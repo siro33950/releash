@@ -1,0 +1,52 @@
+# Claude Code
+.claude/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+target/
+dist/
+out/
+.next/
+build/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Tauri
+src-tauri/target/
+src-tauri/WixTools/
+src-tauri/icons/generated/
+
+# Rust
+*.rs.bk
+Cargo.lock
+
+# Debug
+debug/
+*.dSYM/
+
+# Test coverage
+coverage/
+.nyc_output/
