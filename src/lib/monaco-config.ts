@@ -44,3 +44,15 @@ export const defaultEditorOptions: Monaco.editor.IStandaloneEditorConstructionOp
 		lineDecorationsWidth: 0,
 		lineNumbersMinChars: 4,
 	};
+
+export const defaultDiffEditorOptions: Monaco.editor.IDiffEditorConstructionOptions =
+	{
+		automaticLayout: false,
+		readOnly: false,
+		originalEditable: false,
+		diffAlgorithm: "advanced",
+		renderSideBySide: true,
+		enableSplitViewResizing: true,
+		renderOverviewRuler: true,
+		ignoreTrimWhitespace: false,
+	};

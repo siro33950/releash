@@ -112,3 +112,34 @@
 		padding: 0;
 	}
 }
+
+/* Monaco Editor Gutter Decorations */
+.gutter-added {
+	background-color: var(--status-added);
+	width: 4px !important;
+	margin-left: 3px;
+}
+
+.gutter-modified {
+	background-color: var(--status-modified);
+	width: 4px !important;
+	margin-left: 3px;
+}
+
+.gutter-deleted {
+	background-color: var(--status-deleted);
+	width: 4px !important;
+	margin-left: 3px;
+}
+
+.line-added {
+	background-color: oklch(0.65 0.18 145 / 0.15);
+}
+
+.line-modified {
+	background-color: oklch(0.75 0.15 85 / 0.15);
+}
+
+.line-deleted {
+	background-color: oklch(0.6 0.2 25 / 0.15);
+}
