@@ -55,4 +55,6 @@ export const defaultDiffEditorOptions: Monaco.editor.IDiffEditorConstructionOpti
 		enableSplitViewResizing: true,
 		renderOverviewRuler: true,
 		ignoreTrimWhitespace: false,
+		renderMarginRevertIcon: false,
+		renderGutterMenu: false,
 	};
