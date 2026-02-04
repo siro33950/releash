@@ -19,10 +19,16 @@ interface DiffResult {
 	modified: number[];
 }
 
-function computeDiff(original: string, modified: string): DiffResult {
+export function computeDiff(original: string, modified: string): DiffResult {
 	const changes = diffLines(original, modified);
 	const added: number[] = [];
 	const modified_lines: number[] = [];
+
+	// modified ファイルの行数を計算（末尾改行で空要素が生成されるのを考慮）
+	const modifiedLineCount =
+		modified === ""
+			? 0
+			: modified.split("\n").length - (modified.endsWith("\n") ? 1 : 0);
 
 	let lineNumber = 1;
 
@@ -35,9 +41,9 @@ function computeDiff(original: string, modified: string): DiffResult {
 			}
 			lineNumber += lines;
 		} else if (change.removed) {
-			// removed lines don't increment lineNumber in modified file
-			// but we mark next line as modified if it exists
-			if (lines > 0) {
+			// 削除された行は modified ファイルの行番号を進めない
+			// 次の行が存在する場合のみ modified としてマーク
+			if (lines > 0 && lineNumber <= modifiedLineCount) {
 				modified_lines.push(lineNumber);
 			}
 		} else {
