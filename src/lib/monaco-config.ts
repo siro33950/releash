@@ -47,6 +47,8 @@ export const defaultEditorOptions: Monaco.editor.IStandaloneEditorConstructionOp
 
 export const defaultDiffEditorOptions: Monaco.editor.IDiffEditorConstructionOptions =
 	{
+		fontSize: 14,
+		fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 		automaticLayout: false,
 		readOnly: false,
 		originalEditable: false,

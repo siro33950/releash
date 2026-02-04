@@ -147,3 +147,23 @@
 .line-deleted {
 	background-color: oklch(0.6 0.2 25 / 0.15);
 }
+
+/* Thin scrollbar */
+.scrollbar-thin {
+	scrollbar-width: thin;
+	scrollbar-color: oklch(0.4 0 0 / 0.5) transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+	height: 6px !important;
+	width: 6px !important;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+	background: transparent !important;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+	background: oklch(0.4 0 0 / 0.5) !important;
+	border-radius: 1px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+	background: oklch(0.5 0 0 / 0.7) !important;
+}

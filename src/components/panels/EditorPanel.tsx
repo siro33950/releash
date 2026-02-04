@@ -1,38 +1,47 @@
-import { MonacoDiffViewer } from "./MonacoDiffViewer";
+import type { TabInfo } from "@/types/editor";
+import { EditorTabs } from "./EditorTabs";
+import { EmptyState } from "./EmptyState";
+import { type DiffMode, MonacoDiffViewer } from "./MonacoDiffViewer";
 
-const originalCode = `function greet(name: string) {
-  console.log("Hello, " + name);
+export interface EditorPanelProps {
+	tabs: TabInfo[];
+	activeTab: TabInfo | null;
+	onTabClick: (path: string) => void;
+	onTabClose: (path: string) => void;
+	diffMode: DiffMode;
 }
 
-function add(a: number, b: number) {
-  return a + b;
-}
+export function EditorPanel({
+	tabs,
+	activeTab,
+	onTabClick,
+	onTabClose,
+	diffMode,
+}: EditorPanelProps) {
+	if (tabs.length === 0) {
+		return <EmptyState />;
+	}
 
-greet("World");
-`;
-
-const modifiedCode = `function greet(name: string) {
-  console.log(\`Hello, \${name}!\`);
-}
-
-function add(a: number, b: number): number {
-  return a + b;
-}
-
-function subtract(a: number, b: number): number {
-  return a - b;
-}
-
-greet("Releash");
-`;
-
-export function EditorPanel() {
 	return (
-		<MonacoDiffViewer
-			originalContent={originalCode}
-			modifiedContent={modifiedCode}
-			language="typescript"
-			className="h-full w-full"
-		/>
+		<div className="flex flex-col h-full">
+			<EditorTabs
+				tabs={tabs}
+				activeTabPath={activeTab?.path ?? null}
+				onTabClick={onTabClick}
+				onTabClose={onTabClose}
+			/>
+			<div className="flex-1 overflow-hidden">
+				{activeTab ? (
+					<MonacoDiffViewer
+						originalContent={activeTab.originalContent}
+						modifiedContent={activeTab.content}
+						language={activeTab.language}
+						diffMode={diffMode}
+					/>
+				) : (
+					<EmptyState />
+				)}
+			</div>
+		</div>
 	);
 }
