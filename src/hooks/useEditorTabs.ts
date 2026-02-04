@@ -51,7 +51,7 @@ function getLanguageFromPath(path: string): string {
 }
 
 function getFileNameFromPath(path: string): string {
-	return path.split("/").pop() ?? path;
+	return path.split(/[/\\]/).pop() ?? path;
 }
 
 export function useEditorTabs(): UseEditorTabsReturn {
