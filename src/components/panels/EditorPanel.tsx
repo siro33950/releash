@@ -1,13 +1,38 @@
-import { useRef } from "react";
-import { useMonacoEditor } from "@/hooks/useMonacoEditor";
+import { MonacoDiffViewer } from "./MonacoDiffViewer";
+
+const originalCode = `function greet(name: string) {
+  console.log("Hello, " + name);
+}
+
+function add(a: number, b: number) {
+  return a + b;
+}
+
+greet("World");
+`;
+
+const modifiedCode = `function greet(name: string) {
+  console.log(\`Hello, \${name}!\`);
+}
+
+function add(a: number, b: number): number {
+  return a + b;
+}
+
+function subtract(a: number, b: number): number {
+  return a - b;
+}
+
+greet("Releash");
+`;
 
 export function EditorPanel() {
-	const containerRef = useRef<HTMLDivElement>(null);
-
-	useMonacoEditor(containerRef, {
-		defaultValue: "// Welcome to Releash Editor\n",
-		language: "typescript",
-	});
-
-	return <div ref={containerRef} className="h-full w-full" />;
+	return (
+		<MonacoDiffViewer
+			originalContent={originalCode}
+			modifiedContent={modifiedCode}
+			language="typescript"
+			className="h-full w-full"
+		/>
+	);
 }

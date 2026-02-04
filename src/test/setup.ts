@@ -59,11 +59,49 @@ const mockEditor = {
 	onDidChangeModelContent: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 	getModel: vi.fn().mockReturnValue(null),
 	updateOptions: vi.fn(),
+	deltaDecorations: vi.fn().mockReturnValue([]),
 };
+
+const mockTextModel = {
+	dispose: vi.fn(),
+	getValue: vi.fn().mockReturnValue(""),
+	setValue: vi.fn(),
+	getLineCount: vi.fn().mockReturnValue(1),
+	getLineContent: vi.fn().mockReturnValue(""),
+};
+
+const mockDiffEditor = {
+	dispose: vi.fn(),
+	layout: vi.fn(),
+	getOriginalEditor: vi.fn().mockReturnValue(mockEditor),
+	getModifiedEditor: vi.fn().mockReturnValue(mockEditor),
+	setModel: vi.fn(),
+	updateOptions: vi.fn(),
+};
+
+class MockRange {
+	startLineNumber: number;
+	startColumn: number;
+	endLineNumber: number;
+	endColumn: number;
+	constructor(
+		startLineNumber: number,
+		startColumn: number,
+		endLineNumber: number,
+		endColumn: number,
+	) {
+		this.startLineNumber = startLineNumber;
+		this.startColumn = startColumn;
+		this.endLineNumber = endLineNumber;
+		this.endColumn = endColumn;
+	}
+}
 
 const mockMonaco = {
 	editor: {
 		create: vi.fn().mockReturnValue(mockEditor),
+		createDiffEditor: vi.fn().mockReturnValue(mockDiffEditor),
+		createModel: vi.fn().mockReturnValue(mockTextModel),
 		defineTheme: vi.fn(),
 		setTheme: vi.fn(),
 	},
@@ -71,6 +109,7 @@ const mockMonaco = {
 		register: vi.fn(),
 		setMonarchTokensProvider: vi.fn(),
 	},
+	Range: MockRange,
 };
 
 vi.mock("@monaco-editor/react", () => ({
