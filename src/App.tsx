@@ -11,7 +11,14 @@ import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { useEditorTabs } from "@/hooks/useEditorTabs";
 
 function App() {
-	const { tabs, activeTab, openFile, closeTab, setActiveTab } = useEditorTabs();
+	const {
+		tabs,
+		activeTab,
+		openFile,
+		closeTab,
+		setActiveTab,
+		reloadTabIfClean,
+	} = useEditorTabs();
 	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
 	const [diffMode, setDiffMode] = useState<DiffMode>("gutter");
 
@@ -34,7 +41,10 @@ function App() {
 						maxSize="30"
 						collapsible={false}
 					>
-						<SidebarPanel onSelectFile={openFile} />
+						<SidebarPanel
+							onSelectFile={openFile}
+							onFileChange={reloadTabIfClean}
+						/>
 					</Panel>
 
 					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />

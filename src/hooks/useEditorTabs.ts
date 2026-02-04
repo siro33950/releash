@@ -8,6 +8,7 @@ export interface UseEditorTabsReturn {
 	openFile: (path: string) => Promise<void>;
 	closeTab: (path: string) => void;
 	setActiveTab: (path: string) => void;
+	reloadTabIfClean: (path: string) => Promise<void>;
 }
 
 function getLanguageFromPath(path: string): string {
@@ -127,11 +128,32 @@ export function useEditorTabs(): UseEditorTabsReturn {
 		setActiveTabPath(path);
 	}, []);
 
+	const reloadTabIfClean = useCallback(async (path: string) => {
+		const existingTab = tabsRef.current.find((tab) => tab.path === path);
+		if (!existingTab || existingTab.isDirty) {
+			return;
+		}
+
+		try {
+			const content = await readTextFile(path);
+			setTabs((prevTabs) =>
+				prevTabs.map((tab) =>
+					tab.path === path
+						? { ...tab, content, originalContent: content }
+						: tab,
+				),
+			);
+		} catch (error) {
+			console.error(`Failed to reload file: ${path}`, error);
+		}
+	}, []);
+
 	return {
 		tabs,
 		activeTab,
 		openFile,
 		closeTab,
 		setActiveTab,
+		reloadTabIfClean,
 	};
 }

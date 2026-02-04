@@ -7,9 +7,13 @@ import { FileTree } from "./FileTree";
 
 export interface SidebarPanelProps {
 	onSelectFile?: (path: string) => void;
+	onFileChange?: (path: string) => void;
 }
 
-export function SidebarPanel({ onSelectFile }: SidebarPanelProps) {
+export function SidebarPanel({
+	onSelectFile,
+	onFileChange,
+}: SidebarPanelProps) {
 	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
@@ -23,6 +27,9 @@ export function SidebarPanel({ onSelectFile }: SidebarPanelProps) {
 		collapseAll,
 	} = useFileTree({
 		rootPath,
+		onFileChange: onFileChange
+			? (event) => onFileChange(event.path)
+			: undefined,
 	});
 
 	const handleOpenFolder = async () => {

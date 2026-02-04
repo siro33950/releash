@@ -1,10 +1,12 @@
 import { readDir } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useState } from "react";
+import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import type { FileNode } from "@/types/file-tree";
 
 interface UseFileTreeOptions {
 	rootPath: string | null;
 	showHidden?: boolean;
+	onFileChange?: (event: FileChangeEvent) => void;
 }
 
 interface UseFileTreeReturn {
@@ -65,12 +67,50 @@ function updateNodeChildren(
 }
 
 export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
-	const { rootPath, showHidden = false } = options;
+	const {
+		rootPath,
+		showHidden = false,
+		onFileChange: onFileChangeExternal,
+	} = options;
 
 	const [tree, setTree] = useState<FileNode[]>([]);
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+
+	const handleFileChange = useCallback(
+		async (event: FileChangeEvent) => {
+			onFileChangeExternal?.(event);
+
+			const changedPath = event.path;
+			const parentDir = changedPath.substring(0, changedPath.lastIndexOf("/"));
+
+			if (parentDir === rootPath) {
+				try {
+					const children = await loadChildren(rootPath, showHidden);
+					setTree(children);
+				} catch (e) {
+					console.error("Failed to reload root tree:", e);
+				}
+				return;
+			}
+
+			if (expandedPaths.has(parentDir)) {
+				try {
+					const children = await loadChildren(parentDir, showHidden);
+					setTree((prev) => updateNodeChildren(prev, parentDir, children));
+				} catch (e) {
+					console.error("Failed to reload directory:", e);
+				}
+			}
+		},
+		[rootPath, showHidden, expandedPaths, onFileChangeExternal],
+	);
+
+	useFileWatcher({
+		rootPath,
+		onFileChange: handleFileChange,
+	});
 
 	const loadRootTree = useCallback(async () => {
 		if (!rootPath) {
