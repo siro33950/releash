@@ -50,3 +50,32 @@ vi.mock("@xterm/addon-fit", () => {
 		},
 	};
 });
+
+const mockEditor = {
+	dispose: vi.fn(),
+	getValue: vi.fn().mockReturnValue(""),
+	setValue: vi.fn(),
+	layout: vi.fn(),
+	onDidChangeModelContent: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+	getModel: vi.fn().mockReturnValue(null),
+	updateOptions: vi.fn(),
+};
+
+const mockMonaco = {
+	editor: {
+		create: vi.fn().mockReturnValue(mockEditor),
+		defineTheme: vi.fn(),
+		setTheme: vi.fn(),
+	},
+	languages: {
+		register: vi.fn(),
+		setMonarchTokensProvider: vi.fn(),
+	},
+};
+
+vi.mock("@monaco-editor/react", () => ({
+	loader: {
+		init: vi.fn().mockResolvedValue(mockMonaco),
+		config: vi.fn(),
+	},
+}));
