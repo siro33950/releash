@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { FileTree } from "@/components/agent-scrutiny/file-tree";
-import { DiffViewer } from "@/components/agent-scrutiny/diff-viewer";
-import { Editor } from "@/components/agent-scrutiny/editor";
+import { UnifiedEditor } from "@/components/agent-scrutiny/unified-editor";
 import { Terminal } from "@/components/agent-scrutiny/terminal";
 import { ConsoleOutput } from "@/components/agent-scrutiny/console-output";
 import { GitPanel } from "@/components/agent-scrutiny/git-panel";
@@ -19,16 +18,10 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import { cn } from "@/lib/utils";
-import { Code2, GitCompareArrows } from "lucide-react";
-import { Button } from "@/components/ui/button";
-
-type EditorTab = "editor" | "diff";
 
 export default function AgentScrutinyApp() {
   const [activeView, setActiveView] = useState<ActivityView>("explorer");
   const [selectedFile, setSelectedFile] = useState<string | null>("Button.tsx");
-  const [activeTab, setActiveTab] = useState<EditorTab>("diff");
   const [agentStatus, setAgentStatus] = useState<"idle" | "running" | "waiting">("idle");
 
   const handleSendCommand = (command: string) => {
@@ -63,7 +56,7 @@ export default function AgentScrutinyApp() {
           </div>
           <span className="text-xs font-medium text-muted-foreground">agent-scrutiny</span>
         </div>
-        <div className="text-xs text-muted-foreground">~/projects/my-app</div>
+        <div className="text-xs text-muted-foreground font-mono">~/projects/my-app</div>
         <div className="w-20" />
       </div>
 
@@ -81,45 +74,12 @@ export default function AgentScrutinyApp() {
 
           <ResizableHandle className="w-px bg-border hover:bg-primary/50 transition-colors" />
 
-          {/* Center: Editor + Console */}
+          {/* Center: Unified Editor + Console */}
           <ResizablePanel defaultSize={52}>
             <ResizablePanelGroup direction="vertical">
-              {/* Editor/Diff area */}
+              {/* Unified Editor */}
               <ResizablePanel defaultSize={70} minSize={30}>
-                <div className="h-full flex flex-col">
-                  {/* Tabs */}
-                  <div className="flex items-center gap-px px-1 py-1 bg-sidebar border-b border-border">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className={cn(
-                        "h-6 px-2.5 text-xs gap-1.5 rounded-none",
-                        activeTab === "diff" && "bg-background text-foreground"
-                      )}
-                      onClick={() => setActiveTab("diff")}
-                    >
-                      <GitCompareArrows className="h-3 w-3" />
-                      Diff
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className={cn(
-                        "h-6 px-2.5 text-xs gap-1.5 rounded-none",
-                        activeTab === "editor" && "bg-background text-foreground"
-                      )}
-                      onClick={() => setActiveTab("editor")}
-                    >
-                      <Code2 className="h-3 w-3" />
-                      Edit
-                    </Button>
-                  </div>
-
-                  {/* Content */}
-                  <div className="flex-1 overflow-hidden">
-                    {activeTab === "diff" ? <DiffViewer /> : <Editor filename={selectedFile} />}
-                  </div>
-                </div>
+                <UnifiedEditor />
               </ResizablePanel>
 
               <ResizableHandle className="h-px bg-border hover:bg-primary/50 transition-colors" />

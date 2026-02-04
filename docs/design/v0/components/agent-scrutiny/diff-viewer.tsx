@@ -239,7 +239,33 @@ function DiffFileView({ file, isExpanded, onToggle }: DiffFileViewProps) {
   );
 }
 
-export function DiffViewer() {
+type DiffBase = "HEAD" | "HEAD~1" | "HEAD~5" | "staged" | "working";
+
+const baseOptions: { value: DiffBase; label: string }[] = [
+  { value: "HEAD", label: "HEAD" },
+  { value: "HEAD~1", label: "HEAD~1" },
+  { value: "HEAD~5", label: "HEAD~5" },
+  { value: "staged", label: "Staged" },
+  { value: "working", label: "Working Tree" },
+];
+
+interface DiffViewerProps {
+  base?: DiffBase;
+  onBaseChange?: (base: DiffBase) => void;
+}
+
+export function DiffViewer({ base: controlledBase, onBaseChange }: DiffViewerProps) {
+  const [internalBase, setInternalBase] = useState<DiffBase>("HEAD");
+  const base = controlledBase ?? internalBase;
+  
+  const handleBaseChange = (newBase: DiffBase) => {
+    if (onBaseChange) {
+      onBaseChange(newBase);
+    } else {
+      setInternalBase(newBase);
+    }
+  };
+
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(
     new Set(mockDiffs.map((d) => d.filename))
   );
@@ -263,8 +289,21 @@ export function DiffViewer() {
       <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-card">
         <div className="flex items-center gap-3">
           <GitBranch className="h-4 w-4 text-primary" />
-          <span className="font-medium">Changes</span>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-xs text-muted-foreground">Base:</span>
+          <select
+            value={base}
+            onChange={(e) => handleBaseChange(e.target.value as DiffBase)}
+            className="bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            {baseOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <span className="text-muted-foreground">...</span>
+          <span className="font-mono text-xs text-primary">Working Tree</span>
+          <span className="text-xs text-muted-foreground ml-2">
             {mockDiffs.length} files
           </span>
           <span className="text-xs text-diff-add">+{totalAdditions}</span>
