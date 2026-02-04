@@ -4,43 +4,47 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-	--background: oklch(0.13 0.005 260);
+	/* 背景系（VSCode Dark+に合わせて明るく） */
+	--background: oklch(0.18 0.005 260);
 	--foreground: oklch(0.9 0 0);
-	--card: oklch(0.16 0.005 260);
+	--card: oklch(0.20 0.005 260);
 	--card-foreground: oklch(0.9 0 0);
-	--popover: oklch(0.18 0.005 260);
+	--popover: oklch(0.22 0.005 260);
 	--popover-foreground: oklch(0.9 0 0);
 	--primary: oklch(0.65 0.18 220);
 	--primary-foreground: oklch(0.98 0 0);
-	--secondary: oklch(0.22 0.005 260);
+	--secondary: oklch(0.24 0.005 260);
 	--secondary-foreground: oklch(0.85 0 0);
-	--muted: oklch(0.2 0.005 260);
+	--muted: oklch(0.22 0.005 260);
 	--muted-foreground: oklch(0.6 0 0);
 	--accent: oklch(0.65 0.18 220);
 	--accent-foreground: oklch(0.98 0 0);
 	--destructive: oklch(0.55 0.2 25);
 	--destructive-foreground: oklch(0.98 0 0);
-	--border: oklch(0.25 0.005 260);
-	--input: oklch(0.2 0.005 260);
+	--border: oklch(0.30 0.005 260);
+	--input: oklch(0.22 0.005 260);
 	--ring: oklch(0.65 0.18 220);
 	--radius: 0.375rem;
 
-	--sidebar: oklch(0.11 0.005 260);
+	/* サイドバー */
+	--sidebar: oklch(0.17 0.005 260);
 	--sidebar-foreground: oklch(0.85 0 0);
 	--sidebar-primary: oklch(0.65 0.18 220);
 	--sidebar-primary-foreground: oklch(0.98 0 0);
-	--sidebar-accent: oklch(0.2 0.01 260);
+	--sidebar-accent: oklch(0.26 0.01 260);
 	--sidebar-accent-foreground: oklch(0.9 0 0);
-	--sidebar-border: oklch(0.22 0.005 260);
+	--sidebar-border: oklch(0.28 0.005 260);
 	--sidebar-ring: oklch(0.65 0.18 220);
 
-	--terminal-bg: oklch(0.08 0 0);
+	/* ターミナル */
+	--terminal-bg: oklch(0.14 0 0);
 	--terminal-foreground: oklch(0.85 0 0);
 	--terminal-green: oklch(0.7 0.2 145);
 	--terminal-yellow: oklch(0.8 0.15 85);
 	--terminal-blue: oklch(0.65 0.18 220);
 	--terminal-red: oklch(0.6 0.2 25);
 
+	/* ステータス色 */
 	--status-modified: oklch(0.75 0.15 85);
 	--status-added: oklch(0.65 0.18 145);
 	--status-deleted: oklch(0.6 0.2 25);

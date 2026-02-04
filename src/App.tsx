@@ -1,7 +1,6 @@
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
-import { TitleBar } from "@/components/layout/TitleBar";
 import { ConsolePanel } from "@/components/panels/ConsolePanel";
 import { EditorPanel } from "@/components/panels/EditorPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
@@ -10,7 +9,6 @@ import { TerminalPanel } from "@/components/panels/TerminalPanel";
 function App() {
 	return (
 		<div className="flex flex-col h-screen w-screen overflow-hidden">
-			<TitleBar />
 			<div className="flex flex-1 overflow-hidden">
 				<ActivityBar activeItem="explorer" />
 				<Group orientation="horizontal" className="flex-1">
