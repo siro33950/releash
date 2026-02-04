@@ -136,7 +136,9 @@ pub fn write_pty(state: State<'_, PtyManager>, pty_id: u64, data: String) -> Res
     writer
         .write_all(data.as_bytes())
         .map_err(|e| format!("Failed to write to PTY: {}", e))?;
-    writer.flush().map_err(|e| format!("Failed to flush: {}", e))?;
+    writer
+        .flush()
+        .map_err(|e| format!("Failed to flush: {}", e))?;
 
     Ok(())
 }
