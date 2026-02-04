@@ -58,19 +58,30 @@ export function useEditorTabs(): UseEditorTabsReturn {
 	const [tabs, setTabs] = useState<TabInfo[]>([]);
 	const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
 	const tabsRef = useRef<TabInfo[]>([]);
+	const pendingOpenRef = useRef<Set<string>>(new Set());
 	tabsRef.current = tabs;
 
 	const activeTab = tabs.find((tab) => tab.path === activeTabPath) ?? null;
 
 	const openFile = useCallback(async (path: string) => {
+		if (pendingOpenRef.current.has(path)) {
+			setActiveTabPath(path);
+			return;
+		}
+
 		const existingTab = tabsRef.current.find((tab) => tab.path === path);
 		if (existingTab) {
 			setActiveTabPath(path);
 			return;
 		}
 
+		pendingOpenRef.current.add(path);
 		try {
 			const content = await readTextFile(path);
+			if (tabsRef.current.some((tab) => tab.path === path)) {
+				setActiveTabPath(path);
+				return;
+			}
 			const newTab: TabInfo = {
 				path,
 				name: getFileNameFromPath(path),
@@ -84,6 +95,8 @@ export function useEditorTabs(): UseEditorTabsReturn {
 			setActiveTabPath(path);
 		} catch (error) {
 			console.error(`Failed to open file: ${path}`, error);
+		} finally {
+			pendingOpenRef.current.delete(path);
 		}
 	}, []);
 
