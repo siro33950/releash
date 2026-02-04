@@ -114,7 +114,11 @@ export function useTerminal(containerRef: RefObject<HTMLDivElement | null>) {
 				fitAddonRef.current.fit();
 				if (ptyIdRef.current !== null && terminalRef.current) {
 					const { rows, cols } = terminalRef.current;
-					invoke("resize_pty", { ptyId: ptyIdRef.current, rows, cols });
+					invoke("resize_pty", { ptyId: ptyIdRef.current, rows, cols }).catch(
+						(error) => {
+							console.error("Failed to resize PTY:", error);
+						},
+					);
 				}
 			}
 		});

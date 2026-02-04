@@ -54,7 +54,12 @@ pub fn spawn_pty(
         })
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    #[cfg(target_os = "windows")]
+    let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+
+    #[cfg(not(target_os = "windows"))]
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
     let cmd = CommandBuilder::new(shell);
 
     let child = pair
@@ -175,12 +180,21 @@ pub fn resize_pty(
 #[tauri::command]
 pub fn kill_pty(state: State<'_, PtyManager>, pty_id: u64) -> Result<(), String> {
     let mut sessions = state.sessions.lock();
+
+    // 先にセッションを取得（削除はまだしない）
     let session = sessions
-        .remove(&pty_id)
+        .get(&pty_id)
         .ok_or_else(|| format!("PTY {} not found", pty_id))?;
 
-    let mut killer = session.child_killer.lock();
-    let _ = killer.kill();
+    // kill()を先に実行し、エラーがあれば返す
+    session
+        .child_killer
+        .lock()
+        .kill()
+        .map_err(|e| format!("Failed to kill PTY {}: {}", pty_id, e))?;
+
+    // kill()成功後にセッション削除
+    sessions.remove(&pty_id);
 
     Ok(())
 }
