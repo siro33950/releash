@@ -24,6 +24,8 @@ export function useTerminal(containerRef: RefObject<HTMLDivElement | null>) {
 		const container = containerRef.current;
 		if (!container) return;
 
+		let isMounted = true;
+
 		const terminal = new Terminal({
 			cursorBlink: true,
 			fontFamily: 'Menlo, Monaco, "Courier New", monospace',
@@ -80,16 +82,30 @@ export function useTerminal(containerRef: RefObject<HTMLDivElement | null>) {
 				}
 			});
 
+			if (!isMounted) return;
+
 			const { rows, cols } = terminal;
 			const ptyId = await invoke<number>("spawn_pty", { rows, cols });
+
+			if (!isMounted) {
+				invoke("kill_pty", { ptyId }).catch(() => {});
+				return;
+			}
+
 			ptyIdRef.current = ptyId;
 		};
 
-		initPty();
+		initPty().catch((error) => {
+			console.error("Failed to initialize PTY:", error);
+		});
 
 		terminal.onData((data) => {
 			if (ptyIdRef.current !== null) {
-				invoke("write_pty", { ptyId: ptyIdRef.current, data });
+				invoke("write_pty", { ptyId: ptyIdRef.current, data }).catch(
+					(error) => {
+						console.error("Failed to write to PTY:", error);
+					},
+				);
 			}
 		});
 
@@ -106,11 +122,12 @@ export function useTerminal(containerRef: RefObject<HTMLDivElement | null>) {
 		resizeObserverRef.current = resizeObserver;
 
 		return () => {
+			isMounted = false;
 			resizeObserver.disconnect();
 			unlistenOutput?.();
 			unlistenExit?.();
 			if (ptyIdRef.current !== null) {
-				invoke("kill_pty", { ptyId: ptyIdRef.current });
+				invoke("kill_pty", { ptyId: ptyIdRef.current }).catch(() => {});
 			}
 			terminal.dispose();
 		};

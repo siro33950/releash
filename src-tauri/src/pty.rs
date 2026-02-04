@@ -1,5 +1,5 @@
 use parking_lot::Mutex;
-use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -13,10 +13,10 @@ fn generate_pty_id() -> u64 {
     PTY_ID_COUNTER.fetch_add(1, Ordering::SeqCst)
 }
 
-#[derive(Clone)]
 struct PtySession {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    child_killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -57,10 +57,13 @@ pub fn spawn_pty(
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let cmd = CommandBuilder::new(shell);
 
-    let mut child = pair
+    let child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| format!("Failed to spawn shell: {}", e))?;
+
+    let child_killer = child.clone_killer();
+    let mut child = child;
 
     let pty_id = generate_pty_id();
 
@@ -75,6 +78,7 @@ pub fn spawn_pty(
     let session = PtySession {
         master: Arc::new(Mutex::new(master)),
         writer: Arc::new(Mutex::new(writer)),
+        child_killer: Arc::new(Mutex::new(child_killer)),
     };
 
     state.sessions.lock().insert(pty_id, session);
@@ -171,8 +175,12 @@ pub fn resize_pty(
 #[tauri::command]
 pub fn kill_pty(state: State<'_, PtyManager>, pty_id: u64) -> Result<(), String> {
     let mut sessions = state.sessions.lock();
-    sessions
+    let session = sessions
         .remove(&pty_id)
         .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+
+    let mut killer = session.child_killer.lock();
+    let _ = killer.kill();
+
     Ok(())
 }
