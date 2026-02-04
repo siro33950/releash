@@ -6,5 +6,5 @@ export function TerminalPanel() {
 	const containerRef = useRef<HTMLDivElement>(null);
 	useTerminal(containerRef);
 
-	return <div ref={containerRef} className="h-full w-full" />;
+	return <div ref={containerRef} className="h-full w-full p-2 bg-[#1a1a1a]" />;
 }

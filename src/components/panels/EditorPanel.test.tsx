@@ -1,19 +1,80 @@
-import { render } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import type { TabInfo } from "@/types/editor";
 import { EditorPanel } from "./EditorPanel";
 
-describe("EditorPanel", () => {
-	it("should render container element", () => {
-		render(<EditorPanel />);
+const mockTab: TabInfo = {
+	path: "/test/file.ts",
+	name: "file.ts",
+	content: "const x = 1;",
+	originalContent: "const x = 1;",
+	isDirty: false,
+	language: "typescript",
+};
 
-		const container = document.querySelector(".h-full.w-full");
-		expect(container).toBeInTheDocument();
+describe("EditorPanel", () => {
+	it("should render EmptyState when no tabs", () => {
+		render(
+			<EditorPanel
+				tabs={[]}
+				activeTab={null}
+				onTabClick={vi.fn()}
+				onTabClose={vi.fn()}
+				diffMode="split"
+			/>,
+		);
+
+		expect(screen.getByText("No file selected")).toBeInTheDocument();
 	});
 
-	it("should have full height and width", () => {
-		const { container } = render(<EditorPanel />);
+	it("should render tabs when tabs exist", () => {
+		render(
+			<EditorPanel
+				tabs={[mockTab]}
+				activeTab={mockTab}
+				onTabClick={vi.fn()}
+				onTabClose={vi.fn()}
+				diffMode="split"
+			/>,
+		);
 
-		const editorContainer = container.firstChild as HTMLElement;
-		expect(editorContainer).toHaveClass("h-full", "w-full");
+		expect(screen.getByText("file.ts")).toBeInTheDocument();
+	});
+
+	it("should call onTabClick when tab is clicked", async () => {
+		const user = userEvent.setup();
+		const onTabClick = vi.fn();
+
+		render(
+			<EditorPanel
+				tabs={[mockTab]}
+				activeTab={mockTab}
+				onTabClick={onTabClick}
+				onTabClose={vi.fn()}
+				diffMode="split"
+			/>,
+		);
+
+		await user.click(screen.getByText("file.ts"));
+		expect(onTabClick).toHaveBeenCalledWith("/test/file.ts");
+	});
+
+	it("should call onTabClose when close button is clicked", async () => {
+		const user = userEvent.setup();
+		const onTabClose = vi.fn();
+
+		render(
+			<EditorPanel
+				tabs={[mockTab]}
+				activeTab={mockTab}
+				onTabClick={vi.fn()}
+				onTabClose={onTabClose}
+				diffMode="split"
+			/>,
+		);
+
+		await user.click(screen.getByLabelText("Close file.ts"));
+		expect(onTabClose).toHaveBeenCalledWith("/test/file.ts");
 	});
 });
