@@ -48,6 +48,7 @@ export function ActivityBar({
 						<Button
 							variant="ghost"
 							size="icon"
+							aria-label={item.title}
 							className={cn(
 								"w-12 h-12 rounded-none",
 								activeItem === item.id
