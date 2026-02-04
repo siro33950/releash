@@ -8,7 +8,7 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-	plugins: [react(), tailwindcss()],
+	plugins: [tailwindcss(), react()],
 	resolve: {
 		alias: {
 			"@": path.resolve(import.meta.dirname, "./src"),
@@ -19,7 +19,9 @@ export default defineConfig(async () => ({
 		environment: "jsdom",
 		setupFiles: ["./src/test/setup.ts"],
 		deps: {
-			inline: ["react-resizable-panels"],
+			optimizer: {
+				web: { include: ["react-resizable-panels"] },
+			},
 		},
 	},
 
