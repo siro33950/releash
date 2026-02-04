@@ -20,7 +20,11 @@ export function EditorTabs({
 	return (
 		<ScrollAreaPrimitive.Root className="h-[30px] bg-sidebar border-b border-border">
 			<ScrollAreaPrimitive.Viewport className="h-full w-full">
-				<div className="flex items-center h-[30px]">
+				<div
+					className="flex items-center h-[30px]"
+					role="tablist"
+					aria-orientation="horizontal"
+				>
 					{tabs.map((tab) => {
 						const isActive = tab.path === activeTabPath;
 						return (
@@ -35,6 +39,7 @@ export function EditorTabs({
 								onClick={() => onTabClick(tab.path)}
 								onKeyDown={(e) => {
 									if (e.key === "Enter" || e.key === " ") {
+										e.preventDefault();
 										onTabClick(tab.path);
 									}
 								}}
@@ -57,7 +62,7 @@ export function EditorTabs({
 										"p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0",
 										isActive
 											? "opacity-100"
-											: "opacity-0 group-hover:opacity-100",
+											: "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
 									)}
 									aria-label={`Close ${tab.name}`}
 								>

@@ -47,6 +47,7 @@ export function SidebarPanel({ onSelectFile }: SidebarPanelProps) {
 						onClick={refresh}
 						className="p-1 hover:bg-sidebar-accent rounded transition-colors"
 						title="Refresh"
+						aria-label="Refresh"
 						disabled={!rootPath}
 					>
 						<RefreshCw className="h-3.5 w-3.5 text-muted-foreground" />
@@ -56,6 +57,7 @@ export function SidebarPanel({ onSelectFile }: SidebarPanelProps) {
 						onClick={collapseAll}
 						className="p-1 hover:bg-sidebar-accent rounded transition-colors"
 						title="Collapse All"
+						aria-label="Collapse All"
 						disabled={!rootPath}
 					>
 						<ChevronsDownUp className="h-3.5 w-3.5 text-muted-foreground" />
@@ -65,6 +67,7 @@ export function SidebarPanel({ onSelectFile }: SidebarPanelProps) {
 						onClick={handleOpenFolder}
 						className="p-1 hover:bg-sidebar-accent rounded transition-colors"
 						title="Open Folder"
+						aria-label="Open Folder"
 					>
 						<FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
 					</button>

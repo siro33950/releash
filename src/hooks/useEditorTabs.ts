@@ -69,18 +69,22 @@ export function useEditorTabs(): UseEditorTabsReturn {
 			return;
 		}
 
-		const content = await readTextFile(path);
-		const newTab: TabInfo = {
-			path,
-			name: getFileNameFromPath(path),
-			content,
-			originalContent: content,
-			isDirty: false,
-			language: getLanguageFromPath(path),
-		};
+		try {
+			const content = await readTextFile(path);
+			const newTab: TabInfo = {
+				path,
+				name: getFileNameFromPath(path),
+				content,
+				originalContent: content,
+				isDirty: false,
+				language: getLanguageFromPath(path),
+			};
 
-		setTabs((prevTabs) => [...prevTabs, newTab]);
-		setActiveTabPath(path);
+			setTabs((prevTabs) => [...prevTabs, newTab]);
+			setActiveTabPath(path);
+		} catch (error) {
+			console.error(`Failed to open file: ${path}`, error);
+		}
 	}, []);
 
 	const closeTab = useCallback((path: string) => {
@@ -95,6 +99,9 @@ export function useEditorTabs(): UseEditorTabsReturn {
 					return null;
 				}
 				const closedIndex = prevTabs.findIndex((tab) => tab.path === path);
+				if (closedIndex === -1) {
+					return newTabs[0].path;
+				}
 				const newIndex = Math.min(closedIndex, newTabs.length - 1);
 				return newTabs[newIndex].path;
 			});
