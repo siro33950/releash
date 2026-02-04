@@ -118,3 +118,11 @@ vi.mock("@monaco-editor/react", () => ({
 		config: vi.fn(),
 	},
 }));
+
+vi.mock("@tauri-apps/plugin-fs", () => ({
+	readDir: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+	open: vi.fn().mockResolvedValue(null),
+}));
