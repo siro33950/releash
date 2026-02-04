@@ -136,12 +136,17 @@ pub fn spawn_pty(
 
 #[tauri::command]
 pub fn write_pty(state: State<'_, PtyManager>, pty_id: u64, data: String) -> Result<(), String> {
-    let sessions = state.sessions.lock();
-    let session = sessions
-        .get(&pty_id)
-        .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+    // sessionsロックを取得してwriterのArcクローンを取得後、即座に解放
+    let writer = {
+        let sessions = state.sessions.lock();
+        let session = sessions
+            .get(&pty_id)
+            .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+        Arc::clone(&session.writer)
+    };
 
-    let mut writer = session.writer.lock();
+    // sessionsロック解放後にI/O実行
+    let mut writer = writer.lock();
     writer
         .write_all(data.as_bytes())
         .map_err(|e| format!("Failed to write to PTY: {}", e))?;

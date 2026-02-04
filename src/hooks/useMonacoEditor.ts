@@ -21,6 +21,12 @@ export function useMonacoEditor(
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	const monacoRef = useRef<typeof Monaco | null>(null);
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
+	const onChangeRef = useRef(onChange);
+
+	// onChangeの参照を常に最新に保つ
+	useEffect(() => {
+		onChangeRef.current = onChange;
+	}, [onChange]);
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -53,7 +59,7 @@ export function useMonacoEditor(
 			editorRef.current = editor;
 
 			editor.onDidChangeModelContent(() => {
-				onChange?.(editor.getValue());
+				onChangeRef.current?.(editor.getValue());
 			});
 
 			const resizeObserver = new ResizeObserver(() => {
@@ -72,7 +78,7 @@ export function useMonacoEditor(
 			resizeObserverRef.current?.disconnect();
 			editorRef.current?.dispose();
 		};
-	}, [containerRef, defaultValue, language, onChange]);
+	}, [containerRef, defaultValue, language]);
 
 	return {
 		editorRef,

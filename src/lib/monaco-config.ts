@@ -35,7 +35,7 @@ export const defaultEditorOptions: Monaco.editor.IStandaloneEditorConstructionOp
 		scrollBeyondLastLine: false,
 		renderWhitespace: "selection",
 		tabSize: 2,
-		insertSpaces: false,
+		insertSpaces: true,
 		cursorBlinking: "blink",
 		cursorStyle: "line",
 		lineNumbers: "on",
