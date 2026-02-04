@@ -1,10 +1,9 @@
 import {
-	ChevronDown,
-	ChevronRight,
-	File,
-	Folder,
-	FolderOpen,
-} from "lucide-react";
+	DefaultFolderOpenedIcon,
+	FileIcon,
+	FolderIcon,
+} from "@react-symbols/icons/utils";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { FileNode, FileStatus } from "@/types/file-tree";
 
@@ -86,15 +85,15 @@ function FileTreeItem({
 							<ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
 						)}
 						{isExpanded ? (
-							<FolderOpen className="h-4 w-4 shrink-0 text-status-modified" />
+							<DefaultFolderOpenedIcon className="h-4 w-4 shrink-0" />
 						) : (
-							<Folder className="h-4 w-4 shrink-0 text-status-modified" />
+							<FolderIcon folderName={node.name} className="h-4 w-4 shrink-0" />
 						)}
 					</>
 				) : (
 					<>
 						<span className="w-4" />
-						<File className="h-4 w-4 shrink-0 text-muted-foreground" />
+						<FileIcon fileName={node.name} className="h-4 w-4 shrink-0" />
 					</>
 				)}
 				<span className="truncate flex-1 text-left">{node.name}</span>

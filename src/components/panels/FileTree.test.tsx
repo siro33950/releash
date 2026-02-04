@@ -4,6 +4,38 @@ import { describe, expect, it, vi } from "vitest";
 import type { FileNode } from "@/types/file-tree";
 import { FileTree } from "./FileTree";
 
+vi.mock("@react-symbols/icons/utils", () => ({
+	FileIcon: ({
+		fileName,
+		className,
+	}: {
+		fileName: string;
+		className?: string;
+	}) => (
+		<span
+			data-testid="file-icon"
+			data-filename={fileName}
+			className={className}
+		/>
+	),
+	FolderIcon: ({
+		folderName,
+		className,
+	}: {
+		folderName: string;
+		className?: string;
+	}) => (
+		<span
+			data-testid="folder-icon"
+			data-foldername={folderName}
+			className={className}
+		/>
+	),
+	DefaultFolderOpenedIcon: ({ className }: { className?: string }) => (
+		<span data-testid="folder-open-icon" className={className} />
+	),
+}));
+
 const mockTree: FileNode[] = [
 	{
 		name: "src",
