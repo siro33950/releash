@@ -51,7 +51,10 @@ function updateNodeChildren(
 		if (node.path === targetPath) {
 			return { ...node, children };
 		}
-		if (node.children && targetPath.startsWith(node.path)) {
+		if (
+			node.children &&
+			(targetPath === node.path || targetPath.startsWith(`${node.path}/`))
+		) {
 			return {
 				...node,
 				children: updateNodeChildren(node.children, targetPath, children),
