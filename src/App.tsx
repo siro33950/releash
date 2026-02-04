@@ -1,50 +1,87 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import "./App.css";
+import { Group, Panel, Separator } from "react-resizable-panels";
+import { ActivityBar } from "@/components/layout/ActivityBar";
+import { StatusBar } from "@/components/layout/StatusBar";
+import { TitleBar } from "@/components/layout/TitleBar";
+import { ConsolePanel } from "@/components/panels/ConsolePanel";
+import { EditorPanel } from "@/components/panels/EditorPanel";
+import { SidebarPanel } from "@/components/panels/SidebarPanel";
+import { TerminalPanel } from "@/components/panels/TerminalPanel";
 
 function App() {
-	const [greetMsg, setGreetMsg] = useState("");
-	const [name, setName] = useState("");
-
-	async function greet() {
-		// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-		setGreetMsg(await invoke("greet", { name }));
-	}
-
 	return (
-		<main className="container">
-			<h1>Welcome to Tauri + React</h1>
+		<div className="flex flex-col h-screen w-screen overflow-hidden">
+			<TitleBar />
+			<div className="flex flex-1 overflow-hidden">
+				<ActivityBar activeItem="explorer" />
+				<Group orientation="horizontal" className="flex-1">
+					{/* Sidebar */}
+					<Panel
+						id="sidebar"
+						defaultSize="15"
+						minSize={10}
+						maxSize="30"
+						collapsible={false}
+					>
+						<SidebarPanel />
+					</Panel>
 
-			<div className="row">
-				<a href="https://vite.dev" target="_blank" rel="noopener">
-					<img src="/vite.svg" className="logo vite" alt="Vite logo" />
-				</a>
-				<a href="https://tauri.app" target="_blank" rel="noopener">
-					<img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-				</a>
-				<a href="https://react.dev" target="_blank" rel="noopener">
-					<img src={reactLogo} className="logo react" alt="React logo" />
-				</a>
+					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
+
+					{/* Editor + Console */}
+					<Panel
+						id="editor-console"
+						defaultSize="55"
+						minSize={20}
+						collapsible={false}
+					>
+						<Group orientation="vertical">
+							<Panel
+								id="editor"
+								defaultSize="70"
+								minSize={20}
+								collapsible={false}
+							>
+								<EditorPanel />
+							</Panel>
+
+							<Separator className="h-px bg-border hover:bg-primary/50 cursor-row-resize" />
+
+							<Panel
+								id="console"
+								defaultSize="30"
+								minSize={10}
+								collapsible={false}
+							>
+								<ConsolePanel />
+							</Panel>
+						</Group>
+					</Panel>
+
+					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
+
+					{/* Terminal */}
+					<Panel
+						id="terminal"
+						defaultSize="30"
+						minSize={10}
+						maxSize="60"
+						collapsible={false}
+					>
+						<div className="h-full flex flex-col">
+							<div className="px-3 py-1.5 bg-sidebar border-b border-border">
+								<span className="text-xs font-medium text-muted-foreground">
+									AI Terminal
+								</span>
+							</div>
+							<div className="flex-1 overflow-hidden">
+								<TerminalPanel />
+							</div>
+						</div>
+					</Panel>
+				</Group>
 			</div>
-			<p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-			<form
-				className="row"
-				onSubmit={(e) => {
-					e.preventDefault();
-					greet();
-				}}
-			>
-				<input
-					id="greet-input"
-					onChange={(e) => setName(e.currentTarget.value)}
-					placeholder="Enter a name..."
-				/>
-				<button type="submit">Greet</button>
-			</form>
-			<p>{greetMsg}</p>
-		</main>
+			<StatusBar />
+		</div>
 	);
 }
 
