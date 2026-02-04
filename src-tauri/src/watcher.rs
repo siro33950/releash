@@ -48,7 +48,10 @@ pub fn start_watching(
 
     let debouncer = new_debouncer(
         Duration::from_millis(100),
-        move |res: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify_debouncer_mini::notify::Error>| {
+        move |res: Result<
+            Vec<notify_debouncer_mini::DebouncedEvent>,
+            notify_debouncer_mini::notify::Error,
+        >| {
             match res {
                 Ok(events) => {
                     for event in events {

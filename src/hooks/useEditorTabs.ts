@@ -138,8 +138,8 @@ export function useEditorTabs(): UseEditorTabsReturn {
 			const content = await readTextFile(path);
 			setTabs((prevTabs) =>
 				prevTabs.map((tab) =>
-					tab.path === path
-						? { ...tab, content, originalContent: content }
+					tab.path === path && !tab.isDirty
+						? { ...tab, content, originalContent: content, isDirty: false }
 						: tab,
 				),
 			);

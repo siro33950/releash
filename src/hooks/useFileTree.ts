@@ -83,7 +83,9 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 			onFileChangeExternal?.(event);
 
 			const changedPath = event.path;
-			const parentDir = changedPath.substring(0, changedPath.lastIndexOf("/"));
+			const lastSlashIndex = changedPath.lastIndexOf("/");
+			if (lastSlashIndex === -1) return;
+			const parentDir = changedPath.substring(0, lastSlashIndex);
 
 			if (parentDir === rootPath) {
 				try {
