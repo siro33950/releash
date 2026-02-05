@@ -1,13 +1,69 @@
+import { readTextFile } from "@tauri-apps/plugin-fs";
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { useEditorTabs } from "./useEditorTabs";
+import { detectEol, useEditorTabs } from "./useEditorTabs";
 
 vi.mock("@tauri-apps/plugin-fs", () => ({
 	readTextFile: vi.fn().mockResolvedValue("file content"),
 	writeTextFile: vi.fn().mockResolvedValue(undefined),
 }));
 
+describe("detectEol", () => {
+	it("should return LF for content without CRLF", () => {
+		expect(detectEol("line1\nline2\nline3")).toBe("LF");
+	});
+
+	it("should return CRLF for content with CRLF", () => {
+		expect(detectEol("line1\r\nline2\r\nline3")).toBe("CRLF");
+	});
+
+	it("should return LF for empty content", () => {
+		expect(detectEol("")).toBe("LF");
+	});
+});
+
 describe("useEditorTabs", () => {
+	describe("eol detection", () => {
+		it("should set eol to LF when file has LF line endings", async () => {
+			vi.mocked(readTextFile).mockResolvedValueOnce("line1\nline2");
+			const { result } = renderHook(() => useEditorTabs());
+
+			await act(async () => {
+				await result.current.openFile("/test/lf.ts");
+			});
+
+			expect(result.current.tabs[0].eol).toBe("LF");
+		});
+
+		it("should set eol to CRLF when file has CRLF line endings", async () => {
+			vi.mocked(readTextFile).mockResolvedValueOnce("line1\r\nline2");
+			const { result } = renderHook(() => useEditorTabs());
+
+			await act(async () => {
+				await result.current.openFile("/test/crlf.ts");
+			});
+
+			expect(result.current.tabs[0].eol).toBe("CRLF");
+		});
+
+		it("should update eol on reloadTabIfClean", async () => {
+			vi.mocked(readTextFile).mockResolvedValueOnce("line1\nline2");
+			const { result } = renderHook(() => useEditorTabs());
+
+			await act(async () => {
+				await result.current.openFile("/test/file.ts");
+			});
+			expect(result.current.tabs[0].eol).toBe("LF");
+
+			vi.mocked(readTextFile).mockResolvedValueOnce("line1\r\nline2");
+			await act(async () => {
+				await result.current.reloadTabIfClean("/test/file.ts");
+			});
+
+			expect(result.current.tabs[0].eol).toBe("CRLF");
+		});
+	});
+
 	describe("updateTabContent", () => {
 		it("should update tab content and set isDirty when content changes", async () => {
 			const { result } = renderHook(() => useEditorTabs());
