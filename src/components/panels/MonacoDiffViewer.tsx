@@ -12,7 +12,7 @@ import { useMonacoGutterEditor } from "@/hooks/useMonacoGutterEditor";
 import { cn } from "@/lib/utils";
 
 export type DiffMode = "gutter" | "inline" | "split";
-export type DiffBase = "HEAD" | "HEAD~1" | "HEAD~5" | "staged";
+export type DiffBase = "HEAD" | "staged" | (string & {});
 
 function useEditorContextMenu(
 	editorRef: React.RefObject<Monaco.editor.ICodeEditor | null>,

@@ -21,6 +21,7 @@ describe("EditorPanel", () => {
 				activeTab={null}
 				onTabClick={vi.fn()}
 				onTabClose={vi.fn()}
+				diffBase="HEAD"
 				diffMode="split"
 			/>,
 		);
@@ -35,6 +36,7 @@ describe("EditorPanel", () => {
 				activeTab={mockTab}
 				onTabClick={vi.fn()}
 				onTabClose={vi.fn()}
+				diffBase="HEAD"
 				diffMode="split"
 			/>,
 		);
@@ -52,6 +54,7 @@ describe("EditorPanel", () => {
 				activeTab={mockTab}
 				onTabClick={onTabClick}
 				onTabClose={vi.fn()}
+				diffBase="HEAD"
 				diffMode="split"
 			/>,
 		);
@@ -70,6 +73,7 @@ describe("EditorPanel", () => {
 				activeTab={mockTab}
 				onTabClick={vi.fn()}
 				onTabClose={onTabClose}
+				diffBase="HEAD"
 				diffMode="split"
 			/>,
 		);

@@ -1,6 +1,7 @@
 import { readDir } from "@tauri-apps/plugin-fs";
 import { useCallback, useEffect, useState } from "react";
 import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
+import { normalizePath } from "@/lib/normalizePath";
 import type { FileNode } from "@/types/file-tree";
 
 interface UseFileTreeOptions {
@@ -18,10 +19,6 @@ interface UseFileTreeReturn {
 	addExpandedPath: (path: string) => void;
 	refresh: () => Promise<void>;
 	collapseAll: () => void;
-}
-
-function normalizePath(p: string): string {
-	return p.replace(/\\+/g, "/");
 }
 
 async function loadChildren(
