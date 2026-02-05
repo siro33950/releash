@@ -377,6 +377,8 @@ pub fn git_commit(repo_path: String, message: String) -> Result<String, String> 
 
 #[tauri::command]
 pub fn git_push(repo_path: String) -> Result<String, String> {
+    Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+
     let output = Command::new("git")
         .args(["push", "-u", "origin", "HEAD"])
         .current_dir(&repo_path)

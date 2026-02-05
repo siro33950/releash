@@ -323,7 +323,13 @@ export function SourceControlPanel({
 						value={commitSummary}
 						onChange={(e) => setCommitSummary(e.target.value)}
 						onKeyDown={(e) => {
-							if (e.key === "Enter" && !e.shiftKey) handleCommit();
+							if (
+								e.key === "Enter" &&
+								!e.shiftKey &&
+								stagedFiles.length > 0 &&
+								!loading
+							)
+								handleCommit();
 						}}
 					/>
 					<span
