@@ -31,8 +31,7 @@ function applyStatusRecursive(
 			return { ...node, status };
 		}
 
-		const isIgnored =
-			statusMap.get(node.path) === "ignored" || parentIgnored;
+		const isIgnored = statusMap.get(node.path) === "ignored" || parentIgnored;
 
 		const children = node.children
 			? applyStatusRecursive(

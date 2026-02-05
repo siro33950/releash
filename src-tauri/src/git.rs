@@ -823,7 +823,10 @@ mod tests {
         let result = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
 
         let ignored_file = result.iter().find(|e| e.path == "ignored.txt");
-        assert!(ignored_file.is_some(), "ignored.txt should appear in status");
+        assert!(
+            ignored_file.is_some(),
+            "ignored.txt should appear in status"
+        );
         assert_eq!(ignored_file.unwrap().worktree_status, "ignored");
         assert_eq!(ignored_file.unwrap().index_status, "none");
 

@@ -43,7 +43,10 @@ export function useGitStatus(rootPath: string | null) {
 				const absPath = `${rootPath}/${entry.path}`;
 				map.set(absPath, toFileStatus(entry));
 				if (entry.index_status !== "none") staged.push(entry);
-				if (entry.worktree_status !== "none" && entry.worktree_status !== "ignored")
+				if (
+					entry.worktree_status !== "none" &&
+					entry.worktree_status !== "ignored"
+				)
 					changed.push(entry);
 			}
 
