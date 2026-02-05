@@ -11,7 +11,7 @@ import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useEditorTabs } from "@/hooks/useEditorTabs";
-import { useGitStatus } from "@/hooks/useGitStatus";
+
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 
 function App() {
@@ -33,7 +33,7 @@ function App() {
 	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [activeView, setActiveView] = useState<string>("explorer");
 	const { branch } = useCurrentBranch(rootPath);
-	const { changedFiles } = useGitStatus(rootPath);
+
 	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
 	const [diffMode, setDiffMode] = useState<DiffMode>("gutter");
 	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
@@ -206,9 +206,9 @@ function App() {
 			</div>
 			<StatusBar
 				branch={branch ?? undefined}
-				status={
-					changedFiles.length > 0 ? `${changedFiles.length} changed` : "Clean"
-				}
+				language={activeTab?.language}
+				encoding={activeTab ? "UTF-8" : undefined}
+				eol={activeTab?.eol}
 			/>
 			<UnsavedChangesDialog
 				open={showUnsavedDialog}

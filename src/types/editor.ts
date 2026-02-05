@@ -5,4 +5,5 @@ export interface TabInfo {
 	originalContent: string;
 	isDirty: boolean;
 	language: string;
+	eol: "LF" | "CRLF";
 }

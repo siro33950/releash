@@ -14,6 +14,7 @@ const mockTab: TabInfo = {
 	originalContent: "const x = 1;",
 	isDirty: false,
 	language: "typescript",
+	eol: "LF",
 };
 
 describe("EditorPanel", () => {

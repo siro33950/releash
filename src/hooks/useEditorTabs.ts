@@ -57,6 +57,10 @@ function getLanguageFromPath(path: string): string {
 	return languageMap[ext] ?? "plaintext";
 }
 
+export function detectEol(content: string): "LF" | "CRLF" {
+	return content.includes("\r\n") ? "CRLF" : "LF";
+}
+
 function getFileNameFromPath(path: string): string {
 	return path.split(/[/\\]/).pop() ?? path;
 }
@@ -96,6 +100,7 @@ export function useEditorTabs(): UseEditorTabsReturn {
 				originalContent: content,
 				isDirty: false,
 				language: getLanguageFromPath(path),
+				eol: detectEol(content),
 			};
 
 			setTabs((prevTabs) => [...prevTabs, newTab]);
@@ -220,7 +225,13 @@ export function useEditorTabs(): UseEditorTabsReturn {
 			setTabs((prevTabs) =>
 				prevTabs.map((tab) =>
 					tab.path === path && !tab.isDirty
-						? { ...tab, content, originalContent: content, isDirty: false }
+						? {
+								...tab,
+								content,
+								originalContent: content,
+								isDirty: false,
+								eol: detectEol(content),
+							}
 						: tab,
 				),
 			);
