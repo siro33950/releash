@@ -82,14 +82,16 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 		async (event: FileChangeEvent) => {
 			onFileChangeExternal?.(event);
 
-			const changedPath = event.path;
+			const changedPath = event.path.replace(/\\+/g, "/");
 			const lastSlashIndex = changedPath.lastIndexOf("/");
 			if (lastSlashIndex === -1) return;
 			const parentDir = changedPath.substring(0, lastSlashIndex);
 
-			if (parentDir === rootPath) {
+			const normalizedRootPath = rootPath?.replace(/\\+/g, "/") ?? null;
+
+			if (parentDir === normalizedRootPath) {
 				try {
-					const children = await loadChildren(rootPath, showHidden);
+					const children = await loadChildren(normalizedRootPath, showHidden);
 					setTree(children);
 				} catch (e) {
 					console.error("Failed to reload root tree:", e);
