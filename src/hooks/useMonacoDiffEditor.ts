@@ -34,6 +34,7 @@ export function useMonacoDiffEditor(
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 	const originalModelRef = useRef<Monaco.editor.ITextModel | null>(null);
 	const modifiedModelRef = useRef<Monaco.editor.ITextModel | null>(null);
+	const contentChangeListenerRef = useRef<Monaco.IDisposable | null>(null);
 	const originalValueRef = useRef(originalValue);
 	const modifiedValueRef = useRef(modifiedValue);
 	const onContentChangeRef = useRef(onContentChange);
@@ -93,9 +94,11 @@ export function useMonacoDiffEditor(
 				modified: modifiedModel,
 			});
 
-			diffEditor.getModifiedEditor().onDidChangeModelContent(() => {
-				onContentChangeRef.current?.(modifiedModel.getValue());
-			});
+			contentChangeListenerRef.current = diffEditor
+				.getModifiedEditor()
+				.onDidChangeModelContent(() => {
+					onContentChangeRef.current?.(modifiedModel.getValue());
+				});
 
 			diffEditorRef.current = diffEditor;
 
@@ -113,6 +116,7 @@ export function useMonacoDiffEditor(
 		return () => {
 			isMounted = false;
 			resizeObserverRef.current?.disconnect();
+			contentChangeListenerRef.current?.dispose();
 			diffEditorRef.current?.dispose();
 			originalModelRef.current?.dispose();
 			modifiedModelRef.current?.dispose();

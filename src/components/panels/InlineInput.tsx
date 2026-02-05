@@ -36,7 +36,11 @@ export function InlineInput({
 	const handleCommit = () => {
 		if (committedRef.current) return;
 		const trimmed = value.trim();
-		if (!trimmed || INVALID_CHARS.test(trimmed)) return;
+		if (!trimmed || INVALID_CHARS.test(trimmed)) {
+			committedRef.current = true;
+			onCancel();
+			return;
+		}
 		committedRef.current = true;
 		onCommit(trimmed);
 	};
@@ -71,6 +75,7 @@ export function InlineInput({
 				onChange={handleChange}
 				onKeyDown={handleKeyDown}
 				onBlur={handleCommit}
+				onClick={(e) => e.stopPropagation()}
 				className="h-[22px] px-1 text-sm bg-input border border-primary rounded-sm outline-none w-full"
 			/>
 			{error && (

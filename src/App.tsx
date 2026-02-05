@@ -52,9 +52,14 @@ function App() {
 
 	const handleUnsavedSave = useCallback(async () => {
 		if (!closingTabPath) return;
-		await saveFile(closingTabPath);
-		closeTab(closingTabPath);
-		setClosingTabPath(null);
+		try {
+			await saveFile(closingTabPath);
+			closeTab(closingTabPath);
+			setClosingTabPath(null);
+		} catch (e) {
+			console.error("Failed to save file:", e);
+			setClosingTabPath(null);
+		}
 	}, [closingTabPath, saveFile, closeTab]);
 
 	const handleUnsavedDiscard = useCallback(() => {

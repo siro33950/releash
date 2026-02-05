@@ -17,6 +17,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useFileOperations } from "@/hooks/useFileOperations";
 import { useFileTree } from "@/hooks/useFileTree";
+import type { FileNode } from "@/types/file-tree";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { FileTree } from "./FileTree";
 
@@ -24,6 +25,20 @@ function getTargetDir(nodePath: string, nodeType: "file" | "folder") {
 	return nodeType === "folder"
 		? nodePath
 		: nodePath.substring(0, nodePath.lastIndexOf("/"));
+}
+
+function findNodeByPath(
+	nodes: FileNode[],
+	targetPath: string,
+): FileNode | undefined {
+	for (const node of nodes) {
+		if (node.path === targetPath) return node;
+		if (node.children) {
+			const found = findNodeByPath(node.children, targetPath);
+			if (found) return found;
+		}
+	}
+	return undefined;
 }
 
 export interface SidebarPanelProps {
@@ -183,25 +198,27 @@ export function SidebarPanel({
 		if (!rootPath) return;
 		let parentPath = rootPath;
 		if (selectedPath) {
-			const isDir = expandedPaths.has(selectedPath);
+			const node = findNodeByPath(tree, selectedPath);
+			const isDir = node?.type === "folder";
 			parentPath = isDir
 				? selectedPath
 				: selectedPath.substring(0, selectedPath.lastIndexOf("/"));
 		}
 		setCreatingNode({ parentPath, type: "file" });
-	}, [rootPath, selectedPath, expandedPaths]);
+	}, [rootPath, selectedPath, tree]);
 
 	const handleToolbarNewFolder = useCallback(() => {
 		if (!rootPath) return;
 		let parentPath = rootPath;
 		if (selectedPath) {
-			const isDir = expandedPaths.has(selectedPath);
+			const node = findNodeByPath(tree, selectedPath);
+			const isDir = node?.type === "folder";
 			parentPath = isDir
 				? selectedPath
 				: selectedPath.substring(0, selectedPath.lastIndexOf("/"));
 		}
 		setCreatingNode({ parentPath, type: "folder" });
-	}, [rootPath, selectedPath, expandedPaths]);
+	}, [rootPath, selectedPath, tree]);
 
 	const deletingName = deletingPath?.split("/").pop() ?? "";
 
