@@ -14,6 +14,7 @@ export interface UseEditorTabsReturn {
 	updateTabPath: (oldPath: string, newPath: string) => void;
 	closeTabsByPrefix: (pathPrefix: string) => void;
 	closeAllTabs: () => void;
+	saveAllDirtyTabs: () => Promise<void>;
 }
 
 function getLanguageFromPath(path: string): string {
@@ -203,6 +204,11 @@ export function useEditorTabs(): UseEditorTabsReturn {
 		setActiveTabPath(null);
 	}, []);
 
+	const saveAllDirtyTabs = useCallback(async () => {
+		const dirtyTabs = tabsRef.current.filter((t) => t.isDirty);
+		await Promise.all(dirtyTabs.map((t) => saveFile(t.path)));
+	}, [saveFile]);
+
 	const reloadTabIfClean = useCallback(async (path: string) => {
 		const existingTab = tabsRef.current.find((tab) => tab.path === path);
 		if (!existingTab || existingTab.isDirty) {
@@ -235,5 +241,6 @@ export function useEditorTabs(): UseEditorTabsReturn {
 		updateTabPath,
 		closeTabsByPrefix,
 		closeAllTabs,
+		saveAllDirtyTabs,
 	};
 }
