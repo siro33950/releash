@@ -1,3 +1,4 @@
+import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
@@ -24,11 +25,15 @@ function App() {
 		saveFile,
 		updateTabPath,
 		closeTabsByPrefix,
+		closeAllTabs,
+		saveAllDirtyTabs,
 	} = useEditorTabs();
 
+	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
 	const [diffMode, setDiffMode] = useState<DiffMode>("gutter");
 	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
+	const [pendingRootPath, setPendingRootPath] = useState<string | null>(null);
 
 	const handleSave = useCallback(() => {
 		if (activeTab?.isDirty) {
@@ -37,6 +42,19 @@ function App() {
 	}, [activeTab, saveFile]);
 
 	useKeyboardShortcuts({ onSave: handleSave });
+
+	const handleOpenFolder = useCallback(async () => {
+		const selected = await open({ directory: true });
+		if (!selected) return;
+
+		const hasDirty = tabs.some((t) => t.isDirty);
+		if (hasDirty) {
+			setPendingRootPath(selected);
+		} else {
+			setRootPath(selected);
+			closeAllTabs();
+		}
+	}, [tabs, closeAllTabs]);
 
 	const handleTabClose = useCallback(
 		(path: string) => {
@@ -72,6 +90,25 @@ function App() {
 		setClosingTabPath(null);
 	}, []);
 
+	const handleFolderChangeSave = useCallback(async () => {
+		if (!pendingRootPath) return;
+		await saveAllDirtyTabs();
+		setRootPath(pendingRootPath);
+		closeAllTabs();
+		setPendingRootPath(null);
+	}, [pendingRootPath, saveAllDirtyTabs, closeAllTabs]);
+
+	const handleFolderChangeDiscard = useCallback(() => {
+		if (!pendingRootPath) return;
+		setRootPath(pendingRootPath);
+		closeAllTabs();
+		setPendingRootPath(null);
+	}, [pendingRootPath, closeAllTabs]);
+
+	const handleFolderChangeCancel = useCallback(() => {
+		setPendingRootPath(null);
+	}, []);
+
 	const handleRename = useCallback(
 		(oldPath: string, newPath: string) => {
 			updateTabPath(oldPath, newPath);
@@ -89,6 +126,21 @@ function App() {
 	const closingTab = closingTabPath
 		? tabs.find((t) => t.path === closingTabPath)
 		: null;
+
+	const dirtyTabCount = tabs.filter((t) => t.isDirty).length;
+	const showUnsavedDialog = !!closingTabPath || !!pendingRootPath;
+	const unsavedFileName = closingTab
+		? closingTab.name
+		: `${dirtyTabCount}個のファイル`;
+	const unsavedOnSave = closingTabPath
+		? handleUnsavedSave
+		: handleFolderChangeSave;
+	const unsavedOnDiscard = closingTabPath
+		? handleUnsavedDiscard
+		: handleFolderChangeDiscard;
+	const unsavedOnCancel = closingTabPath
+		? handleUnsavedCancel
+		: handleFolderChangeCancel;
 
 	return (
 		<div className="flex flex-col h-screen w-screen overflow-hidden">
@@ -111,6 +163,8 @@ function App() {
 						collapsible={false}
 					>
 						<SidebarPanel
+							rootPath={rootPath}
+							onOpenFolder={handleOpenFolder}
 							onSelectFile={openFile}
 							onFileChange={reloadTabIfClean}
 							onRename={handleRename}
@@ -168,17 +222,17 @@ function App() {
 						maxSize="60"
 						collapsible={false}
 					>
-						<TerminalPanel />
+						<TerminalPanel key={rootPath} cwd={rootPath} />
 					</Panel>
 				</Group>
 			</div>
 			<StatusBar />
 			<UnsavedChangesDialog
-				open={!!closingTabPath}
-				fileName={closingTab?.name ?? ""}
-				onSave={handleUnsavedSave}
-				onDiscard={handleUnsavedDiscard}
-				onCancel={handleUnsavedCancel}
+				open={showUnsavedDialog}
+				fileName={unsavedFileName}
+				onSave={unsavedOnSave}
+				onDiscard={unsavedOnDiscard}
+				onCancel={unsavedOnCancel}
 			/>
 		</div>
 	);

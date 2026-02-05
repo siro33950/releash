@@ -90,6 +90,7 @@ describe("useTerminal", () => {
 			expect(mockInvoke).toHaveBeenCalledWith("spawn_pty", {
 				rows: 24,
 				cols: 80,
+				cwd: null,
 			});
 		});
 	});

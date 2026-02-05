@@ -30,6 +30,7 @@ describe("TerminalPanel", () => {
 
 		expect(mockUseTerminal).toHaveBeenCalledWith(
 			expect.objectContaining({ current: expect.any(HTMLDivElement) }),
+			undefined,
 		);
 	});
 });
