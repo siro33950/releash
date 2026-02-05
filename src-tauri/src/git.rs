@@ -10,17 +10,13 @@ pub fn get_file_at_ref(file_path: String, git_ref: String) -> Result<String, Str
         .workdir()
         .ok_or_else(|| "bare repository".to_string())?;
 
-    let relative_path = path
-        .strip_prefix(repo_workdir)
-        .map_err(|e| e.to_string())?;
+    let relative_path = path.strip_prefix(repo_workdir).map_err(|e| e.to_string())?;
 
     let obj = repo
         .revparse_single(&git_ref)
         .map_err(|e| e.message().to_string())?;
 
-    let commit = obj
-        .peel_to_commit()
-        .map_err(|e| e.message().to_string())?;
+    let commit = obj.peel_to_commit().map_err(|e| e.message().to_string())?;
 
     let tree = commit.tree().map_err(|e| e.message().to_string())?;
 
@@ -48,9 +44,7 @@ pub fn get_staged_content(file_path: String) -> Result<String, String> {
         .workdir()
         .ok_or_else(|| "bare repository".to_string())?;
 
-    let relative_path = path
-        .strip_prefix(repo_workdir)
-        .map_err(|e| e.to_string())?;
+    let relative_path = path.strip_prefix(repo_workdir).map_err(|e| e.to_string())?;
 
     let index = repo.index().map_err(|e| e.message().to_string())?;
 

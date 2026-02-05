@@ -2,7 +2,11 @@ import { useGitOriginalContent } from "@/hooks/useGitOriginalContent";
 import type { TabInfo } from "@/types/editor";
 import { EditorTabs } from "./EditorTabs";
 import { EmptyState } from "./EmptyState";
-import { type DiffBase, type DiffMode, MonacoDiffViewer } from "./MonacoDiffViewer";
+import {
+	type DiffBase,
+	type DiffMode,
+	MonacoDiffViewer,
+} from "./MonacoDiffViewer";
 
 export interface EditorPanelProps {
 	tabs: TabInfo[];

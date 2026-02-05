@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import type { DiffBase } from "@/components/panels/MonacoDiffViewer";
 import type { FileChangeEvent } from "@/hooks/useFileWatcher";
+import { normalizePath } from "@/lib/normalizePath";
 
 export function useGitOriginalContent(
 	filePath: string | null,
@@ -32,9 +33,10 @@ export function useGitOriginalContent(
 		invoke<string>("get_repo_git_dir", { filePath })
 			.then((gitDir) => {
 				if (!cancelled) {
-					const indexPath = gitDir.endsWith("/")
-						? `${gitDir}index`
-						: `${gitDir}/index`;
+					const normalized = normalizePath(gitDir);
+					const indexPath = normalized.endsWith("/")
+						? `${normalized}index`
+						: `${normalized}/index`;
 					gitIndexPathRef.current = indexPath;
 				}
 			})
@@ -51,11 +53,8 @@ export function useGitOriginalContent(
 
 	useEffect(() => {
 		const unlisten$ = listen<FileChangeEvent>("file-change", (event) => {
-			const changedPath = event.payload.path;
-			if (
-				gitIndexPathRef.current &&
-				changedPath === gitIndexPathRef.current
-			) {
+			const changedPath = normalizePath(event.payload.path);
+			if (gitIndexPathRef.current && changedPath === gitIndexPathRef.current) {
 				if (debounceTimerRef.current) {
 					clearTimeout(debounceTimerRef.current);
 				}
@@ -74,6 +73,8 @@ export function useGitOriginalContent(
 	}, []);
 
 	useEffect(() => {
+		void refreshKey;
+
 		if (!filePath) {
 			setOriginalContent(fallbackContent);
 			return;
