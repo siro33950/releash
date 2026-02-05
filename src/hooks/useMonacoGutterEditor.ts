@@ -64,6 +64,10 @@ export function useMonacoGutterEditor(
 	const monacoRef = useRef<typeof Monaco | null>(null);
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 	const decorationsRef = useRef<string[]>([]);
+	const originalValueRef = useRef(originalValue);
+	const modifiedValueRef = useRef(modifiedValue);
+	originalValueRef.current = originalValue;
+	modifiedValueRef.current = modifiedValue;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -83,7 +87,7 @@ export function useMonacoGutterEditor(
 
 			const editor = monaco.editor.create(container, {
 				...defaultEditorOptions,
-				value: modifiedValue,
+				value: modifiedValueRef.current,
 				language,
 				theme: MONACO_THEME_NAME,
 				glyphMargin: true,
@@ -98,7 +102,7 @@ export function useMonacoGutterEditor(
 
 			const updateDecorations = () => {
 				const currentValue = editor.getValue();
-				const diff = computeDiff(originalValue, currentValue);
+				const diff = computeDiff(originalValueRef.current, currentValue);
 				const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
 
 				for (const line of diff.added) {
@@ -149,7 +153,60 @@ export function useMonacoGutterEditor(
 			resizeObserverRef.current?.disconnect();
 			editorRef.current?.dispose();
 		};
-	}, [containerRef, originalValue, modifiedValue, language]);
+	}, [containerRef, language]);
+
+	useEffect(() => {
+		const editor = editorRef.current;
+		if (!editor) return;
+
+		const currentValue = editor.getValue();
+		if (currentValue !== modifiedValue) {
+			const scrollTop = editor.getScrollTop();
+			const position = editor.getPosition();
+
+			editor.setValue(modifiedValue);
+
+			editor.setScrollTop(scrollTop);
+			if (position) {
+				editor.setPosition(position);
+			}
+		}
+	}, [modifiedValue]);
+
+	useEffect(() => {
+		const editor = editorRef.current;
+		const monaco = monacoRef.current;
+		if (!editor || !monaco) return;
+
+		const currentValue = editor.getValue();
+		const diff = computeDiff(originalValue, currentValue);
+		const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
+
+		for (const line of diff.added) {
+			decorations.push({
+				range: new monaco.Range(line, 1, line, 1),
+				options: {
+					isWholeLine: true,
+					glyphMarginClassName: "gutter-added",
+				},
+			});
+		}
+
+		for (const line of diff.modified) {
+			decorations.push({
+				range: new monaco.Range(line, 1, line, 1),
+				options: {
+					isWholeLine: true,
+					glyphMarginClassName: "gutter-modified",
+				},
+			});
+		}
+
+		decorationsRef.current = editor.deltaDecorations(
+			decorationsRef.current,
+			decorations,
+		);
+	}, [originalValue]);
 
 	return {
 		editorRef,

@@ -32,6 +32,10 @@ export function useMonacoDiffEditor(
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 	const originalModelRef = useRef<Monaco.editor.ITextModel | null>(null);
 	const modifiedModelRef = useRef<Monaco.editor.ITextModel | null>(null);
+	const originalValueRef = useRef(originalValue);
+	const modifiedValueRef = useRef(modifiedValue);
+	originalValueRef.current = originalValue;
+	modifiedValueRef.current = modifiedValue;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -49,8 +53,14 @@ export function useMonacoDiffEditor(
 			monaco.editor.defineTheme(MONACO_THEME_NAME, monacoTheme);
 			monaco.editor.setTheme(MONACO_THEME_NAME);
 
-			const originalModel = monaco.editor.createModel(originalValue, language);
-			const modifiedModel = monaco.editor.createModel(modifiedValue, language);
+			const originalModel = monaco.editor.createModel(
+				originalValueRef.current,
+				language,
+			);
+			const modifiedModel = monaco.editor.createModel(
+				modifiedValueRef.current,
+				language,
+			);
 
 			if (!isMounted) {
 				originalModel.dispose();
@@ -99,7 +109,35 @@ export function useMonacoDiffEditor(
 			originalModelRef.current?.dispose();
 			modifiedModelRef.current?.dispose();
 		};
-	}, [containerRef, originalValue, modifiedValue, language, renderSideBySide]);
+	}, [containerRef, language, renderSideBySide]);
+
+	useEffect(() => {
+		const originalModel = originalModelRef.current;
+		if (!originalModel) return;
+
+		if (originalModel.getValue() !== originalValue) {
+			originalModel.setValue(originalValue);
+		}
+	}, [originalValue]);
+
+	useEffect(() => {
+		const modifiedModel = modifiedModelRef.current;
+		const diffEditor = diffEditorRef.current;
+		if (!modifiedModel || !diffEditor) return;
+
+		if (modifiedModel.getValue() !== modifiedValue) {
+			const modifiedEditor = diffEditor.getModifiedEditor();
+			const scrollTop = modifiedEditor.getScrollTop();
+			const position = modifiedEditor.getPosition();
+
+			modifiedModel.setValue(modifiedValue);
+
+			modifiedEditor.setScrollTop(scrollTop);
+			if (position) {
+				modifiedEditor.setPosition(position);
+			}
+		}
+	}, [modifiedValue]);
 
 	return {
 		diffEditorRef,
