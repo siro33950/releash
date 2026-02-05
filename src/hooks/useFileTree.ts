@@ -159,9 +159,7 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 				}
 			} catch (e) {
 				if (!cancelled) {
-					setError(
-						e instanceof Error ? e.message : "Failed to load directory",
-					);
+					setError(e instanceof Error ? e.message : "Failed to load directory");
 					setTree([]);
 				}
 			} finally {
