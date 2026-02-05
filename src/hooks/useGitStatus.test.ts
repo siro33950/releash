@@ -113,6 +113,37 @@ describe("useGitStatus", () => {
 		);
 	});
 
+	it("should map ignored status and exclude from changedFiles", async () => {
+		const mockEntries: GitFileStatus[] = [
+			{
+				path: "node_modules",
+				index_status: "none",
+				worktree_status: "ignored",
+			},
+			{
+				path: "src/main.ts",
+				index_status: "none",
+				worktree_status: "modified",
+			},
+		];
+		mockInvoke.mockResolvedValue(mockEntries);
+
+		const { result } = renderHook(() => useGitStatus("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.statusMap.size).toBe(2);
+		});
+
+		expect(result.current.statusMap.get("/test/repo/node_modules")).toBe(
+			"ignored",
+		);
+		expect(result.current.statusMap.get("/test/repo/src/main.ts")).toBe(
+			"modified",
+		);
+		expect(result.current.changedFiles).toHaveLength(1);
+		expect(result.current.changedFiles[0].path).toBe("src/main.ts");
+	});
+
 	it("should handle invoke error gracefully", async () => {
 		mockInvoke.mockRejectedValue(new Error("not a git repo"));
 

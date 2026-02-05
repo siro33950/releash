@@ -319,6 +319,7 @@ export function SidebarPanel({
 
 							{rootPath && !loading && !error && (
 								<FileTree
+									rootPath={rootPath}
 									tree={treeWithStatus}
 									selectedPath={selectedPath}
 									expandedPaths={expandedPaths}

@@ -1,7 +1,7 @@
 export interface GitFileStatus {
 	path: string;
 	index_status: "new" | "modified" | "deleted" | "renamed" | "none";
-	worktree_status: "new" | "modified" | "deleted" | "none";
+	worktree_status: "new" | "modified" | "deleted" | "ignored" | "none";
 }
 
 export interface CommitInfo {

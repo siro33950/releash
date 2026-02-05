@@ -20,6 +20,8 @@ function getStatusColor(status: FileStatus) {
 			return "text-status-deleted";
 		case "untracked":
 			return "text-status-untracked";
+		case "ignored":
+			return "text-status-ignored";
 		default:
 			return "text-sidebar-foreground";
 	}
@@ -35,6 +37,8 @@ function getStatusIndicator(status: FileStatus) {
 			return "D";
 		case "untracked":
 			return "U";
+		case "ignored":
+			return null;
 		default:
 			return null;
 	}
@@ -116,6 +120,7 @@ function FileTreeItem({
 				"flex w-full items-center gap-1 px-2 py-1 text-sm hover:bg-sidebar-accent transition-colors",
 				isSelected && "bg-sidebar-accent",
 				getStatusColor(node.status ?? null),
+				node.status === "ignored" && "opacity-50",
 			)}
 			style={{ paddingLeft: `${depth * 12 + 8}px` }}
 		>
@@ -148,7 +153,7 @@ function FileTreeItem({
 			) : (
 				<span className="truncate flex-1 text-left">{node.name}</span>
 			)}
-			{!isRenaming && node.status && (
+			{!isRenaming && node.status && getStatusIndicator(node.status) && (
 				<span
 					className={cn(
 						"text-xs font-mono shrink-0",
@@ -233,6 +238,7 @@ function FileTreeItem({
 }
 
 export interface FileTreeProps {
+	rootPath: string;
 	tree: FileNode[];
 	selectedPath: string | null;
 	expandedPaths: Set<string>;
@@ -258,6 +264,7 @@ export interface FileTreeProps {
 }
 
 export function FileTree({
+	rootPath,
 	tree,
 	selectedPath,
 	expandedPaths,
@@ -283,6 +290,26 @@ export function FileTree({
 }: FileTreeProps) {
 	return (
 		<div className="py-1">
+			{creatingNode && creatingNode.parentPath === rootPath && (
+				<div
+					className="flex items-center gap-1 px-2 py-1"
+					style={{ paddingLeft: "8px" }}
+				>
+					{creatingNode.type === "folder" ? (
+						<FolderIcon folderName="" className="h-4 w-4 shrink-0" />
+					) : (
+						<>
+							<span className="w-4" />
+							<FileIcon fileName="" className="h-4 w-4 shrink-0" />
+						</>
+					)}
+					<InlineInput
+						onCommit={onCreateCommit}
+						onCancel={onCreateCancel}
+						className="flex-1"
+					/>
+				</div>
+			)}
 			{tree.map((node) => (
 				<FileTreeItem
 					key={node.path}

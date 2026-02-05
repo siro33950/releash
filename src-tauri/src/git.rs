@@ -126,7 +126,9 @@ fn index_status_from_flags(status: git2::Status) -> &'static str {
 }
 
 fn worktree_status_from_flags(status: git2::Status) -> &'static str {
-    if status.contains(git2::Status::CONFLICTED) {
+    if status.contains(git2::Status::IGNORED) {
+        "ignored"
+    } else if status.contains(git2::Status::CONFLICTED) {
         "modified"
     } else if status.contains(git2::Status::WT_NEW) {
         "new"
@@ -148,7 +150,9 @@ pub fn get_git_status(repo_path: String) -> Result<Vec<GitFileStatus>, String> {
     let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
 
     let mut opts = StatusOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true);
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(true);
 
     let statuses = repo
         .statuses(Some(&mut opts))
@@ -158,6 +162,7 @@ pub fn get_git_status(repo_path: String) -> Result<Vec<GitFileStatus>, String> {
         .iter()
         .filter_map(|entry| {
             let path = entry.path()?.to_string();
+            let path = path.trim_end_matches('/').to_string();
             let status = entry.status();
             let idx = index_status_from_flags(status);
             let wt = worktree_status_from_flags(status);
@@ -793,6 +798,38 @@ mod tests {
 
         let branch = get_current_branch(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(branch, "feature");
+    }
+
+    #[test]
+    fn test_get_git_status_ignored_file() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        fs::write(dir.path().join(".gitignore"), "ignored.txt\nbuild/\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(".gitignore")).unwrap();
+        index.write().unwrap();
+        let sig = Signature::now("Test User", "test@example.com").unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add gitignore", &tree, &[&parent])
+            .unwrap();
+
+        fs::write(dir.path().join("ignored.txt"), "should be ignored").unwrap();
+        fs::create_dir(dir.path().join("build")).unwrap();
+        fs::write(dir.path().join("build").join("output.js"), "built").unwrap();
+
+        let result = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+
+        let ignored_file = result.iter().find(|e| e.path == "ignored.txt");
+        assert!(ignored_file.is_some(), "ignored.txt should appear in status");
+        assert_eq!(ignored_file.unwrap().worktree_status, "ignored");
+        assert_eq!(ignored_file.unwrap().index_status, "none");
+
+        let ignored_dir = result.iter().find(|e| e.path == "build");
+        assert!(ignored_dir.is_some(), "build dir should appear in status");
+        assert_eq!(ignored_dir.unwrap().worktree_status, "ignored");
     }
 
     #[test]
