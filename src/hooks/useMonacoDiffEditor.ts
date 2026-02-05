@@ -12,6 +12,7 @@ interface UseMonacoDiffEditorOptions {
 	modifiedValue: string;
 	language?: string;
 	renderSideBySide?: boolean;
+	onContentChange?: (content: string) => void;
 }
 
 export function useMonacoDiffEditor(
@@ -23,6 +24,7 @@ export function useMonacoDiffEditor(
 		modifiedValue,
 		language = "typescript",
 		renderSideBySide = true,
+		onContentChange,
 	} = options;
 
 	const diffEditorRef = useRef<Monaco.editor.IStandaloneDiffEditor | null>(
@@ -32,10 +34,13 @@ export function useMonacoDiffEditor(
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 	const originalModelRef = useRef<Monaco.editor.ITextModel | null>(null);
 	const modifiedModelRef = useRef<Monaco.editor.ITextModel | null>(null);
+	const contentChangeListenerRef = useRef<Monaco.IDisposable | null>(null);
 	const originalValueRef = useRef(originalValue);
 	const modifiedValueRef = useRef(modifiedValue);
+	const onContentChangeRef = useRef(onContentChange);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
+	onContentChangeRef.current = onContentChange;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -89,6 +94,12 @@ export function useMonacoDiffEditor(
 				modified: modifiedModel,
 			});
 
+			contentChangeListenerRef.current = diffEditor
+				.getModifiedEditor()
+				.onDidChangeModelContent(() => {
+					onContentChangeRef.current?.(modifiedModel.getValue());
+				});
+
 			diffEditorRef.current = diffEditor;
 
 			const resizeObserver = new ResizeObserver(() => {
@@ -105,6 +116,7 @@ export function useMonacoDiffEditor(
 		return () => {
 			isMounted = false;
 			resizeObserverRef.current?.disconnect();
+			contentChangeListenerRef.current?.dispose();
 			diffEditorRef.current?.dispose();
 			originalModelRef.current?.dispose();
 			modifiedModelRef.current?.dispose();

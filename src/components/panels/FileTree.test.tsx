@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { FileNode } from "@/types/file-tree";
+import type { FileTreeProps } from "./FileTree";
 import { FileTree } from "./FileTree";
 
 vi.mock("@react-symbols/icons/utils", () => ({
@@ -65,17 +66,37 @@ const mockTree: FileNode[] = [
 	},
 ];
 
+function defaultProps(overrides: Partial<FileTreeProps> = {}): FileTreeProps {
+	return {
+		tree: mockTree,
+		selectedPath: null,
+		expandedPaths: new Set(),
+		onSelect: vi.fn(),
+		onToggleExpand: vi.fn(),
+		clipboard: null,
+		creatingNode: null,
+		renamingPath: null,
+		onContextNewFile: vi.fn(),
+		onContextNewFolder: vi.fn(),
+		onContextCut: vi.fn(),
+		onContextCopy: vi.fn(),
+		onContextPaste: vi.fn(),
+		onContextCopyPath: vi.fn(),
+		onContextCopyRelativePath: vi.fn(),
+		onContextRename: vi.fn(),
+		onContextDelete: vi.fn(),
+		onContextRevealInFinder: vi.fn(),
+		onCreateCommit: vi.fn(),
+		onCreateCancel: vi.fn(),
+		onRenameCommit: vi.fn(),
+		onRenameCancel: vi.fn(),
+		...overrides,
+	};
+}
+
 describe("FileTree", () => {
 	it("should render tree structure", () => {
-		render(
-			<FileTree
-				tree={mockTree}
-				selectedPath={null}
-				expandedPaths={new Set()}
-				onSelect={vi.fn()}
-				onToggleExpand={vi.fn()}
-			/>,
-		);
+		render(<FileTree {...defaultProps()} />);
 
 		expect(screen.getByText("src")).toBeInTheDocument();
 		expect(screen.getByText("package.json")).toBeInTheDocument();
@@ -84,11 +105,7 @@ describe("FileTree", () => {
 	it("should show children when folder is expanded", () => {
 		render(
 			<FileTree
-				tree={mockTree}
-				selectedPath={null}
-				expandedPaths={new Set(["/project/src"])}
-				onSelect={vi.fn()}
-				onToggleExpand={vi.fn()}
+				{...defaultProps({ expandedPaths: new Set(["/project/src"]) })}
 			/>,
 		);
 
@@ -97,15 +114,7 @@ describe("FileTree", () => {
 	});
 
 	it("should not show children when folder is collapsed", () => {
-		render(
-			<FileTree
-				tree={mockTree}
-				selectedPath={null}
-				expandedPaths={new Set()}
-				onSelect={vi.fn()}
-				onToggleExpand={vi.fn()}
-			/>,
-		);
+		render(<FileTree {...defaultProps()} />);
 
 		expect(screen.queryByText("index.ts")).not.toBeInTheDocument();
 	});
@@ -114,15 +123,7 @@ describe("FileTree", () => {
 		const user = userEvent.setup();
 		const onToggleExpand = vi.fn();
 
-		render(
-			<FileTree
-				tree={mockTree}
-				selectedPath={null}
-				expandedPaths={new Set()}
-				onSelect={vi.fn()}
-				onToggleExpand={onToggleExpand}
-			/>,
-		);
+		render(<FileTree {...defaultProps({ onToggleExpand })} />);
 
 		await user.click(screen.getByText("src"));
 
@@ -135,11 +136,10 @@ describe("FileTree", () => {
 
 		render(
 			<FileTree
-				tree={mockTree}
-				selectedPath={null}
-				expandedPaths={new Set(["/project/src"])}
-				onSelect={onSelect}
-				onToggleExpand={vi.fn()}
+				{...defaultProps({
+					expandedPaths: new Set(["/project/src"]),
+					onSelect,
+				})}
 			/>,
 		);
 
@@ -151,11 +151,10 @@ describe("FileTree", () => {
 	it("should highlight selected file", () => {
 		render(
 			<FileTree
-				tree={mockTree}
-				selectedPath="/project/src/index.ts"
-				expandedPaths={new Set(["/project/src"])}
-				onSelect={vi.fn()}
-				onToggleExpand={vi.fn()}
+				{...defaultProps({
+					selectedPath: "/project/src/index.ts",
+					expandedPaths: new Set(["/project/src"]),
+				})}
 			/>,
 		);
 
@@ -164,15 +163,7 @@ describe("FileTree", () => {
 	});
 
 	it("should show status indicator for modified files", () => {
-		render(
-			<FileTree
-				tree={mockTree}
-				selectedPath={null}
-				expandedPaths={new Set()}
-				onSelect={vi.fn()}
-				onToggleExpand={vi.fn()}
-			/>,
-		);
+		render(<FileTree {...defaultProps()} />);
 
 		expect(screen.getByText("M")).toBeInTheDocument();
 	});
@@ -180,11 +171,9 @@ describe("FileTree", () => {
 	it("should render nested expanded folders", () => {
 		render(
 			<FileTree
-				tree={mockTree}
-				selectedPath={null}
-				expandedPaths={new Set(["/project/src", "/project/src/utils"])}
-				onSelect={vi.fn()}
-				onToggleExpand={vi.fn()}
+				{...defaultProps({
+					expandedPaths: new Set(["/project/src", "/project/src/utils"]),
+				})}
 			/>,
 		);
 

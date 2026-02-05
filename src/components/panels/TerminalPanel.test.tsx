@@ -2,7 +2,10 @@ import { render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalPanel } from "./TerminalPanel";
 
-const mockUseTerminal = vi.fn();
+const mockTerminalRef = { current: null };
+const mockUseTerminal = vi
+	.fn()
+	.mockReturnValue({ terminalRef: mockTerminalRef });
 
 vi.mock("@/hooks/useTerminal", () => ({
 	useTerminal: (...args: unknown[]) => mockUseTerminal(...args),

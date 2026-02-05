@@ -1,6 +1,6 @@
-import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
 import { FileIcon } from "@react-symbols/icons/utils";
 import { X } from "lucide-react";
+import { ScrollArea as ScrollAreaPrimitive } from "radix-ui";
 import { cn } from "@/lib/utils";
 import type { TabInfo } from "@/types/editor";
 

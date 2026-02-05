@@ -148,6 +148,18 @@
 	background-color: oklch(0.6 0.2 25 / 0.15);
 }
 
+.action-widget {
+	font-size: 14px !important;
+	border-radius: var(--radius) !important;
+}
+.action-widget .monaco-list .monaco-list-row {
+	padding: 6px 8px !important;
+	border-radius: calc(var(--radius) - 4px) !important;
+}
+.action-widget .monaco-list-row.separator {
+	margin: 4px 0 !important;
+}
+
 /* Thin scrollbar */
 .scrollbar-thin {
 	scrollbar-width: thin;

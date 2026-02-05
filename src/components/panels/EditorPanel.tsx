@@ -9,6 +9,7 @@ export interface EditorPanelProps {
 	onTabClick: (path: string) => void;
 	onTabClose: (path: string) => void;
 	diffMode: DiffMode;
+	onContentChange?: (path: string, content: string) => void;
 }
 
 export function EditorPanel({
@@ -17,10 +18,15 @@ export function EditorPanel({
 	onTabClick,
 	onTabClose,
 	diffMode,
+	onContentChange,
 }: EditorPanelProps) {
 	if (tabs.length === 0) {
 		return <EmptyState />;
 	}
+
+	const handleContentChange = activeTab
+		? (content: string) => onContentChange?.(activeTab.path, content)
+		: undefined;
 
 	return (
 		<div className="flex flex-col h-full">
@@ -37,6 +43,7 @@ export function EditorPanel({
 						modifiedContent={activeTab.content}
 						language={activeTab.language}
 						diffMode={diffMode}
+						onContentChange={handleContentChange}
 					/>
 				) : (
 					<EmptyState />
