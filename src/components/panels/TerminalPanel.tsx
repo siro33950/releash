@@ -36,10 +36,7 @@ export function TerminalPanel() {
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<div
-					ref={containerRef}
-					className="h-full w-full p-2 bg-[#1a1a1a]"
-				/>
+				<div ref={containerRef} className="h-full w-full p-2 bg-[#1a1a1a]" />
 			</ContextMenuTrigger>
 			<ContextMenuContent className="w-56">
 				<ContextMenuItem onClick={handleCopy}>コピー</ContextMenuItem>

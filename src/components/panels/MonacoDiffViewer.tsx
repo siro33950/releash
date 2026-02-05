@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useRef } from "react";
 import type * as Monaco from "monaco-editor";
+import { useCallback, useMemo, useRef } from "react";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -69,7 +69,14 @@ function useEditorContextMenu(
 		editor.setSelection(model.getFullModelRange());
 	}, [editorRef]);
 
-	return { handleCopy, handleCut, handlePaste, handleUndo, handleRedo, handleSelectAll };
+	return {
+		handleCopy,
+		handleCut,
+		handlePaste,
+		handleUndo,
+		handleRedo,
+		handleSelectAll,
+	};
 }
 
 function EditorContextMenuContent({
@@ -86,7 +93,9 @@ function EditorContextMenuContent({
 			<ContextMenuItem onClick={actions.handleUndo}>元に戻す</ContextMenuItem>
 			<ContextMenuItem onClick={actions.handleRedo}>やり直し</ContextMenuItem>
 			<ContextMenuSeparator />
-			<ContextMenuItem onClick={actions.handleSelectAll}>全選択</ContextMenuItem>
+			<ContextMenuItem onClick={actions.handleSelectAll}>
+				全選択
+			</ContextMenuItem>
 		</ContextMenuContent>
 	);
 }
@@ -146,7 +155,9 @@ function DiffEditor({
 		onContentChange,
 	});
 
-	const modifiedEditorProxy = useMemo<React.RefObject<Monaco.editor.ICodeEditor | null>>(
+	const modifiedEditorProxy = useMemo<
+		React.RefObject<Monaco.editor.ICodeEditor | null>
+	>(
 		() => ({
 			get current() {
 				return diffEditorRef.current?.getModifiedEditor() ?? null;
