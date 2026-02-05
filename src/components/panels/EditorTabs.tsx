@@ -1,4 +1,4 @@
-import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
+import { ScrollArea as ScrollAreaPrimitive } from "radix-ui";
 import { FileIcon } from "@react-symbols/icons/utils";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
