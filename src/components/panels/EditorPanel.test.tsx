@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type Mock, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, type Mock, vi } from "vitest";
 import type { TabInfo } from "@/types/editor";
 import { EditorPanel } from "./EditorPanel";
 

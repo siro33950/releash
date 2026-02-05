@@ -31,7 +31,11 @@ describe("useGitStatus", () => {
 
 	it("should fetch and map git status", async () => {
 		const mockEntries: GitFileStatus[] = [
-			{ path: "src/main.ts", index_status: "none", worktree_status: "modified" },
+			{
+				path: "src/main.ts",
+				index_status: "none",
+				worktree_status: "modified",
+			},
 			{ path: "new_file.txt", index_status: "none", worktree_status: "new" },
 			{ path: "staged.txt", index_status: "new", worktree_status: "none" },
 		];
@@ -43,8 +47,12 @@ describe("useGitStatus", () => {
 			expect(result.current.statusMap.size).toBe(3);
 		});
 
-		expect(result.current.statusMap.get("/test/repo/src/main.ts")).toBe("modified");
-		expect(result.current.statusMap.get("/test/repo/new_file.txt")).toBe("untracked");
+		expect(result.current.statusMap.get("/test/repo/src/main.ts")).toBe(
+			"modified",
+		);
+		expect(result.current.statusMap.get("/test/repo/new_file.txt")).toBe(
+			"untracked",
+		);
 		expect(result.current.statusMap.get("/test/repo/staged.txt")).toBe("added");
 
 		expect(result.current.changedFiles).toHaveLength(2);
@@ -63,14 +71,28 @@ describe("useGitStatus", () => {
 			expect(result.current.statusMap.size).toBe(1);
 		});
 
-		expect(result.current.statusMap.get("/test/repo/deleted.txt")).toBe("deleted");
+		expect(result.current.statusMap.get("/test/repo/deleted.txt")).toBe(
+			"deleted",
+		);
 	});
 
 	it("should map index-only statuses when worktree is none", async () => {
 		const mockEntries: GitFileStatus[] = [
-			{ path: "modified_idx.txt", index_status: "modified", worktree_status: "none" },
-			{ path: "deleted_idx.txt", index_status: "deleted", worktree_status: "none" },
-			{ path: "renamed_idx.txt", index_status: "renamed", worktree_status: "none" },
+			{
+				path: "modified_idx.txt",
+				index_status: "modified",
+				worktree_status: "none",
+			},
+			{
+				path: "deleted_idx.txt",
+				index_status: "deleted",
+				worktree_status: "none",
+			},
+			{
+				path: "renamed_idx.txt",
+				index_status: "renamed",
+				worktree_status: "none",
+			},
 		];
 		mockInvoke.mockResolvedValue(mockEntries);
 
@@ -80,9 +102,15 @@ describe("useGitStatus", () => {
 			expect(result.current.statusMap.size).toBe(3);
 		});
 
-		expect(result.current.statusMap.get("/test/repo/modified_idx.txt")).toBe("modified");
-		expect(result.current.statusMap.get("/test/repo/deleted_idx.txt")).toBe("deleted");
-		expect(result.current.statusMap.get("/test/repo/renamed_idx.txt")).toBe("modified");
+		expect(result.current.statusMap.get("/test/repo/modified_idx.txt")).toBe(
+			"modified",
+		);
+		expect(result.current.statusMap.get("/test/repo/deleted_idx.txt")).toBe(
+			"deleted",
+		);
+		expect(result.current.statusMap.get("/test/repo/renamed_idx.txt")).toBe(
+			"modified",
+		);
 	});
 
 	it("should handle invoke error gracefully", async () => {

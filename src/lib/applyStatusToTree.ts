@@ -15,9 +15,7 @@ export function applyStatusToTree(
 			? applyStatusToTree(node.children, statusMap)
 			: undefined;
 
-		const hasChangedChild = children?.some(
-			(child) => child.status != null,
-		);
+		const hasChangedChild = children?.some((child) => child.status != null);
 		const status: FileStatus = hasChangedChild ? "modified" : null;
 
 		if (status === (node.status ?? null) && children === node.children)

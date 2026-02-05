@@ -141,10 +141,7 @@ describe("SourceControlPanel", () => {
 		fireEvent.click(screen.getByTitle("Stage All Changes"));
 
 		await waitFor(() => {
-			expect(mockGitActions.stage).toHaveBeenCalledWith(
-				"/test/repo",
-				[],
-			);
+			expect(mockGitActions.stage).toHaveBeenCalledWith("/test/repo", []);
 		});
 	});
 
@@ -161,10 +158,7 @@ describe("SourceControlPanel", () => {
 		fireEvent.click(screen.getByTitle("Unstage All Changes"));
 
 		await waitFor(() => {
-			expect(mockGitActions.unstage).toHaveBeenCalledWith(
-				"/test/repo",
-				[],
-			);
+			expect(mockGitActions.unstage).toHaveBeenCalledWith("/test/repo", []);
 		});
 	});
 
