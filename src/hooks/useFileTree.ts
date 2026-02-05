@@ -20,17 +20,22 @@ interface UseFileTreeReturn {
 	collapseAll: () => void;
 }
 
+function normalizePath(p: string): string {
+	return p.replace(/\\+/g, "/");
+}
+
 async function loadChildren(
 	path: string,
 	showHidden: boolean,
 ): Promise<FileNode[]> {
-	const entries = await readDir(path);
+	const normalizedPath = normalizePath(path);
+	const entries = await readDir(normalizedPath);
 
 	const nodes: FileNode[] = entries
 		.filter((entry) => showHidden || !entry.name.startsWith("."))
 		.map((entry) => ({
 			name: entry.name,
-			path: `${path}/${entry.name}`,
+			path: `${normalizedPath}/${entry.name}`,
 			type: entry.isDirectory ? ("folder" as const) : ("file" as const),
 		}));
 
@@ -83,12 +88,12 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 		async (event: FileChangeEvent) => {
 			onFileChangeExternal?.(event);
 
-			const changedPath = event.path.replace(/\\+/g, "/");
+			const changedPath = normalizePath(event.path);
 			const lastSlashIndex = changedPath.lastIndexOf("/");
 			if (lastSlashIndex === -1) return;
 			const parentDir = changedPath.substring(0, lastSlashIndex);
 
-			const normalizedRootPath = rootPath?.replace(/\\+/g, "/") ?? null;
+			const normalizedRootPath = rootPath ? normalizePath(rootPath) : null;
 
 			if (parentDir === normalizedRootPath) {
 				try {
@@ -127,7 +132,8 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 		setError(null);
 
 		try {
-			const children = await loadChildren(rootPath, showHidden);
+			const normalizedRoot = normalizePath(rootPath);
+			const children = await loadChildren(normalizedRoot, showHidden);
 			setTree(children);
 			setExpandedPaths(new Set());
 		} catch (e) {
@@ -144,19 +150,20 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 
 	const toggleExpand = useCallback(
 		async (path: string) => {
-			const isExpanded = expandedPaths.has(path);
+			const normalized = normalizePath(path);
+			const isExpanded = expandedPaths.has(normalized);
 
 			if (isExpanded) {
 				setExpandedPaths((prev) => {
 					const next = new Set(prev);
-					next.delete(path);
+					next.delete(normalized);
 					return next;
 				});
 			} else {
 				try {
-					const children = await loadChildren(path, showHidden);
-					setTree((prev) => updateNodeChildren(prev, path, children));
-					setExpandedPaths((prev) => new Set(prev).add(path));
+					const children = await loadChildren(normalized, showHidden);
+					setTree((prev) => updateNodeChildren(prev, normalized, children));
+					setExpandedPaths((prev) => new Set(prev).add(normalized));
 				} catch (e) {
 					setError(e instanceof Error ? e.message : "Failed to load directory");
 				}
@@ -170,7 +177,7 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 	}, [loadRootTree]);
 
 	const addExpandedPath = useCallback((path: string) => {
-		setExpandedPaths((prev) => new Set(prev).add(path));
+		setExpandedPaths((prev) => new Set(prev).add(normalizePath(path)));
 	}, []);
 
 	const collapseAll = useCallback(() => {
