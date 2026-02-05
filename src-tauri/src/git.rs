@@ -108,7 +108,9 @@ pub struct GitFileStatus {
 }
 
 fn index_status_from_flags(status: git2::Status) -> &'static str {
-    if status.contains(git2::Status::INDEX_NEW) {
+    if status.contains(git2::Status::CONFLICTED) {
+        "modified"
+    } else if status.contains(git2::Status::INDEX_NEW) {
         "new"
     } else if status.contains(git2::Status::INDEX_MODIFIED) {
         "modified"
@@ -116,18 +118,26 @@ fn index_status_from_flags(status: git2::Status) -> &'static str {
         "deleted"
     } else if status.contains(git2::Status::INDEX_RENAMED) {
         "renamed"
+    } else if status.contains(git2::Status::INDEX_TYPECHANGE) {
+        "modified"
     } else {
         "none"
     }
 }
 
 fn worktree_status_from_flags(status: git2::Status) -> &'static str {
-    if status.contains(git2::Status::WT_NEW) {
+    if status.contains(git2::Status::CONFLICTED) {
+        "modified"
+    } else if status.contains(git2::Status::WT_NEW) {
         "new"
     } else if status.contains(git2::Status::WT_MODIFIED) {
         "modified"
     } else if status.contains(git2::Status::WT_DELETED) {
         "deleted"
+    } else if status.contains(git2::Status::WT_RENAMED)
+        || status.contains(git2::Status::WT_TYPECHANGE)
+    {
+        "modified"
     } else {
         "none"
     }
@@ -244,7 +254,9 @@ pub fn git_stage(repo_path: String, paths: Vec<String>) -> Result<(), String> {
 
     let targets: Vec<String> = if paths.is_empty() {
         let mut opts = StatusOptions::new();
-        opts.include_untracked(true).recurse_untracked_dirs(true);
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .renames_index_to_workdir(true);
         let statuses = repo
             .statuses(Some(&mut opts))
             .map_err(|e| e.message().to_string())?;
@@ -255,6 +267,8 @@ pub fn git_stage(repo_path: String, paths: Vec<String>) -> Result<(), String> {
                 if s.contains(git2::Status::WT_NEW)
                     || s.contains(git2::Status::WT_MODIFIED)
                     || s.contains(git2::Status::WT_DELETED)
+                    || s.contains(git2::Status::WT_RENAMED)
+                    || s.contains(git2::Status::WT_TYPECHANGE)
                 {
                     entry.path().map(|p| p.to_string())
                 } else {

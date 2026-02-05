@@ -72,10 +72,17 @@ function FileStatusItem({
 	const { dir, name } = formatPath(entry.path);
 
 	return (
-		<button
-			type="button"
+		// biome-ignore lint/a11y/useSemanticElements: outer element cannot be <button> because it contains a nested <button> for the action
+		<div
+			role="button"
+			tabIndex={0}
 			className="group flex w-full items-center gap-1.5 px-4 py-1 text-sm hover:bg-sidebar-accent transition-colors"
 			onClick={() => onSelect?.(`${rootPath}/${entry.path}`)}
+			onKeyDown={(e) => {
+				if (e.key === "Enter" || e.key === " ") {
+					onSelect?.(`${rootPath}/${entry.path}`);
+				}
+			}}
 		>
 			<StatusIcon status={status} />
 			<span className="truncate flex-1 text-left">
@@ -97,7 +104,7 @@ function FileStatusItem({
 					<Minus className="h-3.5 w-3.5" />
 				)}
 			</button>
-		</button>
+		</div>
 	);
 }
 
