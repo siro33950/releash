@@ -2,15 +2,16 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
-import { HeaderBar } from "@/components/layout/HeaderBar";
 import { StatusBar } from "@/components/layout/StatusBar";
-import { ConsolePanel } from "@/components/panels/ConsolePanel";
 import { EditorPanel } from "@/components/panels/EditorPanel";
 import type { DiffBase, DiffMode } from "@/components/panels/MonacoDiffViewer";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
+import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
+import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useEditorTabs } from "@/hooks/useEditorTabs";
+import { useGitStatus } from "@/hooks/useGitStatus";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 
 function App() {
@@ -30,6 +31,9 @@ function App() {
 	} = useEditorTabs();
 
 	const [rootPath, setRootPath] = useState<string | null>(null);
+	const [activeView, setActiveView] = useState<string>("explorer");
+	const { branch } = useCurrentBranch(rootPath);
+	const { changedFiles } = useGitStatus(rootPath);
 	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
 	const [diffMode, setDiffMode] = useState<DiffMode>("gutter");
 	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
@@ -144,15 +148,8 @@ function App() {
 
 	return (
 		<div className="flex flex-col h-screen w-screen overflow-hidden">
-			<HeaderBar
-				filePath={activeTab?.path ?? null}
-				diffBase={diffBase}
-				diffMode={diffMode}
-				onDiffBaseChange={setDiffBase}
-				onDiffModeChange={setDiffMode}
-			/>
 			<div className="flex flex-1 overflow-hidden">
-				<ActivityBar activeItem="explorer" />
+				<ActivityBar activeItem={activeView} onItemClick={setActiveView} />
 				<Group orientation="horizontal" className="flex-1">
 					{/* Sidebar */}
 					<Panel
@@ -162,54 +159,43 @@ function App() {
 						maxSize="30"
 						collapsible={false}
 					>
-						<SidebarPanel
-							rootPath={rootPath}
-							onOpenFolder={handleOpenFolder}
-							onSelectFile={openFile}
-							onFileChange={reloadTabIfClean}
-							onRename={handleRename}
-							onDelete={handleDelete}
-						/>
+						{activeView === "git" ? (
+							<SourceControlPanel
+								rootPath={rootPath}
+								onSelectFile={openFile}
+							/>
+						) : (
+							<SidebarPanel
+								rootPath={rootPath}
+								onOpenFolder={handleOpenFolder}
+								onSelectFile={openFile}
+								onFileChange={reloadTabIfClean}
+								onRename={handleRename}
+								onDelete={handleDelete}
+							/>
+						)}
 					</Panel>
 
 					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
 
-					{/* Editor + Console */}
+					{/* Editor */}
 					<Panel
-						id="editor-console"
+						id="editor"
 						defaultSize="55"
 						minSize={20}
 						collapsible={false}
 					>
-						<Group orientation="vertical">
-							<Panel
-								id="editor"
-								defaultSize="70"
-								minSize={20}
-								collapsible={false}
-							>
-								<EditorPanel
-									tabs={tabs}
-									activeTab={activeTab}
-									onTabClick={setActiveTab}
-									onTabClose={handleTabClose}
-									diffBase={diffBase}
-									diffMode={diffMode}
-									onContentChange={updateTabContent}
-								/>
-							</Panel>
-
-							<Separator className="h-px bg-border hover:bg-primary/50 cursor-row-resize" />
-
-							<Panel
-								id="console"
-								defaultSize="30"
-								minSize={10}
-								collapsible={false}
-							>
-								<ConsolePanel />
-							</Panel>
-						</Group>
+						<EditorPanel
+							tabs={tabs}
+							activeTab={activeTab}
+							onTabClick={setActiveTab}
+							onTabClose={handleTabClose}
+							diffBase={diffBase}
+							diffMode={diffMode}
+							onDiffBaseChange={setDiffBase}
+							onDiffModeChange={setDiffMode}
+							onContentChange={updateTabContent}
+						/>
 					</Panel>
 
 					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
@@ -226,7 +212,10 @@ function App() {
 					</Panel>
 				</Group>
 			</div>
-			<StatusBar />
+			<StatusBar
+			branch={branch ?? undefined}
+			status={changedFiles.length > 0 ? `${changedFiles.length} changed` : "Clean"}
+		/>
 			<UnsavedChangesDialog
 				open={showUnsavedDialog}
 				fileName={unsavedFileName}

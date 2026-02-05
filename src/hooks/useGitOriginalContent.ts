@@ -100,7 +100,7 @@ export function useGitOriginalContent(
 				}
 			} catch {
 				if (!cancelled) {
-					setOriginalContent(fallbackContent);
+					setOriginalContent("");
 				}
 			}
 		};

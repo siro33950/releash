@@ -5,7 +5,7 @@ import {
 	FolderPlus,
 	RefreshCw,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -16,6 +16,8 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useFileOperations } from "@/hooks/useFileOperations";
 import { useFileTree } from "@/hooks/useFileTree";
+import { useGitStatus } from "@/hooks/useGitStatus";
+import { applyStatusToTree } from "@/lib/applyStatusToTree";
 import type { FileNode } from "@/types/file-tree";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { FileTree } from "./FileTree";
@@ -82,6 +84,7 @@ export function SidebarPanel({
 			: undefined,
 	});
 
+	const { statusMap } = useGitStatus(rootPath);
 	const fileOps = useFileOperations();
 
 	const prevRootPathRef = useRef(rootPath);
@@ -223,6 +226,11 @@ export function SidebarPanel({
 		setCreatingNode({ parentPath, type: "folder" });
 	}, [rootPath, selectedPath, tree]);
 
+	const treeWithStatus = useMemo(
+		() => applyStatusToTree(tree, statusMap),
+		[tree, statusMap],
+	);
+
 	const deletingName = deletingPath?.split("/").pop() ?? "";
 
 	return (
@@ -311,7 +319,7 @@ export function SidebarPanel({
 
 							{rootPath && !loading && !error && (
 								<FileTree
-									tree={tree}
+									tree={treeWithStatus}
 									selectedPath={selectedPath}
 									expandedPaths={expandedPaths}
 									onSelect={handleSelectFile}

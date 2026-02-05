@@ -1,8 +1,11 @@
+import { invoke } from "@tauri-apps/api/core";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { type Mock, describe, expect, it, vi } from "vitest";
 import type { TabInfo } from "@/types/editor";
 import { EditorPanel } from "./EditorPanel";
+
+vi.mocked(invoke as Mock).mockResolvedValue([]);
 
 const mockTab: TabInfo = {
 	path: "/test/file.ts",
@@ -23,6 +26,8 @@ describe("EditorPanel", () => {
 				onTabClose={vi.fn()}
 				diffBase="HEAD"
 				diffMode="split"
+				onDiffBaseChange={vi.fn()}
+				onDiffModeChange={vi.fn()}
 			/>,
 		);
 
@@ -38,6 +43,8 @@ describe("EditorPanel", () => {
 				onTabClose={vi.fn()}
 				diffBase="HEAD"
 				diffMode="split"
+				onDiffBaseChange={vi.fn()}
+				onDiffModeChange={vi.fn()}
 			/>,
 		);
 
@@ -56,6 +63,8 @@ describe("EditorPanel", () => {
 				onTabClose={vi.fn()}
 				diffBase="HEAD"
 				diffMode="split"
+				onDiffBaseChange={vi.fn()}
+				onDiffModeChange={vi.fn()}
 			/>,
 		);
 
@@ -75,6 +84,8 @@ describe("EditorPanel", () => {
 				onTabClose={onTabClose}
 				diffBase="HEAD"
 				diffMode="split"
+				onDiffBaseChange={vi.fn()}
+				onDiffModeChange={vi.fn()}
 			/>,
 		);
 
