@@ -1,4 +1,10 @@
-export type FileStatus = "modified" | "added" | "deleted" | "untracked" | null;
+export type FileStatus =
+	| "modified"
+	| "added"
+	| "deleted"
+	| "untracked"
+	| "ignored"
+	| null;
 
 export interface FileNode {
 	name: string;

@@ -48,7 +48,8 @@
 	--status-modified: oklch(0.75 0.15 85);
 	--status-added: oklch(0.65 0.18 145);
 	--status-deleted: oklch(0.6 0.2 25);
-	--status-untracked: oklch(0.6 0 0);
+	--status-untracked: oklch(0.75 0.14 155);
+	--status-ignored: oklch(0.63 0 0);
 }
 
 @theme inline {
@@ -97,6 +98,7 @@
 	--color-status-added: var(--status-added);
 	--color-status-deleted: var(--status-deleted);
 	--color-status-untracked: var(--status-untracked);
+	--color-status-ignored: var(--status-ignored);
 }
 
 @layer base {

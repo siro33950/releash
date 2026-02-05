@@ -5,6 +5,7 @@ import type { FileStatus } from "@/types/file-tree";
 import type { GitFileStatus } from "@/types/git";
 
 function toFileStatus(entry: GitFileStatus): FileStatus {
+	if (entry.worktree_status === "ignored") return "ignored";
 	if (entry.worktree_status === "new") return "untracked";
 	if (entry.worktree_status === "modified") return "modified";
 	if (entry.worktree_status === "deleted") return "deleted";
@@ -42,7 +43,11 @@ export function useGitStatus(rootPath: string | null) {
 				const absPath = `${rootPath}/${entry.path}`;
 				map.set(absPath, toFileStatus(entry));
 				if (entry.index_status !== "none") staged.push(entry);
-				if (entry.worktree_status !== "none") changed.push(entry);
+				if (
+					entry.worktree_status !== "none" &&
+					entry.worktree_status !== "ignored"
+				)
+					changed.push(entry);
 			}
 
 			setStatusMap(map);
