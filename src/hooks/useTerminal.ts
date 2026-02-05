@@ -136,4 +136,6 @@ export function useTerminal(containerRef: RefObject<HTMLDivElement | null>) {
 			terminal.dispose();
 		};
 	}, [containerRef]);
+
+	return { terminalRef };
 }

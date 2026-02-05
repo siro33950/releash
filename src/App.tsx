@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { HeaderBar } from "@/components/layout/HeaderBar";
@@ -8,7 +8,9 @@ import { EditorPanel } from "@/components/panels/EditorPanel";
 import type { DiffBase, DiffMode } from "@/components/panels/MonacoDiffViewer";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
+import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
 import { useEditorTabs } from "@/hooks/useEditorTabs";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 
 function App() {
 	const {
@@ -18,9 +20,70 @@ function App() {
 		closeTab,
 		setActiveTab,
 		reloadTabIfClean,
+		updateTabContent,
+		saveFile,
+		updateTabPath,
+		closeTabsByPrefix,
 	} = useEditorTabs();
+
 	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
 	const [diffMode, setDiffMode] = useState<DiffMode>("gutter");
+	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
+
+	const handleSave = useCallback(() => {
+		if (activeTab?.isDirty) {
+			saveFile(activeTab.path);
+		}
+	}, [activeTab, saveFile]);
+
+	useKeyboardShortcuts({ onSave: handleSave });
+
+	const handleTabClose = useCallback(
+		(path: string) => {
+			const tab = tabs.find((t) => t.path === path);
+			if (tab?.isDirty) {
+				setClosingTabPath(path);
+			} else {
+				closeTab(path);
+			}
+		},
+		[tabs, closeTab],
+	);
+
+	const handleUnsavedSave = useCallback(async () => {
+		if (!closingTabPath) return;
+		await saveFile(closingTabPath);
+		closeTab(closingTabPath);
+		setClosingTabPath(null);
+	}, [closingTabPath, saveFile, closeTab]);
+
+	const handleUnsavedDiscard = useCallback(() => {
+		if (!closingTabPath) return;
+		closeTab(closingTabPath);
+		setClosingTabPath(null);
+	}, [closingTabPath, closeTab]);
+
+	const handleUnsavedCancel = useCallback(() => {
+		setClosingTabPath(null);
+	}, []);
+
+	const handleRename = useCallback(
+		(oldPath: string, newPath: string) => {
+			updateTabPath(oldPath, newPath);
+		},
+		[updateTabPath],
+	);
+
+	const handleDelete = useCallback(
+		(path: string) => {
+			closeTabsByPrefix(path);
+		},
+		[closeTabsByPrefix],
+	);
+
+	const closingTab = closingTabPath
+		? tabs.find((t) => t.path === closingTabPath)
+		: null;
 
 	return (
 		<div className="flex flex-col h-screen w-screen overflow-hidden">
@@ -44,6 +107,8 @@ function App() {
 						<SidebarPanel
 							onSelectFile={openFile}
 							onFileChange={reloadTabIfClean}
+							onRename={handleRename}
+							onDelete={handleDelete}
 						/>
 					</Panel>
 
@@ -67,8 +132,9 @@ function App() {
 									tabs={tabs}
 									activeTab={activeTab}
 									onTabClick={setActiveTab}
-									onTabClose={closeTab}
+									onTabClose={handleTabClose}
 									diffMode={diffMode}
+									onContentChange={updateTabContent}
 								/>
 							</Panel>
 
@@ -100,6 +166,13 @@ function App() {
 				</Group>
 			</div>
 			<StatusBar />
+			<UnsavedChangesDialog
+				open={!!closingTabPath}
+				fileName={closingTab?.name ?? ""}
+				onSave={handleUnsavedSave}
+				onDiscard={handleUnsavedDiscard}
+				onCancel={handleUnsavedCancel}
+			/>
 		</div>
 	);
 }

@@ -1,4 +1,4 @@
-import { readTextFile } from "@tauri-apps/plugin-fs";
+import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useRef, useState } from "react";
 import type { TabInfo } from "@/types/editor";
 
@@ -9,6 +9,10 @@ export interface UseEditorTabsReturn {
 	closeTab: (path: string) => void;
 	setActiveTab: (path: string) => void;
 	reloadTabIfClean: (path: string) => Promise<void>;
+	updateTabContent: (path: string, content: string) => void;
+	saveFile: (path: string) => Promise<void>;
+	updateTabPath: (oldPath: string, newPath: string) => void;
+	closeTabsByPrefix: (pathPrefix: string) => void;
 }
 
 function getLanguageFromPath(path: string): string {
@@ -128,6 +132,71 @@ export function useEditorTabs(): UseEditorTabsReturn {
 		setActiveTabPath(path);
 	}, []);
 
+	const updateTabContent = useCallback((path: string, content: string) => {
+		setTabs((prevTabs) =>
+			prevTabs.map((tab) =>
+				tab.path === path
+					? { ...tab, content, isDirty: content !== tab.originalContent }
+					: tab,
+			),
+		);
+	}, []);
+
+	const saveFile = useCallback(async (path: string) => {
+		const tab = tabsRef.current.find((t) => t.path === path);
+		if (!tab) return;
+
+		try {
+			await writeTextFile(path, tab.content);
+			setTabs((prevTabs) =>
+				prevTabs.map((t) =>
+					t.path === path
+						? { ...t, originalContent: t.content, isDirty: false }
+						: t,
+				),
+			);
+		} catch (error) {
+			console.error(`Failed to save file: ${path}`, error);
+		}
+	}, []);
+
+	const updateTabPath = useCallback((oldPath: string, newPath: string) => {
+		setTabs((prevTabs) =>
+			prevTabs.map((tab) =>
+				tab.path === oldPath
+					? {
+							...tab,
+							path: newPath,
+							name: getFileNameFromPath(newPath),
+							language: getLanguageFromPath(newPath),
+						}
+					: tab,
+			),
+		);
+		setActiveTabPath((current) => (current === oldPath ? newPath : current));
+	}, []);
+
+	const closeTabsByPrefix = useCallback((pathPrefix: string) => {
+		setTabs((prevTabs) => {
+			const newTabs = prevTabs.filter(
+				(tab) =>
+					tab.path !== pathPrefix && !tab.path.startsWith(`${pathPrefix}/`),
+			);
+
+			setActiveTabPath((currentPath) => {
+				if (!currentPath) return null;
+				const isRemoved =
+					currentPath === pathPrefix ||
+					currentPath.startsWith(`${pathPrefix}/`);
+				if (!isRemoved) return currentPath;
+				if (newTabs.length === 0) return null;
+				return newTabs[0].path;
+			});
+
+			return newTabs;
+		});
+	}, []);
+
 	const reloadTabIfClean = useCallback(async (path: string) => {
 		const existingTab = tabsRef.current.find((tab) => tab.path === path);
 		if (!existingTab || existingTab.isDirty) {
@@ -155,5 +224,9 @@ export function useEditorTabs(): UseEditorTabsReturn {
 		closeTab,
 		setActiveTab,
 		reloadTabIfClean,
+		updateTabContent,
+		saveFile,
+		updateTabPath,
+		closeTabsByPrefix,
 	};
 }

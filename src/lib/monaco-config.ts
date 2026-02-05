@@ -22,11 +22,13 @@ export const monacoTheme: Monaco.editor.IStandaloneThemeData = {
 		"editorLineNumber.activeForeground": "#e0e0e0",
 		"editor.selectionBackground": "#3a3a3a",
 		"editor.inactiveSelectionBackground": "#2a2a2a",
+		"widget.shadow": "#00000040",
 	},
 };
 
 export const defaultEditorOptions: Monaco.editor.IStandaloneEditorConstructionOptions =
 	{
+		contextmenu: false,
 		fontSize: 14,
 		fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 		automaticLayout: false,
@@ -47,6 +49,7 @@ export const defaultEditorOptions: Monaco.editor.IStandaloneEditorConstructionOp
 
 export const defaultDiffEditorOptions: Monaco.editor.IDiffEditorConstructionOptions =
 	{
+		contextmenu: false,
 		fontSize: 14,
 		fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 		automaticLayout: false,

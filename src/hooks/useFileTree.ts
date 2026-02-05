@@ -15,6 +15,7 @@ interface UseFileTreeReturn {
 	loading: boolean;
 	error: string | null;
 	toggleExpand: (path: string) => Promise<void>;
+	addExpandedPath: (path: string) => void;
 	refresh: () => Promise<void>;
 	collapseAll: () => void;
 }
@@ -168,6 +169,10 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 		await loadRootTree();
 	}, [loadRootTree]);
 
+	const addExpandedPath = useCallback((path: string) => {
+		setExpandedPaths((prev) => new Set(prev).add(path));
+	}, []);
+
 	const collapseAll = useCallback(() => {
 		setExpandedPaths(new Set());
 	}, []);
@@ -178,6 +183,7 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 		loading,
 		error,
 		toggleExpand,
+		addExpandedPath,
 		refresh,
 		collapseAll,
 	};

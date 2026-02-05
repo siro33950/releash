@@ -12,6 +12,7 @@ interface UseMonacoDiffEditorOptions {
 	modifiedValue: string;
 	language?: string;
 	renderSideBySide?: boolean;
+	onContentChange?: (content: string) => void;
 }
 
 export function useMonacoDiffEditor(
@@ -23,6 +24,7 @@ export function useMonacoDiffEditor(
 		modifiedValue,
 		language = "typescript",
 		renderSideBySide = true,
+		onContentChange,
 	} = options;
 
 	const diffEditorRef = useRef<Monaco.editor.IStandaloneDiffEditor | null>(
@@ -34,8 +36,10 @@ export function useMonacoDiffEditor(
 	const modifiedModelRef = useRef<Monaco.editor.ITextModel | null>(null);
 	const originalValueRef = useRef(originalValue);
 	const modifiedValueRef = useRef(modifiedValue);
+	const onContentChangeRef = useRef(onContentChange);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
+	onContentChangeRef.current = onContentChange;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -87,6 +91,10 @@ export function useMonacoDiffEditor(
 			diffEditor.setModel({
 				original: originalModel,
 				modified: modifiedModel,
+			});
+
+			diffEditor.getModifiedEditor().onDidChangeModelContent(() => {
+				onContentChangeRef.current?.(modifiedModel.getValue());
 			});
 
 			diffEditorRef.current = diffEditor;

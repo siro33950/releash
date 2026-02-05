@@ -12,6 +12,7 @@ interface UseMonacoGutterEditorOptions {
 	originalValue: string;
 	modifiedValue: string;
 	language?: string;
+	onContentChange?: (content: string) => void;
 }
 
 interface DiffResult {
@@ -58,7 +59,12 @@ export function useMonacoGutterEditor(
 	containerRef: RefObject<HTMLDivElement | null>,
 	options: UseMonacoGutterEditorOptions,
 ) {
-	const { originalValue, modifiedValue, language = "typescript" } = options;
+	const {
+		originalValue,
+		modifiedValue,
+		language = "typescript",
+		onContentChange,
+	} = options;
 
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	const monacoRef = useRef<typeof Monaco | null>(null);
@@ -66,8 +72,10 @@ export function useMonacoGutterEditor(
 	const decorationsRef = useRef<string[]>([]);
 	const originalValueRef = useRef(originalValue);
 	const modifiedValueRef = useRef(modifiedValue);
+	const onContentChangeRef = useRef(onContentChange);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
+	onContentChangeRef.current = onContentChange;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -135,6 +143,7 @@ export function useMonacoGutterEditor(
 
 			editor.onDidChangeModelContent(() => {
 				updateDecorations();
+				onContentChangeRef.current?.(editor.getValue());
 			});
 
 			const resizeObserver = new ResizeObserver(() => {
