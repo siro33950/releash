@@ -93,6 +93,7 @@ function App() {
 	return (
 		<div className="flex flex-col h-screen w-screen overflow-hidden">
 			<HeaderBar
+				filePath={activeTab?.path ?? null}
 				diffBase={diffBase}
 				diffMode={diffMode}
 				onDiffBaseChange={setDiffBase}
@@ -138,6 +139,7 @@ function App() {
 									activeTab={activeTab}
 									onTabClick={setActiveTab}
 									onTabClose={handleTabClose}
+									diffBase={diffBase}
 									diffMode={diffMode}
 									onContentChange={updateTabContent}
 								/>
