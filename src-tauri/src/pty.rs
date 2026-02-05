@@ -42,6 +42,7 @@ pub fn spawn_pty(
     state: State<'_, PtyManager>,
     rows: u16,
     cols: u16,
+    cwd: Option<String>,
 ) -> Result<u64, String> {
     let pty_system = native_pty_system();
 
@@ -60,7 +61,10 @@ pub fn spawn_pty(
     #[cfg(not(target_os = "windows"))]
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
 
-    let cmd = CommandBuilder::new(shell);
+    let mut cmd = CommandBuilder::new(shell);
+    if let Some(dir) = cwd {
+        cmd.cwd(dir);
+    }
 
     let child = pair
         .slave

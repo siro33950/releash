@@ -1,4 +1,3 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import {
 	ChevronsDownUp,
 	FilePlus,
@@ -6,7 +5,7 @@ import {
 	FolderPlus,
 	RefreshCw,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -42,6 +41,8 @@ function findNodeByPath(
 }
 
 export interface SidebarPanelProps {
+	rootPath: string | null;
+	onOpenFolder: () => void;
 	onSelectFile?: (path: string) => void;
 	onFileChange?: (path: string) => void;
 	onRename?: (oldPath: string, newPath: string) => void;
@@ -49,12 +50,13 @@ export interface SidebarPanelProps {
 }
 
 export function SidebarPanel({
+	rootPath,
+	onOpenFolder,
 	onSelectFile,
 	onFileChange,
 	onRename,
 	onDelete,
 }: SidebarPanelProps) {
-	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
 	const [creatingNode, setCreatingNode] = useState<{
@@ -82,13 +84,14 @@ export function SidebarPanel({
 
 	const fileOps = useFileOperations();
 
-	const handleOpenFolder = async () => {
-		const selected = await open({ directory: true });
-		if (selected) {
-			setRootPath(selected);
-			setSelectedPath(null);
-		}
-	};
+	const prevRootPathRef = useRef(rootPath);
+	if (prevRootPathRef.current !== rootPath) {
+		prevRootPathRef.current = rootPath;
+		if (selectedPath !== null) setSelectedPath(null);
+		if (creatingNode !== null) setCreatingNode(null);
+		if (renamingPath !== null) setRenamingPath(null);
+		if (deletingPath !== null) setDeletingPath(null);
+	}
 
 	const handleSelectFile = (path: string) => {
 		setSelectedPath(path);
@@ -268,7 +271,7 @@ export function SidebarPanel({
 					</button>
 					<button
 						type="button"
-						onClick={handleOpenFolder}
+						onClick={onOpenFolder}
 						className="p-1 hover:bg-sidebar-accent rounded transition-colors"
 						title="Open Folder"
 						aria-label="Open Folder"
@@ -297,7 +300,7 @@ export function SidebarPanel({
 								<div className="px-2 py-4 text-center">
 									<button
 										type="button"
-										onClick={handleOpenFolder}
+										onClick={onOpenFolder}
 										className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-sidebar-accent hover:bg-sidebar-accent/80 rounded transition-colors"
 									>
 										<FolderOpen className="h-4 w-4" />

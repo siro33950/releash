@@ -14,7 +14,10 @@ interface PtyExit {
 	exit_code: number | null;
 }
 
-export function useTerminal(containerRef: RefObject<HTMLDivElement | null>) {
+export function useTerminal(
+	containerRef: RefObject<HTMLDivElement | null>,
+	cwd?: string | null,
+) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
 	const ptyIdRef = useRef<number | null>(null);
@@ -85,7 +88,11 @@ export function useTerminal(containerRef: RefObject<HTMLDivElement | null>) {
 			if (!isMounted) return;
 
 			const { rows, cols } = terminal;
-			const ptyId = await invoke<number>("spawn_pty", { rows, cols });
+			const ptyId = await invoke<number>("spawn_pty", {
+				rows,
+				cols,
+				cwd: cwd ?? null,
+			});
 
 			if (!isMounted) {
 				invoke("kill_pty", { ptyId }).catch(() => {});
@@ -135,7 +142,7 @@ export function useTerminal(containerRef: RefObject<HTMLDivElement | null>) {
 			}
 			terminal.dispose();
 		};
-	}, [containerRef]);
+	}, [containerRef, cwd]);
 
 	return { terminalRef };
 }

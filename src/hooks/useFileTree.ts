@@ -142,8 +142,38 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 	}, [rootPath, showHidden]);
 
 	useEffect(() => {
-		loadRootTree();
-	}, [loadRootTree]);
+		let cancelled = false;
+		(async () => {
+			if (!rootPath) {
+				setTree([]);
+				return;
+			}
+			setLoading(true);
+			setError(null);
+			try {
+				const normalizedRoot = normalizePath(rootPath);
+				const children = await loadChildren(normalizedRoot, showHidden);
+				if (!cancelled) {
+					setTree(children);
+					setExpandedPaths(new Set());
+				}
+			} catch (e) {
+				if (!cancelled) {
+					setError(
+						e instanceof Error ? e.message : "Failed to load directory",
+					);
+					setTree([]);
+				}
+			} finally {
+				if (!cancelled) {
+					setLoading(false);
+				}
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [rootPath, showHidden]);
 
 	const toggleExpand = useCallback(
 		async (path: string) => {

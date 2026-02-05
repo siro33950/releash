@@ -1,3 +1,4 @@
+import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
@@ -24,8 +25,10 @@ function App() {
 		saveFile,
 		updateTabPath,
 		closeTabsByPrefix,
+		closeAllTabs,
 	} = useEditorTabs();
 
+	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
 	const [diffMode, setDiffMode] = useState<DiffMode>("gutter");
 	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
@@ -37,6 +40,14 @@ function App() {
 	}, [activeTab, saveFile]);
 
 	useKeyboardShortcuts({ onSave: handleSave });
+
+	const handleOpenFolder = useCallback(async () => {
+		const selected = await open({ directory: true });
+		if (selected) {
+			setRootPath(selected);
+			closeAllTabs();
+		}
+	}, [closeAllTabs]);
 
 	const handleTabClose = useCallback(
 		(path: string) => {
@@ -111,6 +122,8 @@ function App() {
 						collapsible={false}
 					>
 						<SidebarPanel
+							rootPath={rootPath}
+							onOpenFolder={handleOpenFolder}
 							onSelectFile={openFile}
 							onFileChange={reloadTabIfClean}
 							onRename={handleRename}
@@ -168,7 +181,7 @@ function App() {
 						maxSize="60"
 						collapsible={false}
 					>
-						<TerminalPanel />
+						<TerminalPanel key={rootPath} cwd={rootPath} />
 					</Panel>
 				</Group>
 			</div>

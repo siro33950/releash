@@ -9,9 +9,13 @@ import {
 import { useTerminal } from "@/hooks/useTerminal";
 import "@xterm/xterm/css/xterm.css";
 
-export function TerminalPanel() {
+export interface TerminalPanelProps {
+	cwd?: string | null;
+}
+
+export function TerminalPanel({ cwd }: TerminalPanelProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
-	const { terminalRef } = useTerminal(containerRef);
+	const { terminalRef } = useTerminal(containerRef, cwd);
 
 	const handleCopy = useCallback(async () => {
 		const selection = terminalRef.current?.getSelection();
