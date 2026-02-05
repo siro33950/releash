@@ -138,8 +138,7 @@ pub fn get_git_status(repo_path: String) -> Result<Vec<GitFileStatus>, String> {
     let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
 
     let mut opts = StatusOptions::new();
-    opts.include_untracked(true)
-        .recurse_untracked_dirs(true);
+    opts.include_untracked(true).recurse_untracked_dirs(true);
 
     let statuses = repo
         .statuses(Some(&mut opts))
@@ -399,9 +398,7 @@ pub fn git_create_branch(repo_path: String, branch_name: String) -> Result<(), S
     let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
 
     let head = repo.head().map_err(|e| e.message().to_string())?;
-    let commit = head
-        .peel_to_commit()
-        .map_err(|e| e.message().to_string())?;
+    let commit = head.peel_to_commit().map_err(|e| e.message().to_string())?;
 
     repo.branch(&branch_name, &commit, false)
         .map_err(|e| e.message().to_string())?;
@@ -583,7 +580,11 @@ mod tests {
         create_initial_commit(&repo);
         fs::write(dir.path().join("new.txt"), "hello").unwrap();
 
-        git_stage(dir.path().to_str().unwrap().to_string(), vec!["new.txt".to_string()]).unwrap();
+        git_stage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["new.txt".to_string()],
+        )
+        .unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(statuses.len(), 1);
@@ -615,7 +616,11 @@ mod tests {
         add_and_commit(&repo, "file.txt", "content", "add file");
         fs::remove_file(dir.path().join("file.txt")).unwrap();
 
-        git_stage(dir.path().to_str().unwrap().to_string(), vec!["file.txt".to_string()]).unwrap();
+        git_stage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(statuses.len(), 1);
@@ -631,7 +636,11 @@ mod tests {
         let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(before[0].worktree_status, "new");
 
-        git_stage(dir.path().to_str().unwrap().to_string(), vec!["untracked.txt".to_string()]).unwrap();
+        git_stage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["untracked.txt".to_string()],
+        )
+        .unwrap();
 
         let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(after[0].index_status, "new");
@@ -645,9 +654,17 @@ mod tests {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("file.txt"), "content").unwrap();
-        git_stage(dir.path().to_str().unwrap().to_string(), vec!["file.txt".to_string()]).unwrap();
+        git_stage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
 
-        git_unstage(dir.path().to_str().unwrap().to_string(), vec!["file.txt".to_string()]).unwrap();
+        git_unstage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(statuses.len(), 1);
@@ -677,13 +694,21 @@ mod tests {
         let (dir, _repo) = create_test_repo();
         // No initial commit — unborn branch
         fs::write(dir.path().join("file.txt"), "content").unwrap();
-        git_stage(dir.path().to_str().unwrap().to_string(), vec!["file.txt".to_string()]).unwrap();
+        git_stage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
 
         // Verify it was staged
         let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(before[0].index_status, "new");
 
-        git_unstage(dir.path().to_str().unwrap().to_string(), vec!["file.txt".to_string()]).unwrap();
+        git_unstage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
 
         let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(after[0].index_status, "none");
@@ -697,9 +722,17 @@ mod tests {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
         fs::write(dir.path().join("file.txt"), "content").unwrap();
-        git_stage(dir.path().to_str().unwrap().to_string(), vec!["file.txt".to_string()]).unwrap();
+        git_stage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
 
-        let hash = git_commit(dir.path().to_str().unwrap().to_string(), "test commit".to_string()).unwrap();
+        let hash = git_commit(
+            dir.path().to_str().unwrap().to_string(),
+            "test commit".to_string(),
+        )
+        .unwrap();
         assert_eq!(hash.len(), 40);
 
         let log = get_git_log(dir.path().to_str().unwrap().to_string(), Some(1)).unwrap();
@@ -711,9 +744,17 @@ mod tests {
         let (dir, _repo) = create_test_repo();
         // No initial commit
         fs::write(dir.path().join("file.txt"), "content").unwrap();
-        git_stage(dir.path().to_str().unwrap().to_string(), vec!["file.txt".to_string()]).unwrap();
+        git_stage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
 
-        let hash = git_commit(dir.path().to_str().unwrap().to_string(), "first commit".to_string()).unwrap();
+        let hash = git_commit(
+            dir.path().to_str().unwrap().to_string(),
+            "first commit".to_string(),
+        )
+        .unwrap();
         assert_eq!(hash.len(), 40);
 
         let log = get_git_log(dir.path().to_str().unwrap().to_string(), None).unwrap();
@@ -728,7 +769,11 @@ mod tests {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
-        git_create_branch(dir.path().to_str().unwrap().to_string(), "feature".to_string()).unwrap();
+        git_create_branch(
+            dir.path().to_str().unwrap().to_string(),
+            "feature".to_string(),
+        )
+        .unwrap();
 
         let branch = get_current_branch(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(branch, "feature");
@@ -738,10 +783,16 @@ mod tests {
     fn test_create_branch_already_exists() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
-        git_create_branch(dir.path().to_str().unwrap().to_string(), "feature".to_string()).unwrap();
+        git_create_branch(
+            dir.path().to_str().unwrap().to_string(),
+            "feature".to_string(),
+        )
+        .unwrap();
 
-        let result = git_create_branch(dir.path().to_str().unwrap().to_string(), "feature".to_string());
+        let result = git_create_branch(
+            dir.path().to_str().unwrap().to_string(),
+            "feature".to_string(),
+        );
         assert!(result.is_err());
     }
-
 }

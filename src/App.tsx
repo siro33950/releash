@@ -160,10 +160,7 @@ function App() {
 						collapsible={false}
 					>
 						{activeView === "git" ? (
-							<SourceControlPanel
-								rootPath={rootPath}
-								onSelectFile={openFile}
-							/>
+							<SourceControlPanel rootPath={rootPath} onSelectFile={openFile} />
 						) : (
 							<SidebarPanel
 								rootPath={rootPath}
@@ -179,12 +176,7 @@ function App() {
 					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
 
 					{/* Editor */}
-					<Panel
-						id="editor"
-						defaultSize="55"
-						minSize={20}
-						collapsible={false}
-					>
+					<Panel id="editor" defaultSize="55" minSize={20} collapsible={false}>
 						<EditorPanel
 							tabs={tabs}
 							activeTab={activeTab}
@@ -213,9 +205,11 @@ function App() {
 				</Group>
 			</div>
 			<StatusBar
-			branch={branch ?? undefined}
-			status={changedFiles.length > 0 ? `${changedFiles.length} changed` : "Clean"}
-		/>
+				branch={branch ?? undefined}
+				status={
+					changedFiles.length > 0 ? `${changedFiles.length} changed` : "Clean"
+				}
+			/>
 			<UnsavedChangesDialog
 				open={showUnsavedDialog}
 				fileName={unsavedFileName}

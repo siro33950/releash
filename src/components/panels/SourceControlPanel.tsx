@@ -82,19 +82,12 @@ function FileStatusItem({
 				<span className="text-muted-foreground">{dir}</span>
 				<span className="font-semibold">{name}</span>
 			</span>
-			<span
-				role="button"
-				tabIndex={0}
+			<button
+				type="button"
 				className="hidden group-hover:inline-flex items-center justify-center h-5 w-5 rounded hover:bg-sidebar-accent-foreground/10 shrink-0"
 				onClick={(e) => {
 					e.stopPropagation();
 					onAction();
-				}}
-				onKeyDown={(e) => {
-					if (e.key === "Enter" || e.key === " ") {
-						e.stopPropagation();
-						onAction();
-					}
 				}}
 				title={actionLabel}
 			>
@@ -103,7 +96,7 @@ function FileStatusItem({
 				) : (
 					<Minus className="h-3.5 w-3.5" />
 				)}
-			</span>
+			</button>
 		</button>
 	);
 }
@@ -141,7 +134,8 @@ function CollapsibleSection({
 						<ChevronRight className="h-3.5 w-3.5 shrink-0" />
 					)}
 					<span className="flex-1 text-left truncate">
-						{title}{count != null ? ` (${count})` : ""}
+						{title}
+						{count != null ? ` (${count})` : ""}
 					</span>
 				</button>
 				{actionLabel && onAction && (
@@ -169,8 +163,11 @@ export function SourceControlPanel({
 	rootPath,
 	onSelectFile,
 }: SourceControlPanelProps) {
-	const { stagedFiles, changedFiles, refresh: refreshStatus } =
-		useGitStatus(rootPath);
+	const {
+		stagedFiles,
+		changedFiles,
+		refresh: refreshStatus,
+	} = useGitStatus(rootPath);
 	const { stage, unstage, commit, push } = useGitActions();
 
 	const [commitSummary, setCommitSummary] = useState("");
@@ -243,9 +240,7 @@ export function SourceControlPanel({
 	if (!rootPath) {
 		return (
 			<div className="h-full flex items-center justify-center bg-sidebar">
-				<span className="text-sm text-muted-foreground">
-					No folder opened
-				</span>
+				<span className="text-sm text-muted-foreground">No folder opened</span>
 			</div>
 		);
 	}
@@ -354,9 +349,7 @@ export function SourceControlPanel({
 						type="button"
 						className="flex-1 flex items-center justify-center gap-1 bg-primary text-primary-foreground rounded px-2 py-1 text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 						disabled={
-							!commitSummary.trim() ||
-							stagedFiles.length === 0 ||
-							loading
+							!commitSummary.trim() || stagedFiles.length === 0 || loading
 						}
 						onClick={handleCommit}
 					>
