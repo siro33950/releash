@@ -53,6 +53,8 @@ export function splitHunkIntoGroups(
 	for (let i = 0; i < hunk.lines.length; i++) {
 		const prefix = hunk.lines[i][0];
 
+		if (prefix === "\\") continue;
+
 		if (prefix === "+" || prefix === "-") {
 			if (!inGroup) {
 				inGroup = true;

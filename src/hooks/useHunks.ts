@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	type ChangeGroup,
 	computeChangeGroups,
@@ -18,6 +18,10 @@ export function useHunks(
 	const changeGroups = useMemo(() => computeChangeGroups(hunks), [hunks]);
 
 	const [currentIndex, setCurrentIndex] = useState(0);
+
+	useEffect(() => {
+		setCurrentIndex(0);
+	}, [changeGroups]);
 
 	const safeIndex =
 		changeGroups.length === 0

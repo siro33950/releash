@@ -165,13 +165,13 @@
 
 /* Monaco Editor Gutter Decorations */
 .gutter-added {
-	background-color: #9ccc2c;
+	background-color: var(--status-added);
 	width: 4px !important;
 	margin-left: 3px;
 }
 
 .gutter-modified {
-	background-color: #9ccc2c;
+	background-color: var(--status-modified);
 	width: 4px !important;
 	margin-left: 3px;
 }

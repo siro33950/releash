@@ -427,8 +427,12 @@ pub fn git_stage_hunk(repo_path: String, patch: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Failed to execute git apply: {e}"))?;
 
-    if let Some(stdin) = child.stdin.as_mut() {
+    {
         use std::io::Write;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or("Failed to open stdin for git apply")?;
         stdin
             .write_all(patch.as_bytes())
             .map_err(|e| format!("Failed to write patch: {e}"))?;
@@ -459,8 +463,12 @@ pub fn git_unstage_hunk(repo_path: String, patch: String) -> Result<(), String> 
         .spawn()
         .map_err(|e| format!("Failed to execute git apply: {e}"))?;
 
-    if let Some(stdin) = child.stdin.as_mut() {
+    {
         use std::io::Write;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or("Failed to open stdin for git apply")?;
         stdin
             .write_all(patch.as_bytes())
             .map_err(|e| format!("Failed to write patch: {e}"))?;

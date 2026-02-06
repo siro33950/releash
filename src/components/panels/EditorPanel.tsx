@@ -340,7 +340,7 @@ export function EditorPanel({
 
 	const handleUnstageAll = useCallback(async () => {
 		const relativePath = getRelativePath();
-		if (!relativePath || !rootPath) return;
+		if (!relativePath || !rootPath || !stagedContent) return;
 		const allHunks = computeHunks(stagedContent, originalContent, relativePath);
 		const allIndices = allHunks.map((h) => h.index);
 		const patch = generatePatch(relativePath, allHunks, allIndices);
