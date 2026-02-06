@@ -116,17 +116,29 @@ fn get_definition_patterns(language: &str) -> Vec<(&'static str, String)> {
     match language {
         "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => {
             vec![
-                ("function", r"\b(?:export\s+)?(?:async\s+)?function\s+{symbol}\b".to_string()),
-                ("variable", r"\b(?:export\s+)?(?:const|let|var)\s+{symbol}\b".to_string()),
+                (
+                    "function",
+                    r"\b(?:export\s+)?(?:async\s+)?function\s+{symbol}\b".to_string(),
+                ),
+                (
+                    "variable",
+                    r"\b(?:export\s+)?(?:const|let|var)\s+{symbol}\b".to_string(),
+                ),
                 ("class", r"\b(?:export\s+)?class\s+{symbol}\b".to_string()),
-                ("interface", r"\b(?:export\s+)?interface\s+{symbol}\b".to_string()),
+                (
+                    "interface",
+                    r"\b(?:export\s+)?interface\s+{symbol}\b".to_string(),
+                ),
                 ("type", r"\b(?:export\s+)?type\s+{symbol}\b".to_string()),
                 ("enum", r"\b(?:export\s+)?enum\s+{symbol}\b".to_string()),
             ]
         }
         "rust" => {
             vec![
-                ("function", r"\b(?:pub\s+)?(?:async\s+)?fn\s+{symbol}\b".to_string()),
+                (
+                    "function",
+                    r"\b(?:pub\s+)?(?:async\s+)?fn\s+{symbol}\b".to_string(),
+                ),
                 ("struct", r"\b(?:pub\s+)?struct\s+{symbol}\b".to_string()),
                 ("enum", r"\b(?:pub\s+)?enum\s+{symbol}\b".to_string()),
                 ("trait", r"\b(?:pub\s+)?trait\s+{symbol}\b".to_string()),
@@ -205,10 +217,7 @@ pub fn find_definition(
 
         let path = entry.path();
         if !extensions.is_empty() {
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !extensions.contains(&ext) {
                 continue;
             }
@@ -244,10 +253,7 @@ pub fn find_definition(
 }
 
 #[tauri::command]
-pub fn find_references(
-    root_path: String,
-    symbol: String,
-) -> Result<Vec<SearchMatch>, String> {
+pub fn find_references(root_path: String, symbol: String) -> Result<Vec<SearchMatch>, String> {
     let escaped = regex::escape(&symbol);
     let pattern = format!(r"\b{}\b", escaped);
     let re = Regex::new(&pattern).map_err(|e| format!("Invalid pattern: {}", e))?;
@@ -351,8 +357,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result =
-            search_files(root, "GREET".to_string(), Some(false), None, None).unwrap();
+        let result = search_files(root, "GREET".to_string(), Some(false), None, None).unwrap();
         assert!(result.matches.len() >= 3);
     }
 
@@ -361,8 +366,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result =
-            search_files(root, "GREET".to_string(), Some(true), None, None).unwrap();
+        let result = search_files(root, "GREET".to_string(), Some(true), None, None).unwrap();
         assert_eq!(result.matches.len(), 0);
     }
 
@@ -371,8 +375,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result =
-            search_files(root, r"greet\(".to_string(), None, Some(true), None).unwrap();
+        let result = search_files(root, r"greet\(".to_string(), None, Some(true), None).unwrap();
         assert!(result.matches.len() >= 2);
     }
 
@@ -381,8 +384,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result =
-            search_files(root, "module.exports".to_string(), None, None, None).unwrap();
+        let result = search_files(root, "module.exports".to_string(), None, None, None).unwrap();
         assert_eq!(result.matches.len(), 0);
     }
 
@@ -391,8 +393,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result =
-            search_files(root, "greet".to_string(), None, None, Some(1)).unwrap();
+        let result = search_files(root, "greet".to_string(), None, None, Some(1)).unwrap();
         assert_eq!(result.matches.len(), 1);
         assert!(result.truncated);
         assert!(result.total_matches > 1);
@@ -403,8 +404,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result =
-            find_definition(root, "greet".to_string(), "typescript".to_string()).unwrap();
+        let result = find_definition(root, "greet".to_string(), "typescript".to_string()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].kind, "function");
         assert_eq!(result[0].line_number, 1);
@@ -416,13 +416,11 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result =
-            find_definition(root.clone(), "main".to_string(), "rust".to_string()).unwrap();
+        let result = find_definition(root.clone(), "main".to_string(), "rust".to_string()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].kind, "function");
 
-        let result =
-            find_definition(root, "App".to_string(), "rust".to_string()).unwrap();
+        let result = find_definition(root, "App".to_string(), "rust".to_string()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].kind, "struct");
     }

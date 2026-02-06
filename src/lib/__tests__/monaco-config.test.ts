@@ -21,7 +21,9 @@ type MockMonaco = ReturnType<typeof createMockMonaco>;
 describe("disableBuiltinDiagnostics", () => {
 	it("should disable semantic/suggestion diagnostics and be idempotent", () => {
 		const monaco1 = createMockMonaco();
-		disableBuiltinDiagnostics(monaco1 as unknown as Parameters<typeof disableBuiltinDiagnostics>[0]);
+		disableBuiltinDiagnostics(
+			monaco1 as unknown as Parameters<typeof disableBuiltinDiagnostics>[0],
+		);
 
 		const expectedOptions = {
 			noSemanticValidation: true,
@@ -37,7 +39,9 @@ describe("disableBuiltinDiagnostics", () => {
 		).toHaveBeenCalledWith(expectedOptions);
 
 		const monaco2: MockMonaco = createMockMonaco();
-		disableBuiltinDiagnostics(monaco2 as unknown as Parameters<typeof disableBuiltinDiagnostics>[0]);
+		disableBuiltinDiagnostics(
+			monaco2 as unknown as Parameters<typeof disableBuiltinDiagnostics>[0],
+		);
 
 		expect(
 			monaco2.languages.typescript.typescriptDefaults.setDiagnosticsOptions,
