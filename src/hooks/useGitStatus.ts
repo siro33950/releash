@@ -16,7 +16,10 @@ function toFileStatus(entry: GitFileStatus): FileStatus {
 	return null;
 }
 
-export function useGitStatus(rootPath: string | null) {
+export function useGitStatus(
+	rootPath: string | null,
+	externalRefreshKey?: number,
+) {
 	const [statusMap, setStatusMap] = useState<Map<string, FileStatus>>(
 		new Map(),
 	);
@@ -74,6 +77,12 @@ export function useGitStatus(rootPath: string | null) {
 	useEffect(() => {
 		fetchStatus();
 	}, [fetchStatus]);
+
+	useEffect(() => {
+		if (externalRefreshKey != null && externalRefreshKey > 0) {
+			fetchStatus();
+		}
+	}, [externalRefreshKey, fetchStatus]);
 
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;

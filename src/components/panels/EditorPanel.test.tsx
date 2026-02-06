@@ -1,9 +1,26 @@
 import { invoke } from "@tauri-apps/api/core";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { describe, expect, it, type Mock, vi } from "vitest";
 import type { TabInfo } from "@/types/editor";
 import { EditorPanel } from "./EditorPanel";
+
+vi.mock("react-resizable-panels", () => ({
+	Group: ({ children, ...props }: { children: ReactNode }) => (
+		<div data-testid="resizable-group" {...props}>
+			{children}
+		</div>
+	),
+	Panel: ({ children, ...props }: { children: ReactNode }) => (
+		<div data-testid="resizable-panel" {...props}>
+			{children}
+		</div>
+	),
+	Separator: (props: Record<string, unknown>) => (
+		<div data-testid="resizable-separator" {...props} />
+	),
+}));
 
 vi.mocked(invoke as Mock).mockResolvedValue([]);
 
@@ -18,7 +35,7 @@ const mockTab: TabInfo = {
 };
 
 describe("EditorPanel", () => {
-	it("should render EmptyState when no tabs", () => {
+	it("should render EmptyState and ReviewPanel when no tabs", () => {
 		render(
 			<EditorPanel
 				tabs={[]}
@@ -33,6 +50,7 @@ describe("EditorPanel", () => {
 		);
 
 		expect(screen.getByText("No file selected")).toBeInTheDocument();
+		expect(screen.getByText("Comments")).toBeInTheDocument();
 	});
 
 	it("should render tabs when tabs exist", () => {

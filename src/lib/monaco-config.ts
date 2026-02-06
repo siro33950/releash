@@ -1,6 +1,10 @@
 import type * as Monaco from "monaco-editor";
+import type { Theme } from "@/types/settings";
 
-export const MONACO_THEME_NAME = "releash-dark";
+export const MONACO_DARK_THEME_NAME = "releash-dark";
+export const MONACO_LIGHT_THEME_NAME = "releash-light";
+
+export const MONACO_THEME_NAME = MONACO_DARK_THEME_NAME;
 
 export const monacoTheme: Monaco.editor.IStandaloneThemeData = {
 	base: "vs-dark",
@@ -23,8 +27,44 @@ export const monacoTheme: Monaco.editor.IStandaloneThemeData = {
 		"editor.selectionBackground": "#3a3a3a",
 		"editor.inactiveSelectionBackground": "#2a2a2a",
 		"widget.shadow": "#00000040",
+		"diffEditor.insertedTextBackground": "#9ccc2c33",
+		"diffEditor.removedTextBackground": "#ff000033",
 	},
 };
+
+export const DIFF_ADDED_COLOR = "#9ccc2c";
+export const DIFF_MODIFIED_COLOR = "#9ccc2c";
+export const DIFF_DELETED_COLOR = "#ff0000";
+
+export const monacoLightTheme: Monaco.editor.IStandaloneThemeData = {
+	base: "vs",
+	inherit: true,
+	rules: [
+		{ token: "", foreground: "1a1a1a", background: "f8f8f8" },
+		{ token: "comment", foreground: "6a737d" },
+		{ token: "keyword", foreground: "d73a49" },
+		{ token: "string", foreground: "22863a" },
+		{ token: "number", foreground: "e36209" },
+		{ token: "type", foreground: "005cc5" },
+	],
+	colors: {
+		"editor.background": "#f8f8f8",
+		"editor.foreground": "#1a1a1a",
+		"editorCursor.foreground": "#1a1a1a",
+		"editor.lineHighlightBackground": "#f0f0f0",
+		"editorLineNumber.foreground": "#999999",
+		"editorLineNumber.activeForeground": "#1a1a1a",
+		"editor.selectionBackground": "#c8e1ff",
+		"editor.inactiveSelectionBackground": "#e0e0e0",
+		"widget.shadow": "#00000015",
+		"diffEditor.insertedTextBackground": "#9ccc2c40",
+		"diffEditor.removedTextBackground": "#ff000033",
+	},
+};
+
+export function getMonacoThemeName(theme: Theme): string {
+	return theme === "light" ? MONACO_LIGHT_THEME_NAME : MONACO_DARK_THEME_NAME;
+}
 
 export const defaultEditorOptions: Monaco.editor.IStandaloneEditorConstructionOptions =
 	{
@@ -32,7 +72,7 @@ export const defaultEditorOptions: Monaco.editor.IStandaloneEditorConstructionOp
 		fontSize: 14,
 		fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 		automaticLayout: false,
-		minimap: { enabled: true },
+		minimap: { enabled: false },
 		wordWrap: "on",
 		scrollBeyondLastLine: false,
 		renderWhitespace: "selection",
@@ -58,8 +98,10 @@ export const defaultDiffEditorOptions: Monaco.editor.IDiffEditorConstructionOpti
 		diffAlgorithm: "advanced",
 		renderSideBySide: true,
 		enableSplitViewResizing: true,
-		renderOverviewRuler: true,
+		renderOverviewRuler: false,
+		minimap: { enabled: false },
 		ignoreTrimWhitespace: false,
 		renderMarginRevertIcon: false,
 		renderGutterMenu: false,
+		glyphMargin: true,
 	};

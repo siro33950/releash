@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { forwardRef, useCallback, useImperativeHandle, useRef } from "react";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -7,15 +7,36 @@ import {
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { useTerminal } from "@/hooks/useTerminal";
+import type { Theme } from "@/types/settings";
 import "@xterm/xterm/css/xterm.css";
+
+export interface TerminalPanelHandle {
+	writeToTerminal: (data: string) => void;
+}
 
 export interface TerminalPanelProps {
 	cwd?: string | null;
+	theme?: Theme;
 }
 
-export function TerminalPanel({ cwd }: TerminalPanelProps) {
+export const TerminalPanel = forwardRef<
+	TerminalPanelHandle,
+	TerminalPanelProps
+>(function TerminalPanel({ cwd, theme }, ref) {
 	const containerRef = useRef<HTMLDivElement>(null);
-	const { terminalRef } = useTerminal(containerRef, cwd);
+	const { terminalRef, writeToTerminal } = useTerminal(
+		containerRef,
+		cwd,
+		theme,
+	);
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			writeToTerminal,
+		}),
+		[writeToTerminal],
+	);
 
 	const handleCopy = useCallback(async () => {
 		const selection = terminalRef.current?.getSelection();
@@ -40,7 +61,7 @@ export function TerminalPanel({ cwd }: TerminalPanelProps) {
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<div ref={containerRef} className="h-full w-full p-2 bg-[#1a1a1a]" />
+				<div ref={containerRef} className="h-full w-full p-2 bg-terminal-bg" />
 			</ContextMenuTrigger>
 			<ContextMenuContent className="w-56">
 				<ContextMenuItem onClick={handleCopy}>コピー</ContextMenuItem>
@@ -51,4 +72,4 @@ export function TerminalPanel({ cwd }: TerminalPanelProps) {
 			</ContextMenuContent>
 		</ContextMenu>
 	);
-}
+});
