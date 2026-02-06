@@ -37,8 +37,13 @@ interface HunkCommentProps {
 	theme?: Theme;
 }
 
+interface NavigationHandlers {
+	onSearchOccurrences?: (text: string) => void;
+}
+
 function useEditorContextMenu(
 	editorRef: React.RefObject<Monaco.editor.ICodeEditor | null>,
+	navigation?: NavigationHandlers,
 ) {
 	const handleCopy = useCallback(async () => {
 		const editor = editorRef.current;
@@ -92,6 +97,43 @@ function useEditorContextMenu(
 		editor.setSelection(model.getFullModelRange());
 	}, [editorRef]);
 
+	const getWordAtCursor = useCallback(() => {
+		const editor = editorRef.current;
+		if (!editor) return null;
+		const position = editor.getPosition();
+		if (!position) return null;
+		const model = editor.getModel();
+		if (!model) return null;
+		const selection = editor.getSelection();
+		if (selection && !selection.isEmpty()) {
+			return model.getValueInRange(selection);
+		}
+		const word = model.getWordAtPosition(position);
+		return word?.word ?? null;
+	}, [editorRef]);
+
+	const handleGoToDefinition = useCallback(() => {
+		editorRef.current?.trigger(
+			"contextMenu",
+			"editor.action.revealDefinition",
+			null,
+		);
+	}, [editorRef]);
+
+	const handleFindReferences = useCallback(() => {
+		editorRef.current?.trigger(
+			"contextMenu",
+			"editor.action.goToReferences",
+			null,
+		);
+	}, [editorRef]);
+
+	const handleSearchOccurrences = useCallback(() => {
+		const word = getWordAtCursor();
+		if (!word || !navigation?.onSearchOccurrences) return;
+		navigation.onSearchOccurrences(word);
+	}, [getWordAtCursor, navigation]);
+
 	return {
 		handleCopy,
 		handleCut,
@@ -99,6 +141,10 @@ function useEditorContextMenu(
 		handleUndo,
 		handleRedo,
 		handleSelectAll,
+		handleGoToDefinition,
+		handleFindReferences,
+		handleSearchOccurrences,
+		hasNavigation: true,
 	};
 }
 
@@ -109,6 +155,21 @@ function EditorContextMenuContent({
 }) {
 	return (
 		<ContextMenuContent className="w-56">
+			{actions.hasNavigation && (
+				<>
+					<ContextMenuItem onClick={actions.handleGoToDefinition}>
+						定義へ移動
+					</ContextMenuItem>
+					<ContextMenuItem onClick={actions.handleFindReferences}>
+						参照を検索
+					</ContextMenuItem>
+					<ContextMenuSeparator />
+					<ContextMenuItem onClick={actions.handleSearchOccurrences}>
+						すべての出現箇所を検索
+					</ContextMenuItem>
+					<ContextMenuSeparator />
+				</>
+			)}
 			<ContextMenuItem onClick={actions.handleCopy}>コピー</ContextMenuItem>
 			<ContextMenuItem onClick={actions.handleCut}>切り取り</ContextMenuItem>
 			<ContextMenuItem onClick={actions.handlePaste}>貼り付け</ContextMenuItem>
@@ -137,12 +198,16 @@ function GutterEditor({
 	getCommentsForLine,
 	revealLine,
 	theme,
+	navigation,
+	filePath,
 }: {
 	originalContent: string;
 	modifiedContent: string;
 	language: string;
 	onContentChange?: (content: string) => void;
 	fontSize?: number;
+	filePath?: string;
+	navigation?: NavigationHandlers;
 } & HunkCommentProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 
@@ -152,6 +217,7 @@ function GutterEditor({
 		language,
 		onContentChange,
 		fontSize,
+		filePath,
 		changeGroups,
 		commentRanges,
 		onStageHunk,
@@ -162,7 +228,7 @@ function GutterEditor({
 		theme,
 	});
 
-	const actions = useEditorContextMenu(editorRef);
+	const actions = useEditorContextMenu(editorRef, navigation);
 
 	return (
 		<ContextMenu>
@@ -189,6 +255,8 @@ function DiffEditor({
 	getCommentsForLine,
 	revealLine,
 	theme,
+	navigation,
+	filePath,
 }: {
 	originalContent: string;
 	modifiedContent: string;
@@ -196,6 +264,8 @@ function DiffEditor({
 	renderSideBySide: boolean;
 	onContentChange?: (content: string) => void;
 	fontSize?: number;
+	filePath?: string;
+	navigation?: NavigationHandlers;
 } & HunkCommentProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 
@@ -206,6 +276,7 @@ function DiffEditor({
 		renderSideBySide,
 		onContentChange,
 		fontSize,
+		filePath,
 		changeGroups,
 		commentRanges,
 		onStageHunk,
@@ -227,7 +298,7 @@ function DiffEditor({
 		[diffEditorRef],
 	);
 
-	const actions = useEditorContextMenu(modifiedEditorProxy);
+	const actions = useEditorContextMenu(modifiedEditorProxy, navigation);
 
 	return (
 		<ContextMenu>
@@ -259,6 +330,8 @@ interface MonacoDiffViewerProps {
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
+	filePath?: string;
+	onSearchOccurrences?: (text: string) => void;
 }
 
 export function MonacoDiffViewer({
@@ -277,6 +350,8 @@ export function MonacoDiffViewer({
 	getCommentsForLine,
 	revealLine,
 	theme,
+	filePath,
+	onSearchOccurrences,
 }: MonacoDiffViewerProps) {
 	const hunkCommentProps: HunkCommentProps = {
 		changeGroups,
@@ -289,6 +364,10 @@ export function MonacoDiffViewer({
 		theme,
 	};
 
+	const navigation: NavigationHandlers | undefined = onSearchOccurrences
+		? { onSearchOccurrences }
+		: undefined;
+
 	return (
 		<div className={cn("h-full w-full bg-background", className)}>
 			{diffMode === "gutter" && (
@@ -298,6 +377,8 @@ export function MonacoDiffViewer({
 					language={language}
 					onContentChange={onContentChange}
 					fontSize={fontSize}
+					filePath={filePath}
+					navigation={navigation}
 					{...hunkCommentProps}
 				/>
 			)}
@@ -309,6 +390,8 @@ export function MonacoDiffViewer({
 					renderSideBySide={false}
 					onContentChange={onContentChange}
 					fontSize={fontSize}
+					filePath={filePath}
+					navigation={navigation}
 					{...hunkCommentProps}
 				/>
 			)}
@@ -320,6 +403,8 @@ export function MonacoDiffViewer({
 					renderSideBySide={true}
 					onContentChange={onContentChange}
 					fontSize={fontSize}
+					filePath={filePath}
+					navigation={navigation}
 					{...hunkCommentProps}
 				/>
 			)}

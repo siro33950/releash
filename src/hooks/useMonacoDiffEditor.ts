@@ -10,6 +10,7 @@ import {
 	DIFF_ADDED_COLOR,
 	DIFF_MODIFIED_COLOR,
 	defaultDiffEditorOptions,
+	disableBuiltinDiagnostics,
 	getMonacoThemeName,
 	MONACO_DARK_THEME_NAME,
 	MONACO_LIGHT_THEME_NAME,
@@ -31,6 +32,7 @@ interface UseMonacoDiffEditorOptions {
 	renderSideBySide?: boolean;
 	onContentChange?: (content: string) => void;
 	fontSize?: number;
+	filePath?: string;
 	changeGroups?: ChangeGroup[];
 	commentRanges?: CommentRange[];
 	onStageHunk?: (hunkIndex: number) => void;
@@ -141,6 +143,7 @@ export function useMonacoDiffEditor(
 		renderSideBySide = true,
 		onContentChange,
 		fontSize,
+		filePath,
 		changeGroups,
 		commentRanges,
 		onStageHunk,
@@ -199,6 +202,7 @@ export function useMonacoDiffEditor(
 			if (!isMounted) return;
 
 			monacoRef.current = monaco;
+			disableBuiltinDiagnostics(monaco);
 
 			monaco.editor.defineTheme(MONACO_DARK_THEME_NAME, monacoTheme);
 			monaco.editor.defineTheme(MONACO_LIGHT_THEME_NAME, monacoLightTheme);
@@ -209,9 +213,17 @@ export function useMonacoDiffEditor(
 				originalValueRef.current,
 				language,
 			);
+			const modifiedUri = filePath ? monaco.Uri.file(filePath) : undefined;
+			const existingModel = modifiedUri
+				? monaco.editor.getModel(modifiedUri)
+				: null;
+			if (existingModel) {
+				existingModel.dispose();
+			}
 			const modifiedModel = monaco.editor.createModel(
 				modifiedValueRef.current,
 				language,
+				modifiedUri,
 			);
 
 			if (!isMounted) {
@@ -440,7 +452,7 @@ export function useMonacoDiffEditor(
 			originalModelRef.current?.dispose();
 			modifiedModelRef.current?.dispose();
 		};
-	}, [containerRef, language, renderSideBySide]);
+	}, [containerRef, language, renderSideBySide, filePath]);
 
 	useEffect(() => {
 		const diffEditor = diffEditorRef.current;

@@ -1,5 +1,6 @@
 mod git;
 mod pty;
+mod search;
 mod watcher;
 
 use git::{
@@ -8,6 +9,7 @@ use git::{
     git_unstage, git_unstage_hunk, list_branches,
 };
 use pty::{kill_pty, resize_pty, spawn_pty, write_pty, PtyManager};
+use search::{find_definition, find_references, search_files};
 use watcher::{start_watching, stop_watching, FileWatcherManager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -38,7 +40,10 @@ pub fn run() {
             git_unstage_hunk,
             git_commit,
             git_push,
-            git_create_branch
+            git_create_branch,
+            search_files,
+            find_definition,
+            find_references
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

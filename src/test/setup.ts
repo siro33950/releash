@@ -138,14 +138,29 @@ const mockMonaco = {
 		create: vi.fn().mockReturnValue(mockEditor),
 		createDiffEditor: vi.fn().mockReturnValue(mockDiffEditor),
 		createModel: vi.fn().mockReturnValue(mockTextModel),
+		getModel: vi.fn().mockReturnValue(null),
 		defineTheme: vi.fn(),
 		setTheme: vi.fn(),
+		registerEditorOpener: vi.fn(),
 		MouseTargetType: { GUTTER_GLYPH_MARGIN: 2 },
 		ContentWidgetPositionPreference: { ABOVE: 1 },
 	},
 	languages: {
 		register: vi.fn(),
 		setMonarchTokensProvider: vi.fn(),
+		registerDefinitionProvider: vi.fn(),
+		registerReferenceProvider: vi.fn(),
+		typescript: {
+			typescriptDefaults: {
+				setDiagnosticsOptions: vi.fn(),
+			},
+			javascriptDefaults: {
+				setDiagnosticsOptions: vi.fn(),
+			},
+		},
+	},
+	Uri: {
+		file: vi.fn((path: string) => ({ scheme: "file", path })),
 	},
 	Range: MockRange,
 	KeyMod: { CtrlCmd: 2048 },
@@ -161,6 +176,7 @@ vi.mock("@monaco-editor/react", () => ({
 
 vi.mock("@tauri-apps/plugin-fs", () => ({
 	readDir: vi.fn().mockResolvedValue([]),
+	readTextFile: vi.fn().mockResolvedValue(""),
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({

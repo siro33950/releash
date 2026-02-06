@@ -66,6 +66,33 @@ export function getMonacoThemeName(theme: Theme): string {
 	return theme === "light" ? MONACO_LIGHT_THEME_NAME : MONACO_DARK_THEME_NAME;
 }
 
+interface DiagnosticsDefaults {
+	setDiagnosticsOptions(options: {
+		noSemanticValidation: boolean;
+		noSyntaxValidation: boolean;
+		noSuggestionDiagnostics: boolean;
+	}): void;
+}
+
+interface TypescriptModule {
+	typescriptDefaults: DiagnosticsDefaults;
+	javascriptDefaults: DiagnosticsDefaults;
+}
+
+let diagnosticsDisabled = false;
+export function disableBuiltinDiagnostics(monaco: typeof Monaco) {
+	if (diagnosticsDisabled) return;
+	diagnosticsDisabled = true;
+	const ts = monaco.languages.typescript as unknown as TypescriptModule;
+	const diagnosticsOptions = {
+		noSemanticValidation: true,
+		noSyntaxValidation: false,
+		noSuggestionDiagnostics: true,
+	};
+	ts.typescriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
+	ts.javascriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
+}
+
 export const defaultEditorOptions: Monaco.editor.IStandaloneEditorConstructionOptions =
 	{
 		contextmenu: false,

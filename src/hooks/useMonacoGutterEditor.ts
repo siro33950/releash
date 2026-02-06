@@ -11,6 +11,7 @@ import {
 	DIFF_ADDED_COLOR,
 	DIFF_MODIFIED_COLOR,
 	defaultEditorOptions,
+	disableBuiltinDiagnostics,
 	getMonacoThemeName,
 	MONACO_DARK_THEME_NAME,
 	MONACO_LIGHT_THEME_NAME,
@@ -31,6 +32,7 @@ interface UseMonacoGutterEditorOptions {
 	language?: string;
 	onContentChange?: (content: string) => void;
 	fontSize?: number;
+	filePath?: string;
 	changeGroups?: ChangeGroup[];
 	commentRanges?: CommentRange[];
 	onStageHunk?: (hunkIndex: number) => void;
@@ -92,6 +94,7 @@ export function useMonacoGutterEditor(
 		language = "typescript",
 		onContentChange,
 		fontSize,
+		filePath,
 		commentRanges,
 		onAddComment,
 		getCommentsForLine,
@@ -100,6 +103,7 @@ export function useMonacoGutterEditor(
 	} = options;
 
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+	const modelRef = useRef<Monaco.editor.ITextModel | null>(null);
 	const monacoRef = useRef<typeof Monaco | null>(null);
 	const [, setEditorReady] = useState(false);
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -137,16 +141,28 @@ export function useMonacoGutterEditor(
 			if (!isMounted) return;
 
 			monacoRef.current = monaco;
+			disableBuiltinDiagnostics(monaco);
 
 			monaco.editor.defineTheme(MONACO_DARK_THEME_NAME, monacoTheme);
 			monaco.editor.defineTheme(MONACO_LIGHT_THEME_NAME, monacoLightTheme);
 			const themeName = getMonacoThemeName(themeRef.current ?? "dark");
 			monaco.editor.setTheme(themeName);
 
+			const modelUri = filePath ? monaco.Uri.file(filePath) : undefined;
+			const existingModel = modelUri
+				? monaco.editor.getModel(modelUri)
+				: null;
+			if (existingModel) {
+				existingModel.dispose();
+			}
+			const model = monaco.editor.createModel(
+				modifiedValueRef.current,
+				language,
+				modelUri,
+			);
 			const editor = monaco.editor.create(container, {
 				...defaultEditorOptions,
-				value: modifiedValueRef.current,
-				language,
+				model,
 				theme: themeName,
 				glyphMargin: true,
 				...(fontSizeRef.current != null && { fontSize: fontSizeRef.current }),
@@ -154,9 +170,11 @@ export function useMonacoGutterEditor(
 
 			if (!isMounted) {
 				editor.dispose();
+				model.dispose();
 				return;
 			}
 
+			modelRef.current = model;
 			editorRef.current = editor;
 			setEditorReady(true);
 
@@ -357,8 +375,9 @@ export function useMonacoGutterEditor(
 			isMounted = false;
 			resizeObserverRef.current?.disconnect();
 			editorRef.current?.dispose();
+			modelRef.current?.dispose();
 		};
-	}, [containerRef, language]);
+	}, [containerRef, language, filePath]);
 
 	useEffect(() => {
 		const editor = editorRef.current;

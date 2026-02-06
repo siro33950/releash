@@ -55,6 +55,9 @@ export interface EditorPanelProps {
 	theme?: Theme;
 	gitRefreshKey?: number;
 	onGitChanged?: () => void;
+	externalRevealLine?: { path: string; line: number } | null;
+	onExternalRevealConsumed?: () => void;
+	onSearchOccurrences?: (text: string) => void;
 }
 
 export function EditorPanel({
@@ -76,6 +79,9 @@ export function EditorPanel({
 	theme,
 	gitRefreshKey,
 	onGitChanged,
+	externalRevealLine,
+	onExternalRevealConsumed,
+	onSearchOccurrences,
 }: EditorPanelProps) {
 	const [revealLine, setRevealLine] = useState<
 		{ line: number; key: number } | undefined
@@ -411,6 +417,17 @@ export function EditorPanel({
 		}
 	}, [pendingJump, activeTab?.path]);
 
+	useEffect(() => {
+		if (externalRevealLine && activeTab?.path === externalRevealLine.path) {
+			revealKeyRef.current += 1;
+			setRevealLine({
+				line: externalRevealLine.line,
+				key: revealKeyRef.current,
+			});
+			onExternalRevealConsumed?.();
+		}
+	}, [externalRevealLine, activeTab?.path, onExternalRevealConsumed]);
+
 	const handleContentChange = activeTab
 		? (content: string) => onContentChange?.(activeTab.path, content)
 		: undefined;
@@ -446,6 +463,8 @@ export function EditorPanel({
 									getCommentsForLine={getCommentsForLine}
 									revealLine={revealLine}
 									theme={theme}
+									filePath={activeTab.path}
+									onSearchOccurrences={onSearchOccurrences}
 								/>
 							) : (
 								<EmptyState />

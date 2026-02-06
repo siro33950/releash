@@ -432,6 +432,11 @@
 	margin-left: 3px;
 }
 
+/* Monaco peek widget: reference tree file names - override bold class */
+.monaco-editor .reference-zone-widget .ref-tree .monaco-icon-label.bold > .monaco-icon-label-container > .monaco-icon-name-container > .label-name {
+	font-weight: normal !important;
+}
+
 /* Thin scrollbar */
 .scrollbar-thin {
 	scrollbar-width: thin;
