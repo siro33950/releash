@@ -176,6 +176,7 @@ export function useMonacoDiffEditor(
 	const dragRangeDecorationsRef = useRef<string[]>([]);
 	const hoverLineRef = useRef<number | null>(null);
 	const hoverDecorationsRef = useRef<string[]>([]);
+	const themeRef = useRef(theme);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
 	onContentChangeRef.current = onContentChange;
@@ -184,6 +185,7 @@ export function useMonacoDiffEditor(
 	getCommentsForLineRef.current = getCommentsForLine;
 	onStageHunkRef.current = onStageHunk;
 	onUnstageHunkRef.current = onUnstageHunk;
+	themeRef.current = theme;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -200,7 +202,7 @@ export function useMonacoDiffEditor(
 
 			monaco.editor.defineTheme(MONACO_DARK_THEME_NAME, monacoTheme);
 			monaco.editor.defineTheme(MONACO_LIGHT_THEME_NAME, monacoLightTheme);
-			const themeName = getMonacoThemeName(theme ?? "dark");
+			const themeName = getMonacoThemeName(themeRef.current ?? "dark");
 			monaco.editor.setTheme(themeName);
 
 			const originalModel = monaco.editor.createModel(
@@ -474,6 +476,7 @@ export function useMonacoDiffEditor(
 		}
 	}, [modifiedValue]);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: editorReady triggers rebuild when editor becomes available
 	useEffect(() => {
 		const diffEditor = diffEditorRef.current;
 		if (!diffEditor || !changeGroups) return;

@@ -74,6 +74,8 @@ export function useTerminal(
 	const fitAddonRef = useRef<FitAddon | null>(null);
 	const ptyIdRef = useRef<number | null>(null);
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
+	const themeRef = useRef(theme);
+	themeRef.current = theme;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -85,7 +87,7 @@ export function useTerminal(
 			cursorBlink: true,
 			fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 			fontSize: 14,
-			theme: getTerminalTheme(theme),
+			theme: getTerminalTheme(themeRef.current),
 		});
 
 		const fitAddon = new FitAddon();

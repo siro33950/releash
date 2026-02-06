@@ -73,6 +73,7 @@ export function useGitOriginalContent(
 		};
 	}, []);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: externalRefreshKey is a prop that triggers re-fetch
 	useEffect(() => {
 		void refreshKey;
 

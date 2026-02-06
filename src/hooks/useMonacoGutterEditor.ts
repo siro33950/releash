@@ -116,12 +116,14 @@ export function useMonacoGutterEditor(
 	const dragRangeDecorationsRef = useRef<string[]>([]);
 	const hoverLineRef = useRef<number | null>(null);
 	const hoverDecorationsRef = useRef<string[]>([]);
+	const themeRef = useRef(theme);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
 	onContentChangeRef.current = onContentChange;
 	fontSizeRef.current = fontSize;
 	onAddCommentRef.current = onAddComment;
 	getCommentsForLineRef.current = getCommentsForLine;
+	themeRef.current = theme;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -138,7 +140,7 @@ export function useMonacoGutterEditor(
 
 			monaco.editor.defineTheme(MONACO_DARK_THEME_NAME, monacoTheme);
 			monaco.editor.defineTheme(MONACO_LIGHT_THEME_NAME, monacoLightTheme);
-			const themeName = getMonacoThemeName(theme ?? "dark");
+			const themeName = getMonacoThemeName(themeRef.current ?? "dark");
 			monaco.editor.setTheme(themeName);
 
 			const editor = monaco.editor.create(container, {
