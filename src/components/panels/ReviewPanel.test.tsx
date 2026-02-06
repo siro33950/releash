@@ -18,20 +18,12 @@ function makeComment(overrides: Partial<LineComment> = {}): LineComment {
 
 describe("ReviewPanel", () => {
 	it("should render Comments header", () => {
-		render(
-			<ReviewPanel
-				comments={[]}
-			/>,
-		);
+		render(<ReviewPanel comments={[]} />);
 		expect(screen.getByText("Comments")).toBeInTheDocument();
 	});
 
 	it("should show empty state when no comments", () => {
-		render(
-			<ReviewPanel
-				comments={[]}
-			/>,
-		);
+		render(<ReviewPanel comments={[]} />);
 		expect(screen.getByText("コメントなし")).toBeInTheDocument();
 	});
 
@@ -49,10 +41,7 @@ describe("ReviewPanel", () => {
 
 	it("should show Send button when unsent comments exist", () => {
 		render(
-			<ReviewPanel
-				comments={[makeComment()]}
-				onSendToTerminal={vi.fn()}
-			/>,
+			<ReviewPanel comments={[makeComment()]} onSendToTerminal={vi.fn()} />,
 		);
 		expect(screen.getByText("Send")).toBeInTheDocument();
 	});

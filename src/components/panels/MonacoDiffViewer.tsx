@@ -7,15 +7,15 @@ import {
 	ContextMenuSeparator,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import type { ChangeGroup } from "@/lib/computeHunks";
 import { useMonacoDiffEditor } from "@/hooks/useMonacoDiffEditor";
 import { useMonacoGutterEditor } from "@/hooks/useMonacoGutterEditor";
+import type { ChangeGroup } from "@/lib/computeHunks";
 import { cn } from "@/lib/utils";
 import type { CommentRange, LineComment } from "@/types/comment";
 import type { DiffMode, Theme } from "@/types/settings";
 
 export type { CommentRange } from "@/types/comment";
-export type { DiffMode, DiffBase } from "@/types/settings";
+export type { DiffBase, DiffMode } from "@/types/settings";
 
 interface RevealLine {
 	line: number;
@@ -27,7 +27,11 @@ interface HunkCommentProps {
 	commentRanges?: CommentRange[];
 	onStageHunk?: (hunkIndex: number) => void;
 	onUnstageHunk?: (hunkIndex: number) => void;
-	onAddComment?: (lineNumber: number, content: string, endLine?: number) => void;
+	onAddComment?: (
+		lineNumber: number,
+		content: string,
+		endLine?: number,
+	) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
@@ -247,7 +251,11 @@ interface MonacoDiffViewerProps {
 	commentRanges?: CommentRange[];
 	onStageHunk?: (hunkIndex: number) => void;
 	onUnstageHunk?: (hunkIndex: number) => void;
-	onAddComment?: (lineNumber: number, content: string, endLine?: number) => void;
+	onAddComment?: (
+		lineNumber: number,
+		content: string,
+		endLine?: number,
+	) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;

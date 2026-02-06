@@ -20,26 +20,22 @@ describe("CommentList", () => {
 	it("should show empty state with hints when no comments", () => {
 		render(<CommentList comments={[]} />);
 		expect(screen.getByText("コメントなし")).toBeInTheDocument();
-		expect(screen.getByText(/行番号の左マージンをクリック/)).toBeInTheDocument();
+		expect(
+			screen.getByText(/行番号の左マージンをクリック/),
+		).toBeInTheDocument();
 		expect(screen.getByText("⌘K")).toBeInTheDocument();
 	});
 
 	it("should display file name and comment content", () => {
 		render(
-			<CommentList
-				comments={[makeComment({ content: "fix this bug" })]}
-			/>,
+			<CommentList comments={[makeComment({ content: "fix this bug" })]} />,
 		);
 		expect(screen.getByText("App.tsx")).toBeInTheDocument();
 		expect(screen.getByText("fix this bug")).toBeInTheDocument();
 	});
 
 	it("should display line number", () => {
-		render(
-			<CommentList
-				comments={[makeComment({ lineNumber: 42 })]}
-			/>,
-		);
+		render(<CommentList comments={[makeComment({ lineNumber: 42 })]} />);
 		expect(screen.getByText("L42")).toBeInTheDocument();
 	});
 
@@ -58,9 +54,7 @@ describe("CommentList", () => {
 
 	it("should display range line number with endLine", () => {
 		render(
-			<CommentList
-				comments={[makeComment({ lineNumber: 5, endLine: 12 })]}
-			/>,
+			<CommentList comments={[makeComment({ lineNumber: 5, endLine: 12 })]} />,
 		);
 		expect(screen.getByText("L5-12")).toBeInTheDocument();
 	});

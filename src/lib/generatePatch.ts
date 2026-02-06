@@ -40,7 +40,6 @@ export function generateGroupPatch(
 		} else if (prefix === "-") {
 			resultLines.push(` ${line.slice(1)}`);
 		} else if (prefix === "+") {
-			continue;
 		} else {
 			resultLines.push(line);
 		}

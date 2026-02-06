@@ -4,9 +4,7 @@ import { useHunks } from "./useHunks";
 
 describe("useHunks", () => {
 	it("should return empty hunks for identical content", () => {
-		const { result } = renderHook(() =>
-			useHunks("hello\n", "hello\n"),
-		);
+		const { result } = renderHook(() => useHunks("hello\n", "hello\n"));
 		expect(result.current.hunks).toEqual([]);
 		expect(result.current.total).toBe(0);
 		expect(result.current.currentGroup).toBeNull();
@@ -21,11 +19,10 @@ describe("useHunks", () => {
 	});
 
 	it("should navigate to next hunk", () => {
-		const lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
+		const lines =
+			"a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
 		const modified = lines.replace("b\n", "B\n").replace("r\n", "R\n");
-		const { result } = renderHook(() =>
-			useHunks(lines, modified),
-		);
+		const { result } = renderHook(() => useHunks(lines, modified));
 
 		expect(result.current.currentIndex).toBe(0);
 
@@ -36,11 +33,10 @@ describe("useHunks", () => {
 	});
 
 	it("should wrap around when navigating past last hunk", () => {
-		const lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
+		const lines =
+			"a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
 		const modified = lines.replace("b\n", "B\n").replace("r\n", "R\n");
-		const { result } = renderHook(() =>
-			useHunks(lines, modified),
-		);
+		const { result } = renderHook(() => useHunks(lines, modified));
 
 		act(() => {
 			result.current.goToNext();
@@ -52,11 +48,10 @@ describe("useHunks", () => {
 	});
 
 	it("should navigate to previous hunk with wrap", () => {
-		const lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
+		const lines =
+			"a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
 		const modified = lines.replace("b\n", "B\n").replace("r\n", "R\n");
-		const { result } = renderHook(() =>
-			useHunks(lines, modified),
-		);
+		const { result } = renderHook(() => useHunks(lines, modified));
 
 		act(() => {
 			result.current.goToPrev();
@@ -65,11 +60,10 @@ describe("useHunks", () => {
 	});
 
 	it("should go to specific hunk index", () => {
-		const lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
+		const lines =
+			"a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
 		const modified = lines.replace("b\n", "B\n").replace("r\n", "R\n");
-		const { result } = renderHook(() =>
-			useHunks(lines, modified),
-		);
+		const { result } = renderHook(() => useHunks(lines, modified));
 
 		act(() => {
 			result.current.goTo(1);
@@ -78,9 +72,7 @@ describe("useHunks", () => {
 	});
 
 	it("should return currentGroup when hunks exist", () => {
-		const { result } = renderHook(() =>
-			useHunks("line1\n", "modified\n"),
-		);
+		const { result } = renderHook(() => useHunks("line1\n", "modified\n"));
 		expect(result.current.currentGroup).not.toBeNull();
 		expect(result.current.currentGroup?.groupIndex).toBe(0);
 	});

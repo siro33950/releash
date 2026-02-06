@@ -4,7 +4,6 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { EditorPanel } from "@/components/panels/EditorPanel";
-import type { DiffBase, DiffMode } from "@/types/settings";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
@@ -21,6 +20,7 @@ import { useLineComments } from "@/hooks/useLineComments";
 import { useSettings } from "@/hooks/useSettings";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import type { LineComment } from "@/types/comment";
+import type { DiffBase, DiffMode } from "@/types/settings";
 
 function App() {
 	const {
@@ -41,7 +41,13 @@ function App() {
 	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [activeView, setActiveView] = useState<string>("explorer");
 	const { branch } = useCurrentBranch(rootPath);
-	const { settings, updateTheme, updateFontSize, updateDefaultDiffBase, updateDefaultDiffMode } = useSettings();
+	const {
+		settings,
+		updateTheme,
+		updateFontSize,
+		updateDefaultDiffBase,
+		updateDefaultDiffMode,
+	} = useSettings();
 	const { comments, addComment, markAsSent } = useLineComments();
 	const { stageHunk, unstageHunk } = useGitActions();
 	const terminalRef = useRef<TerminalPanelHandle>(null);
@@ -185,7 +191,12 @@ function App() {
 						collapsible={false}
 					>
 						{activeView === "git" ? (
-							<SourceControlPanel rootPath={rootPath} onSelectFile={openFile} onGitChanged={refreshGit} gitRefreshKey={gitRefreshKey} />
+							<SourceControlPanel
+								rootPath={rootPath}
+								onSelectFile={openFile}
+								onGitChanged={refreshGit}
+								gitRefreshKey={gitRefreshKey}
+							/>
 						) : activeView === "settings" ? (
 							<SettingsPanel
 								settings={settings}
@@ -243,7 +254,12 @@ function App() {
 						maxSize="60"
 						collapsible={false}
 					>
-						<TerminalPanel ref={terminalRef} key={rootPath} cwd={rootPath} theme={settings.theme} />
+						<TerminalPanel
+							ref={terminalRef}
+							key={rootPath}
+							cwd={rootPath}
+							theme={settings.theme}
+						/>
 					</Panel>
 				</Group>
 			</div>

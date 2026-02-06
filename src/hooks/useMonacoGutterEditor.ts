@@ -2,23 +2,22 @@ import { loader } from "@monaco-editor/react";
 import { diffLines } from "diff";
 import type * as Monaco from "monaco-editor";
 import { type RefObject, useEffect, useRef, useState } from "react";
-import type { ChangeGroup } from "@/lib/computeHunks";
-import type { CommentRange } from "@/types/comment";
 import {
-	type MonacoContentWidget,
 	createCommentPeekWidget,
+	type MonacoContentWidget,
 } from "@/lib/commentPeekWidget";
+import type { ChangeGroup } from "@/lib/computeHunks";
 import {
 	DIFF_ADDED_COLOR,
 	DIFF_MODIFIED_COLOR,
-	MONACO_DARK_THEME_NAME,
-	MONACO_LIGHT_THEME_NAME,
 	defaultEditorOptions,
 	getMonacoThemeName,
+	MONACO_DARK_THEME_NAME,
+	MONACO_LIGHT_THEME_NAME,
 	monacoLightTheme,
 	monacoTheme,
 } from "@/lib/monaco-config";
-import type { LineComment } from "@/types/comment";
+import type { CommentRange, LineComment } from "@/types/comment";
 import type { Theme } from "@/types/settings";
 
 interface RevealLine {
@@ -36,7 +35,11 @@ interface UseMonacoGutterEditorOptions {
 	commentRanges?: CommentRange[];
 	onStageHunk?: (hunkIndex: number) => void;
 	onUnstageHunk?: (hunkIndex: number) => void;
-	onAddComment?: (lineNumber: number, content: string, endLine?: number) => void;
+	onAddComment?: (
+		lineNumber: number,
+		content: string,
+		endLine?: number,
+	) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
@@ -234,8 +237,7 @@ export function useMonacoGutterEditor(
 
 			editor.onMouseDown((e: Monaco.editor.IEditorMouseEvent) => {
 				if (
-					e.target.type ===
-					monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN
+					e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN
 				) {
 					const lineNum = e.target.position?.lineNumber;
 					if (!lineNum) return;
@@ -253,19 +255,24 @@ export function useMonacoGutterEditor(
 						dragRangeDecorationsRef.current = editor.deltaDecorations(
 							dragRangeDecorationsRef.current,
 							startLine !== endLine
-								? [{
-										range: new monaco.Range(startLine, 1, endLine, 1),
-										options: {
-											isWholeLine: true,
-											className: "comment-range-highlight",
+								? [
+										{
+											range: new monaco.Range(startLine, 1, endLine, 1),
+											options: {
+												isWholeLine: true,
+												className: "comment-range-highlight",
+											},
 										},
-									}]
+									]
 								: [],
 						);
 					}
 					if (hoverLineRef.current != null) {
 						hoverLineRef.current = null;
-						hoverDecorationsRef.current = editor.deltaDecorations(hoverDecorationsRef.current, []);
+						hoverDecorationsRef.current = editor.deltaDecorations(
+							hoverDecorationsRef.current,
+							[],
+						);
 					}
 					return;
 				}
@@ -275,10 +282,12 @@ export function useMonacoGutterEditor(
 					hoverDecorationsRef.current = editor.deltaDecorations(
 						hoverDecorationsRef.current,
 						lineNum != null
-							? [{
-									range: new monaco.Range(lineNum, 1, lineNum, 1),
-									options: { glyphMarginClassName: "comment-hover-icon" },
-								}]
+							? [
+									{
+										range: new monaco.Range(lineNum, 1, lineNum, 1),
+										options: { glyphMarginClassName: "comment-hover-icon" },
+									},
+								]
 							: [],
 					);
 				}
@@ -287,7 +296,8 @@ export function useMonacoGutterEditor(
 			editor.onMouseUp((e: Monaco.editor.IEditorMouseEvent) => {
 				if (dragStartLineRef.current == null) return;
 
-				const lineNum = e.target.position?.lineNumber ?? dragStartLineRef.current;
+				const lineNum =
+					e.target.position?.lineNumber ?? dragStartLineRef.current;
 				const startLine = dragStartLineRef.current;
 				dragStartLineRef.current = null;
 
@@ -309,9 +319,7 @@ export function useMonacoGutterEditor(
 			editor.addAction({
 				id: "releash.addComment",
 				label: "Add Comment",
-				keybindings: [
-					monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK,
-				],
+				keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
 				run: (ed: Monaco.editor.ICodeEditor) => {
 					const position = ed.getPosition();
 					if (!position) return;

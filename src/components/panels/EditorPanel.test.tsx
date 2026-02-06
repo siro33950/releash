@@ -7,9 +7,19 @@ import type { TabInfo } from "@/types/editor";
 import { EditorPanel } from "./EditorPanel";
 
 vi.mock("react-resizable-panels", () => ({
-	Group: ({ children, ...props }: { children: ReactNode }) => <div data-testid="resizable-group" {...props}>{children}</div>,
-	Panel: ({ children, ...props }: { children: ReactNode }) => <div data-testid="resizable-panel" {...props}>{children}</div>,
-	Separator: (props: Record<string, unknown>) => <div data-testid="resizable-separator" {...props} />,
+	Group: ({ children, ...props }: { children: ReactNode }) => (
+		<div data-testid="resizable-group" {...props}>
+			{children}
+		</div>
+	),
+	Panel: ({ children, ...props }: { children: ReactNode }) => (
+		<div data-testid="resizable-panel" {...props}>
+			{children}
+		</div>
+	),
+	Separator: (props: Record<string, unknown>) => (
+		<div data-testid="resizable-separator" {...props} />
+	),
 }));
 
 vi.mocked(invoke as Mock).mockResolvedValue([]);

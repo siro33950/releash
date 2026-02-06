@@ -21,19 +21,13 @@ export function useGitActions() {
 		return await invoke<string>("git_push", { repoPath });
 	}, []);
 
-	const stageHunk = useCallback(
-		async (repoPath: string, patch: string) => {
-			await invoke("git_stage_hunk", { repoPath, patch });
-		},
-		[],
-	);
+	const stageHunk = useCallback(async (repoPath: string, patch: string) => {
+		await invoke("git_stage_hunk", { repoPath, patch });
+	}, []);
 
-	const unstageHunk = useCallback(
-		async (repoPath: string, patch: string) => {
-			await invoke("git_unstage_hunk", { repoPath, patch });
-		},
-		[],
-	);
+	const unstageHunk = useCallback(async (repoPath: string, patch: string) => {
+		await invoke("git_unstage_hunk", { repoPath, patch });
+	}, []);
 
 	const createBranch = useCallback(
 		async (repoPath: string, branchName: string) => {

@@ -17,7 +17,9 @@ export function CommentList({ comments, onCommentClick }: CommentListProps) {
 				<div className="text-[11px] text-center leading-relaxed">
 					<p>行番号の左マージンをクリック、またはドラッグで範囲選択</p>
 					<p className="mt-0.5">
-						<kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">⌘K</kbd>{" "}
+						<kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">
+							⌘K
+						</kbd>{" "}
 						でカーソル行にも追加できます
 					</p>
 				</div>
@@ -63,7 +65,8 @@ export function CommentList({ comments, onCommentClick }: CommentListProps) {
 										<div className="min-w-0 flex-1">
 											<div className="flex items-center gap-1">
 												<span className="text-muted-foreground font-mono">
-													L{comment.lineNumber}{comment.endLine != null ? `-${comment.endLine}` : ""}
+													L{comment.lineNumber}
+													{comment.endLine != null ? `-${comment.endLine}` : ""}
 												</span>
 												<span
 													className={cn(

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { computeChangeGroups, computeHunks, markStagedGroups } from "./computeHunks";
+import {
+	computeChangeGroups,
+	computeHunks,
+	markStagedGroups,
+} from "./computeHunks";
 
 describe("computeHunks", () => {
 	it("should return empty array for identical content", () => {
@@ -14,10 +18,7 @@ describe("computeHunks", () => {
 	});
 
 	it("should detect removed lines", () => {
-		const hunks = computeHunks(
-			"line1\nline2\nline3\n",
-			"line1\nline3\n",
-		);
+		const hunks = computeHunks("line1\nline2\nline3\n", "line1\nline3\n");
 		expect(hunks.length).toBe(1);
 		expect(hunks[0].lines).toContain("-line2");
 	});
@@ -33,7 +34,8 @@ describe("computeHunks", () => {
 	});
 
 	it("should detect multiple hunks", () => {
-		const lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
+		const lines =
+			"a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
 		const modified = lines.replace("b\n", "B\n").replace("r\n", "R\n");
 		const hunks = computeHunks(lines, modified);
 		expect(hunks.length).toBe(2);
@@ -52,7 +54,8 @@ describe("computeHunks", () => {
 	});
 
 	it("should assign sequential indices", () => {
-		const lines = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
+		const lines =
+			"a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
 		const modified = lines.replace("b\n", "B\n").replace("r\n", "R\n");
 		const hunks = computeHunks(lines, modified);
 		expect(hunks[0].index).toBe(0);

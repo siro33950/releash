@@ -64,12 +64,23 @@ const mockEditor = {
 	addAction: vi.fn(),
 	addContentWidget: vi.fn(),
 	removeContentWidget: vi.fn(),
-	changeViewZones: vi.fn().mockImplementation((cb: (accessor: { addZone: () => string; removeZone: () => void }) => void) => {
-		cb({ addZone: () => "zone-id", removeZone: () => {} });
-	}),
+	changeViewZones: vi
+		.fn()
+		.mockImplementation(
+			(
+				cb: (accessor: {
+					addZone: () => string;
+					removeZone: () => void;
+				}) => void,
+			) => {
+				cb({ addZone: () => "zone-id", removeZone: () => {} });
+			},
+		),
 	getDomNode: vi.fn().mockReturnValue(document.createElement("div")),
 	getTopForLineNumber: vi.fn().mockReturnValue(0),
-	getScrolledVisiblePosition: vi.fn().mockReturnValue({ top: 0, left: 0, height: 20 }),
+	getScrolledVisiblePosition: vi
+		.fn()
+		.mockReturnValue({ top: 0, left: 0, height: 20 }),
 	getLayoutInfo: vi.fn().mockReturnValue({ height: 600 }),
 	onDidScrollChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 	onDidContentSizeChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),

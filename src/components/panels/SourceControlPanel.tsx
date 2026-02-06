@@ -236,7 +236,14 @@ export function SourceControlPanel({
 		} finally {
 			setLoading(false);
 		}
-	}, [rootPath, commitSummary, commitDescription, commit, refreshStatus, onGitChanged]);
+	}, [
+		rootPath,
+		commitSummary,
+		commitDescription,
+		commit,
+		refreshStatus,
+		onGitChanged,
+	]);
 
 	const handlePush = useCallback(async () => {
 		if (!rootPath) return;

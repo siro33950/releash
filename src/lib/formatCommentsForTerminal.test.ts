@@ -3,7 +3,11 @@ import type { LineComment } from "@/types/comment";
 import { formatCommentsForTerminal } from "./formatCommentsForTerminal";
 
 function makeComment(
-	overrides: Partial<LineComment> & { filePath: string; lineNumber: number; content: string },
+	overrides: Partial<LineComment> & {
+		filePath: string;
+		lineNumber: number;
+		content: string;
+	},
 ): LineComment {
 	return {
 		id: "c-1",

@@ -909,13 +909,10 @@ mod tests {
         fs::write(dir.path().join("file.txt"), "line1\nmodified\nline3\n").unwrap();
 
         // Generate a patch for the modification
-        let patch = "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
+        let patch =
+            "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
 
-        git_stage_hunk(
-            dir.path().to_str().unwrap().to_string(),
-            patch.to_string(),
-        )
-        .unwrap();
+        git_stage_hunk(dir.path().to_str().unwrap().to_string(), patch.to_string()).unwrap();
 
         let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert!(statuses.iter().any(|s| s.index_status == "modified"));
@@ -940,12 +937,9 @@ mod tests {
         assert!(before.iter().any(|s| s.index_status == "modified"));
 
         // Unstage via patch
-        let patch = "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
-        git_unstage_hunk(
-            dir.path().to_str().unwrap().to_string(),
-            patch.to_string(),
-        )
-        .unwrap();
+        let patch =
+            "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
+        git_unstage_hunk(dir.path().to_str().unwrap().to_string(), patch.to_string()).unwrap();
 
         let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         // After unstage, file should show worktree modified but not index modified

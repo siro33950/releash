@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
-import { createCommentPeekWidget } from "./commentPeekWidget";
+import { describe, expect, it, vi } from "vitest";
 import type { LineComment } from "@/types/comment";
+import { createCommentPeekWidget } from "./commentPeekWidget";
 
 const mockMonaco = {
 	editor: {
@@ -41,7 +41,9 @@ describe("createCommentPeekWidget", () => {
 		const closeBtn = dom.querySelector(".comment-peek-close-btn");
 		expect(closeBtn?.textContent).toBe("\u00d7");
 
-		const textarea = dom.querySelector(".comment-peek-textarea") as HTMLTextAreaElement;
+		const textarea = dom.querySelector(
+			".comment-peek-textarea",
+		) as HTMLTextAreaElement;
 		expect(textarea).not.toBeNull();
 		expect(textarea.placeholder).toBe("コメントを入力...");
 
@@ -84,10 +86,18 @@ describe("createCommentPeekWidget", () => {
 		const items = existing!.querySelectorAll(".comment-peek-existing-item");
 		expect(items).toHaveLength(2);
 
-		expect(items[0].querySelector(".comment-peek-status")?.textContent).toBe("sent");
-		expect(items[0].querySelector(".comment-peek-comment-text")?.textContent).toBe("最初のコメント");
-		expect(items[1].querySelector(".comment-peek-status")?.textContent).toBe("unsent");
-		expect(items[1].querySelector(".comment-peek-comment-text")?.textContent).toBe("2番目");
+		expect(items[0].querySelector(".comment-peek-status")?.textContent).toBe(
+			"sent",
+		);
+		expect(
+			items[0].querySelector(".comment-peek-comment-text")?.textContent,
+		).toBe("最初のコメント");
+		expect(items[1].querySelector(".comment-peek-status")?.textContent).toBe(
+			"unsent",
+		);
+		expect(
+			items[1].querySelector(".comment-peek-comment-text")?.textContent,
+		).toBe("2番目");
 	});
 
 	it("追加ボタンクリックで onSubmit が呼ばれる", () => {
@@ -100,10 +110,14 @@ describe("createCommentPeekWidget", () => {
 		});
 
 		const dom = widget.getDomNode();
-		const textarea = dom.querySelector(".comment-peek-textarea") as HTMLTextAreaElement;
+		const textarea = dom.querySelector(
+			".comment-peek-textarea",
+		) as HTMLTextAreaElement;
 		textarea.value = "新しいコメント";
 
-		const submitBtn = dom.querySelector(".comment-peek-submit-btn") as HTMLButtonElement;
+		const submitBtn = dom.querySelector(
+			".comment-peek-submit-btn",
+		) as HTMLButtonElement;
 		submitBtn.click();
 
 		expect(onSubmit).toHaveBeenCalledWith("新しいコメント");
@@ -119,7 +133,9 @@ describe("createCommentPeekWidget", () => {
 		});
 
 		const dom = widget.getDomNode();
-		const submitBtn = dom.querySelector(".comment-peek-submit-btn") as HTMLButtonElement;
+		const submitBtn = dom.querySelector(
+			".comment-peek-submit-btn",
+		) as HTMLButtonElement;
 		submitBtn.click();
 
 		expect(onCancel).toHaveBeenCalled();
@@ -135,7 +151,9 @@ describe("createCommentPeekWidget", () => {
 		});
 
 		const dom = widget.getDomNode();
-		const cancelBtn = dom.querySelector(".comment-peek-cancel-btn") as HTMLButtonElement;
+		const cancelBtn = dom.querySelector(
+			".comment-peek-cancel-btn",
+		) as HTMLButtonElement;
 		cancelBtn.click();
 
 		expect(onCancel).toHaveBeenCalled();
@@ -151,7 +169,9 @@ describe("createCommentPeekWidget", () => {
 		});
 
 		const dom = widget.getDomNode();
-		const closeBtn = dom.querySelector(".comment-peek-close-btn") as HTMLButtonElement;
+		const closeBtn = dom.querySelector(
+			".comment-peek-close-btn",
+		) as HTMLButtonElement;
 		closeBtn.click();
 
 		expect(onCancel).toHaveBeenCalled();
@@ -167,11 +187,17 @@ describe("createCommentPeekWidget", () => {
 		});
 
 		const dom = widget.getDomNode();
-		const textarea = dom.querySelector(".comment-peek-textarea") as HTMLTextAreaElement;
+		const textarea = dom.querySelector(
+			".comment-peek-textarea",
+		) as HTMLTextAreaElement;
 		textarea.value = "Cmd+Enter コメント";
 
 		dom.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+			new KeyboardEvent("keydown", {
+				key: "Enter",
+				metaKey: true,
+				bubbles: true,
+			}),
 		);
 
 		expect(onSubmit).toHaveBeenCalledWith("Cmd+Enter コメント");
@@ -187,11 +213,17 @@ describe("createCommentPeekWidget", () => {
 		});
 
 		const dom = widget.getDomNode();
-		const textarea = dom.querySelector(".comment-peek-textarea") as HTMLTextAreaElement;
+		const textarea = dom.querySelector(
+			".comment-peek-textarea",
+		) as HTMLTextAreaElement;
 		textarea.value = "Ctrl+Enter コメント";
 
 		dom.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }),
+			new KeyboardEvent("keydown", {
+				key: "Enter",
+				ctrlKey: true,
+				bubbles: true,
+			}),
 		);
 
 		expect(onSubmit).toHaveBeenCalledWith("Ctrl+Enter コメント");
@@ -245,7 +277,11 @@ describe("createCommentPeekWidget", () => {
 
 		const dom = widget.getDomNode();
 		dom.dispatchEvent(
-			new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+			new KeyboardEvent("keydown", {
+				key: "Enter",
+				metaKey: true,
+				bubbles: true,
+			}),
 		);
 
 		expect(onSubmit).not.toHaveBeenCalled();

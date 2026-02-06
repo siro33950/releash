@@ -50,7 +50,9 @@ describe("SettingsPanel", () => {
 
 	it("should call onFontSizeChange when slider is changed", () => {
 		const onFontSizeChange = vi.fn();
-		render(<SettingsPanel {...defaultProps} onFontSizeChange={onFontSizeChange} />);
+		render(
+			<SettingsPanel {...defaultProps} onFontSizeChange={onFontSizeChange} />,
+		);
 		const slider = screen.getByLabelText(/Font Size/);
 		fireEvent.change(slider, { target: { value: "20" } });
 		expect(onFontSizeChange).toHaveBeenCalledWith(20);
@@ -69,7 +71,9 @@ describe("SettingsPanel", () => {
 
 	it("should call onDiffBaseChange when base is changed", () => {
 		const onDiffBaseChange = vi.fn();
-		render(<SettingsPanel {...defaultProps} onDiffBaseChange={onDiffBaseChange} />);
+		render(
+			<SettingsPanel {...defaultProps} onDiffBaseChange={onDiffBaseChange} />,
+		);
 		const select = screen.getByLabelText("Default Base");
 		fireEvent.change(select, { target: { value: "HEAD" } });
 		expect(onDiffBaseChange).toHaveBeenCalledWith("HEAD");
@@ -77,7 +81,9 @@ describe("SettingsPanel", () => {
 
 	it("should call onDiffModeChange when view is changed", () => {
 		const onDiffModeChange = vi.fn();
-		render(<SettingsPanel {...defaultProps} onDiffModeChange={onDiffModeChange} />);
+		render(
+			<SettingsPanel {...defaultProps} onDiffModeChange={onDiffModeChange} />,
+		);
 		const select = screen.getByLabelText("Default View");
 		fireEvent.change(select, { target: { value: "split" } });
 		expect(onDiffModeChange).toHaveBeenCalledWith("split");

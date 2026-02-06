@@ -16,7 +16,10 @@ function toFileStatus(entry: GitFileStatus): FileStatus {
 	return null;
 }
 
-export function useGitStatus(rootPath: string | null, externalRefreshKey?: number) {
+export function useGitStatus(
+	rootPath: string | null,
+	externalRefreshKey?: number,
+) {
 	const [statusMap, setStatusMap] = useState<Map<string, FileStatus>>(
 		new Map(),
 	);

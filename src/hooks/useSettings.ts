@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-	DEFAULT_SETTINGS,
 	type AppSettings,
+	DEFAULT_SETTINGS,
 	type DiffBase,
 	type DiffMode,
 	type Theme,

@@ -183,11 +183,9 @@ export function useTerminal(
 
 	const writeToTerminal = useCallback((data: string) => {
 		if (ptyIdRef.current !== null) {
-			invoke("write_pty", { ptyId: ptyIdRef.current, data }).catch(
-				(error) => {
-					console.error("Failed to write to PTY:", error);
-				},
-			);
+			invoke("write_pty", { ptyId: ptyIdRef.current, data }).catch((error) => {
+				console.error("Failed to write to PTY:", error);
+			});
 		}
 	}, []);
 

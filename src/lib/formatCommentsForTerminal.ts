@@ -21,9 +21,10 @@ export function formatCommentsForTerminal(comments: LineComment[]): string {
 			(a, b) => a.lineNumber - b.lineNumber,
 		);
 		for (const c of sorted) {
-			const lineLabel = c.endLine != null
-				? `L${c.lineNumber}-${c.endLine}`
-				: `L${c.lineNumber}`;
+			const lineLabel =
+				c.endLine != null
+					? `L${c.lineNumber}-${c.endLine}`
+					: `L${c.lineNumber}`;
 			lines.push(`- ${lineLabel}: ${c.content}`);
 		}
 	}

@@ -7,7 +7,12 @@ export function useLineComments() {
 	const [comments, setComments] = useState<LineComment[]>([]);
 
 	const addComment = useCallback(
-		(filePath: string, lineNumber: number, content: string, endLine?: number) => {
+		(
+			filePath: string,
+			lineNumber: number,
+			content: string,
+			endLine?: number,
+		) => {
 			const comment: LineComment = {
 				id: `comment-${nextId++}`,
 				filePath,
@@ -36,7 +41,9 @@ export function useLineComments() {
 	const markAsSent = useCallback((ids: string[]) => {
 		const idSet = new Set(ids);
 		setComments((prev) =>
-			prev.map((c) => (idSet.has(c.id) ? { ...c, status: "sent" as const } : c)),
+			prev.map((c) =>
+				idSet.has(c.id) ? { ...c, status: "sent" as const } : c,
+			),
 		);
 	}, []);
 

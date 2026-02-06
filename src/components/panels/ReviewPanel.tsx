@@ -39,10 +39,7 @@ export function ReviewPanel({
 				)}
 			</div>
 			<div className="flex-1 overflow-hidden">
-				<CommentList
-					comments={comments}
-					onCommentClick={onCommentClick}
-				/>
+				<CommentList comments={comments} onCommentClick={onCommentClick} />
 			</div>
 		</div>
 	);

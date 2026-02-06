@@ -9,7 +9,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { useGitOriginalContent } from "@/hooks/useGitOriginalContent";
 import { useHunks } from "@/hooks/useHunks";
-import { type Hunk, type ChangeGroup, computeChangeGroups, computeHunks, markStagedGroups } from "@/lib/computeHunks";
+import {
+	type ChangeGroup,
+	computeChangeGroups,
+	computeHunks,
+	type Hunk,
+	markStagedGroups,
+} from "@/lib/computeHunks";
 import { generateGroupPatch, generatePatch } from "@/lib/generatePatch";
 import { cn } from "@/lib/utils";
 import type { LineComment } from "@/types/comment";
@@ -36,7 +42,12 @@ export interface EditorPanelProps {
 	onContentChange?: (path: string, content: string) => void;
 	fontSize?: number;
 	comments?: LineComment[];
-	onAddComment?: (filePath: string, lineNumber: number, content: string, endLine?: number) => void;
+	onAddComment?: (
+		filePath: string,
+		lineNumber: number,
+		content: string,
+		endLine?: number,
+	) => void;
 	rootPath?: string | null;
 	onStageHunk?: (repoPath: string, patch: string) => Promise<void>;
 	onUnstageHunk?: (repoPath: string, patch: string) => Promise<void>;
@@ -66,8 +77,13 @@ export function EditorPanel({
 	gitRefreshKey,
 	onGitChanged,
 }: EditorPanelProps) {
-	const [revealLine, setRevealLine] = useState<{ line: number; key: number } | undefined>();
-	const [pendingJump, setPendingJump] = useState<{ filePath: string; lineNumber: number } | null>(null);
+	const [revealLine, setRevealLine] = useState<
+		{ line: number; key: number } | undefined
+	>();
+	const [pendingJump, setPendingJump] = useState<{
+		filePath: string;
+		lineNumber: number;
+	} | null>(null);
 	const revealKeyRef = useRef(0);
 	const filePath = activeTab?.path ?? null;
 
@@ -87,19 +103,35 @@ export function EditorPanel({
 
 	const modifiedContent = activeTab?.content ?? "";
 
-	const { changeGroups: rawChangeGroups, currentIndex, total, goTo } = useHunks(
-		originalContent,
-		modifiedContent,
-		filePath ?? undefined,
-	);
+	const {
+		changeGroups: rawChangeGroups,
+		currentIndex,
+		total,
+		goTo,
+	} = useHunks(originalContent, modifiedContent, filePath ?? undefined);
 
 	const changeGroups = useMemo(() => {
 		if (diffBase !== "HEAD") return rawChangeGroups;
-		const hunks = computeHunks(originalContent, modifiedContent, filePath ?? undefined);
-		const stagedHunks = computeHunks(originalContent, stagedContent, filePath ?? undefined);
+		const hunks = computeHunks(
+			originalContent,
+			modifiedContent,
+			filePath ?? undefined,
+		);
+		const stagedHunks = computeHunks(
+			originalContent,
+			stagedContent,
+			filePath ?? undefined,
+		);
 		const stagedGroups = computeChangeGroups(stagedHunks);
 		return markStagedGroups(rawChangeGroups, stagedGroups, hunks, stagedHunks);
-	}, [rawChangeGroups, diffBase, originalContent, modifiedContent, stagedContent, filePath]);
+	}, [
+		rawChangeGroups,
+		diffBase,
+		originalContent,
+		modifiedContent,
+		stagedContent,
+		filePath,
+	]);
 
 	const commentRanges = useMemo(() => {
 		if (!comments || !filePath) return undefined;
@@ -140,11 +172,20 @@ export function EditorPanel({
 	}, [rootPath, filePath]);
 
 	const findMatchingGroup = useCallback(
-		(targetLines: string[], hunks: Hunk[], groups: ChangeGroup[], reverse = false) => {
+		(
+			targetLines: string[],
+			hunks: Hunk[],
+			groups: ChangeGroup[],
+			reverse = false,
+		) => {
 			let target: string;
 			if (reverse) {
-				const newMinus = targetLines.filter(l => l.startsWith("+")).map(l => `-${l.slice(1)}`);
-				const newPlus = targetLines.filter(l => l.startsWith("-")).map(l => `+${l.slice(1)}`);
+				const newMinus = targetLines
+					.filter((l) => l.startsWith("+"))
+					.map((l) => `-${l.slice(1)}`);
+				const newPlus = targetLines
+					.filter((l) => l.startsWith("-"))
+					.map((l) => `+${l.slice(1)}`);
 				target = [...newMinus, ...newPlus].join("\n");
 			} else {
 				target = targetLines.join("\n");
@@ -152,7 +193,9 @@ export function EditorPanel({
 			for (const g of groups) {
 				const h = hunks.find((h) => h.index === g.hunkIndex);
 				if (!h) continue;
-				const lines = h.lines.slice(g.lineOffsetStart, g.lineOffsetEnd + 1).join("\n");
+				const lines = h.lines
+					.slice(g.lineOffsetStart, g.lineOffsetEnd + 1)
+					.join("\n");
 				if (lines === target) return { group: g, hunk: h };
 			}
 			return null;
@@ -164,7 +207,11 @@ export function EditorPanel({
 		async (groupIndex: number) => {
 			const relativePath = getRelativePath();
 			if (!relativePath || !rootPath) return;
-			const allHunks = computeHunks(originalContent, modifiedContent, relativePath);
+			const allHunks = computeHunks(
+				originalContent,
+				modifiedContent,
+				relativePath,
+			);
 			const allGroups = computeChangeGroups(allHunks);
 			const group = allGroups.find((g) => g.groupIndex === groupIndex);
 			if (!group) return;
@@ -175,8 +222,15 @@ export function EditorPanel({
 			let patchGroup = group;
 
 			if (diffBase === "HEAD") {
-				const targetLines = hunk.lines.slice(group.lineOffsetStart, group.lineOffsetEnd + 1);
-				const s2wHunks = computeHunks(stagedContent, modifiedContent, relativePath);
+				const targetLines = hunk.lines.slice(
+					group.lineOffsetStart,
+					group.lineOffsetEnd + 1,
+				);
+				const s2wHunks = computeHunks(
+					stagedContent,
+					modifiedContent,
+					relativePath,
+				);
 				const s2wGroups = computeChangeGroups(s2wHunks);
 				const match = findMatchingGroup(targetLines, s2wHunks, s2wGroups);
 				if (!match) return;
@@ -194,7 +248,17 @@ export function EditorPanel({
 				}
 			}
 		},
-		[getRelativePath, rootPath, originalContent, modifiedContent, stagedContent, diffBase, onStageHunk, onGitChanged, findMatchingGroup],
+		[
+			getRelativePath,
+			rootPath,
+			originalContent,
+			modifiedContent,
+			stagedContent,
+			diffBase,
+			onStageHunk,
+			onGitChanged,
+			findMatchingGroup,
+		],
 	);
 
 	const handleUnstageGroup = useCallback(
@@ -202,15 +266,26 @@ export function EditorPanel({
 			const relativePath = getRelativePath();
 			if (!relativePath || !rootPath) return;
 
-			const allHunks = computeHunks(originalContent, modifiedContent, relativePath);
+			const allHunks = computeHunks(
+				originalContent,
+				modifiedContent,
+				relativePath,
+			);
 			const allGroups = computeChangeGroups(allHunks);
 			const group = allGroups.find((g) => g.groupIndex === groupIndex);
 			if (!group) return;
 			const hunk = allHunks.find((h) => h.index === group.hunkIndex);
 			if (!hunk) return;
 
-			const targetLines = hunk.lines.slice(group.lineOffsetStart, group.lineOffsetEnd + 1);
-			const s2hHunks = computeHunks(stagedContent, originalContent, relativePath);
+			const targetLines = hunk.lines.slice(
+				group.lineOffsetStart,
+				group.lineOffsetEnd + 1,
+			);
+			const s2hHunks = computeHunks(
+				stagedContent,
+				originalContent,
+				relativePath,
+			);
 			const s2hGroups = computeChangeGroups(s2hHunks);
 			const match = findMatchingGroup(targetLines, s2hHunks, s2hGroups, true);
 			if (!match) return;
@@ -225,7 +300,16 @@ export function EditorPanel({
 				}
 			}
 		},
-		[getRelativePath, rootPath, originalContent, modifiedContent, stagedContent, onStageHunk, onGitChanged, findMatchingGroup],
+		[
+			getRelativePath,
+			rootPath,
+			originalContent,
+			modifiedContent,
+			stagedContent,
+			onStageHunk,
+			onGitChanged,
+			findMatchingGroup,
+		],
 	);
 
 	const handleStageAll = useCallback(async () => {
@@ -243,7 +327,16 @@ export function EditorPanel({
 				console.error("Stage all failed:", e);
 			}
 		}
-	}, [getRelativePath, rootPath, originalContent, modifiedContent, stagedContent, diffBase, onStageHunk, onGitChanged]);
+	}, [
+		getRelativePath,
+		rootPath,
+		originalContent,
+		modifiedContent,
+		stagedContent,
+		diffBase,
+		onStageHunk,
+		onGitChanged,
+	]);
 
 	const handleUnstageAll = useCallback(async () => {
 		const relativePath = getRelativePath();
@@ -259,14 +352,24 @@ export function EditorPanel({
 				console.error("Unstage all failed:", e);
 			}
 		}
-	}, [getRelativePath, rootPath, originalContent, stagedContent, onStageHunk, onGitChanged]);
+	}, [
+		getRelativePath,
+		rootPath,
+		originalContent,
+		stagedContent,
+		onStageHunk,
+		onGitChanged,
+	]);
 
 	const revealHunk = useCallback(
 		(index: number) => {
 			if (index < 0 || index >= changeGroups.length) return;
 			goTo(index);
 			revealKeyRef.current += 1;
-			setRevealLine({ line: changeGroups[index].newStart, key: revealKeyRef.current });
+			setRevealLine({
+				line: changeGroups[index].newStart,
+				key: revealKeyRef.current,
+			});
 		},
 		[changeGroups, goTo],
 	);
@@ -279,7 +382,8 @@ export function EditorPanel({
 
 	const handleGoToPrev = useCallback(() => {
 		if (changeGroups.length === 0) return;
-		const prevIndex = (currentIndex - 1 + changeGroups.length) % changeGroups.length;
+		const prevIndex =
+			(currentIndex - 1 + changeGroups.length) % changeGroups.length;
 		revealHunk(prevIndex);
 	}, [changeGroups.length, currentIndex, revealHunk]);
 
@@ -299,7 +403,10 @@ export function EditorPanel({
 	useEffect(() => {
 		if (pendingJump && activeTab?.path === pendingJump.filePath) {
 			revealKeyRef.current += 1;
-			setRevealLine({ line: pendingJump.lineNumber, key: revealKeyRef.current });
+			setRevealLine({
+				line: pendingJump.lineNumber,
+				key: revealKeyRef.current,
+			});
 			setPendingJump(null);
 		}
 	}, [pendingJump, activeTab?.path]);
@@ -332,7 +439,9 @@ export function EditorPanel({
 									changeGroups={changeGroups}
 									commentRanges={commentRanges}
 									onStageHunk={handleStageGroup}
-									onUnstageHunk={diffBase === "HEAD" ? handleUnstageGroup : undefined}
+									onUnstageHunk={
+										diffBase === "HEAD" ? handleUnstageGroup : undefined
+									}
 									onAddComment={handleAddComment}
 									getCommentsForLine={getCommentsForLine}
 									revealLine={revealLine}
@@ -348,12 +457,14 @@ export function EditorPanel({
 									<span className="text-xs text-muted-foreground">Base:</span>
 									<select
 										value={diffBase}
-										onChange={(e) => onDiffBaseChange(e.target.value as DiffBase)}
+										onChange={(e) =>
+											onDiffBaseChange(e.target.value as DiffBase)
+										}
 										className="bg-muted border border-border rounded px-2 py-0.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
 									>
 										<option value="HEAD">HEAD</option>
 										<option value="staged">Staged</option>
-																			</select>
+									</select>
 									{total > 0 && (
 										<div className="flex items-center gap-1 ml-2">
 											{onStageHunk && (

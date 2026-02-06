@@ -28,11 +28,7 @@ describe("useLineComments", () => {
 
 		let commentId: string;
 		act(() => {
-			const comment = result.current.addComment(
-				"src/file.ts",
-				10,
-				"Fix this",
-			);
+			const comment = result.current.addComment("src/file.ts", 10, "Fix this");
 			commentId = comment.id;
 		});
 
@@ -48,11 +44,7 @@ describe("useLineComments", () => {
 
 		let commentId: string;
 		act(() => {
-			const comment = result.current.addComment(
-				"src/file.ts",
-				10,
-				"Original",
-			);
+			const comment = result.current.addComment("src/file.ts", 10, "Original");
 			commentId = comment.id;
 		});
 
@@ -79,12 +71,12 @@ describe("useLineComments", () => {
 			result.current.markAsSent([id1]);
 		});
 
-		expect(
-			result.current.comments.find((c) => c.id === id1)?.status,
-		).toBe("sent");
-		expect(
-			result.current.comments.find((c) => c.id === id2)?.status,
-		).toBe("unsent");
+		expect(result.current.comments.find((c) => c.id === id1)?.status).toBe(
+			"sent",
+		);
+		expect(result.current.comments.find((c) => c.id === id2)?.status).toBe(
+			"unsent",
+		);
 	});
 
 	it("should return unsent comments", () => {

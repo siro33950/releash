@@ -30,9 +30,10 @@ export function createCommentPeekWidget(
 
 	const title = document.createElement("span");
 	title.className = "comment-peek-header-title";
-	title.textContent = endLine != null
-		? `Line ${lineNumber}-${endLine} - コメント`
-		: `Line ${lineNumber} - コメント`;
+	title.textContent =
+		endLine != null
+			? `Line ${lineNumber}-${endLine} - コメント`
+			: `Line ${lineNumber} - コメント`;
 	header.appendChild(title);
 
 	const shortcutHint = document.createElement("span");
@@ -142,9 +143,7 @@ export function createCommentPeekWidget(
 		getDomNode: () => domNode,
 		getPosition: () => ({
 			position: { lineNumber: (endLine ?? lineNumber) + 1, column: 1 },
-			preference: [
-				monaco.editor.ContentWidgetPositionPreference.ABOVE,
-			],
+			preference: [monaco.editor.ContentWidgetPositionPreference.ABOVE],
 		}),
 	};
 }

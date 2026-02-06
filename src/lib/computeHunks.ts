@@ -68,15 +68,11 @@ export function splitHunkIntoGroups(
 			}
 		} else {
 			if (inGroup) {
-				const newEnd = hasPlus
-					? lastPlusLine
-					: Math.max(groupNewStart - 1, 1);
+				const newEnd = hasPlus ? lastPlusLine : Math.max(groupNewStart - 1, 1);
 				groups.push({
 					groupIndex: startGroupIndex + groups.length,
 					hunkIndex: hunk.index,
-					newStart: hasPlus
-						? groupNewStart
-						: Math.max(groupNewStart - 1, 1),
+					newStart: hasPlus ? groupNewStart : Math.max(groupNewStart - 1, 1),
 					newEnd,
 					lineOffsetStart: groupStartOffset,
 					lineOffsetEnd: i - 1,
@@ -88,9 +84,7 @@ export function splitHunkIntoGroups(
 	}
 
 	if (inGroup) {
-		const newEnd = hasPlus
-			? lastPlusLine
-			: Math.max(groupNewStart - 1, 1);
+		const newEnd = hasPlus ? lastPlusLine : Math.max(groupNewStart - 1, 1);
 		groups.push({
 			groupIndex: startGroupIndex + groups.length,
 			hunkIndex: hunk.index,

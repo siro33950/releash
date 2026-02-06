@@ -15,10 +15,7 @@ export function useHunks(
 		[original, modified, filePath],
 	);
 
-	const changeGroups = useMemo(
-		() => computeChangeGroups(hunks),
-		[hunks],
-	);
+	const changeGroups = useMemo(() => computeChangeGroups(hunks), [hunks]);
 
 	const [currentIndex, setCurrentIndex] = useState(0);
 
@@ -32,9 +29,7 @@ export function useHunks(
 
 	const goToNext = useCallback(() => {
 		setCurrentIndex((prev) =>
-			changeGroups.length === 0
-				? 0
-				: (prev + 1) % changeGroups.length,
+			changeGroups.length === 0 ? 0 : (prev + 1) % changeGroups.length,
 		);
 	}, [changeGroups.length]);
 

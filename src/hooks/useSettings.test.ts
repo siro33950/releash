@@ -33,10 +33,7 @@ describe("useSettings", () => {
 	});
 
 	it("should merge partial settings with defaults", () => {
-		localStorage.setItem(
-			"releash-settings",
-			JSON.stringify({ fontSize: 20 }),
-		);
+		localStorage.setItem("releash-settings", JSON.stringify({ fontSize: 20 }));
 		const { result } = renderHook(() => useSettings());
 		expect(result.current.settings.theme).toBe("dark");
 		expect(result.current.settings.fontSize).toBe(20);
@@ -60,9 +57,7 @@ describe("useSettings", () => {
 			result.current.updateFontSize(20);
 		});
 
-		const stored = JSON.parse(
-			localStorage.getItem("releash-settings") ?? "{}",
-		);
+		const stored = JSON.parse(localStorage.getItem("releash-settings") ?? "{}");
 		expect(stored.fontSize).toBe(20);
 	});
 
