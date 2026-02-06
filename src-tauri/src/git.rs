@@ -415,6 +415,70 @@ pub fn git_push(repo_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub fn git_stage_hunk(repo_path: String, patch: String) -> Result<(), String> {
+    Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+
+    let mut child = Command::new("git")
+        .args(["apply", "--cached"])
+        .current_dir(&repo_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to execute git apply: {e}"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin
+            .write_all(patch.as_bytes())
+            .map_err(|e| format!("Failed to write patch: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait for git apply: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(stderr.trim().to_string())
+    }
+}
+
+#[tauri::command]
+pub fn git_unstage_hunk(repo_path: String, patch: String) -> Result<(), String> {
+    Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+
+    let mut child = Command::new("git")
+        .args(["apply", "--cached", "--reverse"])
+        .current_dir(&repo_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to execute git apply: {e}"))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin
+            .write_all(patch.as_bytes())
+            .map_err(|e| format!("Failed to write patch: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait for git apply: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(stderr.trim().to_string())
+    }
+}
+
+#[tauri::command]
 pub fn git_create_branch(repo_path: String, branch_name: String) -> Result<(), String> {
     let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
 
@@ -833,6 +897,61 @@ mod tests {
         let ignored_dir = result.iter().find(|e| e.path == "build");
         assert!(ignored_dir.is_some(), "build dir should appear in status");
         assert_eq!(ignored_dir.unwrap().worktree_status, "ignored");
+    }
+
+    #[test]
+    fn test_stage_hunk() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "file.txt", "line1\nline2\nline3\n", "add file");
+
+        // Modify the file
+        fs::write(dir.path().join("file.txt"), "line1\nmodified\nline3\n").unwrap();
+
+        // Generate a patch for the modification
+        let patch = "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
+
+        git_stage_hunk(
+            dir.path().to_str().unwrap().to_string(),
+            patch.to_string(),
+        )
+        .unwrap();
+
+        let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(statuses.iter().any(|s| s.index_status == "modified"));
+    }
+
+    #[test]
+    fn test_unstage_hunk() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "file.txt", "line1\nline2\nline3\n", "add file");
+
+        // Stage the modified file first
+        fs::write(dir.path().join("file.txt"), "line1\nmodified\nline3\n").unwrap();
+        git_stage(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
+
+        // Verify staged
+        let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(before.iter().any(|s| s.index_status == "modified"));
+
+        // Unstage via patch
+        let patch = "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+modified\n line3\n";
+        git_unstage_hunk(
+            dir.path().to_str().unwrap().to_string(),
+            patch.to_string(),
+        )
+        .unwrap();
+
+        let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        // After unstage, file should show worktree modified but not index modified
+        let file_status = after.iter().find(|s| s.path == "file.txt").unwrap();
+        assert_eq!(file_status.worktree_status, "modified");
+        assert_eq!(file_status.index_status, "none");
     }
 
     #[test]

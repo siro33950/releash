@@ -1,18 +1,26 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { EditorPanel } from "@/components/panels/EditorPanel";
 import type { DiffBase, DiffMode } from "@/components/panels/MonacoDiffViewer";
+import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
-import { TerminalPanel } from "@/components/panels/TerminalPanel";
+import {
+	TerminalPanel,
+	type TerminalPanelHandle,
+} from "@/components/panels/TerminalPanel";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useEditorTabs } from "@/hooks/useEditorTabs";
-
+import { useGitActions } from "@/hooks/useGitActions";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useLineComments } from "@/hooks/useLineComments";
+import { useSettings } from "@/hooks/useSettings";
+import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
+import type { LineComment } from "@/types/comment";
 
 function App() {
 	const {
@@ -33,9 +41,15 @@ function App() {
 	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [activeView, setActiveView] = useState<string>("explorer");
 	const { branch } = useCurrentBranch(rootPath);
+	const { settings, updateTheme, updateFontSize } = useSettings();
+	const { comments, addComment, markAsSent } = useLineComments();
+	const { stageHunk, unstageHunk } = useGitActions();
+	const terminalRef = useRef<TerminalPanelHandle>(null);
+	const [gitRefreshKey, setGitRefreshKey] = useState(0);
+	const refreshGit = useCallback(() => setGitRefreshKey((k) => k + 1), []);
 
-	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
-	const [diffMode, setDiffMode] = useState<DiffMode>("gutter");
+	const [diffBase, setDiffBase] = useState<DiffBase>("staged");
+	const [diffMode, setDiffMode] = useState<DiffMode>("inline");
 	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
 	const [pendingRootPath, setPendingRootPath] = useState<string | null>(null);
 
@@ -127,6 +141,17 @@ function App() {
 		[closeTabsByPrefix],
 	);
 
+	const handleSendToTerminal = useCallback(
+		(unsent: LineComment[]) => {
+			const text = formatCommentsForTerminal(unsent);
+			if (text && terminalRef.current) {
+				terminalRef.current.writeToTerminal(`${text}\n`);
+				markAsSent(unsent.map((c) => c.id));
+			}
+		},
+		[markAsSent],
+	);
+
 	const closingTab = closingTabPath
 		? tabs.find((t) => t.path === closingTabPath)
 		: null;
@@ -160,7 +185,13 @@ function App() {
 						collapsible={false}
 					>
 						{activeView === "git" ? (
-							<SourceControlPanel rootPath={rootPath} onSelectFile={openFile} />
+							<SourceControlPanel rootPath={rootPath} onSelectFile={openFile} onGitChanged={refreshGit} gitRefreshKey={gitRefreshKey} />
+						) : activeView === "settings" ? (
+							<SettingsPanel
+								settings={settings}
+								onThemeChange={updateTheme}
+								onFontSizeChange={updateFontSize}
+							/>
 						) : (
 							<SidebarPanel
 								rootPath={rootPath}
@@ -187,6 +218,16 @@ function App() {
 							onDiffBaseChange={setDiffBase}
 							onDiffModeChange={setDiffMode}
 							onContentChange={updateTabContent}
+							fontSize={settings.fontSize}
+							comments={comments}
+							onAddComment={addComment}
+							rootPath={rootPath}
+							onStageHunk={stageHunk}
+							onUnstageHunk={unstageHunk}
+							onSendToTerminal={handleSendToTerminal}
+							theme={settings.theme}
+							gitRefreshKey={gitRefreshKey}
+							onGitChanged={refreshGit}
 						/>
 					</Panel>
 
@@ -200,7 +241,7 @@ function App() {
 						maxSize="60"
 						collapsible={false}
 					>
-						<TerminalPanel key={rootPath} cwd={rootPath} />
+						<TerminalPanel ref={terminalRef} key={rootPath} cwd={rootPath} theme={settings.theme} />
 					</Panel>
 				</Group>
 			</div>

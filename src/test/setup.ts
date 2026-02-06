@@ -37,6 +37,7 @@ vi.mock("@xterm/xterm", () => {
 			write = vi.fn();
 			onData = vi.fn().mockReturnValue({ dispose: vi.fn() });
 			dispose = vi.fn();
+			options: Record<string, unknown> = {};
 			rows = 24;
 			cols = 80;
 		},
@@ -57,7 +58,29 @@ const mockEditor = {
 	setValue: vi.fn(),
 	layout: vi.fn(),
 	onDidChangeModelContent: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+	onMouseDown: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+	onMouseMove: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+	onMouseUp: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+	addAction: vi.fn(),
+	addContentWidget: vi.fn(),
+	removeContentWidget: vi.fn(),
+	changeViewZones: vi.fn().mockImplementation((cb: (accessor: { addZone: () => string; removeZone: () => void }) => void) => {
+		cb({ addZone: () => "zone-id", removeZone: () => {} });
+	}),
+	getDomNode: vi.fn().mockReturnValue(document.createElement("div")),
+	getTopForLineNumber: vi.fn().mockReturnValue(0),
+	getScrolledVisiblePosition: vi.fn().mockReturnValue({ top: 0, left: 0, height: 20 }),
+	getLayoutInfo: vi.fn().mockReturnValue({ height: 600 }),
+	onDidScrollChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+	onDidContentSizeChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 	getModel: vi.fn().mockReturnValue(null),
+	getPosition: vi.fn().mockReturnValue(null),
+	getSelection: vi.fn().mockReturnValue(null),
+	setPosition: vi.fn(),
+	getScrollTop: vi.fn().mockReturnValue(0),
+	setScrollTop: vi.fn(),
+	revealLineInCenter: vi.fn(),
+	focus: vi.fn(),
 	updateOptions: vi.fn(),
 	deltaDecorations: vi.fn().mockReturnValue([]),
 };
@@ -77,6 +100,8 @@ const mockDiffEditor = {
 	getModifiedEditor: vi.fn().mockReturnValue(mockEditor),
 	setModel: vi.fn(),
 	updateOptions: vi.fn(),
+	onDidUpdateDiff: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+	getLineChanges: vi.fn().mockReturnValue([]),
 };
 
 class MockRange {
@@ -104,12 +129,16 @@ const mockMonaco = {
 		createModel: vi.fn().mockReturnValue(mockTextModel),
 		defineTheme: vi.fn(),
 		setTheme: vi.fn(),
+		MouseTargetType: { GUTTER_GLYPH_MARGIN: 2 },
+		ContentWidgetPositionPreference: { ABOVE: 1 },
 	},
 	languages: {
 		register: vi.fn(),
 		setMonarchTokensProvider: vi.fn(),
 	},
 	Range: MockRange,
+	KeyMod: { CtrlCmd: 2048 },
+	KeyCode: { KeyK: 41 },
 };
 
 vi.mock("@monaco-editor/react", () => ({

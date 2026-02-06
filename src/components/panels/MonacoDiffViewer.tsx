@@ -7,12 +7,32 @@ import {
 	ContextMenuSeparator,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import type { ChangeGroup } from "@/lib/computeHunks";
 import { useMonacoDiffEditor } from "@/hooks/useMonacoDiffEditor";
 import { useMonacoGutterEditor } from "@/hooks/useMonacoGutterEditor";
 import { cn } from "@/lib/utils";
+import type { CommentRange, LineComment } from "@/types/comment";
+import type { Theme } from "@/types/settings";
 
+export type { CommentRange } from "@/types/comment";
 export type DiffMode = "gutter" | "inline" | "split";
 export type DiffBase = "HEAD" | "staged" | (string & {});
+
+interface RevealLine {
+	line: number;
+	key: number;
+}
+
+interface HunkCommentProps {
+	changeGroups?: ChangeGroup[];
+	commentRanges?: CommentRange[];
+	onStageHunk?: (hunkIndex: number) => void;
+	onUnstageHunk?: (hunkIndex: number) => void;
+	onAddComment?: (lineNumber: number, content: string, endLine?: number) => void;
+	getCommentsForLine?: (lineNumber: number) => LineComment[];
+	revealLine?: RevealLine;
+	theme?: Theme;
+}
 
 function useEditorContextMenu(
 	editorRef: React.RefObject<Monaco.editor.ICodeEditor | null>,
@@ -105,12 +125,22 @@ function GutterEditor({
 	modifiedContent,
 	language,
 	onContentChange,
+	fontSize,
+	changeGroups,
+	commentRanges,
+	onStageHunk,
+	onUnstageHunk,
+	onAddComment,
+	getCommentsForLine,
+	revealLine,
+	theme,
 }: {
 	originalContent: string;
 	modifiedContent: string;
 	language: string;
 	onContentChange?: (content: string) => void;
-}) {
+	fontSize?: number;
+} & HunkCommentProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 
 	const { editorRef } = useMonacoGutterEditor(containerRef, {
@@ -118,6 +148,15 @@ function GutterEditor({
 		modifiedValue: modifiedContent,
 		language,
 		onContentChange,
+		fontSize,
+		changeGroups,
+		commentRanges,
+		onStageHunk,
+		onUnstageHunk,
+		onAddComment,
+		getCommentsForLine,
+		revealLine,
+		theme,
 	});
 
 	const actions = useEditorContextMenu(editorRef);
@@ -138,13 +177,23 @@ function DiffEditor({
 	language,
 	renderSideBySide,
 	onContentChange,
+	fontSize,
+	changeGroups,
+	commentRanges,
+	onStageHunk,
+	onUnstageHunk,
+	onAddComment,
+	getCommentsForLine,
+	revealLine,
+	theme,
 }: {
 	originalContent: string;
 	modifiedContent: string;
 	language: string;
 	renderSideBySide: boolean;
 	onContentChange?: (content: string) => void;
-}) {
+	fontSize?: number;
+} & HunkCommentProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 
 	const { diffEditorRef } = useMonacoDiffEditor(containerRef, {
@@ -153,6 +202,15 @@ function DiffEditor({
 		language,
 		renderSideBySide,
 		onContentChange,
+		fontSize,
+		changeGroups,
+		commentRanges,
+		onStageHunk,
+		onUnstageHunk,
+		onAddComment,
+		getCommentsForLine,
+		revealLine,
+		theme,
 	});
 
 	const modifiedEditorProxy = useMemo<
@@ -185,6 +243,15 @@ interface MonacoDiffViewerProps {
 	className?: string;
 	diffMode?: DiffMode;
 	onContentChange?: (content: string) => void;
+	fontSize?: number;
+	changeGroups?: ChangeGroup[];
+	commentRanges?: CommentRange[];
+	onStageHunk?: (hunkIndex: number) => void;
+	onUnstageHunk?: (hunkIndex: number) => void;
+	onAddComment?: (lineNumber: number, content: string, endLine?: number) => void;
+	getCommentsForLine?: (lineNumber: number) => LineComment[];
+	revealLine?: RevealLine;
+	theme?: Theme;
 }
 
 export function MonacoDiffViewer({
@@ -194,7 +261,27 @@ export function MonacoDiffViewer({
 	className,
 	diffMode = "split",
 	onContentChange,
+	fontSize,
+	changeGroups,
+	commentRanges,
+	onStageHunk,
+	onUnstageHunk,
+	onAddComment,
+	getCommentsForLine,
+	revealLine,
+	theme,
 }: MonacoDiffViewerProps) {
+	const hunkCommentProps: HunkCommentProps = {
+		changeGroups,
+		commentRanges,
+		onStageHunk,
+		onUnstageHunk,
+		onAddComment,
+		getCommentsForLine,
+		revealLine,
+		theme,
+	};
+
 	return (
 		<div className={cn("h-full w-full bg-background", className)}>
 			{diffMode === "gutter" && (
@@ -203,6 +290,8 @@ export function MonacoDiffViewer({
 					modifiedContent={modifiedContent}
 					language={language}
 					onContentChange={onContentChange}
+					fontSize={fontSize}
+					{...hunkCommentProps}
 				/>
 			)}
 			{diffMode === "inline" && (
@@ -212,6 +301,8 @@ export function MonacoDiffViewer({
 					language={language}
 					renderSideBySide={false}
 					onContentChange={onContentChange}
+					fontSize={fontSize}
+					{...hunkCommentProps}
 				/>
 			)}
 			{diffMode === "split" && (
@@ -221,6 +312,8 @@ export function MonacoDiffViewer({
 					language={language}
 					renderSideBySide={true}
 					onContentChange={onContentChange}
+					fontSize={fontSize}
+					{...hunkCommentProps}
 				/>
 			)}
 		</div>

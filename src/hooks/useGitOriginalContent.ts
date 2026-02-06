@@ -9,6 +9,7 @@ export function useGitOriginalContent(
 	filePath: string | null,
 	diffBase: DiffBase,
 	fallbackContent: string,
+	externalRefreshKey?: number,
 ): string {
 	const [originalContent, setOriginalContent] = useState(fallbackContent);
 	const [refreshKey, setRefreshKey] = useState(0);
@@ -110,7 +111,7 @@ export function useGitOriginalContent(
 		return () => {
 			cancelled = true;
 		};
-	}, [filePath, diffBase, fallbackContent, refreshKey]);
+	}, [filePath, diffBase, fallbackContent, refreshKey, externalRefreshKey]);
 
 	return originalContent;
 }

@@ -11,6 +11,7 @@ let mockTerminalInstance: {
 	write: ReturnType<typeof vi.fn>;
 	onData: ReturnType<typeof vi.fn>;
 	dispose: ReturnType<typeof vi.fn>;
+	options: Record<string, unknown>;
 	rows: number;
 	cols: number;
 };
@@ -36,6 +37,7 @@ vi.mock("@xterm/xterm", () => {
 					return { dispose: vi.fn() };
 				});
 			dispose = vi.fn();
+			options: Record<string, unknown> = {};
 			rows = 24;
 			cols = 80;
 

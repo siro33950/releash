@@ -164,17 +164,21 @@ function CollapsibleSection({
 export interface SourceControlPanelProps {
 	rootPath: string | null;
 	onSelectFile?: (path: string) => void;
+	onGitChanged?: () => void;
+	gitRefreshKey?: number;
 }
 
 export function SourceControlPanel({
 	rootPath,
 	onSelectFile,
+	onGitChanged,
+	gitRefreshKey,
 }: SourceControlPanelProps) {
 	const {
 		stagedFiles,
 		changedFiles,
 		refresh: refreshStatus,
-	} = useGitStatus(rootPath);
+	} = useGitStatus(rootPath, gitRefreshKey);
 	const { stage, unstage, commit, push } = useGitActions();
 
 	const [commitSummary, setCommitSummary] = useState("");
@@ -191,11 +195,12 @@ export function SourceControlPanel({
 				setError(null);
 				await stage(rootPath, paths);
 				refreshStatus();
+				onGitChanged?.();
 			} catch (e) {
 				setError(String(e));
 			}
 		},
-		[rootPath, stage, refreshStatus],
+		[rootPath, stage, refreshStatus, onGitChanged],
 	);
 
 	const handleUnstage = useCallback(
@@ -205,11 +210,12 @@ export function SourceControlPanel({
 				setError(null);
 				await unstage(rootPath, paths);
 				refreshStatus();
+				onGitChanged?.();
 			} catch (e) {
 				setError(String(e));
 			}
 		},
-		[rootPath, unstage, refreshStatus],
+		[rootPath, unstage, refreshStatus, onGitChanged],
 	);
 
 	const handleCommit = useCallback(async () => {
@@ -224,12 +230,13 @@ export function SourceControlPanel({
 			setCommitSummary("");
 			setCommitDescription("");
 			refreshStatus();
+			onGitChanged?.();
 		} catch (e) {
 			setError(String(e));
 		} finally {
 			setLoading(false);
 		}
-	}, [rootPath, commitSummary, commitDescription, commit, refreshStatus]);
+	}, [rootPath, commitSummary, commitDescription, commit, refreshStatus, onGitChanged]);
 
 	const handlePush = useCallback(async () => {
 		if (!rootPath) return;

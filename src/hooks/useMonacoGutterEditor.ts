@@ -1,18 +1,45 @@
 import { loader } from "@monaco-editor/react";
 import { diffLines } from "diff";
 import type * as Monaco from "monaco-editor";
-import { type RefObject, useEffect, useRef } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
+import type { ChangeGroup } from "@/lib/computeHunks";
+import type { CommentRange } from "@/types/comment";
 import {
+	type MonacoContentWidget,
+	createCommentPeekWidget,
+} from "@/lib/commentPeekWidget";
+import {
+	DIFF_ADDED_COLOR,
+	DIFF_MODIFIED_COLOR,
+	MONACO_DARK_THEME_NAME,
+	MONACO_LIGHT_THEME_NAME,
 	defaultEditorOptions,
-	MONACO_THEME_NAME,
+	getMonacoThemeName,
+	monacoLightTheme,
 	monacoTheme,
 } from "@/lib/monaco-config";
+import type { LineComment } from "@/types/comment";
+import type { Theme } from "@/types/settings";
+
+interface RevealLine {
+	line: number;
+	key: number;
+}
 
 interface UseMonacoGutterEditorOptions {
 	originalValue: string;
 	modifiedValue: string;
 	language?: string;
 	onContentChange?: (content: string) => void;
+	fontSize?: number;
+	changeGroups?: ChangeGroup[];
+	commentRanges?: CommentRange[];
+	onStageHunk?: (hunkIndex: number) => void;
+	onUnstageHunk?: (hunkIndex: number) => void;
+	onAddComment?: (lineNumber: number, content: string, endLine?: number) => void;
+	getCommentsForLine?: (lineNumber: number) => LineComment[];
+	revealLine?: RevealLine;
+	theme?: Theme;
 }
 
 interface DiffResult {
@@ -25,7 +52,6 @@ export function computeDiff(original: string, modified: string): DiffResult {
 	const added: number[] = [];
 	const modified_lines: number[] = [];
 
-	// modified ファイルの行数を計算（末尾改行で空要素が生成されるのを考慮）
 	const modifiedLineCount =
 		modified === ""
 			? 0
@@ -42,8 +68,6 @@ export function computeDiff(original: string, modified: string): DiffResult {
 			}
 			lineNumber += lines;
 		} else if (change.removed) {
-			// 削除された行は modified ファイルの行番号を進めない
-			// 次の行が存在する場合のみ modified としてマーク
 			if (lines > 0 && lineNumber <= modifiedLineCount) {
 				modified_lines.push(lineNumber);
 			}
@@ -64,18 +88,37 @@ export function useMonacoGutterEditor(
 		modifiedValue,
 		language = "typescript",
 		onContentChange,
+		fontSize,
+		commentRanges,
+		onAddComment,
+		getCommentsForLine,
+		revealLine,
+		theme,
 	} = options;
 
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	const monacoRef = useRef<typeof Monaco | null>(null);
+	const [, setEditorReady] = useState(false);
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 	const decorationsRef = useRef<string[]>([]);
+	const commentDecorationsRef = useRef<string[]>([]);
 	const originalValueRef = useRef(originalValue);
 	const modifiedValueRef = useRef(modifiedValue);
 	const onContentChangeRef = useRef(onContentChange);
+	const fontSizeRef = useRef(fontSize);
+	const onAddCommentRef = useRef(onAddComment);
+	const getCommentsForLineRef = useRef(getCommentsForLine);
+	const commentInputWidgetRef = useRef<MonacoContentWidget | null>(null);
+	const dragStartLineRef = useRef<number | null>(null);
+	const dragRangeDecorationsRef = useRef<string[]>([]);
+	const hoverLineRef = useRef<number | null>(null);
+	const hoverDecorationsRef = useRef<string[]>([]);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
 	onContentChangeRef.current = onContentChange;
+	fontSizeRef.current = fontSize;
+	onAddCommentRef.current = onAddComment;
+	getCommentsForLineRef.current = getCommentsForLine;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -90,15 +133,18 @@ export function useMonacoGutterEditor(
 
 			monacoRef.current = monaco;
 
-			monaco.editor.defineTheme(MONACO_THEME_NAME, monacoTheme);
-			monaco.editor.setTheme(MONACO_THEME_NAME);
+			monaco.editor.defineTheme(MONACO_DARK_THEME_NAME, monacoTheme);
+			monaco.editor.defineTheme(MONACO_LIGHT_THEME_NAME, monacoLightTheme);
+			const themeName = getMonacoThemeName(theme ?? "dark");
+			monaco.editor.setTheme(themeName);
 
 			const editor = monaco.editor.create(container, {
 				...defaultEditorOptions,
 				value: modifiedValueRef.current,
 				language,
-				theme: MONACO_THEME_NAME,
+				theme: themeName,
 				glyphMargin: true,
+				...(fontSizeRef.current != null && { fontSize: fontSizeRef.current }),
 			});
 
 			if (!isMounted) {
@@ -107,6 +153,7 @@ export function useMonacoGutterEditor(
 			}
 
 			editorRef.current = editor;
+			setEditorReady(true);
 
 			const updateDecorations = () => {
 				const currentValue = editor.getValue();
@@ -119,6 +166,10 @@ export function useMonacoGutterEditor(
 						options: {
 							isWholeLine: true,
 							glyphMarginClassName: "gutter-added",
+							overviewRuler: {
+								color: DIFF_ADDED_COLOR,
+								position: monaco.editor.OverviewRulerLane.Full,
+							},
 						},
 					});
 				}
@@ -129,6 +180,10 @@ export function useMonacoGutterEditor(
 						options: {
 							isWholeLine: true,
 							glyphMarginClassName: "gutter-modified",
+							overviewRuler: {
+								color: DIFF_MODIFIED_COLOR,
+								position: monaco.editor.OverviewRulerLane.Full,
+							},
 						},
 					});
 				}
@@ -144,6 +199,137 @@ export function useMonacoGutterEditor(
 			editor.onDidChangeModelContent(() => {
 				updateDecorations();
 				onContentChangeRef.current?.(editor.getValue());
+			});
+
+			const openCommentWidget = (
+				ed: Monaco.editor.ICodeEditor,
+				lineNum: number,
+				endLine?: number,
+			) => {
+				if (commentInputWidgetRef.current) {
+					ed.removeContentWidget(commentInputWidgetRef.current);
+					commentInputWidgetRef.current = null;
+				}
+
+				const existing = getCommentsForLineRef.current?.(lineNum) ?? [];
+				const widget = createCommentPeekWidget(monaco, {
+					lineNumber: lineNum,
+					endLine,
+					existingComments: existing,
+					onSubmit: (content) => {
+						onAddCommentRef.current?.(lineNum, content, endLine);
+						ed.removeContentWidget(widget);
+						commentInputWidgetRef.current = null;
+						ed.focus();
+					},
+					onCancel: () => {
+						ed.removeContentWidget(widget);
+						commentInputWidgetRef.current = null;
+						ed.focus();
+					},
+				});
+				commentInputWidgetRef.current = widget;
+				ed.addContentWidget(widget);
+			};
+
+			editor.onMouseDown((e: Monaco.editor.IEditorMouseEvent) => {
+				if (
+					e.target.type ===
+					monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN
+				) {
+					const lineNum = e.target.position?.lineNumber;
+					if (!lineNum) return;
+					dragStartLineRef.current = lineNum;
+				}
+			});
+
+			editor.onMouseMove((e: Monaco.editor.IEditorMouseEvent) => {
+				const lineNum = e.target.position?.lineNumber ?? null;
+
+				if (dragStartLineRef.current != null) {
+					if (lineNum) {
+						const startLine = Math.min(dragStartLineRef.current, lineNum);
+						const endLine = Math.max(dragStartLineRef.current, lineNum);
+						dragRangeDecorationsRef.current = editor.deltaDecorations(
+							dragRangeDecorationsRef.current,
+							startLine !== endLine
+								? [{
+										range: new monaco.Range(startLine, 1, endLine, 1),
+										options: {
+											isWholeLine: true,
+											className: "comment-range-highlight",
+										},
+									}]
+								: [],
+						);
+					}
+					if (hoverLineRef.current != null) {
+						hoverLineRef.current = null;
+						hoverDecorationsRef.current = editor.deltaDecorations(hoverDecorationsRef.current, []);
+					}
+					return;
+				}
+
+				if (lineNum !== hoverLineRef.current) {
+					hoverLineRef.current = lineNum;
+					hoverDecorationsRef.current = editor.deltaDecorations(
+						hoverDecorationsRef.current,
+						lineNum != null
+							? [{
+									range: new monaco.Range(lineNum, 1, lineNum, 1),
+									options: { glyphMarginClassName: "comment-hover-icon" },
+								}]
+							: [],
+					);
+				}
+			});
+
+			editor.onMouseUp((e: Monaco.editor.IEditorMouseEvent) => {
+				if (dragStartLineRef.current == null) return;
+
+				const lineNum = e.target.position?.lineNumber ?? dragStartLineRef.current;
+				const startLine = dragStartLineRef.current;
+				dragStartLineRef.current = null;
+
+				dragRangeDecorationsRef.current = editor.deltaDecorations(
+					dragRangeDecorationsRef.current,
+					[],
+				);
+
+				const lo = Math.min(startLine, lineNum);
+				const hi = Math.max(startLine, lineNum);
+
+				if (lo === hi) {
+					openCommentWidget(editor, lo);
+				} else {
+					openCommentWidget(editor, lo, hi);
+				}
+			});
+
+			editor.addAction({
+				id: "releash.addComment",
+				label: "Add Comment",
+				keybindings: [
+					monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK,
+				],
+				run: (ed: Monaco.editor.ICodeEditor) => {
+					const position = ed.getPosition();
+					if (!position) return;
+					const selection = ed.getSelection();
+					if (
+						selection &&
+						!selection.isEmpty() &&
+						selection.startLineNumber !== selection.endLineNumber
+					) {
+						openCommentWidget(
+							ed,
+							selection.startLineNumber,
+							selection.endLineNumber,
+						);
+					} else {
+						openCommentWidget(ed, position.lineNumber);
+					}
+				},
 			});
 
 			const resizeObserver = new ResizeObserver(() => {
@@ -163,6 +349,12 @@ export function useMonacoGutterEditor(
 			editorRef.current?.dispose();
 		};
 	}, [containerRef, language]);
+
+	useEffect(() => {
+		const editor = editorRef.current;
+		if (!editor || fontSize == null) return;
+		editor.updateOptions({ fontSize });
+	}, [fontSize]);
 
 	useEffect(() => {
 		const editor = editorRef.current;
@@ -197,6 +389,10 @@ export function useMonacoGutterEditor(
 				options: {
 					isWholeLine: true,
 					glyphMarginClassName: "gutter-added",
+					overviewRuler: {
+						color: "rgba(80, 200, 80, 0.8)",
+						position: monaco.editor.OverviewRulerLane.Full,
+					},
 				},
 			});
 		}
@@ -207,6 +403,10 @@ export function useMonacoGutterEditor(
 				options: {
 					isWholeLine: true,
 					glyphMarginClassName: "gutter-modified",
+					overviewRuler: {
+						color: "rgba(80, 160, 240, 0.8)",
+						position: monaco.editor.OverviewRulerLane.Full,
+					},
 				},
 			});
 		}
@@ -216,6 +416,39 @@ export function useMonacoGutterEditor(
 			decorations,
 		);
 	}, [originalValue]);
+
+	useEffect(() => {
+		const editor = editorRef.current;
+		const monaco = monacoRef.current;
+		if (!editor || !monaco || !commentRanges) return;
+
+		const decorations: Monaco.editor.IModelDeltaDecoration[] =
+			commentRanges.map((r) => ({
+				range: new monaco.Range(r.start, 1, r.end ?? r.start, 1),
+				options: {
+					isWholeLine: true,
+					glyphMarginClassName: "comment-marker",
+				},
+			}));
+
+		commentDecorationsRef.current = editor.deltaDecorations(
+			commentDecorationsRef.current,
+			decorations,
+		);
+	}, [commentRanges]);
+
+	useEffect(() => {
+		const editor = editorRef.current;
+		if (!editor || !revealLine) return;
+		editor.revealLineInCenter(revealLine.line);
+		editor.setPosition({ lineNumber: revealLine.line, column: 1 });
+	}, [revealLine]);
+
+	useEffect(() => {
+		const monaco = monacoRef.current;
+		if (!monaco || !theme) return;
+		monaco.editor.setTheme(getMonacoThemeName(theme));
+	}, [theme]);
 
 	return {
 		editorRef,
