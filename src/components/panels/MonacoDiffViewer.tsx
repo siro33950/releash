@@ -12,11 +12,10 @@ import { useMonacoDiffEditor } from "@/hooks/useMonacoDiffEditor";
 import { useMonacoGutterEditor } from "@/hooks/useMonacoGutterEditor";
 import { cn } from "@/lib/utils";
 import type { CommentRange, LineComment } from "@/types/comment";
-import type { Theme } from "@/types/settings";
+import type { DiffMode, Theme } from "@/types/settings";
 
 export type { CommentRange } from "@/types/comment";
-export type DiffMode = "gutter" | "inline" | "split";
-export type DiffBase = "HEAD" | "staged" | (string & {});
+export type { DiffMode, DiffBase } from "@/types/settings";
 
 interface RevealLine {
 	line: number;

@@ -4,7 +4,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { EditorPanel } from "@/components/panels/EditorPanel";
-import type { DiffBase, DiffMode } from "@/components/panels/MonacoDiffViewer";
+import type { DiffBase, DiffMode } from "@/types/settings";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
@@ -41,15 +41,15 @@ function App() {
 	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [activeView, setActiveView] = useState<string>("explorer");
 	const { branch } = useCurrentBranch(rootPath);
-	const { settings, updateTheme, updateFontSize } = useSettings();
+	const { settings, updateTheme, updateFontSize, updateDefaultDiffBase, updateDefaultDiffMode } = useSettings();
 	const { comments, addComment, markAsSent } = useLineComments();
 	const { stageHunk, unstageHunk } = useGitActions();
 	const terminalRef = useRef<TerminalPanelHandle>(null);
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
 	const refreshGit = useCallback(() => setGitRefreshKey((k) => k + 1), []);
 
-	const [diffBase, setDiffBase] = useState<DiffBase>("staged");
-	const [diffMode, setDiffMode] = useState<DiffMode>("inline");
+	const [diffBase, setDiffBase] = useState<DiffBase>(settings.defaultDiffBase);
+	const [diffMode, setDiffMode] = useState<DiffMode>(settings.defaultDiffMode);
 	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
 	const [pendingRootPath, setPendingRootPath] = useState<string | null>(null);
 
@@ -191,6 +191,8 @@ function App() {
 								settings={settings}
 								onThemeChange={updateTheme}
 								onFontSizeChange={updateFontSize}
+								onDiffBaseChange={updateDefaultDiffBase}
+								onDiffModeChange={updateDefaultDiffMode}
 							/>
 						) : (
 							<SidebarPanel

@@ -17,6 +17,8 @@ describe("useSettings", () => {
 		expect(result.current.settings).toEqual({
 			theme: "dark",
 			fontSize: 14,
+			defaultDiffBase: "staged",
+			defaultDiffMode: "inline",
 		});
 	});
 
@@ -46,6 +48,8 @@ describe("useSettings", () => {
 		expect(result.current.settings).toEqual({
 			theme: "dark",
 			fontSize: 14,
+			defaultDiffBase: "staged",
+			defaultDiffMode: "inline",
 		});
 	});
 

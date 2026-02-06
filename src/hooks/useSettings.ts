@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
 	DEFAULT_SETTINGS,
 	type AppSettings,
+	type DiffBase,
+	type DiffMode,
 	type Theme,
 } from "@/types/settings";
 
@@ -54,9 +56,19 @@ export function useSettings() {
 		setSettings((prev) => ({ ...prev, fontSize }));
 	}, []);
 
+	const updateDefaultDiffBase = useCallback((defaultDiffBase: DiffBase) => {
+		setSettings((prev) => ({ ...prev, defaultDiffBase }));
+	}, []);
+
+	const updateDefaultDiffMode = useCallback((defaultDiffMode: DiffMode) => {
+		setSettings((prev) => ({ ...prev, defaultDiffMode }));
+	}, []);
+
 	return {
 		settings,
 		updateTheme,
 		updateFontSize,
+		updateDefaultDiffBase,
+		updateDefaultDiffMode,
 	};
 }
