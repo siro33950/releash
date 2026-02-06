@@ -15,7 +15,7 @@ export function useKeyboardShortcuts({
 				e.preventDefault();
 				onSave?.();
 			}
-			if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+			if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "f") {
 				e.preventDefault();
 				onSearch?.();
 			}

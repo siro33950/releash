@@ -61,18 +61,23 @@ function App() {
 	rootPathRef.current = rootPath;
 
 	useEffect(() => {
-		loader.init().then((monaco) => {
-			registerDefinitionProviders(monaco, {
-				onOpenFileAtLine: (relativePath, line) => {
-					const rp = rootPathRef.current;
-					if (!rp) return;
-					const absolutePath = `${rp}/${relativePath}`;
-					openFile(absolutePath);
-					setPendingReveal({ path: absolutePath, line });
-				},
-				getRootPath: () => rootPathRef.current,
+		loader
+			.init()
+			.then((monaco) => {
+				registerDefinitionProviders(monaco, {
+					onOpenFileAtLine: (relativePath, line) => {
+						const rp = rootPathRef.current;
+						if (!rp) return;
+						const absolutePath = `${rp}/${relativePath}`;
+						openFile(absolutePath);
+						setPendingReveal({ path: absolutePath, line });
+					},
+					getRootPath: () => rootPathRef.current,
+				});
+			})
+			.catch((error) => {
+				console.error("Failed to initialize Monaco:", error);
 			});
-		});
 	}, [openFile]);
 
 	const [diffBase, setDiffBase] = useState<DiffBase>(settings.defaultDiffBase);

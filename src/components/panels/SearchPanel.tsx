@@ -90,6 +90,7 @@ export function SearchPanel({
 	);
 
 	const handleClear = useCallback(() => {
+		if (debounceRef.current) clearTimeout(debounceRef.current);
 		setQuery("");
 		clear();
 		inputRef.current?.focus();
@@ -100,6 +101,12 @@ export function SearchPanel({
 			triggerSearch(queryRef.current);
 		}
 	}, [triggerSearch]);
+
+	useEffect(() => {
+		return () => {
+			if (debounceRef.current) clearTimeout(debounceRef.current);
+		};
+	}, []);
 
 	useEffect(() => {
 		if (focusKey != null && focusKey > 0) {
