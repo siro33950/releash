@@ -149,9 +149,7 @@ export function useMonacoGutterEditor(
 			monaco.editor.setTheme(themeName);
 
 			const modelUri = filePath ? monaco.Uri.file(filePath) : undefined;
-			const existingModel = modelUri
-				? monaco.editor.getModel(modelUri)
-				: null;
+			const existingModel = modelUri ? monaco.editor.getModel(modelUri) : null;
 			if (existingModel) {
 				existingModel.dispose();
 			}

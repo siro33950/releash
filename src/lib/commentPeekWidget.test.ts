@@ -83,7 +83,9 @@ describe("createCommentPeekWidget", () => {
 		const existing = dom.querySelector(".comment-peek-existing");
 		expect(existing).not.toBeNull();
 
-		const items = existing!.querySelectorAll(".comment-peek-existing-item");
+		const items = existing
+			? existing.querySelectorAll(".comment-peek-existing-item")
+			: [];
 		expect(items).toHaveLength(2);
 
 		expect(items[0].querySelector(".comment-peek-status")?.textContent).toBe(

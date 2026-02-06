@@ -1,21 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+	act,
+	fireEvent,
 	render,
 	screen,
-	fireEvent,
 	waitFor,
-	act,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchPanel } from "../SearchPanel";
 
 vi.mock("react-resizable-panels", () => ({
-	Group: ({ children }: { children: React.ReactNode }) => (
-		<div>{children}</div>
-	),
-	Panel: ({ children }: { children: React.ReactNode }) => (
-		<div>{children}</div>
-	),
+	Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+	Panel: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 	Separator: () => <div />,
 }));
 
@@ -119,9 +115,7 @@ describe("SearchPanel", () => {
 		mockInvoke.mockResolvedValue(mockResult);
 
 		const onSelect = vi.fn();
-		render(
-			<SearchPanel rootPath="/root" onSelectFileAtLine={onSelect} />,
-		);
+		render(<SearchPanel rootPath="/root" onSelectFileAtLine={onSelect} />);
 
 		const input = screen.getByTestId("search-input");
 		fireEvent.change(input, { target: { value: "test" } });
@@ -131,7 +125,8 @@ describe("SearchPanel", () => {
 		});
 
 		await act(async () => {
-			fireEvent.click(screen.getByText("10").closest("button")!);
+			const button = screen.getByText("10").closest("button");
+			if (button) fireEvent.click(button);
 		});
 		expect(onSelect).toHaveBeenCalledWith("src/main.ts", 10);
 	});

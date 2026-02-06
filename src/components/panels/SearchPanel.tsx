@@ -63,6 +63,8 @@ export function SearchPanel({
 	const [isRegex, setIsRegex] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const queryRef = useRef(query);
+	queryRef.current = query;
 
 	const triggerSearch = useCallback(
 		(value: string) => {
@@ -94,10 +96,10 @@ export function SearchPanel({
 	}, [clear]);
 
 	useEffect(() => {
-		if (query.trim()) {
-			triggerSearch(query);
+		if (queryRef.current.trim()) {
+			triggerSearch(queryRef.current);
 		}
-	}, [caseSensitive, isRegex]);
+	}, [triggerSearch]);
 
 	useEffect(() => {
 		if (focusKey != null && focusKey > 0) {
@@ -183,9 +185,7 @@ export function SearchPanel({
 				{loading && (
 					<div className="text-[10px] text-muted-foreground">Searching...</div>
 				)}
-				{error && (
-					<div className="text-[10px] text-destructive">{error}</div>
-				)}
+				{error && <div className="text-[10px] text-destructive">{error}</div>}
 			</div>
 
 			<ScrollArea className="flex-1 min-h-0 [&>[data-slot=scroll-area-viewport]>div]:block!">
@@ -199,9 +199,7 @@ export function SearchPanel({
 								type="button"
 								key={`${m.line_number}-${i}`}
 								className="flex w-full items-center gap-2 px-4 py-0.5 text-xs hover:bg-sidebar-accent transition-colors text-left"
-								onClick={() =>
-									onSelectFileAtLine?.(m.path, m.line_number)
-								}
+								onClick={() => onSelectFileAtLine?.(m.path, m.line_number)}
 							>
 								<span className="text-muted-foreground font-mono w-8 text-right shrink-0">
 									{m.line_number}
