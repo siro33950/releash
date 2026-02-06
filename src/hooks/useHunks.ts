@@ -19,6 +19,7 @@ export function useHunks(
 
 	const [currentIndex, setCurrentIndex] = useState(0);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: changeGroups変更時にインデックスをリセット
 	useEffect(() => {
 		setCurrentIndex(0);
 	}, [changeGroups]);
