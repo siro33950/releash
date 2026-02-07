@@ -101,18 +101,32 @@ pub fn spawn_pty(
     let pty_id_clone = pty_id;
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut pending = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app_clone.emit(
-                        "pty-output",
-                        PtyOutput {
-                            pty_id: pty_id_clone,
-                            data,
-                        },
-                    );
+                    pending.extend_from_slice(&buf[..n]);
+
+                    let valid_up_to = match std::str::from_utf8(&pending) {
+                        Ok(_) => pending.len(),
+                        Err(e) => e.valid_up_to(),
+                    };
+
+                    if valid_up_to > 0 {
+                        let data = std::str::from_utf8(&pending[..valid_up_to])
+                            .unwrap()
+                            .to_string();
+                        let _ = app_clone.emit(
+                            "pty-output",
+                            PtyOutput {
+                                pty_id: pty_id_clone,
+                                data,
+                            },
+                        );
+                    }
+
+                    pending = pending[valid_up_to..].to_vec();
                 }
                 Err(_) => break,
             }
