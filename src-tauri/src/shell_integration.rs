@@ -58,12 +58,10 @@ pub fn create_shell_integration_files(data_dir: &Path) -> Result<PathBuf, String
 
 pub struct OscParseResult {
     pub filtered_output: String,
-    pub cmd_done_exit_codes: Vec<i32>,
 }
 
 pub fn strip_osc_cmd_done(data: &str) -> OscParseResult {
     let mut output = String::with_capacity(data.len());
-    let mut exit_codes = Vec::new();
     let mut remaining = data;
 
     while let Some(start) = remaining.find(OSC_PREFIX) {
@@ -71,13 +69,8 @@ pub fn strip_osc_cmd_done(data: &str) -> OscParseResult {
         let after_prefix = &remaining[start + OSC_PREFIX.len()..];
 
         if let Some(end) = after_prefix.find(OSC_TERMINATOR) {
-            let exit_code_str = &after_prefix[..end];
-            if let Ok(exit_code) = exit_code_str.parse::<i32>() {
-                exit_codes.push(exit_code);
-            }
             remaining = &after_prefix[end + 1..];
         } else {
-            // Incomplete sequence at the end - keep it (will be completed in next read)
             output.push_str(&remaining[start..]);
             remaining = "";
             break;
@@ -88,7 +81,6 @@ pub fn strip_osc_cmd_done(data: &str) -> OscParseResult {
 
     OscParseResult {
         filtered_output: output,
-        cmd_done_exit_codes: exit_codes,
     }
 }
 
@@ -100,7 +92,6 @@ mod tests {
     fn test_strip_no_osc() {
         let result = strip_osc_cmd_done("hello world\n");
         assert_eq!(result.filtered_output, "hello world\n");
-        assert!(result.cmd_done_exit_codes.is_empty());
     }
 
     #[test]
@@ -108,7 +99,6 @@ mod tests {
         let data = "output\x1b]777;cmd_done;0\x07prompt$ ";
         let result = strip_osc_cmd_done(data);
         assert_eq!(result.filtered_output, "outputprompt$ ");
-        assert_eq!(result.cmd_done_exit_codes, vec![0]);
     }
 
     #[test]
@@ -116,7 +106,6 @@ mod tests {
         let data = "error\x1b]777;cmd_done;1\x07$ ";
         let result = strip_osc_cmd_done(data);
         assert_eq!(result.filtered_output, "error$ ");
-        assert_eq!(result.cmd_done_exit_codes, vec![1]);
     }
 
     #[test]
@@ -124,7 +113,6 @@ mod tests {
         let data = "a\x1b]777;cmd_done;0\x07b\x1b]777;cmd_done;127\x07c";
         let result = strip_osc_cmd_done(data);
         assert_eq!(result.filtered_output, "abc");
-        assert_eq!(result.cmd_done_exit_codes, vec![0, 127]);
     }
 
     #[test]
@@ -132,7 +120,6 @@ mod tests {
         let data = "text\x1b]0;title\x07more";
         let result = strip_osc_cmd_done(data);
         assert_eq!(result.filtered_output, "text\x1b]0;title\x07more");
-        assert!(result.cmd_done_exit_codes.is_empty());
     }
 
     #[test]
@@ -140,7 +127,6 @@ mod tests {
         let data = "\x1b]777;cmd_done;-1\x07";
         let result = strip_osc_cmd_done(data);
         assert_eq!(result.filtered_output, "");
-        assert_eq!(result.cmd_done_exit_codes, vec![-1]);
     }
 
     #[test]

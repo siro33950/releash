@@ -47,7 +47,6 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio-rustls = { version = "0.26", features = ["ring"] }
 rustls-pemfile = "2"
 rcgen = "0.13"
-ureq = "2"
 
 [features]
 vendored-openssl = ["git2/vendored-openssl"]

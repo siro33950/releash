@@ -8,7 +8,6 @@ mod shell_integration;
 mod tls;
 mod vpn_detect;
 mod watcher;
-mod webhook;
 mod ws_bridge;
 mod ws_server;
 

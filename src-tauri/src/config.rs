@@ -23,8 +23,6 @@ pub struct ServerSection {
     pub token: String,
     #[serde(default)]
     pub tls: TlsSection,
-    #[serde(default)]
-    pub notify: NotifySection,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -35,12 +33,6 @@ pub struct TlsSection {
     pub cert: String,
     #[serde(default)]
     pub key: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NotifySection {
-    #[serde(default)]
-    pub webhook_url: String,
 }
 
 fn default_bind() -> String {
@@ -58,7 +50,6 @@ impl Default for ServerSection {
             port: default_port(),
             token: String::new(),
             tls: TlsSection::default(),
-            notify: NotifySection::default(),
         }
     }
 }

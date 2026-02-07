@@ -7,10 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::config::AppConfig;
 use crate::protocol::{PtyExitMsg, PtyOutputMsg, WsMessage};
 use crate::shell_integration;
-use crate::webhook;
 use crate::ws_bridge::WsBroadcaster;
 
 static PTY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -209,26 +207,6 @@ pub fn spawn_pty(
                     pending = pending[valid_up_to..].to_vec();
 
                     let result = shell_integration::strip_osc_cmd_done(&raw);
-
-                    for exit_code in &result.cmd_done_exit_codes {
-                        let _ = app_clone.emit(
-                            "cmd-done",
-                            serde_json::json!({
-                                "pty_id": pty_id_clone,
-                                "exit_code": exit_code,
-                            }),
-                        );
-                        if let Some(config_state) = app_clone.try_state::<AppConfig>() {
-                            if let Ok(config) = config_state.get_config() {
-                                if !config.server.notify.webhook_url.is_empty() {
-                                    webhook::send_notification(
-                                        &config.server.notify.webhook_url,
-                                        *exit_code,
-                                    );
-                                }
-                            }
-                        }
-                    }
 
                     if !result.filtered_output.is_empty() {
                         let _ = app_clone.emit(
