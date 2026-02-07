@@ -1,4 +1,12 @@
-import { ChevronDown, ChevronRight, Minus, Pencil, Plus, RefreshCw, X } from "lucide-react";
+import {
+	ChevronDown,
+	ChevronRight,
+	Minus,
+	Pencil,
+	Plus,
+	RefreshCw,
+	X,
+} from "lucide-react";
 import { useCallback, useState } from "react";
 import type { GitFileStatus } from "@/types/git";
 
@@ -60,6 +68,7 @@ function FileStatusItem({
 	const isSelected = selectedPath === entry.path;
 
 	return (
+		// biome-ignore lint/a11y/useSemanticElements: ネストされたbuttonがあるためdiv+role使用
 		<div
 			role="button"
 			tabIndex={0}

@@ -5,7 +5,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { WsMessage } from "@/types/protocol";
 import { deserializeMessage, serializeMessage } from "@/types/protocol";
 
-export type ConnectionStatus = "disconnected" | "connecting" | "authenticating" | "connected";
+export type ConnectionStatus =
+	| "disconnected"
+	| "connecting"
+	| "authenticating"
+	| "connected";
 
 interface UseWebSocketOptions {
 	url: string;
@@ -22,7 +26,12 @@ function computeHmac(challenge: string, token: string): string {
 	return bytesToHex(hmac(sha256, enc.encode(token), enc.encode(challenge)));
 }
 
-export function useWebSocket({ url, token, onMessage, onStatusChange }: UseWebSocketOptions) {
+export function useWebSocket({
+	url,
+	token,
+	onMessage,
+	onStatusChange,
+}: UseWebSocketOptions) {
 	const [status, setStatus] = useState<ConnectionStatus>("disconnected");
 	const wsRef = useRef<WebSocket | null>(null);
 	const backoffRef = useRef(INITIAL_BACKOFF_MS);
@@ -44,6 +53,7 @@ export function useWebSocket({ url, token, onMessage, onStatusChange }: UseWebSo
 		}
 	}, []);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: connect と scheduleReconnect は相互依存のため循環回避
 	const connect = useCallback(() => {
 		if (!mountedRef.current || !url || !token) return;
 		if (wsRef.current) {

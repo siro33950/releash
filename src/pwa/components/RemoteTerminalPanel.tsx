@@ -46,7 +46,13 @@ type ModifierState = null | { type: "ctrl"; locked: boolean };
 
 const DOUBLE_TAP_MS = 300;
 
-export function RemoteTerminalPanel({ ptyId, ptyCols, send, subscribe, visible }: RemoteTerminalPanelProps) {
+export function RemoteTerminalPanel({
+	ptyId,
+	ptyCols,
+	send,
+	subscribe,
+	visible,
+}: RemoteTerminalPanelProps) {
 	const rootRef = useRef<HTMLDivElement>(null);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -99,13 +105,13 @@ export function RemoteTerminalPanel({ ptyId, ptyCols, send, subscribe, visible }
 		[send, ptyId],
 	);
 
-	const applyCtrlToChar = (char: string): string => {
+	const applyCtrlToChar = useCallback((char: string): string => {
 		const code = char.toUpperCase().charCodeAt(0) - 64;
 		if (code >= 0 && code <= 31) {
 			return String.fromCharCode(code);
 		}
 		return char;
-	};
+	}, []);
 
 	const consumeModifier = useCallback((): boolean => {
 		if (!modifier) return false;
@@ -122,7 +128,7 @@ export function RemoteTerminalPanel({ ptyId, ptyCols, send, subscribe, visible }
 		}
 		sendPtyInput(data);
 		setInputValue("");
-	}, [inputValue, consumeModifier, sendPtyInput]);
+	}, [inputValue, consumeModifier, sendPtyInput, applyCtrlToChar]);
 
 	const handleCtrlTap = useCallback(() => {
 		const now = Date.now();
@@ -156,7 +162,7 @@ export function RemoteTerminalPanel({ ptyId, ptyCols, send, subscribe, visible }
 			sendPtyInput(key);
 			inputRef.current?.focus();
 		},
-		[handleCtrlTap, consumeModifier, sendPtyInput],
+		[handleCtrlTap, consumeModifier, sendPtyInput, applyCtrlToChar],
 	);
 
 	const handleShortcut = useCallback(
@@ -191,7 +197,9 @@ export function RemoteTerminalPanel({ ptyId, ptyCols, send, subscribe, visible }
 								key={def.label}
 								type="button"
 								className={`px-2 py-1 text-xs rounded shrink-0 ${
-									isCtrl ? ctrlButtonClass : "bg-[#333] text-[#ccc] active:bg-[#555]"
+									isCtrl
+										? ctrlButtonClass
+										: "bg-[#333] text-[#ccc] active:bg-[#555]"
 								}`}
 								onPointerDown={(e) => {
 									e.preventDefault();
@@ -208,7 +216,9 @@ export function RemoteTerminalPanel({ ptyId, ptyCols, send, subscribe, visible }
 					<button
 						type="button"
 						className={`px-2 py-1 text-xs rounded shrink-0 ${
-							menuOpen ? "bg-blue-600 text-white" : "bg-[#333] text-[#ccc] active:bg-[#555]"
+							menuOpen
+								? "bg-blue-600 text-white"
+								: "bg-[#333] text-[#ccc] active:bg-[#555]"
 						}`}
 						onPointerDown={(e) => {
 							e.preventDefault();

@@ -404,7 +404,11 @@ mod tests {
                 rows: 24,
                 cols: 80,
             }),
-            WsMessage::PtyReady(PtyReady { pty_id: 1, cols: 80, rows: 24 }),
+            WsMessage::PtyReady(PtyReady {
+                pty_id: 1,
+                cols: 80,
+                rows: 24,
+            }),
             WsMessage::GitStatusSync(GitStatusSync { files: vec![] }),
             WsMessage::FileContentRequest(FileContentRequest {
                 path: "f".to_string(),

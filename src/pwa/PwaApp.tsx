@@ -1,7 +1,7 @@
 import { FileDiff, GitBranch, MessageSquare, Terminal } from "lucide-react";
 import { useCallback, useState } from "react";
-import type { LineComment } from "@/types/comment";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
+import type { LineComment } from "@/types/comment";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { RemoteCommentList } from "./components/RemoteCommentList";
 import { RemoteDiffPanel } from "./components/RemoteDiffPanel";
@@ -69,8 +69,14 @@ export function PwaApp() {
 	});
 
 	const { stagedFiles, changedFiles } = useRemoteGitStatus({ subscribe });
-	const { content, loading, requestContent } = useRemoteFileContent({ subscribe, send });
-	const { stage, unstage, error, clearError } = useRemoteGitActions({ send, subscribe });
+	const { content, loading, requestContent } = useRemoteFileContent({
+		subscribe,
+		send,
+	});
+	const { stage, unstage, error, clearError } = useRemoteGitActions({
+		send,
+		subscribe,
+	});
 
 	const handleConnect = useCallback((wsUrl: string, token: string) => {
 		setConnection({ url: wsUrl, token });
@@ -99,7 +105,12 @@ export function PwaApp() {
 	}, [send]);
 
 	const handleAddComment = useCallback(
-		(filePath: string, lineNumber: number, content: string, endLine?: number) => {
+		(
+			filePath: string,
+			lineNumber: number,
+			content: string,
+			endLine?: number,
+		) => {
 			send({
 				type: "add_comment",
 				payload: {
@@ -165,7 +176,10 @@ export function PwaApp() {
 			</header>
 
 			<main className="flex-1 overflow-hidden relative">
-				<div className="absolute inset-0" style={{ display: activeTab === "changes" ? undefined : "none" }}>
+				<div
+					className="absolute inset-0"
+					style={{ display: activeTab === "changes" ? undefined : "none" }}
+				>
 					<RemoteSourceControl
 						stagedFiles={stagedFiles}
 						changedFiles={changedFiles}
@@ -180,7 +194,10 @@ export function PwaApp() {
 					/>
 				</div>
 
-				<div className="absolute inset-0 flex flex-col" style={{ display: activeTab === "diff" ? undefined : "none" }}>
+				<div
+					className="absolute inset-0 flex flex-col"
+					style={{ display: activeTab === "diff" ? undefined : "none" }}
+				>
 					{selectedPath && (
 						<div className="flex items-center px-3 py-1 border-b border-neutral-800 bg-neutral-900 shrink-0">
 							<span className="text-xs text-neutral-500 truncate">
@@ -205,7 +222,10 @@ export function PwaApp() {
 					</div>
 				</div>
 
-				<div className="absolute inset-0" style={{ display: activeTab === "comments" ? undefined : "none" }}>
+				<div
+					className="absolute inset-0"
+					style={{ display: activeTab === "comments" ? undefined : "none" }}
+				>
 					<RemoteCommentList
 						comments={comments}
 						onSendToTerminal={handleSendToTerminal}
@@ -227,7 +247,9 @@ export function PwaApp() {
 							subscribe={subscribe}
 							visible={activeTab === "terminal"}
 						/>
-					) : activeTab === "terminal" && status === "connected" && ptyId == null ? (
+					) : activeTab === "terminal" &&
+						status === "connected" &&
+						ptyId == null ? (
 						<div className="flex items-center justify-center h-full text-neutral-500">
 							<p>デスクトップのターミナルがまだ起動していません</p>
 						</div>

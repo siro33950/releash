@@ -182,7 +182,7 @@ function HunkRows({
 				const isSelStart =
 					selectionStart != null && line.newLine === selectionStart;
 				const isRangeHighlight =
-					tappable && isInRange(line.newLine!, highlightRange);
+					tappable && isInRange(line.newLine as number, highlightRange);
 
 				let rowHighlight = "";
 				if (isRangeHighlight) {
@@ -195,17 +195,17 @@ function HunkRows({
 					<tr
 						key={`${hunk.index}-${i}`}
 						className={`${lineStyle(line.prefix)} select-none ${tappable ? "active:bg-neutral-700/50" : ""} ${rowHighlight}`}
-						onPointerDown={tappable ? () => onPointerDown(line.newLine!) : undefined}
-						onPointerUp={tappable ? () => onPointerUp(line.newLine!) : undefined}
+						onPointerDown={
+							tappable ? () => onPointerDown(line.newLine as number) : undefined
+						}
+						onPointerUp={
+							tappable ? () => onPointerUp(line.newLine as number) : undefined
+						}
 						onPointerLeave={tappable ? onPointerCancel : undefined}
 						onPointerCancel={tappable ? onPointerCancel : undefined}
 					>
-						<td className={lineNumberClass}>
-							{line.oldLine ?? ""}
-						</td>
-						<td className={lineNumberClass}>
-							{line.newLine ?? ""}
-						</td>
+						<td className={lineNumberClass}>{line.oldLine ?? ""}</td>
+						<td className={lineNumberClass}>{line.newLine ?? ""}</td>
 						<td className="px-3 py-0 whitespace-pre">
 							{line.prefix}
 							{line.content}
