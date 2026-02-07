@@ -3,6 +3,7 @@ import type * as Monaco from "monaco-editor";
 import { type RefObject, useEffect, useRef } from "react";
 import {
 	defaultEditorOptions,
+	disableBuiltinDiagnostics,
 	MONACO_THEME_NAME,
 	monacoTheme,
 } from "@/lib/monaco-config";
@@ -40,6 +41,7 @@ export function useMonacoEditor(
 			if (!isMounted) return;
 
 			monacoRef.current = monaco;
+			disableBuiltinDiagnostics(monaco);
 
 			monaco.editor.defineTheme(MONACO_THEME_NAME, monacoTheme);
 			monaco.editor.setTheme(MONACO_THEME_NAME);

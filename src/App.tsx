@@ -1,9 +1,11 @@
+import { loader } from "@monaco-editor/react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { EditorPanel } from "@/components/panels/EditorPanel";
+import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
@@ -19,6 +21,7 @@ import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useLineComments } from "@/hooks/useLineComments";
 import { useSettings } from "@/hooks/useSettings";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
+import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
 import type { LineComment } from "@/types/comment";
 import type { DiffBase, DiffMode } from "@/types/settings";
 
@@ -54,10 +57,38 @@ function App() {
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
 	const refreshGit = useCallback(() => setGitRefreshKey((k) => k + 1), []);
 
+	const rootPathRef = useRef(rootPath);
+	rootPathRef.current = rootPath;
+
+	useEffect(() => {
+		loader
+			.init()
+			.then((monaco) => {
+				registerDefinitionProviders(monaco, {
+					onOpenFileAtLine: (relativePath, line) => {
+						const rp = rootPathRef.current;
+						if (!rp) return;
+						const absolutePath = `${rp}/${relativePath}`;
+						openFile(absolutePath);
+						setPendingReveal({ path: absolutePath, line });
+					},
+					getRootPath: () => rootPathRef.current,
+				});
+			})
+			.catch((error) => {
+				console.error("Failed to initialize Monaco:", error);
+			});
+	}, [openFile]);
+
 	const [diffBase, setDiffBase] = useState<DiffBase>(settings.defaultDiffBase);
 	const [diffMode, setDiffMode] = useState<DiffMode>(settings.defaultDiffMode);
 	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
 	const [pendingRootPath, setPendingRootPath] = useState<string | null>(null);
+	const [pendingReveal, setPendingReveal] = useState<{
+		path: string;
+		line: number;
+	} | null>(null);
+	const [searchFocusKey, setSearchFocusKey] = useState(0);
 
 	const handleSave = useCallback(() => {
 		if (activeTab?.isDirty) {
@@ -65,7 +96,27 @@ function App() {
 		}
 	}, [activeTab, saveFile]);
 
-	useKeyboardShortcuts({ onSave: handleSave });
+	const handleSearch = useCallback(() => {
+		setActiveView("search");
+		setSearchFocusKey((k) => k + 1);
+	}, []);
+
+	useKeyboardShortcuts({ onSave: handleSave, onSearch: handleSearch });
+
+	const handleSearchResultClick = useCallback(
+		(relativePath: string, line: number) => {
+			if (!rootPath) return;
+			const absolutePath = `${rootPath}/${relativePath}`;
+			openFile(absolutePath);
+			setPendingReveal({ path: absolutePath, line });
+		},
+		[rootPath, openFile],
+	);
+
+	const handleSearchOccurrences = useCallback((_text: string) => {
+		setActiveView("search");
+		setSearchFocusKey((k) => k + 1);
+	}, []);
 
 	const handleOpenFolder = useCallback(async () => {
 		const selected = await open({ directory: true });
@@ -197,6 +248,12 @@ function App() {
 								onGitChanged={refreshGit}
 								gitRefreshKey={gitRefreshKey}
 							/>
+						) : activeView === "search" ? (
+							<SearchPanel
+								rootPath={rootPath}
+								onSelectFileAtLine={handleSearchResultClick}
+								focusKey={searchFocusKey}
+							/>
 						) : activeView === "settings" ? (
 							<SettingsPanel
 								settings={settings}
@@ -241,6 +298,9 @@ function App() {
 							theme={settings.theme}
 							gitRefreshKey={gitRefreshKey}
 							onGitChanged={refreshGit}
+							externalRevealLine={pendingReveal}
+							onExternalRevealConsumed={() => setPendingReveal(null)}
+							onSearchOccurrences={handleSearchOccurrences}
 						/>
 					</Panel>
 
