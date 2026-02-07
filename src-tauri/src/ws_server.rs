@@ -889,7 +889,10 @@ pub async fn start_server(
             None
         }
     } else {
-        app.path().resource_dir().ok().map(|d| d.join("pwa"))
+        app.path()
+            .resource_dir()
+            .ok()
+            .map(|d| d.join("resources").join("pwa"))
     };
     let server_state = Arc::new(WsServerState::new(
         pwa_dir,
