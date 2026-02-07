@@ -13,7 +13,10 @@ interface UseRemoteFileContentOptions {
 	send: (msg: WsMessage) => void;
 }
 
-export function useRemoteFileContent({ subscribe, send }: UseRemoteFileContentOptions) {
+export function useRemoteFileContent({
+	subscribe,
+	send,
+}: UseRemoteFileContentOptions) {
 	const [content, setContent] = useState<FileContent | null>(null);
 	const [loading, setLoading] = useState(false);
 	const currentPathRef = useRef<string | null>(null);

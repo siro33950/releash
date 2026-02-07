@@ -25,7 +25,10 @@ impl Default for WsBroadcaster {
 impl WsBroadcaster {
     pub fn try_send(&self, msg: WsMessage) {
         if let WsMessage::PtyOutput(ref pty) = msg {
-            let mut buf = self.pty_output_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            let mut buf = self
+                .pty_output_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             for byte in pty.data.as_bytes() {
                 if buf.len() >= PTY_OUTPUT_BUFFER_SIZE {
                     buf.pop_front();
@@ -41,7 +44,10 @@ impl WsBroadcaster {
     }
 
     pub fn take_pty_output_buffer(&self) -> String {
-        let buf = self.pty_output_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        let buf = self
+            .pty_output_buffer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let bytes: Vec<u8> = buf.iter().copied().collect();
         String::from_utf8_lossy(&bytes).to_string()
     }

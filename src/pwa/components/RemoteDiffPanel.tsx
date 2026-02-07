@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
-import { RemoteCommentInput } from "./RemoteCommentInput";
 import { DiffRenderer } from "./DiffRenderer";
+import { RemoteCommentInput } from "./RemoteCommentInput";
 
 interface LineRange {
 	start: number;
@@ -12,7 +12,12 @@ interface RemoteDiffPanelProps {
 	original: string;
 	modified: string;
 	loading: boolean;
-	onAddComment?: (filePath: string, lineNumber: number, content: string, endLine?: number) => void;
+	onAddComment?: (
+		filePath: string,
+		lineNumber: number,
+		content: string,
+		endLine?: number,
+	) => void;
 }
 
 export function RemoteDiffPanel({
@@ -25,31 +30,38 @@ export function RemoteDiffPanel({
 	const [selectionStart, setSelectionStart] = useState<number | null>(null);
 	const [commentRange, setCommentRange] = useState<LineRange | null>(null);
 
-	const handleLineTap = useCallback((lineNumber: number) => {
-		if (!onAddComment) return;
+	const handleLineTap = useCallback(
+		(lineNumber: number) => {
+			if (!onAddComment) return;
 
-		if (selectionStart != null) {
-			const start = Math.min(selectionStart, lineNumber);
-			const end = Math.max(selectionStart, lineNumber);
-			setCommentRange({ start, end });
-			setSelectionStart(null);
-		} else {
-			setCommentRange({ start: lineNumber, end: lineNumber });
-		}
-	}, [onAddComment, selectionStart]);
+			if (selectionStart != null) {
+				const start = Math.min(selectionStart, lineNumber);
+				const end = Math.max(selectionStart, lineNumber);
+				setCommentRange({ start, end });
+				setSelectionStart(null);
+			} else {
+				setCommentRange({ start: lineNumber, end: lineNumber });
+			}
+		},
+		[onAddComment, selectionStart],
+	);
 
-	const handleLineLongPress = useCallback((lineNumber: number) => {
-		if (!onAddComment) return;
-		setSelectionStart(lineNumber);
-		setCommentRange(null);
-	}, [onAddComment]);
+	const handleLineLongPress = useCallback(
+		(lineNumber: number) => {
+			if (!onAddComment) return;
+			setSelectionStart(lineNumber);
+			setCommentRange(null);
+		},
+		[onAddComment],
+	);
 
 	const handleSaveComment = useCallback(
 		(content: string) => {
 			if (path && commentRange) {
-				const endLine = commentRange.start !== commentRange.end
-					? commentRange.end
-					: undefined;
+				const endLine =
+					commentRange.start !== commentRange.end
+						? commentRange.end
+						: undefined;
 				onAddComment?.(path, commentRange.start, content, endLine);
 			}
 			setCommentRange(null);
@@ -109,7 +121,11 @@ export function RemoteDiffPanel({
 			{commentRange != null && (
 				<RemoteCommentInput
 					lineNumber={commentRange.start}
-					endLine={commentRange.start !== commentRange.end ? commentRange.end : undefined}
+					endLine={
+						commentRange.start !== commentRange.end
+							? commentRange.end
+							: undefined
+					}
 					onSave={handleSaveComment}
 					onCancel={handleCancelComment}
 				/>

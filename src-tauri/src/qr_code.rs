@@ -54,14 +54,14 @@ pub fn get_connection_qr(
         .active_bind()
         .unwrap_or_else(|| config.server.bind.clone());
     let tls_enabled = server_handle.is_tls_enabled();
-    let url = build_connection_url(
-        &bind,
-        config.server.port,
-        tls_enabled,
-    )?;
+    let url = build_connection_url(&bind, config.server.port, tls_enabled)?;
     let svg = generate_qr_svg(&url)?;
     let token_svg = generate_qr_svg(&config.server.token)?;
-    Ok(QrCodeResult { url, svg, token_svg })
+    Ok(QrCodeResult {
+        url,
+        svg,
+        token_svg,
+    })
 }
 
 #[cfg(test)]

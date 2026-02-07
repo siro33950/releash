@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { QrTokenScanner } from "./QrTokenScanner";
 
 const STORAGE_KEY = "releash-connection";
@@ -62,7 +62,10 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 				</p>
 
 				<div className="space-y-2">
-					<label className="block text-sm font-medium text-neutral-300" htmlFor="host">
+					<label
+						className="block text-sm font-medium text-neutral-300"
+						htmlFor="host"
+					>
 						ホスト (IP:ポート)
 					</label>
 					<input
@@ -76,7 +79,10 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 				</div>
 
 				<div className="space-y-2">
-					<label className="block text-sm font-medium text-neutral-300" htmlFor="token">
+					<label
+						className="block text-sm font-medium text-neutral-300"
+						htmlFor="token"
+					>
 						トークン
 					</label>
 					<div className="flex gap-2">

@@ -386,7 +386,11 @@ pub fn spawn_pty(
 }
 
 #[tauri::command]
-pub fn write_pty(state: State<'_, Arc<PtyManager>>, pty_id: u64, data: String) -> Result<(), String> {
+pub fn write_pty(
+    state: State<'_, Arc<PtyManager>>,
+    pty_id: u64,
+    data: String,
+) -> Result<(), String> {
     state.write(pty_id, &data)
 }
 

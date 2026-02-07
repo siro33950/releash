@@ -3,10 +3,7 @@
 pub fn send_notification(webhook_url: &str, exit_code: i32) {
     let url = webhook_url.to_string();
     std::thread::spawn(move || {
-        let message = format!(
-            "releash: コマンドが終了しました (exit code: {})",
-            exit_code
-        );
+        let message = format!("releash: コマンドが終了しました (exit code: {})", exit_code);
 
         let body = serde_json::json!({
             "text": message,

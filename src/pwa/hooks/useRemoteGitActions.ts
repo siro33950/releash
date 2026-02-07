@@ -7,7 +7,10 @@ interface UseRemoteGitActionsOptions {
 	subscribe: Subscribe;
 }
 
-export function useRemoteGitActions({ send, subscribe }: UseRemoteGitActionsOptions) {
+export function useRemoteGitActions({
+	send,
+	subscribe,
+}: UseRemoteGitActionsOptions) {
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {

@@ -67,8 +67,7 @@ fn list_network_interfaces() -> Result<Vec<RawInterface>, String> {
         .output()
         .map_err(|e| format!("ifconfig 実行失敗: {e}"))?;
 
-    let stdout =
-        String::from_utf8(output.stdout).map_err(|e| format!("UTF-8 パース失敗: {e}"))?;
+    let stdout = String::from_utf8(output.stdout).map_err(|e| format!("UTF-8 パース失敗: {e}"))?;
 
     parse_ifconfig_output(&stdout)
 }
@@ -104,11 +103,7 @@ pub fn resolve_bind_address(bind: &str) -> Result<IpAddr, String> {
     match bind {
         "meshnet" => {
             if let Some(iface) = detect_vpn_ip() {
-                log::info!(
-                    "VPNトンネル検出: {} ({})",
-                    iface.name,
-                    iface.ip
-                );
+                log::info!("VPNトンネル検出: {} ({})", iface.name, iface.ip);
                 Ok(IpAddr::V4(iface.ip))
             } else {
                 log::warn!("VPNトンネルが見つかりません。手動でIPアドレスを指定してください。");

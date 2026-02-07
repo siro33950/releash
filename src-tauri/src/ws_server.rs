@@ -161,7 +161,9 @@ fn validate_relative_path(path: &str, repo_root: &str) -> Result<PathBuf, String
     if std::path::Path::new(path).is_absolute() {
         return Err("絶対パスは拒否されます".to_string());
     }
-    let root = std::path::Path::new(repo_root).canonicalize().map_err(|e| e.to_string())?;
+    let root = std::path::Path::new(repo_root)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
     let resolved = root.join(path).canonicalize().map_err(|e| e.to_string())?;
     if !resolved.starts_with(&root) {
         return Err("プロジェクトルート外のパスは拒否されます".to_string());
@@ -181,12 +183,10 @@ fn handle_file_content_request(req: &FileContentRequest, repo_path: &str) -> WsM
         .join(&req.path)
         .to_string_lossy()
         .to_string();
-    let original = crate::git::get_file_at_ref(absolute_path, "HEAD".to_string())
+    let original =
+        crate::git::get_file_at_ref(absolute_path, "HEAD".to_string()).unwrap_or_default();
+    let modified = std::fs::read_to_string(std::path::Path::new(repo_path).join(&req.path))
         .unwrap_or_default();
-    let modified = std::fs::read_to_string(
-        std::path::Path::new(repo_path).join(&req.path),
-    )
-    .unwrap_or_default();
 
     WsMessage::FileContentResponse(FileContentResponse {
         path: req.path.clone(),
@@ -294,7 +294,12 @@ fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessage> {
         }
         WsMessage::GitStage(req) => {
             if let Some(repo_path) = &state.repo_path {
-                Some(handle_git_stage_unstage(repo_path, &req.paths, true, &state.broadcaster))
+                Some(handle_git_stage_unstage(
+                    repo_path,
+                    &req.paths,
+                    true,
+                    &state.broadcaster,
+                ))
             } else {
                 Some(WsMessage::Error(ErrorMsg {
                     code: "NO_REPO".to_string(),
@@ -304,7 +309,12 @@ fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessage> {
         }
         WsMessage::GitUnstage(req) => {
             if let Some(repo_path) = &state.repo_path {
-                Some(handle_git_stage_unstage(repo_path, &req.paths, false, &state.broadcaster))
+                Some(handle_git_stage_unstage(
+                    repo_path,
+                    &req.paths,
+                    false,
+                    &state.broadcaster,
+                ))
             } else {
                 Some(WsMessage::Error(ErrorMsg {
                     code: "NO_REPO".to_string(),
@@ -314,12 +324,15 @@ fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessage> {
         }
         WsMessage::AddComment(comment) => {
             if let Some(app) = &state.app_handle {
-                let _ = app.emit("remote-comment-added", serde_json::json!({
-                    "file_path": comment.file_path,
-                    "line_number": comment.line_number,
-                    "end_line": comment.end_line,
-                    "content": comment.content,
-                }));
+                let _ = app.emit(
+                    "remote-comment-added",
+                    serde_json::json!({
+                        "file_path": comment.file_path,
+                        "line_number": comment.line_number,
+                        "end_line": comment.end_line,
+                        "content": comment.content,
+                    }),
+                );
             }
             None
         }
@@ -433,9 +446,7 @@ where
 {
     let service = service_fn(move |req| {
         let state = Arc::clone(&state);
-        async move {
-            Ok::<_, std::convert::Infallible>(handle_http(req, peer_addr, state).await)
-        }
+        async move { Ok::<_, std::convert::Infallible>(handle_http(req, peer_addr, state).await) }
     });
 
     http1::Builder::new()
@@ -481,8 +492,7 @@ fn handle_ws_upgrade(
         .map(|s| s.to_string())
         .ok_or("Missing Sec-WebSocket-Key")?;
 
-    let accept =
-        tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+    let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
     let on_upgrade = hyper::upgrade::on(&mut req);
 
     tokio::spawn(async move {
@@ -525,9 +535,7 @@ fn serve_pwa(path: &str, state: &WsServerState) -> Response<Full<Bytes>> {
     };
 
     let full_path = pwa_dir.join(file_path);
-    if let (Ok(canonical), Ok(pwa_canonical)) =
-        (full_path.canonicalize(), pwa_dir.canonicalize())
-    {
+    if let (Ok(canonical), Ok(pwa_canonical)) = (full_path.canonicalize(), pwa_dir.canonicalize()) {
         if !canonical.starts_with(&pwa_canonical) {
             return error_response(StatusCode::FORBIDDEN, "Access denied");
         }
@@ -611,7 +619,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         challenge: challenge.clone(),
     });
     write
-        .send(Message::Text(serialize_message(&challenge_msg).map_err(|e| e.to_string())?))
+        .send(Message::Text(
+            serialize_message(&challenge_msg).map_err(|e| e.to_string())?,
+        ))
         .await
         .map_err(|e| format!("Failed to send challenge: {e}"))?;
 
@@ -619,8 +629,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         while let Some(msg) = read.next().await {
             let msg = msg.map_err(|e| format!("Read error: {e}"))?;
             if let Message::Text(text) = msg {
-                let ws_msg =
-                    deserialize_message(&text).map_err(|e| format!("Parse error: {e}"))?;
+                let ws_msg = deserialize_message(&text).map_err(|e| format!("Parse error: {e}"))?;
                 if let WsMessage::AuthResponse(resp) = ws_msg {
                     return Ok(resp.hmac);
                 }
@@ -640,7 +649,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                 message: Some(e.clone()),
             });
             let _ = write
-                .send(Message::Text(serialize_message(&fail_msg).unwrap_or_default()))
+                .send(Message::Text(
+                    serialize_message(&fail_msg).unwrap_or_default(),
+                ))
                 .await;
             return Err(e);
         }
@@ -652,7 +663,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                 message: Some("認証タイムアウト".to_string()),
             });
             let _ = write
-                .send(Message::Text(serialize_message(&fail_msg).unwrap_or_default()))
+                .send(Message::Text(
+                    serialize_message(&fail_msg).unwrap_or_default(),
+                ))
                 .await;
             return Err("Auth timeout".to_string());
         }
@@ -666,7 +679,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
             message: Some("認証失敗".to_string()),
         });
         let _ = write
-            .send(Message::Text(serialize_message(&fail_msg).unwrap_or_default()))
+            .send(Message::Text(
+                serialize_message(&fail_msg).unwrap_or_default(),
+            ))
             .await;
         return Err("Authentication failed".to_string());
     }
@@ -681,7 +696,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         message: None,
     });
     write
-        .send(Message::Text(serialize_message(&success_msg).map_err(|e| e.to_string())?))
+        .send(Message::Text(
+            serialize_message(&success_msg).map_err(|e| e.to_string())?,
+        ))
         .await
         .map_err(|e| format!("Failed to send auth result: {e}"))?;
 
@@ -701,7 +718,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
             let (cols, rows) = pm.get_pty_size(pty_id).unwrap_or((80, 24));
             let ready_msg = WsMessage::PtyReady(PtyReady { pty_id, cols, rows });
             write
-                .send(Message::Text(serialize_message(&ready_msg).map_err(|e| e.to_string())?))
+                .send(Message::Text(
+                    serialize_message(&ready_msg).map_err(|e| e.to_string())?,
+                ))
                 .await
                 .map_err(|e| format!("Failed to send pty_ready: {e}"))?;
 
@@ -712,7 +731,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                     data: buffered,
                 });
                 write
-                    .send(Message::Text(serialize_message(&replay_msg).map_err(|e| e.to_string())?))
+                    .send(Message::Text(
+                        serialize_message(&replay_msg).map_err(|e| e.to_string())?,
+                    ))
                     .await
                     .map_err(|e| format!("Failed to send pty output replay: {e}"))?;
             }
@@ -722,7 +743,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                 message: "デスクトップのターミナルがまだ起動していません".to_string(),
             });
             write
-                .send(Message::Text(serialize_message(&err_msg).map_err(|e| e.to_string())?))
+                .send(Message::Text(
+                    serialize_message(&err_msg).map_err(|e| e.to_string())?,
+                ))
                 .await
                 .map_err(|e| format!("Failed to send no_pty error: {e}"))?;
         }
@@ -741,7 +764,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
             .collect::<Vec<_>>();
         let sync_msg = WsMessage::GitStatusSync(GitStatusSync { files });
         write
-            .send(Message::Text(serialize_message(&sync_msg).map_err(|e| e.to_string())?))
+            .send(Message::Text(
+                serialize_message(&sync_msg).map_err(|e| e.to_string())?,
+            ))
             .await
             .map_err(|e| format!("Failed to send initial git status: {e}"))?;
     }
@@ -828,7 +853,9 @@ pub async fn start_server(
     cfg.server.bind = bind_ip.clone();
 
     let bind_ip_addr = std::net::IpAddr::V4(vpn_iface.ip);
-    let data_dir = app.path().app_data_dir()
+    let data_dir = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("データディレクトリの取得失敗: {e}"))?;
     let (cert_path, key_path) = crate::tls::ensure_self_signed_cert(bind_ip_addr, &data_dir)?;
     cfg.server.tls.enabled = true;
@@ -841,7 +868,11 @@ pub async fn start_server(
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
             .join("pwa");
-        if dir.exists() { Some(dir) } else { None }
+        if dir.exists() {
+            Some(dir)
+        } else {
+            None
+        }
     } else {
         app.path().resource_dir().ok().map(|d| d.join("pwa"))
     };
@@ -869,9 +900,7 @@ pub async fn start_server(
 }
 
 #[tauri::command]
-pub fn stop_server(
-    handle: tauri::State<'_, WsServerHandle>,
-) -> Result<(), String> {
+pub fn stop_server(handle: tauri::State<'_, WsServerHandle>) -> Result<(), String> {
     let tx = {
         let mut shutdown_tx = handle.shutdown_tx.lock();
         shutdown_tx.take()
@@ -890,9 +919,7 @@ pub fn stop_server(
 }
 
 #[tauri::command]
-pub fn get_server_status(
-    handle: tauri::State<'_, WsServerHandle>,
-) -> bool {
+pub fn get_server_status(handle: tauri::State<'_, WsServerHandle>) -> bool {
     *handle.running.lock()
 }
 
@@ -990,7 +1017,14 @@ mod tests {
             config,
             std::path::PathBuf::from("/tmp/test-releash.toml"),
         ));
-        WsServerState::new(None, Arc::new(WsBroadcaster::default()), None, None, app_config, None)
+        WsServerState::new(
+            None,
+            Arc::new(WsBroadcaster::default()),
+            None,
+            None,
+            app_config,
+            None,
+        )
     }
 
     #[test]

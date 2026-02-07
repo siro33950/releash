@@ -52,7 +52,14 @@ function calculateRows(containerHeight: number, fontSize: number): number {
 	return Math.max(1, Math.floor(containerHeight / cellHeight));
 }
 
-export function useRemoteTerminal({ containerRef, ptyId, ptyCols, send, subscribe, visible }: UseRemoteTerminalOptions) {
+export function useRemoteTerminal({
+	containerRef,
+	ptyId,
+	ptyCols,
+	send,
+	subscribe,
+	visible,
+}: UseRemoteTerminalOptions) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const ptyColsRef = useRef(ptyCols);
 	ptyColsRef.current = ptyCols;
@@ -64,7 +71,8 @@ export function useRemoteTerminal({ containerRef, ptyId, ptyCols, send, subscrib
 		const containerWidth = container.clientWidth;
 		const containerHeight = container.clientHeight;
 		const fontSize = calculateFontSize(containerWidth, ptyCols);
-		const needsHorizontalScroll = fontSize <= MIN_FONT_SIZE &&
+		const needsHorizontalScroll =
+			fontSize <= MIN_FONT_SIZE &&
 			containerWidth < ptyCols * MIN_FONT_SIZE * CHAR_WIDTH_RATIO;
 
 		if (needsHorizontalScroll) {
@@ -97,7 +105,8 @@ export function useRemoteTerminal({ containerRef, ptyId, ptyCols, send, subscrib
 			const newFontSize = calculateFontSize(w, currentCols);
 			const newRows = calculateRows(h, newFontSize);
 
-			const needsScroll = newFontSize <= MIN_FONT_SIZE &&
+			const needsScroll =
+				newFontSize <= MIN_FONT_SIZE &&
 				w < currentCols * MIN_FONT_SIZE * CHAR_WIDTH_RATIO;
 			container.style.overflowX = needsScroll ? "auto" : "";
 
@@ -125,7 +134,8 @@ export function useRemoteTerminal({ containerRef, ptyId, ptyCols, send, subscrib
 				const newFontSize = calculateFontSize(w, newCols);
 				const fitRows = calculateRows(h, newFontSize);
 
-				const needsScroll = newFontSize <= MIN_FONT_SIZE &&
+				const needsScroll =
+					newFontSize <= MIN_FONT_SIZE &&
 					w < newCols * MIN_FONT_SIZE * CHAR_WIDTH_RATIO;
 				container.style.overflowX = needsScroll ? "auto" : "";
 

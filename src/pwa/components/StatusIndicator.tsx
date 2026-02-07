@@ -1,11 +1,12 @@
 import type { ConnectionStatus } from "../hooks/useWebSocket";
 
-const statusConfig: Record<ConnectionStatus, { label: string; color: string }> = {
-	connected: { label: "接続中", color: "bg-green-500" },
-	connecting: { label: "接続試行中", color: "bg-yellow-500 animate-pulse" },
-	authenticating: { label: "認証中", color: "bg-yellow-500 animate-pulse" },
-	disconnected: { label: "切断", color: "bg-red-500" },
-};
+const statusConfig: Record<ConnectionStatus, { label: string; color: string }> =
+	{
+		connected: { label: "接続中", color: "bg-green-500" },
+		connecting: { label: "接続試行中", color: "bg-yellow-500 animate-pulse" },
+		authenticating: { label: "認証中", color: "bg-yellow-500 animate-pulse" },
+		disconnected: { label: "切断", color: "bg-red-500" },
+	};
 
 interface StatusIndicatorProps {
 	status: ConnectionStatus;

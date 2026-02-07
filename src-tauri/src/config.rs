@@ -95,7 +95,8 @@ pub fn generate_token() -> String {
 
 pub fn load_or_create_config(path: &Path) -> Result<ReleashConfig, String> {
     let mut config = if path.exists() {
-        let content = fs::read_to_string(path).map_err(|e| format!("設定ファイル読み込み失敗: {e}"))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("設定ファイル読み込み失敗: {e}"))?;
         toml::from_str::<ReleashConfig>(&content)
             .map_err(|e| format!("設定ファイルのパース失敗: {e}"))?
     } else {
@@ -126,9 +127,7 @@ pub fn write_config(path: &Path, config: &ReleashConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_server_config(
-    state: tauri::State<'_, Arc<AppConfig>>,
-) -> Result<ServerSection, String> {
+pub fn get_server_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<ServerSection, String> {
     let config = state
         .config
         .lock()
@@ -151,9 +150,7 @@ pub fn update_server_port(
 }
 
 #[tauri::command]
-pub fn regenerate_token(
-    state: tauri::State<'_, Arc<AppConfig>>,
-) -> Result<String, String> {
+pub fn regenerate_token(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
     let mut config = state
         .config
         .lock()

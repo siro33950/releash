@@ -26,7 +26,8 @@ export function RemoteCommentInput({
 		<div className="border-t border-neutral-700 bg-neutral-900 p-3 animate-in slide-in-from-bottom-2">
 			<div className="flex items-center gap-2 mb-2">
 				<span className="text-xs font-mono text-neutral-400 bg-neutral-800 px-1.5 py-0.5 rounded">
-					L{lineNumber}{endLine != null ? `-${endLine}` : ""}
+					L{lineNumber}
+					{endLine != null ? `-${endLine}` : ""}
 				</span>
 				<span className="text-xs text-neutral-500">コメントを追加</span>
 			</div>

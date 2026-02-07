@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
 import { Html5Qrcode } from "html5-qrcode";
+import { useEffect, useRef } from "react";
 
 interface QrTokenScannerProps {
 	onScan: (token: string) => void;

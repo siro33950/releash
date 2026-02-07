@@ -416,9 +416,7 @@ export function useMonacoDiffEditor(
 					hi = Math.max(startLine, lineNum);
 				}
 
-				modifiedEditor.setSelection(
-					new monaco.Selection(lo, 1, lo, 1),
-				);
+				modifiedEditor.setSelection(new monaco.Selection(lo, 1, lo, 1));
 
 				if (lo === hi) {
 					openCommentWidget(modifiedEditor, lo);

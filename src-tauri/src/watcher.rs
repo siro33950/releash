@@ -80,8 +80,7 @@ pub fn start_watching(
                                 kind: kind.to_string(),
                             }));
 
-                            if let Ok(statuses) =
-                                crate::git::get_git_status(watch_path_str.clone())
+                            if let Ok(statuses) = crate::git::get_git_status(watch_path_str.clone())
                             {
                                 let files = statuses
                                     .into_iter()
@@ -91,9 +90,7 @@ pub fn start_watching(
                                         worktree_status: s.worktree_status,
                                     })
                                     .collect();
-                                ws.try_send(WsMessage::GitStatusSync(GitStatusSync {
-                                    files,
-                                }));
+                                ws.try_send(WsMessage::GitStatusSync(GitStatusSync { files }));
                             }
                         }
                     }
