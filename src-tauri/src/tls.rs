@@ -83,6 +83,12 @@ pub fn ensure_self_signed_cert(ip: IpAddr, data_dir: &Path) -> Result<(PathBuf, 
     std::fs::write(&cert_path, cert.pem()).map_err(|e| format!("証明書の書き込み失敗: {e}"))?;
     std::fs::write(&key_path, key_pair.serialize_pem())
         .map_err(|e| format!("秘密鍵の書き込み失敗: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("秘密鍵のパーミッション設定失敗: {e}"))?;
+    }
     std::fs::write(&ip_path, ip.to_string()).map_err(|e| format!("IP記録の書き込み失敗: {e}"))?;
 
     log::info!("自己署名証明書を生成しました: {}", cert_path.display());

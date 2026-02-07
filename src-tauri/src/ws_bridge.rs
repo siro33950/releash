@@ -43,7 +43,7 @@ impl WsBroadcaster {
         }
     }
 
-    pub fn take_pty_output_buffer(&self) -> String {
+    pub fn get_pty_output_buffer(&self) -> String {
         let buf = self
             .pty_output_buffer
             .lock()

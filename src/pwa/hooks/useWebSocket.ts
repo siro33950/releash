@@ -37,6 +37,7 @@ export function useWebSocket({
 	const backoffRef = useRef(INITIAL_BACKOFF_MS);
 	const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const mountedRef = useRef(true);
+	const authFailedRef = useRef(false);
 	const onMessageRef = useRef(onMessage);
 	const onStatusChangeRef = useRef(onStatusChange);
 	onMessageRef.current = onMessage;
@@ -56,6 +57,7 @@ export function useWebSocket({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: connect と scheduleReconnect は相互依存のため循環回避
 	const connect = useCallback(() => {
 		if (!mountedRef.current || !url || !token) return;
+		authFailedRef.current = false;
 		if (wsRef.current) {
 			wsRef.current.close();
 			wsRef.current = null;
@@ -89,6 +91,7 @@ export function useWebSocket({
 					updateStatus("connected");
 					backoffRef.current = INITIAL_BACKOFF_MS;
 				} else {
+					authFailedRef.current = true;
 					ws.close();
 				}
 				return;
@@ -101,7 +104,9 @@ export function useWebSocket({
 			wsRef.current = null;
 			if (!mountedRef.current) return;
 			updateStatus("disconnected");
-			scheduleReconnect();
+			if (!authFailedRef.current) {
+				scheduleReconnect();
+			}
 		};
 
 		ws.onerror = () => {

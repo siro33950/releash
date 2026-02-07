@@ -62,6 +62,7 @@ export function useRemoteTerminal({
 }: UseRemoteTerminalOptions) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const ptyColsRef = useRef(ptyCols);
+	const initialSentRef = useRef(false);
 	ptyColsRef.current = ptyCols;
 
 	useEffect(() => {
@@ -146,7 +147,10 @@ export function useRemoteTerminal({
 
 		requestAnimationFrame(() => {
 			terminal.refresh(0, terminal.rows - 1);
-			send({ type: "pty_input", payload: { pty_id: ptyId, data: "\r" } });
+			if (!initialSentRef.current) {
+				initialSentRef.current = true;
+				send({ type: "pty_input", payload: { pty_id: ptyId, data: "\r" } });
+			}
 		});
 
 		return () => {

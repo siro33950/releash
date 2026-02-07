@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { DiffRenderer } from "./DiffRenderer";
 import { RemoteCommentInput } from "./RemoteCommentInput";
 
@@ -29,6 +29,11 @@ export function RemoteDiffPanel({
 }: RemoteDiffPanelProps) {
 	const [selectionStart, setSelectionStart] = useState<number | null>(null);
 	const [commentRange, setCommentRange] = useState<LineRange | null>(null);
+
+	useEffect(() => {
+		setSelectionStart(null);
+		setCommentRange(null);
+	}, [path]);
 
 	const handleLineTap = useCallback(
 		(lineNumber: number) => {

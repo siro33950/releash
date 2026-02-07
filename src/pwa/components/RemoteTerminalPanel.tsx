@@ -122,8 +122,9 @@ export function RemoteTerminalPanel({
 	}, [modifier]);
 
 	const handleSubmit = useCallback(() => {
+		if (inputValue.length === 0) return;
 		let data = inputValue;
-		if (data.length > 0 && consumeModifier()) {
+		if (consumeModifier()) {
 			data = applyCtrlToChar(data[0]) + data.slice(1);
 		}
 		sendPtyInput(data);

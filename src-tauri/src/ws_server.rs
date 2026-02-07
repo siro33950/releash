@@ -124,8 +124,10 @@ fn verify_hmac(challenge: &str, token: &str, client_hmac: &str) -> bool {
         return false;
     };
     mac.update(challenge.as_bytes());
-    let expected = hex::encode(mac.finalize().into_bytes());
-    expected == client_hmac
+    let Ok(client_bytes) = hex::decode(client_hmac) else {
+        return false;
+    };
+    mac.verify_slice(&client_bytes).is_ok()
 }
 
 fn is_ip_blocked(
@@ -730,7 +732,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                 .await
                 .map_err(|e| format!("Failed to send pty_ready: {e}"))?;
 
-            let buffered = state.broadcaster.take_pty_output_buffer();
+            let buffered = state.broadcaster.get_pty_output_buffer();
             if !buffered.is_empty() {
                 let replay_msg = WsMessage::PtyOutput(PtyOutputMsg {
                     pty_id,
