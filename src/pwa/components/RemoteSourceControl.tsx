@@ -266,7 +266,12 @@ export function RemoteSourceControl({
 			{error && (
 				<div className="flex items-start gap-1 px-3 py-2 text-red-400 text-xs border-t border-neutral-800">
 					<span className="flex-1 break-all">{error}</span>
-					<button type="button" className="shrink-0" aria-label="エラーを閉じる" onClick={onClearError}>
+					<button
+						type="button"
+						className="shrink-0"
+						aria-label="エラーを閉じる"
+						onClick={onClearError}
+					>
 						<X className="h-3 w-3" />
 					</button>
 				</div>

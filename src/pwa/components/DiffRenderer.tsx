@@ -180,10 +180,8 @@ function HunkRows({
 			{diffLines.map((line, i) => {
 				const { newLine } = line;
 				const tappable = newLine != null;
-				const isSelStart =
-					selectionStart != null && newLine === selectionStart;
-				const isRangeHighlight =
-					tappable && isInRange(newLine, highlightRange);
+				const isSelStart = selectionStart != null && newLine === selectionStart;
+				const isRangeHighlight = tappable && isInRange(newLine, highlightRange);
 
 				let rowHighlight = "";
 				if (isRangeHighlight) {
@@ -196,12 +194,8 @@ function HunkRows({
 					<tr
 						key={`${hunk.index}-${i}`}
 						className={`${lineStyle(line.prefix)} select-none ${tappable ? "active:bg-neutral-700/50" : ""} ${rowHighlight}`}
-						onPointerDown={
-							tappable ? () => onPointerDown(newLine) : undefined
-						}
-						onPointerUp={
-							tappable ? () => onPointerUp(newLine) : undefined
-						}
+						onPointerDown={tappable ? () => onPointerDown(newLine) : undefined}
+						onPointerUp={tappable ? () => onPointerUp(newLine) : undefined}
 						onPointerLeave={tappable ? onPointerCancel : undefined}
 						onPointerCancel={tappable ? onPointerCancel : undefined}
 					>

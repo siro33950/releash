@@ -238,7 +238,11 @@ default            100.124.65.29      UGScg    utun4
 100.124.65.29/32   link#24            UCS      utun4
 224.0.0/4          link#24            UmCS     utun4
 255.255.255.255/32 link#24            UCS      utun4";
-        assert!(parse_routes_for_interface(netstat, "utun4", "100.124.65.29"));
+        assert!(parse_routes_for_interface(
+            netstat,
+            "utun4",
+            "100.124.65.29"
+        ));
     }
 
     #[test]
@@ -250,7 +254,11 @@ Destination        Gateway            Flags    Netif
 100.124.65.29/32   link#24            UCS      utun4
 224.0.0/4          link#24            UmCS     utun4
 255.255.255.255/32 link#24            UCS      utun4";
-        assert!(!parse_routes_for_interface(netstat, "utun4", "100.124.65.29"));
+        assert!(!parse_routes_for_interface(
+            netstat,
+            "utun4",
+            "100.124.65.29"
+        ));
     }
 
     #[test]
@@ -258,7 +266,11 @@ Destination        Gateway            Flags    Netif
         let netstat = "\
 Destination        Gateway            Flags    Netif
 default            192.168.1.1        UGScg    en0";
-        assert!(!parse_routes_for_interface(netstat, "utun4", "100.124.65.29"));
+        assert!(!parse_routes_for_interface(
+            netstat,
+            "utun4",
+            "100.124.65.29"
+        ));
     }
 
     #[test]
@@ -268,7 +280,11 @@ default            192.168.1.1        UGScg    en0";
 Destination        Gateway            Flags    Netif
 100.64/10          100.124.65.29      UGSc     utun4
 100.124.65.29/32   link#24            UCS      utun4";
-        assert!(parse_routes_for_interface(netstat, "utun4", "100.124.65.29"));
+        assert!(parse_routes_for_interface(
+            netstat,
+            "utun4",
+            "100.124.65.29"
+        ));
     }
 
     #[test]
