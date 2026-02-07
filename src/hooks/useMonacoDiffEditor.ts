@@ -45,6 +45,7 @@ interface UseMonacoDiffEditorOptions {
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
+	readOnly?: boolean;
 }
 
 interface HunkOverlay {
@@ -152,6 +153,7 @@ export function useMonacoDiffEditor(
 		getCommentsForLine,
 		revealLine,
 		theme,
+		readOnly,
 	} = options;
 
 	const diffEditorRef = useRef<Monaco.editor.IStandaloneDiffEditor | null>(
@@ -240,6 +242,7 @@ export function useMonacoDiffEditor(
 				renderSideBySide,
 				theme: themeName,
 				...(fontSizeRef.current != null && { fontSize: fontSizeRef.current }),
+				...(readOnly != null && { readOnly, originalEditable: false }),
 			});
 
 			if (!isMounted) {
@@ -389,8 +392,6 @@ export function useMonacoDiffEditor(
 			modifiedEditor.onMouseUp((e: Monaco.editor.IEditorMouseEvent) => {
 				if (dragStartLineRef.current == null) return;
 
-				const lineNum =
-					e.target.position?.lineNumber ?? dragStartLineRef.current;
 				const startLine = dragStartLineRef.current;
 				dragStartLineRef.current = null;
 
@@ -399,8 +400,25 @@ export function useMonacoDiffEditor(
 					[],
 				);
 
-				const lo = Math.min(startLine, lineNum);
-				const hi = Math.max(startLine, lineNum);
+				const selection = modifiedEditor.getSelection();
+				let lo: number;
+				let hi: number;
+				if (
+					selection &&
+					!selection.isEmpty() &&
+					selection.startLineNumber !== selection.endLineNumber
+				) {
+					lo = Math.min(selection.startLineNumber, startLine);
+					hi = Math.max(selection.endLineNumber, startLine);
+				} else {
+					const lineNum = e.target.position?.lineNumber ?? startLine;
+					lo = Math.min(startLine, lineNum);
+					hi = Math.max(startLine, lineNum);
+				}
+
+				modifiedEditor.setSelection(
+					new monaco.Selection(lo, 1, lo, 1),
+				);
 
 				if (lo === hi) {
 					openCommentWidget(modifiedEditor, lo);
@@ -452,7 +470,7 @@ export function useMonacoDiffEditor(
 			originalModelRef.current?.dispose();
 			modifiedModelRef.current?.dispose();
 		};
-	}, [containerRef, language, renderSideBySide, filePath]);
+	}, [containerRef, language, renderSideBySide, filePath, readOnly]);
 
 	useEffect(() => {
 		const diffEditor = diffEditorRef.current;

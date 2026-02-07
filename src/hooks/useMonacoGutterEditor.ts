@@ -45,6 +45,7 @@ interface UseMonacoGutterEditorOptions {
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
+	readOnly?: boolean;
 }
 
 interface DiffResult {
@@ -100,6 +101,7 @@ export function useMonacoGutterEditor(
 		getCommentsForLine,
 		revealLine,
 		theme,
+		readOnly,
 	} = options;
 
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -164,6 +166,7 @@ export function useMonacoGutterEditor(
 				theme: themeName,
 				glyphMargin: true,
 				...(fontSizeRef.current != null && { fontSize: fontSizeRef.current }),
+				...(readOnly != null && { readOnly }),
 			});
 
 			if (!isMounted) {
@@ -314,8 +317,6 @@ export function useMonacoGutterEditor(
 			editor.onMouseUp((e: Monaco.editor.IEditorMouseEvent) => {
 				if (dragStartLineRef.current == null) return;
 
-				const lineNum =
-					e.target.position?.lineNumber ?? dragStartLineRef.current;
 				const startLine = dragStartLineRef.current;
 				dragStartLineRef.current = null;
 
@@ -324,8 +325,23 @@ export function useMonacoGutterEditor(
 					[],
 				);
 
-				const lo = Math.min(startLine, lineNum);
-				const hi = Math.max(startLine, lineNum);
+				const selection = editor.getSelection();
+				let lo: number;
+				let hi: number;
+				if (
+					selection &&
+					!selection.isEmpty() &&
+					selection.startLineNumber !== selection.endLineNumber
+				) {
+					lo = Math.min(selection.startLineNumber, startLine);
+					hi = Math.max(selection.endLineNumber, startLine);
+				} else {
+					const lineNum = e.target.position?.lineNumber ?? startLine;
+					lo = Math.min(startLine, lineNum);
+					hi = Math.max(startLine, lineNum);
+				}
+
+				editor.setSelection(new monaco.Selection(lo, 1, lo, 1));
 
 				if (lo === hi) {
 					openCommentWidget(editor, lo);
@@ -375,7 +391,7 @@ export function useMonacoGutterEditor(
 			editorRef.current?.dispose();
 			modelRef.current?.dispose();
 		};
-	}, [containerRef, language, filePath]);
+	}, [containerRef, language, filePath, readOnly]);
 
 	useEffect(() => {
 		const editor = editorRef.current;

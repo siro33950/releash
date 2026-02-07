@@ -6,6 +6,7 @@ import {
 	Minus,
 	Pencil,
 	Plus,
+	RefreshCw,
 	X,
 } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -270,9 +271,17 @@ export function SourceControlPanel({
 		<div className="h-full flex flex-col bg-sidebar">
 			{/* Header */}
 			<div className="flex items-center gap-2 h-[30px] px-3 border-b border-border shrink-0">
-				<span className="text-xs font-semibold uppercase tracking-wide truncate">
+				<span className="text-xs font-semibold uppercase tracking-wide truncate flex-1">
 					{totalChanges} file changes
 				</span>
+				<button
+					type="button"
+					className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+					onClick={refreshStatus}
+					title="Refresh"
+				>
+					<RefreshCw className="h-3.5 w-3.5" />
+				</button>
 			</div>
 
 			{/* File Lists */}

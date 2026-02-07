@@ -64,5 +64,6 @@ export function useLineComments() {
 		updateComment,
 		markAsSent,
 		getCommentsForFile,
+		setComments,
 	};
 }

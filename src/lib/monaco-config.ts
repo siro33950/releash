@@ -131,4 +131,5 @@ export const defaultDiffEditorOptions: Monaco.editor.IDiffEditorConstructionOpti
 		renderMarginRevertIcon: false,
 		renderGutterMenu: false,
 		glyphMargin: true,
+		useInlineViewWhenSpaceIsLimited: false,
 	};
