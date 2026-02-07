@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub fn send_notification(webhook_url: &str, exit_code: i32) {
     let url = webhook_url.to_string();
     std::thread::spawn(move || {

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::config::AppConfig;
-use crate::vpn_detect::detect_vpn_ip;
 use crate::ws_server::WsServerHandle;
 
 #[derive(Debug, Clone, Serialize)]
@@ -13,21 +12,9 @@ pub struct QrCodeResult {
     pub token_svg: String,
 }
 
-fn build_connection_url(bind: &str, port: u16, tls_enabled: bool) -> Result<String, String> {
+fn build_connection_url(bind: &str, port: u16, tls_enabled: bool) -> String {
     let scheme = if tls_enabled { "https" } else { "http" };
-
-    let ip = match bind {
-        "127.0.0.1" | "localhost" => "127.0.0.1".to_string(),
-        "meshnet" | "mesh_vpn" => detect_vpn_ip()
-            .map(|iface| iface.ip.to_string())
-            .ok_or("メッシュVPNが見つかりません")?,
-        "any" | "0.0.0.0" => detect_vpn_ip()
-            .map(|iface| iface.ip.to_string())
-            .unwrap_or_else(|| "127.0.0.1".to_string()),
-        addr => addr.to_string(),
-    };
-
-    Ok(format!("{scheme}://{ip}:{port}"))
+    format!("{scheme}://{bind}:{port}")
 }
 
 fn generate_qr_svg(data: &str) -> Result<String, String> {
@@ -54,7 +41,7 @@ pub fn get_connection_qr(
         .active_bind()
         .unwrap_or_else(|| config.server.bind.clone());
     let tls_enabled = server_handle.is_tls_enabled();
-    let url = build_connection_url(&bind, config.server.port, tls_enabled)?;
+    let url = build_connection_url(&bind, config.server.port, tls_enabled);
     let svg = generate_qr_svg(&url)?;
     let token_svg = generate_qr_svg(&config.server.token)?;
     Ok(QrCodeResult {
@@ -70,20 +57,19 @@ mod tests {
 
     #[test]
     fn test_build_url_localhost() {
-        let url = build_connection_url("127.0.0.1", 9700, false).unwrap();
+        let url = build_connection_url("127.0.0.1", 9700, false);
         assert_eq!(url, "http://127.0.0.1:9700");
     }
 
     #[test]
     fn test_build_url_with_tls() {
-        let url = build_connection_url("127.0.0.1", 9700, true).unwrap();
-        assert!(url.starts_with("https://"));
-        assert!(!url.contains("token"));
+        let url = build_connection_url("127.0.0.1", 9700, true);
+        assert_eq!(url, "https://127.0.0.1:9700");
     }
 
     #[test]
     fn test_build_url_custom_ip() {
-        let url = build_connection_url("192.168.1.100", 8080, false).unwrap();
+        let url = build_connection_url("192.168.1.100", 8080, false);
         assert_eq!(url, "http://192.168.1.100:8080");
     }
 

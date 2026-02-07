@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -62,10 +60,6 @@ impl WsServerHandle {
 
     pub fn is_tls_enabled(&self) -> bool {
         *self.tls_enabled.lock()
-    }
-
-    pub fn connection_mode(&self) -> Option<String> {
-        self.connection_mode.lock().clone()
     }
 }
 

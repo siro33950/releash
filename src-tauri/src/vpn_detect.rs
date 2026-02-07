@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::process::Command;
 
 const VPN_INTERFACE_PREFIXES: &[&str] =
@@ -126,25 +126,6 @@ fn parse_ifconfig_output(output: &str) -> Result<Vec<RawInterface>, String> {
     Ok(interfaces)
 }
 
-#[allow(dead_code)]
-pub fn resolve_bind_address(bind: &str) -> Result<IpAddr, String> {
-    match bind {
-        "meshnet" | "mesh_vpn" => {
-            if let Some(iface) = detect_vpn_ip() {
-                log::info!("VPNトンネル検出: {} ({})", iface.name, iface.ip);
-                Ok(IpAddr::V4(iface.ip))
-            } else {
-                log::warn!("メッシュVPNが見つかりません。手動でIPアドレスを指定してください。");
-                Err("メッシュVPNが見つかりません".to_string())
-            }
-        }
-        "any" => Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
-        addr => addr
-            .parse::<IpAddr>()
-            .map_err(|e| format!("無効なIPアドレス: {e}")),
-    }
-}
-
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DetectedInterface {
     pub name: String,
@@ -246,24 +227,6 @@ lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
     fn test_parse_ifconfig_empty() {
         let interfaces = parse_ifconfig_output("").unwrap();
         assert!(interfaces.is_empty());
-    }
-
-    #[test]
-    fn test_resolve_bind_address_localhost() {
-        let result = resolve_bind_address("127.0.0.1").unwrap();
-        assert_eq!(result, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-    }
-
-    #[test]
-    fn test_resolve_bind_address_any() {
-        let result = resolve_bind_address("any").unwrap();
-        assert_eq!(result, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-    }
-
-    #[test]
-    fn test_resolve_bind_address_invalid() {
-        let result = resolve_bind_address("not_an_ip");
-        assert!(result.is_err());
     }
 
     #[test]
