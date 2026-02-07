@@ -7,7 +7,7 @@
 	"scripts": {
 		"dev": "vite",
 		"build": "tsc && vite build",
-		"build:pwa": "vite build --config vite.config.pwa.ts pwa.html",
+		"build:pwa": "vite build --config vite.config.pwa.ts",
 		"preview": "vite preview",
 		"tauri": "tauri",
 		"lint": "biome check .",
