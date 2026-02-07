@@ -1,5 +1,15 @@
 import { Copy, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRemoteServer } from "@/hooks/useRemoteServer";
@@ -8,27 +18,22 @@ export interface RemotePanelProps {
 	rootPath: string | null;
 }
 
-function InfoRow({ label, value }: { label: string; value: string | null }) {
-	return (
-		<div className="flex justify-between items-center">
-			<span className="text-[10px] text-muted-foreground">{label}</span>
-			<span className="text-[10px] font-mono text-foreground">
-				{value ?? "---"}
-			</span>
-		</div>
-	);
-}
-
 export function RemotePanel({ rootPath }: RemotePanelProps) {
 	const {
 		running,
 		qrData,
 		error,
 		config,
-		network,
+		interfaces,
+		selectedIp,
+		setSelectedIp,
 		boundIp,
+		connectionMode,
+		showLanConfirm,
 		startServer,
 		stopServer,
+		confirmLanStart,
+		cancelLanStart,
 		refreshStatus,
 		updatePort,
 		regenerateToken,
@@ -113,15 +118,59 @@ export function RemotePanel({ rootPath }: RemotePanelProps) {
 						</div>
 					)}
 
+					{/* LAN Mode Warning */}
+					{running && connectionMode === "lan" && (
+						<div className="text-xs text-yellow-200 bg-yellow-900/40 border border-yellow-700/50 rounded px-2 py-1.5">
+							LAN接続モード — 同一ネットワーク上のデバイスがアクセス可能です
+						</div>
+					)}
+
 					{/* Network */}
 					<div className="flex flex-col gap-1.5 border-t border-border pt-3">
 						<span className="text-xs font-medium text-muted-foreground">
 							Network
 						</span>
-						<div className="flex flex-col gap-1 bg-muted rounded px-2 py-1.5">
-							<InfoRow label="Meshnet" value={network?.meshnet ?? null} />
-							<InfoRow label="LAN" value={network?.lan ?? null} />
-							{running && <InfoRow label="Bind" value={boundIp} />}
+						<div className="flex flex-col gap-0.5 bg-muted rounded px-2 py-1.5">
+							{interfaces.length === 0 && (
+								<span className="text-[10px] text-muted-foreground">
+									ネットワークが検出されません
+								</span>
+							)}
+							{interfaces.map((iface) => (
+								<label
+									key={iface.ip}
+									className={`flex items-center gap-2 py-0.5 cursor-pointer ${running ? "opacity-50 pointer-events-none" : ""}`}
+								>
+									<input
+										type="radio"
+										name="bind-ip"
+										value={iface.ip}
+										checked={selectedIp === iface.ip}
+										onChange={() => setSelectedIp(iface.ip)}
+										disabled={running}
+										className="accent-primary size-3"
+									/>
+									<span className="text-[10px] text-muted-foreground uppercase w-8 shrink-0">
+										{iface.kind === "vpn" ? "VPN" : "LAN"}
+									</span>
+									<span className="text-[10px] text-muted-foreground truncate">
+										{iface.name}
+									</span>
+									<span className="text-[10px] font-mono text-foreground ml-auto shrink-0">
+										{iface.ip}
+									</span>
+								</label>
+							))}
+							{running && boundIp && (
+								<div className="flex justify-between items-center pt-1 border-t border-border/50">
+									<span className="text-[10px] text-muted-foreground">
+										Bind
+									</span>
+									<span className="text-[10px] font-mono text-foreground">
+										{boundIp}
+									</span>
+								</div>
+							)}
 						</div>
 					</div>
 
@@ -227,6 +276,29 @@ export function RemotePanel({ rootPath }: RemotePanelProps) {
 					)}
 				</div>
 			</ScrollArea>
+
+			<AlertDialog
+				open={showLanConfirm}
+				onOpenChange={(o) => !o && cancelLanStart()}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>LAN接続の確認</AlertDialogTitle>
+						<AlertDialogDescription>
+							LAN
+							IPで起動すると、同一ネットワーク上のすべてのデバイスからアクセス可能になります。安全のため、Tailscale等のメッシュVPN経由での接続を強く推奨します。それでもLANで続行しますか？
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel onClick={cancelLanStart}>
+							キャンセル
+						</AlertDialogCancel>
+						<AlertDialogAction onClick={confirmLanStart}>
+							続行
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</div>
 	);
 }

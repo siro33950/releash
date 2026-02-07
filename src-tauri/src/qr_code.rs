@@ -18,9 +18,9 @@ fn build_connection_url(bind: &str, port: u16, tls_enabled: bool) -> Result<Stri
 
     let ip = match bind {
         "127.0.0.1" | "localhost" => "127.0.0.1".to_string(),
-        "meshnet" => detect_vpn_ip()
+        "meshnet" | "mesh_vpn" => detect_vpn_ip()
             .map(|iface| iface.ip.to_string())
-            .ok_or("VPNトンネルが見つかりません")?,
+            .ok_or("メッシュVPNが見つかりません")?,
         "any" | "0.0.0.0" => detect_vpn_ip()
             .map(|iface| iface.ip.to_string())
             .unwrap_or_else(|| "127.0.0.1".to_string()),

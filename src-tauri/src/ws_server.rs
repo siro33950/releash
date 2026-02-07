@@ -29,11 +29,18 @@ use crate::ws_bridge::WsBroadcaster;
 
 type HmacSha256 = Hmac<Sha256>;
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StartServerResult {
+    pub ip: String,
+    pub mode: String,
+}
+
 pub struct WsServerHandle {
     running: parking_lot::Mutex<bool>,
     shutdown_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     active_bind: parking_lot::Mutex<Option<String>>,
     tls_enabled: parking_lot::Mutex<bool>,
+    connection_mode: parking_lot::Mutex<Option<String>>,
 }
 
 impl Default for WsServerHandle {
@@ -43,6 +50,7 @@ impl Default for WsServerHandle {
             shutdown_tx: parking_lot::Mutex::new(None),
             active_bind: parking_lot::Mutex::new(None),
             tls_enabled: parking_lot::Mutex::new(false),
+            connection_mode: parking_lot::Mutex::new(None),
         }
     }
 }
@@ -54,6 +62,10 @@ impl WsServerHandle {
 
     pub fn is_tls_enabled(&self) -> bool {
         *self.tls_enabled.lock()
+    }
+
+    pub fn connection_mode(&self) -> Option<String> {
+        self.connection_mode.lock().clone()
     }
 }
 
@@ -832,12 +844,13 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 #[tauri::command]
 pub async fn start_server(
     root_path: String,
+    bind_ip: String,
     app: tauri::AppHandle,
     handle: tauri::State<'_, WsServerHandle>,
     config_state: tauri::State<'_, Arc<AppConfig>>,
     broadcaster: tauri::State<'_, Arc<WsBroadcaster>>,
     pty_manager: tauri::State<'_, Arc<crate::pty::PtyManager>>,
-) -> Result<String, String> {
+) -> Result<StartServerResult, String> {
     {
         let running = handle.running.lock();
         if *running {
@@ -847,12 +860,18 @@ pub async fn start_server(
 
     let mut cfg = config_state.get_config()?;
 
-    let vpn_iface = crate::vpn_detect::detect_vpn_ip()
-        .ok_or("メッシュネットが検出できません。NordVPN Meshnet が有効か確認してください")?;
-    let bind_ip = vpn_iface.ip.to_string();
+    let detected = crate::vpn_detect::detect_all_interfaces();
+    let mode = if detected.iter().any(|i| i.kind == "vpn" && i.ip == bind_ip) {
+        "vpn".to_string()
+    } else {
+        "lan".to_string()
+    };
+
     cfg.server.bind = bind_ip.clone();
 
-    let bind_ip_addr = std::net::IpAddr::V4(vpn_iface.ip);
+    let bind_ip_addr: std::net::IpAddr = bind_ip
+        .parse()
+        .map_err(|e| format!("IPアドレスのパース失敗: {e}"))?;
     let data_dir = app
         .path()
         .app_data_dir()
@@ -894,9 +913,10 @@ pub async fn start_server(
         *tx = Some(shutdown_tx);
         handle.active_bind.lock().replace(bind_ip.clone());
         *handle.tls_enabled.lock() = cfg.server.tls.enabled;
+        handle.connection_mode.lock().replace(mode.clone());
     }
 
-    Ok(bind_ip)
+    Ok(StartServerResult { ip: bind_ip, mode })
 }
 
 #[tauri::command]
@@ -912,6 +932,7 @@ pub fn stop_server(handle: tauri::State<'_, WsServerHandle>) -> Result<(), Strin
         *running = false;
         handle.active_bind.lock().take();
         *handle.tls_enabled.lock() = false;
+        handle.connection_mode.lock().take();
         Ok(())
     } else {
         Err("サーバーは起動していません".to_string())

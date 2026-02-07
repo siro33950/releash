@@ -1,15 +1,8 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
 
-const CGNAT_BASE: u32 = 0x6440_0000; // 100.64.0.0
-const CGNAT_MASK: u32 = 0xFFC0_0000; // /10
-
-const VPN_INTERFACE_PREFIXES: &[&str] = &["nordlynx", "tailscale", "utun", "wg", "tun"];
-
-fn is_cgnat(ip: Ipv4Addr) -> bool {
-    let bits: u32 = ip.into();
-    (bits & CGNAT_MASK) == CGNAT_BASE
-}
+const VPN_INTERFACE_PREFIXES: &[&str] =
+    &["nordlynx", "tailscale", "utun", "wg", "tun", "zt", "nebula"];
 
 fn is_vpn_interface(name: &str) -> bool {
     let lower = name.to_lowercase();
@@ -34,26 +27,61 @@ fn is_private_ip(ip: Ipv4Addr) -> bool {
     }
 }
 
-pub fn detect_local_ip() -> Option<Ipv4Addr> {
-    let interfaces = list_network_interfaces().ok()?;
-    interfaces
-        .into_iter()
-        .find(|iface| {
-            !iface.ip.is_loopback() && !is_vpn_interface(&iface.name) && is_private_ip(iface.ip)
-        })
-        .map(|iface| iface.ip)
-}
-
 pub fn detect_vpn_ip() -> Option<VpnInterface> {
     let interfaces = list_network_interfaces().ok()?;
 
-    interfaces
+    let candidate = interfaces
         .into_iter()
-        .find(|iface| is_vpn_interface(&iface.name) && is_cgnat(iface.ip))
-        .map(|iface| VpnInterface {
-            name: iface.name,
-            ip: iface.ip,
-        })
+        .find(|iface| is_vpn_interface(&iface.name))?;
+
+    if !has_active_routes(&candidate.name, &candidate.ip.to_string()) {
+        log::info!(
+            "VPNインターフェース {} は検出されましたがルートが無効です",
+            candidate.name
+        );
+        return None;
+    }
+
+    Some(VpnInterface {
+        name: candidate.name,
+        ip: candidate.ip,
+    })
+}
+
+fn has_active_routes(iface_name: &str, own_ip: &str) -> bool {
+    let output = Command::new("netstat")
+        .args(["-rn", "-f", "inet"])
+        .output()
+        .ok();
+
+    let Some(output) = output else {
+        return false;
+    };
+    let Ok(stdout) = String::from_utf8(output.stdout) else {
+        return false;
+    };
+
+    parse_routes_for_interface(&stdout, iface_name, own_ip)
+}
+
+fn parse_routes_for_interface(netstat_output: &str, iface_name: &str, own_ip: &str) -> bool {
+    for line in netstat_output.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // macOS netstat -rn: Destination  Gateway  Flags  Netif  Expire
+        if fields.len() < 4 || fields[3] != iface_name {
+            continue;
+        }
+        let dest = fields[0];
+        // 自身のIPホストルート、マルチキャスト、ブロードキャストは除外
+        if dest == own_ip || dest == format!("{own_ip}/32") {
+            continue;
+        }
+        if dest.starts_with("224.") || dest.starts_with("239.") || dest.starts_with("255.") {
+            continue;
+        }
+        return true;
+    }
+    false
 }
 
 #[derive(Debug)]
@@ -101,13 +129,13 @@ fn parse_ifconfig_output(output: &str) -> Result<Vec<RawInterface>, String> {
 #[allow(dead_code)]
 pub fn resolve_bind_address(bind: &str) -> Result<IpAddr, String> {
     match bind {
-        "meshnet" => {
+        "meshnet" | "mesh_vpn" => {
             if let Some(iface) = detect_vpn_ip() {
                 log::info!("VPNトンネル検出: {} ({})", iface.name, iface.ip);
                 Ok(IpAddr::V4(iface.ip))
             } else {
-                log::warn!("VPNトンネルが見つかりません。手動でIPアドレスを指定してください。");
-                Err("VPNトンネルが見つかりません".to_string())
+                log::warn!("メッシュVPNが見つかりません。手動でIPアドレスを指定してください。");
+                Err("メッシュVPNが見つかりません".to_string())
             }
         }
         "any" => Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
@@ -118,17 +146,47 @@ pub fn resolve_bind_address(bind: &str) -> Result<IpAddr, String> {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct NetworkInfo {
-    pub meshnet: Option<String>,
-    pub lan: Option<String>,
+pub struct DetectedInterface {
+    pub name: String,
+    pub ip: String,
+    pub kind: String, // "vpn" | "lan"
+}
+
+pub fn detect_all_interfaces() -> Vec<DetectedInterface> {
+    let interfaces = match list_network_interfaces() {
+        Ok(ifaces) => ifaces,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut result = Vec::new();
+
+    for iface in &interfaces {
+        if iface.ip.is_loopback() {
+            continue;
+        }
+        if is_vpn_interface(&iface.name) {
+            if has_active_routes(&iface.name, &iface.ip.to_string()) {
+                result.push(DetectedInterface {
+                    name: iface.name.clone(),
+                    ip: iface.ip.to_string(),
+                    kind: "vpn".to_string(),
+                });
+            }
+        } else if is_private_ip(iface.ip) {
+            result.push(DetectedInterface {
+                name: iface.name.clone(),
+                ip: iface.ip.to_string(),
+                kind: "lan".to_string(),
+            });
+        }
+    }
+
+    result
 }
 
 #[tauri::command]
-pub fn get_network_info() -> NetworkInfo {
-    NetworkInfo {
-        meshnet: detect_vpn_ip().map(|iface| iface.ip.to_string()),
-        lan: detect_local_ip().map(|ip| ip.to_string()),
-    }
+pub fn get_network_info() -> Vec<DetectedInterface> {
+    detect_all_interfaces()
 }
 
 #[tauri::command]
@@ -146,27 +204,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cgnat_in_range() {
-        assert!(is_cgnat(Ipv4Addr::new(100, 64, 0, 1)));
-        assert!(is_cgnat(Ipv4Addr::new(100, 100, 1, 1)));
-        assert!(is_cgnat(Ipv4Addr::new(100, 127, 255, 254)));
-    }
-
-    #[test]
-    fn test_cgnat_out_of_range() {
-        assert!(!is_cgnat(Ipv4Addr::new(100, 63, 255, 255)));
-        assert!(!is_cgnat(Ipv4Addr::new(100, 128, 0, 0)));
-        assert!(!is_cgnat(Ipv4Addr::new(192, 168, 1, 1)));
-        assert!(!is_cgnat(Ipv4Addr::new(10, 0, 0, 1)));
-    }
-
-    #[test]
     fn test_vpn_interface_names() {
         assert!(is_vpn_interface("nordlynx"));
         assert!(is_vpn_interface("tailscale0"));
         assert!(is_vpn_interface("utun3"));
         assert!(is_vpn_interface("wg0"));
         assert!(is_vpn_interface("tun0"));
+        assert!(is_vpn_interface("zt0"));
+        assert!(is_vpn_interface("nebula0"));
     }
 
     #[test]
@@ -222,6 +267,48 @@ lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
     }
 
     #[test]
+    fn test_parse_routes_active_vpn() {
+        let netstat = "\
+Destination        Gateway            Flags    Netif
+default            100.124.65.29      UGScg    utun4
+100.124.65.29      100.124.65.29      UHr      utun4
+100.124.65.29/32   link#24            UCS      utun4
+224.0.0/4          link#24            UmCS     utun4
+255.255.255.255/32 link#24            UCS      utun4";
+        assert!(parse_routes_for_interface(netstat, "utun4", "100.124.65.29"));
+    }
+
+    #[test]
+    fn test_parse_routes_stale_vpn() {
+        // VPNオフ: 自身のIPルートとマルチキャストのみ残存
+        let netstat = "\
+Destination        Gateway            Flags    Netif
+100.124.65.29      100.124.65.29      UHr      utun4
+100.124.65.29/32   link#24            UCS      utun4
+224.0.0/4          link#24            UmCS     utun4
+255.255.255.255/32 link#24            UCS      utun4";
+        assert!(!parse_routes_for_interface(netstat, "utun4", "100.124.65.29"));
+    }
+
+    #[test]
+    fn test_parse_routes_no_matching_interface() {
+        let netstat = "\
+Destination        Gateway            Flags    Netif
+default            192.168.1.1        UGScg    en0";
+        assert!(!parse_routes_for_interface(netstat, "utun4", "100.124.65.29"));
+    }
+
+    #[test]
+    fn test_parse_routes_subnet_route() {
+        // Tailscale exit nodeなし: サブネットルートのみ
+        let netstat = "\
+Destination        Gateway            Flags    Netif
+100.64/10          100.124.65.29      UGSc     utun4
+100.124.65.29/32   link#24            UCS      utun4";
+        assert!(parse_routes_for_interface(netstat, "utun4", "100.124.65.29"));
+    }
+
+    #[test]
     fn test_is_private_ip() {
         assert!(is_private_ip(Ipv4Addr::new(192, 168, 1, 100)));
         assert!(is_private_ip(Ipv4Addr::new(10, 0, 0, 1)));
@@ -231,13 +318,5 @@ lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
         assert!(!is_private_ip(Ipv4Addr::new(172, 32, 0, 1)));
         assert!(!is_private_ip(Ipv4Addr::new(8, 8, 8, 8)));
         assert!(!is_private_ip(Ipv4Addr::new(127, 0, 0, 1)));
-    }
-
-    #[test]
-    fn test_cgnat_boundary_values() {
-        // 100.64.0.0 = first address in range
-        assert!(is_cgnat(Ipv4Addr::new(100, 64, 0, 0)));
-        // 100.127.255.255 = last address in range
-        assert!(is_cgnat(Ipv4Addr::new(100, 127, 255, 255)));
     }
 }

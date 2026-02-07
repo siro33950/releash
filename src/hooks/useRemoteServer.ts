@@ -12,9 +12,15 @@ interface ServerConfig {
 	token: string;
 }
 
-interface NetworkInfo {
-	meshnet: string | null;
-	lan: string | null;
+interface DetectedInterface {
+	name: string;
+	ip: string;
+	kind: "vpn" | "lan";
+}
+
+interface StartServerResult {
+	ip: string;
+	mode: "vpn" | "lan";
 }
 
 export function useRemoteServer() {
@@ -22,8 +28,14 @@ export function useRemoteServer() {
 	const [qrData, setQrData] = useState<QrCodeResult | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [config, setConfig] = useState<ServerConfig | null>(null);
-	const [network, setNetwork] = useState<NetworkInfo | null>(null);
+	const [interfaces, setInterfaces] = useState<DetectedInterface[]>([]);
+	const [selectedIp, setSelectedIp] = useState<string | null>(null);
 	const [boundIp, setBoundIp] = useState<string | null>(null);
+	const [connectionMode, setConnectionMode] = useState<"vpn" | "lan" | null>(
+		null,
+	);
+	const [showLanConfirm, setShowLanConfirm] = useState(false);
+	const [pendingRootPath, setPendingRootPath] = useState<string | null>(null);
 
 	const refreshConfig = useCallback(async () => {
 		try {
@@ -36,8 +48,13 @@ export function useRemoteServer() {
 
 	const refreshNetwork = useCallback(async () => {
 		try {
-			const info = await invoke<NetworkInfo>("get_network_info");
-			setNetwork(info);
+			const detected = await invoke<DetectedInterface[]>("get_network_info");
+			setInterfaces(detected);
+			setSelectedIp((prev) => {
+				if (prev && detected.some((i) => i.ip === prev)) return prev;
+				const vpn = detected.find((i) => i.kind === "vpn");
+				return vpn ? vpn.ip : (detected[0]?.ip ?? null);
+			});
 		} catch (e) {
 			setError(String(e));
 		}
@@ -67,13 +84,17 @@ export function useRemoteServer() {
 		}
 	}, []);
 
-	const startServer = useCallback(
-		async (rootPath: string) => {
+	const doStartServer = useCallback(
+		async (rootPath: string, bindIp: string) => {
 			setError(null);
 			try {
-				const ip = await invoke<string>("start_server", { rootPath });
+				const result = await invoke<StartServerResult>("start_server", {
+					rootPath,
+					bindIp,
+				});
 				setRunning(true);
-				setBoundIp(ip);
+				setBoundIp(result.ip);
+				setConnectionMode(result.mode);
 				await refreshQr();
 			} catch (e) {
 				setError(String(e));
@@ -82,6 +103,35 @@ export function useRemoteServer() {
 		[refreshQr],
 	);
 
+	const startServer = useCallback(
+		async (rootPath: string) => {
+			if (!selectedIp) {
+				setError("IPアドレスを選択してください");
+				return;
+			}
+			const selected = interfaces.find((i) => i.ip === selectedIp);
+			if (selected?.kind === "lan") {
+				setPendingRootPath(rootPath);
+				setShowLanConfirm(true);
+				return;
+			}
+			await doStartServer(rootPath, selectedIp);
+		},
+		[selectedIp, interfaces, doStartServer],
+	);
+
+	const confirmLanStart = useCallback(async () => {
+		setShowLanConfirm(false);
+		if (!pendingRootPath || !selectedIp) return;
+		await doStartServer(pendingRootPath, selectedIp);
+		setPendingRootPath(null);
+	}, [pendingRootPath, selectedIp, doStartServer]);
+
+	const cancelLanStart = useCallback(() => {
+		setShowLanConfirm(false);
+		setPendingRootPath(null);
+	}, []);
+
 	const stopServer = useCallback(async () => {
 		setError(null);
 		try {
@@ -89,6 +139,7 @@ export function useRemoteServer() {
 			setRunning(false);
 			setQrData(null);
 			setBoundIp(null);
+			setConnectionMode(null);
 		} catch (e) {
 			setError(String(e));
 		}
@@ -123,10 +174,16 @@ export function useRemoteServer() {
 		qrData,
 		error,
 		config,
-		network,
+		interfaces,
+		selectedIp,
+		setSelectedIp,
 		boundIp,
+		connectionMode,
+		showLanConfirm,
 		startServer,
 		stopServer,
+		confirmLanStart,
+		cancelLanStart,
 		refreshQr,
 		refreshStatus,
 		updatePort,
