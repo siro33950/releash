@@ -114,8 +114,9 @@ pub fn spawn_pty(
                     };
 
                     if valid_up_to > 0 {
-                        let data =
-                            std::str::from_utf8(&pending[..valid_up_to]).unwrap().to_string();
+                        let data = std::str::from_utf8(&pending[..valid_up_to])
+                            .unwrap()
+                            .to_string();
                         let _ = app_clone.emit(
                             "pty-output",
                             PtyOutput {
