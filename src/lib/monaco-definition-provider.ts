@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import type * as Monaco from "monaco-editor";
+import { normalizePath } from "@/lib/normalizePath";
 import type { DefinitionLocation, SearchMatch } from "@/types/search";
 
 const SUPPORTED_LANGUAGES = [
@@ -157,8 +158,9 @@ export function registerDefinitionProviders(
 			if (!rootPath) return false;
 
 			const filePath = resource.path;
-			const relativePath = filePath.startsWith(`${rootPath}/`)
-				? filePath.slice(rootPath.length + 1)
+			const normalizedRoot = normalizePath(rootPath);
+			const relativePath = filePath.startsWith(`${normalizedRoot}/`)
+				? filePath.slice(normalizedRoot.length + 1)
 				: filePath;
 
 			const line = selectionOrPosition
