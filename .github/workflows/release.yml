@@ -56,6 +56,18 @@ jobs:
           workspaces: src-tauri
           key: macos-universal
 
+      - uses: 1password/load-secrets-action@v3
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          APPLE_CERTIFICATE: op://releash/apple-signing/certificate
+          APPLE_CERTIFICATE_PASSWORD: op://releash/apple-signing/certificate-password
+          APPLE_SIGNING_IDENTITY: op://releash/apple-signing/signing-identity
+          APPLE_ID: op://releash/apple-signing/apple-id
+          APPLE_PASSWORD: op://releash/apple-signing/app-password
+          APPLE_TEAM_ID: op://releash/apple-signing/team-id
+        with:
+          export-env: true
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
