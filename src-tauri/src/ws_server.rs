@@ -90,6 +90,7 @@ pub struct WsServerState {
     repo_path: Option<String>,
     app_config: Arc<AppConfig>,
     app_handle: Option<tauri::AppHandle>,
+    tls_enabled: bool,
 }
 
 impl WsServerState {
@@ -100,6 +101,7 @@ impl WsServerState {
         repo_path: Option<String>,
         app_config: Arc<AppConfig>,
         app_handle: Option<tauri::AppHandle>,
+        tls_enabled: bool,
     ) -> Self {
         Self {
             active_connection: Arc::new(Mutex::new(false)),
@@ -110,6 +112,7 @@ impl WsServerState {
             repo_path,
             app_config,
             app_handle,
+            tls_enabled,
         }
     }
 
@@ -525,6 +528,21 @@ fn join_error_msg(e: tokio::task::JoinError) -> WsMessage {
     })
 }
 
+fn apply_security_headers(
+    builder: hyper::http::response::Builder,
+    tls_enabled: bool,
+) -> hyper::http::response::Builder {
+    let builder = builder
+        .header("X-Content-Type-Options", "nosniff")
+        .header("X-Frame-Options", "DENY")
+        .header("Referrer-Policy", "strict-origin-when-cross-origin");
+    if tls_enabled {
+        builder.header("Strict-Transport-Security", "max-age=31536000")
+    } else {
+        builder
+    }
+}
+
 fn content_type_for(path: &str) -> &'static str {
     if path.ends_with(".html") {
         "text/html; charset=utf-8"
@@ -652,10 +670,11 @@ async fn handle_http(
     state: Arc<WsServerState>,
 ) -> Response<Full<Bytes>> {
     let path = req.uri().path().to_string();
+    let tls = state.tls_enabled;
     if is_ws_upgrade(&req) {
         match handle_ws_upgrade(req, peer_addr, state) {
             Ok(resp) => resp,
-            Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
+            Err(e) => error_response(StatusCode::BAD_REQUEST, &e, tls),
         }
     } else {
         serve_pwa(&path, &state)
@@ -708,7 +727,13 @@ fn handle_ws_upgrade(
 fn serve_pwa(path: &str, state: &WsServerState) -> Response<Full<Bytes>> {
     let pwa_dir = match &state.pwa_dir {
         Some(d) => d,
-        None => return error_response(StatusCode::NOT_FOUND, "PWA is not available"),
+        None => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "PWA is not available",
+                state.tls_enabled,
+            )
+        }
     };
 
     let file_path = match path {
@@ -716,41 +741,42 @@ fn serve_pwa(path: &str, state: &WsServerState) -> Response<Full<Bytes>> {
         p => p.trim_start_matches('/'),
     };
 
+    let tls = state.tls_enabled;
     let full_path = pwa_dir.join(file_path);
     if let (Ok(canonical), Ok(pwa_canonical)) = (full_path.canonicalize(), pwa_dir.canonicalize()) {
         if !canonical.starts_with(&pwa_canonical) {
-            return error_response(StatusCode::FORBIDDEN, "Access denied");
+            return error_response(StatusCode::FORBIDDEN, "Access denied", tls);
         }
         match std::fs::read(&canonical) {
             Ok(content) => {
                 let ct = content_type_for(canonical.to_str().unwrap_or(""));
-                Response::builder()
+                apply_security_headers(Response::builder(), tls)
                     .status(StatusCode::OK)
                     .header("Content-Type", ct)
                     .header("Cache-Control", "no-cache")
                     .body(Full::new(Bytes::from(content)))
                     .unwrap()
             }
-            Err(_) => serve_pwa_fallback(pwa_dir),
+            Err(_) => serve_pwa_fallback(pwa_dir, tls),
         }
     } else {
-        serve_pwa_fallback(pwa_dir)
+        serve_pwa_fallback(pwa_dir, tls)
     }
 }
 
-fn serve_pwa_fallback(pwa_dir: &std::path::Path) -> Response<Full<Bytes>> {
+fn serve_pwa_fallback(pwa_dir: &std::path::Path, tls_enabled: bool) -> Response<Full<Bytes>> {
     match std::fs::read(pwa_dir.join("pwa.html")) {
-        Ok(content) => Response::builder()
+        Ok(content) => apply_security_headers(Response::builder(), tls_enabled)
             .status(StatusCode::OK)
             .header("Content-Type", "text/html; charset=utf-8")
             .body(Full::new(Bytes::from(content)))
             .unwrap(),
-        Err(_) => error_response(StatusCode::NOT_FOUND, "Not Found"),
+        Err(_) => error_response(StatusCode::NOT_FOUND, "Not Found", tls_enabled),
     }
 }
 
-fn error_response(status: StatusCode, msg: &str) -> Response<Full<Bytes>> {
-    Response::builder()
+fn error_response(status: StatusCode, msg: &str, tls_enabled: bool) -> Response<Full<Bytes>> {
+    apply_security_headers(Response::builder(), tls_enabled)
         .status(status)
         .body(Full::new(Bytes::from(msg.to_string())))
         .unwrap()
@@ -1063,6 +1089,7 @@ pub async fn start_server(
         Some(root_path),
         Arc::clone(config_state.inner()),
         Some(app.clone()),
+        cfg.server.tls.enabled,
     ));
 
     start_ws_server(&cfg, server_state, shutdown_rx).await?;
@@ -1206,6 +1233,7 @@ mod tests {
             None,
             app_config,
             None,
+            false,
         )
     }
 

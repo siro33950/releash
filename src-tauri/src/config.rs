@@ -114,6 +114,13 @@ pub fn write_config(path: &Path, config: &ReleashConfig) -> Result<(), String> {
     fs::write(&tmp_path, &content).map_err(|e| format!("一時ファイル書き込み失敗: {e}"))?;
     fs::rename(&tmp_path, path).map_err(|e| format!("ファイルのリネーム失敗: {e}"))?;
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("パーミッション設定失敗: {e}"))?;
+    }
+
     Ok(())
 }
 

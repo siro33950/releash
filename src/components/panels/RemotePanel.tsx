@@ -1,3 +1,4 @@
+import DOMPurify from "dompurify";
 import { Copy, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
@@ -182,8 +183,12 @@ export function RemotePanel({ rootPath }: RemotePanelProps) {
 							</span>
 							<div
 								className="w-full flex justify-center"
-								// biome-ignore lint/security/noDangerouslySetInnerHtml: QR SVG from trusted backend
-								dangerouslySetInnerHTML={{ __html: qrData.svg }}
+								// biome-ignore lint/security/noDangerouslySetInnerHtml: SVG sanitized by DOMPurify
+								dangerouslySetInnerHTML={{
+									__html: DOMPurify.sanitize(qrData.svg, {
+										USE_PROFILES: { svg: true },
+									}),
+								}}
 							/>
 							<div className="flex items-center gap-1">
 								<span className="flex-1 text-[10px] text-muted-foreground font-mono truncate">
@@ -209,8 +214,12 @@ export function RemotePanel({ rootPath }: RemotePanelProps) {
 							</span>
 							<div
 								className="w-full flex justify-center"
-								// biome-ignore lint/security/noDangerouslySetInnerHtml: QR SVG from trusted backend
-								dangerouslySetInnerHTML={{ __html: qrData.token_svg }}
+								// biome-ignore lint/security/noDangerouslySetInnerHtml: SVG sanitized by DOMPurify
+								dangerouslySetInnerHTML={{
+									__html: DOMPurify.sanitize(qrData.token_svg, {
+										USE_PROFILES: { svg: true },
+									}),
+								}}
 							/>
 							<div className="flex items-center gap-1">
 								<span className="flex-1 text-[10px] text-muted-foreground font-mono truncate bg-muted border border-border rounded px-2 py-1">
