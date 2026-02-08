@@ -12,7 +12,7 @@ export default defineConfig({
 	},
 	build: {
 		outDir: "src-tauri/resources/pwa",
-		emptyOutDir: true,
+		emptyOutDir: false,
 		rollupOptions: {
 			input: path.resolve(import.meta.dirname, "pwa.html"),
 		},
