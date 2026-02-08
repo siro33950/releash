@@ -679,8 +679,11 @@ async fn handle_ws_session<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         *active = true;
     }
 
-    let token = state.current_token()?;
-    let result = handle_ws_authenticated(ws_stream, peer_addr, &token, state).await;
+    let result = async {
+        let token = state.current_token()?;
+        handle_ws_authenticated(ws_stream, peer_addr, &token, state).await
+    }
+    .await;
 
     {
         let mut active = state.active_connection.lock().await;
