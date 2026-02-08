@@ -38,6 +38,7 @@ export function useWebSocket({
 	const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const mountedRef = useRef(true);
 	const authFailedRef = useRef(false);
+	const intentionalCloseRef = useRef(false);
 	const connectRef = useRef<() => void>(() => {});
 	const onMessageRef = useRef(onMessage);
 	const onStatusChangeRef = useRef(onStatusChange);
@@ -67,6 +68,7 @@ export function useWebSocket({
 	const connect = useCallback(() => {
 		if (!mountedRef.current || !url || !token) return;
 		authFailedRef.current = false;
+		intentionalCloseRef.current = false;
 		if (wsRef.current) {
 			wsRef.current.close();
 			wsRef.current = null;
@@ -113,7 +115,7 @@ export function useWebSocket({
 			wsRef.current = null;
 			if (!mountedRef.current) return;
 			updateStatus("disconnected");
-			if (!authFailedRef.current) {
+			if (!authFailedRef.current && !intentionalCloseRef.current) {
 				scheduleReconnect();
 			}
 		};
@@ -126,6 +128,7 @@ export function useWebSocket({
 	connectRef.current = connect;
 
 	const disconnect = useCallback(() => {
+		intentionalCloseRef.current = true;
 		if (reconnectTimerRef.current) {
 			clearTimeout(reconnectTimerRef.current);
 			reconnectTimerRef.current = null;

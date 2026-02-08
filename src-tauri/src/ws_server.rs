@@ -152,6 +152,12 @@ fn record_auth_failure(
         failures: 0,
         blocked_until: None,
     });
+    if let Some(blocked_until) = entry.blocked_until {
+        if Instant::now() >= blocked_until {
+            entry.failures = 0;
+            entry.blocked_until = None;
+        }
+    }
     entry.failures += 1;
     if entry.failures >= RATE_LIMIT_MAX_FAILURES {
         entry.blocked_until = Some(Instant::now() + Duration::from_secs(RATE_LIMIT_BLOCK_SECS));
@@ -180,21 +186,20 @@ fn validate_relative_path(path: &str, repo_root: &str) -> Result<PathBuf, String
 }
 
 fn handle_file_content_request(req: &FileContentRequest, repo_path: &str) -> WsMessage {
-    if let Err(e) = validate_relative_path(&req.path, repo_path) {
-        return WsMessage::Error(ErrorMsg {
-            code: "INVALID_PATH".to_string(),
-            message: e,
-        });
-    }
+    let validated_path = match validate_relative_path(&req.path, repo_path) {
+        Ok(p) => p,
+        Err(e) => {
+            return WsMessage::Error(ErrorMsg {
+                code: "INVALID_PATH".to_string(),
+                message: e,
+            });
+        }
+    };
 
-    let absolute_path = std::path::Path::new(repo_path)
-        .join(&req.path)
-        .to_string_lossy()
-        .to_string();
+    let absolute_path = validated_path.to_string_lossy().to_string();
     let original =
         crate::git::get_file_at_ref(absolute_path, "HEAD".to_string()).unwrap_or_default();
-    let modified = std::fs::read_to_string(std::path::Path::new(repo_path).join(&req.path))
-        .unwrap_or_default();
+    let modified = std::fs::read_to_string(&validated_path).unwrap_or_default();
 
     WsMessage::FileContentResponse(FileContentResponse {
         path: req.path.clone(),
@@ -872,10 +877,13 @@ pub async fn start_server(
         .path()
         .app_data_dir()
         .map_err(|e| format!("データディレクトリの取得失敗: {e}"))?;
-    let (cert_path, key_path) = crate::tls::ensure_self_signed_cert(bind_ip_addr, &data_dir)?;
+    if cfg.server.tls.cert.is_empty() || cfg.server.tls.key.is_empty() {
+        let (cert_path, key_path) =
+            crate::tls::ensure_self_signed_cert(bind_ip_addr, &data_dir)?;
+        cfg.server.tls.cert = cert_path.to_string_lossy().to_string();
+        cfg.server.tls.key = key_path.to_string_lossy().to_string();
+    }
     cfg.server.tls.enabled = true;
-    cfg.server.tls.cert = cert_path.to_string_lossy().to_string();
-    cfg.server.tls.key = key_path.to_string_lossy().to_string();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 

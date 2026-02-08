@@ -68,7 +68,7 @@ export function RemoteTerminalPanel({
 		const root = rootRef.current;
 		if (!viewport || !root) return;
 
-		const initialHeight = viewport.height;
+		let initialHeight = viewport.height;
 
 		const handleResize = () => {
 			if (viewport.height < initialHeight * 0.9) {
@@ -81,11 +81,20 @@ export function RemoteTerminalPanel({
 			}
 		};
 
+		const handleOrientationChange = () => {
+			setTimeout(() => {
+				initialHeight = viewport.height;
+				root.style.height = "";
+			}, 200);
+		};
+
 		viewport.addEventListener("resize", handleResize);
 		viewport.addEventListener("scroll", handleResize);
+		window.addEventListener("orientationchange", handleOrientationChange);
 		return () => {
 			viewport.removeEventListener("resize", handleResize);
 			viewport.removeEventListener("scroll", handleResize);
+			window.removeEventListener("orientationchange", handleOrientationChange);
 			root.style.height = "";
 		};
 	}, []);

@@ -78,6 +78,7 @@ function FileStatusItem({
 			onClick={() => onSelect?.(entry.path)}
 			onKeyDown={(e) => {
 				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
 					onSelect?.(entry.path);
 				}
 			}}
