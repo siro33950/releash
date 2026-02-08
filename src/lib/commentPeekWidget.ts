@@ -2,6 +2,7 @@ import type * as Monaco from "monaco-editor";
 import type { LineComment } from "@/types/comment";
 
 export interface MonacoContentWidget {
+	allowEditorOverflow?: boolean;
 	getId(): string;
 	getDomNode(): HTMLElement;
 	getPosition(): Monaco.editor.IContentWidgetPosition | null;
@@ -118,6 +119,10 @@ export function createCommentPeekWidget(
 
 	domNode.appendChild(actions);
 
+	domNode.addEventListener("mousedown", (e) => {
+		e.stopPropagation();
+	});
+
 	// Key events on the whole widget
 	domNode.addEventListener("keydown", (e) => {
 		e.stopPropagation();
@@ -139,6 +144,7 @@ export function createCommentPeekWidget(
 	setTimeout(() => textarea.focus(), 0);
 
 	return {
+		allowEditorOverflow: true,
 		getId: () => "comment-input-widget",
 		getDomNode: () => domNode,
 		getPosition: () => ({

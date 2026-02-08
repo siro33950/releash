@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::protocol::{PtyExitMsg, PtyOutputMsg, WsMessage};
+use crate::shell_integration;
+use crate::ws_bridge::WsBroadcaster;
+
 static PTY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn generate_pty_id() -> u64 {
@@ -24,6 +28,60 @@ pub struct PtyManager {
     sessions: Mutex<HashMap<u64, PtySession>>,
 }
 
+impl PtyManager {
+    pub fn write(&self, pty_id: u64, data: &str) -> Result<(), String> {
+        let writer = {
+            let sessions = self.sessions.lock();
+            let session = sessions
+                .get(&pty_id)
+                .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+            Arc::clone(&session.writer)
+        };
+        let mut writer = writer.lock();
+        writer
+            .write_all(data.as_bytes())
+            .map_err(|e| format!("Failed to write to PTY: {}", e))?;
+        writer
+            .flush()
+            .map_err(|e| format!("Failed to flush: {}", e))?;
+        Ok(())
+    }
+
+    pub fn active_pty_id(&self) -> Option<u64> {
+        let sessions = self.sessions.lock();
+        sessions.keys().next().copied()
+    }
+
+    pub fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), String> {
+        let sessions = self.sessions.lock();
+        let session = sessions
+            .get(&pty_id)
+            .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+        let master = session.master.lock();
+        let size = master
+            .get_size()
+            .map_err(|e| format!("Failed to get PTY size: {}", e))?;
+        Ok((size.cols, size.rows))
+    }
+
+    pub fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), String> {
+        let sessions = self.sessions.lock();
+        let session = sessions
+            .get(&pty_id)
+            .ok_or_else(|| format!("PTY {} not found", pty_id))?;
+        let master = session.master.lock();
+        master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to resize PTY: {}", e))?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PtyOutput {
     pub pty_id: u64,
@@ -39,7 +97,7 @@ pub struct PtyExit {
 #[tauri::command]
 pub fn spawn_pty(
     app: AppHandle,
-    state: State<'_, PtyManager>,
+    state: State<'_, Arc<PtyManager>>,
     rows: u16,
     cols: u16,
     cwd: Option<String>,
@@ -55,7 +113,32 @@ pub fn spawn_pty(
         })
         .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
-    let mut cmd = CommandBuilder::new_default_prog();
+    let integration_dir = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|d| shell_integration::create_shell_integration_files(&d).ok());
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let mut cmd = if let Some(ref int_dir) = integration_dir {
+        if shell.ends_with("/bash") {
+            let mut c = CommandBuilder::new(&shell);
+            c.arg("--rcfile");
+            c.arg(int_dir.join("bash-init.sh"));
+            c
+        } else if shell.ends_with("/zsh") {
+            let mut c = CommandBuilder::new(&shell);
+            let user_zdotdir = std::env::var("ZDOTDIR")
+                .unwrap_or_else(|_| std::env::var("HOME").unwrap_or_default());
+            c.env("RELEASH_USER_ZDOTDIR", user_zdotdir);
+            c.env("ZDOTDIR", int_dir.join("zsh"));
+            c
+        } else {
+            CommandBuilder::new_default_prog()
+        }
+    } else {
+        CommandBuilder::new_default_prog()
+    };
 
     #[cfg(not(target_os = "windows"))]
     {
@@ -100,6 +183,7 @@ pub fn spawn_pty(
     let app_clone = app.clone();
     let pty_id_clone = pty_id;
     std::thread::spawn(move || {
+        let ws = app_clone.try_state::<Arc<WsBroadcaster>>();
         let mut buf = [0u8; 4096];
         let mut pending = Vec::new();
         loop {
@@ -113,20 +197,32 @@ pub fn spawn_pty(
                         Err(e) => e.valid_up_to(),
                     };
 
-                    if valid_up_to > 0 {
-                        let data = std::str::from_utf8(&pending[..valid_up_to])
-                            .unwrap()
-                            .to_string();
+                    if valid_up_to == 0 {
+                        continue;
+                    }
+
+                    let raw = std::str::from_utf8(&pending[..valid_up_to])
+                        .unwrap()
+                        .to_string();
+                    pending = pending[valid_up_to..].to_vec();
+
+                    let result = shell_integration::strip_osc_cmd_done(&raw);
+
+                    if !result.filtered_output.is_empty() {
                         let _ = app_clone.emit(
                             "pty-output",
                             PtyOutput {
                                 pty_id: pty_id_clone,
-                                data,
+                                data: result.filtered_output.clone(),
                             },
                         );
+                        if let Some(ws) = &ws {
+                            ws.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+                                pty_id: pty_id_clone,
+                                data: result.filtered_output,
+                            }));
+                        }
                     }
-
-                    pending = pending[valid_up_to..].to_vec();
                 }
                 Err(_) => break,
             }
@@ -146,6 +242,12 @@ pub fn spawn_pty(
                 exit_code,
             },
         );
+        if let Some(ws) = app_clone.try_state::<Arc<WsBroadcaster>>() {
+            ws.try_send(WsMessage::PtyExit(PtyExitMsg {
+                pty_id: pty_id_clone,
+                exit_code,
+            }));
+        }
 
         // Remove session from manager
         if let Some(manager) = app_clone.try_state::<PtyManager>() {
@@ -157,55 +259,35 @@ pub fn spawn_pty(
 }
 
 #[tauri::command]
-pub fn write_pty(state: State<'_, PtyManager>, pty_id: u64, data: String) -> Result<(), String> {
-    // sessionsロックを取得してwriterのArcクローンを取得後、即座に解放
-    let writer = {
-        let sessions = state.sessions.lock();
-        let session = sessions
-            .get(&pty_id)
-            .ok_or_else(|| format!("PTY {} not found", pty_id))?;
-        Arc::clone(&session.writer)
-    };
-
-    // sessionsロック解放後にI/O実行
-    let mut writer = writer.lock();
-    writer
-        .write_all(data.as_bytes())
-        .map_err(|e| format!("Failed to write to PTY: {}", e))?;
-    writer
-        .flush()
-        .map_err(|e| format!("Failed to flush: {}", e))?;
-
-    Ok(())
+pub fn write_pty(
+    state: State<'_, Arc<PtyManager>>,
+    pty_id: u64,
+    data: String,
+) -> Result<(), String> {
+    state.write(pty_id, &data)
 }
 
 #[tauri::command]
 pub fn resize_pty(
-    state: State<'_, PtyManager>,
+    app: AppHandle,
+    state: State<'_, Arc<PtyManager>>,
     pty_id: u64,
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let sessions = state.sessions.lock();
-    let session = sessions
-        .get(&pty_id)
-        .ok_or_else(|| format!("PTY {} not found", pty_id))?;
-
-    let master = session.master.lock();
-    master
-        .resize(PtySize {
+    state.resize(pty_id, rows, cols)?;
+    if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
+        ws.try_send(WsMessage::PtyResize(crate::protocol::PtyResize {
+            pty_id,
             rows,
             cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("Failed to resize PTY: {}", e))?;
-
+        }));
+    }
     Ok(())
 }
 
 #[tauri::command]
-pub fn kill_pty(state: State<'_, PtyManager>, pty_id: u64) -> Result<(), String> {
+pub fn kill_pty(state: State<'_, Arc<PtyManager>>, pty_id: u64) -> Result<(), String> {
     let mut sessions = state.sessions.lock();
 
     // 先にセッションを取得（削除はまだしない）

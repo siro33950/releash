@@ -200,6 +200,7 @@ function GutterEditor({
 	theme,
 	navigation,
 	filePath,
+	readOnly,
 }: {
 	originalContent: string;
 	modifiedContent: string;
@@ -208,6 +209,7 @@ function GutterEditor({
 	fontSize?: number;
 	filePath?: string;
 	navigation?: NavigationHandlers;
+	readOnly?: boolean;
 } & HunkCommentProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 
@@ -226,6 +228,7 @@ function GutterEditor({
 		getCommentsForLine,
 		revealLine,
 		theme,
+		readOnly,
 	});
 
 	const actions = useEditorContextMenu(editorRef, navigation);
@@ -257,6 +260,7 @@ function DiffEditor({
 	theme,
 	navigation,
 	filePath,
+	readOnly,
 }: {
 	originalContent: string;
 	modifiedContent: string;
@@ -266,6 +270,7 @@ function DiffEditor({
 	fontSize?: number;
 	filePath?: string;
 	navigation?: NavigationHandlers;
+	readOnly?: boolean;
 } & HunkCommentProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 
@@ -285,6 +290,7 @@ function DiffEditor({
 		getCommentsForLine,
 		revealLine,
 		theme,
+		readOnly,
 	});
 
 	const modifiedEditorProxy = useMemo<
@@ -332,6 +338,7 @@ interface MonacoDiffViewerProps {
 	theme?: Theme;
 	filePath?: string;
 	onSearchOccurrences?: (text: string) => void;
+	readOnly?: boolean;
 }
 
 export function MonacoDiffViewer({
@@ -352,6 +359,7 @@ export function MonacoDiffViewer({
 	theme,
 	filePath,
 	onSearchOccurrences,
+	readOnly,
 }: MonacoDiffViewerProps) {
 	const hunkCommentProps: HunkCommentProps = {
 		changeGroups,
@@ -379,6 +387,7 @@ export function MonacoDiffViewer({
 					fontSize={fontSize}
 					filePath={filePath}
 					navigation={navigation}
+					readOnly={readOnly}
 					{...hunkCommentProps}
 				/>
 			)}
@@ -392,6 +401,7 @@ export function MonacoDiffViewer({
 					fontSize={fontSize}
 					filePath={filePath}
 					navigation={navigation}
+					readOnly={readOnly}
 					{...hunkCommentProps}
 				/>
 			)}
@@ -405,6 +415,7 @@ export function MonacoDiffViewer({
 					fontSize={fontSize}
 					filePath={filePath}
 					navigation={navigation}
+					readOnly={readOnly}
 					{...hunkCommentProps}
 				/>
 			)}
