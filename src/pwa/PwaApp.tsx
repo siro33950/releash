@@ -1,6 +1,8 @@
 import { FileDiff, GitBranch, MessageSquare, Terminal } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { computeHunks } from "@/lib/computeHunks";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
+import { generatePatch } from "@/lib/generatePatch";
 import type { LineComment } from "@/types/comment";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { RemoteCommentList } from "./components/RemoteCommentList";
@@ -9,7 +11,10 @@ import { RemoteSourceControl } from "./components/RemoteSourceControl";
 import { RemoteTerminalPanel } from "./components/RemoteTerminalPanel";
 import { StatusIndicator } from "./components/StatusIndicator";
 import { useMessageBus } from "./hooks/useMessageBus";
-import { useRemoteFileContent } from "./hooks/useRemoteFileContent";
+import {
+	type DiffBase,
+	useRemoteFileContent,
+} from "./hooks/useRemoteFileContent";
 import { useRemoteGitActions } from "./hooks/useRemoteGitActions";
 import { useRemoteGitStatus } from "./hooks/useRemoteGitStatus";
 import { useWebSocket } from "./hooks/useWebSocket";
@@ -35,6 +40,7 @@ export function PwaApp() {
 	const [activeTab, setActiveTab] = useState<Tab>("changes");
 	const [terminalMounted, setTerminalMounted] = useState(false);
 	const [comments, setComments] = useState<LineComment[]>([]);
+	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
 
 	const { dispatch, subscribe } = useMessageBus();
 
@@ -73,7 +79,7 @@ export function PwaApp() {
 		subscribe,
 		send,
 	});
-	const { stage, unstage, error, clearError } = useRemoteGitActions({
+	const { stage, unstage, stageHunk, error, clearError } = useRemoteGitActions({
 		send,
 		subscribe,
 	});
@@ -91,9 +97,19 @@ export function PwaApp() {
 	const handleSelectFile = useCallback(
 		(path: string) => {
 			setSelectedPath(path);
-			requestContent(path);
+			requestContent(path, diffBase);
 		},
-		[requestContent],
+		[requestContent, diffBase],
+	);
+
+	const handleDiffBaseChange = useCallback(
+		(newBase: DiffBase) => {
+			setDiffBase(newBase);
+			if (selectedPath) {
+				requestContent(selectedPath, newBase);
+			}
+		},
+		[selectedPath, requestContent],
 	);
 
 	const handleNavigateToDiff = useCallback(() => {
@@ -155,6 +171,35 @@ export function PwaApp() {
 		[send, ptyId],
 	);
 
+	const hasDiffChanges = useMemo(() => {
+		if (!content) return false;
+		return content.original !== content.modified;
+	}, [content]);
+
+	const handleStageAll = useCallback(() => {
+		if (!selectedPath || !content) return;
+		const base =
+			diffBase === "HEAD" && content.staged != null
+				? content.staged
+				: content.original;
+		const allHunks = computeHunks(base, content.modified, selectedPath);
+		const allIndices = allHunks.map((h) => h.index);
+		const patch = generatePatch(selectedPath, allHunks, allIndices);
+		if (patch) stageHunk(patch);
+	}, [selectedPath, content, diffBase, stageHunk]);
+
+	const handleUnstageAll = useCallback(() => {
+		if (!selectedPath || !content || content.staged == null) return;
+		const allHunks = computeHunks(
+			content.staged,
+			content.original,
+			selectedPath,
+		);
+		const allIndices = allHunks.map((h) => h.index);
+		const patch = generatePatch(selectedPath, allHunks, allIndices);
+		if (patch) stageHunk(patch);
+	}, [selectedPath, content, stageHunk]);
+
 	if (!connection) {
 		return <ConnectionForm onConnect={handleConnect} />;
 	}
@@ -199,10 +244,41 @@ export function PwaApp() {
 					style={{ display: activeTab === "diff" ? undefined : "none" }}
 				>
 					{selectedPath && (
-						<div className="flex items-center px-3 py-1 border-b border-neutral-800 bg-neutral-900 shrink-0">
-							<span className="text-xs text-neutral-500 truncate">
+						<div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-neutral-800 bg-neutral-900 shrink-0">
+							<span className="text-xs text-neutral-500 truncate flex-1 min-w-0">
 								{selectedPath}
 							</span>
+							<div className="flex items-center gap-1.5 shrink-0">
+								<select
+									value={diffBase}
+									onChange={(e) =>
+										handleDiffBaseChange(e.target.value as DiffBase)
+									}
+									className="text-xs bg-neutral-800 text-neutral-300 border border-neutral-700 rounded px-1.5 py-0.5"
+								>
+									<option value="HEAD">HEAD</option>
+									<option value="staged">Staged</option>
+								</select>
+								{hasDiffChanges && (
+									<button
+										type="button"
+										onClick={handleStageAll}
+										className="text-xs px-2 py-0.5 rounded bg-green-800 hover:bg-green-700 text-green-100 transition-colors"
+									>
+										Stage All
+									</button>
+								)}
+								{diffBase === "HEAD" &&
+									stagedFiles.some((f) => f.path === selectedPath) && (
+										<button
+											type="button"
+											onClick={handleUnstageAll}
+											className="text-xs px-2 py-0.5 rounded bg-amber-800 hover:bg-amber-700 text-amber-100 transition-colors"
+										>
+											Unstage All
+										</button>
+									)}
+							</div>
 						</div>
 					)}
 					<div className="flex-1" style={{ minHeight: 0 }}>
@@ -212,6 +288,9 @@ export function PwaApp() {
 								original={content?.original ?? ""}
 								modified={content?.modified ?? ""}
 								loading={loading}
+								diffBase={diffBase}
+								staged={content?.staged ?? null}
+								onStageHunk={stageHunk}
 								onAddComment={handleAddComment}
 							/>
 						) : (

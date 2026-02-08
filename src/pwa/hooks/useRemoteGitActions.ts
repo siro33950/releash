@@ -37,7 +37,15 @@ export function useRemoteGitActions({
 		[send],
 	);
 
+	const stageHunk = useCallback(
+		(patch: string) => {
+			setError(null);
+			send({ type: "git_stage_hunk", payload: { patch } });
+		},
+		[send],
+	);
+
 	const clearError = useCallback(() => setError(null), []);
 
-	return { stage, unstage, error, clearError };
+	return { stage, unstage, stageHunk, error, clearError };
 }

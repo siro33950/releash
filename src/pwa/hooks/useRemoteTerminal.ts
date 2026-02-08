@@ -149,6 +149,10 @@ export function useRemoteTerminal({
 			terminal.refresh(0, terminal.rows - 1);
 			if (!initialSentRef.current) {
 				initialSentRef.current = true;
+				send({
+					type: "pty_output_request",
+					payload: { pty_id: ptyId },
+				});
 				send({ type: "pty_input", payload: { pty_id: ptyId, data: "\r" } });
 			}
 		});

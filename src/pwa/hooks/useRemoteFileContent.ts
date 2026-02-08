@@ -6,7 +6,10 @@ interface FileContent {
 	path: string;
 	original: string;
 	modified: string;
+	staged: string | null;
 }
+
+export type DiffBase = "HEAD" | "staged";
 
 interface UseRemoteFileContentOptions {
 	subscribe: Subscribe;
@@ -20,12 +23,19 @@ export function useRemoteFileContent({
 	const [content, setContent] = useState<FileContent | null>(null);
 	const [loading, setLoading] = useState(false);
 	const currentPathRef = useRef<string | null>(null);
+	const currentDiffBaseRef = useRef<DiffBase>("HEAD");
 
 	const requestContent = useCallback(
-		(path: string) => {
+		(path: string, diffBase?: DiffBase) => {
 			currentPathRef.current = path;
+			if (diffBase !== undefined) {
+				currentDiffBaseRef.current = diffBase;
+			}
 			setLoading(true);
-			send({ type: "file_content_request", payload: { path } });
+			send({
+				type: "file_content_request",
+				payload: { path, diff_base: currentDiffBaseRef.current },
+			});
 		},
 		[send],
 	);
@@ -38,6 +48,7 @@ export function useRemoteFileContent({
 						path: msg.payload.path,
 						original: msg.payload.original,
 						modified: msg.payload.modified,
+						staged: msg.payload.staged ?? null,
 					});
 					setLoading(false);
 				}
@@ -45,7 +56,20 @@ export function useRemoteFileContent({
 				if (msg.payload.path === currentPathRef.current) {
 					send({
 						type: "file_content_request",
-						payload: { path: currentPathRef.current },
+						payload: {
+							path: currentPathRef.current,
+							diff_base: currentDiffBaseRef.current,
+						},
+					});
+				}
+			} else if (msg.type === "git_stage_result" && msg.payload.success) {
+				if (currentPathRef.current) {
+					send({
+						type: "file_content_request",
+						payload: {
+							path: currentPathRef.current,
+							diff_base: currentDiffBaseRef.current,
+						},
 					});
 				}
 			}
@@ -54,6 +78,7 @@ export function useRemoteFileContent({
 
 	const clear = useCallback(() => {
 		currentPathRef.current = null;
+		currentDiffBaseRef.current = "HEAD";
 		setContent(null);
 		setLoading(false);
 	}, []);

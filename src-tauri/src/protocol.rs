@@ -53,6 +53,11 @@ pub struct PtyReady {
     pub rows: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyOutputRequest {
+    pub pty_id: u64,
+}
+
 // --- ファイル・Diff ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +75,12 @@ pub struct GitStatusSync {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileContentRequest {
     pub path: String,
+    #[serde(default = "default_diff_base")]
+    pub diff_base: String,
+}
+
+fn default_diff_base() -> String {
+    "HEAD".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +88,8 @@ pub struct FileContentResponse {
     pub path: String,
     pub original: String,
     pub modified: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub staged: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +119,11 @@ pub struct GitStageResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub files: Vec<GitFileStatusMsg>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitStageHunk {
+    pub patch: String,
 }
 
 // --- コメント ---
@@ -168,6 +186,8 @@ pub enum WsMessage {
     PtyResize(PtyResize),
     #[serde(rename = "pty_ready")]
     PtyReady(PtyReady),
+    #[serde(rename = "pty_output_request")]
+    PtyOutputRequest(PtyOutputRequest),
 
     // ファイル・Diff
     #[serde(rename = "git_status_sync")]
@@ -188,6 +208,8 @@ pub enum WsMessage {
     GitUnstage(GitUnstage),
     #[serde(rename = "git_stage_result")]
     GitStageResult(GitStageResult),
+    #[serde(rename = "git_stage_hunk")]
+    GitStageHunk(GitStageHunk),
 
     // コメント
     #[serde(rename = "add_comment")]
@@ -313,6 +335,7 @@ mod tests {
             path: "lib.rs".to_string(),
             original: "fn old() {}".to_string(),
             modified: "fn new() {}".to_string(),
+            staged: None,
         });
         let json = serialize_message(&msg).unwrap();
         let deserialized = deserialize_message(&json).unwrap();
@@ -367,9 +390,81 @@ mod tests {
     }
 
     #[test]
+    fn file_content_request_default_diff_base() {
+        let json = r#"{"type":"file_content_request","payload":{"path":"test.rs"}}"#;
+        let msg = deserialize_message(json).unwrap();
+        match msg {
+            WsMessage::FileContentRequest(req) => {
+                assert_eq!(req.path, "test.rs");
+                assert_eq!(req.diff_base, "HEAD");
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn file_content_request_staged_diff_base() {
+        let json =
+            r#"{"type":"file_content_request","payload":{"path":"a.rs","diff_base":"staged"}}"#;
+        let msg = deserialize_message(json).unwrap();
+        match msg {
+            WsMessage::FileContentRequest(req) => {
+                assert_eq!(req.diff_base, "staged");
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
     fn deserialize_unknown_type_fails() {
         let json = r#"{"type":"unknown_type","payload":{}}"#;
         assert!(deserialize_message(json).is_err());
+    }
+
+    #[test]
+    fn roundtrip_git_stage_hunk() {
+        let msg = WsMessage::GitStageHunk(GitStageHunk {
+            patch: "--- a/f\n+++ b/f\n".to_string(),
+        });
+        let json = serialize_message(&msg).unwrap();
+        let deserialized = deserialize_message(&json).unwrap();
+        match deserialized {
+            WsMessage::GitStageHunk(h) => {
+                assert_eq!(h.patch, "--- a/f\n+++ b/f\n");
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn file_content_response_omits_none_staged() {
+        let msg = WsMessage::FileContentResponse(FileContentResponse {
+            path: "f".to_string(),
+            original: "".to_string(),
+            modified: "".to_string(),
+            staged: None,
+        });
+        let json = serialize_message(&msg).unwrap();
+        assert!(!json.contains("\"staged\""));
+    }
+
+    #[test]
+    fn file_content_response_includes_staged() {
+        let msg = WsMessage::FileContentResponse(FileContentResponse {
+            path: "f".to_string(),
+            original: "a".to_string(),
+            modified: "b".to_string(),
+            staged: Some("s".to_string()),
+        });
+        let json = serialize_message(&msg).unwrap();
+        assert!(json.contains("\"staged\":\"s\""));
+        let deserialized = deserialize_message(&json).unwrap();
+        match deserialized {
+            WsMessage::FileContentResponse(r) => {
+                assert_eq!(r.staged.unwrap(), "s");
+            }
+            _ => panic!("unexpected variant"),
+        }
     }
 
     #[test]
@@ -407,14 +502,17 @@ mod tests {
                 cols: 80,
                 rows: 24,
             }),
+            WsMessage::PtyOutputRequest(PtyOutputRequest { pty_id: 1 }),
             WsMessage::GitStatusSync(GitStatusSync { files: vec![] }),
             WsMessage::FileContentRequest(FileContentRequest {
                 path: "f".to_string(),
+                diff_base: "HEAD".to_string(),
             }),
             WsMessage::FileContentResponse(FileContentResponse {
                 path: "f".to_string(),
                 original: "".to_string(),
                 modified: "".to_string(),
+                staged: None,
             }),
             WsMessage::FileChange(FileChange {
                 path: "f".to_string(),
@@ -431,6 +529,9 @@ mod tests {
                 success: true,
                 error: None,
                 files: vec![],
+            }),
+            WsMessage::GitStageHunk(GitStageHunk {
+                patch: "p".to_string(),
             }),
             WsMessage::AddComment(AddComment {
                 file_path: "src/main.rs".to_string(),

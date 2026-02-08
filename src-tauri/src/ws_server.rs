@@ -197,14 +197,23 @@ fn handle_file_content_request(req: &FileContentRequest, repo_path: &str) -> WsM
     };
 
     let absolute_path = validated_path.to_string_lossy().to_string();
-    let original =
-        crate::git::get_file_at_ref(absolute_path, "HEAD".to_string()).unwrap_or_default();
+    let original = if req.diff_base == "staged" {
+        crate::git::get_staged_content(absolute_path.clone()).unwrap_or_default()
+    } else {
+        crate::git::get_file_at_ref(absolute_path.clone(), "HEAD".to_string()).unwrap_or_default()
+    };
     let modified = std::fs::read_to_string(&validated_path).unwrap_or_default();
+    let staged = if req.diff_base == "HEAD" {
+        Some(crate::git::get_staged_content(absolute_path).unwrap_or_default())
+    } else {
+        None
+    };
 
     WsMessage::FileContentResponse(FileContentResponse {
         path: req.path.clone(),
         original,
         modified,
+        staged,
     })
 }
 
@@ -332,6 +341,69 @@ fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessage> {
                 Some(WsMessage::Error(ErrorMsg {
                     code: "NO_REPO".to_string(),
                     message: "リポジトリパスが設定されていません".to_string(),
+                }))
+            }
+        }
+        WsMessage::GitStageHunk(req) => {
+            if let Some(repo_path) = &state.repo_path {
+                let result = crate::git::git_stage_hunk(repo_path.clone(), req.patch.clone());
+                let files = crate::git::get_git_status(repo_path.clone())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|s| GitFileStatusMsg {
+                        path: s.path,
+                        index_status: s.index_status,
+                        worktree_status: s.worktree_status,
+                    })
+                    .collect::<Vec<_>>();
+
+                state
+                    .broadcaster
+                    .try_send(WsMessage::GitStatusSync(GitStatusSync {
+                        files: files.clone(),
+                    }));
+
+                Some(WsMessage::GitStageResult(GitStageResult {
+                    success: result.is_ok(),
+                    error: result.err(),
+                    files,
+                }))
+            } else {
+                Some(WsMessage::Error(ErrorMsg {
+                    code: "NO_REPO".to_string(),
+                    message: "リポジトリパスが設定されていません".to_string(),
+                }))
+            }
+        }
+        WsMessage::PtyOutputRequest(req) => {
+            if let Some(pm) = &state.pty_manager {
+                if let Some(pty_id) = pm.active_pty_id() {
+                    if pty_id == req.pty_id {
+                        let buffered = state.broadcaster.get_pty_output_buffer();
+                        if buffered.is_empty() {
+                            None
+                        } else {
+                            Some(WsMessage::PtyOutput(PtyOutputMsg {
+                                pty_id,
+                                data: buffered,
+                            }))
+                        }
+                    } else {
+                        Some(WsMessage::Error(ErrorMsg {
+                            code: "PTY_ID_MISMATCH".to_string(),
+                            message: "指定されたPTY IDが一致しません".to_string(),
+                        }))
+                    }
+                } else {
+                    Some(WsMessage::Error(ErrorMsg {
+                        code: "NO_PTY".to_string(),
+                        message: "デスクトップのターミナルがまだ起動していません".to_string(),
+                    }))
+                }
+            } else {
+                Some(WsMessage::Error(ErrorMsg {
+                    code: "NO_PTY".to_string(),
+                    message: "デスクトップのターミナルがまだ起動していません".to_string(),
                 }))
             }
         }
@@ -736,20 +808,6 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                 ))
                 .await
                 .map_err(|e| format!("Failed to send pty_ready: {e}"))?;
-
-            let buffered = state.broadcaster.get_pty_output_buffer();
-            if !buffered.is_empty() {
-                let replay_msg = WsMessage::PtyOutput(PtyOutputMsg {
-                    pty_id,
-                    data: buffered,
-                });
-                write
-                    .send(Message::Text(
-                        serialize_message(&replay_msg).map_err(|e| e.to_string())?,
-                    ))
-                    .await
-                    .map_err(|e| format!("Failed to send pty output replay: {e}"))?;
-            }
         } else {
             let err_msg = WsMessage::Error(ErrorMsg {
                 code: "NO_PTY".to_string(),
@@ -1107,6 +1165,7 @@ mod tests {
         let state = test_state();
         let msg = WsMessage::FileContentRequest(FileContentRequest {
             path: "test.rs".to_string(),
+            diff_base: "HEAD".to_string(),
         });
         let result = route_message(&msg, &state);
         match result {

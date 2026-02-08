@@ -1,5 +1,10 @@
 import { useCallback, useMemo, useRef } from "react";
-import { computeHunks, type Hunk } from "@/lib/computeHunks";
+import {
+	type ChangeGroup,
+	computeChangeGroups,
+	computeHunks,
+	type Hunk,
+} from "@/lib/computeHunks";
 
 interface LineRange {
 	start: number;
@@ -14,6 +19,9 @@ interface DiffRendererProps {
 	highlightRange: LineRange | null;
 	onLineTap: (lineNumber: number) => void;
 	onLineLongPress: (lineNumber: number) => void;
+	changeGroups?: ChangeGroup[];
+	onStageGroup?: (groupIndex: number) => void;
+	onUnstageGroup?: (groupIndex: number) => void;
 }
 
 interface DiffLine {
@@ -21,6 +29,7 @@ interface DiffLine {
 	content: string;
 	oldLine: number | null;
 	newLine: number | null;
+	lineIndex: number;
 }
 
 function buildDiffLines(hunk: Hunk): DiffLine[] {
@@ -28,20 +37,27 @@ function buildDiffLines(hunk: Hunk): DiffLine[] {
 	let oldLine = hunk.oldStart;
 	let newLine = hunk.newStart;
 
-	for (const raw of hunk.lines) {
+	for (let idx = 0; idx < hunk.lines.length; idx++) {
+		const raw = hunk.lines[idx];
 		const prefix = raw[0];
 		const content = raw.slice(1);
 
 		if (prefix === "\\") continue;
 
 		if (prefix === "-") {
-			lines.push({ prefix, content, oldLine, newLine: null });
+			lines.push({ prefix, content, oldLine, newLine: null, lineIndex: idx });
 			oldLine++;
 		} else if (prefix === "+") {
-			lines.push({ prefix, content, oldLine: null, newLine });
+			lines.push({
+				prefix,
+				content,
+				oldLine: null,
+				newLine,
+				lineIndex: idx,
+			});
 			newLine++;
 		} else {
-			lines.push({ prefix, content, oldLine, newLine });
+			lines.push({ prefix, content, oldLine, newLine, lineIndex: idx });
 			oldLine++;
 			newLine++;
 		}
@@ -74,11 +90,19 @@ export function DiffRenderer({
 	highlightRange,
 	onLineTap,
 	onLineLongPress,
+	changeGroups,
+	onStageGroup,
+	onUnstageGroup,
 }: DiffRendererProps) {
 	const hunks = useMemo(
 		() => computeHunks(original, modified, filePath),
 		[original, modified, filePath],
 	);
+
+	const groups = useMemo(() => {
+		if (changeGroups) return changeGroups;
+		return computeChangeGroups(hunks);
+	}, [changeGroups, hunks]);
 
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const longPressedRef = useRef(false);
@@ -130,16 +154,20 @@ export function DiffRenderer({
 				<tbody>
 					{hunks.map((hunk) => {
 						const diffLines = buildDiffLines(hunk);
+						const hunkGroups = groups.filter((g) => g.hunkIndex === hunk.index);
 						return (
 							<HunkRows
 								key={hunk.index}
 								hunk={hunk}
 								diffLines={diffLines}
+								groups={hunkGroups}
 								selectionStart={selectionStart}
 								highlightRange={highlightRange}
 								onPointerDown={handlePointerDown}
 								onPointerUp={handlePointerUp}
 								onPointerCancel={handlePointerCancel}
+								onStageGroup={onStageGroup}
+								onUnstageGroup={onUnstageGroup}
 							/>
 						);
 					})}
@@ -152,20 +180,36 @@ export function DiffRenderer({
 function HunkRows({
 	hunk,
 	diffLines,
+	groups,
 	selectionStart,
 	highlightRange,
 	onPointerDown,
 	onPointerUp,
 	onPointerCancel,
+	onStageGroup,
+	onUnstageGroup,
 }: {
 	hunk: Hunk;
 	diffLines: DiffLine[];
+	groups: ChangeGroup[];
 	selectionStart: number | null;
 	highlightRange: LineRange | null;
 	onPointerDown: (lineNum: number) => void;
 	onPointerUp: (lineNum: number) => void;
 	onPointerCancel: () => void;
+	onStageGroup?: (groupIndex: number) => void;
+	onUnstageGroup?: (groupIndex: number) => void;
 }) {
+	const groupStartOffsets = useMemo(() => {
+		const map = new Map<number, ChangeGroup>();
+		for (const g of groups) {
+			map.set(g.lineOffsetStart, g);
+		}
+		return map;
+	}, [groups]);
+
+	const hasGroupButtons = onStageGroup != null || onUnstageGroup != null;
+
 	return (
 		<>
 			<tr className="bg-neutral-900/80">
@@ -190,24 +234,89 @@ function HunkRows({
 					rowHighlight = "ring-1 ring-amber-500 bg-amber-950/30";
 				}
 
+				const group = hasGroupButtons
+					? groupStartOffsets.get(line.lineIndex)
+					: undefined;
+				const isStaged = group?.isStaged === true;
+
 				return (
-					<tr
+					<GroupButtonWrapper
 						key={`${hunk.index}-${i}`}
-						className={`${lineStyle(line.prefix)} select-none ${tappable ? "active:bg-neutral-700/50" : ""} ${rowHighlight}`}
-						onPointerDown={tappable ? () => onPointerDown(newLine) : undefined}
-						onPointerUp={tappable ? () => onPointerUp(newLine) : undefined}
-						onPointerLeave={tappable ? onPointerCancel : undefined}
-						onPointerCancel={tappable ? onPointerCancel : undefined}
+						group={group}
+						isStaged={isStaged}
+						onStageGroup={onStageGroup}
+						onUnstageGroup={onUnstageGroup}
 					>
-						<td className={lineNumberClass}>{line.oldLine ?? ""}</td>
-						<td className={lineNumberClass}>{newLine ?? ""}</td>
-						<td className="px-3 py-0 whitespace-pre">
-							{line.prefix}
-							{line.content}
-						</td>
-					</tr>
+						<tr
+							className={`${lineStyle(line.prefix)} select-none ${tappable ? "active:bg-neutral-700/50" : ""} ${rowHighlight} ${isStaged ? "opacity-50" : ""}`}
+							onPointerDown={
+								tappable ? () => onPointerDown(newLine) : undefined
+							}
+							onPointerUp={tappable ? () => onPointerUp(newLine) : undefined}
+							onPointerLeave={tappable ? onPointerCancel : undefined}
+							onPointerCancel={tappable ? onPointerCancel : undefined}
+						>
+							<td className={lineNumberClass}>{line.oldLine ?? ""}</td>
+							<td className={lineNumberClass}>{newLine ?? ""}</td>
+							<td className="px-3 py-0 whitespace-pre">
+								{line.prefix}
+								{line.content}
+							</td>
+						</tr>
+					</GroupButtonWrapper>
 				);
 			})}
+		</>
+	);
+}
+
+function GroupButtonWrapper({
+	group,
+	isStaged,
+	onStageGroup,
+	onUnstageGroup,
+	children,
+}: {
+	group: ChangeGroup | undefined;
+	isStaged: boolean;
+	onStageGroup?: (groupIndex: number) => void;
+	onUnstageGroup?: (groupIndex: number) => void;
+	children: React.ReactNode;
+}) {
+	if (!group) return <>{children}</>;
+
+	return (
+		<>
+			<tr className="bg-neutral-900/60">
+				<td colSpan={3} className="px-3 py-0.5 select-none">
+					<div className="flex items-center gap-1.5">
+						{isStaged && (
+							<span className="text-[10px] text-green-500 font-medium">
+								Staged
+							</span>
+						)}
+						{onStageGroup && !isStaged && (
+							<button
+								type="button"
+								onClick={() => onStageGroup(group.groupIndex)}
+								className="text-[10px] px-1.5 py-0 rounded bg-green-800/80 hover:bg-green-700 text-green-100 transition-colors"
+							>
+								Stage
+							</button>
+						)}
+						{onUnstageGroup && isStaged && (
+							<button
+								type="button"
+								onClick={() => onUnstageGroup(group.groupIndex)}
+								className="text-[10px] px-1.5 py-0 rounded bg-amber-800/80 hover:bg-amber-700 text-amber-100 transition-colors"
+							>
+								Unstage
+							</button>
+						)}
+					</div>
+				</td>
+			</tr>
+			{children}
 		</>
 	);
 }

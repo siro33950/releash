@@ -61,3 +61,57 @@ impl WsBroadcaster {
         mpsc::unbounded_channel()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::PtyOutputMsg;
+
+    #[test]
+    fn empty_buffer_returns_empty_string() {
+        let broadcaster = WsBroadcaster::default();
+        assert_eq!(broadcaster.get_pty_output_buffer(), "");
+    }
+
+    #[test]
+    fn buffer_accumulates_pty_output() {
+        let broadcaster = WsBroadcaster::default();
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 1,
+            data: "hello".to_string(),
+        }));
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 1,
+            data: " world".to_string(),
+        }));
+        assert_eq!(broadcaster.get_pty_output_buffer(), "hello world");
+    }
+
+    #[test]
+    fn buffer_ring_evicts_oldest_bytes() {
+        let broadcaster = WsBroadcaster::default();
+        let chunk = "A".repeat(PTY_OUTPUT_BUFFER_SIZE);
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 1,
+            data: chunk,
+        }));
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 1,
+            data: "B".to_string(),
+        }));
+        let buf = broadcaster.get_pty_output_buffer();
+        assert_eq!(buf.len(), PTY_OUTPUT_BUFFER_SIZE);
+        assert!(buf.starts_with('A'));
+        assert!(buf.ends_with('B'));
+    }
+
+    #[test]
+    fn non_pty_output_does_not_affect_buffer() {
+        let broadcaster = WsBroadcaster::default();
+        broadcaster.try_send(WsMessage::Error(crate::protocol::ErrorMsg {
+            code: "TEST".to_string(),
+            message: "test".to_string(),
+        }));
+        assert_eq!(broadcaster.get_pty_output_buffer(), "");
+    }
+}

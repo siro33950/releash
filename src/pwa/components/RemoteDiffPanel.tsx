@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+	type ChangeGroup,
+	computeChangeGroups,
+	computeHunks,
+	type Hunk,
+	markStagedGroups,
+} from "@/lib/computeHunks";
+import { generateGroupPatch } from "@/lib/generatePatch";
+import type { DiffBase } from "@/pwa/hooks/useRemoteFileContent";
 import { DiffRenderer } from "./DiffRenderer";
 import { RemoteCommentInput } from "./RemoteCommentInput";
 
@@ -12,6 +21,9 @@ interface RemoteDiffPanelProps {
 	original: string;
 	modified: string;
 	loading: boolean;
+	diffBase: DiffBase;
+	staged: string | null;
+	onStageHunk?: (patch: string) => void;
 	onAddComment?: (
 		filePath: string,
 		lineNumber: number,
@@ -20,11 +32,43 @@ interface RemoteDiffPanelProps {
 	) => void;
 }
 
+function findMatchingGroup(
+	targetLines: string[],
+	hunks: Hunk[],
+	groups: ChangeGroup[],
+	reverse = false,
+): { group: ChangeGroup; hunk: Hunk } | null {
+	let target: string;
+	if (reverse) {
+		const newMinus = targetLines
+			.filter((l) => l.startsWith("+"))
+			.map((l) => `-${l.slice(1)}`);
+		const newPlus = targetLines
+			.filter((l) => l.startsWith("-"))
+			.map((l) => `+${l.slice(1)}`);
+		target = [...newMinus, ...newPlus].join("\n");
+	} else {
+		target = targetLines.join("\n");
+	}
+	for (const g of groups) {
+		const h = hunks.find((h) => h.index === g.hunkIndex);
+		if (!h) continue;
+		const lines = h.lines
+			.slice(g.lineOffsetStart, g.lineOffsetEnd + 1)
+			.join("\n");
+		if (lines === target) return { group: g, hunk: h };
+	}
+	return null;
+}
+
 export function RemoteDiffPanel({
 	path,
 	original,
 	modified,
 	loading,
+	diffBase,
+	staged,
+	onStageHunk,
 	onAddComment,
 }: RemoteDiffPanelProps) {
 	const [selectionStart, setSelectionStart] = useState<number | null>(null);
@@ -35,6 +79,76 @@ export function RemoteDiffPanel({
 		setSelectionStart(null);
 		setCommentRange(null);
 	}, [path]);
+
+	const hunks = useMemo(
+		() => (path ? computeHunks(original, modified, path) : []),
+		[original, modified, path],
+	);
+
+	const stagedHunks = useMemo(() => {
+		if (!path || staged == null || diffBase !== "HEAD") return [];
+		return computeHunks(original, staged, path);
+	}, [original, staged, diffBase, path]);
+
+	const changeGroups = useMemo(() => {
+		const groups = computeChangeGroups(hunks);
+		if (diffBase !== "HEAD" || stagedHunks.length === 0) return groups;
+		const sGroups = computeChangeGroups(stagedHunks);
+		return markStagedGroups(groups, sGroups, hunks, stagedHunks);
+	}, [hunks, stagedHunks, diffBase]);
+
+	const handleStageGroup = useCallback(
+		(groupIndex: number) => {
+			if (!path || !onStageHunk) return;
+			const group = changeGroups.find((g) => g.groupIndex === groupIndex);
+			if (!group) return;
+			const hunk = hunks.find((h) => h.index === group.hunkIndex);
+			if (!hunk) return;
+
+			let patchHunk = hunk;
+			let patchGroup = group;
+
+			if (diffBase === "HEAD" && staged != null) {
+				const targetLines = hunk.lines.slice(
+					group.lineOffsetStart,
+					group.lineOffsetEnd + 1,
+				);
+				const s2wHunks = computeHunks(staged, modified, path);
+				const s2wGroups = computeChangeGroups(s2wHunks);
+				const match = findMatchingGroup(targetLines, s2wHunks, s2wGroups);
+				if (!match) return;
+				patchHunk = match.hunk;
+				patchGroup = match.group;
+			}
+
+			const patch = generateGroupPatch(path, patchHunk, patchGroup);
+			if (patch) onStageHunk(patch);
+		},
+		[path, onStageHunk, changeGroups, hunks, diffBase, staged, modified],
+	);
+
+	const handleUnstageGroup = useCallback(
+		(groupIndex: number) => {
+			if (!path || !onStageHunk || staged == null) return;
+			const group = changeGroups.find((g) => g.groupIndex === groupIndex);
+			if (!group) return;
+			const hunk = hunks.find((h) => h.index === group.hunkIndex);
+			if (!hunk) return;
+
+			const targetLines = hunk.lines.slice(
+				group.lineOffsetStart,
+				group.lineOffsetEnd + 1,
+			);
+			const s2hHunks = computeHunks(staged, original, path);
+			const s2hGroups = computeChangeGroups(s2hHunks);
+			const match = findMatchingGroup(targetLines, s2hHunks, s2hGroups, true);
+			if (!match) return;
+
+			const patch = generateGroupPatch(path, match.hunk, match.group);
+			if (patch) onStageHunk(patch);
+		},
+		[path, onStageHunk, changeGroups, hunks, staged, original],
+	);
 
 	const handleLineTap = useCallback(
 		(lineNumber: number) => {
@@ -122,6 +236,11 @@ export function RemoteDiffPanel({
 					highlightRange={commentRange}
 					onLineTap={handleLineTap}
 					onLineLongPress={handleLineLongPress}
+					changeGroups={changeGroups}
+					onStageGroup={onStageHunk ? handleStageGroup : undefined}
+					onUnstageGroup={
+						onStageHunk && diffBase === "HEAD" ? handleUnstageGroup : undefined
+					}
 				/>
 			</div>
 			{commentRange != null && (

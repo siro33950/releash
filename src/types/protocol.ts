@@ -44,6 +44,10 @@ export interface PtyReady {
 	rows: number;
 }
 
+export interface PtyOutputRequest {
+	pty_id: number;
+}
+
 // --- ファイル・Diff ---
 
 export interface GitStatusSync {
@@ -52,12 +56,14 @@ export interface GitStatusSync {
 
 export interface FileContentRequest {
 	path: string;
+	diff_base?: "HEAD" | "staged";
 }
 
 export interface FileContentResponse {
 	path: string;
 	original: string;
 	modified: string;
+	staged?: string;
 }
 
 export interface FileChange {
@@ -79,6 +85,10 @@ export interface GitStageResult {
 	success: boolean;
 	error?: string;
 	files: GitFileStatus[];
+}
+
+export interface GitStageHunk {
+	patch: string;
 }
 
 // --- コメント ---
@@ -122,6 +132,7 @@ export type WsMessage =
 	| { type: "pty_input"; payload: PtyInput }
 	| { type: "pty_resize"; payload: PtyResize }
 	| { type: "pty_ready"; payload: PtyReady }
+	| { type: "pty_output_request"; payload: PtyOutputRequest }
 	| { type: "git_status_sync"; payload: GitStatusSync }
 	| { type: "file_content_request"; payload: FileContentRequest }
 	| { type: "file_content_response"; payload: FileContentResponse }
@@ -129,6 +140,7 @@ export type WsMessage =
 	| { type: "git_stage"; payload: GitStage }
 	| { type: "git_unstage"; payload: GitUnstage }
 	| { type: "git_stage_result"; payload: GitStageResult }
+	| { type: "git_stage_hunk"; payload: GitStageHunk }
 	| { type: "git_status_request"; payload: Record<string, never> }
 	| { type: "add_comment"; payload: AddComment }
 	| { type: "comments_sync"; payload: CommentSync }
