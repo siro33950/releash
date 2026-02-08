@@ -223,20 +223,57 @@ fn handle_git_stage_unstage(
     is_stage: bool,
     broadcaster: &WsBroadcaster,
 ) -> WsMessage {
-    for path in paths {
-        if let Err(e) = validate_relative_path(path, repo_path) {
+    let root = std::path::Path::new(repo_path)
+        .canonicalize()
+        .map_err(|e| e.to_string());
+    let root = match root {
+        Ok(r) => r,
+        Err(e) => {
             return WsMessage::GitStageResult(GitStageResult {
                 success: false,
                 error: Some(e),
                 files: vec![],
             });
         }
+    };
+
+    let mut validated_paths = Vec::with_capacity(paths.len());
+    for path in paths {
+        match validate_relative_path(path, repo_path) {
+            Ok(canonical) => {
+                let relative = canonical
+                    .strip_prefix(&root)
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| {
+                        r.to_str()
+                            .map(|s| s.to_string())
+                            .ok_or_else(|| "非UTF-8パス".to_string())
+                    });
+                match relative {
+                    Ok(r) => validated_paths.push(r),
+                    Err(e) => {
+                        return WsMessage::GitStageResult(GitStageResult {
+                            success: false,
+                            error: Some(e),
+                            files: vec![],
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                return WsMessage::GitStageResult(GitStageResult {
+                    success: false,
+                    error: Some(e),
+                    files: vec![],
+                });
+            }
+        }
     }
 
     let result = if is_stage {
-        crate::git::git_stage(repo_path.to_string(), paths.to_vec())
+        crate::git::git_stage(repo_path.to_string(), validated_paths)
     } else {
-        crate::git::git_unstage(repo_path.to_string(), paths.to_vec())
+        crate::git::git_unstage(repo_path.to_string(), validated_paths)
     };
 
     if let Err(e) = result {
