@@ -39,6 +39,7 @@ yarn-error.log*
 src-tauri/target/
 src-tauri/WixTools/
 src-tauri/icons/generated/
+src-tauri/resources/pwa/
 
 # Rust
 *.rs.bk

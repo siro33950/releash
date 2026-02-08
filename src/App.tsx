@@ -1,10 +1,13 @@
 import { loader } from "@monaco-editor/react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { EditorPanel } from "@/components/panels/EditorPanel";
+import { RemotePanel } from "@/components/panels/RemotePanel";
 import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
@@ -59,6 +62,50 @@ function App() {
 
 	const rootPathRef = useRef(rootPath);
 	rootPathRef.current = rootPath;
+
+	const commentsRef = useRef(comments);
+	commentsRef.current = comments;
+
+	const broadcastComments = useCallback((commentsList: LineComment[]) => {
+		invoke("broadcast_comments", {
+			comments: {
+				comments: commentsList.map((c) => ({
+					id: c.id,
+					file_path: c.filePath,
+					line_number: c.lineNumber,
+					...(c.endLine != null && { end_line: c.endLine }),
+					content: c.content,
+					status: c.status,
+					created_at: c.createdAt,
+				})),
+			},
+		}).catch(() => {});
+	}, []);
+
+	useEffect(() => {
+		const unlistenComment = listen<{
+			file_path: string;
+			line_number: number;
+			end_line?: number;
+			content: string;
+		}>("remote-comment-added", (event) => {
+			const { file_path, line_number, end_line, content } = event.payload;
+			addComment(file_path, line_number, content, end_line ?? undefined);
+		});
+
+		const unlistenConnected = listen("pwa-connected", () => {
+			broadcastComments(commentsRef.current);
+		});
+
+		return () => {
+			unlistenComment.then((f) => f());
+			unlistenConnected.then((f) => f());
+		};
+	}, [addComment, broadcastComments]);
+
+	useEffect(() => {
+		broadcastComments(comments);
+	}, [comments, broadcastComments]);
 
 	useEffect(() => {
 		loader
@@ -241,7 +288,9 @@ function App() {
 						maxSize="30"
 						collapsible={false}
 					>
-						{activeView === "git" ? (
+						{activeView === "remote" ? (
+							<RemotePanel rootPath={rootPath} />
+						) : activeView === "git" ? (
 							<SourceControlPanel
 								rootPath={rootPath}
 								onSelectFile={openFile}
