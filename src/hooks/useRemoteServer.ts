@@ -60,11 +60,6 @@ export function useRemoteServer() {
 		}
 	}, []);
 
-	useEffect(() => {
-		refreshConfig();
-		refreshNetwork();
-	}, [refreshConfig, refreshNetwork]);
-
 	const refreshStatus = useCallback(async () => {
 		try {
 			const status = await invoke<boolean>("get_server_status");
@@ -73,6 +68,12 @@ export function useRemoteServer() {
 			setError(String(e));
 		}
 	}, []);
+
+	useEffect(() => {
+		refreshConfig();
+		refreshNetwork();
+		refreshStatus();
+	}, [refreshConfig, refreshNetwork, refreshStatus]);
 
 	const refreshQr = useCallback(async () => {
 		try {

@@ -89,7 +89,7 @@ function FileStatusItem({
 			</span>
 			<button
 				type="button"
-				className="hidden group-hover:inline-flex items-center justify-center h-5 w-5 rounded hover:bg-neutral-600 shrink-0"
+				className="inline-flex items-center justify-center h-5 w-5 rounded active:bg-neutral-600 shrink-0"
 				onClick={(e) => {
 					e.stopPropagation();
 					onAction();
