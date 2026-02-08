@@ -878,8 +878,7 @@ pub async fn start_server(
         .app_data_dir()
         .map_err(|e| format!("データディレクトリの取得失敗: {e}"))?;
     if cfg.server.tls.cert.is_empty() || cfg.server.tls.key.is_empty() {
-        let (cert_path, key_path) =
-            crate::tls::ensure_self_signed_cert(bind_ip_addr, &data_dir)?;
+        let (cert_path, key_path) = crate::tls::ensure_self_signed_cert(bind_ip_addr, &data_dir)?;
         cfg.server.tls.cert = cert_path.to_string_lossy().to_string();
         cfg.server.tls.key = key_path.to_string_lossy().to_string();
     }
