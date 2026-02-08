@@ -179,6 +179,20 @@ fn clear_auth_failures(
     rate_limits.remove(ip);
 }
 
+fn normalize_path(path: &std::path::Path) -> PathBuf {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                components.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => components.push(c),
+        }
+    }
+    components.iter().collect()
+}
+
 fn validate_relative_path(path: &str, repo_root: &str) -> Result<PathBuf, String> {
     if std::path::Path::new(path).is_absolute() {
         return Err("絶対パスは拒否されます".to_string());
@@ -186,7 +200,7 @@ fn validate_relative_path(path: &str, repo_root: &str) -> Result<PathBuf, String
     let root = std::path::Path::new(repo_root)
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let resolved = root.join(path).canonicalize().map_err(|e| e.to_string())?;
+    let resolved = normalize_path(&root.join(path));
     if !resolved.starts_with(&root) {
         return Err("プロジェクトルート外のパスは拒否されます".to_string());
     }
