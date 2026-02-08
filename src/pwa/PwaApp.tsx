@@ -332,6 +332,11 @@ export function PwaApp() {
 						<div className="flex items-center justify-center h-full text-neutral-500">
 							<p>デスクトップのターミナルがまだ起動していません</p>
 						</div>
+					) : activeTab === "terminal" &&
+						status !== "connected" ? (
+						<div className="flex items-center justify-center h-full text-neutral-500">
+							<p>接続されていません</p>
+						</div>
 					) : null}
 				</div>
 			</main>

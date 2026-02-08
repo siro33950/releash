@@ -27,6 +27,14 @@ use crate::ws_bridge::WsBroadcaster;
 
 type HmacSha256 = Hmac<Sha256>;
 
+struct BroadcasterGuard(Arc<WsBroadcaster>);
+
+impl Drop for BroadcasterGuard {
+    fn drop(&mut self) {
+        self.0.set_sender(None);
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StartServerResult {
     pub ip: String,
@@ -185,6 +193,20 @@ fn validate_relative_path(path: &str, repo_root: &str) -> Result<PathBuf, String
     Ok(resolved)
 }
 
+fn validate_patch_paths(patch: &str, repo_root: &str) -> Result<(), String> {
+    for line in patch.lines() {
+        let path = line
+            .strip_prefix("--- a/")
+            .or_else(|| line.strip_prefix("+++ b/"));
+        if let Some(p) = path {
+            if p != "/dev/null" {
+                validate_relative_path(p, repo_root)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn handle_file_content_request(req: &FileContentRequest, repo_path: &str) -> WsMessage {
     let validated_path = match validate_relative_path(&req.path, repo_path) {
         Ok(p) => p,
@@ -284,15 +306,7 @@ fn handle_git_stage_unstage(
         });
     }
 
-    let files = crate::git::get_git_status(repo_path.to_string())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| GitFileStatusMsg {
-            path: s.path,
-            index_status: s.index_status,
-            worktree_status: s.worktree_status,
-        })
-        .collect::<Vec<_>>();
+    let files = git_status_to_msg_list(repo_path);
 
     broadcaster.try_send(WsMessage::GitStatusSync(GitStatusSync {
         files: files.clone(),
@@ -305,7 +319,7 @@ fn handle_git_stage_unstage(
     })
 }
 
-fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessage> {
+async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessage> {
     match msg {
         WsMessage::PtyInput(input) => {
             if let Some(pm) = &state.pty_manager {
@@ -324,92 +338,101 @@ fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessage> {
         }
         WsMessage::GitStatusRequest(_) => {
             if let Some(repo_path) = &state.repo_path {
-                let files = crate::git::get_git_status(repo_path.clone())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|s| GitFileStatusMsg {
-                        path: s.path,
-                        index_status: s.index_status,
-                        worktree_status: s.worktree_status,
-                    })
-                    .collect::<Vec<_>>();
-                Some(WsMessage::GitStatusSync(GitStatusSync { files }))
+                let repo_path = repo_path.clone();
+                match tokio::task::spawn_blocking(move || {
+                    git_status_to_msg_list(&repo_path)
+                })
+                .await
+                {
+                    Ok(files) => Some(WsMessage::GitStatusSync(GitStatusSync { files })),
+                    Err(e) => Some(join_error_msg(e)),
+                }
             } else {
-                Some(WsMessage::Error(ErrorMsg {
-                    code: "NO_REPO".to_string(),
-                    message: "リポジトリパスが設定されていません".to_string(),
-                }))
+                Some(no_repo_error())
             }
         }
         WsMessage::FileContentRequest(req) => {
             if let Some(repo_path) = &state.repo_path {
-                Some(handle_file_content_request(req, repo_path))
+                let req = req.clone();
+                let repo_path = repo_path.clone();
+                match tokio::task::spawn_blocking(move || {
+                    handle_file_content_request(&req, &repo_path)
+                })
+                .await
+                {
+                    Ok(msg) => Some(msg),
+                    Err(e) => Some(join_error_msg(e)),
+                }
             } else {
-                Some(WsMessage::Error(ErrorMsg {
-                    code: "NO_REPO".to_string(),
-                    message: "リポジトリパスが設定されていません".to_string(),
-                }))
+                Some(no_repo_error())
             }
         }
         WsMessage::GitStage(req) => {
             if let Some(repo_path) = &state.repo_path {
-                Some(handle_git_stage_unstage(
-                    repo_path,
-                    &req.paths,
-                    true,
-                    &state.broadcaster,
-                ))
+                let repo_path = repo_path.clone();
+                let paths = req.paths.clone();
+                let broadcaster = state.broadcaster.clone();
+                match tokio::task::spawn_blocking(move || {
+                    handle_git_stage_unstage(&repo_path, &paths, true, &broadcaster)
+                })
+                .await
+                {
+                    Ok(msg) => Some(msg),
+                    Err(e) => Some(join_error_msg(e)),
+                }
             } else {
-                Some(WsMessage::Error(ErrorMsg {
-                    code: "NO_REPO".to_string(),
-                    message: "リポジトリパスが設定されていません".to_string(),
-                }))
+                Some(no_repo_error())
             }
         }
         WsMessage::GitUnstage(req) => {
             if let Some(repo_path) = &state.repo_path {
-                Some(handle_git_stage_unstage(
-                    repo_path,
-                    &req.paths,
-                    false,
-                    &state.broadcaster,
-                ))
+                let repo_path = repo_path.clone();
+                let paths = req.paths.clone();
+                let broadcaster = state.broadcaster.clone();
+                match tokio::task::spawn_blocking(move || {
+                    handle_git_stage_unstage(&repo_path, &paths, false, &broadcaster)
+                })
+                .await
+                {
+                    Ok(msg) => Some(msg),
+                    Err(e) => Some(join_error_msg(e)),
+                }
             } else {
-                Some(WsMessage::Error(ErrorMsg {
-                    code: "NO_REPO".to_string(),
-                    message: "リポジトリパスが設定されていません".to_string(),
-                }))
+                Some(no_repo_error())
             }
         }
         WsMessage::GitStageHunk(req) => {
             if let Some(repo_path) = &state.repo_path {
-                let result = crate::git::git_stage_hunk(repo_path.clone(), req.patch.clone());
-                let files = crate::git::get_git_status(repo_path.clone())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|s| GitFileStatusMsg {
-                        path: s.path,
-                        index_status: s.index_status,
-                        worktree_status: s.worktree_status,
-                    })
-                    .collect::<Vec<_>>();
+                let repo_path = repo_path.clone();
+                let patch = req.patch.clone();
+                let broadcaster = state.broadcaster.clone();
+                match tokio::task::spawn_blocking(move || {
+                    if let Err(e) = validate_patch_paths(&patch, &repo_path) {
+                        return WsMessage::Error(ErrorMsg {
+                            code: "INVALID_PATH".to_string(),
+                            message: e,
+                        });
+                    }
+                    let result = crate::git::git_stage_hunk(repo_path.clone(), patch);
+                    let files = git_status_to_msg_list(&repo_path);
 
-                state
-                    .broadcaster
-                    .try_send(WsMessage::GitStatusSync(GitStatusSync {
+                    broadcaster.try_send(WsMessage::GitStatusSync(GitStatusSync {
                         files: files.clone(),
                     }));
 
-                Some(WsMessage::GitStageResult(GitStageResult {
-                    success: result.is_ok(),
-                    error: result.err(),
-                    files,
-                }))
+                    WsMessage::GitStageResult(GitStageResult {
+                        success: result.is_ok(),
+                        error: result.err(),
+                        files,
+                    })
+                })
+                .await
+                {
+                    Ok(msg) => Some(msg),
+                    Err(e) => Some(join_error_msg(e)),
+                }
             } else {
-                Some(WsMessage::Error(ErrorMsg {
-                    code: "NO_REPO".to_string(),
-                    message: "リポジトリパスが設定されていません".to_string(),
-                }))
+                Some(no_repo_error())
             }
         }
         WsMessage::PtyOutputRequest(req) => {
@@ -463,6 +486,32 @@ fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessage> {
             message: "Unexpected message from client".to_string(),
         })),
     }
+}
+
+fn git_status_to_msg_list(repo_path: &str) -> Vec<GitFileStatusMsg> {
+    crate::git::get_git_status(repo_path.to_string())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| GitFileStatusMsg {
+            path: s.path,
+            index_status: s.index_status,
+            worktree_status: s.worktree_status,
+        })
+        .collect()
+}
+
+fn no_repo_error() -> WsMessage {
+    WsMessage::Error(ErrorMsg {
+        code: "NO_REPO".to_string(),
+        message: "リポジトリパスが設定されていません".to_string(),
+    })
+}
+
+fn join_error_msg(e: tokio::task::JoinError) -> WsMessage {
+    WsMessage::Error(ErrorMsg {
+        code: "INTERNAL_ERROR".to_string(),
+        message: format!("Task join error: {e}"),
+    })
 }
 
 fn content_type_for(path: &str) -> &'static str {
@@ -836,6 +885,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     // --- WsBroadcaster セットアップ（PTYスポーン前に初期化） ---
     let (tx, mut rx) = WsBroadcaster::create_channel();
     state.broadcaster.set_sender(Some(tx));
+    let _sender_guard = BroadcasterGuard(state.broadcaster.clone());
 
     // --- デスクトップPTY共有 ---
     if let Some(pm) = &state.pty_manager {
@@ -864,15 +914,10 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 
     // --- 初期データ送信 ---
     if let Some(repo_path) = &state.repo_path {
-        let files = crate::git::get_git_status(repo_path.clone())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|s| GitFileStatusMsg {
-                path: s.path,
-                index_status: s.index_status,
-                worktree_status: s.worktree_status,
-            })
-            .collect::<Vec<_>>();
+        let repo_path = repo_path.clone();
+        let files = tokio::task::spawn_blocking(move || git_status_to_msg_list(&repo_path))
+            .await
+            .map_err(|e| format!("Failed to get initial git status: {e}"))?;
         let sync_msg = WsMessage::GitStatusSync(GitStatusSync { files });
         write
             .send(Message::Text(
@@ -918,7 +963,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                         continue;
                     }
                 };
-                if let Some(response) = route_message(&ws_msg, state) {
+                if let Some(response) = route_message(&ws_msg, state).await {
                     state.broadcaster.try_send(response);
                 }
             }
@@ -932,7 +977,8 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     }
 
     // --- クリーンアップ ---
-    state.broadcaster.set_sender(None);
+    // _sender_guard の Drop で set_sender(None) が呼ばれる
+    drop(_sender_guard);
     // forward_task にドロップされた rx の closed を通知して終了させる
     let _ = forward_task.await;
 
@@ -1152,21 +1198,21 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_route_unknown_message_returns_error() {
+    #[tokio::test]
+    async fn test_route_unknown_message_returns_error() {
         let state = test_state();
         let msg = WsMessage::AuthChallenge(AuthChallenge {
             challenge: "x".to_string(),
         });
-        let result = route_message(&msg, &state);
+        let result = route_message(&msg, &state).await;
         match result {
             Some(WsMessage::Error(e)) => assert_eq!(e.code, "INVALID_MESSAGE"),
             _ => panic!("expected error"),
         }
     }
 
-    #[test]
-    fn test_route_add_comment_returns_none() {
+    #[tokio::test]
+    async fn test_route_add_comment_returns_none() {
         let state = test_state();
         let msg = WsMessage::AddComment(AddComment {
             file_path: "src/main.rs".to_string(),
@@ -1174,40 +1220,40 @@ mod tests {
             end_line: None,
             content: "fix this".to_string(),
         });
-        let result = route_message(&msg, &state);
+        let result = route_message(&msg, &state).await;
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_route_pty_input_without_manager_returns_none() {
+    #[tokio::test]
+    async fn test_route_pty_input_without_manager_returns_none() {
         let state = test_state();
         let msg = WsMessage::PtyInput(PtyInput {
             pty_id: 1,
             data: "ls".to_string(),
         });
-        let result = route_message(&msg, &state);
+        let result = route_message(&msg, &state).await;
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_route_git_status_request_without_repo() {
+    #[tokio::test]
+    async fn test_route_git_status_request_without_repo() {
         let state = test_state();
         let msg = WsMessage::GitStatusRequest(GitStatusRequest {});
-        let result = route_message(&msg, &state);
+        let result = route_message(&msg, &state).await;
         match result {
             Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_REPO"),
             _ => panic!("expected no repo error"),
         }
     }
 
-    #[test]
-    fn test_route_file_content_request_without_repo() {
+    #[tokio::test]
+    async fn test_route_file_content_request_without_repo() {
         let state = test_state();
         let msg = WsMessage::FileContentRequest(FileContentRequest {
             path: "test.rs".to_string(),
             diff_base: "HEAD".to_string(),
         });
-        let result = route_message(&msg, &state);
+        let result = route_message(&msg, &state).await;
         match result {
             Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_REPO"),
             _ => panic!("expected no repo error"),
