@@ -70,6 +70,9 @@ export function useWebSocket({
 		authFailedRef.current = false;
 		intentionalCloseRef.current = false;
 		if (wsRef.current) {
+			wsRef.current.onclose = null;
+			wsRef.current.onmessage = null;
+			wsRef.current.onerror = null;
 			wsRef.current.close();
 			wsRef.current = null;
 		}
