@@ -1,14 +1,14 @@
 export interface CommentRange {
-	start: number;
-	end?: number;
+  start: number;
+  end?: number;
 }
 
 export interface LineComment {
-	id: string;
-	filePath: string;
-	lineNumber: number;
-	endLine?: number;
-	content: string;
-	status: "unsent" | "sent";
-	createdAt: number;
+  id: string;
+  filePath: string;
+  lineNumber: number;
+  endLine?: number;
+  content: string;
+  status: "unsent" | "sent";
+  createdAt: number;
 }

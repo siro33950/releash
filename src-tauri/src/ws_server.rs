@@ -339,10 +339,7 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
         WsMessage::GitStatusRequest(_) => {
             if let Some(repo_path) = &state.repo_path {
                 let repo_path = repo_path.clone();
-                match tokio::task::spawn_blocking(move || {
-                    git_status_to_msg_list(&repo_path)
-                })
-                .await
+                match tokio::task::spawn_blocking(move || git_status_to_msg_list(&repo_path)).await
                 {
                     Ok(files) => Some(WsMessage::GitStatusSync(GitStatusSync { files })),
                     Err(e) => Some(join_error_msg(e)),
