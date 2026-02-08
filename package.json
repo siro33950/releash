@@ -6,7 +6,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
-		"build": "tsc && vite build",
+		"build": "tsc && vite build && pnpm build:pwa",
 		"build:pwa": "vite build --config vite.config.pwa.ts",
 		"preview": "vite preview",
 		"tauri": "tauri",
