@@ -4,34 +4,34 @@ import { TerminalPanel } from "./TerminalPanel";
 
 const mockTerminalRef = { current: null };
 const mockUseTerminal = vi
-  .fn()
-  .mockReturnValue({ terminalRef: mockTerminalRef });
+	.fn()
+	.mockReturnValue({ terminalRef: mockTerminalRef });
 
 vi.mock("@/hooks/useTerminal", () => ({
-  useTerminal: (...args: unknown[]) => mockUseTerminal(...args),
+	useTerminal: (...args: unknown[]) => mockUseTerminal(...args),
 }));
 
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 describe("TerminalPanel", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
 
-  it("コンテナdivが正しいclassNameで描画される", () => {
-    const { container } = render(<TerminalPanel />);
+	it("コンテナdivが正しいclassNameで描画される", () => {
+		const { container } = render(<TerminalPanel />);
 
-    const terminalContainer = container.querySelector(".h-full.w-full");
-    expect(terminalContainer).toBeInTheDocument();
-  });
+		const terminalContainer = container.querySelector(".h-full.w-full");
+		expect(terminalContainer).toBeInTheDocument();
+	});
 
-  it("useTerminal が containerRef とともに呼び出される", () => {
-    render(<TerminalPanel />);
+	it("useTerminal が containerRef とともに呼び出される", () => {
+		render(<TerminalPanel />);
 
-    expect(mockUseTerminal).toHaveBeenCalledWith(
-      expect.objectContaining({ current: expect.any(HTMLDivElement) }),
-      undefined,
-      undefined,
-    );
-  });
+		expect(mockUseTerminal).toHaveBeenCalledWith(
+			expect.objectContaining({ current: expect.any(HTMLDivElement) }),
+			undefined,
+			undefined,
+		);
+	});
 });

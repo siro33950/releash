@@ -4,7 +4,7 @@ import { PwaApp } from "./PwaApp";
 import "../index.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <PwaApp />
-  </React.StrictMode>,
+	<React.StrictMode>
+		<PwaApp />
+	</React.StrictMode>,
 );
