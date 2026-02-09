@@ -153,7 +153,6 @@ export function useRemoteTerminal({
 					type: "pty_output_request",
 					payload: { pty_id: ptyId },
 				});
-				send({ type: "pty_input", payload: { pty_id: ptyId, data: "\r" } });
 			}
 		});
 
