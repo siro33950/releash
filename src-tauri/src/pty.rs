@@ -21,11 +21,18 @@ struct PtySession {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child_killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
+    worktree_path: Option<String>,
 }
 
 #[derive(Default)]
 pub struct PtyManager {
     sessions: Mutex<HashMap<u64, PtySession>>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PtySessionInfo {
+    pub pty_id: u64,
+    pub worktree_path: Option<String>,
 }
 
 impl PtyManager {
@@ -47,11 +54,6 @@ impl PtyManager {
         Ok(())
     }
 
-    pub fn active_pty_id(&self) -> Option<u64> {
-        let sessions = self.sessions.lock();
-        sessions.keys().next().copied()
-    }
-
     pub fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), String> {
         let sessions = self.sessions.lock();
         let session = sessions
@@ -62,6 +64,17 @@ impl PtyManager {
             .get_size()
             .map_err(|e| format!("Failed to get PTY size: {}", e))?;
         Ok((size.cols, size.rows))
+    }
+
+    pub fn list_pty_sessions(&self) -> Vec<PtySessionInfo> {
+        let sessions = self.sessions.lock();
+        sessions
+            .iter()
+            .map(|(id, s)| PtySessionInfo {
+                pty_id: *id,
+                worktree_path: s.worktree_path.clone(),
+            })
+            .collect()
     }
 
     pub fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), String> {
@@ -101,6 +114,7 @@ pub fn spawn_pty(
     rows: u16,
     cols: u16,
     cwd: Option<String>,
+    worktree_path: Option<String>,
 ) -> Result<u64, String> {
     let pty_system = native_pty_system();
 
@@ -175,6 +189,7 @@ pub fn spawn_pty(
         master: Arc::new(Mutex::new(master)),
         writer: Arc::new(Mutex::new(writer)),
         child_killer: Arc::new(Mutex::new(child_killer)),
+        worktree_path,
     };
 
     state.sessions.lock().insert(pty_id, session);
@@ -284,6 +299,11 @@ pub fn resize_pty(
         }));
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn list_pty_sessions(state: State<'_, Arc<PtyManager>>) -> Vec<PtySessionInfo> {
+    state.list_pty_sessions()
 }
 
 #[tauri::command]

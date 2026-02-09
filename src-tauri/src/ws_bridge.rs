@@ -1,5 +1,5 @@
 use crate::protocol::WsMessage;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
@@ -10,14 +10,14 @@ const PTY_OUTPUT_BUFFER_SIZE: usize = 64 * 1024;
 
 pub struct WsBroadcaster {
     sender: Mutex<Option<WsSender>>,
-    pty_output_buffer: Mutex<VecDeque<u8>>,
+    pty_output_buffers: Mutex<HashMap<u64, VecDeque<u8>>>,
 }
 
 impl Default for WsBroadcaster {
     fn default() -> Self {
         Self {
             sender: Mutex::new(None),
-            pty_output_buffer: Mutex::new(VecDeque::new()),
+            pty_output_buffers: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -25,10 +25,11 @@ impl Default for WsBroadcaster {
 impl WsBroadcaster {
     pub fn try_send(&self, msg: WsMessage) {
         if let WsMessage::PtyOutput(ref pty) = msg {
-            let mut buf = self
-                .pty_output_buffer
+            let mut buffers = self
+                .pty_output_buffers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            let buf = buffers.entry(pty.pty_id).or_default();
             for byte in pty.data.as_bytes() {
                 if buf.len() >= PTY_OUTPUT_BUFFER_SIZE {
                     buf.pop_front();
@@ -43,13 +44,18 @@ impl WsBroadcaster {
         }
     }
 
-    pub fn get_pty_output_buffer(&self) -> String {
-        let buf = self
-            .pty_output_buffer
+    pub fn get_pty_output_buffer(&self, pty_id: u64) -> String {
+        let buffers = self
+            .pty_output_buffers
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let bytes: Vec<u8> = buf.iter().copied().collect();
-        String::from_utf8_lossy(&bytes).to_string()
+        match buffers.get(&pty_id) {
+            Some(buf) => {
+                let bytes: Vec<u8> = buf.iter().copied().collect();
+                String::from_utf8_lossy(&bytes).to_string()
+            }
+            None => String::new(),
+        }
     }
 
     pub fn set_sender(&self, sender: Option<WsSender>) {
@@ -70,7 +76,7 @@ mod tests {
     #[test]
     fn empty_buffer_returns_empty_string() {
         let broadcaster = WsBroadcaster::default();
-        assert_eq!(broadcaster.get_pty_output_buffer(), "");
+        assert_eq!(broadcaster.get_pty_output_buffer(1), "");
     }
 
     #[test]
@@ -84,7 +90,7 @@ mod tests {
             pty_id: 1,
             data: " world".to_string(),
         }));
-        assert_eq!(broadcaster.get_pty_output_buffer(), "hello world");
+        assert_eq!(broadcaster.get_pty_output_buffer(1), "hello world");
     }
 
     #[test]
@@ -99,7 +105,7 @@ mod tests {
             pty_id: 1,
             data: "B".to_string(),
         }));
-        let buf = broadcaster.get_pty_output_buffer();
+        let buf = broadcaster.get_pty_output_buffer(1);
         assert_eq!(buf.len(), PTY_OUTPUT_BUFFER_SIZE);
         assert!(buf.starts_with('A'));
         assert!(buf.ends_with('B'));
@@ -112,6 +118,21 @@ mod tests {
             code: "TEST".to_string(),
             message: "test".to_string(),
         }));
-        assert_eq!(broadcaster.get_pty_output_buffer(), "");
+        assert_eq!(broadcaster.get_pty_output_buffer(1), "");
+    }
+
+    #[test]
+    fn separate_buffers_per_pty_id() {
+        let broadcaster = WsBroadcaster::default();
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 1,
+            data: "aaa".to_string(),
+        }));
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 2,
+            data: "bbb".to_string(),
+        }));
+        assert_eq!(broadcaster.get_pty_output_buffer(1), "aaa");
+        assert_eq!(broadcaster.get_pty_output_buffer(2), "bbb");
     }
 }
