@@ -10,7 +10,7 @@ import {
 	RefreshCw,
 	X,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { GitFileStatus } from "@/types/git";
 
 function statusColor(status: string): string {
@@ -185,10 +185,18 @@ export function RemoteSourceControl({
 	const totalChanges = stagedFiles.length + changedFiles.length;
 	const [commitMessage, setCommitMessage] = useState("");
 
+	const prevCommittingRef = useRef(false);
+
+	useEffect(() => {
+		if (prevCommittingRef.current && !committing && !error) {
+			setCommitMessage("");
+		}
+		prevCommittingRef.current = committing;
+	}, [committing, error]);
+
 	const handleCommit = useCallback(() => {
 		if (!commitMessage.trim() || committing) return;
 		onCommit(commitMessage.trim());
-		setCommitMessage("");
 	}, [commitMessage, committing, onCommit]);
 
 	const handleSelectFile = useCallback(

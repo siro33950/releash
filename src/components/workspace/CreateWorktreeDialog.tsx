@@ -64,7 +64,7 @@ export function CreateWorktreeDialog({
 		setBaseBranch("");
 		setSelectedIndex(0);
 		setError(null);
-		invoke<BranchInfo[]>("list_branches", { filePath: repoPath })
+		invoke<BranchInfo[]>("list_branches", { repoPath })
 			.then((result) => {
 				setBranches(result);
 				const defaultBranch = result.find(

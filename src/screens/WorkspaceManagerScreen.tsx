@@ -127,14 +127,18 @@ export function WorkspaceManagerScreen({
 			const repoDir = repoPath.split("/").filter(Boolean).pop();
 			const worktreeDir = `${parent}/${repoDir}-worktrees`;
 			const dirName = branch.name.replace(/\//g, "-");
-			const entry = await invoke<WorktreeEntry>("create_worktree", {
-				repoPath,
-				worktreePath: `${worktreeDir}/${dirName}`,
-				branch: branch.name,
-				createBranch: false,
-				baseBranch: null,
-			});
-			onSelectWorktree(entry.path);
+			try {
+				const entry = await invoke<WorktreeEntry>("create_worktree", {
+					repoPath,
+					worktreePath: `${worktreeDir}/${dirName}`,
+					branch: branch.name,
+					createBranch: false,
+					baseBranch: null,
+				});
+				onSelectWorktree(entry.path);
+			} catch (e) {
+				console.error("Failed to create worktree:", e);
+			}
 		},
 		[repoPath, onSelectWorktree],
 	);
@@ -157,7 +161,7 @@ export function WorkspaceManagerScreen({
 	const handleDeleteConfirm = useCallback(
 		async (worktreePath: string, force: boolean) => {
 			if (!repoPath) return;
-			await invoke("kill_ptys_by_worktree", { worktreePath });
+			await invoke("kill_ptys_by_worktree", { worktreePath }).catch(() => {});
 			await invoke("remove_worktree", { repoPath, worktreePath, force });
 			setDeletingBranch(null);
 			await refresh();

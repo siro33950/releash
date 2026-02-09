@@ -14,7 +14,7 @@ describe("WorkspaceManagerScreen", () => {
 		expect(screen.getByText("Open Folder")).toBeInTheDocument();
 	});
 
-	it("renders loading state then repo name when repoPath is set", () => {
+	it("renders repo name when repoPath is set", () => {
 		render(
 			<WorkspaceManagerScreen
 				repoPath="/home/user/my-repo"

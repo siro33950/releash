@@ -24,7 +24,7 @@ export function BranchCard({ branch, onOpen, onDelete }: BranchCardProps) {
 					className={`size-4 shrink-0 ${hasWorktree ? "text-muted-foreground" : "text-muted-foreground/50"}`}
 				/>
 				<span
-					className={`text-sm font-medium truncate ${!hasWorktree && "text-muted-foreground"}`}
+					className={`text-sm font-medium truncate ${!hasWorktree ? "text-muted-foreground" : ""}`}
 				>
 					{branch.name}
 				</span>

@@ -88,8 +88,8 @@ pub struct BranchInfo {
 }
 
 #[tauri::command]
-pub fn list_branches(file_path: String) -> Result<Vec<BranchInfo>, String> {
-    let path = Path::new(&file_path);
+pub fn list_branches(repo_path: String) -> Result<Vec<BranchInfo>, String> {
+    let path = Path::new(&repo_path);
     let repo = Repository::discover(path).map_err(|e| e.message().to_string())?;
 
     let mut result = Vec::new();
@@ -852,6 +852,14 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, S
         .branches(Some(BranchType::Local))
         .map_err(|e| e.message().to_string())?;
 
+    let base_target_oid = repo
+        .config()
+        .ok()
+        .and_then(|cfg| cfg.get_string("releash.base").ok())
+        .and_then(|base_name| repo.find_branch(&base_name, BranchType::Local).ok())
+        .and_then(|b| b.get().target())
+        .or(default_oid);
+
     let mut cards = Vec::new();
     for branch in local_branches {
         let (branch, _) = branch.map_err(|e| e.message().to_string())?;
@@ -873,13 +881,7 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, S
             None => (None, 0),
         };
 
-        let target_oid = repo
-            .config()
-            .ok()
-            .and_then(|cfg| cfg.get_string("releash.base").ok())
-            .and_then(|base_name| repo.find_branch(&base_name, BranchType::Local).ok())
-            .and_then(|b| b.get().target())
-            .or(default_oid);
+        let target_oid = base_target_oid;
 
         let is_merged = target_oid
             .and_then(|t_oid| {

@@ -36,6 +36,8 @@ export function useRemoteWorktrees({
 	useEffect(() => {
 		if (connected) {
 			refresh();
+		} else {
+			setLoading(false);
 		}
 	}, [connected, refresh]);
 

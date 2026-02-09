@@ -36,12 +36,16 @@ export function BaseBranchDialog({
 		setSaving(false);
 
 		Promise.all([
-			invoke<BranchInfo[]>("list_branches", { filePath: repoPath }),
+			invoke<BranchInfo[]>("list_branches", { repoPath }),
 			invoke<string | null>("get_releash_base", { repoPath }),
-		]).then(([branchList, currentBase]) => {
-			setBranches(branchList.filter((b) => !b.is_remote));
-			setSelected(currentBase ?? "");
-		});
+		])
+			.then(([branchList, currentBase]) => {
+				setBranches(branchList.filter((b) => !b.is_remote));
+				setSelected(currentBase ?? "");
+			})
+			.catch((e) => {
+				setError(String(e));
+			});
 	}, [open, repoPath]);
 
 	const handleSave = useCallback(async () => {
