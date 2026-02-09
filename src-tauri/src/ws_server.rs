@@ -84,7 +84,7 @@ struct RateLimitEntry {
 pub struct WsServerState {
     active_connection: Arc<Mutex<bool>>,
     rate_limits: Arc<Mutex<HashMap<std::net::IpAddr, RateLimitEntry>>>,
-    pwa_dir: Option<PathBuf>,
+    remote_dir: Option<PathBuf>,
     broadcaster: Arc<WsBroadcaster>,
     pty_manager: Option<Arc<PtyManager>>,
     repo_path: Option<String>,
@@ -95,7 +95,7 @@ pub struct WsServerState {
 
 impl WsServerState {
     pub fn new(
-        pwa_dir: Option<PathBuf>,
+        remote_dir: Option<PathBuf>,
         broadcaster: Arc<WsBroadcaster>,
         pty_manager: Option<Arc<PtyManager>>,
         repo_path: Option<String>,
@@ -106,7 +106,7 @@ impl WsServerState {
         Self {
             active_connection: Arc::new(Mutex::new(false)),
             rate_limits: Arc::new(Mutex::new(HashMap::new())),
-            pwa_dir,
+            remote_dir,
             broadcaster,
             pty_manager,
             repo_path,
@@ -350,7 +350,7 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
             None
         }
         WsMessage::PtyResize(_) => {
-            // PWAからのリサイズはデスクトップのターミナル表示を崩すため無視
+            // リモートUIからのリサイズはデスクトップのターミナル表示を崩すため無視
             None
         }
         WsMessage::GitStatusRequest(_) => {
@@ -451,27 +451,21 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
         }
         WsMessage::PtyOutputRequest(req) => {
             if let Some(pm) = &state.pty_manager {
-                if let Some(pty_id) = pm.active_pty_id() {
-                    if pty_id == req.pty_id {
-                        let buffered = state.broadcaster.get_pty_output_buffer();
-                        if buffered.is_empty() {
-                            None
-                        } else {
-                            Some(WsMessage::PtyOutput(PtyOutputMsg {
-                                pty_id,
-                                data: buffered,
-                            }))
-                        }
+                let sessions = pm.list_pty_sessions();
+                if sessions.iter().any(|s| s.pty_id == req.pty_id) {
+                    let buffered = state.broadcaster.get_pty_output_buffer(req.pty_id);
+                    if buffered.is_empty() {
+                        None
                     } else {
-                        Some(WsMessage::Error(ErrorMsg {
-                            code: "PTY_ID_MISMATCH".to_string(),
-                            message: "指定されたPTY IDが一致しません".to_string(),
+                        Some(WsMessage::PtyOutput(PtyOutputMsg {
+                            pty_id: req.pty_id,
+                            data: buffered,
                         }))
                     }
                 } else {
                     Some(WsMessage::Error(ErrorMsg {
-                        code: "NO_PTY".to_string(),
-                        message: "デスクトップのターミナルがまだ起動していません".to_string(),
+                        code: "PTY_NOT_FOUND".to_string(),
+                        message: format!("PTY {} が見つかりません", req.pty_id),
                     }))
                 }
             } else {
@@ -479,6 +473,112 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     code: "NO_PTY".to_string(),
                     message: "デスクトップのターミナルがまだ起動していません".to_string(),
                 }))
+            }
+        }
+        WsMessage::GitCommitRequest(req) => {
+            if let Some(repo_path) = &state.repo_path {
+                let repo_path = repo_path.clone();
+                let message = req.message.clone();
+                let broadcaster = state.broadcaster.clone();
+                match tokio::task::spawn_blocking(move || {
+                    match crate::git::git_commit(repo_path.clone(), message) {
+                        Ok(hash) => {
+                            let files = git_status_to_msg_list(&repo_path);
+                            broadcaster.try_send(WsMessage::GitStatusSync(GitStatusSync { files }));
+                            let branch =
+                                crate::git::get_current_branch(repo_path).unwrap_or_default();
+                            broadcaster.try_send(WsMessage::BranchInfoResponse(
+                                BranchInfoResponse { branch },
+                            ));
+                            WsMessage::GitCommitResult(GitCommitResult {
+                                success: true,
+                                hash: Some(hash),
+                                error: None,
+                            })
+                        }
+                        Err(e) => WsMessage::GitCommitResult(GitCommitResult {
+                            success: false,
+                            hash: None,
+                            error: Some(e),
+                        }),
+                    }
+                })
+                .await
+                {
+                    Ok(msg) => Some(msg),
+                    Err(e) => Some(join_error_msg(e)),
+                }
+            } else {
+                Some(no_repo_error())
+            }
+        }
+        WsMessage::GitPushRequest(_) => {
+            if let Some(repo_path) = &state.repo_path {
+                let repo_path = repo_path.clone();
+                match tokio::task::spawn_blocking(move || match crate::git::git_push(repo_path) {
+                    Ok(output) => WsMessage::GitPushResult(GitPushResult {
+                        success: true,
+                        output: Some(output),
+                        error: None,
+                    }),
+                    Err(e) => WsMessage::GitPushResult(GitPushResult {
+                        success: false,
+                        output: None,
+                        error: Some(e),
+                    }),
+                })
+                .await
+                {
+                    Ok(msg) => Some(msg),
+                    Err(e) => Some(join_error_msg(e)),
+                }
+            } else {
+                Some(no_repo_error())
+            }
+        }
+        WsMessage::BranchInfoRequest(_) => {
+            if let Some(repo_path) = &state.repo_path {
+                let repo_path = repo_path.clone();
+                match tokio::task::spawn_blocking(move || {
+                    let branch = crate::git::get_current_branch(repo_path).unwrap_or_default();
+                    WsMessage::BranchInfoResponse(BranchInfoResponse { branch })
+                })
+                .await
+                {
+                    Ok(msg) => Some(msg),
+                    Err(e) => Some(join_error_msg(e)),
+                }
+            } else {
+                Some(no_repo_error())
+            }
+        }
+        WsMessage::WorktreeListRequest(_) => {
+            if let Some(repo_path) = &state.repo_path {
+                let repo_path = repo_path.clone();
+                match tokio::task::spawn_blocking(move || {
+                    use crate::protocol::{WorktreeEntryMsg, WorktreeListResponse};
+                    let entries = crate::git::list_worktrees(repo_path)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|e| WorktreeEntryMsg {
+                            name: e.name,
+                            path: e.path,
+                            branch: e.branch,
+                            is_main: e.is_main,
+                            is_locked: e.is_locked,
+                            dirty_count: e.dirty_count,
+                            base_branch: e.base_branch,
+                        })
+                        .collect();
+                    WsMessage::WorktreeListResponse(WorktreeListResponse { worktrees: entries })
+                })
+                .await
+                {
+                    Ok(msg) => Some(msg),
+                    Err(e) => Some(join_error_msg(e)),
+                }
+            } else {
+                Some(no_repo_error())
             }
         }
         WsMessage::AddComment(comment) => {
@@ -677,7 +777,7 @@ async fn handle_http(
             Err(e) => error_response(StatusCode::BAD_REQUEST, &e, tls),
         }
     } else {
-        serve_pwa(&path, &state)
+        serve_remote(&path, &state)
     }
 }
 
@@ -724,27 +824,29 @@ fn handle_ws_upgrade(
         .map_err(|e| e.to_string())
 }
 
-fn serve_pwa(path: &str, state: &WsServerState) -> Response<Full<Bytes>> {
-    let pwa_dir = match &state.pwa_dir {
+fn serve_remote(path: &str, state: &WsServerState) -> Response<Full<Bytes>> {
+    let remote_dir = match &state.remote_dir {
         Some(d) => d,
         None => {
             return error_response(
                 StatusCode::NOT_FOUND,
-                "PWA is not available",
+                "Remote UI is not available",
                 state.tls_enabled,
             )
         }
     };
 
     let file_path = match path {
-        "/" | "" => "pwa.html",
+        "/" | "" => "remote.html",
         p => p.trim_start_matches('/'),
     };
 
     let tls = state.tls_enabled;
-    let full_path = pwa_dir.join(file_path);
-    if let (Ok(canonical), Ok(pwa_canonical)) = (full_path.canonicalize(), pwa_dir.canonicalize()) {
-        if !canonical.starts_with(&pwa_canonical) {
+    let full_path = remote_dir.join(file_path);
+    if let (Ok(canonical), Ok(remote_canonical)) =
+        (full_path.canonicalize(), remote_dir.canonicalize())
+    {
+        if !canonical.starts_with(&remote_canonical) {
             return error_response(StatusCode::FORBIDDEN, "Access denied", tls);
         }
         match std::fs::read(&canonical) {
@@ -757,15 +859,15 @@ fn serve_pwa(path: &str, state: &WsServerState) -> Response<Full<Bytes>> {
                     .body(Full::new(Bytes::from(content)))
                     .unwrap()
             }
-            Err(_) => serve_pwa_fallback(pwa_dir, tls),
+            Err(_) => serve_remote_fallback(remote_dir, tls),
         }
     } else {
-        serve_pwa_fallback(pwa_dir, tls)
+        serve_remote_fallback(remote_dir, tls)
     }
 }
 
-fn serve_pwa_fallback(pwa_dir: &std::path::Path, tls_enabled: bool) -> Response<Full<Bytes>> {
-    match std::fs::read(pwa_dir.join("pwa.html")) {
+fn serve_remote_fallback(remote_dir: &std::path::Path, tls_enabled: bool) -> Response<Full<Bytes>> {
+    match std::fs::read(remote_dir.join("remote.html")) {
         Ok(content) => apply_security_headers(Response::builder(), tls_enabled)
             .status(StatusCode::OK)
             .header("Content-Type", "text/html; charset=utf-8")
@@ -916,7 +1018,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     log::info!("Client authenticated: {}", peer_addr);
 
     if let Some(app) = &state.app_handle {
-        let _ = app.emit("pwa-connected", ());
+        let _ = app.emit("remote-connected", ());
     }
 
     // --- WsBroadcaster セットアップ（PTYスポーン前に初期化） ---
@@ -926,16 +1028,8 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
 
     // --- デスクトップPTY共有 ---
     if let Some(pm) = &state.pty_manager {
-        if let Some(pty_id) = pm.active_pty_id() {
-            let (cols, rows) = pm.get_pty_size(pty_id).unwrap_or((80, 24));
-            let ready_msg = WsMessage::PtyReady(PtyReady { pty_id, cols, rows });
-            write
-                .send(Message::Text(
-                    serialize_message(&ready_msg).map_err(|e| e.to_string())?,
-                ))
-                .await
-                .map_err(|e| format!("Failed to send pty_ready: {e}"))?;
-        } else {
+        let sessions = pm.list_pty_sessions();
+        if sessions.is_empty() {
             let err_msg = WsMessage::Error(ErrorMsg {
                 code: "NO_PTY".to_string(),
                 message: "デスクトップのターミナルがまだ起動していません".to_string(),
@@ -946,13 +1040,28 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                 ))
                 .await
                 .map_err(|e| format!("Failed to send no_pty error: {e}"))?;
+        } else {
+            for session in &sessions {
+                let (cols, rows) = pm.get_pty_size(session.pty_id).unwrap_or((80, 24));
+                let ready_msg = WsMessage::PtyReady(PtyReady {
+                    pty_id: session.pty_id,
+                    cols,
+                    rows,
+                });
+                write
+                    .send(Message::Text(
+                        serialize_message(&ready_msg).map_err(|e| e.to_string())?,
+                    ))
+                    .await
+                    .map_err(|e| format!("Failed to send pty_ready: {e}"))?;
+            }
         }
     }
 
     // --- 初期データ送信 ---
     if let Some(repo_path) = &state.repo_path {
-        let repo_path = repo_path.clone();
-        let files = tokio::task::spawn_blocking(move || git_status_to_msg_list(&repo_path))
+        let repo_path_clone = repo_path.clone();
+        let files = tokio::task::spawn_blocking(move || git_status_to_msg_list(&repo_path_clone))
             .await
             .map_err(|e| format!("Failed to get initial git status: {e}"))?;
         let sync_msg = WsMessage::GitStatusSync(GitStatusSync { files });
@@ -962,6 +1071,20 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
             ))
             .await
             .map_err(|e| format!("Failed to send initial git status: {e}"))?;
+
+        let repo_path_clone = repo_path.clone();
+        let branch = tokio::task::spawn_blocking(move || {
+            crate::git::get_current_branch(repo_path_clone).unwrap_or_default()
+        })
+        .await
+        .map_err(|e| format!("Failed to get branch info: {e}"))?;
+        let branch_msg = WsMessage::BranchInfoResponse(BranchInfoResponse { branch });
+        write
+            .send(Message::Text(
+                serialize_message(&branch_msg).map_err(|e| e.to_string())?,
+            ))
+            .await
+            .map_err(|e| format!("Failed to send branch info: {e}"))?;
     }
 
     // PTY出力をWebSocketにフォワードするタスク
@@ -1067,10 +1190,10 @@ pub async fn start_server(
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
-    let pwa_dir = if cfg!(debug_assertions) {
+    let remote_dir = if cfg!(debug_assertions) {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
-            .join("pwa");
+            .join("remote");
         if dir.exists() {
             Some(dir)
         } else {
@@ -1080,10 +1203,10 @@ pub async fn start_server(
         app.path()
             .resource_dir()
             .ok()
-            .map(|d| d.join("resources").join("pwa"))
+            .map(|d| d.join("resources").join("remote"))
     };
     let server_state = Arc::new(WsServerState::new(
-        pwa_dir,
+        remote_dir,
         Arc::clone(&broadcaster),
         Some(Arc::clone(&pty_manager)),
         Some(root_path),

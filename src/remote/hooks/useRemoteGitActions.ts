@@ -12,11 +12,28 @@ export function useRemoteGitActions({
 	subscribe,
 }: UseRemoteGitActionsOptions) {
 	const [error, setError] = useState<string | null>(null);
+	const [committing, setCommitting] = useState(false);
+	const [pushing, setPushing] = useState(false);
+	const [pushResult, setPushResult] = useState<string | null>(null);
 
 	useEffect(() => {
 		return subscribe((msg: WsMessage) => {
 			if (msg.type === "git_stage_result" && !msg.payload.success) {
 				setError(msg.payload.error ?? "Unknown error");
+			}
+			if (msg.type === "git_commit_result") {
+				setCommitting(false);
+				if (!msg.payload.success) {
+					setError(msg.payload.error ?? "Commit failed");
+				}
+			}
+			if (msg.type === "git_push_result") {
+				setPushing(false);
+				if (msg.payload.success) {
+					setPushResult(msg.payload.output ?? "Push successful");
+				} else {
+					setError(msg.payload.error ?? "Push failed");
+				}
 			}
 		});
 	}, [subscribe]);
@@ -45,7 +62,42 @@ export function useRemoteGitActions({
 		[send],
 	);
 
-	const clearError = useCallback(() => setError(null), []);
+	const commit = useCallback(
+		(message: string) => {
+			setError(null);
+			setCommitting(true);
+			send({
+				type: "git_commit_request",
+				payload: { message },
+			});
+		},
+		[send],
+	);
 
-	return { stage, unstage, stageHunk, error, clearError };
+	const push = useCallback(() => {
+		setError(null);
+		setPushResult(null);
+		setPushing(true);
+		send({
+			type: "git_push_request",
+			payload: {} as Record<string, never>,
+		});
+	}, [send]);
+
+	const clearError = useCallback(() => setError(null), []);
+	const clearPushResult = useCallback(() => setPushResult(null), []);
+
+	return {
+		stage,
+		unstage,
+		stageHunk,
+		commit,
+		push,
+		committing,
+		pushing,
+		pushResult,
+		clearPushResult,
+		error,
+		clearError,
+	};
 }
