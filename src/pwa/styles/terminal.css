@@ -1,5 +1,5 @@
 .xterm {
-  touch-action: none;
+  touch-action: pan-x;
 }
 
 .xterm .xterm-viewport {

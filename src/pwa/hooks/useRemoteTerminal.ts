@@ -160,18 +160,35 @@ export function useRemoteTerminal({
 			}
 		};
 
+		let lastTouchX = 0;
+		let directionLocked: "vertical" | "horizontal" | null = null;
+
 		const onTouchStart = (e: TouchEvent) => {
 			cancelInertia();
 			const touch = e.touches[0];
 			lastTouchY = touch.clientY;
+			lastTouchX = touch.clientX;
 			lastTouchTime = performance.now();
 			velocity = 0;
+			directionLocked = null;
 		};
 
 		const onTouchMove = (e: TouchEvent) => {
-			e.preventDefault();
 			const touch = e.touches[0];
 			const deltaY = lastTouchY - touch.clientY;
+			const deltaX = lastTouchX - touch.clientX;
+
+			if (directionLocked === null) {
+				if (Math.abs(deltaY) > Math.abs(deltaX)) {
+					directionLocked = "vertical";
+				} else if (Math.abs(deltaX) > Math.abs(deltaY)) {
+					directionLocked = "horizontal";
+				}
+			}
+
+			if (directionLocked === "horizontal") return;
+
+			e.preventDefault();
 			const now = performance.now();
 			const dt = now - lastTouchTime;
 			if (dt > 0) {
