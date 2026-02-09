@@ -1,11 +1,4 @@
-import {
-	Files,
-	GitBranch,
-	Globe,
-	LayoutGrid,
-	Search,
-	Settings,
-} from "lucide-react";
+import { Files, GitBranch, LayoutGrid, Search, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -27,11 +20,6 @@ const items: ActivityBarItem[] = [
 		id: "git",
 		icon: <GitBranch className="size-5" />,
 		title: "Source Control",
-	},
-	{
-		id: "remote",
-		icon: <Globe className="size-5" />,
-		title: "Remote",
 	},
 ];
 

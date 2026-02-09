@@ -48,6 +48,17 @@ export interface PtyOutputRequest {
 	pty_id: number;
 }
 
+export interface PtySpawnRequest {
+	cols: number;
+	rows: number;
+}
+
+export interface PtySpawnResponse {
+	success: boolean;
+	pty_id?: number;
+	error?: string;
+}
+
 // --- ファイル・Diff ---
 
 export interface GitStatusSync {
@@ -158,6 +169,16 @@ export interface WorktreeListResponse {
 	worktrees: WorktreeEntryMsg[];
 }
 
+export interface WorktreeSelectRequest {
+	path: string;
+}
+
+export interface WorktreeSelectResponse {
+	success: boolean;
+	path: string;
+	error?: string;
+}
+
 // --- 制御 ---
 
 export interface ErrorMsg {
@@ -177,6 +198,8 @@ export type WsMessage =
 	| { type: "pty_resize"; payload: PtyResize }
 	| { type: "pty_ready"; payload: PtyReady }
 	| { type: "pty_output_request"; payload: PtyOutputRequest }
+	| { type: "pty_spawn_request"; payload: PtySpawnRequest }
+	| { type: "pty_spawn_response"; payload: PtySpawnResponse }
 	| { type: "git_status_sync"; payload: GitStatusSync }
 	| { type: "file_content_request"; payload: FileContentRequest }
 	| { type: "file_content_response"; payload: FileContentResponse }
@@ -196,6 +219,8 @@ export type WsMessage =
 	| { type: "comments_sync"; payload: CommentSync }
 	| { type: "worktree_list_request"; payload: WorktreeListRequest }
 	| { type: "worktree_list_response"; payload: WorktreeListResponse }
+	| { type: "worktree_select_request"; payload: WorktreeSelectRequest }
+	| { type: "worktree_select_response"; payload: WorktreeSelectResponse }
 	| { type: "error"; payload: ErrorMsg };
 
 export type WsMessageType = WsMessage["type"];

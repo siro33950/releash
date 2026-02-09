@@ -336,7 +336,11 @@ fn handle_git_stage_unstage(
     })
 }
 
-async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessage> {
+async fn route_message(
+    msg: &WsMessage,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
     match msg {
         WsMessage::PtyInput(input) => {
             if let Some(pm) = &state.pty_manager {
@@ -354,7 +358,8 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
             None
         }
         WsMessage::GitStatusRequest(_) => {
-            if let Some(repo_path) = &state.repo_path {
+            let wt = selected_worktree.lock().await;
+            if let Some(repo_path) = wt.as_ref() {
                 let repo_path = repo_path.clone();
                 match tokio::task::spawn_blocking(move || git_status_to_msg_list(&repo_path)).await
                 {
@@ -362,11 +367,12 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     Err(e) => Some(join_error_msg(e)),
                 }
             } else {
-                Some(no_repo_error())
+                Some(no_worktree_selected_error())
             }
         }
         WsMessage::FileContentRequest(req) => {
-            if let Some(repo_path) = &state.repo_path {
+            let wt = selected_worktree.lock().await;
+            if let Some(repo_path) = wt.as_ref() {
                 let req = req.clone();
                 let repo_path = repo_path.clone();
                 match tokio::task::spawn_blocking(move || {
@@ -378,11 +384,12 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     Err(e) => Some(join_error_msg(e)),
                 }
             } else {
-                Some(no_repo_error())
+                Some(no_worktree_selected_error())
             }
         }
         WsMessage::GitStage(req) => {
-            if let Some(repo_path) = &state.repo_path {
+            let wt = selected_worktree.lock().await;
+            if let Some(repo_path) = wt.as_ref() {
                 let repo_path = repo_path.clone();
                 let paths = req.paths.clone();
                 let broadcaster = state.broadcaster.clone();
@@ -395,11 +402,12 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     Err(e) => Some(join_error_msg(e)),
                 }
             } else {
-                Some(no_repo_error())
+                Some(no_worktree_selected_error())
             }
         }
         WsMessage::GitUnstage(req) => {
-            if let Some(repo_path) = &state.repo_path {
+            let wt = selected_worktree.lock().await;
+            if let Some(repo_path) = wt.as_ref() {
                 let repo_path = repo_path.clone();
                 let paths = req.paths.clone();
                 let broadcaster = state.broadcaster.clone();
@@ -412,11 +420,12 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     Err(e) => Some(join_error_msg(e)),
                 }
             } else {
-                Some(no_repo_error())
+                Some(no_worktree_selected_error())
             }
         }
         WsMessage::GitStageHunk(req) => {
-            if let Some(repo_path) = &state.repo_path {
+            let wt = selected_worktree.lock().await;
+            if let Some(repo_path) = wt.as_ref() {
                 let repo_path = repo_path.clone();
                 let patch = req.patch.clone();
                 let broadcaster = state.broadcaster.clone();
@@ -446,7 +455,57 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     Err(e) => Some(join_error_msg(e)),
                 }
             } else {
-                Some(no_repo_error())
+                Some(no_worktree_selected_error())
+            }
+        }
+        WsMessage::PtySpawnRequest(req) => {
+            let wt = selected_worktree.lock().await;
+            if let Some(worktree_path) = wt.as_ref() {
+                if let (Some(pm), Some(app)) = (&state.pty_manager, &state.app_handle) {
+                    let pm = Arc::clone(pm);
+                    let app = app.clone();
+                    let worktree_path = worktree_path.clone();
+                    let rows = req.rows;
+                    let cols = req.cols;
+                    match tokio::task::spawn_blocking(move || {
+                        pm.spawn(
+                            &app,
+                            rows,
+                            cols,
+                            Some(worktree_path.clone()),
+                            Some(worktree_path),
+                        )
+                    })
+                    .await
+                    {
+                        Ok(Ok(pty_id)) => {
+                            state.broadcaster.try_send(WsMessage::PtyReady(PtyReady {
+                                pty_id,
+                                cols: req.cols,
+                                rows: req.rows,
+                            }));
+                            Some(WsMessage::PtySpawnResponse(PtySpawnResponse {
+                                success: true,
+                                pty_id: Some(pty_id),
+                                error: None,
+                            }))
+                        }
+                        Ok(Err(e)) => Some(WsMessage::PtySpawnResponse(PtySpawnResponse {
+                            success: false,
+                            pty_id: None,
+                            error: Some(e),
+                        })),
+                        Err(e) => Some(join_error_msg(e)),
+                    }
+                } else {
+                    Some(WsMessage::PtySpawnResponse(PtySpawnResponse {
+                        success: false,
+                        pty_id: None,
+                        error: Some("PTY manager が利用できません".to_string()),
+                    }))
+                }
+            } else {
+                Some(no_worktree_selected_error())
             }
         }
         WsMessage::PtyOutputRequest(req) => {
@@ -476,7 +535,8 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
             }
         }
         WsMessage::GitCommitRequest(req) => {
-            if let Some(repo_path) = &state.repo_path {
+            let wt = selected_worktree.lock().await;
+            if let Some(repo_path) = wt.as_ref() {
                 let repo_path = repo_path.clone();
                 let message = req.message.clone();
                 let broadcaster = state.broadcaster.clone();
@@ -509,11 +569,12 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     Err(e) => Some(join_error_msg(e)),
                 }
             } else {
-                Some(no_repo_error())
+                Some(no_worktree_selected_error())
             }
         }
         WsMessage::GitPushRequest(_) => {
-            if let Some(repo_path) = &state.repo_path {
+            let wt = selected_worktree.lock().await;
+            if let Some(repo_path) = wt.as_ref() {
                 let repo_path = repo_path.clone();
                 match tokio::task::spawn_blocking(move || match crate::git::git_push(repo_path) {
                     Ok(output) => WsMessage::GitPushResult(GitPushResult {
@@ -533,11 +594,12 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     Err(e) => Some(join_error_msg(e)),
                 }
             } else {
-                Some(no_repo_error())
+                Some(no_worktree_selected_error())
             }
         }
         WsMessage::BranchInfoRequest(_) => {
-            if let Some(repo_path) = &state.repo_path {
+            let wt = selected_worktree.lock().await;
+            if let Some(repo_path) = wt.as_ref() {
                 let repo_path = repo_path.clone();
                 match tokio::task::spawn_blocking(move || {
                     let branch = crate::git::get_current_branch(repo_path).unwrap_or_default();
@@ -549,7 +611,7 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     Err(e) => Some(join_error_msg(e)),
                 }
             } else {
-                Some(no_repo_error())
+                Some(no_worktree_selected_error())
             }
         }
         WsMessage::WorktreeListRequest(_) => {
@@ -577,6 +639,80 @@ async fn route_message(msg: &WsMessage, state: &WsServerState) -> Option<WsMessa
                     Ok(msg) => Some(msg),
                     Err(e) => Some(join_error_msg(e)),
                 }
+            } else {
+                Some(no_repo_error())
+            }
+        }
+        WsMessage::WorktreeSelectRequest(req) => {
+            if let Some(repo_path) = &state.repo_path {
+                let requested_path = req.path.clone();
+                let repo_path = repo_path.clone();
+                let broadcaster = state.broadcaster.clone();
+
+                // バリデーション: worktreeリストに含まれるパスか確認
+                let valid = tokio::task::spawn_blocking({
+                    let requested_path = requested_path.clone();
+                    let repo_path = repo_path.clone();
+                    move || {
+                        let worktrees = crate::git::list_worktrees(repo_path).unwrap_or_default();
+                        worktrees.iter().any(|w| w.path == requested_path)
+                    }
+                })
+                .await
+                .unwrap_or(false);
+
+                if !valid {
+                    return Some(WsMessage::WorktreeSelectResponse(WorktreeSelectResponse {
+                        success: false,
+                        path: requested_path,
+                        error: Some("指定されたworktreeが見つかりません".to_string()),
+                    }));
+                }
+
+                {
+                    let mut wt = selected_worktree.lock().await;
+                    *wt = Some(requested_path.clone());
+                }
+
+                // git status + branch info + PTYセッションを自動送信
+                let wt_path = requested_path.clone();
+                let wt_path2 = requested_path.clone();
+                if let Ok(files) =
+                    tokio::task::spawn_blocking(move || git_status_to_msg_list(&wt_path)).await
+                {
+                    broadcaster.try_send(WsMessage::GitStatusSync(GitStatusSync { files }));
+                }
+                if let Ok(branch) = tokio::task::spawn_blocking(move || {
+                    crate::git::get_current_branch(wt_path2).unwrap_or_default()
+                })
+                .await
+                {
+                    broadcaster
+                        .try_send(WsMessage::BranchInfoResponse(BranchInfoResponse { branch }));
+                }
+
+                // WorktreeSelectResponse を先に送信し、クライアント側でPTYセッションをクリアさせる
+                broadcaster.try_send(WsMessage::WorktreeSelectResponse(WorktreeSelectResponse {
+                    success: true,
+                    path: requested_path.clone(),
+                    error: None,
+                }));
+
+                // その後に該当worktreeのPTYセッションを送信
+                if let Some(pm) = &state.pty_manager {
+                    for session in pm.list_pty_sessions() {
+                        if session.worktree_path.as_deref() == Some(&requested_path) {
+                            let (cols, rows) = pm.get_pty_size(session.pty_id).unwrap_or((80, 24));
+                            broadcaster.try_send(WsMessage::PtyReady(PtyReady {
+                                pty_id: session.pty_id,
+                                cols,
+                                rows,
+                            }));
+                        }
+                    }
+                }
+
+                None
             } else {
                 Some(no_repo_error())
             }
@@ -618,6 +754,13 @@ fn no_repo_error() -> WsMessage {
     WsMessage::Error(ErrorMsg {
         code: "NO_REPO".to_string(),
         message: "リポジトリパスが設定されていません".to_string(),
+    })
+}
+
+fn no_worktree_selected_error() -> WsMessage {
+    WsMessage::Error(ErrorMsg {
+        code: "NO_WORKTREE_SELECTED".to_string(),
+        message: "Worktreeが選択されていません".to_string(),
     })
 }
 
@@ -1026,66 +1169,37 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     state.broadcaster.set_sender(Some(tx));
     let _sender_guard = BroadcasterGuard(state.broadcaster.clone());
 
-    // --- デスクトップPTY共有 ---
-    if let Some(pm) = &state.pty_manager {
-        let sessions = pm.list_pty_sessions();
-        if sessions.is_empty() {
-            let err_msg = WsMessage::Error(ErrorMsg {
-                code: "NO_PTY".to_string(),
-                message: "デスクトップのターミナルがまだ起動していません".to_string(),
-            });
-            write
-                .send(Message::Text(
-                    serialize_message(&err_msg).map_err(|e| e.to_string())?,
-                ))
-                .await
-                .map_err(|e| format!("Failed to send no_pty error: {e}"))?;
-        } else {
-            for session in &sessions {
-                let (cols, rows) = pm.get_pty_size(session.pty_id).unwrap_or((80, 24));
-                let ready_msg = WsMessage::PtyReady(PtyReady {
-                    pty_id: session.pty_id,
-                    cols,
-                    rows,
-                });
-                write
-                    .send(Message::Text(
-                        serialize_message(&ready_msg).map_err(|e| e.to_string())?,
-                    ))
-                    .await
-                    .map_err(|e| format!("Failed to send pty_ready: {e}"))?;
-            }
-        }
-    }
-
-    // --- 初期データ送信 ---
+    // --- 初期データ送信: worktreeリストのみ（PTYはworktree選択後に送信） ---
     if let Some(repo_path) = &state.repo_path {
         let repo_path_clone = repo_path.clone();
-        let files = tokio::task::spawn_blocking(move || git_status_to_msg_list(&repo_path_clone))
-            .await
-            .map_err(|e| format!("Failed to get initial git status: {e}"))?;
-        let sync_msg = WsMessage::GitStatusSync(GitStatusSync { files });
-        write
-            .send(Message::Text(
-                serialize_message(&sync_msg).map_err(|e| e.to_string())?,
-            ))
-            .await
-            .map_err(|e| format!("Failed to send initial git status: {e}"))?;
-
-        let repo_path_clone = repo_path.clone();
-        let branch = tokio::task::spawn_blocking(move || {
-            crate::git::get_current_branch(repo_path_clone).unwrap_or_default()
+        let worktree_msg = tokio::task::spawn_blocking(move || {
+            let entries = crate::git::list_worktrees(repo_path_clone)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| WorktreeEntryMsg {
+                    name: e.name,
+                    path: e.path,
+                    branch: e.branch,
+                    is_main: e.is_main,
+                    is_locked: e.is_locked,
+                    dirty_count: e.dirty_count,
+                    base_branch: e.base_branch,
+                })
+                .collect();
+            WsMessage::WorktreeListResponse(WorktreeListResponse { worktrees: entries })
         })
         .await
-        .map_err(|e| format!("Failed to get branch info: {e}"))?;
-        let branch_msg = WsMessage::BranchInfoResponse(BranchInfoResponse { branch });
+        .map_err(|e| format!("Failed to get worktree list: {e}"))?;
         write
             .send(Message::Text(
-                serialize_message(&branch_msg).map_err(|e| e.to_string())?,
+                serialize_message(&worktree_msg).map_err(|e| e.to_string())?,
             ))
             .await
-            .map_err(|e| format!("Failed to send branch info: {e}"))?;
+            .map_err(|e| format!("Failed to send worktree list: {e}"))?;
     }
+
+    // --- セッション単位のworktree選択状態 ---
+    let selected_worktree: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     // PTY出力をWebSocketにフォワードするタスク
     let forward_task = tokio::spawn(async move {
@@ -1123,7 +1237,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                         continue;
                     }
                 };
-                if let Some(response) = route_message(&ws_msg, state).await {
+                if let Some(response) = route_message(&ws_msg, state, &selected_worktree).await {
                     state.broadcaster.try_send(response);
                 }
             }
@@ -1360,13 +1474,18 @@ mod tests {
         )
     }
 
+    fn test_selected_worktree() -> Arc<Mutex<Option<String>>> {
+        Arc::new(Mutex::new(None))
+    }
+
     #[tokio::test]
     async fn test_route_unknown_message_returns_error() {
         let state = test_state();
+        let wt = test_selected_worktree();
         let msg = WsMessage::AuthChallenge(AuthChallenge {
             challenge: "x".to_string(),
         });
-        let result = route_message(&msg, &state).await;
+        let result = route_message(&msg, &state, &wt).await;
         match result {
             Some(WsMessage::Error(e)) => assert_eq!(e.code, "INVALID_MESSAGE"),
             _ => panic!("expected error"),
@@ -1376,49 +1495,80 @@ mod tests {
     #[tokio::test]
     async fn test_route_add_comment_returns_none() {
         let state = test_state();
+        let wt = test_selected_worktree();
         let msg = WsMessage::AddComment(AddComment {
             file_path: "src/main.rs".to_string(),
             line_number: 10,
             end_line: None,
             content: "fix this".to_string(),
         });
-        let result = route_message(&msg, &state).await;
+        let result = route_message(&msg, &state, &wt).await;
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_route_pty_input_without_manager_returns_none() {
         let state = test_state();
+        let wt = test_selected_worktree();
         let msg = WsMessage::PtyInput(PtyInput {
             pty_id: 1,
             data: "ls".to_string(),
         });
-        let result = route_message(&msg, &state).await;
+        let result = route_message(&msg, &state, &wt).await;
         assert!(result.is_none());
     }
 
     #[tokio::test]
-    async fn test_route_git_status_request_without_repo() {
+    async fn test_route_git_status_request_without_worktree() {
         let state = test_state();
+        let wt = test_selected_worktree();
         let msg = WsMessage::GitStatusRequest(GitStatusRequest {});
-        let result = route_message(&msg, &state).await;
+        let result = route_message(&msg, &state, &wt).await;
         match result {
-            Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_REPO"),
-            _ => panic!("expected no repo error"),
+            Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("expected no worktree selected error"),
         }
     }
 
     #[tokio::test]
-    async fn test_route_file_content_request_without_repo() {
+    async fn test_route_pty_spawn_request_without_worktree() {
         let state = test_state();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::PtySpawnRequest(PtySpawnRequest { cols: 80, rows: 24 });
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("expected no worktree selected error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_pty_spawn_request_without_pty_manager() {
+        let state = test_state(); // pty_manager = None
+        let wt = Arc::new(Mutex::new(Some("/tmp/test".to_string())));
+        let msg = WsMessage::PtySpawnRequest(PtySpawnRequest { cols: 80, rows: 24 });
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::PtySpawnResponse(r)) => {
+                assert!(!r.success);
+                assert!(r.error.is_some());
+            }
+            _ => panic!("expected PtySpawnResponse with error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_file_content_request_without_worktree() {
+        let state = test_state();
+        let wt = test_selected_worktree();
         let msg = WsMessage::FileContentRequest(FileContentRequest {
             path: "test.rs".to_string(),
             diff_base: "HEAD".to_string(),
         });
-        let result = route_message(&msg, &state).await;
+        let result = route_message(&msg, &state, &wt).await;
         match result {
-            Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_REPO"),
-            _ => panic!("expected no repo error"),
+            Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("expected no worktree selected error"),
         }
     }
 

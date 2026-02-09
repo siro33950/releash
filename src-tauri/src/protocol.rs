@@ -212,6 +212,36 @@ pub struct WorktreeListResponse {
     pub worktrees: Vec<WorktreeEntryMsg>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeSelectRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeSelectResponse {
+    pub success: bool,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// --- PTYスポーン ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtySpawnRequest {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtySpawnResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pty_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 // --- 制御 ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,11 +317,21 @@ pub enum WsMessage {
     #[serde(rename = "comments_sync")]
     CommentsSync(CommentSync),
 
+    // PTYスポーン
+    #[serde(rename = "pty_spawn_request")]
+    PtySpawnRequest(PtySpawnRequest),
+    #[serde(rename = "pty_spawn_response")]
+    PtySpawnResponse(PtySpawnResponse),
+
     // Worktree
     #[serde(rename = "worktree_list_request")]
     WorktreeListRequest(WorktreeListRequest),
     #[serde(rename = "worktree_list_response")]
     WorktreeListResponse(WorktreeListResponse),
+    #[serde(rename = "worktree_select_request")]
+    WorktreeSelectRequest(WorktreeSelectRequest),
+    #[serde(rename = "worktree_select_response")]
+    WorktreeSelectResponse(WorktreeSelectResponse),
 
     // 制御
     #[serde(rename = "error")]
@@ -644,6 +684,12 @@ mod tests {
                     created_at: 1234567890.0,
                 }],
             }),
+            WsMessage::PtySpawnRequest(PtySpawnRequest { cols: 80, rows: 24 }),
+            WsMessage::PtySpawnResponse(PtySpawnResponse {
+                success: true,
+                pty_id: Some(1),
+                error: None,
+            }),
             WsMessage::WorktreeListRequest(WorktreeListRequest {}),
             WsMessage::WorktreeListResponse(WorktreeListResponse {
                 worktrees: vec![WorktreeEntryMsg {
@@ -655,6 +701,14 @@ mod tests {
                     dirty_count: 0,
                     base_branch: None,
                 }],
+            }),
+            WsMessage::WorktreeSelectRequest(WorktreeSelectRequest {
+                path: "/repo".to_string(),
+            }),
+            WsMessage::WorktreeSelectResponse(WorktreeSelectResponse {
+                success: true,
+                path: "/repo".to_string(),
+                error: None,
             }),
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),

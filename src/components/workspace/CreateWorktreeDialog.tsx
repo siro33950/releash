@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	AlertDialog,
-	AlertDialogAction,
 	AlertDialogCancel,
 	AlertDialogContent,
 	AlertDialogDescription,
@@ -10,14 +9,14 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { BranchInfo, WorktreeEntry } from "@/types/git";
+import type { BranchCard, BranchInfo, WorktreeEntry } from "@/types/git";
 
 interface CreateWorktreeDialogProps {
 	open: boolean;
 	repoPath: string;
-	worktreeRoot: string;
-	existingWorktrees: WorktreeEntry[];
+	existingBranches: BranchCard[];
 	onCreated: (entry: WorktreeEntry) => void;
 	onCancel: () => void;
 }
@@ -26,11 +25,16 @@ function branchToDir(branch: string): string {
 	return branch.replace(/\//g, "-");
 }
 
+function computeWorktreeDir(repoPath: string): string {
+	const parent = repoPath.replace(/\/[^/]+\/?$/, "");
+	const repoName = repoPath.split("/").filter(Boolean).pop() ?? "repo";
+	return `${parent}/${repoName}-worktrees`;
+}
+
 export function CreateWorktreeDialog({
 	open,
 	repoPath,
-	worktreeRoot,
-	existingWorktrees,
+	existingBranches,
 	onCreated,
 	onCancel,
 }: CreateWorktreeDialogProps) {
@@ -38,23 +42,36 @@ export function CreateWorktreeDialog({
 	const [filter, setFilter] = useState("");
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const [branchName, setBranchName] = useState("");
+	const [baseBranch, setBaseBranch] = useState("");
 	const [creating, setCreating] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const listRef = useRef<HTMLDivElement>(null);
 
-	const existingBranches = useMemo(
-		() => new Set(existingWorktrees.map((w) => w.branch)),
-		[existingWorktrees],
+	const existingBranchNames = useMemo(
+		() => new Set(existingBranches.map((b) => b.name)),
+		[existingBranches],
+	);
+
+	const localBranchNames = useMemo(
+		() => branches.filter((b) => !b.is_remote).map((b) => b.name),
+		[branches],
 	);
 
 	useEffect(() => {
 		if (!open) return;
 		setFilter("");
 		setBranchName("");
+		setBaseBranch("");
 		setSelectedIndex(0);
 		setError(null);
 		invoke<BranchInfo[]>("list_branches", { filePath: repoPath })
-			.then(setBranches)
+			.then((result) => {
+				setBranches(result);
+				const defaultBranch = result.find(
+					(b) => !b.is_remote && (b.name === "main" || b.name === "master"),
+				);
+				setBaseBranch(defaultBranch?.name ?? "HEAD");
+			})
 			.catch(() => setBranches([]));
 	}, [open, repoPath]);
 
@@ -120,24 +137,25 @@ export function CreateWorktreeDialog({
 				if (!item) return;
 				if (item.isNew) {
 					setBranchName(filter);
-				} else if (!existingBranches.has(item.branch.name)) {
+				} else if (!existingBranchNames.has(item.branch.name)) {
 					setBranchName(item.branch.name);
 				}
 			}
 		},
-		[flatList, selectedIndex, filter, existingBranches],
+		[flatList, selectedIndex, filter, existingBranchNames],
 	);
 
 	const selectBranch = useCallback(
 		(name: string, isNew: boolean) => {
-			if (!isNew && existingBranches.has(name)) return;
+			if (!isNew && existingBranchNames.has(name)) return;
 			setBranchName(name);
 		},
-		[existingBranches],
+		[existingBranchNames],
 	);
 
+	const worktreeDir = computeWorktreeDir(repoPath);
 	const worktreePath = branchName
-		? `${worktreeRoot}/${branchToDir(branchName)}`
+		? `${worktreeDir}/${branchToDir(branchName)}`
 		: "";
 	const isNewBranch =
 		branchName.length > 0 && !allBranchNames.includes(branchName);
@@ -152,7 +170,7 @@ export function CreateWorktreeDialog({
 				worktreePath,
 				branch: branchName,
 				createBranch: isNewBranch,
-				baseBranch: isNewBranch ? "HEAD" : null,
+				baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
 			});
 			onCreated(entry);
 		} catch (e) {
@@ -160,131 +178,143 @@ export function CreateWorktreeDialog({
 		} finally {
 			setCreating(false);
 		}
-	}, [branchName, worktreePath, repoPath, isNewBranch, onCreated]);
-
-	if (branchName) {
-		return (
-			<AlertDialog open={open} onOpenChange={(o) => !o && onCancel()}>
-				<AlertDialogContent>
-					<AlertDialogHeader>
-						<AlertDialogTitle>New Workspace</AlertDialogTitle>
-						<AlertDialogDescription>
-							{isNewBranch
-								? `Create new branch "${branchName}" and workspace`
-								: `Create workspace for branch "${branchName}"`}
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<div className="grid gap-3 text-sm">
-						<div className="flex items-center gap-2">
-							<span className="text-muted-foreground w-16 shrink-0">
-								Branch:
-							</span>
-							<span className="font-mono truncate">{branchName}</span>
-						</div>
-						<div className="flex items-center gap-2">
-							<span className="text-muted-foreground w-16 shrink-0">Path:</span>
-							<span className="font-mono text-xs truncate">{worktreePath}</span>
-						</div>
-						{error && <p className="text-sm text-destructive">{error}</p>}
-					</div>
-					<AlertDialogFooter>
-						<AlertDialogCancel
-							onClick={() => {
-								setBranchName("");
-								setError(null);
-							}}
-							disabled={creating}
-						>
-							Back
-						</AlertDialogCancel>
-						<AlertDialogAction onClick={handleCreate} disabled={creating}>
-							{creating ? "Creating..." : "Create"}
-						</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
-		);
-	}
+	}, [branchName, worktreePath, repoPath, isNewBranch, baseBranch, onCreated]);
 
 	let lastSection: string | undefined;
 
 	return (
 		<AlertDialog open={open} onOpenChange={(o) => !o && onCancel()}>
 			<AlertDialogContent>
-				<AlertDialogHeader>
-					<AlertDialogTitle>New Workspace</AlertDialogTitle>
-					<AlertDialogDescription>
-						Select an existing branch or type a new branch name
-					</AlertDialogDescription>
-				</AlertDialogHeader>
-				<div className="grid gap-2">
-					<Input
-						placeholder="Filter or create branch..."
-						value={filter}
-						onChange={(e) => setFilter(e.target.value)}
-						onKeyDown={handleKeyDown}
-						autoFocus
-					/>
-					<div
-						ref={listRef}
-						className="max-h-48 overflow-y-auto rounded border border-border"
-					>
-						{flatList.map((item, idx) => {
-							const showHeader =
-								!item.isNew &&
-								item.section !== lastSection &&
-								item.section != null;
-							if (!item.isNew && item.section != null) {
-								lastSection = item.section;
-							}
-							const isExisting = existingBranches.has(item.branch.name);
-
-							return (
-								<div key={item.isNew ? `__new__` : item.branch.name}>
-									{showHeader && (
-										<div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 sticky top-0">
-											{item.section === "local" ? "Local" : "Remote"}
-										</div>
-									)}
-									{item.isNew ? (
-										<button
-											type="button"
-											data-active={selectedIndex === idx}
-											className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent data-[active=true]:bg-accent"
-											onClick={() => selectBranch(filter, true)}
-										>
-											<span className="text-primary">+</span>
-											<span>Create branch &quot;{filter}&quot;</span>
-										</button>
-									) : (
-										<button
-											type="button"
-											data-active={selectedIndex === idx}
-											disabled={isExisting}
-											className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent data-[active=true]:bg-accent disabled:opacity-40 disabled:cursor-not-allowed"
-											onClick={() => selectBranch(item.branch.name, false)}
-										>
-											<span className="truncate">{item.branch.name}</span>
-											{isExisting && (
-												<span className="ml-auto text-xs text-muted-foreground shrink-0">
-													already open
-												</span>
-											)}
-										</button>
-									)}
-								</div>
-							);
-						})}
-						{flatList.length === 0 && (
-							<div className="px-3 py-4 text-sm text-muted-foreground text-center">
-								No branches found
+				{branchName ? (
+					<>
+						<AlertDialogHeader>
+							<AlertDialogTitle>New Workspace</AlertDialogTitle>
+							<AlertDialogDescription>
+								{isNewBranch
+									? `Create new branch "${branchName}" and workspace`
+									: `Create workspace for branch "${branchName}"`}
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<div className="grid gap-3 text-sm">
+							<div className="flex items-center gap-2">
+								<span className="text-muted-foreground w-16 shrink-0">
+									Branch:
+								</span>
+								<span className="font-mono truncate">{branchName}</span>
 							</div>
-						)}
-					</div>
-				</div>
-				<AlertDialogFooter>
-					<AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
-				</AlertDialogFooter>
+							{isNewBranch && (
+								<div className="flex items-center gap-2">
+									<span className="text-muted-foreground w-16 shrink-0">
+										Base:
+									</span>
+									<select
+										value={baseBranch}
+										onChange={(e) => setBaseBranch(e.target.value)}
+										className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-sm"
+									>
+										{localBranchNames.map((name) => (
+											<option key={name} value={name}>
+												{name}
+											</option>
+										))}
+									</select>
+								</div>
+							)}
+							{error && <p className="text-sm text-destructive">{error}</p>}
+						</div>
+						<AlertDialogFooter>
+							<AlertDialogCancel
+								onClick={() => {
+									setBranchName("");
+									setError(null);
+								}}
+								disabled={creating}
+							>
+								Back
+							</AlertDialogCancel>
+							<Button onClick={handleCreate} disabled={creating}>
+								{creating ? "Creating..." : "Create"}
+							</Button>
+						</AlertDialogFooter>
+					</>
+				) : (
+					<>
+						<AlertDialogHeader>
+							<AlertDialogTitle>New Workspace</AlertDialogTitle>
+							<AlertDialogDescription>
+								Select an existing branch or type a new branch name
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<div className="grid gap-2">
+							<Input
+								placeholder="Filter or create branch..."
+								value={filter}
+								onChange={(e) => setFilter(e.target.value)}
+								onKeyDown={handleKeyDown}
+								autoFocus
+							/>
+							<div
+								ref={listRef}
+								className="max-h-48 overflow-y-auto rounded border border-border"
+							>
+								{flatList.map((item, idx) => {
+									const showHeader =
+										!item.isNew &&
+										item.section !== lastSection &&
+										item.section != null;
+									if (!item.isNew && item.section != null) {
+										lastSection = item.section;
+									}
+									const isExisting = existingBranchNames.has(item.branch.name);
+
+									return (
+										<div key={item.isNew ? "__new__" : item.branch.name}>
+											{showHeader && (
+												<div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50 sticky top-0">
+													{item.section === "local" ? "Local" : "Remote"}
+												</div>
+											)}
+											{item.isNew ? (
+												<button
+													type="button"
+													data-active={selectedIndex === idx}
+													className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent data-[active=true]:bg-accent"
+													onClick={() => selectBranch(filter, true)}
+												>
+													<span className="text-primary">+</span>
+													<span>Create branch &quot;{filter}&quot;</span>
+												</button>
+											) : (
+												<button
+													type="button"
+													data-active={selectedIndex === idx}
+													disabled={isExisting}
+													className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent data-[active=true]:bg-accent disabled:opacity-40 disabled:cursor-not-allowed"
+													onClick={() => selectBranch(item.branch.name, false)}
+												>
+													<span className="truncate">{item.branch.name}</span>
+													{isExisting && (
+														<span className="ml-auto text-xs text-muted-foreground shrink-0">
+															already open
+														</span>
+													)}
+												</button>
+											)}
+										</div>
+									);
+								})}
+								{flatList.length === 0 && (
+									<div className="px-3 py-4 text-sm text-muted-foreground text-center">
+										No branches found
+									</div>
+								)}
+							</div>
+						</div>
+						<AlertDialogFooter>
+							<AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
+						</AlertDialogFooter>
+					</>
+				)}
 			</AlertDialogContent>
 		</AlertDialog>
 	);

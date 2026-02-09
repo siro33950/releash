@@ -40,6 +40,10 @@ function App() {
 		})();
 	}, []);
 
+	const handleChangeRepo = useCallback((path: string | null) => {
+		setMainRepoPath(path);
+	}, []);
+
 	const handleGoHome = useCallback(() => {
 		setScreen("manager");
 		setRootPath(null);
@@ -69,6 +73,7 @@ function App() {
 		<WorkspaceManagerScreen
 			repoPath={mainRepoPath}
 			onSelectWorktree={handleSelectWorktree}
+			onChangeRepo={handleChangeRepo}
 		/>
 	);
 }

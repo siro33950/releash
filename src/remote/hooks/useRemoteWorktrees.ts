@@ -45,5 +45,15 @@ export function useRemoteWorktrees({
 		return () => clearInterval(id);
 	}, [connected, refresh]);
 
-	return { worktrees, loading, refresh };
+	const select = useCallback(
+		(worktreePath: string) => {
+			send({
+				type: "worktree_select_request",
+				payload: { path: worktreePath },
+			});
+		},
+		[send],
+	);
+
+	return { worktrees, loading, refresh, select };
 }

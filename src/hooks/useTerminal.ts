@@ -15,6 +15,14 @@ interface PtyExit {
 	exit_code: number | null;
 }
 
+interface GetOrSpawnPtyResult {
+	pty_id: number;
+	buffered_output: string;
+	is_new: boolean;
+	is_exited: boolean;
+	exit_code: number | null;
+}
+
 const terminalDarkTheme: ITheme = {
 	background: "#1a1a1a",
 	foreground: "#e0e0e0",
@@ -103,6 +111,7 @@ export function useTerminal(
 		let unlistenExit: UnlistenFn | null = null;
 
 		const initPty = async () => {
+			// 1. Register listeners first (ptyIdRef is still null so they won't fire yet)
 			unlistenOutput = await listen<PtyOutput>("pty-output", (event) => {
 				if (event.payload.pty_id === ptyIdRef.current) {
 					terminal.write(event.payload.data);
@@ -120,19 +129,33 @@ export function useTerminal(
 
 			if (!isMounted) return;
 
+			// 2. Get or spawn PTY for this worktree
 			const { rows, cols } = terminal;
-			const ptyId = await invoke<number>("spawn_pty", {
+			const worktreePath = cwd ?? null;
+			const result = await invoke<GetOrSpawnPtyResult>("get_or_spawn_pty", {
 				rows,
 				cols,
-				cwd: cwd ?? null,
+				cwd: worktreePath,
+				worktreePath: worktreePath ?? "",
 			});
 
-			if (!isMounted) {
-				invoke("kill_pty", { ptyId }).catch(() => {});
+			if (!isMounted) return;
+
+			// 3. Replay buffered output
+			if (result.buffered_output) {
+				terminal.write(result.buffered_output);
+			}
+
+			// 4. Handle already-exited session
+			if (result.is_exited) {
+				terminal.write(
+					`\r\n\x1b[90m[Process exited with code ${result.exit_code ?? "unknown"}]\x1b[0m\r\n`,
+				);
 				return;
 			}
 
-			ptyIdRef.current = ptyId;
+			// 5. Set ptyId (from here, real-time output starts flowing)
+			ptyIdRef.current = result.pty_id;
 		};
 
 		initPty().catch((error) => {
@@ -170,9 +193,6 @@ export function useTerminal(
 			resizeObserver.disconnect();
 			unlistenOutput?.();
 			unlistenExit?.();
-			if (ptyIdRef.current !== null) {
-				invoke("kill_pty", { ptyId: ptyIdRef.current }).catch(() => {});
-			}
 			terminal.dispose();
 		};
 	}, [containerRef, cwd]);

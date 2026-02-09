@@ -19,6 +19,14 @@ export interface BranchInfo {
 	is_remote: boolean;
 }
 
+export interface BranchCard {
+	name: string;
+	is_default: boolean;
+	worktree_path: string | null;
+	dirty_count: number;
+	is_merged: boolean;
+}
+
 export interface CommitInfo {
 	hash: string;
 	short_hash: string;

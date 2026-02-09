@@ -9,39 +9,39 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { WorktreeEntry } from "@/types/git";
+import type { BranchCard } from "@/types/git";
 
 interface DeleteWorktreeDialogProps {
 	open: boolean;
-	worktree: WorktreeEntry | null;
+	branch: BranchCard | null;
 	onConfirm: (worktreePath: string, force: boolean) => Promise<void>;
 	onCancel: () => void;
 }
 
 export function DeleteWorktreeDialog({
 	open,
-	worktree,
+	branch,
 	onConfirm,
 	onCancel,
 }: DeleteWorktreeDialogProps) {
 	const [deleting, setDeleting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const hasDirty = (worktree?.dirty_count ?? 0) > 0;
+	const hasDirty = (branch?.dirty_count ?? 0) > 0;
 
 	const handleDelete = useCallback(
 		async (force: boolean) => {
-			if (!worktree) return;
+			if (!branch?.worktree_path) return;
 			setDeleting(true);
 			setError(null);
 			try {
-				await onConfirm(worktree.path, force);
+				await onConfirm(branch.worktree_path, force);
 			} catch (e) {
 				setError(String(e));
 				setDeleting(false);
 			}
 		},
-		[worktree, onConfirm],
+		[branch, onConfirm],
 	);
 
 	const handleOpenChange = useCallback(
@@ -55,7 +55,7 @@ export function DeleteWorktreeDialog({
 		[onCancel],
 	);
 
-	if (!worktree) return null;
+	if (!branch) return null;
 
 	return (
 		<AlertDialog open={open} onOpenChange={handleOpenChange}>
@@ -63,17 +63,18 @@ export function DeleteWorktreeDialog({
 				<AlertDialogHeader>
 					<AlertDialogTitle>Delete Workspace</AlertDialogTitle>
 					<AlertDialogDescription>
-						Delete workspace &quot;{worktree.name}&quot; on branch &quot;
-						{worktree.branch}&quot;?
+						Delete workspace for branch &quot;{branch.name}&quot;?
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<div className="grid gap-2 text-sm">
-					<div className="text-muted-foreground font-mono text-xs truncate">
-						{worktree.path}
-					</div>
+					{branch.worktree_path && (
+						<div className="text-muted-foreground font-mono text-xs truncate">
+							{branch.worktree_path}
+						</div>
+					)}
 					{hasDirty && (
 						<p className="text-yellow-500">
-							This workspace has {worktree.dirty_count} uncommitted change(s).
+							This workspace has {branch.dirty_count} uncommitted change(s).
 							Force delete is required.
 						</p>
 					)}

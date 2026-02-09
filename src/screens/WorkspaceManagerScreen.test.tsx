@@ -3,11 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import { WorkspaceManagerScreen } from "./WorkspaceManagerScreen";
 
 describe("WorkspaceManagerScreen", () => {
-	it("renders no-repo message when repoPath is null", () => {
+	it("renders open-folder button when repoPath is null", () => {
 		render(
-			<WorkspaceManagerScreen repoPath={null} onSelectWorktree={vi.fn()} />,
+			<WorkspaceManagerScreen
+				repoPath={null}
+				onSelectWorktree={vi.fn()}
+				onChangeRepo={vi.fn()}
+			/>,
 		);
-		expect(screen.getByText("No git repository detected")).toBeInTheDocument();
+		expect(screen.getByText("Open Folder")).toBeInTheDocument();
 	});
 
 	it("renders loading state then repo name when repoPath is set", () => {
@@ -15,6 +19,7 @@ describe("WorkspaceManagerScreen", () => {
 			<WorkspaceManagerScreen
 				repoPath="/home/user/my-repo"
 				onSelectWorktree={vi.fn()}
+				onChangeRepo={vi.fn()}
 			/>,
 		);
 		expect(screen.getByText("my-repo")).toBeInTheDocument();

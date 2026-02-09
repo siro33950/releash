@@ -6,7 +6,6 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { EditorPanel } from "@/components/panels/EditorPanel";
-import { RemotePanel } from "@/components/panels/RemotePanel";
 import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
@@ -249,9 +248,7 @@ export function WorktreeView({
 						maxSize="30"
 						collapsible={false}
 					>
-						{activeView === "remote" ? (
-							<RemotePanel rootPath={rootPath} />
-						) : activeView === "git" ? (
+						{activeView === "git" ? (
 							<SourceControlPanel
 								rootPath={rootPath}
 								onSelectFile={openFile}

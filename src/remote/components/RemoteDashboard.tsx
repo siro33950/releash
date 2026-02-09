@@ -5,12 +5,14 @@ interface RemoteDashboardProps {
 	worktrees: WorktreeEntryMsg[];
 	loading: boolean;
 	onRefresh: () => void;
+	onSelect?: (worktreePath: string) => void;
 }
 
 export function RemoteDashboard({
 	worktrees,
 	loading,
 	onRefresh,
+	onSelect,
 }: RemoteDashboardProps) {
 	return (
 		<div className="flex flex-col h-full">
@@ -42,9 +44,11 @@ export function RemoteDashboard({
 				)}
 				<div className="grid gap-3">
 					{worktrees.map((wt) => (
-						<div
+						<button
 							key={wt.path}
-							className="flex items-start gap-3 p-3 rounded-lg border border-neutral-800 bg-neutral-900/50"
+							type="button"
+							className="flex items-start gap-3 p-3 rounded-lg border border-neutral-800 bg-neutral-900/50 hover:border-neutral-600 hover:bg-neutral-800/50 transition-colors text-left w-full"
+							onClick={() => onSelect?.(wt.path)}
 						>
 							<GitBranch className="size-4 shrink-0 text-neutral-500 mt-0.5" />
 							<div className="flex-1 min-w-0">
@@ -74,7 +78,7 @@ export function RemoteDashboard({
 									)}
 								</div>
 							</div>
-						</div>
+						</button>
 					))}
 				</div>
 			</div>
