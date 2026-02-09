@@ -1,4 +1,11 @@
-import { Files, GitBranch, Globe, Search, Settings } from "lucide-react";
+import {
+	Files,
+	GitBranch,
+	Globe,
+	LayoutGrid,
+	Search,
+	Settings,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -32,6 +39,7 @@ interface ActivityBarProps {
 	className?: string;
 	activeItem?: string;
 	onItemClick?: (id: string) => void;
+	onGoHome?: () => void;
 }
 
 function ActivityBarButton({
@@ -72,10 +80,17 @@ const settingsItem: ActivityBarItem = {
 	title: "Settings",
 };
 
+const homeItem: ActivityBarItem = {
+	id: "home",
+	icon: <LayoutGrid className="size-5" />,
+	title: "Workspace Manager",
+};
+
 export function ActivityBar({
 	className,
 	activeItem,
 	onItemClick,
+	onGoHome,
 }: ActivityBarProps) {
 	return (
 		<div
@@ -85,6 +100,16 @@ export function ActivityBar({
 				className,
 			)}
 		>
+			{onGoHome && (
+				<>
+					<ActivityBarButton
+						item={homeItem}
+						isActive={false}
+						onClick={onGoHome}
+					/>
+					<div className="w-8 border-b border-sidebar-border my-1" />
+				</>
+			)}
 			{items.map((item) => (
 				<ActivityBarButton
 					key={item.id}

@@ -17,11 +17,12 @@ use config::{
     get_server_config, load_or_create_config, regenerate_token, update_server_port, AppConfig,
 };
 use git::{
-    get_current_branch, get_file_at_ref, get_git_log, get_git_status, get_repo_git_dir,
-    get_staged_content, git_commit, git_create_branch, git_push, git_stage, git_stage_hunk,
-    git_unstage, git_unstage_hunk, list_branches,
+    create_worktree, get_current_branch, get_cwd, get_file_at_ref, get_git_log, get_git_status,
+    get_main_repo_path, get_repo_git_dir, get_staged_content, get_worktree_dirty_count, git_commit,
+    git_create_branch, git_push, git_stage, git_stage_hunk, git_unstage, git_unstage_hunk,
+    list_branches, list_worktrees, remove_worktree,
 };
-use pty::{kill_pty, resize_pty, spawn_pty, write_pty, PtyManager};
+use pty::{kill_pty, list_pty_sessions, resize_pty, spawn_pty, write_pty, PtyManager};
 use qr_code::get_connection_qr;
 use search::{find_definition, find_references, search_files};
 use tauri::Manager;
@@ -54,6 +55,7 @@ pub fn run() {
             write_pty,
             resize_pty,
             kill_pty,
+            list_pty_sessions,
             start_watching,
             stop_watching,
             get_file_at_ref,
@@ -82,7 +84,13 @@ pub fn run() {
             start_server,
             stop_server,
             get_server_status,
-            broadcast_comments
+            broadcast_comments,
+            get_main_repo_path,
+            get_worktree_dirty_count,
+            list_worktrees,
+            create_worktree,
+            remove_worktree,
+            get_cwd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
