@@ -145,6 +145,77 @@ export function useRemoteTerminal({
 			}
 		});
 
+		// タッチスクロールハンドラ
+		let lastTouchY = 0;
+		let lastTouchTime = 0;
+		let velocity = 0;
+		let inertiaRafId = 0;
+
+		const cellHeight = fontSize * (DEFAULT_LINE_HEIGHT + 0.2);
+
+		const cancelInertia = () => {
+			if (inertiaRafId) {
+				cancelAnimationFrame(inertiaRafId);
+				inertiaRafId = 0;
+			}
+		};
+
+		const onTouchStart = (e: TouchEvent) => {
+			cancelInertia();
+			const touch = e.touches[0];
+			lastTouchY = touch.clientY;
+			lastTouchTime = performance.now();
+			velocity = 0;
+		};
+
+		const onTouchMove = (e: TouchEvent) => {
+			e.preventDefault();
+			const touch = e.touches[0];
+			const deltaY = lastTouchY - touch.clientY;
+			const now = performance.now();
+			const dt = now - lastTouchTime;
+			if (dt > 0) {
+				velocity = deltaY / dt;
+			}
+			lastTouchY = touch.clientY;
+			lastTouchTime = now;
+
+			const lines = Math.round(deltaY / cellHeight);
+			if (lines !== 0) {
+				terminal.scrollLines(lines);
+				lastTouchY = touch.clientY;
+			}
+		};
+
+		const onTouchEnd = () => {
+			const friction = 0.92;
+			const minVelocity = 0.01;
+
+			const inertiaStep = () => {
+				velocity *= friction;
+				if (Math.abs(velocity) < minVelocity) {
+					inertiaRafId = 0;
+					return;
+				}
+				const pxPerFrame = velocity * 16;
+				const lines = Math.round(pxPerFrame / cellHeight);
+				if (lines !== 0) {
+					terminal.scrollLines(lines);
+				}
+				inertiaRafId = requestAnimationFrame(inertiaStep);
+			};
+
+			if (Math.abs(velocity) > minVelocity) {
+				inertiaRafId = requestAnimationFrame(inertiaStep);
+			}
+		};
+
+		container.addEventListener("touchstart", onTouchStart, {
+			passive: true,
+		});
+		container.addEventListener("touchmove", onTouchMove, { passive: false });
+		container.addEventListener("touchend", onTouchEnd, { passive: true });
+
 		requestAnimationFrame(() => {
 			terminal.refresh(0, terminal.rows - 1);
 			if (!initialSentRef.current) {
@@ -157,6 +228,10 @@ export function useRemoteTerminal({
 		});
 
 		return () => {
+			cancelInertia();
+			container.removeEventListener("touchstart", onTouchStart);
+			container.removeEventListener("touchmove", onTouchMove);
+			container.removeEventListener("touchend", onTouchEnd);
 			unsubscribe();
 			resizeObserver.disconnect();
 			container.style.overflowX = "";
