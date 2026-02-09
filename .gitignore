@@ -39,8 +39,8 @@ yarn-error.log*
 src-tauri/target/
 src-tauri/WixTools/
 src-tauri/icons/generated/
-src-tauri/resources/pwa/*
-!src-tauri/resources/pwa/.gitkeep
+src-tauri/resources/remote/*
+!src-tauri/resources/remote/.gitkeep
 
 # Rust
 *.rs.bk

@@ -7,7 +7,7 @@ import {
 	markStagedGroups,
 } from "@/lib/computeHunks";
 import { generateGroupPatch } from "@/lib/generatePatch";
-import type { DiffBase } from "@/pwa/hooks/useRemoteFileContent";
+import type { DiffBase } from "@/remote/hooks/useRemoteFileContent";
 import { DiffRenderer } from "./DiffRenderer";
 import { RemoteCommentInput } from "./RemoteCommentInput";
 

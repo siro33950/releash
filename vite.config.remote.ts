@@ -11,10 +11,10 @@ export default defineConfig({
 		},
 	},
 	build: {
-		outDir: "src-tauri/resources/pwa",
+		outDir: "src-tauri/resources/remote",
 		emptyOutDir: false,
 		rollupOptions: {
-			input: path.resolve(import.meta.dirname, "pwa.html"),
+			input: path.resolve(import.meta.dirname, "remote.html"),
 		},
 	},
 	root: ".",
