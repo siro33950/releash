@@ -174,37 +174,42 @@ export function useRemoteTerminal({
 		};
 
 		const onTouchMove = (e: TouchEvent) => {
+			e.preventDefault();
 			const touch = e.touches[0];
 			const deltaY = lastTouchY - touch.clientY;
 			const deltaX = lastTouchX - touch.clientX;
 
 			if (directionLocked === null) {
-				if (Math.abs(deltaY) > Math.abs(deltaX)) {
+				if (Math.abs(deltaY) >= Math.abs(deltaX)) {
 					directionLocked = "vertical";
-				} else if (Math.abs(deltaX) > Math.abs(deltaY)) {
+				} else {
 					directionLocked = "horizontal";
 				}
 			}
 
-			if (directionLocked === "horizontal") return;
-
-			e.preventDefault();
-			const now = performance.now();
-			const dt = now - lastTouchTime;
-			if (dt > 0) {
-				velocity = deltaY / dt;
-			}
-			lastTouchY = touch.clientY;
-			lastTouchTime = now;
-
-			const lines = Math.round(deltaY / cellHeight);
-			if (lines !== 0) {
-				terminal.scrollLines(lines);
+			if (directionLocked === "vertical") {
+				const now = performance.now();
+				const dt = now - lastTouchTime;
+				if (dt > 0) {
+					velocity = deltaY / dt;
+				}
 				lastTouchY = touch.clientY;
+				lastTouchTime = now;
+
+				const lines = Math.round(deltaY / cellHeight);
+				if (lines !== 0) {
+					terminal.scrollLines(lines);
+					lastTouchY = touch.clientY;
+				}
+			} else {
+				container.scrollLeft += deltaX;
+				lastTouchX = touch.clientX;
 			}
 		};
 
 		const onTouchEnd = () => {
+			if (directionLocked !== "vertical") return;
+
 			const friction = 0.92;
 			const minVelocity = 0.01;
 
