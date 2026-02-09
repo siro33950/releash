@@ -69,33 +69,55 @@ export function RemoteTerminalPanel({
 		if (!viewport || !root) return;
 
 		let initialHeight = viewport.height;
+		let isKeyboardOpen = false;
 
-		const handleResize = () => {
-			if (viewport.height < initialHeight * 0.9) {
-				const rect = root.getBoundingClientRect();
-				const topInViewport = rect.top - viewport.offsetTop;
-				const available = viewport.height - topInViewport;
-				root.style.height = `${Math.max(0, available)}px`;
-			} else {
+		const update = () => {
+			const keyboardOpen = viewport.height < initialHeight * 0.85;
+			if (keyboardOpen) {
+				root.style.position = "fixed";
+				root.style.top = `${viewport.offsetTop}px`;
+				root.style.left = "0";
+				root.style.right = "0";
+				root.style.height = `${viewport.height}px`;
+				root.style.zIndex = "50";
+				isKeyboardOpen = true;
+			} else if (isKeyboardOpen) {
+				root.style.position = "";
+				root.style.top = "";
+				root.style.left = "";
+				root.style.right = "";
 				root.style.height = "";
+				root.style.zIndex = "";
+				isKeyboardOpen = false;
 			}
 		};
 
 		const handleOrientationChange = () => {
 			setTimeout(() => {
 				initialHeight = viewport.height;
+				root.style.position = "";
+				root.style.top = "";
+				root.style.left = "";
+				root.style.right = "";
 				root.style.height = "";
+				root.style.zIndex = "";
+				isKeyboardOpen = false;
 			}, 200);
 		};
 
-		viewport.addEventListener("resize", handleResize);
-		viewport.addEventListener("scroll", handleResize);
+		viewport.addEventListener("resize", update);
+		viewport.addEventListener("scroll", update);
 		window.addEventListener("orientationchange", handleOrientationChange);
 		return () => {
-			viewport.removeEventListener("resize", handleResize);
-			viewport.removeEventListener("scroll", handleResize);
+			viewport.removeEventListener("resize", update);
+			viewport.removeEventListener("scroll", update);
 			window.removeEventListener("orientationchange", handleOrientationChange);
+			root.style.position = "";
+			root.style.top = "";
+			root.style.left = "";
+			root.style.right = "";
 			root.style.height = "";
+			root.style.zIndex = "";
 		};
 	}, []);
 
@@ -191,7 +213,7 @@ export function RemoteTerminalPanel({
 		: "bg-[#333] text-[#ccc] active:bg-[#555]";
 
 	return (
-		<div ref={rootRef} className="flex flex-col h-full">
+		<div ref={rootRef} className="flex flex-col h-full bg-[#1a1a1a]">
 			<div
 				ref={containerRef}
 				className="flex-1 overflow-hidden bg-[#1a1a1a]"

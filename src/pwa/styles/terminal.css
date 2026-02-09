@@ -1,5 +1,11 @@
+.xterm {
+  touch-action: none;
+}
+
 .xterm .xterm-viewport {
   overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .xterm .xterm-viewport::-webkit-scrollbar {
