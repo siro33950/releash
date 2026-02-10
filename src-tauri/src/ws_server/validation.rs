@@ -98,7 +98,7 @@ mod tests {
     fn test_validate_patch_paths_allows_dev_null() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("new_file.rs"), "").unwrap();
-        let patch = "--- a//dev/null\n+++ b/new_file.rs\n";
+        let patch = "--- /dev/null\n+++ b/new_file.rs\n";
         let result = validate_patch_paths(patch, dir.path().to_str().unwrap());
         assert!(result.is_ok());
     }

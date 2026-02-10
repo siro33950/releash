@@ -525,15 +525,7 @@ pub(super) async fn handle_worktree_select_request(
 
 pub(super) fn handle_add_comment(comment: &AddComment, state: &WsServerState) -> Option<WsMessage> {
     if let Some(app) = &state.app_handle {
-        let _ = app.emit(
-            "remote-comment-added",
-            serde_json::json!({
-                "file_path": comment.file_path,
-                "line_number": comment.line_number,
-                "end_line": comment.end_line,
-                "content": comment.content,
-            }),
-        );
+        let _ = app.emit("remote-comment-added", comment);
     }
     None
 }

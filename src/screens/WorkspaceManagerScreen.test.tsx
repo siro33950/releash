@@ -203,7 +203,6 @@ describe("WorkspaceManagerScreen", () => {
 				expect(screen.getByText("feat/active-branch")).toBeInTheDocument();
 			});
 
-			screen.getAllByText("Open");
 			// active-branch の Open ボタンをクリック（2番目: In Progress列の1つ目）
 			const activeBranchCard = screen
 				.getByText("feat/active-branch")
@@ -437,6 +436,10 @@ describe("WorkspaceManagerScreen", () => {
 			vi.useFakeTimers();
 			setupMockInvoke();
 			renderScreen();
+			const originalDescriptor = Object.getOwnPropertyDescriptor(
+				document,
+				"visibilityState",
+			);
 
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(100);
@@ -470,6 +473,13 @@ describe("WorkspaceManagerScreen", () => {
 			).length;
 			expect(callCountAfter30s).toBeGreaterThan(callCount);
 
+			if (originalDescriptor) {
+				Object.defineProperty(
+					document,
+					"visibilityState",
+					originalDescriptor,
+				);
+			}
 			vi.useRealTimers();
 		});
 	});

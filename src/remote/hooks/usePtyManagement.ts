@@ -61,6 +61,7 @@ export function usePtyManagement({ subscribe, send }: UsePtyManagementOptions) {
 		setPtySessions([]);
 		setActivePtyId(null);
 		setPtySpawnError(null);
+		setPtySpawning(false);
 	}, []);
 
 	return {

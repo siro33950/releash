@@ -1,5 +1,5 @@
 import { renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WsMessage } from "@/types/protocol";
 import type { Subscribe } from "./useMessageBus";
 import { useRemoteTerminal } from "./useRemoteTerminal";
@@ -37,6 +37,10 @@ describe("useRemoteTerminal", () => {
 		mockSend = vi.fn();
 		mockSubscribe = createMockSubscribe();
 		containerRef = createContainerRef();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
 	});
 
 	it("subscribes to message bus on mount", () => {

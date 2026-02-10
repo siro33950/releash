@@ -168,17 +168,22 @@ pub fn start_git_dir_watching(
             Vec<notify_debouncer_mini::DebouncedEvent>,
             notify_debouncer_mini::notify::Error,
         >| {
-            if let Ok(events) = res {
-                let dominated_by_git = events.iter().any(|e| {
-                    let p = e.path.to_string_lossy();
-                    p.contains("refs/heads") || p.ends_with("HEAD")
-                });
-                if dominated_by_git {
-                    if let Some(sync_msg) = build_branch_list_sync(&main_repo_clone) {
-                        let _ = app_clone.emit("branch-list-sync", ());
-                        if let Some(ws) = app_clone.try_state::<std::sync::Arc<WsBroadcaster>>() {
-                            ws.try_send(sync_msg);
-                        }
+            let events = match res {
+                Ok(events) => events,
+                Err(e) => {
+                    eprintln!("Git dir watcher error: {:?}", e);
+                    return;
+                }
+            };
+            let dominated_by_git = events.iter().any(|e| {
+                let p = e.path.to_string_lossy();
+                p.contains("refs/heads") || p.ends_with("HEAD")
+            });
+            if dominated_by_git {
+                if let Some(sync_msg) = build_branch_list_sync(&main_repo_clone) {
+                    let _ = app_clone.emit("branch-list-sync", ());
+                    if let Some(ws) = app_clone.try_state::<std::sync::Arc<WsBroadcaster>>() {
+                        ws.try_send(sync_msg);
                     }
                 }
             }

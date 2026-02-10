@@ -17,7 +17,11 @@ pub fn set_releash_base(repo_path: String, base: Option<String>) -> Result<(), G
     let mut config = repo.config()?;
     match base {
         Some(b) => config.set_str("releash.base", &b)?,
-        None => config.remove("releash.base")?,
+        None => match config.remove("releash.base") {
+            Ok(()) => {}
+            Err(e) if e.code() == git2::ErrorCode::NotFound => {}
+            Err(e) => return Err(e.into()),
+        },
     }
     Ok(())
 }

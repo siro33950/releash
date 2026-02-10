@@ -17,7 +17,6 @@ use crate::config::AppConfig;
 use crate::pty::PtyManager;
 use crate::ws_bridge::WsBroadcaster;
 
-
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StartServerResult {
     pub ip: String,
