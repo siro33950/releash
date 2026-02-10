@@ -14,7 +14,7 @@ pub(crate) mod worktree;
 pub(crate) use branch::get_current_branch;
 pub(crate) use commit::{git_commit, git_push};
 pub(crate) use diff::{get_file_at_ref, get_staged_content};
-pub(crate) use stage::{git_discard, git_stage, git_stage_hunk, git_unstage};
+pub(crate) use stage::{git_stage, git_stage_hunk, git_unstage};
 pub(crate) use status::get_git_status;
 pub(crate) use worktree::{get_main_repo_path, list_branches_with_status, list_worktrees};
 

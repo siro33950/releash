@@ -20,6 +20,12 @@ function App() {
 	const [mainRepoPath, setMainRepoPath] = useState<string | null>(null);
 
 	useEffect(() => {
+		const suppress = (e: MouseEvent) => e.preventDefault();
+		document.addEventListener("contextmenu", suppress);
+		return () => document.removeEventListener("contextmenu", suppress);
+	}, []);
+
+	useEffect(() => {
 		(async () => {
 			try {
 				const cwd = await invoke<string>("get_cwd");
