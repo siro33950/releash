@@ -456,7 +456,10 @@ mod tests {
 
         let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert!(after.is_empty());
-        assert_eq!(fs::read_to_string(dir.path().join("file.txt")).unwrap(), "original");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "original"
+        );
     }
 
     #[test]
@@ -500,7 +503,10 @@ mod tests {
         let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert!(after.is_empty());
         assert!(dir.path().join("file.txt").exists());
-        assert_eq!(fs::read_to_string(dir.path().join("file.txt")).unwrap(), "content");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "content"
+        );
     }
 
     #[test]
