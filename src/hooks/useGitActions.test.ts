@@ -68,6 +68,17 @@ describe("useGitActions", () => {
 		expect(output).toBe("Everything up-to-date");
 	});
 
+	it("discard should invoke git_discard with correct args", async () => {
+		mockInvoke.mockResolvedValue(undefined);
+		const { result } = renderHook(() => useGitActions());
+
+		await result.current.discard("/repo", ["file.txt"]);
+		expect(mockInvoke).toHaveBeenCalledWith("git_discard", {
+			repoPath: "/repo",
+			paths: ["file.txt"],
+		});
+	});
+
 	it("createBranch should invoke git_create_branch", async () => {
 		mockInvoke.mockResolvedValue(undefined);
 		const { result } = renderHook(() => useGitActions());
