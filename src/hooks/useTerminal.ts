@@ -24,8 +24,9 @@ interface GetOrSpawnPtyResult {
 }
 
 const terminalDarkTheme: ITheme = {
-	background: "#1a1a1a",
 	foreground: "#e0e0e0",
+	selectionBackground: "#264F78",
+	selectionInactiveBackground: "#3A3D41",
 	cursor: "#e0e0e0",
 	cursorAccent: "#1a1a1a",
 	black: "#1a1a1a",
@@ -47,8 +48,9 @@ const terminalDarkTheme: ITheme = {
 };
 
 const terminalLightTheme: ITheme = {
-	background: "#f8f8f8",
 	foreground: "#1a1a1a",
+	selectionBackground: "#ADD6FF",
+	selectionInactiveBackground: "#E5EBF1",
 	cursor: "#1a1a1a",
 	cursorAccent: "#f8f8f8",
 	black: "#1a1a1a",
@@ -69,8 +71,20 @@ const terminalLightTheme: ITheme = {
 	brightWhite: "#fafbfc",
 };
 
-function getTerminalTheme(theme?: Theme): ITheme {
-	return theme === "light" ? terminalLightTheme : terminalDarkTheme;
+function resolveTerminalBg(container: HTMLElement): string {
+	const bg = getComputedStyle(container).backgroundColor;
+	if (!bg || bg === "rgba(0, 0, 0, 0)" || bg === "transparent") {
+		return "#1a1a1a";
+	}
+	return bg;
+}
+
+function getTerminalTheme(
+	theme: Theme | undefined,
+	container: HTMLElement,
+): ITheme {
+	const base = theme === "light" ? terminalLightTheme : terminalDarkTheme;
+	return { ...base, background: resolveTerminalBg(container) };
 }
 
 export function useTerminal(
@@ -95,7 +109,7 @@ export function useTerminal(
 			cursorBlink: true,
 			fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 			fontSize: 14,
-			theme: getTerminalTheme(themeRef.current),
+			theme: getTerminalTheme(themeRef.current, container),
 		});
 
 		const fitAddon = new FitAddon();
@@ -199,9 +213,10 @@ export function useTerminal(
 
 	useEffect(() => {
 		const terminal = terminalRef.current;
-		if (!terminal) return;
-		terminal.options.theme = getTerminalTheme(theme);
-	}, [theme]);
+		const container = containerRef.current;
+		if (!terminal || !container) return;
+		terminal.options.theme = getTerminalTheme(theme, container);
+	}, [theme, containerRef]);
 
 	const writeToTerminal = useCallback((data: string) => {
 		if (ptyIdRef.current !== null) {
