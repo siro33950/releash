@@ -1,6 +1,7 @@
 import { loader } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
@@ -61,11 +62,18 @@ export function WorktreeView({
 
 	const [activeView, setActiveView] = useState<string>("explorer");
 	const { branch } = useCurrentBranch(rootPath);
+	const [ready, setReady] = useState(false);
 	const { comments, addComment, markAsSent } = useLineComments();
 	const { stageHunk, unstageHunk } = useGitActions();
 	const terminalRef = useRef<TerminalPanelHandle>(null);
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
 	const refreshGit = useCallback(() => setGitRefreshKey((k) => k + 1), []);
+
+	useEffect(() => {
+		if (branch != null) {
+			setReady(true);
+		}
+	}, [branch]);
 
 	const rootPathRef = useRef(rootPath);
 	rootPathRef.current = rootPath;
@@ -234,105 +242,116 @@ export function WorktreeView({
 		: null;
 
 	return (
-		<div className="flex flex-col h-screen w-screen overflow-hidden">
+		<div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
 			<div className="flex flex-1 overflow-hidden">
 				<ActivityBar
 					activeItem={activeView}
 					onItemClick={setActiveView}
 					onGoHome={onGoHome}
 				/>
-				<Group orientation="horizontal" className="flex-1">
-					{/* Sidebar */}
-					<Panel
-						id="sidebar"
-						defaultSize="15"
-						minSize={10}
-						maxSize="30"
-						collapsible={false}
-					>
-						{activeView === "git" ? (
-							<SourceControlPanel
+				{!ready ? (
+					<div className="flex-1 flex items-center justify-center">
+						<Loader2 className="size-6 text-muted-foreground animate-spin" />
+					</div>
+				) : (
+					<Group orientation="horizontal" className="flex-1">
+						{/* Sidebar */}
+						<Panel
+							id="sidebar"
+							defaultSize="15"
+							minSize={10}
+							maxSize="30"
+							collapsible={false}
+						>
+							{activeView === "git" ? (
+								<SourceControlPanel
+									rootPath={rootPath}
+									onSelectFile={openFile}
+									onGitChanged={refreshGit}
+									gitRefreshKey={gitRefreshKey}
+								/>
+							) : activeView === "search" ? (
+								<SearchPanel
+									rootPath={rootPath}
+									onSelectFileAtLine={handleSearchResultClick}
+									focusKey={searchFocusKey}
+								/>
+							) : activeView === "settings" ? (
+								<SettingsPanel
+									settings={settings}
+									onThemeChange={updateTheme}
+									onFontSizeChange={updateFontSize}
+									onDiffBaseChange={updateDefaultDiffBase}
+									onDiffModeChange={updateDefaultDiffMode}
+									onTerminalStartupCommandChange={updateTerminalStartupCommand}
+								/>
+							) : (
+								<SidebarPanel
+									rootPath={rootPath}
+									onOpenFolder={onGoHome}
+									onSelectFile={openFile}
+									onFileChange={reloadTabIfClean}
+									onRename={handleRename}
+									onDelete={handleDelete}
+								/>
+							)}
+						</Panel>
+
+						<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
+
+						{/* Editor */}
+						<Panel
+							id="editor"
+							defaultSize="55"
+							minSize={20}
+							collapsible={false}
+						>
+							<EditorPanel
+								tabs={tabs}
+								activeTab={activeTab}
+								onTabClick={setActiveTab}
+								onTabClose={handleTabClose}
+								diffBase={diffBase}
+								diffMode={diffMode}
+								onDiffBaseChange={setDiffBase}
+								onDiffModeChange={setDiffMode}
+								onContentChange={updateTabContent}
+								fontSize={settings.fontSize}
+								comments={comments}
+								onAddComment={addComment}
 								rootPath={rootPath}
-								onSelectFile={openFile}
-								onGitChanged={refreshGit}
+								onStageHunk={stageHunk}
+								onUnstageHunk={unstageHunk}
+								onSendToTerminal={handleSendToTerminal}
+								theme={settings.theme}
 								gitRefreshKey={gitRefreshKey}
+								onGitChanged={refreshGit}
+								externalRevealLine={pendingReveal}
+								onExternalRevealConsumed={() => setPendingReveal(null)}
+								onSearchOccurrences={handleSearchOccurrences}
 							/>
-						) : activeView === "search" ? (
-							<SearchPanel
-								rootPath={rootPath}
-								onSelectFileAtLine={handleSearchResultClick}
-								focusKey={searchFocusKey}
+						</Panel>
+
+						<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
+
+						{/* Terminal */}
+						<Panel
+							id="terminal"
+							defaultSize="30"
+							minSize={10}
+							maxSize="60"
+							collapsible={false}
+						>
+							<TerminalPanel
+								ref={terminalRef}
+								key={rootPath}
+								cwd={rootPath}
+								theme={settings.theme}
+								terminalStartupCommand={settings.terminalStartupCommand}
 							/>
-						) : activeView === "settings" ? (
-							<SettingsPanel
-								settings={settings}
-								onThemeChange={updateTheme}
-								onFontSizeChange={updateFontSize}
-								onDiffBaseChange={updateDefaultDiffBase}
-								onDiffModeChange={updateDefaultDiffMode}
-								onTerminalStartupCommandChange={updateTerminalStartupCommand}
-							/>
-						) : (
-							<SidebarPanel
-								rootPath={rootPath}
-								onOpenFolder={onGoHome}
-								onSelectFile={openFile}
-								onFileChange={reloadTabIfClean}
-								onRename={handleRename}
-								onDelete={handleDelete}
-							/>
-						)}
-					</Panel>
-
-					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
-
-					{/* Editor */}
-					<Panel id="editor" defaultSize="55" minSize={20} collapsible={false}>
-						<EditorPanel
-							tabs={tabs}
-							activeTab={activeTab}
-							onTabClick={setActiveTab}
-							onTabClose={handleTabClose}
-							diffBase={diffBase}
-							diffMode={diffMode}
-							onDiffBaseChange={setDiffBase}
-							onDiffModeChange={setDiffMode}
-							onContentChange={updateTabContent}
-							fontSize={settings.fontSize}
-							comments={comments}
-							onAddComment={addComment}
-							rootPath={rootPath}
-							onStageHunk={stageHunk}
-							onUnstageHunk={unstageHunk}
-							onSendToTerminal={handleSendToTerminal}
-							theme={settings.theme}
-							gitRefreshKey={gitRefreshKey}
-							onGitChanged={refreshGit}
-							externalRevealLine={pendingReveal}
-							onExternalRevealConsumed={() => setPendingReveal(null)}
-							onSearchOccurrences={handleSearchOccurrences}
-						/>
-					</Panel>
-
-					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
-
-					{/* Terminal */}
-					<Panel
-						id="terminal"
-						defaultSize="30"
-						minSize={10}
-						maxSize="60"
-						collapsible={false}
-					>
-						<TerminalPanel
-							ref={terminalRef}
-							key={rootPath}
-							cwd={rootPath}
-							theme={settings.theme}
-							terminalStartupCommand={settings.terminalStartupCommand}
-						/>
-					</Panel>
-				</Group>
+						</Panel>
+					</Group>
+				)}
 			</div>
 			<StatusBar
 				branch={branch ?? undefined}

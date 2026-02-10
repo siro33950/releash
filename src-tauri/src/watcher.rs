@@ -130,6 +130,9 @@ fn build_branch_list_sync(repo_path: &str) -> Option<WsMessage> {
             worktree_path: b.worktree_path,
             dirty_count: b.dirty_count,
             is_merged: b.is_merged,
+            has_pr: b.has_pr,
+            pr_number: b.pr_number,
+            pr_url: b.pr_url,
         })
         .collect();
     Some(WsMessage::BranchListSync(BranchListSync {

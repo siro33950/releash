@@ -134,28 +134,40 @@ pub fn get_server_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<Serv
 }
 
 #[tauri::command]
-pub fn update_server_port(
+pub async fn update_server_port(
     state: tauri::State<'_, Arc<AppConfig>>,
     port: u16,
 ) -> Result<(), String> {
-    let mut config = state
-        .config
-        .lock()
-        .map_err(|e| format!("ロック取得失敗: {e}"))?;
-    config.server.port = port;
-    write_config(&state.config_path, &config)?;
-    Ok(())
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.server.port = port;
+        write_config(&app_config.config_path, &config)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]
-pub fn regenerate_token(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
-    let mut config = state
-        .config
-        .lock()
-        .map_err(|e| format!("ロック取得失敗: {e}"))?;
-    config.server.token = generate_token();
-    write_config(&state.config_path, &config)?;
-    Ok(config.server.token.clone())
+pub async fn regenerate_token(
+    state: tauri::State<'_, Arc<AppConfig>>,
+) -> Result<String, String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.server.token = generate_token();
+        write_config(&app_config.config_path, &config)?;
+        Ok(config.server.token.clone())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[cfg(test)]

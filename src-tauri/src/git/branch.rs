@@ -3,7 +3,6 @@ use super::types::BranchInfo;
 use git2::{build::CheckoutBuilder, BranchType, Repository};
 use std::path::Path;
 
-#[tauri::command]
 pub fn list_branches(repo_path: String) -> Result<Vec<BranchInfo>, GitError> {
     let path = Path::new(&repo_path);
     let repo = Repository::discover(path)?;
@@ -45,7 +44,6 @@ pub fn list_branches(repo_path: String) -> Result<Vec<BranchInfo>, GitError> {
     Ok(result)
 }
 
-#[tauri::command]
 pub fn get_current_branch(repo_path: String) -> Result<String, GitError> {
     let repo = Repository::open(&repo_path)?;
 
@@ -68,7 +66,6 @@ pub fn get_current_branch(repo_path: String) -> Result<String, GitError> {
     }
 }
 
-#[tauri::command]
 pub fn git_create_branch(repo_path: String, branch_name: String) -> Result<(), GitError> {
     let repo = Repository::open(&repo_path)?;
 
@@ -91,7 +88,6 @@ pub(crate) fn detect_default_branch(repo: &Repository) -> Option<String> {
     None
 }
 
-#[tauri::command]
 pub fn get_default_branch(repo_path: String) -> Result<String, GitError> {
     let repo = Repository::open(&repo_path)?;
     detect_default_branch(&repo)

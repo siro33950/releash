@@ -470,6 +470,9 @@ mod tests {
                     is_locked: false,
                     dirty_count: 0,
                     base_branch: None,
+                    has_pr: false,
+                    pr_number: None,
+                    pr_url: None,
                 }],
             }),
             WsMessage::WorktreeSelectRequest(WorktreeSelectRequest {
@@ -487,6 +490,9 @@ mod tests {
                     worktree_path: Some("/repo-worktrees/feature-test".to_string()),
                     dirty_count: 2,
                     is_merged: false,
+                    has_pr: true,
+                    pr_number: Some(42),
+                    pr_url: Some("https://github.com/owner/repo/pull/42".to_string()),
                 }],
             }),
             WsMessage::Error(ErrorMsg {

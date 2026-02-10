@@ -3,7 +3,6 @@ use git2::{ErrorCode, Repository};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-#[tauri::command]
 pub fn git_commit(repo_path: String, message: String) -> Result<String, GitError> {
     let repo = Repository::open(&repo_path)?;
     let sig = repo.signature()?;
@@ -29,7 +28,6 @@ pub fn git_commit(repo_path: String, message: String) -> Result<String, GitError
 
 const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(60);
 
-#[tauri::command]
 pub fn git_push(repo_path: String) -> Result<String, GitError> {
     Repository::open(&repo_path)?;
 

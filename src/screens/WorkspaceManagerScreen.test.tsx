@@ -17,6 +17,10 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 	open: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock("@tauri-apps/plugin-opener", () => ({
+	openUrl: vi.fn(),
+}));
+
 vi.mock("@/components/panels/RemotePanel", () => ({
 	RemotePanel: () => <div data-testid="remote-panel">RemotePanel</div>,
 }));
@@ -30,6 +34,9 @@ const todoBranch: BranchCard = {
 	worktree_path: null,
 	dirty_count: 0,
 	is_merged: false,
+	has_pr: false,
+	pr_number: null,
+	pr_url: null,
 };
 
 const inProgressBranch: BranchCard = {
@@ -38,6 +45,9 @@ const inProgressBranch: BranchCard = {
 	worktree_path: "/tmp/worktrees/active",
 	dirty_count: 3,
 	is_merged: false,
+	has_pr: false,
+	pr_number: null,
+	pr_url: null,
 };
 
 const inProgressCleanBranch: BranchCard = {
@@ -46,6 +56,20 @@ const inProgressCleanBranch: BranchCard = {
 	worktree_path: "/tmp/worktrees/clean-active",
 	dirty_count: 0,
 	is_merged: false,
+	has_pr: false,
+	pr_number: null,
+	pr_url: null,
+};
+
+const reviewBranch: BranchCard = {
+	name: "feat/review-branch",
+	is_default: false,
+	worktree_path: "/tmp/worktrees/review",
+	dirty_count: 1,
+	is_merged: false,
+	has_pr: false,
+	pr_number: null,
+	pr_url: null,
 };
 
 const doneBranch: BranchCard = {
@@ -54,20 +78,41 @@ const doneBranch: BranchCard = {
 	worktree_path: null,
 	dirty_count: 0,
 	is_merged: true,
+	has_pr: false,
+	pr_number: null,
+	pr_url: null,
 };
 
 const allBranches: BranchCard[] = [
 	todoBranch,
 	inProgressBranch,
 	inProgressCleanBranch,
+	reviewBranch,
 	doneBranch,
 ];
 
-function setupMockInvoke(branches: BranchCard[] = allBranches) {
+import type { PrStatus } from "@/types/git";
+
+const defaultPrStatus: PrStatus = {
+	open_prs: {
+		"feat/review-branch": {
+			number: 42,
+			url: "https://github.com/owner/repo/pull/42",
+		},
+	},
+	merged_branches: [],
+};
+
+function setupMockInvoke(
+	branches: BranchCard[] = allBranches,
+	prStatus: PrStatus = defaultPrStatus,
+) {
 	mockInvoke.mockImplementation((cmd: string) => {
 		switch (cmd) {
 			case "list_branches_with_status":
 				return Promise.resolve(branches);
+			case "get_cached_pr_status":
+				return Promise.resolve(prStatus);
 			case "get_releash_base":
 				return Promise.resolve(null);
 			case "get_default_branch":
@@ -85,6 +130,7 @@ function renderScreen(repoPath: string | null = "/home/user/my-repo") {
 		<WorkspaceManagerScreen
 			repoPath={repoPath}
 			settings={DEFAULT_SETTINGS}
+			providerStatus="available"
 			onThemeChange={vi.fn()}
 			onFontSizeChange={vi.fn()}
 			onDiffBaseChange={vi.fn()}
@@ -121,6 +167,7 @@ describe("WorkspaceManagerScreen", () => {
 				expect(screen.getByText("Todo")).toBeInTheDocument();
 			});
 			expect(screen.getByText("In Progress")).toBeInTheDocument();
+			expect(screen.getByText("Review")).toBeInTheDocument();
 			expect(screen.getByText("Done")).toBeInTheDocument();
 		});
 
@@ -143,6 +190,8 @@ describe("WorkspaceManagerScreen", () => {
 				switch (cmd) {
 					case "list_branches_with_status":
 						return Promise.resolve(allBranches);
+					case "get_cached_pr_status":
+						return Promise.resolve(defaultPrStatus);
 					case "get_releash_base":
 						return Promise.resolve("develop");
 					default:
@@ -185,11 +234,57 @@ describe("WorkspaceManagerScreen", () => {
 			await waitFor(() => {
 				expect(screen.getByText("Todo")).toBeInTheDocument();
 			});
-			// Todo: 1, In Progress: 2, Done: 1
+			// Todo: 1, In Progress: 2, Review: 1, Done: 1
 			const counts = screen.getAllByText(/^[0-9]+$/);
 			const countValues = counts.map((el) => el.textContent);
-			expect(countValues).toContain("1"); // Todo or Done
+			expect(countValues).toContain("1"); // Todo, Review, or Done
 			expect(countValues).toContain("2"); // In Progress
+		});
+
+		it("PR enrichment 後にブランチが Review 列に表示", async () => {
+			renderScreen();
+			await waitFor(() => {
+				expect(screen.getByText("PR #42")).toBeInTheDocument();
+			});
+			expect(screen.getByText("Review")).toBeInTheDocument();
+		});
+
+		it("PRバッジが表示される", async () => {
+			renderScreen();
+			await waitFor(() => {
+				expect(screen.getByText("PR #42")).toBeInTheDocument();
+			});
+			const prBadge = screen.getByText("PR #42");
+			expect(prBadge.closest("button")).toBeInTheDocument();
+		});
+
+		it("is_merged が has_pr より優先される", async () => {
+			const mergedWithPr: BranchCard = {
+				name: "feat/merged-with-pr",
+				is_default: false,
+				worktree_path: null,
+				dirty_count: 0,
+				is_merged: true,
+				has_pr: false,
+				pr_number: null,
+				pr_url: null,
+			};
+			const prStatus: PrStatus = {
+				open_prs: {
+					"feat/merged-with-pr": {
+						number: 99,
+						url: "https://github.com/owner/repo/pull/99",
+					},
+				},
+				merged_branches: [],
+			};
+			setupMockInvoke([mergedWithPr], prStatus);
+			renderScreen();
+			await waitFor(() => {
+				expect(screen.getByText("feat/merged-with-pr")).toBeInTheDocument();
+			});
+			// is_merged=true なのでDone列にいるべき（PRがあってもis_mergedが優先）
+			expect(screen.getByText("merged")).toBeInTheDocument();
 		});
 
 		it("dirty_count=0 で worktree がある場合 clean と表示", async () => {
@@ -230,6 +325,8 @@ describe("WorkspaceManagerScreen", () => {
 				switch (cmd) {
 					case "list_branches_with_status":
 						return Promise.resolve(allBranches);
+					case "get_cached_pr_status":
+						return Promise.resolve(defaultPrStatus);
 					case "get_releash_base":
 						return Promise.resolve(null);
 					case "get_default_branch":
@@ -358,6 +455,8 @@ describe("WorkspaceManagerScreen", () => {
 				switch (cmd) {
 					case "list_branches_with_status":
 						return Promise.resolve([]);
+					case "get_cached_pr_status":
+						return Promise.resolve({ open_prs: {}, merged_branches: [] });
 					case "get_releash_base":
 						return Promise.reject(new Error("config error"));
 					default:
@@ -408,12 +507,20 @@ describe("WorkspaceManagerScreen", () => {
 					worktree_path: null,
 					dirty_count: 0,
 					is_merged: false,
+					has_pr: false,
+					pr_number: null,
+					pr_url: null,
 				},
 			];
 			mockInvoke.mockImplementation((cmd: string) => {
 				switch (cmd) {
 					case "list_branches_with_status":
 						return Promise.resolve(updatedBranches);
+					case "get_cached_pr_status":
+						return Promise.resolve({
+							open_prs: {},
+							merged_branches: [],
+						});
 					case "get_releash_base":
 						return Promise.resolve(null);
 					case "get_default_branch":

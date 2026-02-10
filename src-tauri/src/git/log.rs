@@ -2,7 +2,6 @@ use super::error::GitError;
 use super::types::CommitInfo;
 use git2::{Repository, Sort};
 
-#[tauri::command]
 pub fn get_git_log(repo_path: String, limit: Option<usize>) -> Result<Vec<CommitInfo>, GitError> {
     let repo = Repository::open(&repo_path)?;
     let limit = limit.unwrap_or(50);

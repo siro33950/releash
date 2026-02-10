@@ -29,8 +29,7 @@ pub struct DefinitionLocation {
     pub kind: String,
 }
 
-#[tauri::command]
-pub fn search_files(
+fn search_files_inner(
     root_path: String,
     pattern: String,
     case_sensitive: Option<bool>,
@@ -112,6 +111,21 @@ pub fn search_files(
     })
 }
 
+#[tauri::command]
+pub async fn search_files(
+    root_path: String,
+    pattern: String,
+    case_sensitive: Option<bool>,
+    is_regex: Option<bool>,
+    max_results: Option<usize>,
+) -> Result<SearchResult, String> {
+    tokio::task::spawn_blocking(move || {
+        search_files_inner(root_path, pattern, case_sensitive, is_regex, max_results)
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
 fn get_definition_patterns(language: &str) -> Vec<(&'static str, String)> {
     match language {
         "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => {
@@ -183,8 +197,7 @@ fn language_extensions(language: &str) -> Vec<&'static str> {
     }
 }
 
-#[tauri::command]
-pub fn find_definition(
+fn find_definition_inner(
     root_path: String,
     symbol: String,
     language: String,
@@ -253,7 +266,17 @@ pub fn find_definition(
 }
 
 #[tauri::command]
-pub fn find_references(root_path: String, symbol: String) -> Result<Vec<SearchMatch>, String> {
+pub async fn find_definition(
+    root_path: String,
+    symbol: String,
+    language: String,
+) -> Result<Vec<DefinitionLocation>, String> {
+    tokio::task::spawn_blocking(move || find_definition_inner(root_path, symbol, language))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
+}
+
+fn find_references_inner(root_path: String, symbol: String) -> Result<Vec<SearchMatch>, String> {
     let escaped = regex::escape(&symbol);
     let pattern = format!(r"\b{}\b", escaped);
     let re = Regex::new(&pattern).map_err(|e| format!("Invalid pattern: {}", e))?;
@@ -299,6 +322,16 @@ pub fn find_references(root_path: String, symbol: String) -> Result<Vec<SearchMa
     }
 
     Ok(results)
+}
+
+#[tauri::command]
+pub async fn find_references(
+    root_path: String,
+    symbol: String,
+) -> Result<Vec<SearchMatch>, String> {
+    tokio::task::spawn_blocking(move || find_references_inner(root_path, symbol))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[cfg(test)]
@@ -347,7 +380,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = search_files(root, "greet".to_string(), None, None, None).unwrap();
+        let result = search_files_inner(root, "greet".to_string(), None, None, None).unwrap();
         assert!(result.matches.len() >= 3);
         assert!(!result.truncated);
     }
@@ -357,7 +390,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = search_files(root, "GREET".to_string(), Some(false), None, None).unwrap();
+        let result = search_files_inner(root, "GREET".to_string(), Some(false), None, None).unwrap();
         assert!(result.matches.len() >= 3);
     }
 
@@ -366,7 +399,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = search_files(root, "GREET".to_string(), Some(true), None, None).unwrap();
+        let result = search_files_inner(root, "GREET".to_string(), Some(true), None, None).unwrap();
         assert_eq!(result.matches.len(), 0);
     }
 
@@ -375,7 +408,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = search_files(root, r"greet\(".to_string(), None, Some(true), None).unwrap();
+        let result = search_files_inner(root, r"greet\(".to_string(), None, Some(true), None).unwrap();
         assert!(result.matches.len() >= 2);
     }
 
@@ -384,7 +417,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = search_files(root, "module.exports".to_string(), None, None, None).unwrap();
+        let result = search_files_inner(root, "module.exports".to_string(), None, None, None).unwrap();
         assert_eq!(result.matches.len(), 0);
     }
 
@@ -393,7 +426,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = search_files(root, "greet".to_string(), None, None, Some(1)).unwrap();
+        let result = search_files_inner(root, "greet".to_string(), None, None, Some(1)).unwrap();
         assert_eq!(result.matches.len(), 1);
         assert!(result.truncated);
         assert!(result.total_matches > 1);
@@ -404,7 +437,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = find_definition(root, "greet".to_string(), "typescript".to_string()).unwrap();
+        let result = find_definition_inner(root, "greet".to_string(), "typescript".to_string()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].kind, "function");
         assert_eq!(result[0].line_number, 1);
@@ -416,11 +449,11 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = find_definition(root.clone(), "main".to_string(), "rust".to_string()).unwrap();
+        let result = find_definition_inner(root.clone(), "main".to_string(), "rust".to_string()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].kind, "function");
 
-        let result = find_definition(root, "App".to_string(), "rust".to_string()).unwrap();
+        let result = find_definition_inner(root, "App".to_string(), "rust".to_string()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].kind, "struct");
     }
@@ -430,7 +463,7 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = find_references(root, "greet".to_string()).unwrap();
+        let result = find_references_inner(root, "greet".to_string()).unwrap();
         assert!(result.len() >= 3);
     }
 }

@@ -6,7 +6,6 @@ use git2::{
 };
 use std::path::{Path, PathBuf};
 
-#[tauri::command]
 pub fn get_main_repo_path(any_path: String) -> Result<String, GitError> {
     let path = Path::new(&any_path);
     let repo = Repository::discover(path)?;
@@ -38,7 +37,6 @@ pub fn get_main_repo_path(any_path: String) -> Result<String, GitError> {
         .to_string())
 }
 
-#[tauri::command]
 pub fn get_worktree_dirty_count(worktree_path: String) -> Result<u32, GitError> {
     let repo = Repository::open(&worktree_path)?;
 
@@ -77,7 +75,7 @@ fn get_dirty_count_for_path(path: &Path) -> u32 {
     match Repository::open(path) {
         Ok(repo) => {
             let mut opts = StatusOptions::new();
-            opts.include_untracked(true).recurse_untracked_dirs(true);
+            opts.include_untracked(true);
             match repo.statuses(Some(&mut opts)) {
                 Ok(statuses) => statuses
                     .iter()
@@ -96,7 +94,6 @@ fn resolve_main_repo_path(repo: &Repository) -> Result<PathBuf, GitError> {
         .ok_or_else(|| GitError::Custom("bare repository".to_string()))
 }
 
-#[tauri::command]
 pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, GitError> {
     let repo = Repository::open(&repo_path)?;
     let main_workdir = resolve_main_repo_path(&repo)?;
@@ -180,7 +177,6 @@ pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, GitError>
     Ok(entries)
 }
 
-#[tauri::command]
 pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, GitError> {
     let repo = Repository::open(&repo_path)?;
     let default_branch = detect_default_branch(&repo);
@@ -284,13 +280,15 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
             worktree_path,
             dirty_count,
             is_merged,
+            has_pr: false,
+            pr_number: None,
+            pr_url: None,
         });
     }
 
     Ok(cards)
 }
 
-#[tauri::command]
 pub fn create_worktree(
     repo_path: String,
     worktree_path: String,
@@ -367,7 +365,6 @@ pub fn create_worktree(
     })
 }
 
-#[tauri::command]
 pub fn remove_worktree(
     repo_path: String,
     worktree_path: String,

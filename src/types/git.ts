@@ -25,6 +25,26 @@ export interface BranchCard {
 	worktree_path: string | null;
 	dirty_count: number;
 	is_merged: boolean;
+	has_pr: boolean;
+	pr_number: number | null;
+	pr_url: string | null;
+}
+
+export type ProviderStatus =
+	| "available"
+	| { cli_not_found: { cli: string } }
+	| "not_authenticated"
+	| "unsupported_platform"
+	| "no_remote";
+
+export interface PrInfo {
+	number: number;
+	url: string;
+}
+
+export interface PrStatus {
+	open_prs: Record<string, PrInfo>;
+	merged_branches: string[];
 }
 
 export interface CommitInfo {

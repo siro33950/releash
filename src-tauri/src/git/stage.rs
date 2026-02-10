@@ -3,7 +3,6 @@ use git2::{build::CheckoutBuilder, ErrorCode, Repository, StatusOptions};
 use std::path::Path;
 use std::process::Command;
 
-#[tauri::command]
 pub fn git_stage(repo_path: String, paths: Vec<String>) -> Result<(), GitError> {
     let repo = Repository::open(&repo_path)?;
     let mut index = repo.index()?;
@@ -51,7 +50,6 @@ pub fn git_stage(repo_path: String, paths: Vec<String>) -> Result<(), GitError> 
     Ok(())
 }
 
-#[tauri::command]
 pub fn git_unstage(repo_path: String, paths: Vec<String>) -> Result<(), GitError> {
     let repo = Repository::open(&repo_path)?;
 
@@ -102,7 +100,6 @@ pub fn git_unstage(repo_path: String, paths: Vec<String>) -> Result<(), GitError
     Ok(())
 }
 
-#[tauri::command]
 pub fn git_stage_hunk(repo_path: String, patch: String) -> Result<(), GitError> {
     Repository::open(&repo_path)?;
 
@@ -138,7 +135,6 @@ pub fn git_stage_hunk(repo_path: String, patch: String) -> Result<(), GitError> 
     }
 }
 
-#[tauri::command]
 pub fn git_unstage_hunk(repo_path: String, patch: String) -> Result<(), GitError> {
     Repository::open(&repo_path)?;
 
@@ -174,7 +170,6 @@ pub fn git_unstage_hunk(repo_path: String, patch: String) -> Result<(), GitError
     }
 }
 
-#[tauri::command]
 pub fn git_discard(repo_path: String, paths: Vec<String>) -> Result<(), GitError> {
     let repo = Repository::open(&repo_path)?;
     let workdir = repo

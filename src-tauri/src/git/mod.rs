@@ -2,6 +2,7 @@ pub mod error;
 pub mod types;
 
 pub(crate) mod branch;
+pub(crate) mod commands;
 pub(crate) mod commit;
 pub(crate) mod config;
 pub(crate) mod diff;

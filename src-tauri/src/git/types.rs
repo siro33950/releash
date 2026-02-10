@@ -41,4 +41,7 @@ pub struct BranchCard {
     pub worktree_path: Option<String>,
     pub dirty_count: usize,
     pub is_merged: bool,
+    pub has_pr: bool,
+    pub pr_number: Option<u64>,
+    pub pr_url: Option<String>,
 }
