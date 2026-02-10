@@ -179,6 +179,20 @@ export interface WorktreeSelectResponse {
 	error?: string;
 }
 
+// --- ブランチリスト同期 ---
+
+export interface BranchCardMsg {
+	name: string;
+	is_default: boolean;
+	worktree_path: string | null;
+	dirty_count: number;
+	is_merged: boolean;
+}
+
+export interface BranchListSync {
+	branches: BranchCardMsg[];
+}
+
 // --- 制御 ---
 
 export interface ErrorMsg {
@@ -221,6 +235,7 @@ export type WsMessage =
 	| { type: "worktree_list_response"; payload: WorktreeListResponse }
 	| { type: "worktree_select_request"; payload: WorktreeSelectRequest }
 	| { type: "worktree_select_response"; payload: WorktreeSelectResponse }
+	| { type: "branch_list_sync"; payload: BranchListSync }
 	| { type: "error"; payload: ErrorMsg };
 
 export type WsMessageType = WsMessage["type"];

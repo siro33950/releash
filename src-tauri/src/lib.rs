@@ -13,26 +13,8 @@ mod ws_server;
 
 use std::sync::Arc;
 
-use config::{
-    get_server_config, load_or_create_config, regenerate_token, update_server_port, AppConfig,
-};
-use git::{
-    create_worktree, get_current_branch, get_cwd, get_default_branch, get_file_at_ref, get_git_log,
-    get_git_status, get_main_repo_path, get_releash_base, get_repo_git_dir, get_staged_content,
-    get_worktree_dirty_count, git_commit, git_create_branch, git_push, git_stage, git_stage_hunk,
-    git_unstage, git_unstage_hunk, list_branches, list_branches_with_status, list_worktrees,
-    remove_worktree, set_releash_base,
-};
-use pty::{
-    get_or_spawn_pty, kill_pty, kill_ptys_by_worktree, list_pty_sessions, resize_pty, spawn_pty,
-    write_pty, PtyManager,
-};
-use qr_code::get_connection_qr;
-use search::{find_definition, find_references, search_files};
+use config::{load_or_create_config, AppConfig};
 use tauri::Manager;
-use vpn_detect::{detect_vpn_tunnel, get_network_info};
-use watcher::{start_watching, stop_watching, FileWatcherManager};
-use ws_server::{broadcast_comments, get_server_status, start_server, stop_server, WsServerHandle};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -40,10 +22,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(Arc::new(PtyManager::default()))
-        .manage(FileWatcherManager::default())
+        .manage(Arc::new(pty::PtyManager::default()))
+        .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))
-        .manage(WsServerHandle::default())
+        .manage(ws_server::WsServerHandle::default())
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -55,52 +37,66 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            spawn_pty,
-            write_pty,
-            resize_pty,
-            kill_pty,
-            list_pty_sessions,
-            get_or_spawn_pty,
-            kill_ptys_by_worktree,
-            start_watching,
-            stop_watching,
-            get_file_at_ref,
-            get_staged_content,
-            list_branches,
-            get_repo_git_dir,
-            get_git_status,
-            get_git_log,
-            get_current_branch,
-            git_stage,
-            git_unstage,
-            git_stage_hunk,
-            git_unstage_hunk,
-            git_commit,
-            git_push,
-            git_create_branch,
-            search_files,
-            find_definition,
-            find_references,
-            get_server_config,
-            update_server_port,
-            regenerate_token,
-            detect_vpn_tunnel,
-            get_network_info,
-            get_connection_qr,
-            start_server,
-            stop_server,
-            get_server_status,
-            broadcast_comments,
-            get_main_repo_path,
-            get_worktree_dirty_count,
-            list_worktrees,
-            list_branches_with_status,
-            create_worktree,
-            remove_worktree,
-            get_cwd,
-            get_default_branch,
-            get_releash_base,
-            set_releash_base
+            // PTY
+            pty::spawn_pty,
+            pty::write_pty,
+            pty::resize_pty,
+            pty::kill_pty,
+            pty::list_pty_sessions,
+            pty::get_or_spawn_pty,
+            pty::kill_ptys_by_worktree,
+            // ファイル監視
+            watcher::start_watching,
+            watcher::start_git_dir_watching,
+            watcher::stop_watching,
+            // Git: diff/content
+            git::diff::get_file_at_ref,
+            git::diff::get_staged_content,
+            // Git: ブランチ
+            git::branch::list_branches,
+            git::branch::get_current_branch,
+            git::branch::get_default_branch,
+            git::branch::git_create_branch,
+            // Git: ステータス
+            git::status::get_git_status,
+            git::log::get_git_log,
+            // Git: ステージング
+            git::stage::git_stage,
+            git::stage::git_unstage,
+            git::stage::git_stage_hunk,
+            git::stage::git_unstage_hunk,
+            // Git: コミット・プッシュ
+            git::commit::git_commit,
+            git::commit::git_push,
+            // Git: ワークツリー
+            git::worktree::get_main_repo_path,
+            git::worktree::get_worktree_dirty_count,
+            git::worktree::list_worktrees,
+            git::worktree::list_branches_with_status,
+            git::worktree::create_worktree,
+            git::worktree::remove_worktree,
+            // Git: 設定・ユーティリティ
+            git::util::get_cwd,
+            git::util::get_repo_git_dir,
+            git::config::get_releash_base,
+            git::config::set_releash_base,
+            // 検索
+            search::search_files,
+            search::find_definition,
+            search::find_references,
+            // アプリ設定
+            config::get_server_config,
+            config::update_server_port,
+            config::regenerate_token,
+            // ネットワーク
+            vpn_detect::detect_vpn_tunnel,
+            vpn_detect::get_network_info,
+            qr_code::get_connection_qr,
+            // WebSocket サーバー
+            ws_server::commands::start_server,
+            ws_server::commands::stop_server,
+            ws_server::commands::get_server_status,
+            ws_server::commands::broadcast_comments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -443,3 +443,66 @@ pub fn kill_ptys_by_worktree(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_pty_id_is_monotonically_increasing() {
+        let id1 = generate_pty_id();
+        let id2 = generate_pty_id();
+        let id3 = generate_pty_id();
+        assert!(id2 > id1);
+        assert!(id3 > id2);
+    }
+
+    #[test]
+    fn test_generate_pty_id_uniqueness() {
+        let ids: Vec<u64> = (0..100).map(|_| generate_pty_id()).collect();
+        let unique: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        assert_eq!(ids.len(), unique.len());
+    }
+
+    #[test]
+    fn test_pty_manager_default() {
+        let pm = PtyManager::default();
+        assert!(pm.sessions.lock().is_empty());
+    }
+
+    #[test]
+    fn test_list_pty_sessions_empty() {
+        let pm = PtyManager::default();
+        let sessions = pm.list_pty_sessions();
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn test_write_nonexistent_pty_returns_error() {
+        let pm = PtyManager::default();
+        let result = pm.write(99999, "hello");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_resize_nonexistent_pty_returns_error() {
+        let pm = PtyManager::default();
+        let result = pm.resize(99999, 24, 80);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_get_pty_size_nonexistent_returns_error() {
+        let pm = PtyManager::default();
+        let result = pm.get_pty_size(99999);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_output_buffer_capacity_value() {
+        assert_eq!(OUTPUT_BUFFER_CAPACITY, 64 * 1024);
+    }
+}

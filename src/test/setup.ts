@@ -35,6 +35,7 @@ vi.mock("@xterm/xterm", () => {
 			loadAddon = vi.fn();
 			open = vi.fn();
 			write = vi.fn();
+			refresh = vi.fn();
 			onData = vi.fn().mockReturnValue({ dispose: vi.fn() });
 			dispose = vi.fn();
 			options: Record<string, unknown> = {};
