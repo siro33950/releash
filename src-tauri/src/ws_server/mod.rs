@@ -76,6 +76,7 @@ pub(crate) struct WsServerState {
 }
 
 impl WsServerState {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         remote_dir: Option<PathBuf>,
         broadcaster: Arc<WsBroadcaster>,

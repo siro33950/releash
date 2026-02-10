@@ -9,6 +9,7 @@ use super::http::start_ws_server;
 use super::{StartServerResult, WsServerHandle, WsServerState};
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_server(
     root_path: String,
     bind_ip: String,
