@@ -16,12 +16,8 @@ pub(super) async fn route_message(
         WsMessage::PtyInput(input) => handle_pty_input(input, state),
         WsMessage::PtyResize(_) => None,
         WsMessage::GitStatusRequest(_) => handle_git_status_request(selected_worktree).await,
-        WsMessage::FileContentRequest(req) => {
-            handle_file_content_req(req, selected_worktree).await
-        }
-        WsMessage::GitStage(req) => {
-            handle_git_stage_request(req, state, selected_worktree).await
-        }
+        WsMessage::FileContentRequest(req) => handle_file_content_req(req, selected_worktree).await,
+        WsMessage::GitStage(req) => handle_git_stage_request(req, state, selected_worktree).await,
         WsMessage::GitUnstage(req) => {
             handle_git_unstage_request(req, state, selected_worktree).await
         }

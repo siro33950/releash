@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use tauri::Emitter;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
-use tauri::Emitter;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::protocol::*;

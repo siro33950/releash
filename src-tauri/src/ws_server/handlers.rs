@@ -356,18 +356,14 @@ pub(super) async fn handle_git_commit_request(
 ) -> Option<WsMessage> {
     let message = req.message.clone();
     let broadcaster = state.broadcaster.clone();
-    with_worktree_blocking(selected_worktree, move |repo_path| {
-        match crate::git::git_commit(repo_path.clone(), message) {
+    with_worktree_blocking(
+        selected_worktree,
+        move |repo_path| match crate::git::git_commit(repo_path.clone(), message) {
             Ok(hash) => {
                 broadcast_git_status_sync(&broadcaster, &repo_path);
-                let branch =
-                    crate::git::get_current_branch(repo_path.clone()).unwrap_or_default();
-                broadcaster.try_send(WsMessage::BranchInfoResponse(
-                    BranchInfoResponse { branch },
-                ));
-                if let Ok(cards) =
-                    crate::git::list_branches_with_status(repo_path)
-                {
+                let branch = crate::git::get_current_branch(repo_path.clone()).unwrap_or_default();
+                broadcaster.try_send(WsMessage::BranchInfoResponse(BranchInfoResponse { branch }));
+                if let Ok(cards) = crate::git::list_branches_with_status(repo_path) {
                     let branch_msgs = cards
                         .into_iter()
                         .map(|b| BranchCardMsg {
@@ -378,11 +374,9 @@ pub(super) async fn handle_git_commit_request(
                             is_merged: b.is_merged,
                         })
                         .collect();
-                    broadcaster.try_send(WsMessage::BranchListSync(
-                        BranchListSync {
-                            branches: branch_msgs,
-                        },
-                    ));
+                    broadcaster.try_send(WsMessage::BranchListSync(BranchListSync {
+                        branches: branch_msgs,
+                    }));
                 }
                 WsMessage::GitCommitResult(GitCommitResult {
                     success: true,
@@ -395,8 +389,8 @@ pub(super) async fn handle_git_commit_request(
                 hash: None,
                 error: Some(e.to_string()),
             }),
-        }
-    })
+        },
+    )
     .await
 }
 
@@ -496,9 +490,7 @@ pub(super) async fn handle_worktree_select_request(
 
     let wt_path = requested_path.clone();
     let wt_path2 = requested_path.clone();
-    if let Ok(files) =
-        tokio::task::spawn_blocking(move || git_status_to_msg_list(&wt_path)).await
-    {
+    if let Ok(files) = tokio::task::spawn_blocking(move || git_status_to_msg_list(&wt_path)).await {
         broadcaster.try_send(WsMessage::GitStatusSync(GitStatusSync { files }));
     }
     if let Ok(branch) = tokio::task::spawn_blocking(move || {

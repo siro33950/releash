@@ -20,9 +20,7 @@ pub fn get_main_repo_path(any_path: String) -> Result<String, GitError> {
             let commondir = commondir.canonicalize()?;
             let main_workdir = commondir
                 .parent()
-                .ok_or_else(|| {
-                    GitError::Custom("cannot determine main repo path".to_string())
-                })?;
+                .ok_or_else(|| GitError::Custom("cannot determine main repo path".to_string()))?;
             return Ok(main_workdir
                 .to_str()
                 .ok_or_else(|| GitError::Custom("invalid path encoding".to_string()))?
@@ -399,8 +397,7 @@ pub fn remove_worktree(
         }
     }
 
-    let wt_name = found_name
-        .ok_or_else(|| GitError::Custom("worktree not found".to_string()))?;
+    let wt_name = found_name.ok_or_else(|| GitError::Custom("worktree not found".to_string()))?;
     let wt = repo.find_worktree(&wt_name)?;
 
     let is_locked =
@@ -436,7 +433,7 @@ pub fn remove_worktree(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::branch::{get_current_branch, detect_default_branch};
+    use crate::git::branch::{detect_default_branch, get_current_branch};
     use crate::git::config::set_releash_base;
     use crate::git::test_helpers::*;
     use git2::build::CheckoutBuilder;
@@ -761,7 +758,10 @@ mod tests {
             false,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("uncommitted change"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("uncommitted change"));
         assert!(wt_path.exists());
     }
 

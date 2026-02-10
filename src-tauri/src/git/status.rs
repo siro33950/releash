@@ -144,15 +144,8 @@ mod tests {
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
         let parent = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            "add gitignore",
-            &tree,
-            &[&parent],
-        )
-        .unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add gitignore", &tree, &[&parent])
+            .unwrap();
 
         fs::write(dir.path().join("ignored.txt"), "should be ignored").unwrap();
         fs::create_dir(dir.path().join("build")).unwrap();
