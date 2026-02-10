@@ -27,18 +27,23 @@ export interface TerminalPanelProps {
 	cwd?: string | null;
 	theme?: Theme;
 	terminalStartupCommand?: string;
+	sessionKey?: string;
 }
 
 export const TerminalPanel = forwardRef<
 	TerminalPanelHandle,
 	TerminalPanelProps
->(function TerminalPanel({ cwd, theme, terminalStartupCommand }, ref) {
+>(function TerminalPanel(
+	{ cwd, theme, terminalStartupCommand, sessionKey },
+	ref,
+) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const { terminalRef, writeToTerminal } = useTerminal(
 		containerRef,
 		cwd,
 		theme,
 		terminalStartupCommand,
+		sessionKey,
 	);
 	const [isDragOver, setIsDragOver] = useState(false);
 

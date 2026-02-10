@@ -585,6 +585,8 @@ export function EditorPanel({
 						comments={comments ?? []}
 						onCommentClick={handleCommentClick}
 						onSendToTerminal={onSendToTerminal}
+						cwd={rootPath}
+						theme={theme}
 					/>
 				</Panel>
 			</Group>
