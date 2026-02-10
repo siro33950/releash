@@ -117,6 +117,22 @@ pub fn get_server_status(handle: tauri::State<'_, WsServerHandle>) -> bool {
     *handle.running.lock()
 }
 
+#[derive(serde::Serialize)]
+pub struct ServerInfo {
+    pub running: bool,
+    pub bound_ip: Option<String>,
+    pub connection_mode: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_server_info(handle: tauri::State<'_, WsServerHandle>) -> ServerInfo {
+    ServerInfo {
+        running: handle.is_running(),
+        bound_ip: handle.active_bind(),
+        connection_mode: handle.connection_mode(),
+    }
+}
+
 #[tauri::command]
 pub fn broadcast_comments(
     comments: crate::protocol::CommentSync,

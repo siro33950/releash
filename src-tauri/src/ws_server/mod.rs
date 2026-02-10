@@ -51,6 +51,14 @@ impl WsServerHandle {
     pub fn is_tls_enabled(&self) -> bool {
         *self.tls_enabled.lock()
     }
+
+    pub fn connection_mode(&self) -> Option<String> {
+        self.connection_mode.lock().clone()
+    }
+
+    pub fn is_running(&self) -> bool {
+        *self.running.lock()
+    }
 }
 
 pub(crate) struct WsServerState {

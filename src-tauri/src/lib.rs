@@ -96,6 +96,7 @@ pub fn run() {
             ws_server::commands::start_server,
             ws_server::commands::stop_server,
             ws_server::commands::get_server_status,
+            ws_server::commands::get_server_info,
             ws_server::commands::broadcast_comments,
         ])
         .run(tauri::generate_context!())
