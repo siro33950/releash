@@ -7,6 +7,7 @@ export interface SettingsPanelProps {
 	onFontSizeChange: (size: number) => void;
 	onDiffBaseChange: (base: DiffBase) => void;
 	onDiffModeChange: (mode: DiffMode) => void;
+	onTerminalStartupCommandChange: (command: string) => void;
 }
 
 export function SettingsPanel({
@@ -15,6 +16,7 @@ export function SettingsPanel({
 	onFontSizeChange,
 	onDiffBaseChange,
 	onDiffModeChange,
+	onTerminalStartupCommandChange,
 }: SettingsPanelProps) {
 	return (
 		<div className="h-full flex flex-col bg-sidebar">
@@ -102,6 +104,26 @@ export function SettingsPanel({
 							<span>12px</span>
 							<span>24px</span>
 						</div>
+					</div>
+
+					<div className="flex flex-col gap-1.5">
+						<label
+							htmlFor="terminal-startup-cmd"
+							className="text-xs font-medium text-muted-foreground"
+						>
+							Terminal Startup Command
+						</label>
+						<textarea
+							id="terminal-startup-cmd"
+							value={settings.terminalStartupCommand}
+							onChange={(e) => onTerminalStartupCommandChange(e.target.value)}
+							placeholder="e.g. nvm use 18 && clear"
+							rows={3}
+							className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+						/>
+						<p className="text-[10px] text-muted-foreground">
+							Command to run when a new terminal is opened.
+						</p>
 					</div>
 				</div>
 			</ScrollArea>

@@ -23,6 +23,7 @@ describe("WorktreeView", () => {
 				updateFontSize={vi.fn()}
 				updateDefaultDiffBase={vi.fn()}
 				updateDefaultDiffMode={vi.fn()}
+				updateTerminalStartupCommand={vi.fn()}
 				onGoHome={vi.fn()}
 			/>,
 		);

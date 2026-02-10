@@ -34,6 +34,7 @@ describe("TerminalPanel", () => {
 			expect.objectContaining({ current: expect.any(HTMLDivElement) }),
 			undefined,
 			undefined,
+			undefined,
 		);
 	});
 });

@@ -14,28 +14,41 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RemotePanel } from "@/components/panels/RemotePanel";
 import { Button } from "@/components/ui/button";
-import { BaseBranchDialog } from "@/components/workspace/BaseBranchDialog";
 import { CreateWorktreeDialog } from "@/components/workspace/CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "@/components/workspace/DeleteWorktreeDialog";
 import { KanbanColumn } from "@/components/workspace/KanbanColumn";
+import { SettingsDialog } from "@/components/workspace/SettingsDialog";
 import { BranchCard as BranchCardComponent } from "@/components/workspace/WorktreeCard";
 import type { BranchCard, WorktreeEntry } from "@/types/git";
+import type { AppSettings, DiffBase, DiffMode, Theme } from "@/types/settings";
 
 interface WorkspaceManagerScreenProps {
 	repoPath: string | null;
+	settings: AppSettings;
+	onThemeChange: (theme: Theme) => void;
+	onFontSizeChange: (size: number) => void;
+	onDiffBaseChange: (base: DiffBase) => void;
+	onDiffModeChange: (mode: DiffMode) => void;
+	onTerminalStartupCommandChange: (command: string) => void;
 	onSelectWorktree: (path: string) => void;
 	onChangeRepo: (path: string | null) => void;
 }
 
 export function WorkspaceManagerScreen({
 	repoPath,
+	settings,
+	onThemeChange,
+	onFontSizeChange,
+	onDiffBaseChange,
+	onDiffModeChange,
+	onTerminalStartupCommandChange,
 	onSelectWorktree,
 	onChangeRepo,
 }: WorkspaceManagerScreenProps) {
 	const [branches, setBranches] = useState<BranchCard[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [showCreate, setShowCreate] = useState(false);
-	const [showBaseBranch, setShowBaseBranch] = useState(false);
+	const [showSettings, setShowSettings] = useState(false);
 	const [showRemote, setShowRemote] = useState(false);
 	const [deletingBranch, setDeletingBranch] = useState<BranchCard | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
@@ -155,7 +168,6 @@ export function WorkspaceManagerScreen({
 	);
 
 	const handleBaseBranchSaved = useCallback(() => {
-		setShowBaseBranch(false);
 		refreshBaseBranch();
 		refresh();
 	}, [refreshBaseBranch, refresh]);
@@ -238,7 +250,7 @@ export function WorkspaceManagerScreen({
 					<Button
 						size="sm"
 						variant="ghost"
-						onClick={() => setShowBaseBranch(true)}
+						onClick={() => setShowSettings(true)}
 					>
 						<Settings className="size-4" />
 					</Button>
@@ -307,11 +319,17 @@ export function WorkspaceManagerScreen({
 
 			{/* Dialogs */}
 			{repoPath && (
-				<BaseBranchDialog
-					open={showBaseBranch}
+				<SettingsDialog
+					open={showSettings}
 					repoPath={repoPath}
-					onSaved={handleBaseBranchSaved}
-					onCancel={() => setShowBaseBranch(false)}
+					settings={settings}
+					onThemeChange={onThemeChange}
+					onFontSizeChange={onFontSizeChange}
+					onDiffBaseChange={onDiffBaseChange}
+					onDiffModeChange={onDiffModeChange}
+					onTerminalStartupCommandChange={onTerminalStartupCommandChange}
+					onBaseBranchSaved={handleBaseBranchSaved}
+					onClose={() => setShowSettings(false)}
 				/>
 			)}
 			{repoPath && (

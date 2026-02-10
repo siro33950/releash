@@ -64,11 +64,19 @@ export function useSettings() {
 		setSettings((prev) => ({ ...prev, defaultDiffMode }));
 	}, []);
 
+	const updateTerminalStartupCommand = useCallback(
+		(terminalStartupCommand: string) => {
+			setSettings((prev) => ({ ...prev, terminalStartupCommand }));
+		},
+		[],
+	);
+
 	return {
 		settings,
 		updateTheme,
 		updateFontSize,
 		updateDefaultDiffBase,
 		updateDefaultDiffMode,
+		updateTerminalStartupCommand,
 	};
 }

@@ -91,6 +91,7 @@ export function useTerminal(
 	containerRef: RefObject<HTMLDivElement | null>,
 	cwd?: string | null,
 	theme?: Theme,
+	terminalStartupCommand?: string,
 ) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
@@ -98,6 +99,8 @@ export function useTerminal(
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
 	const themeRef = useRef(theme);
 	themeRef.current = theme;
+	const startupCommandRef = useRef(terminalStartupCommand);
+	startupCommandRef.current = terminalStartupCommand;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -170,6 +173,19 @@ export function useTerminal(
 
 			// 5. Set ptyId (from here, real-time output starts flowing)
 			ptyIdRef.current = result.pty_id;
+
+			// 6. Send startup command for newly created PTY
+			if (result.is_new && startupCommandRef.current) {
+				const cmd = startupCommandRef.current.trim();
+				if (cmd) {
+					invoke("write_pty", {
+						ptyId: result.pty_id,
+						data: `${cmd}\n`,
+					}).catch((error) => {
+						console.error("Failed to send startup command:", error);
+					});
+				}
+			}
 		};
 
 		initPty().catch((error) => {
