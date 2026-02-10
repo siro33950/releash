@@ -1,6 +1,7 @@
 use super::error::GitError;
 use git2::{ErrorCode, Repository};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[tauri::command]
 pub fn git_commit(repo_path: String, message: String) -> Result<String, GitError> {
@@ -26,15 +27,43 @@ pub fn git_commit(repo_path: String, message: String) -> Result<String, GitError
     Ok(oid.to_string())
 }
 
+const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(60);
+
 #[tauri::command]
 pub fn git_push(repo_path: String) -> Result<String, GitError> {
     Repository::open(&repo_path)?;
 
-    let output = Command::new("git")
+    let mut child = Command::new("git")
         .args(["push", "-u", "origin", "HEAD"])
         .current_dir(&repo_path)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| GitError::Custom(format!("Failed to execute git push: {e}")))?;
+
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if start.elapsed() > GIT_PUSH_TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(GitError::Custom(
+                        "git push がタイムアウトしました (60秒)".to_string(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => {
+                return Err(GitError::Custom(format!("git push の監視に失敗: {e}")));
+            }
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| GitError::Custom(format!("Failed to read git push output: {e}")))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

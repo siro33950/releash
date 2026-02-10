@@ -25,6 +25,15 @@ pub(super) fn validate_relative_path(path: &str, repo_root: &str) -> Result<Path
     if !resolved.starts_with(&root) {
         return Err("プロジェクトルート外のパスは拒否されます".to_string());
     }
+    if resolved.exists() {
+        let canonical = resolved.canonicalize().map_err(|e| e.to_string())?;
+        if !canonical.starts_with(&root) {
+            return Err(
+                "シンボリックリンクによるプロジェクトルート外へのアクセスは拒否されます"
+                    .to_string(),
+            );
+        }
+    }
     Ok(resolved)
 }
 
@@ -101,6 +110,18 @@ mod tests {
         let patch = "--- /dev/null\n+++ b/new_file.rs\n";
         let result = validate_patch_paths(patch, dir.path().to_str().unwrap());
         assert!(result.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_validate_relative_path_rejects_symlink_traversal() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("inner")).unwrap();
+        std::os::unix::fs::symlink("/etc", dir.path().join("inner/secret_link")).unwrap();
+        let result =
+            validate_relative_path("inner/secret_link/passwd", dir.path().to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("シンボリックリンク"));
     }
 
     #[test]
