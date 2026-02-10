@@ -9,6 +9,7 @@ describe("SettingsPanel", () => {
 		fontSize: 14,
 		defaultDiffBase: "staged",
 		defaultDiffMode: "inline",
+		terminalStartupCommand: "",
 	};
 
 	const defaultProps = {
@@ -17,6 +18,7 @@ describe("SettingsPanel", () => {
 		onFontSizeChange: vi.fn(),
 		onDiffBaseChange: vi.fn(),
 		onDiffModeChange: vi.fn(),
+		onTerminalStartupCommandChange: vi.fn(),
 	};
 
 	it("should render Settings header", () => {
