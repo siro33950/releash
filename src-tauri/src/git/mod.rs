@@ -1,28 +1,22 @@
 pub mod error;
 pub mod types;
 
-mod branch;
-mod commit;
-mod config;
-mod diff;
-mod log;
-mod stage;
+pub(crate) mod branch;
+pub(crate) mod commit;
+pub(crate) mod config;
+pub(crate) mod diff;
+pub(crate) mod log;
+pub(crate) mod stage;
 pub(crate) mod status;
-mod util;
-mod worktree;
+pub(crate) mod util;
+pub(crate) mod worktree;
 
-pub use branch::{get_current_branch, get_default_branch, git_create_branch, list_branches};
-pub use commit::{git_commit, git_push};
-pub use config::{get_releash_base, set_releash_base};
-pub use diff::{get_file_at_ref, get_staged_content};
-pub use log::get_git_log;
-pub use stage::{git_stage, git_stage_hunk, git_unstage, git_unstage_hunk};
-pub use status::get_git_status;
-pub use util::{get_cwd, get_repo_git_dir};
-pub use worktree::{
-    create_worktree, get_main_repo_path, get_worktree_dirty_count, list_branches_with_status,
-    list_worktrees, remove_worktree,
-};
+pub(crate) use branch::get_current_branch;
+pub(crate) use commit::{git_commit, git_push};
+pub(crate) use diff::{get_file_at_ref, get_staged_content};
+pub(crate) use stage::{git_stage, git_stage_hunk, git_unstage};
+pub(crate) use status::get_git_status;
+pub(crate) use worktree::{get_main_repo_path, list_branches_with_status, list_worktrees};
 
 #[cfg(test)]
 pub(crate) mod test_helpers {

@@ -1,5 +1,5 @@
 mod auth;
-mod commands;
+pub(crate) mod commands;
 mod handlers;
 mod http;
 mod rate_limit;
@@ -17,7 +17,6 @@ use crate::config::AppConfig;
 use crate::pty::PtyManager;
 use crate::ws_bridge::WsBroadcaster;
 
-pub use commands::{broadcast_comments, get_server_status, start_server, stop_server};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StartServerResult {
