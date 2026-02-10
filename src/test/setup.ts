@@ -29,6 +29,12 @@ vi.mock("@tauri-apps/api/event", () => ({
 	listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
+vi.mock("@tauri-apps/api/webview", () => ({
+	getCurrentWebview: vi.fn().mockReturnValue({
+		onDragDropEvent: vi.fn().mockResolvedValue(() => {}),
+	}),
+}));
+
 vi.mock("@xterm/xterm", () => {
 	return {
 		Terminal: class MockTerminal {
