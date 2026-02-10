@@ -69,7 +69,18 @@ describe("useTerminal", () => {
 		mockUnlistenOutput = vi.fn();
 		mockUnlistenExit = vi.fn();
 
-		mockInvoke.mockResolvedValue(1);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") {
+				return Promise.resolve({
+					pty_id: 1,
+					buffered_output: "",
+					is_new: true,
+					is_exited: false,
+					exit_code: null,
+				});
+			}
+			return Promise.resolve();
+		});
 		mockListen
 			.mockResolvedValueOnce(mockUnlistenOutput)
 			.mockResolvedValueOnce(mockUnlistenExit);
@@ -85,14 +96,15 @@ describe("useTerminal", () => {
 		);
 	});
 
-	it("spawn_pty が正しい引数で呼び出される", async () => {
+	it("get_or_spawn_pty が正しい引数で呼び出される", async () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("spawn_pty", {
+			expect(mockInvoke).toHaveBeenCalledWith("get_or_spawn_pty", {
 				rows: 24,
 				cols: 80,
 				cwd: null,
+				worktreePath: "",
 			});
 		});
 	});
@@ -113,7 +125,10 @@ describe("useTerminal", () => {
 		renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("spawn_pty", expect.any(Object));
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
 		});
 
 		mockOnDataCallback("test input");
@@ -124,18 +139,21 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("アンマウント時にクリーンアップが実行される", async () => {
+	it("アンマウント時にクリーンアップが実行される（kill_pty は呼ばれない）", async () => {
 		const { unmount } = renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("spawn_pty", expect.any(Object));
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
 		});
 
 		unmount();
 
 		expect(mockUnlistenOutput).toHaveBeenCalled();
 		expect(mockUnlistenExit).toHaveBeenCalled();
-		expect(mockInvoke).toHaveBeenCalledWith("kill_pty", { ptyId: 1 });
+		expect(mockInvoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
 		expect(mockTerminalInstance.dispose).toHaveBeenCalled();
 	});
 

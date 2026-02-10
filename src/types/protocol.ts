@@ -48,6 +48,17 @@ export interface PtyOutputRequest {
 	pty_id: number;
 }
 
+export interface PtySpawnRequest {
+	cols: number;
+	rows: number;
+}
+
+export interface PtySpawnResponse {
+	success: boolean;
+	pty_id?: number;
+	error?: string;
+}
+
 // --- ファイル・Diff ---
 
 export interface GitStatusSync {
@@ -91,6 +102,32 @@ export interface GitStageHunk {
 	patch: string;
 }
 
+// --- Git Commit / Push / BranchInfo ---
+
+export interface GitCommitRequest {
+	message: string;
+}
+
+export interface GitCommitResult {
+	success: boolean;
+	hash?: string;
+	error?: string;
+}
+
+export type GitPushRequest = Record<string, never>;
+
+export interface GitPushResult {
+	success: boolean;
+	output?: string;
+	error?: string;
+}
+
+export type BranchInfoRequest = Record<string, never>;
+
+export interface BranchInfoResponse {
+	branch: string;
+}
+
 // --- コメント ---
 
 export interface AddComment {
@@ -114,6 +151,34 @@ export interface CommentSync {
 	comments: CommentItem[];
 }
 
+// --- Worktree ---
+
+export type WorktreeListRequest = Record<string, never>;
+
+export interface WorktreeEntryMsg {
+	name: string;
+	path: string;
+	branch: string;
+	is_main: boolean;
+	is_locked: boolean;
+	dirty_count: number;
+	base_branch: string | null;
+}
+
+export interface WorktreeListResponse {
+	worktrees: WorktreeEntryMsg[];
+}
+
+export interface WorktreeSelectRequest {
+	path: string;
+}
+
+export interface WorktreeSelectResponse {
+	success: boolean;
+	path: string;
+	error?: string;
+}
+
 // --- 制御 ---
 
 export interface ErrorMsg {
@@ -133,6 +198,8 @@ export type WsMessage =
 	| { type: "pty_resize"; payload: PtyResize }
 	| { type: "pty_ready"; payload: PtyReady }
 	| { type: "pty_output_request"; payload: PtyOutputRequest }
+	| { type: "pty_spawn_request"; payload: PtySpawnRequest }
+	| { type: "pty_spawn_response"; payload: PtySpawnResponse }
 	| { type: "git_status_sync"; payload: GitStatusSync }
 	| { type: "file_content_request"; payload: FileContentRequest }
 	| { type: "file_content_response"; payload: FileContentResponse }
@@ -141,9 +208,19 @@ export type WsMessage =
 	| { type: "git_unstage"; payload: GitUnstage }
 	| { type: "git_stage_result"; payload: GitStageResult }
 	| { type: "git_stage_hunk"; payload: GitStageHunk }
+	| { type: "git_commit_request"; payload: GitCommitRequest }
+	| { type: "git_commit_result"; payload: GitCommitResult }
+	| { type: "git_push_request"; payload: GitPushRequest }
+	| { type: "git_push_result"; payload: GitPushResult }
+	| { type: "branch_info_request"; payload: BranchInfoRequest }
+	| { type: "branch_info_response"; payload: BranchInfoResponse }
 	| { type: "git_status_request"; payload: Record<string, never> }
 	| { type: "add_comment"; payload: AddComment }
 	| { type: "comments_sync"; payload: CommentSync }
+	| { type: "worktree_list_request"; payload: WorktreeListRequest }
+	| { type: "worktree_list_response"; payload: WorktreeListResponse }
+	| { type: "worktree_select_request"; payload: WorktreeSelectRequest }
+	| { type: "worktree_select_response"; payload: WorktreeSelectResponse }
 	| { type: "error"; payload: ErrorMsg };
 
 export type WsMessageType = WsMessage["type"];

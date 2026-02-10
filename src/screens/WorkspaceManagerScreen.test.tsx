@@ -1,0 +1,27 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { WorkspaceManagerScreen } from "./WorkspaceManagerScreen";
+
+describe("WorkspaceManagerScreen", () => {
+	it("renders open-folder button when repoPath is null", () => {
+		render(
+			<WorkspaceManagerScreen
+				repoPath={null}
+				onSelectWorktree={vi.fn()}
+				onChangeRepo={vi.fn()}
+			/>,
+		);
+		expect(screen.getByText("Open Folder")).toBeInTheDocument();
+	});
+
+	it("renders repo name when repoPath is set", () => {
+		render(
+			<WorkspaceManagerScreen
+				repoPath="/home/user/my-repo"
+				onSelectWorktree={vi.fn()}
+				onChangeRepo={vi.fn()}
+			/>,
+		);
+		expect(screen.getByText("my-repo")).toBeInTheDocument();
+	});
+});

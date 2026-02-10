@@ -1,13 +1,16 @@
 import {
+	ArrowUpFromLine,
+	Check,
 	ChevronDown,
 	ChevronRight,
+	Loader2,
 	Minus,
 	Pencil,
 	Plus,
 	RefreshCw,
 	X,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { GitFileStatus } from "@/types/git";
 
 function statusColor(status: string): string {
@@ -149,6 +152,12 @@ interface RemoteSourceControlProps {
 	onSelectFile: (path: string) => void;
 	onStage: (paths: string[]) => void;
 	onUnstage: (paths: string[]) => void;
+	onCommit: (message: string) => void;
+	onPush: () => void;
+	committing: boolean;
+	pushing: boolean;
+	pushResult: string | null;
+	onClearPushResult: () => void;
 	error: string | null;
 	onClearError: () => void;
 	onNavigateToDiff?: () => void;
@@ -162,12 +171,33 @@ export function RemoteSourceControl({
 	onSelectFile,
 	onStage,
 	onUnstage,
+	onCommit,
+	onPush,
+	committing,
+	pushing,
+	pushResult,
+	onClearPushResult,
 	error,
 	onClearError,
 	onNavigateToDiff,
 	onRefresh,
 }: RemoteSourceControlProps) {
 	const totalChanges = stagedFiles.length + changedFiles.length;
+	const [commitMessage, setCommitMessage] = useState("");
+
+	const prevCommittingRef = useRef(false);
+
+	useEffect(() => {
+		if (prevCommittingRef.current && !committing && !error) {
+			setCommitMessage("");
+		}
+		prevCommittingRef.current = committing;
+	}, [committing, error]);
+
+	const handleCommit = useCallback(() => {
+		if (!commitMessage.trim() || committing) return;
+		onCommit(commitMessage.trim());
+	}, [commitMessage, committing, onCommit]);
 
 	const handleSelectFile = useCallback(
 		(path: string) => {
@@ -263,6 +293,60 @@ export function RemoteSourceControl({
 					<div className="px-3 py-4 text-sm text-neutral-500">No changes</div>
 				)}
 			</div>
+
+			<div className="px-3 py-2 border-t border-neutral-800 shrink-0">
+				<textarea
+					value={commitMessage}
+					onChange={(e) => setCommitMessage(e.target.value)}
+					placeholder="Commit message..."
+					rows={2}
+					className="w-full px-2 py-1.5 text-sm bg-neutral-800 text-neutral-200 border border-neutral-700 rounded resize-none outline-none focus:border-blue-500 placeholder:text-neutral-500"
+				/>
+				<div className="flex gap-2 mt-1.5">
+					<button
+						type="button"
+						disabled={
+							!commitMessage.trim() || stagedFiles.length === 0 || committing
+						}
+						className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-green-700 hover:bg-green-600 text-green-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+						onClick={handleCommit}
+					>
+						{committing ? (
+							<Loader2 className="h-3.5 w-3.5 animate-spin" />
+						) : (
+							<Check className="h-3.5 w-3.5" />
+						)}
+						{committing ? "Committing..." : "Commit"}
+					</button>
+					<button
+						type="button"
+						disabled={pushing}
+						className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-blue-700 hover:bg-blue-600 text-blue-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+						onClick={onPush}
+					>
+						{pushing ? (
+							<Loader2 className="h-3.5 w-3.5 animate-spin" />
+						) : (
+							<ArrowUpFromLine className="h-3.5 w-3.5" />
+						)}
+						{pushing ? "Pushing..." : "Push"}
+					</button>
+				</div>
+			</div>
+
+			{pushResult && (
+				<div className="flex items-start gap-1 px-3 py-2 text-green-400 text-xs border-t border-neutral-800">
+					<span className="flex-1 break-all">{pushResult}</span>
+					<button
+						type="button"
+						className="shrink-0"
+						aria-label="閉じる"
+						onClick={onClearPushResult}
+					>
+						<X className="h-3 w-3" />
+					</button>
+				</div>
+			)}
 
 			{error && (
 				<div className="flex items-start gap-1 px-3 py-2 text-red-400 text-xs border-t border-neutral-800">

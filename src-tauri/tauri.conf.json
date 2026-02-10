@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "identifier": "com.releash.app",
   "build": {
-    "beforeDevCommand": "pnpm build:pwa && pnpm dev",
+    "beforeDevCommand": "pnpm build:remote && pnpm dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
@@ -25,7 +25,7 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/pwa/"
+      "resources/remote/"
     ],
     "icon": [
       "icons/32x32.png",

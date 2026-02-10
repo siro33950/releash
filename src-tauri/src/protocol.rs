@@ -126,6 +126,42 @@ pub struct GitStageHunk {
     pub patch: String,
 }
 
+// --- Git Commit / Push / BranchInfo ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCommitRequest {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCommitResult {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitPushRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitPushResult {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchInfoRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchInfoResponse {
+    pub branch: String,
+}
+
 // --- コメント ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +188,58 @@ pub struct CommentItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentSync {
     pub comments: Vec<CommentItem>,
+}
+
+// --- Worktree ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeListRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeEntryMsg {
+    pub name: String,
+    pub path: String,
+    pub branch: String,
+    pub is_main: bool,
+    pub is_locked: bool,
+    pub dirty_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeListResponse {
+    pub worktrees: Vec<WorktreeEntryMsg>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeSelectRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeSelectResponse {
+    pub success: bool,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// --- PTYスポーン ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtySpawnRequest {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtySpawnResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pty_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // --- 制御 ---
@@ -210,12 +298,40 @@ pub enum WsMessage {
     GitStageResult(GitStageResult),
     #[serde(rename = "git_stage_hunk")]
     GitStageHunk(GitStageHunk),
+    #[serde(rename = "git_commit_request")]
+    GitCommitRequest(GitCommitRequest),
+    #[serde(rename = "git_commit_result")]
+    GitCommitResult(GitCommitResult),
+    #[serde(rename = "git_push_request")]
+    GitPushRequest(GitPushRequest),
+    #[serde(rename = "git_push_result")]
+    GitPushResult(GitPushResult),
+    #[serde(rename = "branch_info_request")]
+    BranchInfoRequest(BranchInfoRequest),
+    #[serde(rename = "branch_info_response")]
+    BranchInfoResponse(BranchInfoResponse),
 
     // コメント
     #[serde(rename = "add_comment")]
     AddComment(AddComment),
     #[serde(rename = "comments_sync")]
     CommentsSync(CommentSync),
+
+    // PTYスポーン
+    #[serde(rename = "pty_spawn_request")]
+    PtySpawnRequest(PtySpawnRequest),
+    #[serde(rename = "pty_spawn_response")]
+    PtySpawnResponse(PtySpawnResponse),
+
+    // Worktree
+    #[serde(rename = "worktree_list_request")]
+    WorktreeListRequest(WorktreeListRequest),
+    #[serde(rename = "worktree_list_response")]
+    WorktreeListResponse(WorktreeListResponse),
+    #[serde(rename = "worktree_select_request")]
+    WorktreeSelectRequest(WorktreeSelectRequest),
+    #[serde(rename = "worktree_select_response")]
+    WorktreeSelectResponse(WorktreeSelectResponse),
 
     // 制御
     #[serde(rename = "error")]
@@ -533,6 +649,24 @@ mod tests {
             WsMessage::GitStageHunk(GitStageHunk {
                 patch: "p".to_string(),
             }),
+            WsMessage::GitCommitRequest(GitCommitRequest {
+                message: "msg".to_string(),
+            }),
+            WsMessage::GitCommitResult(GitCommitResult {
+                success: true,
+                hash: Some("abc123".to_string()),
+                error: None,
+            }),
+            WsMessage::GitPushRequest(GitPushRequest {}),
+            WsMessage::GitPushResult(GitPushResult {
+                success: true,
+                output: Some("ok".to_string()),
+                error: None,
+            }),
+            WsMessage::BranchInfoRequest(BranchInfoRequest {}),
+            WsMessage::BranchInfoResponse(BranchInfoResponse {
+                branch: "main".to_string(),
+            }),
             WsMessage::AddComment(AddComment {
                 file_path: "src/main.rs".to_string(),
                 line_number: 10,
@@ -549,6 +683,32 @@ mod tests {
                     status: "unsent".to_string(),
                     created_at: 1234567890.0,
                 }],
+            }),
+            WsMessage::PtySpawnRequest(PtySpawnRequest { cols: 80, rows: 24 }),
+            WsMessage::PtySpawnResponse(PtySpawnResponse {
+                success: true,
+                pty_id: Some(1),
+                error: None,
+            }),
+            WsMessage::WorktreeListRequest(WorktreeListRequest {}),
+            WsMessage::WorktreeListResponse(WorktreeListResponse {
+                worktrees: vec![WorktreeEntryMsg {
+                    name: "main".to_string(),
+                    path: "/repo".to_string(),
+                    branch: "main".to_string(),
+                    is_main: true,
+                    is_locked: false,
+                    dirty_count: 0,
+                    base_branch: None,
+                }],
+            }),
+            WsMessage::WorktreeSelectRequest(WorktreeSelectRequest {
+                path: "/repo".to_string(),
+            }),
+            WsMessage::WorktreeSelectResponse(WorktreeSelectResponse {
+                success: true,
+                path: "/repo".to_string(),
+                error: None,
             }),
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),

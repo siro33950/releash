@@ -1,7 +1,19 @@
-use git2::{build::CheckoutBuilder, BranchType, ErrorCode, Repository, Sort, StatusOptions};
+use git2::{
+    build::CheckoutBuilder, BranchType, ErrorCode, Repository, Sort, StatusOptions,
+    WorktreeAddOptions, WorktreePruneOptions,
+};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[tauri::command]
+pub fn get_cwd() -> Result<String, String> {
+    std::env::current_dir()
+        .map_err(|e| e.to_string())?
+        .to_str()
+        .ok_or_else(|| "invalid path encoding".to_string())
+        .map(|s| s.to_string())
+}
 
 #[tauri::command]
 pub fn get_file_at_ref(file_path: String, git_ref: String) -> Result<String, String> {
@@ -69,24 +81,56 @@ pub fn get_staged_content(file_path: String) -> Result<String, String> {
     Ok(content)
 }
 
+#[derive(Serialize, Debug, Clone)]
+pub struct BranchInfo {
+    pub name: String,
+    pub is_remote: bool,
+}
+
 #[tauri::command]
-pub fn list_branches(file_path: String) -> Result<Vec<String>, String> {
-    let path = Path::new(&file_path);
+pub fn list_branches(repo_path: String) -> Result<Vec<BranchInfo>, String> {
+    let path = Path::new(&repo_path);
     let repo = Repository::discover(path).map_err(|e| e.message().to_string())?;
 
-    let branches = repo
+    let mut result = Vec::new();
+    let mut local_names = std::collections::HashSet::new();
+
+    let local_branches = repo
         .branches(Some(BranchType::Local))
         .map_err(|e| e.message().to_string())?;
-
-    let mut names = Vec::new();
-    for branch in branches {
+    for branch in local_branches {
         let (branch, _) = branch.map_err(|e| e.message().to_string())?;
         if let Some(name) = branch.name().map_err(|e| e.message().to_string())? {
-            names.push(name.to_string());
+            local_names.insert(name.to_string());
+            result.push(BranchInfo {
+                name: name.to_string(),
+                is_remote: false,
+            });
         }
     }
 
-    Ok(names)
+    let remote_branches = repo
+        .branches(Some(BranchType::Remote))
+        .map_err(|e| e.message().to_string())?;
+    for branch in remote_branches {
+        let (branch, _) = branch.map_err(|e| e.message().to_string())?;
+        if let Some(full_name) = branch.name().map_err(|e| e.message().to_string())? {
+            // "origin/branch-name" → "branch-name"
+            let short = full_name
+                .split_once('/')
+                .map(|(_, b)| b)
+                .unwrap_or(full_name);
+            if short == "HEAD" || local_names.contains(short) {
+                continue;
+            }
+            result.push(BranchInfo {
+                name: short.to_string(),
+                is_remote: true,
+            });
+        }
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -501,6 +545,512 @@ pub fn git_create_branch(repo_path: String, branch_name: String) -> Result<(), S
 
     repo.checkout_head(Some(CheckoutBuilder::new().safe()))
         .map_err(|e| e.message().to_string())?;
+
+    Ok(())
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct WorktreeEntry {
+    pub name: String,
+    pub path: String,
+    pub branch: String,
+    pub is_main: bool,
+    pub is_locked: bool,
+    pub dirty_count: u32,
+    pub base_branch: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_main_repo_path(any_path: String) -> Result<String, String> {
+    let path = Path::new(&any_path);
+    let repo = Repository::discover(path).map_err(|e| e.message().to_string())?;
+
+    if repo.is_worktree() {
+        let git_dir = repo.path();
+        // worktree の .git ディレクトリ内に commondir ファイルがある
+        let commondir_file = git_dir.join("commondir");
+        if commondir_file.exists() {
+            let content = std::fs::read_to_string(&commondir_file).map_err(|e| e.to_string())?;
+            let commondir = git_dir.join(content.trim());
+            let commondir = commondir.canonicalize().map_err(|e| e.to_string())?;
+            // commondir は .git ディレクトリを指す → 親がメインリポジトリ
+            let main_workdir = commondir
+                .parent()
+                .ok_or_else(|| "cannot determine main repo path".to_string())?;
+            return Ok(main_workdir
+                .to_str()
+                .ok_or("invalid path encoding")?
+                .to_string());
+        }
+    }
+
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| "bare repository".to_string())?;
+    Ok(workdir
+        .to_str()
+        .ok_or_else(|| "invalid path encoding".to_string())?
+        .trim_end_matches('/')
+        .to_string())
+}
+
+#[tauri::command]
+pub fn get_worktree_dirty_count(worktree_path: String) -> Result<u32, String> {
+    let repo = Repository::open(&worktree_path).map_err(|e| e.message().to_string())?;
+
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(true);
+
+    let statuses = repo
+        .statuses(Some(&mut opts))
+        .map_err(|e| e.message().to_string())?;
+
+    let count = statuses
+        .iter()
+        .filter(|entry| !entry.status().contains(git2::Status::IGNORED))
+        .count() as u32;
+
+    Ok(count)
+}
+
+fn get_branch_name_for_repo(repo: &Repository) -> String {
+    match repo.head() {
+        Ok(head) => {
+            if head.is_branch() {
+                head.shorthand().unwrap_or("HEAD").to_string()
+            } else {
+                let oid = head.target().map(|o| o.to_string());
+                match oid {
+                    Some(h) => format!("({})", &h[..7.min(h.len())]),
+                    None => "HEAD".to_string(),
+                }
+            }
+        }
+        Err(e) if e.code() == ErrorCode::UnbornBranch => "(no commits)".to_string(),
+        Err(_) => "unknown".to_string(),
+    }
+}
+
+fn get_dirty_count_for_path(path: &Path) -> u32 {
+    match Repository::open(path) {
+        Ok(repo) => {
+            let mut opts = StatusOptions::new();
+            opts.include_untracked(true).recurse_untracked_dirs(true);
+            match repo.statuses(Some(&mut opts)) {
+                Ok(statuses) => statuses
+                    .iter()
+                    .filter(|entry| !entry.status().contains(git2::Status::IGNORED))
+                    .count() as u32,
+                Err(_) => 0,
+            }
+        }
+        Err(_) => 0,
+    }
+}
+
+fn resolve_main_repo_path(repo: &Repository) -> Result<PathBuf, String> {
+    repo.workdir()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "bare repository".to_string())
+}
+
+#[tauri::command]
+pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+    let main_workdir = resolve_main_repo_path(&repo)?;
+    let mut entries = Vec::new();
+
+    // メインworktreeを手動追加
+    let main_branch = get_branch_name_for_repo(&repo);
+    let main_dirty = get_dirty_count_for_path(&main_workdir);
+    let main_name = main_workdir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("main")
+        .to_string();
+
+    // メインworktreeの base_branch を config から読み取り
+    let main_base = repo.config().ok().and_then(|cfg| {
+        cfg.get_string(&format!("branch.{}.releash-base", main_branch))
+            .ok()
+    });
+
+    entries.push(WorktreeEntry {
+        name: main_name,
+        path: main_workdir
+            .to_str()
+            .ok_or("invalid path encoding")?
+            .trim_end_matches('/')
+            .to_string(),
+        branch: main_branch,
+        is_main: true,
+        is_locked: false,
+        dirty_count: main_dirty,
+        base_branch: main_base,
+    });
+
+    // linked worktrees
+    let wt_names = repo.worktrees().map_err(|e| e.message().to_string())?;
+    for i in 0..wt_names.len() {
+        let wt_name = match wt_names.get(i) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        let wt = match repo.find_worktree(&wt_name) {
+            Ok(wt) => wt,
+            Err(_) => continue,
+        };
+
+        if wt.validate().is_err() {
+            continue;
+        }
+
+        let wt_path = wt.path();
+        let is_locked =
+            matches!(wt.is_locked(), Ok(s) if !matches!(s, git2::WorktreeLockStatus::Unlocked));
+
+        let (branch, dirty_count, base_branch) = match Repository::open(wt_path) {
+            Ok(wt_repo) => {
+                let branch = get_branch_name_for_repo(&wt_repo);
+                let dirty = get_dirty_count_for_path(wt_path);
+                let base = wt_repo.config().ok().and_then(|cfg| {
+                    cfg.get_string(&format!("branch.{}.releash-base", branch))
+                        .ok()
+                });
+                (branch, dirty, base)
+            }
+            Err(_) => ("unknown".to_string(), 0, None),
+        };
+
+        entries.push(WorktreeEntry {
+            name: wt_name,
+            path: wt_path
+                .to_str()
+                .ok_or("invalid path encoding")?
+                .trim_end_matches('/')
+                .to_string(),
+            branch,
+            is_main: false,
+            is_locked,
+            dirty_count,
+            base_branch,
+        });
+    }
+
+    Ok(entries)
+}
+
+#[derive(Serialize)]
+pub struct BranchCard {
+    pub name: String,
+    pub is_default: bool,
+    pub worktree_path: Option<String>,
+    pub dirty_count: usize,
+    pub is_merged: bool,
+}
+
+fn detect_default_branch(repo: &Repository) -> Option<String> {
+    for name in &["main", "master"] {
+        if repo.find_branch(name, BranchType::Local).is_ok() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn get_default_branch(repo_path: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+    detect_default_branch(&repo).ok_or_else(|| "no default branch found".to_string())
+}
+
+#[tauri::command]
+pub fn get_releash_base(repo_path: String) -> Result<Option<String>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+    let base = repo
+        .config()
+        .ok()
+        .and_then(|cfg| cfg.get_string("releash.base").ok());
+    Ok(base)
+}
+
+#[tauri::command]
+pub fn set_releash_base(repo_path: String, base: Option<String>) -> Result<(), String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+    let mut config = repo.config().map_err(|e| e.message().to_string())?;
+    match base {
+        Some(b) => config
+            .set_str("releash.base", &b)
+            .map_err(|e| e.message().to_string())?,
+        None => config
+            .remove("releash.base")
+            .map_err(|e| e.message().to_string())?,
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+    let default_branch = detect_default_branch(&repo);
+
+    let default_oid = default_branch.as_ref().and_then(|name| {
+        repo.find_branch(name, BranchType::Local)
+            .ok()?
+            .get()
+            .target()
+    });
+
+    // worktree ブランチ→パスのマップを構築
+    let mut wt_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    // メインworktreeのブランチ
+    let main_branch = get_branch_name_for_repo(&repo);
+    if let Some(workdir) = repo.workdir() {
+        wt_map.insert(
+            main_branch.clone(),
+            workdir
+                .to_str()
+                .unwrap_or("")
+                .trim_end_matches('/')
+                .to_string(),
+        );
+    }
+
+    // linked worktrees
+    if let Ok(wt_names) = repo.worktrees() {
+        for i in 0..wt_names.len() {
+            let wt_name = match wt_names.get(i) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+            let wt = match repo.find_worktree(&wt_name) {
+                Ok(wt) => wt,
+                Err(_) => continue,
+            };
+            if wt.validate().is_err() {
+                continue;
+            }
+            let wt_path = wt.path();
+            if let Ok(wt_repo) = Repository::open(wt_path) {
+                let branch = get_branch_name_for_repo(&wt_repo);
+                wt_map.insert(
+                    branch,
+                    wt_path
+                        .to_str()
+                        .unwrap_or("")
+                        .trim_end_matches('/')
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    // 全ローカルブランチを取得
+    let local_branches = repo
+        .branches(Some(BranchType::Local))
+        .map_err(|e| e.message().to_string())?;
+
+    let base_target_oid = repo
+        .config()
+        .ok()
+        .and_then(|cfg| cfg.get_string("releash.base").ok())
+        .and_then(|base_name| repo.find_branch(&base_name, BranchType::Local).ok())
+        .and_then(|b| b.get().target())
+        .or(default_oid);
+
+    let mut cards = Vec::new();
+    for branch in local_branches {
+        let (branch, _) = branch.map_err(|e| e.message().to_string())?;
+        let name = match branch.name().map_err(|e| e.message().to_string())? {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        let is_default = default_branch.as_deref() == Some(&name);
+        if is_default {
+            continue;
+        }
+
+        let (worktree_path, dirty_count) = match wt_map.get(&name) {
+            Some(path) => {
+                let dirty = get_dirty_count_for_path(Path::new(path)) as usize;
+                (Some(path.clone()), dirty)
+            }
+            None => (None, 0),
+        };
+
+        let target_oid = base_target_oid;
+
+        let is_merged = target_oid
+            .and_then(|t_oid| {
+                let branch_oid = branch.get().target()?;
+                if branch_oid == t_oid {
+                    return Some(false);
+                }
+                let merge_base = repo.merge_base(branch_oid, t_oid).ok()?;
+                Some(merge_base == branch_oid)
+            })
+            .unwrap_or(false);
+
+        cards.push(BranchCard {
+            name,
+            is_default,
+            worktree_path,
+            dirty_count,
+            is_merged,
+        });
+    }
+
+    Ok(cards)
+}
+
+#[tauri::command]
+pub fn create_worktree(
+    repo_path: String,
+    worktree_path: String,
+    branch: String,
+    create_branch: bool,
+    base_branch: Option<String>,
+) -> Result<WorktreeEntry, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+    let wt_path = Path::new(&worktree_path);
+
+    // 壊れた worktree エントリを事前に掃除
+    if let Ok(wt_names) = repo.worktrees() {
+        for i in 0..wt_names.len() {
+            if let Some(name) = wt_names.get(i) {
+                if let Ok(wt) = repo.find_worktree(name) {
+                    if wt.validate().is_err() {
+                        let mut prune_opts = WorktreePruneOptions::new();
+                        prune_opts.working_tree(true);
+                        let _ = wt.prune(Some(&mut prune_opts));
+                    }
+                }
+            }
+        }
+    }
+
+    let reference = if create_branch {
+        let base = base_branch.as_deref().unwrap_or("HEAD");
+        let obj = repo
+            .revparse_single(base)
+            .map_err(|e| e.message().to_string())?;
+        let commit = obj.peel_to_commit().map_err(|e| e.message().to_string())?;
+        repo.branch(&branch, &commit, false)
+            .map_err(|e| e.message().to_string())?
+            .into_reference()
+    } else {
+        repo.find_branch(&branch, BranchType::Local)
+            .map_err(|e| e.message().to_string())?
+            .into_reference()
+    };
+
+    let wt_name = wt_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "invalid worktree path".to_string())?;
+
+    if let Some(parent) = wt_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create parent directory: {e}"))?;
+    }
+
+    let mut opts = WorktreeAddOptions::new();
+    opts.reference(Some(&reference));
+
+    if let Err(e) = repo.worktree(wt_name, wt_path, Some(&opts)) {
+        if create_branch {
+            let _ = repo
+                .find_branch(&branch, BranchType::Local)
+                .and_then(|mut b| b.delete());
+        }
+        return Err(e.message().to_string());
+    }
+
+    // base_branch を config に保存
+    if let Some(ref base) = base_branch {
+        let mut config = repo.config().map_err(|e| e.message().to_string())?;
+        config
+            .set_str(&format!("branch.{}.releash-base", branch), base)
+            .map_err(|e| e.message().to_string())?;
+    }
+
+    Ok(WorktreeEntry {
+        name: wt_name.to_string(),
+        path: wt_path.to_str().ok_or("invalid path encoding")?.to_string(),
+        branch,
+        is_main: false,
+        is_locked: false,
+        dirty_count: 0,
+        base_branch,
+    })
+}
+
+#[tauri::command]
+pub fn remove_worktree(
+    repo_path: String,
+    worktree_path: String,
+    force: bool,
+) -> Result<(), String> {
+    let repo = Repository::open(&repo_path).map_err(|e| e.message().to_string())?;
+
+    let target_path = Path::new(&worktree_path)
+        .canonicalize()
+        .map_err(|e| format!("invalid worktree path: {e}"))?;
+
+    let wt_names = repo.worktrees().map_err(|e| e.message().to_string())?;
+
+    let mut found_name: Option<String> = None;
+    for i in 0..wt_names.len() {
+        let name = match wt_names.get(i) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if let Ok(wt) = repo.find_worktree(&name) {
+            if let Ok(canonical) = wt.path().canonicalize() {
+                if canonical == target_path {
+                    found_name = Some(name);
+                    break;
+                }
+            }
+        }
+    }
+
+    let wt_name = found_name.ok_or_else(|| "worktree not found".to_string())?;
+    let wt = repo
+        .find_worktree(&wt_name)
+        .map_err(|e| e.message().to_string())?;
+
+    let is_locked =
+        matches!(wt.is_locked(), Ok(s) if !matches!(s, git2::WorktreeLockStatus::Unlocked));
+
+    if !force {
+        if is_locked {
+            return Err("worktree is locked".to_string());
+        }
+        let dirty = get_dirty_count_for_path(wt.path());
+        if dirty > 0 {
+            return Err(format!(
+                "worktree has {dirty} uncommitted change(s). Use force to remove."
+            ));
+        }
+    }
+
+    let mut prune_opts = WorktreePruneOptions::new();
+    prune_opts.valid(true).working_tree(true);
+    if is_locked {
+        prune_opts.locked(true);
+    }
+    wt.prune(Some(&mut prune_opts))
+        .map_err(|e| e.message().to_string())?;
+
+    // prune 後に残存ディレクトリがあれば削除
+    if target_path.exists() {
+        std::fs::remove_dir_all(&target_path)
+            .map_err(|e| format!("failed to remove worktree directory: {e}"))?;
+    }
 
     Ok(())
 }
@@ -969,6 +1519,595 @@ mod tests {
         let result = git_create_branch(
             dir.path().to_str().unwrap().to_string(),
             "feature".to_string(),
+        );
+        assert!(result.is_err());
+    }
+
+    // --- worktree tests ---
+
+    /// テスト用の隔離された親ディレクトリを持つリポジトリを作成
+    /// worktreeをメインリポジトリの兄弟ディレクトリに作れるようにする
+    fn create_test_repo_with_parent() -> (TempDir, PathBuf, Repository) {
+        let parent = TempDir::new().unwrap();
+        let repo_dir = parent.path().join("main-repo");
+        fs::create_dir(&repo_dir).unwrap();
+        let repo = Repository::init(&repo_dir).unwrap();
+
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test User").unwrap();
+        config.set_str("user.email", "test@example.com").unwrap();
+
+        (parent, repo_dir, repo)
+    }
+
+    fn create_worktree_helper(
+        repo: &Repository,
+        parent_dir: &Path,
+        wt_name: &str,
+        branch_name: &str,
+    ) -> PathBuf {
+        let wt_path = parent_dir.join(wt_name);
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let branch = repo.branch(branch_name, &head, false).unwrap();
+        let reference = branch.into_reference();
+        let mut opts = WorktreeAddOptions::new();
+        opts.reference(Some(&reference));
+        repo.worktree(wt_name, &wt_path, Some(&opts)).unwrap();
+        wt_path
+    }
+
+    #[test]
+    fn test_get_main_repo_path_from_main_repo() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let result = get_main_repo_path(dir.path().to_str().unwrap().to_string()).unwrap();
+        let expected = dir.path().canonicalize().unwrap();
+        let result_canon = PathBuf::from(&result).canonicalize().unwrap();
+        assert_eq!(result_canon, expected);
+    }
+
+    #[test]
+    fn test_get_main_repo_path_from_worktree() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-test", "feat-test");
+
+        let result = get_main_repo_path(wt_path.to_str().unwrap().to_string()).unwrap();
+        let expected = repo_dir.canonicalize().unwrap();
+        let result_canon = PathBuf::from(&result).canonicalize().unwrap();
+        assert_eq!(result_canon, expected);
+    }
+
+    #[test]
+    fn test_get_main_repo_path_invalid_path() {
+        let result = get_main_repo_path("/nonexistent/invalid/path".to_string());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_worktree_dirty_count_clean() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let count = get_worktree_dirty_count(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_get_worktree_dirty_count_with_changes() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        fs::write(dir.path().join("a.txt"), "a").unwrap();
+        fs::write(dir.path().join("b.txt"), "b").unwrap();
+
+        let count = get_worktree_dirty_count(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_list_worktrees_main_only() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let entries = list_worktrees(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_main);
+        assert!(!entries[0].is_locked);
+    }
+
+    #[test]
+    fn test_list_worktrees_with_linked() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        create_worktree_helper(&repo, _parent.path(), "wt-linked", "feat-linked");
+
+        let entries = list_worktrees(repo_dir.to_str().unwrap().to_string()).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        let main_entry = entries.iter().find(|e| e.is_main).unwrap();
+        assert!(main_entry.is_main);
+
+        let linked_entry = entries.iter().find(|e| !e.is_main).unwrap();
+        assert_eq!(linked_entry.name, "wt-linked");
+        assert_eq!(linked_entry.branch, "feat-linked");
+    }
+
+    #[test]
+    fn test_list_worktrees_locked() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        create_worktree_helper(&repo, _parent.path(), "wt-lock", "feat-lock");
+        let wt = repo.find_worktree("wt-lock").unwrap();
+        wt.lock(None).unwrap();
+
+        let entries = list_worktrees(repo_dir.to_str().unwrap().to_string()).unwrap();
+        let locked_entry = entries.iter().find(|e| e.name == "wt-lock").unwrap();
+        assert!(locked_entry.is_locked);
+    }
+
+    #[test]
+    fn test_list_worktrees_with_base() {
+        let (_parent, repo_dir, _repo) = create_test_repo_with_parent();
+        create_initial_commit(&_repo);
+
+        let wt_path = _parent.path().join("wt-base");
+        create_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            "feat-base".to_string(),
+            true,
+            Some("HEAD".to_string()),
+        )
+        .unwrap();
+
+        let entries = list_worktrees(repo_dir.to_str().unwrap().to_string()).unwrap();
+        let wt_entry = entries.iter().find(|e| e.name == "wt-base").unwrap();
+        assert_eq!(wt_entry.base_branch, Some("HEAD".to_string()));
+    }
+
+    #[test]
+    fn test_create_worktree_new_branch() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = _parent.path().join("wt-new");
+        let entry = create_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            "feat-new".to_string(),
+            true,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(entry.branch, "feat-new");
+        assert!(!entry.is_main);
+        assert!(wt_path.exists());
+
+        // ブランチが作成されたことを確認
+        assert!(repo.find_branch("feat-new", BranchType::Local).is_ok());
+    }
+
+    #[test]
+    fn test_create_worktree_existing_branch() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("existing-branch", &head, false).unwrap();
+
+        let wt_path = _parent.path().join("wt-existing");
+        let entry = create_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            "existing-branch".to_string(),
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(entry.branch, "existing-branch");
+        assert!(wt_path.exists());
+    }
+
+    #[test]
+    fn test_create_worktree_with_base() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let main_branch = get_current_branch(repo_dir.to_str().unwrap().to_string()).unwrap();
+
+        let wt_path = _parent.path().join("wt-withbase");
+        create_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            "feat-withbase".to_string(),
+            true,
+            Some(main_branch.clone()),
+        )
+        .unwrap();
+
+        // config に base_branch が保存されていることを確認
+        let config = repo.config().unwrap();
+        let base = config
+            .get_string("branch.feat-withbase.releash-base")
+            .unwrap();
+        assert_eq!(base, main_branch);
+    }
+
+    #[test]
+    fn test_create_worktree_duplicate_branch() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = _parent.path().join("wt-dup1");
+        create_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            "feat-dup".to_string(),
+            true,
+            None,
+        )
+        .unwrap();
+
+        let wt_path2 = _parent.path().join("wt-dup2");
+        let result = create_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path2.to_str().unwrap().to_string(),
+            "feat-dup".to_string(),
+            true,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_worktree_parent_dir_not_exists() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        // 存在しないネストされたディレクトリ配下にworktreeを作成
+        let wt_path = _parent.path().join("nested").join("deep").join("wt-new");
+        assert!(!_parent.path().join("nested").exists());
+
+        let entry = create_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            "feat-nested".to_string(),
+            true,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(entry.branch, "feat-nested");
+        assert!(wt_path.exists());
+    }
+
+    #[test]
+    fn test_create_worktree_rollback_branch_on_failure() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        // 先にworktreeを作成して同じnameを占有させ、2回目を失敗させる
+        let wt_path1 = _parent.path().join("wt-occupy");
+        create_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path1.to_str().unwrap().to_string(),
+            "feat-occupy".to_string(),
+            true,
+            None,
+        )
+        .unwrap();
+
+        // 同じworktree名(wt-occupy)で別ブランチを作成 → worktree追加が失敗するはず
+        let wt_path2 = _parent.path().join("other").join("wt-occupy");
+        let result = create_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path2.to_str().unwrap().to_string(),
+            "feat-rollback".to_string(),
+            true,
+            None,
+        );
+        assert!(result.is_err());
+
+        // ブランチがロールバックされていることを確認
+        assert!(repo
+            .find_branch("feat-rollback", BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn test_remove_worktree_clean() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-rm", "feat-rm");
+        assert!(wt_path.exists());
+
+        remove_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            false,
+        )
+        .unwrap();
+
+        assert!(!wt_path.exists());
+    }
+
+    #[test]
+    fn test_remove_worktree_dirty_no_force() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-dirty", "feat-dirty");
+        fs::write(wt_path.join("dirty.txt"), "uncommitted").unwrap();
+
+        let result = remove_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("uncommitted change"));
+        assert!(wt_path.exists());
+    }
+
+    #[test]
+    fn test_remove_worktree_dirty_force() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-dirtyf", "feat-dirtyf");
+        fs::write(wt_path.join("dirty.txt"), "uncommitted").unwrap();
+
+        remove_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            true,
+        )
+        .unwrap();
+
+        assert!(!wt_path.exists());
+    }
+
+    #[test]
+    fn test_remove_worktree_locked_no_force() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-locked", "feat-locked");
+        let wt = repo.find_worktree("wt-locked").unwrap();
+        wt.lock(None).unwrap();
+
+        let result = remove_worktree(
+            repo_dir.to_str().unwrap().to_string(),
+            wt_path.to_str().unwrap().to_string(),
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("locked"));
+    }
+
+    // --- list_branches_with_status tests ---
+
+    #[test]
+    fn test_list_branches_with_status_excludes_default() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        // デフォルトブランチ(main or master)のみ → 結果は空
+        let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(cards.is_empty());
+    }
+
+    #[test]
+    fn test_list_branches_with_status_shows_non_default() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature-a", &head, false).unwrap();
+        repo.branch("feature-b", &head, false).unwrap();
+
+        let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert_eq!(cards.len(), 2);
+        let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"feature-a"));
+        assert!(names.contains(&"feature-b"));
+        // worktreeなし → dirty_count = 0, worktree_path = None
+        for card in &cards {
+            assert!(card.worktree_path.is_none());
+            assert_eq!(card.dirty_count, 0);
+        }
+    }
+
+    #[test]
+    fn test_list_branches_with_status_with_worktree() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-feat", "feat-wt");
+
+        // worktreeにダーティファイルを追加
+        fs::write(wt_path.join("dirty.txt"), "dirty").unwrap();
+
+        let cards = list_branches_with_status(repo_dir.to_str().unwrap().to_string()).unwrap();
+        let feat_card = cards.iter().find(|c| c.name == "feat-wt").unwrap();
+        assert!(feat_card.worktree_path.is_some());
+        assert_eq!(feat_card.dirty_count, 1);
+    }
+
+    #[test]
+    fn test_list_branches_merged_branch() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        // feature ブランチを作成
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature-merged", &head, false).unwrap();
+
+        // main に追加コミット → feature は main に含まれるのでマージ済み
+        add_and_commit(&repo, "after.txt", "after", "commit after branch");
+
+        let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let card = cards.iter().find(|c| c.name == "feature-merged").unwrap();
+        assert!(card.is_merged);
+    }
+
+    #[test]
+    fn test_list_branches_unmerged_branch() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        // feature ブランチを作成してコミットを追加
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let branch_ref = repo.branch("feature-unmerged", &head, false).unwrap();
+        let branch_ref = branch_ref.into_reference();
+        repo.set_head(branch_ref.name().unwrap()).unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
+        add_and_commit(&repo, "feat.txt", "feat", "feature commit");
+
+        // main に戻る
+        let default_branch = detect_default_branch(&repo).unwrap();
+        repo.set_head(&format!("refs/heads/{}", default_branch))
+            .unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
+
+        let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let card = cards.iter().find(|c| c.name == "feature-unmerged").unwrap();
+        assert!(!card.is_merged);
+    }
+
+    #[test]
+    fn test_list_branches_same_oid_not_merged() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        // 同一OIDのブランチ → is_merged = false
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature-same", &head, false).unwrap();
+
+        let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let card = cards.iter().find(|c| c.name == "feature-same").unwrap();
+        assert!(!card.is_merged);
+    }
+
+    #[test]
+    fn test_list_branches_merged_via_releash_base() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        // develop ブランチを作成
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let develop_branch = repo.branch("develop", &head, false).unwrap();
+        let develop_ref = develop_branch.into_reference();
+
+        // develop に切り替えてコミット追加
+        repo.set_head(develop_ref.name().unwrap()).unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
+        add_and_commit(&repo, "dev.txt", "dev", "develop commit");
+
+        // feature ブランチを develop の1つ前（= 初期コミット）から作成
+        let feature_base = head;
+        repo.branch("feature-x", &feature_base, false).unwrap();
+
+        // develop にさらにコミット → feature は develop に含まれる
+        add_and_commit(&repo, "dev2.txt", "dev2", "develop commit 2");
+
+        // main に戻す
+        let default_branch = detect_default_branch(&repo).unwrap();
+        repo.set_head(&format!("refs/heads/{}", default_branch))
+            .unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
+
+        // releash.base を設定せずに確認 → main にはマージされていない（同一OID）
+        let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let card = cards.iter().find(|c| c.name == "feature-x").unwrap();
+        assert!(
+            !card.is_merged,
+            "without releash.base, should not be merged into main"
+        );
+
+        // releash.base = develop をリポジトリ単位で設定
+        let mut config = repo.config().unwrap();
+        config.set_str("releash.base", "develop").unwrap();
+
+        let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let card = cards.iter().find(|c| c.name == "feature-x").unwrap();
+        assert!(
+            card.is_merged,
+            "with releash.base=develop, should be merged"
+        );
+    }
+
+    #[test]
+    fn test_get_set_releash_base() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let repo_path = dir.path().to_str().unwrap().to_string();
+
+        // 初期状態: None
+        let base = get_releash_base(repo_path.clone()).unwrap();
+        assert_eq!(base, None);
+
+        // 設定
+        set_releash_base(repo_path.clone(), Some("develop".to_string())).unwrap();
+        let base = get_releash_base(repo_path.clone()).unwrap();
+        assert_eq!(base, Some("develop".to_string()));
+
+        // 解除
+        set_releash_base(repo_path.clone(), None).unwrap();
+        let base = get_releash_base(repo_path).unwrap();
+        assert_eq!(base, None);
+    }
+
+    #[test]
+    fn test_get_default_branch() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let branch = get_default_branch(repo_path).unwrap();
+        // init.defaultBranch の設定によって main または master
+        assert!(
+            branch == "main" || branch == "master",
+            "expected main or master, got {}",
+            branch
+        );
+
+        // 既存のデフォルトブランチを削除して別の方を作成
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        let other = if branch == "main" { "master" } else { "main" };
+        repo.branch(other, &head_commit, false).unwrap();
+        repo.set_head(&format!("refs/heads/{}", other)).unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
+        let mut old_branch = repo.find_branch(&branch, BranchType::Local).unwrap();
+        old_branch.delete().unwrap();
+
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let new_default = get_default_branch(repo_path).unwrap();
+        assert_eq!(new_default, other);
+    }
+
+    #[test]
+    fn test_remove_worktree_not_found() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let result = remove_worktree(
+            dir.path().to_str().unwrap().to_string(),
+            dir.path().join("nonexistent").to_str().unwrap().to_string(),
+            false,
         );
         assert!(result.is_err());
     }

@@ -6,8 +6,8 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
-		"build": "tsc && vite build && pnpm build:pwa",
-		"build:pwa": "vite build --config vite.config.pwa.ts",
+		"build": "tsc && vite build && pnpm build:remote",
+		"build:remote": "vite build --config vite.config.remote.ts",
 		"preview": "vite preview",
 		"tauri": "tauri",
 		"lint": "biome check .",
