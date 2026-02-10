@@ -261,7 +261,7 @@ export function WorkspaceManagerScreen({
 							<p className="text-muted-foreground">Loading...</p>
 						</div>
 					) : (
-						<div className="grid grid-cols-3 gap-3 h-full">
+						<div className="flex gap-3 h-full overflow-x-auto">
 							<KanbanColumn
 								icon={<CircleDot className="size-3.5 text-muted-foreground" />}
 								title="Todo"
