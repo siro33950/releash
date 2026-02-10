@@ -17,6 +17,7 @@ pub async fn start_server(
     config_state: tauri::State<'_, Arc<AppConfig>>,
     broadcaster: tauri::State<'_, Arc<WsBroadcaster>>,
     pty_manager: tauri::State<'_, Arc<crate::pty::PtyManager>>,
+    pr_cache: tauri::State<'_, Arc<crate::git_host::PrCache>>,
 ) -> Result<StartServerResult, String> {
     {
         let running = handle.running.lock();
@@ -75,6 +76,7 @@ pub async fn start_server(
         Arc::clone(config_state.inner()),
         Some(app.clone()),
         cfg.server.tls.enabled,
+        Arc::clone(&pr_cache),
     ));
 
     start_ws_server(&cfg, server_state, shutdown_rx).await?;

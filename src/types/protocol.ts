@@ -190,6 +190,9 @@ export interface BranchCardMsg {
 	worktree_path: string | null;
 	dirty_count: number;
 	is_merged: boolean;
+	has_pr?: boolean;
+	pr_number?: number;
+	pr_url?: string;
 }
 
 export interface BranchListSync {

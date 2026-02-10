@@ -3,7 +3,7 @@ pub mod types;
 
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use types::{GitHostProvider, PrStatus, ProviderStatus};
@@ -54,6 +54,27 @@ pub(crate) fn fetch_pr_status_inner(repo_path: &str) -> PrStatus {
     }
 }
 
+pub(crate) fn fetch_pr_status_with_cache(cache: &PrCache, repo_path: &str) -> PrStatus {
+    if let Ok(map) = cache.entries.lock() {
+        if let Some(entry) = map.get(repo_path) {
+            if entry.fetched_at.elapsed() < PR_CACHE_TTL {
+                return entry.value.clone();
+            }
+        }
+    }
+    let status = fetch_pr_status_inner(repo_path);
+    if let Ok(mut map) = cache.entries.lock() {
+        map.insert(
+            repo_path.to_string(),
+            CacheEntry {
+                value: status.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+    status
+}
+
 #[tauri::command]
 pub async fn fetch_pr_status(repo_path: String) -> Result<PrStatus, String> {
     tokio::task::spawn_blocking(move || fetch_pr_status_inner(&repo_path))
@@ -63,29 +84,14 @@ pub async fn fetch_pr_status(repo_path: String) -> Result<PrStatus, String> {
 
 #[tauri::command]
 pub async fn get_cached_pr_status(
-    cache: tauri::State<'_, PrCache>,
+    cache: tauri::State<'_, Arc<PrCache>>,
     repo_path: String,
 ) -> Result<PrStatus, String> {
-    if let Ok(map) = cache.entries.lock() {
-        if let Some(entry) = map.get(&repo_path) {
-            if entry.fetched_at.elapsed() < PR_CACHE_TTL {
-                return Ok(entry.value.clone());
-            }
-        }
-    }
-    let key = repo_path.clone();
-    let status = tokio::task::spawn_blocking(move || fetch_pr_status_inner(&repo_path))
-        .await
-        .map_err(|e| format!("task join error: {e}"))?;
-    if let Ok(mut map) = cache.entries.lock() {
-        map.insert(
-            key,
-            CacheEntry {
-                value: status.clone(),
-                fetched_at: Instant::now(),
-            },
-        );
-    }
+    let cache = Arc::clone(&cache);
+    let status =
+        tokio::task::spawn_blocking(move || fetch_pr_status_with_cache(&cache, &repo_path))
+            .await
+            .map_err(|e| format!("task join error: {e}"))?;
     Ok(status)
 }
 

@@ -27,7 +27,7 @@ pub fn run() {
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))
         .manage(ws_server::WsServerHandle::default())
-        .manage(git_host::PrCache::new())
+        .manage(Arc::new(git_host::PrCache::new()))
         .setup(|app| {
             let data_dir = app
                 .path()

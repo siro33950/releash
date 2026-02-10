@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
+use crate::git_host::PrCache;
 use crate::pty::PtyManager;
 use crate::ws_bridge::WsBroadcaster;
 
@@ -71,6 +72,7 @@ pub(crate) struct WsServerState {
     app_config: Arc<AppConfig>,
     app_handle: Option<tauri::AppHandle>,
     tls_enabled: bool,
+    pr_cache: Arc<PrCache>,
 }
 
 impl WsServerState {
@@ -82,6 +84,7 @@ impl WsServerState {
         app_config: Arc<AppConfig>,
         app_handle: Option<tauri::AppHandle>,
         tls_enabled: bool,
+        pr_cache: Arc<PrCache>,
     ) -> Self {
         Self {
             active_connection: Arc::new(Mutex::new(false)),
@@ -93,6 +96,7 @@ impl WsServerState {
             app_config,
             app_handle,
             tls_enabled,
+            pr_cache,
         }
     }
 

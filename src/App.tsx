@@ -59,11 +59,19 @@ function App() {
 			setProviderStatus(null);
 			return;
 		}
+		let cancelled = false;
 		invoke<ProviderStatus>("check_pr_provider_status", {
 			repoPath: mainRepoPath,
 		})
-			.then(setProviderStatus)
-			.catch(() => setProviderStatus(null));
+			.then((s) => {
+				if (!cancelled) setProviderStatus(s);
+			})
+			.catch(() => {
+				if (!cancelled) setProviderStatus(null);
+			});
+		return () => {
+			cancelled = true;
+		};
 	}, [mainRepoPath]);
 
 	const handleChangeRepo = useCallback((path: string | null) => {

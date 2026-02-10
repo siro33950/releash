@@ -171,8 +171,10 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     // --- 初期データ送信: worktreeリストのみ（PTYはworktree選択後に送信） ---
     if let Some(repo_path) = &state.repo_path {
         let repo_path_clone = repo_path.clone();
+        let pr_cache = state.pr_cache.clone();
         let worktree_msg = tokio::task::spawn_blocking(move || {
-            let pr_status = crate::git_host::fetch_pr_status_inner(&repo_path_clone);
+            let pr_status =
+                crate::git_host::fetch_pr_status_with_cache(&pr_cache, &repo_path_clone);
             let entries = crate::git::list_worktrees(repo_path_clone)
                 .unwrap_or_default()
                 .into_iter()

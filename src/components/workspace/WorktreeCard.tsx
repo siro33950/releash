@@ -35,7 +35,7 @@ export function BranchCard({
 				>
 					{branch.name}
 				</span>
-				{branch.has_pr && branch.pr_url && (
+				{branch.has_pr && branch.pr_url && branch.pr_number != null && (
 					<button
 						type="button"
 						className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-500 font-medium hover:bg-purple-500/25 transition-colors"

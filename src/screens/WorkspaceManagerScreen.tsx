@@ -213,6 +213,7 @@ export function WorkspaceManagerScreen({
 			setOpeningBranch(branch.name);
 			if (branch.worktree_path) {
 				onSelectWorktree(branch.worktree_path);
+				setOpeningBranch(null);
 				return;
 			}
 			const parent = repoPath.replace(/\/[^/]+\/?$/, "");
@@ -228,6 +229,7 @@ export function WorkspaceManagerScreen({
 					baseBranch: null,
 				});
 				onSelectWorktree(entry.path);
+				setOpeningBranch(null);
 			} catch (e) {
 				console.error("Failed to create worktree:", e);
 				setOpeningBranch(null);

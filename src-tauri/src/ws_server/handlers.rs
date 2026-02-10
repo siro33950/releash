@@ -432,8 +432,9 @@ pub(super) async fn handle_worktree_list_request(state: &WsServerState) -> Optio
         Some(p) => p.clone(),
         None => return Some(no_repo_error()),
     };
+    let pr_cache = state.pr_cache.clone();
     match tokio::task::spawn_blocking(move || {
-        let pr_status = crate::git_host::fetch_pr_status_inner(&repo_path);
+        let pr_status = crate::git_host::fetch_pr_status_with_cache(&pr_cache, &repo_path);
         let entries = crate::git::list_worktrees(repo_path)
             .unwrap_or_default()
             .into_iter()
