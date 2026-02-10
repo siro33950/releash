@@ -15,11 +15,10 @@ describe("MonacoDiffViewer", () => {
 			/>,
 		);
 
-		expect(container.firstChild).toHaveClass(
-			"h-full",
-			"w-full",
-			"bg-background",
-		);
+		const el = container.firstChild as HTMLElement;
+		expect(el).toHaveClass("bg-background");
+		expect(el.style.position).toBe("absolute");
+		expect(el.style.inset).toBe("0");
 	});
 
 	it("should apply custom className", () => {
@@ -42,7 +41,10 @@ describe("MonacoDiffViewer", () => {
 			/>,
 		);
 
-		expect(container.querySelector(".h-full.w-full")).toBeInTheDocument();
+		const editors = container.querySelectorAll<HTMLElement>(
+			"[style*='height: 100%']",
+		);
+		expect(editors.length).toBeGreaterThan(0);
 	});
 
 	it("should render gutter mode when diffMode is gutter", () => {
@@ -54,7 +56,10 @@ describe("MonacoDiffViewer", () => {
 			/>,
 		);
 
-		expect(container.querySelector(".h-full.w-full")).toBeInTheDocument();
+		const editors = container.querySelectorAll<HTMLElement>(
+			"[style*='height: 100%']",
+		);
+		expect(editors.length).toBeGreaterThan(0);
 	});
 
 	it("should render inline mode when diffMode is inline", () => {
@@ -66,6 +71,9 @@ describe("MonacoDiffViewer", () => {
 			/>,
 		);
 
-		expect(container.querySelector(".h-full.w-full")).toBeInTheDocument();
+		const editors = container.querySelectorAll<HTMLElement>(
+			"[style*='height: 100%']",
+		);
+		expect(editors.length).toBeGreaterThan(0);
 	});
 });
