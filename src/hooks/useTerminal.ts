@@ -24,7 +24,6 @@ interface GetOrSpawnPtyResult {
 }
 
 const terminalDarkTheme: ITheme = {
-	background: "#1a1a1a",
 	foreground: "#e0e0e0",
 	cursor: "#e0e0e0",
 	cursorAccent: "#1a1a1a",
@@ -47,7 +46,6 @@ const terminalDarkTheme: ITheme = {
 };
 
 const terminalLightTheme: ITheme = {
-	background: "#f8f8f8",
 	foreground: "#1a1a1a",
 	cursor: "#1a1a1a",
 	cursorAccent: "#f8f8f8",
@@ -69,8 +67,16 @@ const terminalLightTheme: ITheme = {
 	brightWhite: "#fafbfc",
 };
 
-function getTerminalTheme(theme?: Theme): ITheme {
-	return theme === "light" ? terminalLightTheme : terminalDarkTheme;
+function resolveTerminalBg(container: HTMLElement): string {
+	return getComputedStyle(container).backgroundColor;
+}
+
+function getTerminalTheme(
+	theme: Theme | undefined,
+	container: HTMLElement,
+): ITheme {
+	const base = theme === "light" ? terminalLightTheme : terminalDarkTheme;
+	return { ...base, background: resolveTerminalBg(container) };
 }
 
 export function useTerminal(
@@ -95,7 +101,7 @@ export function useTerminal(
 			cursorBlink: true,
 			fontFamily: 'Menlo, Monaco, "Courier New", monospace',
 			fontSize: 14,
-			theme: getTerminalTheme(themeRef.current),
+			theme: getTerminalTheme(themeRef.current, container),
 		});
 
 		const fitAddon = new FitAddon();
@@ -199,9 +205,10 @@ export function useTerminal(
 
 	useEffect(() => {
 		const terminal = terminalRef.current;
-		if (!terminal) return;
-		terminal.options.theme = getTerminalTheme(theme);
-	}, [theme]);
+		const container = containerRef.current;
+		if (!terminal || !container) return;
+		terminal.options.theme = getTerminalTheme(theme, container);
+	}, [theme, containerRef]);
 
 	const writeToTerminal = useCallback((data: string) => {
 		if (ptyIdRef.current !== null) {
