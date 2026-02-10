@@ -18,6 +18,12 @@ interface DetectedInterface {
 	kind: "vpn" | "lan";
 }
 
+interface ServerInfo {
+	running: boolean;
+	bound_ip: string | null;
+	connection_mode: "vpn" | "lan" | null;
+}
+
 interface StartServerResult {
 	ip: string;
 	mode: "vpn" | "lan";
@@ -62,8 +68,12 @@ export function useRemoteServer() {
 
 	const refreshStatus = useCallback(async () => {
 		try {
-			const status = await invoke<boolean>("get_server_status");
-			setRunning(status);
+			const info = await invoke<ServerInfo>("get_server_info");
+			setRunning(info.running);
+			if (info.running) {
+				setBoundIp(info.bound_ip);
+				setConnectionMode(info.connection_mode);
+			}
 		} catch (e) {
 			setError(String(e));
 		}
@@ -84,6 +94,12 @@ export function useRemoteServer() {
 			setError(String(e));
 		}
 	}, []);
+
+	useEffect(() => {
+		if (running && !qrData) {
+			refreshQr();
+		}
+	}, [running, qrData, refreshQr]);
 
 	const doStartServer = useCallback(
 		async (rootPath: string, bindIp: string) => {
