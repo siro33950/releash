@@ -474,11 +474,7 @@ describe("WorkspaceManagerScreen", () => {
 			expect(callCountAfter30s).toBeGreaterThan(callCount);
 
 			if (originalDescriptor) {
-				Object.defineProperty(
-					document,
-					"visibilityState",
-					originalDescriptor,
-				);
+				Object.defineProperty(document, "visibilityState", originalDescriptor);
 			}
 			vi.useRealTimers();
 		});
