@@ -14,7 +14,7 @@ export function KanbanColumn({
 	children,
 }: KanbanColumnProps) {
 	return (
-		<div className="flex flex-col min-h-0 rounded-lg border border-border bg-card/30">
+		<div className="flex flex-col min-h-0 w-80 shrink-0 rounded-lg border border-border bg-card/30">
 			<div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
 				{icon}
 				<span className="text-xs font-semibold">{title}</span>
