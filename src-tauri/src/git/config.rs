@@ -1,7 +1,6 @@
 use super::error::GitError;
 use git2::Repository;
 
-#[tauri::command]
 pub fn get_releash_base(repo_path: String) -> Result<Option<String>, GitError> {
     let repo = Repository::open(&repo_path)?;
     let base = repo
@@ -11,7 +10,6 @@ pub fn get_releash_base(repo_path: String) -> Result<Option<String>, GitError> {
     Ok(base)
 }
 
-#[tauri::command]
 pub fn set_releash_base(repo_path: String, base: Option<String>) -> Result<(), GitError> {
     let repo = Repository::open(&repo_path)?;
     let mut config = repo.config()?;

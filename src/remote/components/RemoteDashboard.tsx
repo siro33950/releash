@@ -1,4 +1,4 @@
-import { GitBranch, Lock, RefreshCw } from "lucide-react";
+import { GitBranch, GitPullRequest, Lock, RefreshCw } from "lucide-react";
 import type { WorktreeEntryMsg } from "@/types/protocol";
 
 interface RemoteDashboardProps {
@@ -58,6 +58,12 @@ export function RemoteDashboard({
 									</span>
 									{wt.is_locked && (
 										<Lock className="size-3 text-yellow-500 shrink-0" />
+									)}
+									{wt.has_pr && (
+										<span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
+											<GitPullRequest className="size-2.5" />
+											{wt.pr_number && `#${wt.pr_number}`}
+										</span>
 									)}
 									{wt.is_main && (
 										<span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400">

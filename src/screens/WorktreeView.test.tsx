@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "@/types/settings";
 import { WorktreeView } from "./WorktreeView";
 
+vi.mock("@/hooks/useCurrentBranch", () => ({
+	useCurrentBranch: () => ({ branch: "main", refresh: vi.fn() }),
+}));
+
 vi.mock("react-resizable-panels", () => ({
 	Group: ({ children }: { children: React.ReactNode }) => (
 		<div data-testid="panel-group">{children}</div>

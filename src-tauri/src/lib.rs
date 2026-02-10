@@ -1,5 +1,6 @@
 mod config;
 mod git;
+mod git_host;
 mod protocol;
 mod pty;
 mod qr_code;
@@ -26,6 +27,7 @@ pub fn run() {
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))
         .manage(ws_server::WsServerHandle::default())
+        .manage(Arc::new(git_host::PrCache::new()))
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -50,37 +52,41 @@ pub fn run() {
             watcher::start_git_dir_watching,
             watcher::stop_watching,
             // Git: diff/content
-            git::diff::get_file_at_ref,
-            git::diff::get_staged_content,
+            git::commands::get_file_at_ref,
+            git::commands::get_staged_content,
             // Git: ブランチ
-            git::branch::list_branches,
-            git::branch::get_current_branch,
-            git::branch::get_default_branch,
-            git::branch::git_create_branch,
+            git::commands::list_branches,
+            git::commands::get_current_branch,
+            git::commands::get_default_branch,
+            git::commands::git_create_branch,
             // Git: ステータス
-            git::status::get_git_status,
-            git::log::get_git_log,
+            git::commands::get_git_status,
+            git::commands::get_git_log,
             // Git: ステージング
-            git::stage::git_stage,
-            git::stage::git_unstage,
-            git::stage::git_stage_hunk,
-            git::stage::git_unstage_hunk,
-            git::stage::git_discard,
+            git::commands::git_stage,
+            git::commands::git_unstage,
+            git::commands::git_stage_hunk,
+            git::commands::git_unstage_hunk,
+            git::commands::git_discard,
             // Git: コミット・プッシュ
-            git::commit::git_commit,
-            git::commit::git_push,
+            git::commands::git_commit,
+            git::commands::git_push,
             // Git: ワークツリー
-            git::worktree::get_main_repo_path,
-            git::worktree::get_worktree_dirty_count,
-            git::worktree::list_worktrees,
-            git::worktree::list_branches_with_status,
-            git::worktree::create_worktree,
-            git::worktree::remove_worktree,
+            git::commands::get_main_repo_path,
+            git::commands::get_worktree_dirty_count,
+            git::commands::list_worktrees,
+            git::commands::list_branches_with_status,
+            git::commands::create_worktree,
+            git::commands::remove_worktree,
             // Git: 設定・ユーティリティ
-            git::util::get_cwd,
-            git::util::get_repo_git_dir,
-            git::config::get_releash_base,
-            git::config::set_releash_base,
+            git::commands::get_cwd,
+            git::commands::get_repo_git_dir,
+            git::commands::get_releash_base,
+            git::commands::set_releash_base,
+            // Git Host
+            git_host::check_pr_provider_status,
+            git_host::fetch_pr_status,
+            git_host::get_cached_pr_status,
             // 検索
             search::search_files,
             search::find_definition,

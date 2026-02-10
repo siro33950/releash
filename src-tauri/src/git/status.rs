@@ -40,7 +40,6 @@ fn worktree_status_from_flags(status: git2::Status) -> &'static str {
     }
 }
 
-#[tauri::command]
 pub fn get_git_status(repo_path: String) -> Result<Vec<GitFileStatus>, GitError> {
     let repo = Repository::open(&repo_path)?;
 

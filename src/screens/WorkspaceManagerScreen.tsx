@@ -5,6 +5,7 @@ import {
 	CheckCircle2,
 	CircleDot,
 	FolderOpen,
+	GitPullRequest,
 	Globe,
 	Loader2,
 	Plus,
@@ -19,12 +20,19 @@ import { DeleteWorktreeDialog } from "@/components/workspace/DeleteWorktreeDialo
 import { KanbanColumn } from "@/components/workspace/KanbanColumn";
 import { SettingsDialog } from "@/components/workspace/SettingsDialog";
 import { BranchCard as BranchCardComponent } from "@/components/workspace/WorktreeCard";
-import type { BranchCard, WorktreeEntry } from "@/types/git";
+import type {
+	BranchCard,
+	ProviderStatus,
+	PrStatus,
+	WorktreeEntry,
+} from "@/types/git";
 import type { AppSettings, DiffBase, DiffMode, Theme } from "@/types/settings";
 
 interface WorkspaceManagerScreenProps {
 	repoPath: string | null;
 	settings: AppSettings;
+	providerStatus: ProviderStatus | null;
+	initializing?: boolean;
 	onThemeChange: (theme: Theme) => void;
 	onFontSizeChange: (size: number) => void;
 	onDiffBaseChange: (base: DiffBase) => void;
@@ -34,9 +42,32 @@ interface WorkspaceManagerScreenProps {
 	onChangeRepo: (path: string | null) => void;
 }
 
+function ProviderStatusGuide({ status }: { status: ProviderStatus | null }) {
+	if (!status || status === "available" || status === "no_remote") return null;
+
+	let message: string;
+	if (typeof status === "object" && "cli_not_found" in status) {
+		message = `PR検出を有効にするには ${status.cli_not_found.cli} CLI をインストールしてください`;
+	} else if (status === "not_authenticated") {
+		message = "gh auth login で認証してください";
+	} else if (status === "unsupported_platform") {
+		message = "PR検出は現在GitHubに対応しています";
+	} else {
+		return null;
+	}
+
+	return (
+		<div className="rounded-lg border border-dashed border-border/50 p-3 text-xs text-muted-foreground">
+			{message}
+		</div>
+	);
+}
+
 export function WorkspaceManagerScreen({
 	repoPath,
 	settings,
+	providerStatus,
+	initializing = false,
 	onThemeChange,
 	onFontSizeChange,
 	onDiffBaseChange,
@@ -51,27 +82,32 @@ export function WorkspaceManagerScreen({
 	const [showSettings, setShowSettings] = useState(false);
 	const [showRemote, setShowRemote] = useState(false);
 	const [deletingBranch, setDeletingBranch] = useState<BranchCard | null>(null);
+	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
+	const [folderLoading, setFolderLoading] = useState(false);
 
 	const repoName = useMemo(
 		() => repoPath?.split("/").filter(Boolean).pop() ?? "",
 		[repoPath],
 	);
 
-	const { todo, inProgress, done } = useMemo(() => {
+	const { todo, inProgress, review, done } = useMemo(() => {
 		const todo: BranchCard[] = [];
 		const inProgress: BranchCard[] = [];
+		const review: BranchCard[] = [];
 		const done: BranchCard[] = [];
 		for (const b of branches) {
 			if (b.is_merged) {
 				done.push(b);
+			} else if (b.has_pr) {
+				review.push(b);
 			} else if (b.worktree_path != null) {
 				inProgress.push(b);
 			} else {
 				todo.push(b);
 			}
 		}
-		return { todo, inProgress, done };
+		return { todo, inProgress, review, done };
 	}, [branches]);
 
 	const refreshBaseBranch = useCallback(async () => {
@@ -96,6 +132,36 @@ export function WorkspaceManagerScreen({
 		}
 	}, [repoPath]);
 
+	const enrichWithPrStatus = useCallback(
+		async (cards: BranchCard[]): Promise<BranchCard[]> => {
+			if (!repoPath) return cards;
+			try {
+				const prStatus = await invoke<PrStatus>("get_cached_pr_status", {
+					repoPath,
+				});
+				return cards.map((b) => {
+					const pr = prStatus.open_prs[b.name];
+					const isMergedViaPr = prStatus.merged_branches.includes(b.name);
+					if (pr) {
+						return {
+							...b,
+							has_pr: true,
+							pr_number: pr.number,
+							pr_url: pr.url,
+						};
+					}
+					if (isMergedViaPr && !b.is_merged) {
+						return { ...b, is_merged: true };
+					}
+					return b;
+				});
+			} catch {
+				return cards;
+			}
+		},
+		[repoPath],
+	);
+
 	const refresh = useCallback(async () => {
 		if (!repoPath) {
 			setBranches([]);
@@ -106,14 +172,15 @@ export function WorkspaceManagerScreen({
 			const cards = await invoke<BranchCard[]>("list_branches_with_status", {
 				repoPath,
 			});
-			setBranches(cards);
+			const enriched = await enrichWithPrStatus(cards);
+			setBranches(enriched);
 		} catch (e) {
 			console.error("Failed to list branches:", e);
 		} finally {
 			setLoading(false);
 		}
 		refreshBaseBranch();
-	}, [repoPath, refreshBaseBranch]);
+	}, [repoPath, refreshBaseBranch, enrichWithPrStatus]);
 
 	useEffect(() => {
 		setLoading(true);
@@ -143,8 +210,10 @@ export function WorkspaceManagerScreen({
 	const handleOpenBranch = useCallback(
 		async (branch: BranchCard) => {
 			if (!repoPath) return;
+			setOpeningBranch(branch.name);
 			if (branch.worktree_path) {
 				onSelectWorktree(branch.worktree_path);
+				setOpeningBranch(null);
 				return;
 			}
 			const parent = repoPath.replace(/\/[^/]+\/?$/, "");
@@ -160,8 +229,10 @@ export function WorkspaceManagerScreen({
 					baseBranch: null,
 				});
 				onSelectWorktree(entry.path);
+				setOpeningBranch(null);
 			} catch (e) {
 				console.error("Failed to create worktree:", e);
+				setOpeningBranch(null);
 			}
 		},
 		[repoPath, onSelectWorktree],
@@ -195,6 +266,7 @@ export function WorkspaceManagerScreen({
 	const handleSelectFolder = useCallback(async () => {
 		const selected = await open({ directory: true, multiple: false });
 		if (!selected) return;
+		setFolderLoading(true);
 		try {
 			const mainPath = await invoke<string>("get_main_repo_path", {
 				anyPath: selected,
@@ -202,16 +274,26 @@ export function WorkspaceManagerScreen({
 			onChangeRepo(mainPath);
 		} catch {
 			onSelectWorktree(selected as string);
+		} finally {
+			setFolderLoading(false);
 		}
 	}, [onChangeRepo, onSelectWorktree]);
 
 	if (!repoPath) {
 		return (
 			<div className="flex flex-col items-center justify-center h-screen w-screen bg-background text-foreground gap-4">
-				<Button onClick={handleSelectFolder}>
-					<FolderOpen className="size-4 mr-2" />
-					Open Folder
-				</Button>
+				{initializing ? (
+					<Loader2 className="size-6 text-muted-foreground animate-spin" />
+				) : (
+					<Button onClick={handleSelectFolder} disabled={folderLoading}>
+						{folderLoading ? (
+							<Loader2 className="size-4 mr-2 animate-spin" />
+						) : (
+							<FolderOpen className="size-4 mr-2" />
+						)}
+						Open Folder
+					</Button>
+				)}
 			</div>
 		);
 	}
@@ -221,6 +303,7 @@ export function WorkspaceManagerScreen({
 			<BranchCardComponent
 				key={b.name}
 				branch={b}
+				opening={openingBranch === b.name}
 				onOpen={() => handleOpenBranch(b)}
 				onDelete={setDeletingBranch}
 			/>
@@ -254,8 +337,17 @@ export function WorkspaceManagerScreen({
 					>
 						<Settings className="size-4" />
 					</Button>
-					<Button size="sm" variant="outline" onClick={handleSelectFolder}>
-						<FolderOpen className="size-4 mr-1" />
+					<Button
+						size="sm"
+						variant="outline"
+						onClick={handleSelectFolder}
+						disabled={folderLoading}
+					>
+						{folderLoading ? (
+							<Loader2 className="size-4 mr-1 animate-spin" />
+						) : (
+							<FolderOpen className="size-4 mr-1" />
+						)}
 						Open
 					</Button>
 					<Button size="sm" onClick={() => setShowCreate(true)}>
@@ -270,7 +362,7 @@ export function WorkspaceManagerScreen({
 				<div className="flex-1 p-3 min-w-0">
 					{loading ? (
 						<div className="flex items-center justify-center h-full">
-							<p className="text-muted-foreground">Loading...</p>
+							<Loader2 className="size-5 text-muted-foreground animate-spin" />
 						</div>
 					) : (
 						<div className="flex gap-3 h-full overflow-x-auto">
@@ -287,6 +379,14 @@ export function WorkspaceManagerScreen({
 								count={inProgress.length}
 							>
 								{renderCards(inProgress)}
+							</KanbanColumn>
+							<KanbanColumn
+								icon={<GitPullRequest className="size-3.5 text-purple-500" />}
+								title="Review"
+								count={review.length}
+							>
+								{renderCards(review)}
+								<ProviderStatusGuide status={providerStatus} />
 							</KanbanColumn>
 							<KanbanColumn
 								icon={<CheckCircle2 className="size-3.5 text-green-500" />}

@@ -372,6 +372,9 @@ pub(super) async fn handle_git_commit_request(
                             worktree_path: b.worktree_path,
                             dirty_count: b.dirty_count,
                             is_merged: b.is_merged,
+                            has_pr: b.has_pr,
+                            pr_number: b.pr_number,
+                            pr_url: b.pr_url,
                         })
                         .collect();
                     broadcaster.try_send(WsMessage::BranchListSync(BranchListSync {
@@ -429,18 +432,26 @@ pub(super) async fn handle_worktree_list_request(state: &WsServerState) -> Optio
         Some(p) => p.clone(),
         None => return Some(no_repo_error()),
     };
+    let pr_cache = state.pr_cache.clone();
     match tokio::task::spawn_blocking(move || {
+        let pr_status = crate::git_host::fetch_pr_status_with_cache(&pr_cache, &repo_path);
         let entries = crate::git::list_worktrees(repo_path)
             .unwrap_or_default()
             .into_iter()
-            .map(|e| WorktreeEntryMsg {
-                name: e.name,
-                path: e.path,
-                branch: e.branch,
-                is_main: e.is_main,
-                is_locked: e.is_locked,
-                dirty_count: e.dirty_count,
-                base_branch: e.base_branch,
+            .map(|e| {
+                let pr = pr_status.open_prs.get(&e.branch);
+                WorktreeEntryMsg {
+                    name: e.name,
+                    path: e.path,
+                    branch: e.branch,
+                    is_main: e.is_main,
+                    is_locked: e.is_locked,
+                    dirty_count: e.dirty_count,
+                    base_branch: e.base_branch,
+                    has_pr: pr.is_some(),
+                    pr_number: pr.map(|p| p.number),
+                    pr_url: pr.map(|p| p.url.clone()),
+                }
             })
             .collect();
         WsMessage::WorktreeListResponse(WorktreeListResponse { worktrees: entries })

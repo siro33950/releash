@@ -166,18 +166,24 @@ pub fn detect_all_interfaces() -> Vec<DetectedInterface> {
 }
 
 #[tauri::command]
-pub fn get_network_info() -> Vec<DetectedInterface> {
-    detect_all_interfaces()
+pub async fn get_network_info() -> Result<Vec<DetectedInterface>, String> {
+    tokio::task::spawn_blocking(detect_all_interfaces)
+        .await
+        .map_err(|e| format!("task join error: {e}"))
 }
 
 #[tauri::command]
-pub fn detect_vpn_tunnel() -> Result<Option<serde_json::Value>, String> {
-    Ok(detect_vpn_ip().map(|iface| {
-        serde_json::json!({
-            "name": iface.name,
-            "ip": iface.ip.to_string()
+pub async fn detect_vpn_tunnel() -> Result<Option<serde_json::Value>, String> {
+    tokio::task::spawn_blocking(|| {
+        detect_vpn_ip().map(|iface| {
+            serde_json::json!({
+                "name": iface.name,
+                "ip": iface.ip.to_string()
+            })
         })
-    }))
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))
 }
 
 #[cfg(test)]

@@ -2,7 +2,6 @@ use super::error::GitError;
 use git2::Repository;
 use std::path::Path;
 
-#[tauri::command]
 pub fn get_file_at_ref(file_path: String, git_ref: String) -> Result<String, GitError> {
     let path = Path::new(&file_path);
     let repo = Repository::discover(path)?;
@@ -23,7 +22,6 @@ pub fn get_file_at_ref(file_path: String, git_ref: String) -> Result<String, Git
     Ok(content)
 }
 
-#[tauri::command]
 pub fn get_staged_content(file_path: String) -> Result<String, GitError> {
     let path = Path::new(&file_path);
     let repo = Repository::discover(path)?;

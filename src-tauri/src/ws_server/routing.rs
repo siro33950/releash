@@ -72,6 +72,7 @@ mod tests {
             app_config,
             None,
             false,
+            Arc::new(crate::git_host::PrCache::new()),
         )
     }
 
