@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
 	CheckCircle2,
@@ -108,11 +109,21 @@ export function WorkspaceManagerScreen({
 
 	useEffect(() => {
 		if (!repoPath) return;
+		const unlisten = listen("branch-list-sync", () => {
+			refresh();
+		});
+		return () => {
+			unlisten.then((fn) => fn());
+		};
+	}, [repoPath, refresh]);
+
+	useEffect(() => {
+		if (!repoPath) return;
 		const id = setInterval(() => {
 			if (document.visibilityState === "visible") {
 				refresh();
 			}
-		}, 5000);
+		}, 30000);
 		return () => clearInterval(id);
 	}, [repoPath, refresh]);
 

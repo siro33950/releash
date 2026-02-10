@@ -242,6 +242,22 @@ pub struct PtySpawnResponse {
     pub error: Option<String>,
 }
 
+// --- ブランチリスト同期 ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchCardMsg {
+    pub name: String,
+    pub is_default: bool,
+    pub worktree_path: Option<String>,
+    pub dirty_count: usize,
+    pub is_merged: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchListSync {
+    pub branches: Vec<BranchCardMsg>,
+}
+
 // --- 制御 ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,6 +348,10 @@ pub enum WsMessage {
     WorktreeSelectRequest(WorktreeSelectRequest),
     #[serde(rename = "worktree_select_response")]
     WorktreeSelectResponse(WorktreeSelectResponse),
+
+    // ブランチリスト同期
+    #[serde(rename = "branch_list_sync")]
+    BranchListSync(BranchListSync),
 
     // 制御
     #[serde(rename = "error")]
@@ -709,6 +729,15 @@ mod tests {
                 success: true,
                 path: "/repo".to_string(),
                 error: None,
+            }),
+            WsMessage::BranchListSync(BranchListSync {
+                branches: vec![BranchCardMsg {
+                    name: "feature/test".to_string(),
+                    is_default: false,
+                    worktree_path: Some("/repo-worktrees/feature-test".to_string()),
+                    dirty_count: 2,
+                    is_merged: false,
+                }],
             }),
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),

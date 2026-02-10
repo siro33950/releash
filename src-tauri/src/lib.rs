@@ -31,7 +31,7 @@ use qr_code::get_connection_qr;
 use search::{find_definition, find_references, search_files};
 use tauri::Manager;
 use vpn_detect::{detect_vpn_tunnel, get_network_info};
-use watcher::{start_watching, stop_watching, FileWatcherManager};
+use watcher::{start_git_dir_watching, start_watching, stop_watching, FileWatcherManager};
 use ws_server::{broadcast_comments, get_server_status, start_server, stop_server, WsServerHandle};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -63,6 +63,7 @@ pub fn run() {
             get_or_spawn_pty,
             kill_ptys_by_worktree,
             start_watching,
+            start_git_dir_watching,
             stop_watching,
             get_file_at_ref,
             get_staged_content,

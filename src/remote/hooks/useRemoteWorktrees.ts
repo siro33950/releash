@@ -30,8 +30,11 @@ export function useRemoteWorktrees({
 				setWorktrees(msg.payload.worktrees);
 				setLoading(false);
 			}
+			if (msg.type === "branch_list_sync") {
+				refresh();
+			}
 		});
-	}, [subscribe]);
+	}, [subscribe, refresh]);
 
 	useEffect(() => {
 		if (connected) {
@@ -43,7 +46,7 @@ export function useRemoteWorktrees({
 
 	useEffect(() => {
 		if (!connected) return;
-		const id = setInterval(refresh, 10000);
+		const id = setInterval(refresh, 30000);
 		return () => clearInterval(id);
 	}, [connected, refresh]);
 

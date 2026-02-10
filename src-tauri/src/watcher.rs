@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::protocol::{FileChange, GitFileStatusMsg, GitStatusSync, WsMessage};
+use crate::protocol::{
+    BranchCardMsg, BranchListSync, FileChange, GitFileStatusMsg, GitStatusSync, WsMessage,
+};
 use crate::ws_bridge::WsBroadcaster;
 
 static WATCHER_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -113,6 +115,91 @@ pub fn start_watching(
         _debouncer: debouncer,
     };
 
+    state.sessions.lock().insert(watcher_id, session);
+
+    Ok(watcher_id)
+}
+
+fn build_branch_list_sync(repo_path: &str) -> Option<WsMessage> {
+    let branches = crate::git::list_branches_with_status(repo_path.to_string()).ok()?;
+    let branch_msgs: Vec<BranchCardMsg> = branches
+        .into_iter()
+        .map(|b| BranchCardMsg {
+            name: b.name,
+            is_default: b.is_default,
+            worktree_path: b.worktree_path,
+            dirty_count: b.dirty_count,
+            is_merged: b.is_merged,
+        })
+        .collect();
+    Some(WsMessage::BranchListSync(BranchListSync {
+        branches: branch_msgs,
+    }))
+}
+
+#[tauri::command]
+pub fn start_git_dir_watching(
+    app: AppHandle,
+    state: State<'_, FileWatcherManager>,
+    repo_path: String,
+) -> Result<u64, String> {
+    let watcher_id = generate_watcher_id();
+
+    let main_repo = crate::git::get_main_repo_path(repo_path)
+        .map_err(|e| format!("Failed to resolve main repo: {e}"))?;
+    let git_dir = git2::Repository::open(&main_repo)
+        .map_err(|e| format!("Failed to open repo: {e}"))?
+        .path()
+        .to_path_buf();
+
+    let refs_heads = git_dir.join("refs").join("heads");
+    let head_file = git_dir.join("HEAD");
+
+    if !refs_heads.exists() {
+        return Err(format!("refs/heads not found: {}", refs_heads.display()));
+    }
+
+    let app_clone = app.clone();
+    let main_repo_clone = main_repo.clone();
+
+    let debouncer = new_debouncer(Duration::from_millis(500), move |res: Result<
+        Vec<notify_debouncer_mini::DebouncedEvent>,
+        notify_debouncer_mini::notify::Error,
+    >| {
+        if let Ok(events) = res {
+            let dominated_by_git = events.iter().any(|e| {
+                let p = e.path.to_string_lossy();
+                p.contains("refs/heads") || p.ends_with("HEAD")
+            });
+            if dominated_by_git {
+                if let Some(sync_msg) = build_branch_list_sync(&main_repo_clone) {
+                    let _ = app_clone.emit("branch-list-sync", ());
+                    if let Some(ws) =
+                        app_clone.try_state::<std::sync::Arc<WsBroadcaster>>()
+                    {
+                        ws.try_send(sync_msg);
+                    }
+                }
+            }
+        }
+    })
+    .map_err(|e| format!("Failed to create debouncer: {e}"))?;
+
+    let mut debouncer = debouncer;
+    debouncer
+        .watcher()
+        .watch(&refs_heads, RecursiveMode::Recursive)
+        .map_err(|e| format!("Failed to watch refs/heads: {e}"))?;
+    if head_file.exists() {
+        debouncer
+            .watcher()
+            .watch(&head_file, RecursiveMode::NonRecursive)
+            .map_err(|e| format!("Failed to watch HEAD: {e}"))?;
+    }
+
+    let session = WatcherSession {
+        _debouncer: debouncer,
+    };
     state.sessions.lock().insert(watcher_id, session);
 
     Ok(watcher_id)
