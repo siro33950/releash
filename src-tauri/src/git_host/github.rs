@@ -12,7 +12,13 @@ impl GitHostProvider for GitHubProvider {
     fn detect_open_prs(&self, repo_path: &str) -> HashMap<String, PrInfo> {
         let output = run_gh_with_timeout(
             &[
-                "pr", "list", "--state", "open", "--json", "headRefName,number,url", "--limit",
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--json",
+                "headRefName,number,url",
+                "--limit",
                 "100",
             ],
             repo_path,
@@ -26,7 +32,14 @@ impl GitHostProvider for GitHubProvider {
     fn detect_merged_prs(&self, repo_path: &str) -> Vec<String> {
         let output = run_gh_with_timeout(
             &[
-                "pr", "list", "--state", "merged", "--json", "headRefName", "--limit", "100",
+                "pr",
+                "list",
+                "--state",
+                "merged",
+                "--json",
+                "headRefName",
+                "--limit",
+                "100",
             ],
             repo_path,
         );

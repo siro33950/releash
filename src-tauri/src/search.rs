@@ -390,7 +390,8 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = search_files_inner(root, "GREET".to_string(), Some(false), None, None).unwrap();
+        let result =
+            search_files_inner(root, "GREET".to_string(), Some(false), None, None).unwrap();
         assert!(result.matches.len() >= 3);
     }
 
@@ -408,7 +409,8 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = search_files_inner(root, r"greet\(".to_string(), None, Some(true), None).unwrap();
+        let result =
+            search_files_inner(root, r"greet\(".to_string(), None, Some(true), None).unwrap();
         assert!(result.matches.len() >= 2);
     }
 
@@ -417,7 +419,8 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = search_files_inner(root, "module.exports".to_string(), None, None, None).unwrap();
+        let result =
+            search_files_inner(root, "module.exports".to_string(), None, None, None).unwrap();
         assert_eq!(result.matches.len(), 0);
     }
 
@@ -437,7 +440,8 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = find_definition_inner(root, "greet".to_string(), "typescript".to_string()).unwrap();
+        let result =
+            find_definition_inner(root, "greet".to_string(), "typescript".to_string()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].kind, "function");
         assert_eq!(result[0].line_number, 1);
@@ -449,7 +453,8 @@ mod tests {
         let dir = setup_test_dir();
         let root = dir.path().to_string_lossy().to_string();
 
-        let result = find_definition_inner(root.clone(), "main".to_string(), "rust".to_string()).unwrap();
+        let result =
+            find_definition_inner(root.clone(), "main".to_string(), "rust".to_string()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].kind, "function");
 

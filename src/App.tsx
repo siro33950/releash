@@ -20,8 +20,9 @@ function App() {
 	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [mainRepoPath, setMainRepoPath] = useState<string | null>(null);
 	const [initializing, setInitializing] = useState(true);
-	const [providerStatus, setProviderStatus] =
-		useState<ProviderStatus | null>(null);
+	const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(
+		null,
+	);
 
 	useEffect(() => {
 		const suppress = (e: MouseEvent) => e.preventDefault();

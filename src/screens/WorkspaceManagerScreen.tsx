@@ -22,8 +22,8 @@ import { SettingsDialog } from "@/components/workspace/SettingsDialog";
 import { BranchCard as BranchCardComponent } from "@/components/workspace/WorktreeCard";
 import type {
 	BranchCard,
-	PrStatus,
 	ProviderStatus,
+	PrStatus,
 	WorktreeEntry,
 } from "@/types/git";
 import type { AppSettings, DiffBase, DiffMode, Theme } from "@/types/settings";
@@ -42,9 +42,7 @@ interface WorkspaceManagerScreenProps {
 	onChangeRepo: (path: string | null) => void;
 }
 
-function ProviderStatusGuide({
-	status,
-}: { status: ProviderStatus | null }) {
+function ProviderStatusGuide({ status }: { status: ProviderStatus | null }) {
 	if (!status || status === "available" || status === "no_remote") return null;
 
 	let message: string;
@@ -337,7 +335,12 @@ export function WorkspaceManagerScreen({
 					>
 						<Settings className="size-4" />
 					</Button>
-					<Button size="sm" variant="outline" onClick={handleSelectFolder} disabled={folderLoading}>
+					<Button
+						size="sm"
+						variant="outline"
+						onClick={handleSelectFolder}
+						disabled={folderLoading}
+					>
 						{folderLoading ? (
 							<Loader2 className="size-4 mr-1 animate-spin" />
 						) : (
@@ -376,9 +379,7 @@ export function WorkspaceManagerScreen({
 								{renderCards(inProgress)}
 							</KanbanColumn>
 							<KanbanColumn
-								icon={
-									<GitPullRequest className="size-3.5 text-purple-500" />
-								}
+								icon={<GitPullRequest className="size-3.5 text-purple-500" />}
 								title="Review"
 								count={review.length}
 							>

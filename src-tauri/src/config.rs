@@ -153,9 +153,7 @@ pub async fn update_server_port(
 }
 
 #[tauri::command]
-pub async fn regenerate_token(
-    state: tauri::State<'_, Arc<AppConfig>>,
-) -> Result<String, String> {
+pub async fn regenerate_token(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
     let app_config = state.inner().clone();
     tokio::task::spawn_blocking(move || {
         let mut config = app_config

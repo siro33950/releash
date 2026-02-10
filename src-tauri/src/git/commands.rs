@@ -29,10 +29,7 @@ pub async fn get_default_branch(repo_path: String) -> Result<String, GitError> {
 }
 
 #[tauri::command]
-pub async fn git_create_branch(
-    repo_path: String,
-    branch_name: String,
-) -> Result<(), GitError> {
+pub async fn git_create_branch(repo_path: String, branch_name: String) -> Result<(), GitError> {
     blocking(move || super::branch::git_create_branch(repo_path, branch_name)).await
 }
 
@@ -54,9 +51,7 @@ pub async fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, Git
 }
 
 #[tauri::command]
-pub async fn list_branches_with_status(
-    repo_path: String,
-) -> Result<Vec<BranchCard>, GitError> {
+pub async fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, GitError> {
     blocking(move || super::worktree::list_branches_with_status(repo_path)).await
 }
 
@@ -109,10 +104,7 @@ pub async fn get_releash_base(repo_path: String) -> Result<Option<String>, GitEr
 }
 
 #[tauri::command]
-pub async fn set_releash_base(
-    repo_path: String,
-    base: Option<String>,
-) -> Result<(), GitError> {
+pub async fn set_releash_base(repo_path: String, base: Option<String>) -> Result<(), GitError> {
     blocking(move || super::config::set_releash_base(repo_path, base)).await
 }
 

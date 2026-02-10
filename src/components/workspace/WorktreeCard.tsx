@@ -10,7 +10,12 @@ interface BranchCardProps {
 	onDelete: (branch: BranchCardType) => void;
 }
 
-export function BranchCard({ branch, opening, onOpen, onDelete }: BranchCardProps) {
+export function BranchCard({
+	branch,
+	opening,
+	onOpen,
+	onDelete,
+}: BranchCardProps) {
 	const hasWorktree = branch.worktree_path != null;
 
 	return (
@@ -63,12 +68,13 @@ export function BranchCard({ branch, opening, onOpen, onDelete }: BranchCardProp
 			)}
 
 			<div className="flex items-center gap-2 mt-auto">
-				<Button size="sm" className="flex-1" onClick={onOpen} disabled={opening}>
-					{opening ? (
-						<Loader2 className="size-4 animate-spin" />
-					) : (
-						"Open"
-					)}
+				<Button
+					size="sm"
+					className="flex-1"
+					onClick={onOpen}
+					disabled={opening}
+				>
+					{opening ? <Loader2 className="size-4 animate-spin" /> : "Open"}
 				</Button>
 				{hasWorktree && (
 					<Button
