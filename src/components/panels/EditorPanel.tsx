@@ -443,7 +443,10 @@ export function EditorPanel({
 			<Group orientation="vertical" className="flex-1">
 				<Panel id="editor-main" defaultSize={70} minSize={30}>
 					<div className="flex flex-col h-full">
-						<div className="flex-1 overflow-hidden">
+						<div
+							className="flex-1"
+							style={{ position: "relative", overflow: "hidden" }}
+						>
 							{activeTab ? (
 								<MonacoDiffViewer
 									key={activeTab.path}
