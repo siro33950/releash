@@ -4,6 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { LineComment } from "@/types/comment";
 import { ReviewPanel } from "./ReviewPanel";
 
+vi.mock("./TerminalPanel", () => ({
+	TerminalPanel: () => <div data-testid="terminal-panel" />,
+}));
+
 function makeComment(overrides: Partial<LineComment> = {}): LineComment {
 	return {
 		id: "c-1",
@@ -17,17 +21,29 @@ function makeComment(overrides: Partial<LineComment> = {}): LineComment {
 }
 
 describe("ReviewPanel", () => {
-	it("should render Comments header", () => {
+	it("should render Terminal and Comments tab buttons", () => {
 		render(<ReviewPanel comments={[]} />);
+		expect(screen.getByText("Terminal")).toBeInTheDocument();
 		expect(screen.getByText("Comments")).toBeInTheDocument();
 	});
 
-	it("should show empty state when no comments", () => {
+	it("should default to terminal tab", () => {
 		render(<ReviewPanel comments={[]} />);
+		expect(screen.getByRole("tab", { name: /Terminal/ })).toHaveAttribute(
+			"aria-selected",
+			"true",
+		);
+		expect(screen.getByTestId("terminal-panel")).toBeInTheDocument();
+	});
+
+	it("should show empty state when switching to comments tab with no comments", async () => {
+		const user = userEvent.setup();
+		render(<ReviewPanel comments={[]} />);
+		await user.click(screen.getByText("Comments"));
 		expect(screen.getByText("コメントなし")).toBeInTheDocument();
 	});
 
-	it("should show unsent count badge", () => {
+	it("should show unsent count badge on comments tab", () => {
 		render(
 			<ReviewPanel
 				comments={[
@@ -39,10 +55,12 @@ describe("ReviewPanel", () => {
 		expect(screen.getByText("1")).toBeInTheDocument();
 	});
 
-	it("should show Send button when unsent comments exist", () => {
+	it("should show Send button when comments tab is active and unsent comments exist", async () => {
+		const user = userEvent.setup();
 		render(
 			<ReviewPanel comments={[makeComment()]} onSendToTerminal={vi.fn()} />,
 		);
+		await user.click(screen.getByText("Comments"));
 		expect(screen.getByText("Send")).toBeInTheDocument();
 	});
 
@@ -56,6 +74,7 @@ describe("ReviewPanel", () => {
 				onSendToTerminal={onSend}
 			/>,
 		);
+		await user.click(screen.getByText("Comments"));
 		await user.click(screen.getByText("Send"));
 		expect(onSend).toHaveBeenCalledWith([unsent]);
 	});

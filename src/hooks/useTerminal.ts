@@ -92,6 +92,7 @@ export function useTerminal(
 	cwd?: string | null,
 	theme?: Theme,
 	terminalStartupCommand?: string,
+	sessionKey?: string,
 ) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
@@ -149,11 +150,12 @@ export function useTerminal(
 			// 2. Get or spawn PTY for this worktree
 			const { rows, cols } = terminal;
 			const worktreePath = cwd ?? null;
+			const effectiveKey = sessionKey ?? worktreePath ?? "";
 			const result = await invoke<GetOrSpawnPtyResult>("get_or_spawn_pty", {
 				rows,
 				cols,
 				cwd: worktreePath,
-				worktreePath: worktreePath ?? "",
+				worktreePath: effectiveKey,
 			});
 
 			if (!isMounted) return;
@@ -225,7 +227,7 @@ export function useTerminal(
 			unlistenExit?.();
 			terminal.dispose();
 		};
-	}, [containerRef, cwd]);
+	}, [containerRef, cwd, sessionKey]);
 
 	useEffect(() => {
 		const terminal = terminalRef.current;
