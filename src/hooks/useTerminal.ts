@@ -72,7 +72,11 @@ const terminalLightTheme: ITheme = {
 };
 
 function resolveTerminalBg(container: HTMLElement): string {
-	return getComputedStyle(container).backgroundColor;
+	const bg = getComputedStyle(container).backgroundColor;
+	if (!bg || bg === "rgba(0, 0, 0, 0)" || bg === "transparent") {
+		return "#1a1a1a";
+	}
+	return bg;
 }
 
 function getTerminalTheme(
