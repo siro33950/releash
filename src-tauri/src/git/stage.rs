@@ -1,5 +1,5 @@
 use super::error::GitError;
-use git2::{ErrorCode, Repository, StatusOptions};
+use git2::{build::CheckoutBuilder, ErrorCode, Repository, StatusOptions};
 use std::path::Path;
 use std::process::Command;
 
@@ -172,6 +172,82 @@ pub fn git_unstage_hunk(repo_path: String, patch: String) -> Result<(), GitError
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(GitError::Custom(stderr.trim().to_string()))
     }
+}
+
+#[tauri::command]
+pub fn git_discard(repo_path: String, paths: Vec<String>) -> Result<(), GitError> {
+    let repo = Repository::open(&repo_path)?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| GitError::Custom("bare repository".to_string()))?
+        .to_path_buf();
+
+    let targets: Vec<(String, git2::Status)> = if paths.is_empty() {
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true).recurse_untracked_dirs(true);
+        let statuses = repo.statuses(Some(&mut opts))?;
+        statuses
+            .iter()
+            .filter_map(|entry| {
+                let s = entry.status();
+                if s.contains(git2::Status::WT_NEW)
+                    || s.contains(git2::Status::WT_MODIFIED)
+                    || s.contains(git2::Status::WT_DELETED)
+                    || s.contains(git2::Status::WT_TYPECHANGE)
+                {
+                    entry.path().map(|p| (p.to_string(), s))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true).recurse_untracked_dirs(true);
+        let statuses = repo.statuses(Some(&mut opts))?;
+
+        let status_map: std::collections::HashMap<String, git2::Status> = statuses
+            .iter()
+            .filter_map(|entry| entry.path().map(|p| (p.to_string(), entry.status())))
+            .collect();
+
+        paths
+            .into_iter()
+            .map(|p| {
+                let s = status_map
+                    .get(&p)
+                    .copied()
+                    .unwrap_or(git2::Status::WT_MODIFIED);
+                (p, s)
+            })
+            .collect()
+    };
+
+    let mut checkout_paths: Vec<String> = Vec::new();
+
+    for (path, status) in &targets {
+        if status.contains(git2::Status::WT_NEW) {
+            let full_path = workdir.join(path);
+            if full_path.is_dir() {
+                std::fs::remove_dir_all(&full_path)?;
+            } else if full_path.exists() {
+                std::fs::remove_file(&full_path)?;
+            }
+        } else {
+            checkout_paths.push(path.clone());
+        }
+    }
+
+    if !checkout_paths.is_empty() {
+        let mut cb = CheckoutBuilder::new();
+        cb.force();
+        for p in &checkout_paths {
+            cb.path(p.as_str());
+        }
+        repo.checkout_head(Some(&mut cb))?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -359,5 +435,100 @@ mod tests {
         let file_status = after.iter().find(|s| s.path == "file.txt").unwrap();
         assert_eq!(file_status.worktree_status, "modified");
         assert_eq!(file_status.index_status, "none");
+    }
+
+    #[test]
+    fn test_discard_modified_file() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "file.txt", "original", "add file");
+
+        fs::write(dir.path().join("file.txt"), "modified").unwrap();
+        let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].worktree_status, "modified");
+
+        git_discard(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
+
+        let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(after.is_empty());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "original"
+        );
+    }
+
+    #[test]
+    fn test_discard_untracked_file() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        fs::write(dir.path().join("new.txt"), "untracked").unwrap();
+        let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].worktree_status, "new");
+
+        git_discard(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["new.txt".to_string()],
+        )
+        .unwrap();
+
+        let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(after.is_empty());
+        assert!(!dir.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn test_discard_deleted_file() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "file.txt", "content", "add file");
+
+        fs::remove_file(dir.path().join("file.txt")).unwrap();
+        let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].worktree_status, "deleted");
+
+        git_discard(
+            dir.path().to_str().unwrap().to_string(),
+            vec!["file.txt".to_string()],
+        )
+        .unwrap();
+
+        let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(after.is_empty());
+        assert!(dir.path().join("file.txt").exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "content"
+        );
+    }
+
+    #[test]
+    fn test_discard_all_changes() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "tracked.txt", "original", "add tracked");
+
+        fs::write(dir.path().join("tracked.txt"), "modified").unwrap();
+        fs::write(dir.path().join("new.txt"), "untracked").unwrap();
+
+        let before = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert_eq!(before.len(), 2);
+
+        git_discard(dir.path().to_str().unwrap().to_string(), vec![]).unwrap();
+
+        let after = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(after.is_empty());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("tracked.txt")).unwrap(),
+            "original"
+        );
+        assert!(!dir.path().join("new.txt").exists());
     }
 }

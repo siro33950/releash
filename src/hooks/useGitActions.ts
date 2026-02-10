@@ -29,6 +29,10 @@ export function useGitActions() {
 		await invoke("git_unstage_hunk", { repoPath, patch });
 	}, []);
 
+	const discard = useCallback(async (repoPath: string, paths: string[]) => {
+		await invoke("git_discard", { repoPath, paths });
+	}, []);
+
 	const createBranch = useCallback(
 		async (repoPath: string, branchName: string) => {
 			await invoke("git_create_branch", { repoPath, branchName });
@@ -36,5 +40,14 @@ export function useGitActions() {
 		[],
 	);
 
-	return { stage, unstage, stageHunk, unstageHunk, commit, push, createBranch };
+	return {
+		stage,
+		unstage,
+		stageHunk,
+		unstageHunk,
+		discard,
+		commit,
+		push,
+		createBranch,
+	};
 }

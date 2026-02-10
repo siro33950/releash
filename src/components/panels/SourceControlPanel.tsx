@@ -1,3 +1,4 @@
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
 	ArrowDown,
 	ArrowUp,
@@ -10,6 +11,17 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useState } from "react";
+import { SourceControlContextMenu } from "@/components/panels/SourceControlContextMenu";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitStatus } from "@/hooks/useGitStatus";
@@ -180,12 +192,16 @@ export function SourceControlPanel({
 		changedFiles,
 		refresh: refreshStatus,
 	} = useGitStatus(rootPath, gitRefreshKey);
-	const { stage, unstage, commit, push } = useGitActions();
+	const { stage, unstage, discard, commit, push } = useGitActions();
 
 	const [commitSummary, setCommitSummary] = useState("");
 	const [commitDescription, setCommitDescription] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
+	const [discardTarget, setDiscardTarget] = useState<{
+		path: string;
+		paths: string[];
+	} | null>(null);
 
 	const totalChanges = stagedFiles.length + changedFiles.length;
 
@@ -218,6 +234,20 @@ export function SourceControlPanel({
 		},
 		[rootPath, unstage, refreshStatus, onGitChanged],
 	);
+
+	const handleDiscard = useCallback(async () => {
+		if (!rootPath || !discardTarget) return;
+		try {
+			setError(null);
+			await discard(rootPath, discardTarget.paths);
+			refreshStatus();
+			onGitChanged?.();
+		} catch (e) {
+			setError(String(e));
+		} finally {
+			setDiscardTarget(null);
+		}
+	}, [rootPath, discardTarget, discard, refreshStatus, onGitChanged]);
 
 	const handleCommit = useCallback(async () => {
 		if (!rootPath || !commitSummary.trim()) return;
@@ -299,15 +329,36 @@ export function SourceControlPanel({
 						</div>
 					)}
 					{changedFiles.map((entry) => (
-						<FileStatusItem
+						<SourceControlContextMenu
 							key={`changed-${entry.path}`}
-							entry={entry}
-							statusField="worktree_status"
-							rootPath={rootPath}
-							onSelect={onSelectFile}
-							actionLabel="Stage"
-							onAction={() => handleStage([entry.path])}
-						/>
+							variant="unstaged"
+							onOpenChanges={() => onSelectFile?.(`${rootPath}/${entry.path}`)}
+							onStage={() => handleStage([entry.path])}
+							onDiscard={() =>
+								setDiscardTarget({
+									path: entry.path,
+									paths: [entry.path],
+								})
+							}
+							onCopyPath={() =>
+								navigator.clipboard.writeText(`${rootPath}/${entry.path}`)
+							}
+							onCopyRelativePath={() =>
+								navigator.clipboard.writeText(entry.path)
+							}
+							onRevealInFinder={() =>
+								revealItemInDir(`${rootPath}/${entry.path}`)
+							}
+						>
+							<FileStatusItem
+								entry={entry}
+								statusField="worktree_status"
+								rootPath={rootPath}
+								onSelect={onSelectFile}
+								actionLabel="Stage"
+								onAction={() => handleStage([entry.path])}
+							/>
+						</SourceControlContextMenu>
 					))}
 				</CollapsibleSection>
 
@@ -324,15 +375,30 @@ export function SourceControlPanel({
 						</div>
 					)}
 					{stagedFiles.map((entry) => (
-						<FileStatusItem
+						<SourceControlContextMenu
 							key={`staged-${entry.path}`}
-							entry={entry}
-							statusField="index_status"
-							rootPath={rootPath}
-							onSelect={onSelectFile}
-							actionLabel="Unstage"
-							onAction={() => handleUnstage([entry.path])}
-						/>
+							variant="staged"
+							onOpenChanges={() => onSelectFile?.(`${rootPath}/${entry.path}`)}
+							onUnstage={() => handleUnstage([entry.path])}
+							onCopyPath={() =>
+								navigator.clipboard.writeText(`${rootPath}/${entry.path}`)
+							}
+							onCopyRelativePath={() =>
+								navigator.clipboard.writeText(entry.path)
+							}
+							onRevealInFinder={() =>
+								revealItemInDir(`${rootPath}/${entry.path}`)
+							}
+						>
+							<FileStatusItem
+								entry={entry}
+								statusField="index_status"
+								rootPath={rootPath}
+								onSelect={onSelectFile}
+								actionLabel="Unstage"
+								onAction={() => handleUnstage([entry.path])}
+							/>
+						</SourceControlContextMenu>
 					))}
 				</CollapsibleSection>
 
@@ -414,6 +480,28 @@ export function SourceControlPanel({
 					</div>
 				)}
 			</div>
+
+			{/* Discard Confirm Dialog */}
+			<AlertDialog
+				open={discardTarget !== null}
+				onOpenChange={(o) => !o && setDiscardTarget(null)}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>変更の破棄</AlertDialogTitle>
+						<AlertDialogDescription>
+							「{discardTarget?.path}
+							」の変更を破棄しますか？この操作は取り消せません。
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel onClick={() => setDiscardTarget(null)}>
+							キャンセル
+						</AlertDialogCancel>
+						<AlertDialogAction onClick={handleDiscard}>破棄</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</div>
 	);
 }

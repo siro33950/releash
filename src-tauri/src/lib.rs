@@ -65,6 +65,7 @@ pub fn run() {
             git::stage::git_unstage,
             git::stage::git_stage_hunk,
             git::stage::git_unstage_hunk,
+            git::stage::git_discard,
             // Git: コミット・プッシュ
             git::commit::git_commit,
             git::commit::git_push,

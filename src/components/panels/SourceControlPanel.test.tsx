@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitFileStatus } from "@/types/git";
 import { SourceControlPanel } from "./SourceControlPanel";
@@ -13,6 +14,7 @@ const mockGitStatus = {
 const mockGitActions = {
 	stage: vi.fn().mockResolvedValue(undefined),
 	unstage: vi.fn().mockResolvedValue(undefined),
+	discard: vi.fn().mockResolvedValue(undefined),
 	commit: vi.fn().mockResolvedValue("abc123"),
 	push: vi.fn().mockResolvedValue("ok"),
 	createBranch: vi.fn().mockResolvedValue(undefined),
@@ -27,6 +29,10 @@ vi.mock("@/hooks/useGitActions", () => ({
 	useGitActions: () => mockGitActions,
 }));
 
+vi.mock("@tauri-apps/plugin-opener", () => ({
+	revealItemInDir: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe("SourceControlPanel", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -34,6 +40,7 @@ describe("SourceControlPanel", () => {
 		mockGitStatus.changedFiles = [];
 		mockGitActions.stage.mockResolvedValue(undefined);
 		mockGitActions.unstage.mockResolvedValue(undefined);
+		mockGitActions.discard.mockResolvedValue(undefined);
 		mockGitActions.commit.mockResolvedValue("abc123");
 		mockGitActions.push.mockResolvedValue("ok");
 	});
@@ -241,6 +248,170 @@ describe("SourceControlPanel", () => {
 
 		await waitFor(() => {
 			expect(mockGitActions.push).toHaveBeenCalledWith("/test/repo");
+		});
+	});
+
+	describe("context menu", () => {
+		it("should show context menu on right-click for unstaged file", async () => {
+			const user = userEvent.setup();
+			mockGitStatus.changedFiles = [
+				{
+					path: "file.txt",
+					index_status: "none",
+					worktree_status: "modified",
+				},
+			];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			const fileItem = screen.getByText("file.txt");
+			await user.pointer({ keys: "[MouseRight]", target: fileItem });
+
+			await waitFor(() => {
+				expect(screen.getByText("変更を開く")).toBeInTheDocument();
+				expect(screen.getByText("ステージ")).toBeInTheDocument();
+				expect(screen.getByText("変更を破棄")).toBeInTheDocument();
+				expect(screen.getByText("パスをコピー")).toBeInTheDocument();
+				expect(screen.getByText("相対パスをコピー")).toBeInTheDocument();
+				expect(screen.getByText("Finder で表示")).toBeInTheDocument();
+			});
+		});
+
+		it("should show context menu on right-click for staged file", async () => {
+			const user = userEvent.setup();
+			mockGitStatus.stagedFiles = [
+				{
+					path: "staged.txt",
+					index_status: "new",
+					worktree_status: "none",
+				},
+			];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			const fileItem = screen.getByText("staged.txt");
+			await user.pointer({ keys: "[MouseRight]", target: fileItem });
+
+			await waitFor(() => {
+				expect(screen.getByText("変更を開く")).toBeInTheDocument();
+				expect(screen.getByText("アンステージ")).toBeInTheDocument();
+				expect(screen.queryByText("変更を破棄")).not.toBeInTheDocument();
+				expect(screen.getByText("パスをコピー")).toBeInTheDocument();
+			});
+		});
+
+		it("should show discard confirmation dialog", async () => {
+			const user = userEvent.setup();
+			mockGitStatus.changedFiles = [
+				{
+					path: "file.txt",
+					index_status: "none",
+					worktree_status: "modified",
+				},
+			];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			const fileItem = screen.getByText("file.txt");
+			await user.pointer({ keys: "[MouseRight]", target: fileItem });
+
+			await waitFor(() => {
+				expect(screen.getByText("変更を破棄")).toBeInTheDocument();
+			});
+
+			await user.click(screen.getByText("変更を破棄"));
+
+			await waitFor(() => {
+				expect(screen.getByText("変更の破棄")).toBeInTheDocument();
+				expect(
+					screen.getByText(/file\.txt.*の変更を破棄しますか/),
+				).toBeInTheDocument();
+			});
+		});
+
+		it("should execute discard on confirmation", async () => {
+			const user = userEvent.setup();
+			mockGitStatus.changedFiles = [
+				{
+					path: "file.txt",
+					index_status: "none",
+					worktree_status: "modified",
+				},
+			];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			const fileItem = screen.getByText("file.txt");
+			await user.pointer({ keys: "[MouseRight]", target: fileItem });
+
+			await waitFor(() => {
+				expect(screen.getByText("変更を破棄")).toBeInTheDocument();
+			});
+
+			await user.click(screen.getByText("変更を破棄"));
+
+			await waitFor(() => {
+				expect(screen.getByText("変更の破棄")).toBeInTheDocument();
+			});
+
+			await user.click(screen.getByText("破棄"));
+
+			await waitFor(() => {
+				expect(mockGitActions.discard).toHaveBeenCalledWith("/test/repo", [
+					"file.txt",
+				]);
+			});
+			expect(mockGitStatus.refresh).toHaveBeenCalled();
+		});
+
+		it("should stage via context menu", async () => {
+			const user = userEvent.setup();
+			mockGitStatus.changedFiles = [
+				{
+					path: "file.txt",
+					index_status: "none",
+					worktree_status: "modified",
+				},
+			];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			const fileItem = screen.getByText("file.txt");
+			await user.pointer({ keys: "[MouseRight]", target: fileItem });
+
+			await waitFor(() => {
+				expect(screen.getByText("ステージ")).toBeInTheDocument();
+			});
+
+			await user.click(screen.getByText("ステージ"));
+
+			await waitFor(() => {
+				expect(mockGitActions.stage).toHaveBeenCalledWith("/test/repo", [
+					"file.txt",
+				]);
+			});
+		});
+
+		it("should unstage via context menu", async () => {
+			const user = userEvent.setup();
+			mockGitStatus.stagedFiles = [
+				{
+					path: "file.txt",
+					index_status: "new",
+					worktree_status: "none",
+				},
+			];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			const fileItem = screen.getByText("file.txt");
+			await user.pointer({ keys: "[MouseRight]", target: fileItem });
+
+			await waitFor(() => {
+				expect(screen.getByText("アンステージ")).toBeInTheDocument();
+			});
+
+			await user.click(screen.getByText("アンステージ"));
+
+			await waitFor(() => {
+				expect(mockGitActions.unstage).toHaveBeenCalledWith("/test/repo", [
+					"file.txt",
+				]);
+			});
 		});
 	});
 });
