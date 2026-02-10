@@ -13,6 +13,7 @@ function App() {
 		updateFontSize,
 		updateDefaultDiffBase,
 		updateDefaultDiffMode,
+		updateTerminalStartupCommand,
 	} = useSettings();
 
 	const [screen, setScreen] = useState<ScreenType>("manager");
@@ -64,6 +65,7 @@ function App() {
 				updateFontSize={updateFontSize}
 				updateDefaultDiffBase={updateDefaultDiffBase}
 				updateDefaultDiffMode={updateDefaultDiffMode}
+				updateTerminalStartupCommand={updateTerminalStartupCommand}
 				onGoHome={handleGoHome}
 			/>
 		);
@@ -72,6 +74,12 @@ function App() {
 	return (
 		<WorkspaceManagerScreen
 			repoPath={mainRepoPath}
+			settings={settings}
+			onThemeChange={updateTheme}
+			onFontSizeChange={updateFontSize}
+			onDiffBaseChange={updateDefaultDiffBase}
+			onDiffModeChange={updateDefaultDiffMode}
+			onTerminalStartupCommandChange={updateTerminalStartupCommand}
 			onSelectWorktree={handleSelectWorktree}
 			onChangeRepo={handleChangeRepo}
 		/>

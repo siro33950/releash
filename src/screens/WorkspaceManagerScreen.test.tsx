@@ -22,6 +22,7 @@ vi.mock("@/components/panels/RemotePanel", () => ({
 }));
 
 import type { BranchCard } from "@/types/git";
+import { DEFAULT_SETTINGS } from "@/types/settings";
 
 const todoBranch: BranchCard = {
 	name: "feat/todo-branch",
@@ -83,6 +84,12 @@ function renderScreen(repoPath: string | null = "/home/user/my-repo") {
 	const result = render(
 		<WorkspaceManagerScreen
 			repoPath={repoPath}
+			settings={DEFAULT_SETTINGS}
+			onThemeChange={vi.fn()}
+			onFontSizeChange={vi.fn()}
+			onDiffBaseChange={vi.fn()}
+			onDiffModeChange={vi.fn()}
+			onTerminalStartupCommandChange={vi.fn()}
 			onSelectWorktree={onSelectWorktree}
 			onChangeRepo={onChangeRepo}
 		/>,

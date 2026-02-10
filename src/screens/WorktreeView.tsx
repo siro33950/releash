@@ -32,6 +32,7 @@ interface WorktreeViewProps {
 	updateFontSize: (fontSize: number) => void;
 	updateDefaultDiffBase: (base: DiffBase) => void;
 	updateDefaultDiffMode: (mode: DiffMode) => void;
+	updateTerminalStartupCommand: (command: string) => void;
 	onGoHome: () => void;
 }
 
@@ -42,6 +43,7 @@ export function WorktreeView({
 	updateFontSize,
 	updateDefaultDiffBase,
 	updateDefaultDiffMode,
+	updateTerminalStartupCommand,
 	onGoHome,
 }: WorktreeViewProps) {
 	const {
@@ -268,6 +270,7 @@ export function WorktreeView({
 								onFontSizeChange={updateFontSize}
 								onDiffBaseChange={updateDefaultDiffBase}
 								onDiffModeChange={updateDefaultDiffMode}
+								onTerminalStartupCommandChange={updateTerminalStartupCommand}
 							/>
 						) : (
 							<SidebarPanel
@@ -326,6 +329,7 @@ export function WorktreeView({
 							key={rootPath}
 							cwd={rootPath}
 							theme={settings.theme}
+							terminalStartupCommand={settings.terminalStartupCommand}
 						/>
 					</Panel>
 				</Group>

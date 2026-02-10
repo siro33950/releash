@@ -7,6 +7,7 @@ export interface AppSettings {
 	fontSize: number;
 	defaultDiffBase: DiffBase;
 	defaultDiffMode: DiffMode;
+	terminalStartupCommand: string;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -14,4 +15,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	fontSize: 14,
 	defaultDiffBase: "staged",
 	defaultDiffMode: "inline",
+	terminalStartupCommand: "",
 };

@@ -19,6 +19,7 @@ describe("useSettings", () => {
 			fontSize: 14,
 			defaultDiffBase: "staged",
 			defaultDiffMode: "inline",
+			terminalStartupCommand: "",
 		});
 	});
 
@@ -47,6 +48,7 @@ describe("useSettings", () => {
 			fontSize: 14,
 			defaultDiffBase: "staged",
 			defaultDiffMode: "inline",
+			terminalStartupCommand: "",
 		});
 	});
 

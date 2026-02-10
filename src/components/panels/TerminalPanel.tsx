@@ -17,17 +17,19 @@ export interface TerminalPanelHandle {
 export interface TerminalPanelProps {
 	cwd?: string | null;
 	theme?: Theme;
+	terminalStartupCommand?: string;
 }
 
 export const TerminalPanel = forwardRef<
 	TerminalPanelHandle,
 	TerminalPanelProps
->(function TerminalPanel({ cwd, theme }, ref) {
+>(function TerminalPanel({ cwd, theme, terminalStartupCommand }, ref) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const { terminalRef, writeToTerminal } = useTerminal(
 		containerRef,
 		cwd,
 		theme,
+		terminalStartupCommand,
 	);
 
 	useImperativeHandle(
