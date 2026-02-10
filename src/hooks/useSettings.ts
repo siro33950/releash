@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
 	type AppSettings,
 	DEFAULT_SETTINGS,
@@ -40,7 +40,7 @@ function applyTheme(theme: Theme): void {
 export function useSettings() {
 	const [settings, setSettings] = useState<AppSettings>(loadSettings);
 
-	useEffect(() => {
+	useLayoutEffect(() => {
 		applyTheme(settings.theme);
 	}, [settings.theme]);
 

@@ -25,6 +25,8 @@ interface GetOrSpawnPtyResult {
 
 const terminalDarkTheme: ITheme = {
 	foreground: "#e0e0e0",
+	selectionBackground: "#264F78",
+	selectionInactiveBackground: "#3A3D41",
 	cursor: "#e0e0e0",
 	cursorAccent: "#1a1a1a",
 	black: "#1a1a1a",
@@ -47,6 +49,8 @@ const terminalDarkTheme: ITheme = {
 
 const terminalLightTheme: ITheme = {
 	foreground: "#1a1a1a",
+	selectionBackground: "#ADD6FF",
+	selectionInactiveBackground: "#E5EBF1",
 	cursor: "#1a1a1a",
 	cursorAccent: "#f8f8f8",
 	black: "#1a1a1a",
