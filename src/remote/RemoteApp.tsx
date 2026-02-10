@@ -18,16 +18,17 @@ import { RemoteSourceControl } from "./components/RemoteSourceControl";
 import { RemoteTerminalPanel } from "./components/RemoteTerminalPanel";
 import { StatusIndicator } from "./components/StatusIndicator";
 import { useMessageBus } from "./hooks/useMessageBus";
+import { usePtyManagement } from "./hooks/usePtyManagement";
+import { useRemoteContent } from "./hooks/useRemoteContent";
 import {
 	type DiffBase,
 	useRemoteFileContent,
 } from "./hooks/useRemoteFileContent";
 import { useRemoteGitActions } from "./hooks/useRemoteGitActions";
 import { useRemoteGitStatus } from "./hooks/useRemoteGitStatus";
+import { type Tab, useRemoteNavigation } from "./hooks/useRemoteNavigation";
 import { useRemoteWorktrees } from "./hooks/useRemoteWorktrees";
 import { useWebSocket } from "./hooks/useWebSocket";
-
-type Tab = "changes" | "diff" | "terminal" | "comments";
 
 const tabs: { id: Tab; label: string; icon: typeof GitBranch }[] = [
 	{ id: "changes", label: "Changes", icon: GitBranch },
@@ -42,77 +43,39 @@ export function RemoteApp() {
 		token: string;
 	} | null>(null);
 
-	const [selectedPath, setSelectedPath] = useState<string | null>(null);
-	const [ptySessions, setPtySessions] = useState<
-		{ ptyId: number; cols: number }[]
-	>([]);
-	const [activePtyId, setActivePtyId] = useState<number | null>(null);
-	const [selectedWorktree, setSelectedWorktree] = useState<string | null>(null);
-	const [activeTab, setActiveTab] = useState<Tab>("changes");
-	const [terminalMounted, setTerminalMounted] = useState(false);
-	const [comments, setComments] = useState<LineComment[]>([]);
-	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
-	const [branchName, setBranchName] = useState<string | null>(null);
-	const [ptySpawnError, setPtySpawnError] = useState<string | null>(null);
-	const [ptySpawning, setPtySpawning] = useState(false);
-
 	const { dispatch, subscribe } = useMessageBus();
-
-	const handleMessage = useCallback(
-		(msg: import("@/types/protocol").WsMessage) => {
-			if (msg.type === "worktree_select_response") {
-				if (msg.payload.success) {
-					setSelectedWorktree(msg.payload.path);
-					setPtySessions([]);
-					setActivePtyId(null);
-				}
-			}
-			if (msg.type === "branch_info_response") {
-				setBranchName(msg.payload.branch);
-			}
-			if (msg.type === "pty_spawn_response") {
-				setPtySpawning(false);
-				if (!msg.payload.success) {
-					setPtySpawnError(msg.payload.error ?? "PTY起動に失敗しました");
-				}
-			}
-			if (msg.type === "pty_ready") {
-				const { pty_id, cols } = msg.payload;
-				setPtySessions((prev) => {
-					if (prev.some((s) => s.ptyId === pty_id)) return prev;
-					return [...prev, { ptyId: pty_id, cols }];
-				});
-				setActivePtyId((prev) => prev ?? pty_id);
-				setPtySpawnError(null);
-			}
-			if (msg.type === "pty_exit") {
-				const { pty_id } = msg.payload;
-				setPtySessions((prev) => prev.filter((s) => s.ptyId !== pty_id));
-				setActivePtyId((prev) => (prev === pty_id ? null : prev));
-			}
-			if (msg.type === "comments_sync") {
-				setComments(
-					msg.payload.comments.map((c) => ({
-						id: c.id,
-						filePath: c.file_path,
-						lineNumber: c.line_number,
-						...(c.end_line != null && { endLine: c.end_line }),
-						content: c.content,
-						status: c.status,
-						createdAt: c.created_at,
-					})),
-				);
-			}
-			dispatch(msg);
-		},
-		[dispatch],
-	);
 
 	const { status, send, disconnect } = useWebSocket({
 		url: connection?.url ?? "",
 		token: connection?.token ?? "",
-		onMessage: handleMessage,
+		onMessage: dispatch,
 	});
+
+	const {
+		selectedPath,
+		selectedWorktree,
+		activeTab,
+		diffBase,
+		setSelectedPath,
+		setSelectedWorktree,
+		setActiveTab,
+		setDiffBase,
+	} = useRemoteNavigation({ subscribe });
+
+	const {
+		ptySessions,
+		activePtyId,
+		ptySpawning,
+		ptySpawnError,
+		terminalMounted,
+		setActivePtyId,
+		setTerminalMounted,
+		spawnPty,
+		resetPty,
+	} = usePtyManagement({ subscribe, send });
+
+	const { comments, branchName, setComments, setBranchName, addComment } =
+		useRemoteContent({ subscribe, send });
 
 	const { stagedFiles, changedFiles } = useRemoteGitStatus({ subscribe });
 	const { content, loading, requestContent } = useRemoteFileContent({
@@ -151,46 +114,34 @@ export function RemoteApp() {
 			selectWorktree(worktreePath);
 			setSelectedPath(null);
 			setBranchName(null);
-			setPtySessions([]);
-			setActivePtyId(null);
-			setPtySpawnError(null);
+			resetPty();
 			setActiveTab("changes");
 		},
-		[selectWorktree],
+		[selectWorktree, setSelectedPath, setBranchName, resetPty, setActiveTab],
 	);
 
 	const handleBackToWorktrees = useCallback(() => {
 		setSelectedWorktree(null);
 		setSelectedPath(null);
 		setBranchName(null);
-	}, []);
+	}, [setSelectedWorktree, setSelectedPath, setBranchName]);
 
 	const handleConnect = useCallback((wsUrl: string, token: string) => {
 		setConnection({ url: wsUrl, token });
 	}, []);
 
-	const handleSpawnPty = useCallback(() => {
-		setPtySpawnError(null);
-		setPtySpawning(true);
-		send({
-			type: "pty_spawn_request",
-			payload: { cols: 80, rows: 24 },
-		});
-	}, [send]);
-
 	const handleDisconnect = useCallback(() => {
 		disconnect();
 		setConnection(null);
-		setPtySessions([]);
-		setActivePtyId(null);
-	}, [disconnect]);
+		resetPty();
+	}, [disconnect, resetPty]);
 
 	const handleSelectFile = useCallback(
 		(path: string) => {
 			setSelectedPath(path);
 			requestContent(path, diffBase);
 		},
-		[requestContent, diffBase],
+		[setSelectedPath, requestContent, diffBase],
 	);
 
 	const handleDiffBaseChange = useCallback(
@@ -200,46 +151,16 @@ export function RemoteApp() {
 				requestContent(selectedPath, newBase);
 			}
 		},
-		[selectedPath, requestContent],
+		[selectedPath, setDiffBase, requestContent],
 	);
 
 	const handleNavigateToDiff = useCallback(() => {
 		setActiveTab("diff");
-	}, []);
+	}, [setActiveTab]);
 
 	const handleRefreshStatus = useCallback(() => {
 		send({ type: "git_status_request", payload: {} as Record<string, never> });
 	}, [send]);
-
-	const handleAddComment = useCallback(
-		(
-			filePath: string,
-			lineNumber: number,
-			content: string,
-			endLine?: number,
-		) => {
-			send({
-				type: "add_comment",
-				payload: {
-					file_path: filePath,
-					line_number: lineNumber,
-					...(endLine != null && { end_line: endLine }),
-					content,
-				},
-			});
-			const comment: LineComment = {
-				id: `remote-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-				filePath,
-				lineNumber,
-				...(endLine != null && { endLine }),
-				content,
-				status: "unsent",
-				createdAt: Date.now(),
-			};
-			setComments((prev) => [...prev, comment]);
-		},
-		[send],
-	);
 
 	const handleSendToTerminal = useCallback(
 		(unsent: LineComment[]) => {
@@ -259,7 +180,7 @@ export function RemoteApp() {
 				);
 			}
 		},
-		[send, activePtyId],
+		[send, activePtyId, setComments],
 	);
 
 	const hasDiffChanges = useMemo(() => {
@@ -416,7 +337,7 @@ export function RemoteApp() {
 										diffBase={diffBase}
 										staged={content?.staged ?? null}
 										onStageHunk={stageHunk}
-										onAddComment={handleAddComment}
+										onAddComment={addComment}
 									/>
 								) : (
 									<div className="flex items-center justify-center h-full text-neutral-500">
@@ -488,7 +409,7 @@ export function RemoteApp() {
 									<p>ターミナルセッションがありません</p>
 									<button
 										type="button"
-										onClick={handleSpawnPty}
+										onClick={spawnPty}
 										disabled={ptySpawning || !selectedWorktree}
 										className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm transition-colors"
 									>

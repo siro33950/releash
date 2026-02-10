@@ -203,7 +203,7 @@ describe("WorkspaceManagerScreen", () => {
 				expect(screen.getByText("feat/active-branch")).toBeInTheDocument();
 			});
 
-			const openButtons = screen.getAllByText("Open");
+			screen.getAllByText("Open");
 			// active-branch の Open ボタンをクリック（2番目: In Progress列の1つ目）
 			const activeBranchCard = screen
 				.getByText("feat/active-branch")
@@ -214,9 +214,7 @@ describe("WorkspaceManagerScreen", () => {
 			}
 
 			await waitFor(() => {
-				expect(onSelectWorktree).toHaveBeenCalledWith(
-					"/tmp/worktrees/active",
-				);
+				expect(onSelectWorktree).toHaveBeenCalledWith("/tmp/worktrees/active");
 			});
 		});
 
@@ -301,9 +299,7 @@ describe("WorkspaceManagerScreen", () => {
 				expect(screen.getByText("Todo")).toBeInTheDocument();
 			});
 
-			expect(
-				screen.queryByTestId("remote-panel"),
-			).not.toBeInTheDocument();
+			expect(screen.queryByTestId("remote-panel")).not.toBeInTheDocument();
 
 			const remoteBtn = screen.getByTitle("Remote");
 			await user.click(remoteBtn);
@@ -312,9 +308,7 @@ describe("WorkspaceManagerScreen", () => {
 
 			await user.click(remoteBtn);
 
-			expect(
-				screen.queryByTestId("remote-panel"),
-			).not.toBeInTheDocument();
+			expect(screen.queryByTestId("remote-panel")).not.toBeInTheDocument();
 		});
 	});
 
@@ -389,12 +383,10 @@ describe("WorkspaceManagerScreen", () => {
 
 		it("branch-list-sync イベント受信時にブランチリストが更新される", async () => {
 			let listenCallback: (() => void) | null = null;
-			mockListen.mockImplementation(
-				(_event: string, cb: () => void) => {
-					listenCallback = cb;
-					return Promise.resolve(() => {});
-				},
-			);
+			mockListen.mockImplementation((_event: string, cb: () => void) => {
+				listenCallback = cb;
+				return Promise.resolve(() => {});
+			});
 
 			renderScreen();
 
@@ -433,9 +425,7 @@ describe("WorkspaceManagerScreen", () => {
 			await waitFor(() => {
 				expect(screen.getByText("feat/new-branch")).toBeInTheDocument();
 			});
-			expect(
-				screen.queryByText("feat/todo-branch"),
-			).not.toBeInTheDocument();
+			expect(screen.queryByText("feat/todo-branch")).not.toBeInTheDocument();
 		});
 
 		it("repoPath=null の場合 listen が呼ばれない", () => {
