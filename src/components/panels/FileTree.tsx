@@ -115,6 +115,11 @@ function FileTreeItem({
 	const itemButton = (
 		<button
 			type="button"
+			draggable
+			onDragStart={(e) => {
+				e.dataTransfer.setData("application/x-releash-file-path", node.path);
+				e.dataTransfer.effectAllowed = "copy";
+			}}
 			onClick={handleClick}
 			className={cn(
 				"flex w-full items-center gap-1 px-2 py-1 text-sm hover:bg-sidebar-accent transition-colors",
