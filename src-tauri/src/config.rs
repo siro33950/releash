@@ -262,8 +262,11 @@ pub async fn apply_hooks_config(config_json: String) -> Result<(), String> {
         }
         let content = serde_json::to_string_pretty(&existing)
             .map_err(|e| format!("JSONシリアライズ失敗: {e}"))?;
-        fs::write(&settings_path, content)
-            .map_err(|e| format!("settings.json書き込み失敗: {e}"))?;
+        let tmp_path = settings_path.with_extension("json.tmp");
+        fs::write(&tmp_path, &content)
+            .map_err(|e| format!("一時ファイル書き込み失敗: {e}"))?;
+        fs::rename(&tmp_path, &settings_path)
+            .map_err(|e| format!("ファイルのリネーム失敗: {e}"))?;
 
         Ok(())
     })
