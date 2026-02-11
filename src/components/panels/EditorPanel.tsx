@@ -433,7 +433,7 @@ export function EditorPanel({
 		: undefined;
 
 	return (
-		<div className="flex flex-col h-full">
+		<div className="flex flex-col h-full overflow-hidden">
 			<EditorTabs
 				tabs={tabs}
 				activeTabPath={activeTab?.path ?? null}
