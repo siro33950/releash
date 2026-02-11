@@ -10,6 +10,7 @@ export interface WorktreeTab {
 	id: string;
 	rootPath: string;
 	branchName: string;
+	repoName?: string;
 	agentState?: AgentState;
 }
 

@@ -169,35 +169,9 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     let _sender_guard = BroadcasterGuard(state.broadcaster.clone());
 
     // --- 初期データ送信: worktreeリストのみ（PTYはworktree選択後に送信） ---
-    if let Some(repo_path) = &state.repo_path {
-        let repo_path_clone = repo_path.clone();
-        let pr_cache = state.pr_cache.clone();
-        let worktree_msg = tokio::task::spawn_blocking(move || {
-            let pr_status =
-                crate::git_host::fetch_pr_status_with_cache(&pr_cache, &repo_path_clone);
-            let entries = crate::git::list_worktrees(repo_path_clone)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|e| {
-                    let pr = pr_status.open_prs.get(&e.branch);
-                    WorktreeEntryMsg {
-                        name: e.name,
-                        path: e.path,
-                        branch: e.branch,
-                        is_main: e.is_main,
-                        is_locked: e.is_locked,
-                        dirty_count: e.dirty_count,
-                        base_branch: e.base_branch,
-                        has_pr: pr.is_some(),
-                        pr_number: pr.map(|p| p.number),
-                        pr_url: pr.map(|p| p.url.clone()),
-                    }
-                })
-                .collect();
-            WsMessage::WorktreeListResponse(WorktreeListResponse { worktrees: entries })
-        })
-        .await
-        .map_err(|e| format!("Failed to get worktree list: {e}"))?;
+    if !state.get_repo_paths().is_empty() {
+        let worktrees = super::handlers::build_all_worktrees(state).await;
+        let worktree_msg = WsMessage::WorktreeListResponse(WorktreeListResponse { worktrees });
         write
             .send(Message::Text(
                 serialize_message(&worktree_msg).map_err(|e| e.to_string())?,

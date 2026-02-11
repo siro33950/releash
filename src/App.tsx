@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
+import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useWorkspaceTabs } from "@/hooks/useWorkspaceTabs";
 import { WorkspaceManagerScreen } from "@/screens/WorkspaceManagerScreen";
@@ -17,12 +19,12 @@ function App() {
 		setActiveTab,
 		switchToKanban,
 	} = useWorkspaceTabs();
+	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
 
-	const [mainRepoPath, setMainRepoPath] = useState<string | null>(null);
 	const [initializing, setInitializing] = useState(true);
-	const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(
-		null,
-	);
+	const [providerStatuses, setProviderStatuses] = useState<
+		Record<string, ProviderStatus | null>
+	>({});
 
 	useEffect(() => {
 		const suppress = (e: MouseEvent) => e.preventDefault();
@@ -37,12 +39,13 @@ function App() {
 				const mainPath = await invoke<string>("get_main_repo_path", {
 					anyPath: cwd,
 				});
-				setMainRepoPath(mainPath);
+				initFromCwd(mainPath);
 				const worktrees = await invoke<WorktreeEntry[]>("list_worktrees", {
 					repoPath: mainPath,
 				});
 				if (worktrees.length === 1) {
-					openWorktreeTab(worktrees[0].path, worktrees[0].branch);
+					const repoName = mainPath.split(/[\\/]/).pop() ?? mainPath;
+					openWorktreeTab(worktrees[0].path, worktrees[0].branch, repoName);
 					setInitializing(false);
 					return;
 				}
@@ -51,31 +54,58 @@ function App() {
 			}
 			setInitializing(false);
 		})();
-	}, [openWorktreeTab]);
+	}, [openWorktreeTab, initFromCwd]);
 
 	useEffect(() => {
-		if (!mainRepoPath) {
-			setProviderStatus(null);
+		if (repoPaths.length === 0) {
+			setProviderStatuses({});
 			return;
 		}
 		let cancelled = false;
-		invoke<ProviderStatus>("check_pr_provider_status", {
-			repoPath: mainRepoPath,
-		})
-			.then((s) => {
-				if (!cancelled) setProviderStatus(s);
-			})
-			.catch(() => {
-				if (!cancelled) setProviderStatus(null);
-			});
+		const fetchStatuses = async () => {
+			const entries = await Promise.all(
+				repoPaths.map(async (repoPath) => {
+					try {
+						const status = await invoke<ProviderStatus>(
+							"check_pr_provider_status",
+							{ repoPath },
+						);
+						return [repoPath, status] as const;
+					} catch {
+						return [repoPath, null] as const;
+					}
+				}),
+			);
+			if (!cancelled) {
+				setProviderStatuses(Object.fromEntries(entries));
+			}
+		};
+		fetchStatuses();
 		return () => {
 			cancelled = true;
 		};
-	}, [mainRepoPath]);
+	}, [repoPaths]);
 
-	const handleChangeRepo = useCallback((path: string | null) => {
-		setMainRepoPath(path);
-	}, []);
+	const handleAddRepo = useCallback(async () => {
+		const selected = await open({ directory: true, multiple: false });
+		if (!selected) return;
+		try {
+			const mainPath = await invoke<string>("get_main_repo_path", {
+				anyPath: selected,
+			});
+			addRepo(mainPath);
+		} catch {
+			// not a git repo — open as worktree directly
+			openWorktreeTab(selected as string);
+		}
+	}, [addRepo, openWorktreeTab]);
+
+	const handleRemoveRepo = useCallback(
+		(repoPath: string) => {
+			removeRepo(repoPath);
+		},
+		[removeRepo],
+	);
 
 	const worktreeTabs = useMemo(
 		() => tabs.filter((t) => t.type === "worktree"),
@@ -98,14 +128,15 @@ function App() {
 					className="h-full"
 				>
 					<WorkspaceManagerScreen
-						repoPath={mainRepoPath}
+						repoPaths={repoPaths}
 						settings={settings}
-						providerStatus={providerStatus}
+						providerStatuses={providerStatuses}
 						initializing={initializing}
 						isActive={activeTabId === "kanban"}
 						onSettingsSave={updateSettings}
 						onSelectWorktree={openWorktreeTab}
-						onChangeRepo={handleChangeRepo}
+						onAddRepo={handleAddRepo}
+						onRemoveRepo={handleRemoveRepo}
 					/>
 				</div>
 				{worktreeTabs.map((tab) => (
