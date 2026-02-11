@@ -123,7 +123,7 @@ export function WorkspaceManagerScreen({
 		setTerminalOpen((prev) => {
 			const next = !prev;
 			if (next) {
-				terminalPanelRef.current?.expand();
+				terminalPanelRef.current?.resize(35);
 			} else {
 				terminalPanelRef.current?.collapse();
 			}
