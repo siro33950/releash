@@ -581,6 +581,5 @@ describe("WorkspaceManagerScreen", () => {
 				expect.any(Function),
 			);
 		});
-
 	});
 });

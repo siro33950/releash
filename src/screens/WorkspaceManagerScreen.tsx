@@ -34,7 +34,6 @@ export function WorkspaceManagerScreen({
 	settings,
 	providerStatuses,
 	initializing = false,
-	isActive = true,
 	onSettingsSave,
 	onSelectWorktree,
 	onAddRepo,
