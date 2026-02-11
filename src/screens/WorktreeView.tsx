@@ -36,14 +36,14 @@ interface WorktreeViewProps {
 	rootPath: string;
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
-	onGoHome: () => void;
+	onSwitchToKanban: () => void;
 }
 
 export function WorktreeView({
 	rootPath,
 	settings,
 	onSettingsSave,
-	onGoHome,
+	onSwitchToKanban,
 }: WorktreeViewProps) {
 	const {
 		tabs,
@@ -252,12 +252,12 @@ export function WorktreeView({
 		: null;
 
 	return (
-		<div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+		<div className="flex flex-col h-full w-full overflow-hidden bg-background text-foreground">
 			<div className="flex flex-1 overflow-hidden">
 				<ActivityBar
 					activeItem={activeView}
 					onItemClick={setActiveView}
-					onGoHome={onGoHome}
+					onGoHome={onSwitchToKanban}
 				/>
 				{!ready ? (
 					<div className="flex-1 flex items-center justify-center">
@@ -291,7 +291,7 @@ export function WorktreeView({
 							) : (
 								<SidebarPanel
 									rootPath={rootPath}
-									onOpenFolder={onGoHome}
+									onOpenFolder={onSwitchToKanban}
 									onSelectFile={openFile}
 									onFileChange={reloadTabIfClean}
 									onRename={handleRename}

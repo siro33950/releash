@@ -1,16 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
 import { useSettings } from "@/hooks/useSettings";
+import { useWorkspaceTabs } from "@/hooks/useWorkspaceTabs";
 import { WorkspaceManagerScreen } from "@/screens/WorkspaceManagerScreen";
 import { WorktreeView } from "@/screens/WorktreeView";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
-import type { ScreenType } from "@/types/screen";
 
 function App() {
 	const { settings, updateSettings } = useSettings();
+	const {
+		tabs,
+		activeTabId,
+		openWorktreeTab,
+		closeWorktreeTab,
+		setActiveTab,
+		switchToKanban,
+	} = useWorkspaceTabs();
 
-	const [screen, setScreen] = useState<ScreenType>("manager");
-	const [rootPath, setRootPath] = useState<string | null>(null);
 	const [mainRepoPath, setMainRepoPath] = useState<string | null>(null);
 	const [initializing, setInitializing] = useState(true);
 	const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(
@@ -35,8 +42,7 @@ function App() {
 					repoPath: mainPath,
 				});
 				if (worktrees.length === 1) {
-					setRootPath(worktrees[0].path);
-					setScreen("workspace");
+					openWorktreeTab(worktrees[0].path, worktrees[0].branch);
 					setInitializing(false);
 					return;
 				}
@@ -45,7 +51,7 @@ function App() {
 			}
 			setInitializing(false);
 		})();
-	}, []);
+	}, [openWorktreeTab]);
 
 	useEffect(() => {
 		if (!mainRepoPath) {
@@ -71,36 +77,54 @@ function App() {
 		setMainRepoPath(path);
 	}, []);
 
-	const handleGoHome = useCallback(() => {
-		setScreen("manager");
-		setRootPath(null);
-	}, []);
+	const worktreeTabs = useMemo(
+		() => tabs.filter((t) => t.type === "worktree"),
+		[tabs],
+	);
 
-	const handleSelectWorktree = useCallback((path: string) => {
-		setRootPath(path);
-		setScreen("workspace");
-	}, []);
-
-	const showWorkspace = screen === "workspace" && !!rootPath;
-
-	return showWorkspace ? (
-		<WorktreeView
-			key={rootPath}
-			rootPath={rootPath}
-			settings={settings}
-			onSettingsSave={updateSettings}
-			onGoHome={handleGoHome}
-		/>
-	) : (
-		<WorkspaceManagerScreen
-			repoPath={mainRepoPath}
-			settings={settings}
-			providerStatus={providerStatus}
-			initializing={initializing}
-			onSettingsSave={updateSettings}
-			onSelectWorktree={handleSelectWorktree}
-			onChangeRepo={handleChangeRepo}
-		/>
+	return (
+		<div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+			<WorkspaceTabBar
+				tabs={tabs}
+				activeTabId={activeTabId}
+				onTabClick={setActiveTab}
+				onTabClose={closeWorktreeTab}
+			/>
+			<div className="flex-1 overflow-hidden relative">
+				<div
+					style={{
+						display: activeTabId === "kanban" ? "contents" : "none",
+					}}
+					className="h-full"
+				>
+					<WorkspaceManagerScreen
+						repoPath={mainRepoPath}
+						settings={settings}
+						providerStatus={providerStatus}
+						initializing={initializing}
+						onSettingsSave={updateSettings}
+						onSelectWorktree={openWorktreeTab}
+						onChangeRepo={handleChangeRepo}
+					/>
+				</div>
+				{worktreeTabs.map((tab) => (
+					<div
+						key={tab.id}
+						style={{
+							display: activeTabId === tab.id ? "contents" : "none",
+						}}
+						className="h-full"
+					>
+						<WorktreeView
+							rootPath={tab.rootPath}
+							settings={settings}
+							onSettingsSave={updateSettings}
+							onSwitchToKanban={switchToKanban}
+						/>
+					</div>
+				))}
+			</div>
+		</div>
 	);
 }
 
