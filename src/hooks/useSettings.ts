@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
+	type AgentType,
 	type AppSettings,
 	DEFAULT_SETTINGS,
 	type DiffBase,
@@ -71,6 +72,18 @@ export function useSettings() {
 		[],
 	);
 
+	const updateAgent = useCallback((agent: AgentType) => {
+		setSettings((prev) => ({ ...prev, agent }));
+	}, []);
+
+	const updateAgentAutoApprove = useCallback((agentAutoApprove: boolean) => {
+		setSettings((prev) => ({ ...prev, agentAutoApprove }));
+	}, []);
+
+	const updateSettings = useCallback((next: AppSettings) => {
+		setSettings(next);
+	}, []);
+
 	return {
 		settings,
 		updateTheme,
@@ -78,5 +91,8 @@ export function useSettings() {
 		updateDefaultDiffBase,
 		updateDefaultDiffMode,
 		updateTerminalStartupCommand,
+		updateAgent,
+		updateAgentAutoApprove,
+		updateSettings,
 	};
 }

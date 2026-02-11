@@ -9,16 +9,14 @@ describe("SettingsPanel", () => {
 		fontSize: 14,
 		defaultDiffBase: "staged",
 		defaultDiffMode: "inline",
+		agent: "none",
+		agentAutoApprove: false,
 		terminalStartupCommand: "",
 	};
 
 	const defaultProps = {
 		settings: defaultSettings,
-		onThemeChange: vi.fn(),
-		onFontSizeChange: vi.fn(),
-		onDiffBaseChange: vi.fn(),
-		onDiffModeChange: vi.fn(),
-		onTerminalStartupCommandChange: vi.fn(),
+		onSave: vi.fn(),
 	};
 
 	it("should render Settings header", () => {
@@ -42,22 +40,31 @@ describe("SettingsPanel", () => {
 		expect(screen.getByText("Font Size: 18px")).toBeInTheDocument();
 	});
 
-	it("should call onThemeChange when theme is changed", () => {
-		const onThemeChange = vi.fn();
-		render(<SettingsPanel {...defaultProps} onThemeChange={onThemeChange} />);
-		const select = screen.getByLabelText("Theme");
-		fireEvent.change(select, { target: { value: "light" } });
-		expect(onThemeChange).toHaveBeenCalledWith("light");
+	it("Save button is disabled when no changes", () => {
+		render(<SettingsPanel {...defaultProps} />);
+		const saveBtn = screen.getByRole("button", { name: "Save" });
+		expect(saveBtn).toBeDisabled();
 	});
 
-	it("should call onFontSizeChange when slider is changed", () => {
-		const onFontSizeChange = vi.fn();
-		render(
-			<SettingsPanel {...defaultProps} onFontSizeChange={onFontSizeChange} />,
-		);
-		const slider = screen.getByLabelText(/Font Size/);
-		fireEvent.change(slider, { target: { value: "20" } });
-		expect(onFontSizeChange).toHaveBeenCalledWith(20);
+	it("Save button is enabled after draft change", () => {
+		render(<SettingsPanel {...defaultProps} />);
+		const select = screen.getByLabelText("Theme");
+		fireEvent.change(select, { target: { value: "light" } });
+		const saveBtn = screen.getByRole("button", { name: "Save" });
+		expect(saveBtn).toBeEnabled();
+	});
+
+	it("should call onSave with updated settings on Save click", () => {
+		const onSave = vi.fn();
+		render(<SettingsPanel {...defaultProps} onSave={onSave} />);
+		const select = screen.getByLabelText("Theme");
+		fireEvent.change(select, { target: { value: "light" } });
+		const saveBtn = screen.getByRole("button", { name: "Save" });
+		fireEvent.click(saveBtn);
+		expect(onSave).toHaveBeenCalledWith({
+			...defaultSettings,
+			theme: "light",
+		});
 	});
 
 	it("should show light theme option", () => {
@@ -71,23 +78,27 @@ describe("SettingsPanel", () => {
 		expect(select.value).toBe("light");
 	});
 
-	it("should call onDiffBaseChange when base is changed", () => {
-		const onDiffBaseChange = vi.fn();
-		render(
-			<SettingsPanel {...defaultProps} onDiffBaseChange={onDiffBaseChange} />,
-		);
+	it("should update draft when diff base is changed", () => {
+		const onSave = vi.fn();
+		render(<SettingsPanel {...defaultProps} onSave={onSave} />);
 		const select = screen.getByLabelText("Default Base");
 		fireEvent.change(select, { target: { value: "HEAD" } });
-		expect(onDiffBaseChange).toHaveBeenCalledWith("HEAD");
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		expect(onSave).toHaveBeenCalledWith({
+			...defaultSettings,
+			defaultDiffBase: "HEAD",
+		});
 	});
 
-	it("should call onDiffModeChange when view is changed", () => {
-		const onDiffModeChange = vi.fn();
-		render(
-			<SettingsPanel {...defaultProps} onDiffModeChange={onDiffModeChange} />,
-		);
+	it("should update draft when diff mode is changed", () => {
+		const onSave = vi.fn();
+		render(<SettingsPanel {...defaultProps} onSave={onSave} />);
 		const select = screen.getByLabelText("Default View");
 		fireEvent.change(select, { target: { value: "split" } });
-		expect(onDiffModeChange).toHaveBeenCalledWith("split");
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		expect(onSave).toHaveBeenCalledWith({
+			...defaultSettings,
+			defaultDiffMode: "split",
+		});
 	});
 });

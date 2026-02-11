@@ -17,6 +17,7 @@ import { RemoteDiffPanel } from "./components/RemoteDiffPanel";
 import { RemoteSourceControl } from "./components/RemoteSourceControl";
 import { RemoteTerminalPanel } from "./components/RemoteTerminalPanel";
 import { StatusIndicator } from "./components/StatusIndicator";
+import { useAgentState } from "./hooks/useAgentState";
 import { useMessageBus } from "./hooks/useMessageBus";
 import { usePtyManagement } from "./hooks/usePtyManagement";
 import { useRemoteContent } from "./hooks/useRemoteContent";
@@ -98,6 +99,8 @@ export function RemoteApp() {
 		send,
 		subscribe,
 	});
+	const { agentStates } = useAgentState({ subscribe });
+
 	const {
 		worktrees,
 		loading: worktreesLoading,
@@ -256,6 +259,7 @@ export function RemoteApp() {
 						loading={worktreesLoading}
 						onRefresh={refreshWorktrees}
 						onSelect={handleSelectWorktree}
+						agentStates={agentStates}
 					/>
 				</main>
 			) : (

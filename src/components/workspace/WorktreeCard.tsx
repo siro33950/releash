@@ -1,7 +1,75 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink, GitBranch, Loader2, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { BranchCard as BranchCardType } from "@/types/git";
+import type { AgentState } from "@/types/protocol";
+
+function formatElapsed(timestampSec: number): string {
+	const now = Date.now() / 1000;
+	const diff = Math.max(0, Math.floor(now - timestampSec));
+	if (diff < 60) return `${diff}s`;
+	if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+	return `${Math.floor(diff / 3600)}h`;
+}
+
+const agentStateConfig: Record<
+	AgentState,
+	{ bg: string; text: string; dot: string; label: string }
+> = {
+	running: {
+		bg: "bg-blue-500/15",
+		text: "text-blue-500",
+		dot: "bg-blue-500 animate-pulse",
+		label: "Running",
+	},
+	done: {
+		bg: "bg-green-500/15",
+		text: "text-green-500",
+		dot: "bg-green-500",
+		label: "Done",
+	},
+	waiting: {
+		bg: "bg-yellow-500/15",
+		text: "text-yellow-500",
+		dot: "bg-yellow-500 animate-pulse",
+		label: "Waiting",
+	},
+	error: {
+		bg: "bg-red-500/15",
+		text: "text-red-500",
+		dot: "bg-red-500",
+		label: "Error",
+	},
+};
+
+export function AgentStateBadge({
+	state,
+	timestamp,
+}: { state: AgentState; timestamp?: number }) {
+	const [, setTick] = useState(0);
+	const config = agentStateConfig[state];
+
+	useEffect(() => {
+		if (!timestamp) return;
+		const id = setInterval(() => setTick((t) => t + 1), 10000);
+		return () => clearInterval(id);
+	}, [timestamp]);
+
+	return (
+		<span className="shrink-0 inline-flex items-center gap-1">
+			<span
+				className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-medium ${config.bg} ${config.text}`}
+			>
+				<span className={`w-1.5 h-1.5 rounded-full ${config.dot}`} />
+				{config.label}
+			</span>
+			{timestamp && (
+				<span className="text-[10px] text-muted-foreground">{formatElapsed(timestamp)}</span>
+			)}
+		</span>
+	);
+}
 
 interface BranchCardProps {
 	branch: BranchCardType;
@@ -52,6 +120,12 @@ export function BranchCard({
 					<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
 						merged
 					</span>
+				)}
+				{branch.agent_state && (
+					<AgentStateBadge
+						state={branch.agent_state}
+						timestamp={branch.agent_state_timestamp}
+					/>
 				)}
 			</div>
 

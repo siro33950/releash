@@ -1,6 +1,7 @@
 mod config;
 mod git;
 mod git_host;
+mod hook_listener;
 mod protocol;
 mod pty;
 mod qr_code;
@@ -9,12 +10,15 @@ mod shell_integration;
 mod tls;
 mod vpn_detect;
 mod watcher;
+mod webhook;
 mod ws_bridge;
 mod ws_server;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use config::{load_or_create_config, AppConfig};
+use protocol::AgentStateSync;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,7 +39,25 @@ pub fn run() {
                 .expect("app_data_dir の取得に失敗");
             let config_path = data_dir.join("releash.toml");
             let config = load_or_create_config(&config_path).expect("設定ファイルの読み込みに失敗");
-            app.manage(Arc::new(AppConfig::new(config, config_path)));
+            let app_config = Arc::new(AppConfig::new(config, config_path));
+            app.manage(app_config.clone());
+
+            let agent_states: hook_listener::AgentStatesMap =
+                Arc::new(parking_lot::Mutex::new(HashMap::<String, AgentStateSync>::new()));
+            app.manage(agent_states.clone());
+
+            let hook_state = hook_listener::HookListenerState {
+                app_config,
+                app_handle: app.handle().clone(),
+                broadcaster: app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone(),
+                agent_states,
+            };
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = hook_listener::start_hook_listener(hook_state).await {
+                    log::error!("Hook listener failed to start: {e}");
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -95,6 +117,11 @@ pub fn run() {
             config::get_server_config,
             config::update_server_port,
             config::regenerate_token,
+            config::generate_hooks_config,
+            config::apply_hooks_config,
+            config::get_hooks_status,
+            // Hook Listener
+            hook_listener::get_agent_states,
             // ネットワーク
             vpn_detect::detect_vpn_tunnel,
             vpn_detect::get_network_info,

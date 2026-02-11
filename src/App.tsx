@@ -7,14 +7,7 @@ import type { ProviderStatus, WorktreeEntry } from "@/types/git";
 import type { ScreenType } from "@/types/screen";
 
 function App() {
-	const {
-		settings,
-		updateTheme,
-		updateFontSize,
-		updateDefaultDiffBase,
-		updateDefaultDiffMode,
-		updateTerminalStartupCommand,
-	} = useSettings();
+	const { settings, updateSettings } = useSettings();
 
 	const [screen, setScreen] = useState<ScreenType>("manager");
 	const [rootPath, setRootPath] = useState<string | null>(null);
@@ -95,11 +88,7 @@ function App() {
 			key={rootPath}
 			rootPath={rootPath}
 			settings={settings}
-			updateTheme={updateTheme}
-			updateFontSize={updateFontSize}
-			updateDefaultDiffBase={updateDefaultDiffBase}
-			updateDefaultDiffMode={updateDefaultDiffMode}
-			updateTerminalStartupCommand={updateTerminalStartupCommand}
+			onSettingsSave={updateSettings}
 			onGoHome={handleGoHome}
 		/>
 	) : (
@@ -108,11 +97,7 @@ function App() {
 			settings={settings}
 			providerStatus={providerStatus}
 			initializing={initializing}
-			onThemeChange={updateTheme}
-			onFontSizeChange={updateFontSize}
-			onDiffBaseChange={updateDefaultDiffBase}
-			onDiffModeChange={updateDefaultDiffMode}
-			onTerminalStartupCommandChange={updateTerminalStartupCommand}
+			onSettingsSave={updateSettings}
 			onSelectWorktree={handleSelectWorktree}
 			onChangeRepo={handleChangeRepo}
 		/>

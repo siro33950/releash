@@ -1,23 +1,39 @@
+import { useCallback, useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { AppSettings, DiffBase, DiffMode, Theme } from "@/types/settings";
+import {
+	AGENT_CONFIGS,
+	type AgentType,
+	type AppSettings,
+	type DiffBase,
+	type DiffMode,
+	type Theme,
+} from "@/types/settings";
+
+const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
 
 export interface SettingsPanelProps {
 	settings: AppSettings;
-	onThemeChange: (theme: Theme) => void;
-	onFontSizeChange: (size: number) => void;
-	onDiffBaseChange: (base: DiffBase) => void;
-	onDiffModeChange: (mode: DiffMode) => void;
-	onTerminalStartupCommandChange: (command: string) => void;
+	onSave: (settings: AppSettings) => void;
 }
 
 export function SettingsPanel({
 	settings,
-	onThemeChange,
-	onFontSizeChange,
-	onDiffBaseChange,
-	onDiffModeChange,
-	onTerminalStartupCommandChange,
+	onSave,
 }: SettingsPanelProps) {
+	const [draft, setDraft] = useState<AppSettings>(settings);
+
+	useEffect(() => {
+		setDraft(settings);
+	}, [settings]);
+
+	const handleSave = useCallback(() => {
+		onSave(draft);
+	}, [draft, onSave]);
+
+	const isDirty = JSON.stringify(draft) !== JSON.stringify(settings);
+	const showAutoApprove = draft.agent !== "none" && draft.agent !== "cursor" && draft.agent !== "custom";
+
 	return (
 		<div className="h-full flex flex-col bg-sidebar">
 			<div className="flex items-center gap-2 h-[30px] px-3 border-b border-border shrink-0">
@@ -37,8 +53,8 @@ export function SettingsPanel({
 						</label>
 						<select
 							id="theme-select"
-							value={settings.theme}
-							onChange={(e) => onThemeChange(e.target.value as Theme)}
+							value={draft.theme}
+							onChange={(e) => setDraft((d) => ({ ...d, theme: e.target.value as Theme }))}
 							className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
 						>
 							<option value="dark">Dark</option>
@@ -55,8 +71,8 @@ export function SettingsPanel({
 						</label>
 						<select
 							id="diff-base-select"
-							value={settings.defaultDiffBase}
-							onChange={(e) => onDiffBaseChange(e.target.value as DiffBase)}
+							value={draft.defaultDiffBase}
+							onChange={(e) => setDraft((d) => ({ ...d, defaultDiffBase: e.target.value as DiffBase }))}
 							className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
 						>
 							<option value="staged">Staged</option>
@@ -73,8 +89,8 @@ export function SettingsPanel({
 						</label>
 						<select
 							id="diff-mode-select"
-							value={settings.defaultDiffMode}
-							onChange={(e) => onDiffModeChange(e.target.value as DiffMode)}
+							value={draft.defaultDiffMode}
+							onChange={(e) => setDraft((d) => ({ ...d, defaultDiffMode: e.target.value as DiffMode }))}
 							className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
 						>
 							<option value="gutter">Gutter</option>
@@ -88,7 +104,7 @@ export function SettingsPanel({
 							htmlFor="font-size-slider"
 							className="text-xs font-medium text-muted-foreground"
 						>
-							Font Size: {settings.fontSize}px
+							Font Size: {draft.fontSize}px
 						</label>
 						<input
 							id="font-size-slider"
@@ -96,8 +112,8 @@ export function SettingsPanel({
 							min={12}
 							max={24}
 							step={1}
-							value={settings.fontSize}
-							onChange={(e) => onFontSizeChange(Number(e.target.value))}
+							value={draft.fontSize}
+							onChange={(e) => setDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))}
 							className="w-full accent-primary"
 						/>
 						<div className="flex justify-between text-[10px] text-muted-foreground">
@@ -108,23 +124,69 @@ export function SettingsPanel({
 
 					<div className="flex flex-col gap-1.5">
 						<label
-							htmlFor="terminal-startup-cmd"
+							htmlFor="agent-select"
 							className="text-xs font-medium text-muted-foreground"
 						>
-							Terminal Startup Command
+							Agent
 						</label>
-						<textarea
-							id="terminal-startup-cmd"
-							value={settings.terminalStartupCommand}
-							onChange={(e) => onTerminalStartupCommandChange(e.target.value)}
-							placeholder="e.g. nvm use 18 && clear"
-							rows={3}
-							className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary resize-none"
-						/>
-						<p className="text-[10px] text-muted-foreground">
-							Command to run when a new terminal is opened.
-						</p>
+						<select
+							id="agent-select"
+							value={draft.agent}
+							onChange={(e) => setDraft((d) => ({ ...d, agent: e.target.value as AgentType }))}
+							className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+						>
+							{AGENT_TYPE_KEYS.map((key) => (
+								<option key={key} value={key}>
+									{AGENT_CONFIGS[key].label}
+								</option>
+							))}
+						</select>
 					</div>
+
+					{showAutoApprove && (
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={draft.agentAutoApprove}
+								onChange={(e) => setDraft((d) => ({ ...d, agentAutoApprove: e.target.checked }))}
+								className="accent-primary"
+							/>
+							<span className="text-xs font-medium text-muted-foreground">
+								Auto-approve
+							</span>
+						</label>
+					)}
+
+					{draft.agent === "custom" && (
+						<div className="flex flex-col gap-1.5">
+							<label
+								htmlFor="terminal-startup-cmd"
+								className="text-xs font-medium text-muted-foreground"
+							>
+								Startup Command
+							</label>
+							<textarea
+								id="terminal-startup-cmd"
+								value={draft.terminalStartupCommand}
+								onChange={(e) => setDraft((d) => ({ ...d, terminalStartupCommand: e.target.value }))}
+								placeholder="e.g. nvm use 18 && clear"
+								rows={3}
+								className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+							/>
+							<p className="text-[10px] text-muted-foreground">
+								Optional: pre-launch setup command.
+							</p>
+						</div>
+					)}
+
+					<Button
+						size="sm"
+						onClick={handleSave}
+						disabled={!isDirty}
+						className="w-full"
+					>
+						Save
+					</Button>
 				</div>
 			</ScrollArea>
 		</div>

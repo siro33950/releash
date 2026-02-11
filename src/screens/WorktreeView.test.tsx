@@ -23,11 +23,7 @@ describe("WorktreeView", () => {
 			<WorktreeView
 				rootPath="/test/path"
 				settings={DEFAULT_SETTINGS}
-				updateTheme={vi.fn()}
-				updateFontSize={vi.fn()}
-				updateDefaultDiffBase={vi.fn()}
-				updateDefaultDiffMode={vi.fn()}
-				updateTerminalStartupCommand={vi.fn()}
+				onSettingsSave={vi.fn()}
 				onGoHome={vi.fn()}
 			/>,
 		);

@@ -26,18 +26,15 @@ import type {
 	PrStatus,
 	WorktreeEntry,
 } from "@/types/git";
-import type { AppSettings, DiffBase, DiffMode, Theme } from "@/types/settings";
+import type { AgentStateSync } from "@/types/protocol";
+import type { AppSettings } from "@/types/settings";
 
 interface WorkspaceManagerScreenProps {
 	repoPath: string | null;
 	settings: AppSettings;
 	providerStatus: ProviderStatus | null;
 	initializing?: boolean;
-	onThemeChange: (theme: Theme) => void;
-	onFontSizeChange: (size: number) => void;
-	onDiffBaseChange: (base: DiffBase) => void;
-	onDiffModeChange: (mode: DiffMode) => void;
-	onTerminalStartupCommandChange: (command: string) => void;
+	onSettingsSave: (settings: AppSettings) => void;
 	onSelectWorktree: (path: string) => void;
 	onChangeRepo: (path: string | null) => void;
 }
@@ -68,11 +65,7 @@ export function WorkspaceManagerScreen({
 	settings,
 	providerStatus,
 	initializing = false,
-	onThemeChange,
-	onFontSizeChange,
-	onDiffBaseChange,
-	onDiffModeChange,
-	onTerminalStartupCommandChange,
+	onSettingsSave,
 	onSelectWorktree,
 	onChangeRepo,
 }: WorkspaceManagerScreenProps) {
@@ -173,7 +166,15 @@ export function WorkspaceManagerScreen({
 				repoPath,
 			});
 			const enriched = await enrichWithPrStatus(cards);
-			setBranches(enriched);
+			const agentStates = await invoke<Record<string, AgentStateSync>>("get_agent_states").catch((): Record<string, AgentStateSync> => ({}));
+			setBranches(
+				enriched.map((b) => {
+					const agent = b.worktree_path ? agentStates[b.worktree_path] : undefined;
+					return agent
+						? { ...b, agent_state: agent.state, agent_state_timestamp: agent.timestamp }
+						: b;
+				}),
+			);
 		} catch (e) {
 			console.error("Failed to list branches:", e);
 		} finally {
@@ -196,6 +197,22 @@ export function WorkspaceManagerScreen({
 			unlisten.then((fn) => fn());
 		};
 	}, [repoPath, refresh]);
+
+	useEffect(() => {
+		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
+			const { worktree_path, state, timestamp } = event.payload;
+			setBranches((prev) =>
+				prev.map((b) =>
+					b.worktree_path === worktree_path
+						? { ...b, agent_state: state, agent_state_timestamp: timestamp }
+						: b,
+				),
+			);
+		});
+		return () => {
+			unlisten.then((fn) => fn());
+		};
+	}, []);
 
 	useEffect(() => {
 		if (!repoPath) return;
@@ -423,11 +440,7 @@ export function WorkspaceManagerScreen({
 					open={showSettings}
 					repoPath={repoPath}
 					settings={settings}
-					onThemeChange={onThemeChange}
-					onFontSizeChange={onFontSizeChange}
-					onDiffBaseChange={onDiffBaseChange}
-					onDiffModeChange={onDiffModeChange}
-					onTerminalStartupCommandChange={onTerminalStartupCommandChange}
+					onSave={onSettingsSave}
 					onBaseBranchSaved={handleBaseBranchSaved}
 					onClose={() => setShowSettings(false)}
 				/>
