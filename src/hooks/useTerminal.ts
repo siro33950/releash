@@ -204,16 +204,40 @@ export function useTerminal(
 			}
 		});
 
+		let wasHidden = false;
+
 		const resizeObserver = new ResizeObserver(() => {
-			if (fitAddonRef.current) {
-				fitAddonRef.current.fit();
-				if (ptyIdRef.current !== null && terminalRef.current) {
-					const { rows, cols } = terminalRef.current;
-					invoke("resize_pty", { ptyId: ptyIdRef.current, rows, cols }).catch(
-						(error) => {
-							console.error("Failed to resize PTY:", error);
-						},
+			const el = containerRef.current;
+			if (!el || !fitAddonRef.current) return;
+
+			const isHidden = el.clientWidth === 0 || el.clientHeight === 0;
+			if (isHidden) {
+				wasHidden = true;
+				return;
+			}
+
+			fitAddonRef.current.fit();
+
+			if (wasHidden && terminalRef.current) {
+				wasHidden = false;
+				requestAnimationFrame(() => {
+					terminalRef.current?.refresh(
+						0,
+						(terminalRef.current?.rows ?? 1) - 1,
 					);
+				});
+			}
+
+			if (ptyIdRef.current !== null && terminalRef.current) {
+				const { rows, cols } = terminalRef.current;
+				if (rows > 0 && cols > 0) {
+					invoke("resize_pty", {
+						ptyId: ptyIdRef.current,
+						rows,
+						cols,
+					}).catch((error) => {
+						console.error("Failed to resize PTY:", error);
+					});
 				}
 			}
 		});
