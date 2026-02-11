@@ -163,14 +163,12 @@ describe("useGitStatus", () => {
 		mockInvoke.mockResolvedValue([]);
 
 		let fileChangeCallback: (() => void) | null = null;
-		mockListen.mockImplementation(
-			(event: string, cb: () => void) => {
-				if (event === "file-change") {
-					fileChangeCallback = cb;
-				}
-				return Promise.resolve(vi.fn());
-			},
-		);
+		mockListen.mockImplementation((event: string, cb: () => void) => {
+			if (event === "file-change") {
+				fileChangeCallback = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
 
 		renderHook(() => useGitStatus("/test/repo"));
 
@@ -181,9 +179,9 @@ describe("useGitStatus", () => {
 		expect(fileChangeCallback).not.toBeNull();
 
 		act(() => {
-			fileChangeCallback!();
-			fileChangeCallback!();
-			fileChangeCallback!();
+			fileChangeCallback?.();
+			fileChangeCallback?.();
+			fileChangeCallback?.();
 		});
 
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
