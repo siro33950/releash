@@ -166,12 +166,20 @@ export function WorkspaceManagerScreen({
 				repoPath,
 			});
 			const enriched = await enrichWithPrStatus(cards);
-			const agentStates = await invoke<Record<string, AgentStateSync>>("get_agent_states").catch((): Record<string, AgentStateSync> => ({}));
+			const agentStates = await invoke<Record<string, AgentStateSync>>(
+				"get_agent_states",
+			).catch((): Record<string, AgentStateSync> => ({}));
 			setBranches(
 				enriched.map((b) => {
-					const agent = b.worktree_path ? agentStates[b.worktree_path] : undefined;
+					const agent = b.worktree_path
+						? agentStates[b.worktree_path]
+						: undefined;
 					return agent
-						? { ...b, agent_state: agent.state, agent_state_timestamp: agent.timestamp }
+						? {
+								...b,
+								agent_state: agent.state,
+								agent_state_timestamp: agent.timestamp,
+							}
 						: b;
 				}),
 			);

@@ -2,7 +2,14 @@ export type Theme = "dark" | "light";
 export type DiffBase = "HEAD" | "staged";
 export type DiffMode = "gutter" | "inline" | "split";
 
-export type AgentType = "none" | "claude" | "codex" | "gemini" | "aider" | "cursor" | "custom";
+export type AgentType =
+	| "none"
+	| "claude"
+	| "codex"
+	| "gemini"
+	| "aider"
+	| "cursor"
+	| "custom";
 
 export interface AgentConfig {
 	command: string;
@@ -12,7 +19,11 @@ export interface AgentConfig {
 
 export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 	none: { command: "", bypassFlag: "", label: "None" },
-	claude: { command: "claude", bypassFlag: "--dangerously-skip-permissions", label: "Claude Code" },
+	claude: {
+		command: "claude",
+		bypassFlag: "--dangerously-skip-permissions",
+		label: "Claude Code",
+	},
 	codex: { command: "codex", bypassFlag: "--yolo", label: "Codex" },
 	gemini: { command: "gemini", bypassFlag: "--yolo", label: "Gemini CLI" },
 	aider: { command: "aider", bypassFlag: "--yes-always", label: "Aider" },

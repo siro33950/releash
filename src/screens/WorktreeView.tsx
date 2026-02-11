@@ -26,8 +26,8 @@ import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
 import type { LineComment } from "@/types/comment";
 import type { AgentState, AgentStateSync } from "@/types/protocol";
 import {
-	buildTerminalCommand,
 	type AppSettings,
+	buildTerminalCommand,
 	type DiffBase,
 	type DiffMode,
 } from "@/types/settings";
@@ -287,10 +287,7 @@ export function WorktreeView({
 									focusKey={searchFocusKey}
 								/>
 							) : activeView === "settings" ? (
-								<SettingsPanel
-									settings={settings}
-									onSave={onSettingsSave}
-								/>
+								<SettingsPanel settings={settings} onSave={onSettingsSave} />
 							) : (
 								<SidebarPanel
 									rootPath={rootPath}

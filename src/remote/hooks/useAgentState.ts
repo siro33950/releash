@@ -7,9 +7,9 @@ interface UseAgentStateOptions {
 }
 
 export function useAgentState({ subscribe }: UseAgentStateOptions) {
-	const [agentStates, setAgentStates] = useState<
-		Map<string, AgentStateSync>
-	>(new Map());
+	const [agentStates, setAgentStates] = useState<Map<string, AgentStateSync>>(
+		new Map(),
+	);
 	const statesRef = useRef(agentStates);
 	statesRef.current = agentStates;
 

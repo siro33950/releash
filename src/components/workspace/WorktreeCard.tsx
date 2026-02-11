@@ -46,7 +46,10 @@ const agentStateConfig: Record<
 export function AgentStateBadge({
 	state,
 	timestamp,
-}: { state: AgentState; timestamp?: number }) {
+}: {
+	state: AgentState;
+	timestamp?: number;
+}) {
 	const [, setTick] = useState(0);
 	const config = agentStateConfig[state];
 
@@ -65,7 +68,9 @@ export function AgentStateBadge({
 				{config.label}
 			</span>
 			{timestamp && (
-				<span className="text-[10px] text-muted-foreground">{formatElapsed(timestamp)}</span>
+				<span className="text-[10px] text-muted-foreground">
+					{formatElapsed(timestamp)}
+				</span>
 			)}
 		</span>
 	);
