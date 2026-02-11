@@ -54,7 +54,7 @@ export function RemotePanel({ rootPaths }: RemotePanelProps) {
 	}, [config]);
 
 	useEffect(() => {
-		if (running && rootPaths.length > 0) {
+		if (running) {
 			updateRepoPaths(rootPaths);
 		}
 	}, [running, rootPaths, updateRepoPaths]);
