@@ -17,6 +17,9 @@ export function Breadcrumb({ rootPath, filePath }: BreadcrumbProps) {
 	}
 
 	const relativePath = filePath.slice(normalizedRoot.length);
+	if (relativePath === "") {
+		return null;
+	}
 	const segments = relativePath.split("/");
 
 	return (
@@ -27,7 +30,7 @@ export function Breadcrumb({ rootPath, filePath }: BreadcrumbProps) {
 			{segments.map((segment, index) => {
 				const isLast = index === segments.length - 1;
 				return (
-					<span key={segment} className="flex items-center shrink-0">
+					<span key={`${index}-${segment}`} className="flex items-center shrink-0">
 						{index > 0 && (
 							<ChevronRight className="h-3 w-3 mx-0.5 text-muted-foreground/50" />
 						)}
