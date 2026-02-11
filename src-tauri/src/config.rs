@@ -197,7 +197,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d \"$(jq -n --arg wp \\\"$(pwd)\\\" --arg ev prompt_submit '{{worktree_path: $wp, event: $ev}}')\" || true"
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"prompt_submit\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
             }],
@@ -206,7 +206,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d \"$(jq -n --arg wp \\\"$(pwd)\\\" --arg ev stop '{{worktree_path: $wp, event: $ev}}')\" || true"
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"stop\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
             }],
@@ -215,7 +215,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d \"$(jq -n --arg wp \\\"$(pwd)\\\" --arg ev notification '{{worktree_path: $wp, event: $ev}}')\" || true"
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"notification\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
             }]

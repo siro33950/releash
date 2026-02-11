@@ -24,8 +24,16 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		bypassFlag: "--dangerously-skip-permissions",
 		label: "Claude Code",
 	},
-	codex: { command: "codex", bypassFlag: "--yolo", label: "Codex" },
-	gemini: { command: "gemini", bypassFlag: "--yolo", label: "Gemini CLI" },
+	codex: {
+		command: "codex",
+		bypassFlag: "--dangerously-bypass-approvals-and-sandbox",
+		label: "Codex",
+	},
+	gemini: {
+		command: "gemini",
+		bypassFlag: "--approval-mode=yolo",
+		label: "Gemini CLI",
+	},
 	aider: { command: "aider", bypassFlag: "--yes-always", label: "Aider" },
 	cursor: { command: "cursor-agent", bypassFlag: "", label: "Cursor" },
 	custom: { command: "", bypassFlag: "", label: "Custom" },
