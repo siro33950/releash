@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
+import { normalizePath } from "@/lib/normalizePath";
 import type { AgentStateSync } from "@/types/protocol";
 import type { WorkspaceTab, WorktreeTab } from "@/types/workspace-tab";
 
@@ -24,9 +25,10 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 
 	const openWorktreeTab = useCallback(
 		(rootPath: string, branchName?: string) => {
+			const normalized = normalizePath(rootPath);
 			setTabs((prev) => {
 				const existing = prev.find(
-					(t) => t.type === "worktree" && t.rootPath === rootPath,
+					(t) => t.type === "worktree" && t.rootPath === normalized,
 				);
 				if (existing) {
 					setActiveTabId(existing.id);
@@ -34,9 +36,9 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 				}
 				const newTab: WorktreeTab = {
 					type: "worktree",
-					id: rootPath,
-					rootPath,
-					branchName: branchName ?? fallbackBranchName(rootPath),
+					id: normalized,
+					rootPath: normalized,
+					branchName: branchName ?? fallbackBranchName(normalized),
 				};
 				setActiveTabId(newTab.id);
 				return [...prev, newTab];
@@ -70,10 +72,11 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 
 	useEffect(() => {
 		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
-			const { worktree_path, state } = event.payload;
+			const worktreePath = normalizePath(event.payload.worktree_path);
+			const { state } = event.payload;
 			setTabs((prev) =>
 				prev.map((t) =>
-					t.type === "worktree" && t.rootPath === worktree_path
+					t.type === "worktree" && t.rootPath === worktreePath
 						? { ...t, agentState: state }
 						: t,
 				),
