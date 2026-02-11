@@ -22,6 +22,7 @@ describe("useSettings", () => {
 			agent: "none",
 			agentAutoApprove: false,
 			terminalStartupCommand: "",
+			autoUpdate: true,
 		});
 	});
 
@@ -53,6 +54,7 @@ describe("useSettings", () => {
 			agent: "none",
 			agentAutoApprove: false,
 			terminalStartupCommand: "",
+			autoUpdate: true,
 		});
 	});
 

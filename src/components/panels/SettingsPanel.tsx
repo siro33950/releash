@@ -178,6 +178,23 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 						</label>
 					)}
 
+					<label className="flex items-center gap-2 cursor-pointer">
+						<input
+							type="checkbox"
+							checked={draft.autoUpdate}
+							onChange={(e) =>
+								setDraft((d) => ({
+									...d,
+									autoUpdate: e.target.checked,
+								}))
+							}
+							className="accent-primary"
+						/>
+						<span className="text-xs font-medium text-muted-foreground">
+							Auto-update
+						</span>
+					</label>
+
 					{draft.agent === "custom" && (
 						<div className="flex flex-col gap-1.5">
 							<label

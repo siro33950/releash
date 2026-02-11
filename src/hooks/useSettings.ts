@@ -80,6 +80,10 @@ export function useSettings() {
 		setSettings((prev) => ({ ...prev, agentAutoApprove }));
 	}, []);
 
+	const updateAutoUpdate = useCallback((autoUpdate: boolean) => {
+		setSettings((prev) => ({ ...prev, autoUpdate }));
+	}, []);
+
 	const updateSettings = useCallback((next: AppSettings) => {
 		setSettings(next);
 	}, []);
@@ -93,6 +97,7 @@ export function useSettings() {
 		updateTerminalStartupCommand,
 		updateAgent,
 		updateAgentAutoApprove,
+		updateAutoUpdate,
 		updateSettings,
 	};
 }
