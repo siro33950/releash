@@ -24,27 +24,25 @@ import { useLineComments } from "@/hooks/useLineComments";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
 import type { LineComment } from "@/types/comment";
-import type { AppSettings, DiffBase, DiffMode, Theme } from "@/types/settings";
+import type { AgentState, AgentStateSync } from "@/types/protocol";
+import {
+	type AppSettings,
+	buildTerminalCommand,
+	type DiffBase,
+	type DiffMode,
+} from "@/types/settings";
 
 interface WorktreeViewProps {
 	rootPath: string;
 	settings: AppSettings;
-	updateTheme: (theme: Theme) => void;
-	updateFontSize: (fontSize: number) => void;
-	updateDefaultDiffBase: (base: DiffBase) => void;
-	updateDefaultDiffMode: (mode: DiffMode) => void;
-	updateTerminalStartupCommand: (command: string) => void;
+	onSettingsSave: (settings: AppSettings) => void;
 	onGoHome: () => void;
 }
 
 export function WorktreeView({
 	rootPath,
 	settings,
-	updateTheme,
-	updateFontSize,
-	updateDefaultDiffBase,
-	updateDefaultDiffMode,
-	updateTerminalStartupCommand,
+	onSettingsSave,
 	onGoHome,
 }: WorktreeViewProps) {
 	const {
@@ -63,6 +61,7 @@ export function WorktreeView({
 	const [activeView, setActiveView] = useState<string>("explorer");
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
+	const [agentState, setAgentState] = useState<AgentState | undefined>();
 	const { comments, addComment, markAsSent } = useLineComments();
 	const { stageHunk, unstageHunk } = useGitActions();
 	const terminalRef = useRef<TerminalPanelHandle>(null);
@@ -74,6 +73,17 @@ export function WorktreeView({
 			setReady(true);
 		}
 	}, [branch]);
+
+	useEffect(() => {
+		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
+			if (event.payload.worktree_path === rootPath) {
+				setAgentState(event.payload.state);
+			}
+		});
+		return () => {
+			unlisten.then((f) => f());
+		};
+	}, [rootPath]);
 
 	const rootPathRef = useRef(rootPath);
 	rootPathRef.current = rootPath;
@@ -277,14 +287,7 @@ export function WorktreeView({
 									focusKey={searchFocusKey}
 								/>
 							) : activeView === "settings" ? (
-								<SettingsPanel
-									settings={settings}
-									onThemeChange={updateTheme}
-									onFontSizeChange={updateFontSize}
-									onDiffBaseChange={updateDefaultDiffBase}
-									onDiffModeChange={updateDefaultDiffMode}
-									onTerminalStartupCommandChange={updateTerminalStartupCommand}
-								/>
+								<SettingsPanel settings={settings} onSave={onSettingsSave} />
 							) : (
 								<SidebarPanel
 									rootPath={rootPath}
@@ -347,7 +350,7 @@ export function WorktreeView({
 								key={rootPath}
 								cwd={rootPath}
 								theme={settings.theme}
-								terminalStartupCommand={settings.terminalStartupCommand}
+								terminalStartupCommand={buildTerminalCommand(settings)}
 							/>
 						</Panel>
 					</Group>
@@ -358,6 +361,7 @@ export function WorktreeView({
 				language={activeTab?.language}
 				encoding={activeTab ? "UTF-8" : undefined}
 				eol={activeTab?.eol}
+				agentState={agentState}
 			/>
 			<UnsavedChangesDialog
 				open={!!closingTabPath}

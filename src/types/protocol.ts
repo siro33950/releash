@@ -199,6 +199,18 @@ export interface BranchListSync {
 	branches: BranchCardMsg[];
 }
 
+// --- エージェント状態 ---
+
+export type AgentState = "running" | "done" | "error" | "waiting";
+
+export interface AgentStateSync {
+	worktree_path: string;
+	state: AgentState;
+	exit_code: number | null;
+	timestamp: number;
+	session_id: string | null;
+}
+
 // --- 制御 ---
 
 export interface ErrorMsg {
@@ -242,6 +254,7 @@ export type WsMessage =
 	| { type: "worktree_select_request"; payload: WorktreeSelectRequest }
 	| { type: "worktree_select_response"; payload: WorktreeSelectResponse }
 	| { type: "branch_list_sync"; payload: BranchListSync }
+	| { type: "agent_state_sync"; payload: AgentStateSync }
 	| { type: "error"; payload: ErrorMsg };
 
 export type WsMessageType = WsMessage["type"];

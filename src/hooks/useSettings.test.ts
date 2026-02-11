@@ -19,6 +19,8 @@ describe("useSettings", () => {
 			fontSize: 14,
 			defaultDiffBase: "staged",
 			defaultDiffMode: "inline",
+			agent: "none",
+			agentAutoApprove: false,
 			terminalStartupCommand: "",
 		});
 	});
@@ -48,6 +50,8 @@ describe("useSettings", () => {
 			fontSize: 14,
 			defaultDiffBase: "staged",
 			defaultDiffMode: "inline",
+			agent: "none",
+			agentAutoApprove: false,
 			terminalStartupCommand: "",
 		});
 	});

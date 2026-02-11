@@ -28,6 +28,8 @@ export interface BranchCard {
 	has_pr: boolean;
 	pr_number: number | null;
 	pr_url: string | null;
+	agent_state?: "running" | "done" | "error" | "waiting";
+	agent_state_timestamp?: number;
 }
 
 export type ProviderStatus =

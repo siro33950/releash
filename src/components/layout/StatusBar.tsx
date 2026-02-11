@@ -1,5 +1,6 @@
 import { GitBranch } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { AgentState } from "@/types/protocol";
 
 interface StatusBarProps {
 	className?: string;
@@ -7,6 +8,7 @@ interface StatusBarProps {
 	language?: string;
 	encoding?: string;
 	eol?: "LF" | "CRLF";
+	agentState?: AgentState;
 }
 
 const languageDisplayNames: Record<string, string> = {
@@ -49,6 +51,7 @@ export function StatusBar({
 	language,
 	encoding,
 	eol,
+	agentState,
 }: StatusBarProps) {
 	const hasFileInfo = language != null;
 
@@ -66,6 +69,32 @@ export function StatusBar({
 						<GitBranch className="w-3.5 h-3.5" />
 						<span>{branch}</span>
 					</>
+				)}
+				{agentState && (
+					<span
+						className={`inline-flex items-center gap-1 ${
+							agentState === "running"
+								? "text-blue-300"
+								: agentState === "waiting"
+									? "text-yellow-300"
+									: agentState === "done"
+										? "text-green-300"
+										: "text-red-300"
+						}`}
+					>
+						<span
+							className={`w-1.5 h-1.5 rounded-full ${
+								agentState === "running"
+									? "bg-blue-400 animate-pulse"
+									: agentState === "waiting"
+										? "bg-yellow-400 animate-pulse"
+										: agentState === "done"
+											? "bg-green-400"
+											: "bg-red-400"
+							}`}
+						/>
+						Agent: {agentState}
+					</span>
 				)}
 			</div>
 			{hasFileInfo && (

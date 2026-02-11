@@ -1,3 +1,4 @@
+mod agent;
 mod auth;
 mod branch;
 mod comment;
@@ -7,6 +8,7 @@ mod git;
 mod pty;
 mod worktree;
 
+pub use agent::*;
 pub use auth::*;
 pub use branch::*;
 pub use comment::*;
@@ -102,6 +104,10 @@ pub enum WsMessage {
     // ブランチリスト同期
     #[serde(rename = "branch_list_sync")]
     BranchListSync(BranchListSync),
+
+    // エージェント状態
+    #[serde(rename = "agent_state_sync")]
+    AgentStateSync(AgentStateSync),
 
     // 制御
     #[serde(rename = "error")]
@@ -494,6 +500,13 @@ mod tests {
                     pr_number: Some(42),
                     pr_url: Some("https://github.com/owner/repo/pull/42".to_string()),
                 }],
+            }),
+            WsMessage::AgentStateSync(AgentStateSync {
+                worktree_path: "/repo".to_string(),
+                state: AgentState::Running,
+                exit_code: None,
+                timestamp: 1234567890.0,
+                session_id: Some("sess-1".to_string()),
             }),
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),

@@ -19,10 +19,20 @@ pub struct ServerSection {
     pub bind: String,
     #[serde(default = "default_port")]
     pub port: u16,
+    #[serde(default = "default_hook_port")]
+    pub hook_port: u16,
     #[serde(default)]
     pub token: String,
     #[serde(default)]
     pub tls: TlsSection,
+    #[serde(default)]
+    pub notify: NotifySection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NotifySection {
+    #[serde(default)]
+    pub webhook_url: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -43,13 +53,19 @@ fn default_port() -> u16 {
     9700
 }
 
+fn default_hook_port() -> u16 {
+    19700
+}
+
 impl Default for ServerSection {
     fn default() -> Self {
         Self {
             bind: default_bind(),
             port: default_port(),
+            hook_port: default_hook_port(),
             token: String::new(),
             tls: TlsSection::default(),
+            notify: NotifySection::default(),
         }
     }
 }
@@ -163,6 +179,136 @@ pub async fn regenerate_token(state: tauri::State<'_, Arc<AppConfig>>) -> Result
         config.server.token = generate_token();
         write_config(&app_config.config_path, &config)?;
         Ok(config.server.token.clone())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
+    let config = state.get_config()?;
+    let port = config.server.hook_port;
+    let token = config.server.token;
+
+    let hooks_json = serde_json::json!({
+        "hooks": {
+            "UserPromptSubmit": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!(
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"prompt_submit\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                    )
+                }]
+            }],
+            "Stop": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!(
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"stop\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                    )
+                }]
+            }],
+            "Notification": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!(
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"notification\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                    )
+                }]
+            }]
+        }
+    });
+
+    serde_json::to_string_pretty(&hooks_json).map_err(|e| format!("JSON生成失敗: {e}"))
+}
+
+#[tauri::command]
+pub async fn apply_hooks_config(config_json: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let home = dirs::home_dir().ok_or("ホームディレクトリの取得失敗")?;
+        let settings_path = home.join(".claude").join("settings.json");
+
+        let mut existing: serde_json::Value = if settings_path.exists() {
+            let content = fs::read_to_string(&settings_path)
+                .map_err(|e| format!("settings.json読み込み失敗: {e}"))?;
+            serde_json::from_str(&content).map_err(|e| format!("settings.jsonパース失敗: {e}"))?
+        } else {
+            serde_json::json!({})
+        };
+
+        let new_config: serde_json::Value =
+            serde_json::from_str(&config_json).map_err(|e| format!("設定JSONパース失敗: {e}"))?;
+
+        if let Some(serde_json::Value::Object(new_hooks)) = new_config.get("hooks") {
+            let existing_hooks = existing
+                .as_object_mut()
+                .ok_or("settings.jsonがオブジェクトではありません")?
+                .entry("hooks")
+                .or_insert_with(|| serde_json::json!({}));
+            if let serde_json::Value::Object(map) = existing_hooks {
+                for (key, value) in new_hooks {
+                    map.insert(key.clone(), value.clone());
+                }
+            } else {
+                *existing_hooks = serde_json::Value::Object(new_hooks.clone());
+            }
+        }
+
+        if let Some(parent) = settings_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("ディレクトリ作成失敗: {e}"))?;
+        }
+        let content = serde_json::to_string_pretty(&existing)
+            .map_err(|e| format!("JSONシリアライズ失敗: {e}"))?;
+        let tmp_path = settings_path.with_extension("json.tmp");
+        fs::write(&tmp_path, &content).map_err(|e| format!("一時ファイル書き込み失敗: {e}"))?;
+        fs::rename(&tmp_path, &settings_path)
+            .map_err(|e| format!("ファイルのリネーム失敗: {e}"))?;
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_hooks_status(state: tauri::State<'_, Arc<AppConfig>>) -> Result<bool, String> {
+    let config = state.get_config()?;
+    let hook_port = config.server.hook_port;
+
+    tokio::task::spawn_blocking(move || {
+        let home = dirs::home_dir().ok_or("ホームディレクトリの取得失敗")?;
+        let settings_path = home.join(".claude").join("settings.json");
+
+        if !settings_path.exists() {
+            return Ok(false);
+        }
+
+        let content = fs::read_to_string(&settings_path)
+            .map_err(|e| format!("settings.json読み込み失敗: {e}"))?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("settings.jsonパース失敗: {e}"))?;
+
+        let port_str = format!("localhost:{hook_port}");
+        let has_releash_hook = parsed
+            .get("hooks")
+            .and_then(|h| h.as_object())
+            .map(|hooks| {
+                hooks.values().any(|entries| {
+                    entries
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .any(|entry| entry.to_string().contains(&port_str))
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+
+        Ok(has_releash_hook)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?

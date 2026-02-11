@@ -206,6 +206,26 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
             .map_err(|e| format!("Failed to send worktree list: {e}"))?;
     }
 
+    // --- 初期データ送信: agent_states ---
+    if let Some(app) = &state.app_handle {
+        use tauri::Manager;
+        if let Some(agent_states) = app.try_state::<crate::hook_listener::AgentStatesMap>() {
+            let agent_msgs: Vec<String> = {
+                let states = agent_states.lock();
+                states
+                    .values()
+                    .filter_map(|sync| {
+                        let msg = WsMessage::AgentStateSync(sync.clone());
+                        serialize_message(&msg).ok()
+                    })
+                    .collect()
+            };
+            for json in agent_msgs {
+                let _ = write.send(Message::Text(json)).await;
+            }
+        }
+    }
+
     // --- セッション単位のworktree選択状態 ---
     let selected_worktree: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 

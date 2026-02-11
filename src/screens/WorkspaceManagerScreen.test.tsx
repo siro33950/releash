@@ -117,6 +117,8 @@ function setupMockInvoke(
 				return Promise.resolve(null);
 			case "get_default_branch":
 				return Promise.resolve("main");
+			case "get_agent_states":
+				return Promise.resolve({});
 			default:
 				return Promise.resolve(null);
 		}
@@ -131,11 +133,7 @@ function renderScreen(repoPath: string | null = "/home/user/my-repo") {
 			repoPath={repoPath}
 			settings={DEFAULT_SETTINGS}
 			providerStatus="available"
-			onThemeChange={vi.fn()}
-			onFontSizeChange={vi.fn()}
-			onDiffBaseChange={vi.fn()}
-			onDiffModeChange={vi.fn()}
-			onTerminalStartupCommandChange={vi.fn()}
+			onSettingsSave={vi.fn()}
 			onSelectWorktree={onSelectWorktree}
 			onChangeRepo={onChangeRepo}
 		/>,
@@ -194,6 +192,8 @@ describe("WorkspaceManagerScreen", () => {
 						return Promise.resolve(defaultPrStatus);
 					case "get_releash_base":
 						return Promise.resolve("develop");
+					case "get_agent_states":
+						return Promise.resolve({});
 					default:
 						return Promise.resolve(null);
 				}
@@ -331,6 +331,8 @@ describe("WorkspaceManagerScreen", () => {
 						return Promise.resolve(null);
 					case "get_default_branch":
 						return Promise.resolve("main");
+					case "get_agent_states":
+						return Promise.resolve({});
 					case "create_worktree":
 						return Promise.resolve({
 							name: "feat-todo-branch",
@@ -428,6 +430,8 @@ describe("WorkspaceManagerScreen", () => {
 						return Promise.resolve(null);
 					case "get_default_branch":
 						return Promise.resolve("main");
+					case "get_agent_states":
+						return Promise.resolve({});
 					default:
 						return Promise.resolve(null);
 				}
@@ -459,6 +463,8 @@ describe("WorkspaceManagerScreen", () => {
 						return Promise.resolve({ open_prs: {}, merged_branches: [] });
 					case "get_releash_base":
 						return Promise.reject(new Error("config error"));
+					case "get_agent_states":
+						return Promise.resolve({});
 					default:
 						return Promise.resolve(null);
 				}
@@ -488,8 +494,10 @@ describe("WorkspaceManagerScreen", () => {
 
 		it("branch-list-sync イベント受信時にブランチリストが更新される", async () => {
 			let listenCallback: (() => void) | null = null;
-			mockListen.mockImplementation((_event: string, cb: () => void) => {
-				listenCallback = cb;
+			mockListen.mockImplementation((event: string, cb: () => void) => {
+				if (event === "branch-list-sync") {
+					listenCallback = cb;
+				}
 				return Promise.resolve(() => {});
 			});
 
@@ -525,6 +533,8 @@ describe("WorkspaceManagerScreen", () => {
 						return Promise.resolve(null);
 					case "get_default_branch":
 						return Promise.resolve("main");
+					case "get_agent_states":
+						return Promise.resolve({});
 					default:
 						return Promise.resolve(null);
 				}
@@ -541,9 +551,12 @@ describe("WorkspaceManagerScreen", () => {
 			expect(screen.queryByText("feat/todo-branch")).not.toBeInTheDocument();
 		});
 
-		it("repoPath=null の場合 listen が呼ばれない", () => {
+		it("repoPath=null の場合 branch-list-sync の listen が呼ばれない", () => {
 			renderScreen(null);
-			expect(mockListen).not.toHaveBeenCalled();
+			expect(mockListen).not.toHaveBeenCalledWith(
+				"branch-list-sync",
+				expect.any(Function),
+			);
 		});
 
 		it("フォールバックポーリングが 30秒間隔で設定される", async () => {
