@@ -50,7 +50,9 @@ export function SettingsDialog({
 	const [hooksConfig, setHooksConfig] = useState<string>("");
 	const [hooksLoading, setHooksLoading] = useState(false);
 	const [hooksApplying, setHooksApplying] = useState(false);
-	const [hooksEnabled, setHooksEnabled] = useState(false);
+	const [hooksStatus, setHooksStatus] = useState<
+		"active" | "token_mismatch" | "not_configured"
+	>("not_configured");
 	const [hooksCopied, setHooksCopied] = useState(false);
 	const [hooksError, setHooksError] = useState<string | null>(null);
 	const [hooksSuccess, setHooksSuccess] = useState(false);
@@ -93,11 +95,13 @@ export function SettingsDialog({
 
 		Promise.all([
 			invoke<string>("generate_hooks_config"),
-			invoke<boolean>("get_hooks_status"),
+			invoke<string>("get_hooks_status"),
 		])
 			.then(([json, status]) => {
 				setHooksConfig(json);
-				setHooksEnabled(status);
+				setHooksStatus(
+					status as "active" | "token_mismatch" | "not_configured",
+				);
 			})
 			.catch((e) => {
 				setHooksError(String(e));
@@ -112,7 +116,7 @@ export function SettingsDialog({
 		setHooksError(null);
 		try {
 			await invoke("apply_hooks_config", { configJson: hooksConfig });
-			setHooksEnabled(true);
+			setHooksStatus("active");
 			setHooksSuccess(true);
 		} catch (e) {
 			setHooksError(String(e));
@@ -346,9 +350,15 @@ export function SettingsDialog({
 									<div className="flex items-center gap-2">
 										<span className="text-xs font-medium">
 											Status:{" "}
-											{hooksEnabled ? (
+											{hooksStatus === "active" && (
 												<span className="text-green-500">Enabled</span>
-											) : (
+											)}
+											{hooksStatus === "token_mismatch" && (
+												<span className="text-yellow-500">
+													Token mismatch — 再設定が必要です
+												</span>
+											)}
+											{hooksStatus === "not_configured" && (
 												<span className="text-muted-foreground">
 													Not configured
 												</span>
@@ -387,14 +397,14 @@ export function SettingsDialog({
 									<div className="flex justify-end">
 										<Button
 											size="sm"
-											variant={hooksEnabled ? "ghost" : "default"}
+											variant={hooksStatus === "active" ? "ghost" : "default"}
 											onClick={handleApplyHooks}
 											disabled={hooksApplying || !hooksConfig}
 										>
 											{hooksApplying ? (
 												<Loader2 className="size-3.5 mr-1 animate-spin" />
 											) : null}
-											{hooksEnabled ? "再設定" : "設定を適用"}
+											{hooksStatus === "active" ? "再設定" : "設定を適用"}
 										</Button>
 									</div>
 								</>

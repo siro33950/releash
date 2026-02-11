@@ -274,16 +274,17 @@ pub async fn apply_hooks_config(config_json: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn get_hooks_status(state: tauri::State<'_, Arc<AppConfig>>) -> Result<bool, String> {
+pub async fn get_hooks_status(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
     let config = state.get_config()?;
     let hook_port = config.server.hook_port;
+    let token = config.server.token.clone();
 
     tokio::task::spawn_blocking(move || {
         let home = dirs::home_dir().ok_or("ホームディレクトリの取得失敗")?;
         let settings_path = home.join(".claude").join("settings.json");
 
         if !settings_path.exists() {
-            return Ok(false);
+            return Ok("not_configured".to_string());
         }
 
         let content = fs::read_to_string(&settings_path)
@@ -292,23 +293,20 @@ pub async fn get_hooks_status(state: tauri::State<'_, Arc<AppConfig>>) -> Result
             serde_json::from_str(&content).map_err(|e| format!("settings.jsonパース失敗: {e}"))?;
 
         let port_str = format!("localhost:{hook_port}");
-        let has_releash_hook = parsed
+        let hooks_str = parsed
             .get("hooks")
-            .and_then(|h| h.as_object())
-            .map(|hooks| {
-                hooks.values().any(|entries| {
-                    entries
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter()
-                                .any(|entry| entry.to_string().contains(&port_str))
-                        })
-                        .unwrap_or(false)
-                })
-            })
-            .unwrap_or(false);
+            .map(|h| h.to_string())
+            .unwrap_or_default();
 
-        Ok(has_releash_hook)
+        if !hooks_str.contains(&port_str) {
+            return Ok("not_configured".to_string());
+        }
+
+        if !hooks_str.contains(&token) {
+            return Ok("token_mismatch".to_string());
+        }
+
+        Ok("active".to_string())
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?

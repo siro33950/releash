@@ -24,7 +24,7 @@ describe("WorktreeView", () => {
 				rootPath="/test/path"
 				settings={DEFAULT_SETTINGS}
 				onSettingsSave={vi.fn()}
-				onGoHome={vi.fn()}
+				onSwitchToKanban={vi.fn()}
 			/>,
 		);
 		expect(screen.getByText("No file selected")).toBeInTheDocument();

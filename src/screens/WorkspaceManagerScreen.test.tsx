@@ -315,7 +315,10 @@ describe("WorkspaceManagerScreen", () => {
 			}
 
 			await waitFor(() => {
-				expect(onSelectWorktree).toHaveBeenCalledWith("/tmp/worktrees/active");
+				expect(onSelectWorktree).toHaveBeenCalledWith(
+					"/tmp/worktrees/active",
+					"feat/active-branch",
+				);
 			});
 		});
 
@@ -371,7 +374,10 @@ describe("WorkspaceManagerScreen", () => {
 					baseBranch: null,
 				});
 			});
-			expect(onSelectWorktree).toHaveBeenCalledWith("/tmp/worktrees/todo");
+			expect(onSelectWorktree).toHaveBeenCalledWith(
+				"/tmp/worktrees/todo",
+				"feat/todo-branch",
+			);
 		});
 
 		it("worktree ありのブランチに削除ボタンが表示される", async () => {

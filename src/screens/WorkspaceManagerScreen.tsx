@@ -35,7 +35,7 @@ interface WorkspaceManagerScreenProps {
 	providerStatus: ProviderStatus | null;
 	initializing?: boolean;
 	onSettingsSave: (settings: AppSettings) => void;
-	onSelectWorktree: (path: string) => void;
+	onSelectWorktree: (path: string, branchName?: string) => void;
 	onChangeRepo: (path: string | null) => void;
 }
 
@@ -237,7 +237,7 @@ export function WorkspaceManagerScreen({
 			if (!repoPath) return;
 			setOpeningBranch(branch.name);
 			if (branch.worktree_path) {
-				onSelectWorktree(branch.worktree_path);
+				onSelectWorktree(branch.worktree_path, branch.name);
 				setOpeningBranch(null);
 				return;
 			}
@@ -253,7 +253,7 @@ export function WorkspaceManagerScreen({
 					createBranch: false,
 					baseBranch: null,
 				});
-				onSelectWorktree(entry.path);
+				onSelectWorktree(entry.path, branch.name);
 				setOpeningBranch(null);
 			} catch (e) {
 				console.error("Failed to create worktree:", e);
@@ -272,7 +272,7 @@ export function WorkspaceManagerScreen({
 		(entry: WorktreeEntry) => {
 			setShowCreate(false);
 			refresh();
-			onSelectWorktree(entry.path);
+			onSelectWorktree(entry.path, entry.branch);
 		},
 		[refresh, onSelectWorktree],
 	);
@@ -306,7 +306,7 @@ export function WorkspaceManagerScreen({
 
 	if (!repoPath) {
 		return (
-			<div className="flex flex-col items-center justify-center h-screen w-screen bg-background text-foreground gap-4">
+			<div className="flex flex-col items-center justify-center h-full w-full bg-background text-foreground gap-4">
 				{initializing ? (
 					<Loader2 className="size-6 text-muted-foreground animate-spin" />
 				) : (
@@ -335,7 +335,7 @@ export function WorkspaceManagerScreen({
 		));
 
 	return (
-		<div className="flex flex-col h-screen w-screen bg-background text-foreground">
+		<div className="flex flex-col h-full w-full bg-background text-foreground">
 			{/* Header */}
 			<div className="flex items-center justify-between h-12 px-4 border-b border-border shrink-0">
 				<div className="flex items-center gap-2 min-w-0">
