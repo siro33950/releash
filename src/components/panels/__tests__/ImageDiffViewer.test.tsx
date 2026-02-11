@@ -4,9 +4,7 @@ import { ImageDiffViewer } from "../ImageDiffViewer";
 
 describe("ImageDiffViewer", () => {
 	it("shows loading state", () => {
-		render(
-			<ImageDiffViewer originalUrl={null} modifiedUrl={null} loading />,
-		);
+		render(<ImageDiffViewer originalUrl={null} modifiedUrl={null} loading />);
 		expect(screen.getByText("Loading...")).toBeInTheDocument();
 	});
 

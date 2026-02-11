@@ -27,6 +27,7 @@ export function useImageDiff(
 	const [modifiedUrl, setModifiedUrl] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: gitRefreshKey is an intentional trigger to re-fetch images on git state changes
 	useEffect(() => {
 		if (!filePath) {
 			setOriginalUrl(null);

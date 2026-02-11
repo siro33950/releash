@@ -4,15 +4,10 @@ interface ImageDiffViewerProps {
 	loading: boolean;
 }
 
-function ImagePane({
-	url,
-	label,
-}: { url: string | null; label: string }) {
+function ImagePane({ url, label }: { url: string | null; label: string }) {
 	return (
 		<div className="flex-1 flex flex-col items-center gap-2 min-w-0 p-4">
-			<span className="text-xs font-medium text-muted-foreground">
-				{label}
-			</span>
+			<span className="text-xs font-medium text-muted-foreground">{label}</span>
 			{url ? (
 				<div
 					className="relative flex items-center justify-center overflow-auto max-h-full w-full rounded border border-border"
@@ -51,10 +46,7 @@ export function ImageDiffViewer({
 	}
 
 	return (
-		<div
-			className="flex h-full bg-background"
-			data-testid="image-diff-viewer"
-		>
+		<div className="flex h-full bg-background" data-testid="image-diff-viewer">
 			<ImagePane url={originalUrl} label="Original" />
 			<div className="w-px bg-border shrink-0" />
 			<ImagePane url={modifiedUrl} label="Modified" />

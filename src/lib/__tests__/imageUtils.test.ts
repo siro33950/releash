@@ -20,12 +20,15 @@ describe("isImageFile", () => {
 		expect(isImageFile(path)).toBe(true);
 	});
 
-	it.each(["file.ts", "readme.md", "data.json", "style.css", "noext"])(
-		"returns false for %s",
-		(path) => {
-			expect(isImageFile(path)).toBe(false);
-		},
-	);
+	it.each([
+		"file.ts",
+		"readme.md",
+		"data.json",
+		"style.css",
+		"noext",
+	])("returns false for %s", (path) => {
+		expect(isImageFile(path)).toBe(false);
+	});
 
 	it("is case-insensitive", () => {
 		expect(isImageFile("PHOTO.PNG")).toBe(true);

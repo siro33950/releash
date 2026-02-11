@@ -10,7 +10,6 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { useGitOriginalContent } from "@/hooks/useGitOriginalContent";
 import { useHunks } from "@/hooks/useHunks";
 import { useImageDiff } from "@/hooks/useImageDiff";
-import { isImageFile } from "@/lib/imageUtils";
 import {
 	type ChangeGroup,
 	computeChangeGroups,
@@ -19,6 +18,7 @@ import {
 	markStagedGroups,
 } from "@/lib/computeHunks";
 import { generateGroupPatch, generatePatch } from "@/lib/generatePatch";
+import { isImageFile } from "@/lib/imageUtils";
 import { cn } from "@/lib/utils";
 import type { LineComment } from "@/types/comment";
 import type { TabInfo } from "@/types/editor";

@@ -1,7 +1,7 @@
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useRef, useState } from "react";
-import type { TabInfo } from "@/types/editor";
 import { isImageFile } from "@/lib/imageUtils";
+import type { TabInfo } from "@/types/editor";
 
 export interface UseEditorTabsReturn {
 	tabs: TabInfo[];
