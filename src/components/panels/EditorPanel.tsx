@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import type { LineComment } from "@/types/comment";
 import type { TabInfo } from "@/types/editor";
 import type { Theme } from "@/types/settings";
+import { Breadcrumb } from "./Breadcrumb";
 import { EditorTabs } from "./EditorTabs";
 import { EmptyState } from "./EmptyState";
 import {
@@ -443,6 +444,9 @@ export function EditorPanel({
 			<Group orientation="vertical" className="flex-1">
 				<Panel id="editor-main" defaultSize={70} minSize={30}>
 					<div className="flex flex-col h-full">
+						{activeTab && (
+							<Breadcrumb rootPath={rootPath ?? null} filePath={filePath} />
+						)}
 						<div
 							className="flex-1"
 							style={{ position: "relative", overflow: "hidden" }}

@@ -1,10 +1,39 @@
 import { invoke } from "@tauri-apps/api/core";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, type Mock, vi } from "vitest";
 import type { TabInfo } from "@/types/editor";
 import { EditorPanel } from "./EditorPanel";
+
+vi.mock("@react-symbols/icons/utils", () => ({
+	FileIcon: ({
+		fileName,
+		className,
+	}: {
+		fileName: string;
+		className?: string;
+	}) => (
+		<span
+			data-testid="file-icon"
+			data-filename={fileName}
+			className={className}
+		/>
+	),
+	FolderIcon: ({
+		folderName,
+		className,
+	}: {
+		folderName: string;
+		className?: string;
+	}) => (
+		<span
+			data-testid="folder-icon"
+			data-foldername={folderName}
+			className={className}
+		/>
+	),
+}));
 
 vi.mock("react-resizable-panels", () => ({
 	Group: ({ children, ...props }: { children: ReactNode }) => (
@@ -89,6 +118,46 @@ describe("EditorPanel", () => {
 
 		await user.click(screen.getByText("file.ts"));
 		expect(onTabClick).toHaveBeenCalledWith("/test/file.ts");
+	});
+
+	it("should render Breadcrumb when activeTab exists and rootPath is provided", () => {
+		render(
+			<EditorPanel
+				tabs={[mockTab]}
+				activeTab={mockTab}
+				onTabClick={vi.fn()}
+				onTabClose={vi.fn()}
+				diffBase="HEAD"
+				diffMode="split"
+				onDiffBaseChange={vi.fn()}
+				onDiffModeChange={vi.fn()}
+				rootPath="/test"
+			/>,
+		);
+
+		const breadcrumb = screen.getByTestId("breadcrumb");
+		expect(within(breadcrumb).getByTestId("file-icon")).toHaveAttribute(
+			"data-filename",
+			"file.ts",
+		);
+	});
+
+	it("should not render Breadcrumb when activeTab is null", () => {
+		render(
+			<EditorPanel
+				tabs={[]}
+				activeTab={null}
+				onTabClick={vi.fn()}
+				onTabClose={vi.fn()}
+				diffBase="HEAD"
+				diffMode="split"
+				onDiffBaseChange={vi.fn()}
+				onDiffModeChange={vi.fn()}
+				rootPath="/test"
+			/>,
+		);
+
+		expect(screen.queryByTestId("breadcrumb")).not.toBeInTheDocument();
 	});
 
 	it("should call onTabClose when close button is clicked", async () => {

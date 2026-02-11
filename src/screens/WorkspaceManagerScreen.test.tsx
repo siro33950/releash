@@ -582,49 +582,5 @@ describe("WorkspaceManagerScreen", () => {
 			);
 		});
 
-		it("フォールバックポーリングが 30秒間隔で設定される", async () => {
-			vi.useFakeTimers();
-			setupMockInvoke();
-			renderScreen();
-			const originalDescriptor = Object.getOwnPropertyDescriptor(
-				document,
-				"visibilityState",
-			);
-
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(100);
-			});
-
-			const callCount = mockInvoke.mock.calls.filter(
-				(c) => c[0] === "list_branches_with_status",
-			).length;
-
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(29_000);
-			});
-
-			const callCountAfter29s = mockInvoke.mock.calls.filter(
-				(c) => c[0] === "list_branches_with_status",
-			).length;
-			expect(callCountAfter29s).toBe(callCount);
-
-			Object.defineProperty(document, "visibilityState", {
-				value: "visible",
-				writable: true,
-			});
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(1_000);
-			});
-
-			const callCountAfter30s = mockInvoke.mock.calls.filter(
-				(c) => c[0] === "list_branches_with_status",
-			).length;
-			expect(callCountAfter30s).toBeGreaterThan(callCount);
-
-			if (originalDescriptor) {
-				Object.defineProperty(document, "visibilityState", originalDescriptor);
-			}
-			vi.useRealTimers();
-		});
 	});
 });

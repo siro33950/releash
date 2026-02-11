@@ -18,6 +18,7 @@ interface WorkspaceManagerScreenProps {
 	settings: AppSettings;
 	providerStatuses: Record<string, ProviderStatus | null>;
 	initializing?: boolean;
+	isActive?: boolean;
 	onSettingsSave: (settings: AppSettings) => void;
 	onSelectWorktree: (
 		path: string,
@@ -33,6 +34,7 @@ export function WorkspaceManagerScreen({
 	settings,
 	providerStatuses,
 	initializing = false,
+	isActive = true,
 	onSettingsSave,
 	onSelectWorktree,
 	onAddRepo,
