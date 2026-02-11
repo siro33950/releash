@@ -2,7 +2,7 @@ import { loader } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
@@ -22,6 +22,7 @@ import { useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useLineComments } from "@/hooks/useLineComments";
+import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
 import { normalizePath } from "@/lib/normalizePath";
@@ -58,6 +59,9 @@ export function WorktreeView({
 		saveFile,
 		updateTabPath,
 		closeTabsByPrefix,
+		closeAllTabs,
+		saveAllDirtyTabs,
+		createUntitledTab,
 	} = useEditorTabs();
 
 	const [activeView, setActiveView] = useState<string>("git");
@@ -65,7 +69,15 @@ export function WorktreeView({
 	const [ready, setReady] = useState(false);
 	const [agentState, setAgentState] = useState<AgentState | undefined>();
 	const { comments, addComment, markAsSent } = useLineComments();
-	const { stageHunk, unstageHunk } = useGitActions();
+	const {
+		stage,
+		unstage,
+		push,
+		discard,
+		stageHunk,
+		unstageHunk,
+		createBranch,
+	} = useGitActions();
 	const terminalRef = useRef<TerminalPanelHandle>(null);
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
 	const refreshGit = useCallback(() => setGitRefreshKey((k) => k + 1), []);
@@ -184,6 +196,149 @@ export function WorktreeView({
 	}, []);
 
 	useKeyboardShortcuts({ onSave: handleSave, onSearch: handleSearch });
+
+	const handleCloseActiveTab = useCallback(() => {
+		if (activeTab) {
+			const tab = tabs.find((t) => t.path === activeTab.path);
+			if (tab?.isDirty) {
+				setClosingTabPath(activeTab.path);
+			} else {
+				closeTab(activeTab.path);
+			}
+		}
+	}, [activeTab, tabs, closeTab]);
+
+	const handleGitStageAll = useCallback(async () => {
+		try {
+			const status = await invoke<{ changed: Array<{ path: string }> }>(
+				"get_git_status",
+				{ repoPath: rootPath },
+			);
+			if (status.changed.length > 0) {
+				await stage(
+					rootPath,
+					status.changed.map((f) => f.path),
+				);
+				refreshGit();
+			}
+		} catch (e) {
+			console.error("Failed to stage all:", e);
+		}
+	}, [rootPath, stage, refreshGit]);
+
+	const handleGitUnstageAll = useCallback(async () => {
+		try {
+			const status = await invoke<{ staged: Array<{ path: string }> }>(
+				"get_git_status",
+				{ repoPath: rootPath },
+			);
+			if (status.staged.length > 0) {
+				await unstage(
+					rootPath,
+					status.staged.map((f) => f.path),
+				);
+				refreshGit();
+			}
+		} catch (e) {
+			console.error("Failed to unstage all:", e);
+		}
+	}, [rootPath, unstage, refreshGit]);
+
+	const handleGitCommit = useCallback(() => {
+		setActiveView("git");
+	}, []);
+
+	const handleGitPush = useCallback(async () => {
+		try {
+			await push(rootPath);
+		} catch (e) {
+			console.error("Failed to push:", e);
+		}
+	}, [rootPath, push]);
+
+	const handleGitDiscardAll = useCallback(async () => {
+		try {
+			const status = await invoke<{ changed: Array<{ path: string }> }>(
+				"get_git_status",
+				{ repoPath: rootPath },
+			);
+			if (status.changed.length > 0) {
+				await discard(
+					rootPath,
+					status.changed.map((f) => f.path),
+				);
+				refreshGit();
+			}
+		} catch (e) {
+			console.error("Failed to discard all:", e);
+		}
+	}, [rootPath, discard, refreshGit]);
+
+	const handleGitCreateBranch = useCallback(async () => {
+		const name = window.prompt("Branch name:");
+		if (name) {
+			try {
+				await createBranch(rootPath, name);
+			} catch (e) {
+				console.error("Failed to create branch:", e);
+			}
+		}
+	}, [rootPath, createBranch]);
+
+	const menuHandlers: MenuHandlers = useMemo(
+		() => ({
+			"new-file": createUntitledTab,
+			save: handleSave,
+			"save-all": saveAllDirtyTabs,
+			"close-tab": handleCloseActiveTab,
+			"close-all-tabs": closeAllTabs,
+			"find-in-files": handleSearch,
+			"view-explorer": () => setActiveView("explorer"),
+			"view-search": () => {
+				setActiveView("search");
+				setSearchFocusKey((k) => k + 1);
+			},
+			"view-source-control": () => setActiveView("git"),
+			"diff-gutter": () => setDiffMode("gutter"),
+			"diff-inline": () => setDiffMode("inline"),
+			"diff-split": () => setDiffMode("split"),
+			"increase-font-size": () =>
+				onSettingsSave({ ...settings, fontSize: settings.fontSize + 1 }),
+			"decrease-font-size": () =>
+				onSettingsSave({
+					...settings,
+					fontSize: Math.max(8, settings.fontSize - 1),
+				}),
+			"reset-font-size": () => onSettingsSave({ ...settings, fontSize: 14 }),
+			"git-stage-all": handleGitStageAll,
+			"git-unstage-all": handleGitUnstageAll,
+			"git-commit": handleGitCommit,
+			"git-push": handleGitPush,
+			"git-discard-all": handleGitDiscardAll,
+			"git-create-branch": handleGitCreateBranch,
+			"new-terminal": () => {
+				// Terminal is always visible; focus could be added later
+			},
+		}),
+		[
+			createUntitledTab,
+			handleSave,
+			saveAllDirtyTabs,
+			handleCloseActiveTab,
+			closeAllTabs,
+			handleSearch,
+			settings,
+			onSettingsSave,
+			handleGitStageAll,
+			handleGitUnstageAll,
+			handleGitCommit,
+			handleGitPush,
+			handleGitDiscardAll,
+			handleGitCreateBranch,
+		],
+	);
+
+	useMenuEvents(menuHandlers);
 
 	const handleSearchResultClick = useCallback(
 		(relativePath: string, line: number) => {

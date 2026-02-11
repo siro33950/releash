@@ -2,6 +2,7 @@ mod config;
 mod git;
 mod git_host;
 mod hook_listener;
+mod menu;
 mod protocol;
 mod pty;
 mod qr_code;
@@ -63,6 +64,8 @@ pub fn run() {
                     log::error!("Hook listener failed to start: {e}");
                 }
             });
+
+            menu::setup_menu(app).expect("Failed to setup menu");
 
             Ok(())
         })
@@ -141,6 +144,8 @@ pub fn run() {
             ws_server::commands::get_server_info,
             ws_server::commands::broadcast_comments,
             ws_server::commands::update_server_repo_paths,
+            // Menu
+            menu::set_menu_items_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

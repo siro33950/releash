@@ -3,40 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 
 describe("useKeyboardShortcuts", () => {
-	it("should call onSave when Cmd+S is pressed", () => {
+	it("should be a no-op (shortcuts handled by native menu accelerators)", () => {
 		const onSave = vi.fn();
 		renderHook(() => useKeyboardShortcuts({ onSave }));
 
 		const event = new KeyboardEvent("keydown", {
 			key: "s",
 			metaKey: true,
-			bubbles: true,
-		});
-		window.dispatchEvent(event);
-
-		expect(onSave).toHaveBeenCalledOnce();
-	});
-
-	it("should call onSave when Ctrl+S is pressed", () => {
-		const onSave = vi.fn();
-		renderHook(() => useKeyboardShortcuts({ onSave }));
-
-		const event = new KeyboardEvent("keydown", {
-			key: "s",
-			ctrlKey: true,
-			bubbles: true,
-		});
-		window.dispatchEvent(event);
-
-		expect(onSave).toHaveBeenCalledOnce();
-	});
-
-	it("should not call onSave when S is pressed without modifier", () => {
-		const onSave = vi.fn();
-		renderHook(() => useKeyboardShortcuts({ onSave }));
-
-		const event = new KeyboardEvent("keydown", {
-			key: "s",
 			bubbles: true,
 		});
 		window.dispatchEvent(event);
@@ -44,15 +17,11 @@ describe("useKeyboardShortcuts", () => {
 		expect(onSave).not.toHaveBeenCalled();
 	});
 
-	it("should not call onSave when onSave is undefined", () => {
-		renderHook(() => useKeyboardShortcuts({}));
-
-		const event = new KeyboardEvent("keydown", {
-			key: "s",
-			metaKey: true,
-			bubbles: true,
-		});
-
-		expect(() => window.dispatchEvent(event)).not.toThrow();
+	it("should accept options without error", () => {
+		expect(() => {
+			renderHook(() =>
+				useKeyboardShortcuts({ onSave: vi.fn(), onSearch: vi.fn() }),
+			);
+		}).not.toThrow();
 	});
 });

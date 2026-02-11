@@ -1,27 +1,9 @@
-import { useEffect } from "react";
-
 interface UseKeyboardShortcutsOptions {
 	onSave?: () => void;
 	onSearch?: () => void;
 }
 
-export function useKeyboardShortcuts({
-	onSave,
-	onSearch,
-}: UseKeyboardShortcutsOptions) {
-	useEffect(() => {
-		const handleKeyDown = (e: KeyboardEvent) => {
-			if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-				e.preventDefault();
-				onSave?.();
-			}
-			if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "f") {
-				e.preventDefault();
-				onSearch?.();
-			}
-		};
-
-		window.addEventListener("keydown", handleKeyDown);
-		return () => window.removeEventListener("keydown", handleKeyDown);
-	}, [onSave, onSearch]);
+export function useKeyboardShortcuts(_options: UseKeyboardShortcutsOptions) {
+	// Cmd+S and Cmd+Shift+F are now handled by native menu accelerators.
+	// This hook is kept for API compatibility but is intentionally a no-op.
 }

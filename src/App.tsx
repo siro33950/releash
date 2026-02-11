@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
 import { UpdateDialog } from "@/components/UpdateDialog";
+import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
 import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
@@ -12,7 +13,7 @@ import { WorktreeView } from "@/screens/WorktreeView";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
 
 function App() {
-	const { settings, updateSettings } = useSettings();
+	const { settings, updateSettings, updateTheme } = useSettings();
 	const updateChecker = useUpdateChecker(settings.autoUpdate);
 	const {
 		tabs,
@@ -109,6 +110,62 @@ function App() {
 		},
 		[removeRepo],
 	);
+
+	// Sync menu item enabled state based on active tab
+	const isWorktreeActive = activeTabId !== "kanban";
+	useEffect(() => {
+		invoke("set_menu_items_enabled", { enabled: isWorktreeActive }).catch(
+			() => {},
+		);
+	}, [isWorktreeActive]);
+
+	const handleOpenFolder = useCallback(async () => {
+		const selected = await open({ directory: true, multiple: false });
+		if (!selected) return;
+		try {
+			const mainPath = await invoke<string>("get_main_repo_path", {
+				anyPath: selected,
+			});
+			setMainRepoPath(mainPath);
+		} catch {
+			openWorktreeTab(selected as string);
+		}
+	}, [openWorktreeTab]);
+
+	const menuHandlers: MenuHandlers = useMemo(
+		() => ({
+			settings: () => {
+				// Switch to settings view within the active worktree, or kanban settings
+				// For now, handled per-worktree via WorktreeView
+			},
+			"open-folder": handleOpenFolder,
+			"theme-dark": () => updateTheme("dark"),
+			"theme-light": () => updateTheme("light"),
+			"back-to-kanban": switchToKanban,
+			"create-worktree": () => {
+				switchToKanban();
+			},
+			"delete-worktree": () => {
+				switchToKanban();
+			},
+			"remote-start-server": () => {
+				// Handled by WorkspaceManagerScreen's remote server UI
+			},
+			"remote-stop-server": async () => {
+				try {
+					await invoke("stop_server");
+				} catch (e) {
+					console.error("Failed to stop server:", e);
+				}
+			},
+			"remote-show-qr": () => {
+				// QR Code is shown through the settings/remote panel
+			},
+		}),
+		[handleOpenFolder, updateTheme, switchToKanban],
+	);
+
+	useMenuEvents(menuHandlers);
 
 	const worktreeTabs = useMemo(
 		() => tabs.filter((t) => t.type === "worktree"),
