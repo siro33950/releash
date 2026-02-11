@@ -9,6 +9,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { useGitOriginalContent } from "@/hooks/useGitOriginalContent";
 import { useHunks } from "@/hooks/useHunks";
+import { useImageDiff } from "@/hooks/useImageDiff";
+import { isImageFile } from "@/lib/imageUtils";
 import {
 	type ChangeGroup,
 	computeChangeGroups,
@@ -23,6 +25,7 @@ import type { TabInfo } from "@/types/editor";
 import type { Theme } from "@/types/settings";
 import { EditorTabs } from "./EditorTabs";
 import { EmptyState } from "./EmptyState";
+import { ImageDiffViewer } from "./ImageDiffViewer";
 import {
 	type DiffBase,
 	type DiffMode,
@@ -92,18 +95,25 @@ export function EditorPanel({
 	} | null>(null);
 	const revealKeyRef = useRef(0);
 	const filePath = activeTab?.path ?? null;
+	const isImage = filePath !== null && isImageFile(filePath);
 
 	const originalContent = useGitOriginalContent(
-		filePath,
+		isImage ? null : filePath,
 		diffBase,
 		activeTab?.originalContent ?? "",
 		gitRefreshKey,
 	);
 
 	const stagedContent = useGitOriginalContent(
-		diffBase === "HEAD" ? filePath : null,
+		!isImage && diffBase === "HEAD" ? filePath : null,
 		"staged",
 		"",
+		gitRefreshKey,
+	);
+
+	const imageDiff = useImageDiff(
+		isImage ? filePath : null,
+		diffBase,
 		gitRefreshKey,
 	);
 
@@ -448,32 +458,40 @@ export function EditorPanel({
 							style={{ position: "relative", overflow: "hidden" }}
 						>
 							{activeTab ? (
-								<MonacoDiffViewer
-									key={activeTab.path}
-									originalContent={originalContent}
-									modifiedContent={modifiedContent}
-									language={activeTab.language}
-									diffMode={diffMode}
-									onContentChange={handleContentChange}
-									fontSize={fontSize}
-									changeGroups={changeGroups}
-									commentRanges={commentRanges}
-									onStageHunk={handleStageGroup}
-									onUnstageHunk={
-										diffBase === "HEAD" ? handleUnstageGroup : undefined
-									}
-									onAddComment={handleAddComment}
-									getCommentsForLine={getCommentsForLine}
-									revealLine={revealLine}
-									theme={theme}
-									filePath={activeTab.path}
-									onSearchOccurrences={onSearchOccurrences}
-								/>
+								isImage ? (
+									<ImageDiffViewer
+										originalUrl={imageDiff.originalUrl}
+										modifiedUrl={imageDiff.modifiedUrl}
+										loading={imageDiff.loading}
+									/>
+								) : (
+									<MonacoDiffViewer
+										key={activeTab.path}
+										originalContent={originalContent}
+										modifiedContent={modifiedContent}
+										language={activeTab.language}
+										diffMode={diffMode}
+										onContentChange={handleContentChange}
+										fontSize={fontSize}
+										changeGroups={changeGroups}
+										commentRanges={commentRanges}
+										onStageHunk={handleStageGroup}
+										onUnstageHunk={
+											diffBase === "HEAD" ? handleUnstageGroup : undefined
+										}
+										onAddComment={handleAddComment}
+										getCommentsForLine={getCommentsForLine}
+										revealLine={revealLine}
+										theme={theme}
+										filePath={activeTab.path}
+										onSearchOccurrences={onSearchOccurrences}
+									/>
+								)
 							) : (
 								<EmptyState />
 							)}
 						</div>
-						{activeTab && (
+						{activeTab && !isImage && (
 							<div className="flex items-center justify-between px-3 py-1.5 border-t border-border bg-card">
 								<div className="flex items-center gap-2">
 									<span className="text-xs text-muted-foreground">Base:</span>

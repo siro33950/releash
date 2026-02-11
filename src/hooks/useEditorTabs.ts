@@ -1,6 +1,7 @@
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useRef, useState } from "react";
 import type { TabInfo } from "@/types/editor";
+import { isImageFile } from "@/lib/imageUtils";
 
 export interface UseEditorTabsReturn {
 	tabs: TabInfo[];
@@ -88,7 +89,7 @@ export function useEditorTabs(): UseEditorTabsReturn {
 
 		pendingOpenRef.current.add(path);
 		try {
-			const content = await readTextFile(path);
+			const content = isImageFile(path) ? "" : await readTextFile(path);
 			if (tabsRef.current.some((tab) => tab.path === path)) {
 				setActiveTabPath(path);
 				return;
@@ -216,7 +217,7 @@ export function useEditorTabs(): UseEditorTabsReturn {
 
 	const reloadTabIfClean = useCallback(async (path: string) => {
 		const existingTab = tabsRef.current.find((tab) => tab.path === path);
-		if (!existingTab || existingTab.isDirty) {
+		if (!existingTab || existingTab.isDirty || isImageFile(path)) {
 			return;
 		}
 
