@@ -333,7 +333,8 @@ export function useMonacoDiffEditor(
 
 			modifiedEditor.onMouseDown((e: Monaco.editor.IEditorMouseEvent) => {
 				if (
-					e.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS
+					e.target.type ===
+					monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS
 				) {
 					const lineNum = e.target.position?.lineNumber;
 					if (!lineNum) return;
@@ -381,7 +382,9 @@ export function useMonacoDiffEditor(
 							? [
 									{
 										range: new monaco.Range(lineNum, 1, lineNum, 1),
-										options: { linesDecorationsClassName: "comment-hover-icon" },
+										options: {
+											linesDecorationsClassName: "comment-hover-icon",
+										},
 									},
 								]
 							: [],
