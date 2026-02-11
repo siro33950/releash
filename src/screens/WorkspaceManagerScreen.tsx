@@ -12,7 +12,13 @@ import {
 	Settings,
 	Terminal,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	Group,
+	Panel,
+	type PanelImperativeHandle,
+	Separator,
+} from "react-resizable-panels";
 import {
 	ActivityBar,
 	type ActivityBarItem,
@@ -80,7 +86,8 @@ export function WorkspaceManagerScreen({
 	const [showCreate, setShowCreate] = useState(false);
 	const [showSettings, setShowSettings] = useState(false);
 	const [activeView, setActiveView] = useState<string | null>(null);
-	const [showTerminal, setShowTerminal] = useState(false);
+	const [terminalOpen, setTerminalOpen] = useState(false);
+	const terminalPanelRef = useRef<PanelImperativeHandle>(null);
 	const [deletingBranch, setDeletingBranch] = useState<BranchCard | null>(null);
 	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
@@ -110,6 +117,18 @@ export function WorkspaceManagerScreen({
 
 	const handleActivityItemClick = useCallback((id: string) => {
 		setActiveView((prev) => (prev === id ? null : id));
+	}, []);
+
+	const handleToggleTerminal = useCallback(() => {
+		setTerminalOpen((prev) => {
+			const next = !prev;
+			if (next) {
+				terminalPanelRef.current?.expand();
+			} else {
+				terminalPanelRef.current?.collapse();
+			}
+			return next;
+		});
 	}, []);
 
 	const repoName = useMemo(
@@ -382,8 +401,8 @@ export function WorkspaceManagerScreen({
 				<div className="flex items-center gap-2">
 					<Button
 						size="sm"
-						variant={showTerminal ? "secondary" : "ghost"}
-						onClick={() => setShowTerminal((v) => !v)}
+						variant={terminalOpen ? "secondary" : "ghost"}
+						onClick={handleToggleTerminal}
 						title="Terminal"
 					>
 						<Terminal className="size-4" />
@@ -418,7 +437,7 @@ export function WorkspaceManagerScreen({
 					onItemClick={handleActivityItemClick}
 				/>
 
-				{/* Sidebar */}
+				{/* Sidebar (fixed width, outside resizable group) */}
 				{activeView && (
 					<div className="w-64 border-r border-border shrink-0">
 						{activeView === "remote" && <RemotePanel rootPath={repoPath} />}
@@ -432,62 +451,74 @@ export function WorkspaceManagerScreen({
 					</div>
 				)}
 
-				{/* Kanban board */}
-				<div className="flex-1 p-3 min-w-0">
-					{loading ? (
-						<div className="flex items-center justify-center h-full">
-							<Loader2 className="size-5 text-muted-foreground animate-spin" />
+				{/* Kanban + Terminal (resizable) */}
+				<Group orientation="horizontal" className="flex-1">
+					<Panel id="kanban" minSize={30} collapsible={false}>
+						<div className="h-full p-3 min-w-0">
+							{loading ? (
+								<div className="flex items-center justify-center h-full">
+									<Loader2 className="size-5 text-muted-foreground animate-spin" />
+								</div>
+							) : (
+								<div className="flex gap-3 h-full overflow-x-auto">
+									<KanbanColumn
+										icon={
+											<CircleDot className="size-3.5 text-muted-foreground" />
+										}
+										title="Todo"
+										count={todo.length}
+									>
+										{renderCards(todo)}
+									</KanbanColumn>
+									<KanbanColumn
+										icon={<Loader2 className="size-3.5 text-blue-500" />}
+										title="In Progress"
+										count={inProgress.length}
+									>
+										{renderCards(inProgress)}
+									</KanbanColumn>
+									<KanbanColumn
+										icon={
+											<GitPullRequest className="size-3.5 text-purple-500" />
+										}
+										title="Review"
+										count={review.length}
+									>
+										{renderCards(review)}
+										<ProviderStatusGuide status={providerStatus} />
+									</KanbanColumn>
+									<KanbanColumn
+										icon={<CheckCircle2 className="size-3.5 text-green-500" />}
+										title="Done"
+										count={done.length}
+									>
+										{renderCards(done)}
+									</KanbanColumn>
+								</div>
+							)}
 						</div>
-					) : (
-						<div className="flex gap-3 h-full overflow-x-auto">
-							<KanbanColumn
-								icon={<CircleDot className="size-3.5 text-muted-foreground" />}
-								title="Todo"
-								count={todo.length}
-							>
-								{renderCards(todo)}
-							</KanbanColumn>
-							<KanbanColumn
-								icon={<Loader2 className="size-3.5 text-blue-500" />}
-								title="In Progress"
-								count={inProgress.length}
-							>
-								{renderCards(inProgress)}
-							</KanbanColumn>
-							<KanbanColumn
-								icon={<GitPullRequest className="size-3.5 text-purple-500" />}
-								title="Review"
-								count={review.length}
-							>
-								{renderCards(review)}
-								<ProviderStatusGuide status={providerStatus} />
-							</KanbanColumn>
-							<KanbanColumn
-								icon={<CheckCircle2 className="size-3.5 text-green-500" />}
-								title="Done"
-								count={done.length}
-							>
-								{renderCards(done)}
-							</KanbanColumn>
-						</div>
-					)}
-				</div>
+					</Panel>
 
-				{/* AI Terminal (display:none pattern to preserve PTY session) */}
-				<div
-					className="border-l border-border shrink-0"
-					style={{
-						width: showTerminal ? 480 : 0,
-						display: showTerminal ? undefined : "none",
-					}}
-				>
-					<TerminalPanel
-						cwd={repoPath}
-						theme={settings.theme}
-						terminalStartupCommand={buildTerminalCommand(settings)}
-						sessionKey={`${repoPath}::kanban`}
-					/>
-				</div>
+					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
+
+					{/* AI Terminal (collapsible panel, PTY preserved via sessionKey) */}
+					<Panel
+						id="terminal"
+						panelRef={terminalPanelRef}
+						defaultSize={0}
+						minSize={15}
+						maxSize={60}
+						collapsedSize={0}
+						collapsible
+					>
+						<TerminalPanel
+							cwd={repoPath}
+							theme={settings.theme}
+							terminalStartupCommand={buildTerminalCommand(settings)}
+							sessionKey={`${repoPath}::kanban`}
+						/>
+					</Panel>
+				</Group>
 			</div>
 
 			{/* Status bar */}
