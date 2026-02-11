@@ -197,7 +197,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d '{{\"worktree_path\": \"'$(pwd)'\", \"event\": \"prompt_submit\"}}' || true"
+                        "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d \"$(jq -n --arg wp \\\"$(pwd)\\\" --arg ev prompt_submit '{{worktree_path: $wp, event: $ev}}')\" || true"
                     )
                 }]
             }],
@@ -206,7 +206,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d '{{\"worktree_path\": \"'$(pwd)'\", \"event\": \"stop\"}}' || true"
+                        "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d \"$(jq -n --arg wp \\\"$(pwd)\\\" --arg ev stop '{{worktree_path: $wp, event: $ev}}')\" || true"
                     )
                 }]
             }],
@@ -215,7 +215,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d '{{\"worktree_path\": \"'$(pwd)'\", \"event\": \"notification\"}}' || true"
+                        "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d \"$(jq -n --arg wp \\\"$(pwd)\\\" --arg ev notification '{{worktree_path: $wp, event: $ev}}')\" || true"
                     )
                 }]
             }]
@@ -242,8 +242,19 @@ pub async fn apply_hooks_config(config_json: String) -> Result<(), String> {
         let new_config: serde_json::Value =
             serde_json::from_str(&config_json).map_err(|e| format!("設定JSONパース失敗: {e}"))?;
 
-        if let Some(hooks) = new_config.get("hooks") {
-            existing["hooks"] = hooks.clone();
+        if let Some(serde_json::Value::Object(new_hooks)) = new_config.get("hooks") {
+            let existing_hooks = existing
+                .as_object_mut()
+                .ok_or("settings.jsonがオブジェクトではありません")?
+                .entry("hooks")
+                .or_insert_with(|| serde_json::json!({}));
+            if let serde_json::Value::Object(map) = existing_hooks {
+                for (key, value) in new_hooks {
+                    map.insert(key.clone(), value.clone());
+                }
+            } else {
+                *existing_hooks = serde_json::Value::Object(new_hooks.clone());
+            }
         }
 
         if let Some(parent) = settings_path.parent() {
@@ -261,8 +272,11 @@ pub async fn apply_hooks_config(config_json: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn get_hooks_status() -> Result<bool, String> {
-    tokio::task::spawn_blocking(|| {
+pub async fn get_hooks_status(state: tauri::State<'_, Arc<AppConfig>>) -> Result<bool, String> {
+    let config = state.get_config()?;
+    let hook_port = config.server.hook_port;
+
+    tokio::task::spawn_blocking(move || {
         let home = dirs::home_dir().ok_or("ホームディレクトリの取得失敗")?;
         let settings_path = home.join(".claude").join("settings.json");
 
@@ -275,7 +289,24 @@ pub async fn get_hooks_status() -> Result<bool, String> {
         let parsed: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| format!("settings.jsonパース失敗: {e}"))?;
 
-        Ok(parsed.get("hooks").is_some())
+        let port_str = format!("localhost:{hook_port}");
+        let has_releash_hook = parsed
+            .get("hooks")
+            .and_then(|h| h.as_object())
+            .map(|hooks| {
+                hooks.values().any(|entries| {
+                    entries
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .any(|entry| entry.to_string().contains(&port_str))
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+
+        Ok(has_releash_hook)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?

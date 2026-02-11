@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Check, Copy, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	AlertDialog,
 	AlertDialogCancel,
@@ -55,11 +55,13 @@ export function SettingsDialog({
 	const [hooksError, setHooksError] = useState<string | null>(null);
 	const [hooksSuccess, setHooksSuccess] = useState(false);
 
-	// Reset draft when dialog opens
+	// Reset draft only on closed→open transition
+	const prevOpen = useRef(false);
 	useEffect(() => {
-		if (open) {
+		if (open && !prevOpen.current) {
 			setDraft(settings);
 		}
+		prevOpen.current = open;
 	}, [open, settings]);
 
 	useEffect(() => {
@@ -120,16 +122,19 @@ export function SettingsDialog({
 	}, [hooksConfig]);
 
 	const handleCopyHooks = useCallback(async () => {
-		await navigator.clipboard.writeText(hooksConfig);
-		setHooksCopied(true);
-		setTimeout(() => setHooksCopied(false), 2000);
+		try {
+			await navigator.clipboard.writeText(hooksConfig);
+			setHooksCopied(true);
+			setTimeout(() => setHooksCopied(false), 2000);
+		} catch (e) {
+			setHooksError(`Copy failed: ${String(e)}`);
+		}
 	}, [hooksConfig]);
 
 	const handleSave = useCallback(async () => {
 		setSaving(true);
 		setError(null);
 		try {
-			onSave(draft);
 			if (selectedBase !== initialBase) {
 				await invoke("set_releash_base", {
 					repoPath,
@@ -137,6 +142,7 @@ export function SettingsDialog({
 				});
 				onBaseBranchSaved();
 			}
+			onSave(draft);
 			onClose();
 		} catch (e) {
 			setError(String(e));
