@@ -106,10 +106,9 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let close_tab = MenuItemBuilder::with_id(ids::CLOSE_TAB, "Close Tab")
         .accelerator("CmdOrCtrl+W")
         .build(handle)?;
-    let close_all_tabs =
-        MenuItemBuilder::with_id(ids::CLOSE_ALL_TABS, "Close All Tabs")
-            .accelerator("CmdOrCtrl+Shift+W")
-            .build(handle)?;
+    let close_all_tabs = MenuItemBuilder::with_id(ids::CLOSE_ALL_TABS, "Close All Tabs")
+        .accelerator("CmdOrCtrl+Shift+W")
+        .build(handle)?;
 
     worktree_items.extend([
         new_file.clone(),
@@ -134,10 +133,9 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // ---- Edit menu ----
-    let find_in_files =
-        MenuItemBuilder::with_id(ids::FIND_IN_FILES, "Find in Files")
-            .accelerator("CmdOrCtrl+Shift+F")
-            .build(handle)?;
+    let find_in_files = MenuItemBuilder::with_id(ids::FIND_IN_FILES, "Find in Files")
+        .accelerator("CmdOrCtrl+Shift+F")
+        .build(handle)?;
     worktree_items.push(find_in_files.clone());
 
     let edit_menu = SubmenuBuilder::new(handle, "Edit")
@@ -153,50 +151,39 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // ---- View menu ----
-    let view_explorer =
-        MenuItemBuilder::with_id(ids::VIEW_EXPLORER, "Explorer")
-            .accelerator("CmdOrCtrl+Shift+E")
-            .build(handle)?;
-    let view_search =
-        MenuItemBuilder::with_id(ids::VIEW_SEARCH, "Search").build(handle)?;
-    let view_source_control =
-        MenuItemBuilder::with_id(ids::VIEW_SOURCE_CONTROL, "Source Control")
-            .accelerator("CmdOrCtrl+Shift+G")
-            .build(handle)?;
+    let view_explorer = MenuItemBuilder::with_id(ids::VIEW_EXPLORER, "Explorer")
+        .accelerator("CmdOrCtrl+Shift+E")
+        .build(handle)?;
+    let view_search = MenuItemBuilder::with_id(ids::VIEW_SEARCH, "Search").build(handle)?;
+    let view_source_control = MenuItemBuilder::with_id(ids::VIEW_SOURCE_CONTROL, "Source Control")
+        .accelerator("CmdOrCtrl+Shift+G")
+        .build(handle)?;
 
-    let diff_gutter =
-        MenuItemBuilder::with_id(ids::DIFF_GUTTER, "Gutter").build(handle)?;
-    let diff_inline =
-        MenuItemBuilder::with_id(ids::DIFF_INLINE, "Inline").build(handle)?;
-    let diff_split =
-        MenuItemBuilder::with_id(ids::DIFF_SPLIT, "Split").build(handle)?;
+    let diff_gutter = MenuItemBuilder::with_id(ids::DIFF_GUTTER, "Gutter").build(handle)?;
+    let diff_inline = MenuItemBuilder::with_id(ids::DIFF_INLINE, "Inline").build(handle)?;
+    let diff_split = MenuItemBuilder::with_id(ids::DIFF_SPLIT, "Split").build(handle)?;
     let diff_submenu = SubmenuBuilder::new(handle, "Diff Mode")
         .item(&diff_gutter)
         .item(&diff_inline)
         .item(&diff_split)
         .build()?;
 
-    let theme_dark =
-        MenuItemBuilder::with_id(ids::THEME_DARK, "Dark").build(handle)?;
-    let theme_light =
-        MenuItemBuilder::with_id(ids::THEME_LIGHT, "Light").build(handle)?;
+    let theme_dark = MenuItemBuilder::with_id(ids::THEME_DARK, "Dark").build(handle)?;
+    let theme_light = MenuItemBuilder::with_id(ids::THEME_LIGHT, "Light").build(handle)?;
     let theme_submenu = SubmenuBuilder::new(handle, "Theme")
         .item(&theme_dark)
         .item(&theme_light)
         .build()?;
 
-    let increase_font =
-        MenuItemBuilder::with_id(ids::INCREASE_FONT_SIZE, "Increase Font Size")
-            .accelerator("CmdOrCtrl+=")
-            .build(handle)?;
-    let decrease_font =
-        MenuItemBuilder::with_id(ids::DECREASE_FONT_SIZE, "Decrease Font Size")
-            .accelerator("CmdOrCtrl+-")
-            .build(handle)?;
-    let reset_font =
-        MenuItemBuilder::with_id(ids::RESET_FONT_SIZE, "Reset Font Size")
-            .accelerator("CmdOrCtrl+0")
-            .build(handle)?;
+    let increase_font = MenuItemBuilder::with_id(ids::INCREASE_FONT_SIZE, "Increase Font Size")
+        .accelerator("CmdOrCtrl+=")
+        .build(handle)?;
+    let decrease_font = MenuItemBuilder::with_id(ids::DECREASE_FONT_SIZE, "Decrease Font Size")
+        .accelerator("CmdOrCtrl+-")
+        .build(handle)?;
+    let reset_font = MenuItemBuilder::with_id(ids::RESET_FONT_SIZE, "Reset Font Size")
+        .accelerator("CmdOrCtrl+0")
+        .build(handle)?;
 
     worktree_items.extend([
         view_explorer.clone(),
@@ -225,20 +212,15 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // ---- Git menu ----
-    let git_stage_all =
-        MenuItemBuilder::with_id(ids::GIT_STAGE_ALL, "Stage All").build(handle)?;
+    let git_stage_all = MenuItemBuilder::with_id(ids::GIT_STAGE_ALL, "Stage All").build(handle)?;
     let git_unstage_all =
         MenuItemBuilder::with_id(ids::GIT_UNSTAGE_ALL, "Unstage All").build(handle)?;
-    let git_commit =
-        MenuItemBuilder::with_id(ids::GIT_COMMIT, "Commit").build(handle)?;
-    let git_push =
-        MenuItemBuilder::with_id(ids::GIT_PUSH, "Push").build(handle)?;
+    let git_commit = MenuItemBuilder::with_id(ids::GIT_COMMIT, "Commit").build(handle)?;
+    let git_push = MenuItemBuilder::with_id(ids::GIT_PUSH, "Push").build(handle)?;
     let git_discard_all =
-        MenuItemBuilder::with_id(ids::GIT_DISCARD_ALL, "Discard All Changes")
-            .build(handle)?;
+        MenuItemBuilder::with_id(ids::GIT_DISCARD_ALL, "Discard All Changes").build(handle)?;
     let git_create_branch =
-        MenuItemBuilder::with_id(ids::GIT_CREATE_BRANCH, "Create Branch...")
-            .build(handle)?;
+        MenuItemBuilder::with_id(ids::GIT_CREATE_BRANCH, "Create Branch...").build(handle)?;
 
     worktree_items.extend([
         git_stage_all.clone(),
@@ -262,10 +244,9 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // ---- Terminal menu ----
-    let new_terminal =
-        MenuItemBuilder::with_id(ids::NEW_TERMINAL, "New Terminal")
-            .accelerator("Ctrl+`")
-            .build(handle)?;
+    let new_terminal = MenuItemBuilder::with_id(ids::NEW_TERMINAL, "New Terminal")
+        .accelerator("Ctrl+`")
+        .build(handle)?;
     worktree_items.push(new_terminal.clone());
 
     let terminal_menu = SubmenuBuilder::new(handle, "Terminal")
@@ -274,14 +255,11 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- Worktree menu ----
     let back_to_kanban =
-        MenuItemBuilder::with_id(ids::BACK_TO_KANBAN, "Back to Kanban")
-            .build(handle)?;
+        MenuItemBuilder::with_id(ids::BACK_TO_KANBAN, "Back to Kanban").build(handle)?;
     let create_worktree =
-        MenuItemBuilder::with_id(ids::CREATE_WORKTREE, "Create Worktree...")
-            .build(handle)?;
+        MenuItemBuilder::with_id(ids::CREATE_WORKTREE, "Create Worktree...").build(handle)?;
     let delete_worktree =
-        MenuItemBuilder::with_id(ids::DELETE_WORKTREE, "Delete Worktree...")
-            .build(handle)?;
+        MenuItemBuilder::with_id(ids::DELETE_WORKTREE, "Delete Worktree...").build(handle)?;
 
     let worktree_menu = SubmenuBuilder::new(handle, "Worktree")
         .item(&back_to_kanban)
@@ -292,14 +270,10 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- Remote menu ----
     let remote_start =
-        MenuItemBuilder::with_id(ids::REMOTE_START_SERVER, "Start Server")
-            .build(handle)?;
+        MenuItemBuilder::with_id(ids::REMOTE_START_SERVER, "Start Server").build(handle)?;
     let remote_stop =
-        MenuItemBuilder::with_id(ids::REMOTE_STOP_SERVER, "Stop Server")
-            .build(handle)?;
-    let remote_qr =
-        MenuItemBuilder::with_id(ids::REMOTE_SHOW_QR, "Show QR Code")
-            .build(handle)?;
+        MenuItemBuilder::with_id(ids::REMOTE_STOP_SERVER, "Stop Server").build(handle)?;
+    let remote_qr = MenuItemBuilder::with_id(ids::REMOTE_SHOW_QR, "Show QR Code").build(handle)?;
 
     let remote_menu = SubmenuBuilder::new(handle, "Remote")
         .item(&remote_start)
