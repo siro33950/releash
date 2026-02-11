@@ -4,6 +4,7 @@ import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
 import { useSettings } from "@/hooks/useSettings";
 import { useWorkspaceTabs } from "@/hooks/useWorkspaceTabs";
 import { WorkspaceManagerScreen } from "@/screens/WorkspaceManagerScreen";
+import { WorktreeErrorBoundary } from "@/components/ErrorBoundary";
 import { WorktreeView } from "@/screens/WorktreeView";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
 
@@ -115,12 +116,14 @@ function App() {
 						}}
 						className="h-full"
 					>
-						<WorktreeView
-							rootPath={tab.rootPath}
-							settings={settings}
-							onSettingsSave={updateSettings}
-							onSwitchToKanban={switchToKanban}
-						/>
+						<WorktreeErrorBoundary>
+							<WorktreeView
+								rootPath={tab.rootPath}
+								settings={settings}
+								onSettingsSave={updateSettings}
+								onSwitchToKanban={switchToKanban}
+							/>
+						</WorktreeErrorBoundary>
 					</div>
 				))}
 			</div>

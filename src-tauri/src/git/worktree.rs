@@ -53,12 +53,26 @@ pub fn get_worktree_dirty_count(worktree_path: String) -> Result<u32, GitError> 
     Ok(count)
 }
 
+fn get_rebasing_branch_name(repo: &Repository) -> Option<String> {
+    let git_dir = repo.path();
+    for subdir in &["rebase-merge", "rebase-apply"] {
+        let head_name = git_dir.join(subdir).join("head-name");
+        if let Ok(content) = std::fs::read_to_string(&head_name) {
+            return content.trim().strip_prefix("refs/heads/").map(String::from);
+        }
+    }
+    None
+}
+
 fn get_branch_name_for_repo(repo: &Repository) -> String {
     match repo.head() {
         Ok(head) => {
             if head.is_branch() {
                 head.shorthand().unwrap_or("HEAD").to_string()
             } else {
+                if let Some(name) = get_rebasing_branch_name(repo) {
+                    return name;
+                }
                 let oid = head.target().map(|o| o.to_string());
                 match oid {
                     Some(h) => format!("({})", &h[..7.min(h.len())]),
@@ -138,11 +152,36 @@ pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, GitError>
             Err(_) => continue,
         };
 
+        let wt_path = wt.path();
+
         if wt.validate().is_err() {
+            if wt_path.exists() {
+                let (branch, dirty_count) = match Repository::open(wt_path) {
+                    Ok(wt_repo) => (
+                        get_branch_name_for_repo(&wt_repo),
+                        get_dirty_count_for_path(wt_path),
+                    ),
+                    Err(_) => ("(rebasing...)".to_string(), 0),
+                };
+                entries.push(WorktreeEntry {
+                    name: wt_name,
+                    path: wt_path
+                        .to_str()
+                        .ok_or_else(|| {
+                            GitError::Custom("invalid path encoding".to_string())
+                        })?
+                        .trim_end_matches('/')
+                        .to_string(),
+                    branch,
+                    is_main: false,
+                    is_locked: false,
+                    dirty_count,
+                    base_branch: None,
+                });
+            }
             continue;
         }
 
-        let wt_path = wt.path();
         let is_locked =
             matches!(wt.is_locked(), Ok(s) if !matches!(s, git2::WorktreeLockStatus::Unlocked));
 
@@ -212,10 +251,11 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
                 Ok(wt) => wt,
                 Err(_) => continue,
             };
-            if wt.validate().is_err() {
+            let wt_path = wt.path();
+            let is_invalid = wt.validate().is_err();
+            if is_invalid && !wt_path.exists() {
                 continue;
             }
-            let wt_path = wt.path();
             if let Ok(wt_repo) = Repository::open(wt_path) {
                 let branch = get_branch_name_for_repo(&wt_repo);
                 wt_map.insert(
@@ -947,6 +987,80 @@ mod tests {
         assert!(
             card.is_merged,
             "with releash.base=develop, should be merged"
+        );
+    }
+
+    #[test]
+    fn test_get_rebasing_branch_name_from_rebase_merge() {
+        let (_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let git_dir = repo.path();
+        let rebase_dir = git_dir.join("rebase-merge");
+        fs::create_dir_all(&rebase_dir).unwrap();
+        fs::write(
+            rebase_dir.join("head-name"),
+            "refs/heads/feat-rebase\n",
+        )
+        .unwrap();
+
+        let result = get_rebasing_branch_name(&repo);
+        assert_eq!(result, Some("feat-rebase".to_string()));
+
+        fs::remove_dir_all(&rebase_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_rebasing_branch_name_from_rebase_apply() {
+        let (_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let git_dir = repo.path();
+        let rebase_dir = git_dir.join("rebase-apply");
+        fs::create_dir_all(&rebase_dir).unwrap();
+        fs::write(
+            rebase_dir.join("head-name"),
+            "refs/heads/feat-apply\n",
+        )
+        .unwrap();
+
+        let result = get_rebasing_branch_name(&repo);
+        assert_eq!(result, Some("feat-apply".to_string()));
+
+        fs::remove_dir_all(&rebase_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_rebasing_branch_name_none_when_not_rebasing() {
+        let (_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let result = get_rebasing_branch_name(&repo);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_list_worktrees_with_invalid_but_existing_worktree() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-rebase", "feat-rebase");
+        assert!(wt_path.exists());
+
+        // Simulate a broken worktree by removing the .git file (makes validate fail)
+        let dot_git = wt_path.join(".git");
+        if dot_git.exists() {
+            fs::remove_file(&dot_git).unwrap();
+            // Write an invalid .git file so the directory still exists but worktree is invalid
+            fs::write(&dot_git, "invalid content").unwrap();
+        }
+
+        let entries = list_worktrees(repo_dir.to_str().unwrap().to_string()).unwrap();
+        // The invalid worktree should still appear if the path exists
+        let wt_entry = entries.iter().find(|e| e.name == "wt-rebase");
+        assert!(
+            wt_entry.is_some(),
+            "worktree with existing path should be listed even if validate fails"
         );
     }
 }
