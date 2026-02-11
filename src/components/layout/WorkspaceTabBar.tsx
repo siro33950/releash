@@ -24,6 +24,14 @@ export function WorkspaceTabBar({
 	onTabClick,
 	onTabClose,
 }: WorkspaceTabBarProps) {
+	const worktreeTabs = tabs.filter((t) => t.type === "worktree");
+	const distinctRepoNames = new Set(
+		worktreeTabs
+			.map((t) => (t.type === "worktree" ? t.repoName : undefined))
+			.filter(Boolean),
+	);
+	const showRepoPrefix = distinctRepoNames.size > 1;
+
 	return (
 		<ScrollAreaPrimitive.Root className="h-[34px] bg-sidebar border-b border-border shrink-0">
 			<ScrollAreaPrimitive.Viewport className="h-full w-full">
@@ -81,7 +89,11 @@ export function WorkspaceTabBar({
 								aria-selected={isActive}
 							>
 								<GitBranch className="size-4 shrink-0" />
-								<span className="truncate max-w-40">{tab.branchName}</span>
+								<span className="truncate max-w-40">
+									{showRepoPrefix && tab.repoName
+										? `${tab.repoName} / ${tab.branchName}`
+										: tab.branchName}
+								</span>
 								{tab.agentState && (
 									<span
 										className={cn(

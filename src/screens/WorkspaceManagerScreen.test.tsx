@@ -35,7 +35,7 @@ vi.mock("@/components/panels/RemotePanel", () => ({
 	RemotePanel: () => <div data-testid="remote-panel">RemotePanel</div>,
 }));
 
-import type { BranchCard } from "@/types/git";
+import type { BranchCard, ProviderStatus } from "@/types/git";
 import { DEFAULT_SETTINGS } from "@/types/settings";
 
 const todoBranch: BranchCard = {
@@ -135,20 +135,28 @@ function setupMockInvoke(
 	});
 }
 
-function renderScreen(repoPath: string | null = "/home/user/my-repo") {
+const REPO_PATH = "/home/user/my-repo";
+
+function renderScreen(repoPaths: string[] = [REPO_PATH]) {
 	const onSelectWorktree = vi.fn();
-	const onChangeRepo = vi.fn();
+	const onAddRepo = vi.fn();
+	const onRemoveRepo = vi.fn();
+	const providerStatuses: Record<string, ProviderStatus | null> = {};
+	for (const p of repoPaths) {
+		providerStatuses[p] = "available";
+	}
 	const result = render(
 		<WorkspaceManagerScreen
-			repoPath={repoPath}
+			repoPaths={repoPaths}
 			settings={DEFAULT_SETTINGS}
-			providerStatus="available"
+			providerStatuses={providerStatuses}
 			onSettingsSave={vi.fn()}
 			onSelectWorktree={onSelectWorktree}
-			onChangeRepo={onChangeRepo}
+			onAddRepo={onAddRepo}
+			onRemoveRepo={onRemoveRepo}
 		/>,
 	);
-	return { ...result, onSelectWorktree, onChangeRepo };
+	return { ...result, onSelectWorktree, onAddRepo, onRemoveRepo };
 }
 
 beforeEach(() => {
@@ -163,13 +171,13 @@ afterEach(() => {
 
 describe("WorkspaceManagerScreen", () => {
 	describe("画面切替", () => {
-		it("repoPath=null で Open Folder ボタンを表示", () => {
-			renderScreen(null);
+		it("repoPaths=[] で Open Folder ボタンを表示", () => {
+			renderScreen([]);
 			expect(screen.getByText("Open Folder")).toBeInTheDocument();
 			expect(screen.queryByText("Todo")).not.toBeInTheDocument();
 		});
 
-		it("repoPath ありで Kanban ボードを表示", async () => {
+		it("repoPaths ありで Kanban ボードを表示", async () => {
 			renderScreen();
 			await waitFor(() => {
 				expect(screen.getByText("Todo")).toBeInTheDocument();
@@ -180,7 +188,7 @@ describe("WorkspaceManagerScreen", () => {
 		});
 
 		it("リポジトリ名をヘッダーに表示", async () => {
-			renderScreen("/home/user/my-repo");
+			renderScreen(["/home/user/my-repo"]);
 			await waitFor(() => {
 				expect(screen.getByText("my-repo")).toBeInTheDocument();
 			});
@@ -293,7 +301,6 @@ describe("WorkspaceManagerScreen", () => {
 			await waitFor(() => {
 				expect(screen.getByText("feat/merged-with-pr")).toBeInTheDocument();
 			});
-			// is_merged=true なのでDone列にいるべき（PRがあってもis_mergedが優先）
 			expect(screen.getByText("merged")).toBeInTheDocument();
 		});
 
@@ -315,7 +322,6 @@ describe("WorkspaceManagerScreen", () => {
 				expect(screen.getByText("feat/active-branch")).toBeInTheDocument();
 			});
 
-			// active-branch の Open ボタンをクリック（2番目: In Progress列の1つ目）
 			const activeBranchCard = screen
 				.getByText("feat/active-branch")
 				.closest("[class*='flex flex-col gap-3']");
@@ -328,6 +334,7 @@ describe("WorkspaceManagerScreen", () => {
 				expect(onSelectWorktree).toHaveBeenCalledWith(
 					"/tmp/worktrees/active",
 					"feat/active-branch",
+					"my-repo",
 				);
 			});
 		});
@@ -387,6 +394,7 @@ describe("WorkspaceManagerScreen", () => {
 			expect(onSelectWorktree).toHaveBeenCalledWith(
 				"/tmp/worktrees/todo",
 				"feat/todo-branch",
+				"my-repo",
 			);
 		});
 
@@ -464,7 +472,6 @@ describe("WorkspaceManagerScreen", () => {
 				);
 			});
 
-			// loading=false になり Kanban 列は表示されるが空
 			await waitFor(() => {
 				expect(screen.getByText("Todo")).toBeInTheDocument();
 			});
@@ -525,7 +532,6 @@ describe("WorkspaceManagerScreen", () => {
 				expect(screen.getByText("feat/todo-branch")).toBeInTheDocument();
 			});
 
-			// invoke をリセットして新しいデータを返す
 			const updatedBranches: BranchCard[] = [
 				{
 					name: "feat/new-branch",
@@ -558,7 +564,6 @@ describe("WorkspaceManagerScreen", () => {
 				}
 			});
 
-			// イベントコールバックを発火
 			await act(async () => {
 				listenCallback?.();
 			});
@@ -569,8 +574,8 @@ describe("WorkspaceManagerScreen", () => {
 			expect(screen.queryByText("feat/todo-branch")).not.toBeInTheDocument();
 		});
 
-		it("repoPath=null の場合 branch-list-sync の listen が呼ばれない", () => {
-			renderScreen(null);
+		it("repoPaths=[] の場合 branch-list-sync の listen が呼ばれない", () => {
+			renderScreen([]);
 			expect(mockListen).not.toHaveBeenCalledWith(
 				"branch-list-sync",
 				expect.any(Function),
@@ -594,7 +599,6 @@ describe("WorkspaceManagerScreen", () => {
 				(c) => c[0] === "list_branches_with_status",
 			).length;
 
-			// 30秒未満では追加の呼び出しなし
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(29_000);
 			});
@@ -604,7 +608,6 @@ describe("WorkspaceManagerScreen", () => {
 			).length;
 			expect(callCountAfter29s).toBe(callCount);
 
-			// 30秒経過で呼び出しが発生
 			Object.defineProperty(document, "visibilityState", {
 				value: "visible",
 				writable: true,
