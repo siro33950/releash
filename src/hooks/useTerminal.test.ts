@@ -65,7 +65,7 @@ vi.mock("@xterm/addon-fit", () => {
 });
 
 let resizeObserverCallback: () => void;
-let resizeObserverDisconnect: ReturnType<typeof vi.fn>;
+let resizeObserverDisconnect: ReturnType<typeof vi.fn<() => void>>;
 
 class MockResizeObserver {
 	constructor(callback: () => void) {

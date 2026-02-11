@@ -221,10 +221,7 @@ export function useTerminal(
 			if (wasHidden && terminalRef.current) {
 				wasHidden = false;
 				requestAnimationFrame(() => {
-					terminalRef.current?.refresh(
-						0,
-						(terminalRef.current?.rows ?? 1) - 1,
-					);
+					terminalRef.current?.refresh(0, (terminalRef.current?.rows ?? 1) - 1);
 				});
 			}
 
