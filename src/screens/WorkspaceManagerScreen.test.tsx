@@ -402,7 +402,7 @@ describe("WorkspaceManagerScreen", () => {
 	});
 
 	describe("リモートパネル表示切替", () => {
-		it("Remote ボタンでパネルの表示/非表示が切り替わる", async () => {
+		it("ActivityBar の Remote ボタンでパネルの表示/非表示が切り替わる", async () => {
 			const user = userEvent.setup();
 			renderScreen();
 
@@ -412,7 +412,7 @@ describe("WorkspaceManagerScreen", () => {
 
 			expect(screen.queryByTestId("remote-panel")).not.toBeInTheDocument();
 
-			const remoteBtn = screen.getByTitle("Remote");
+			const remoteBtn = screen.getByLabelText("Remote");
 			await user.click(remoteBtn);
 
 			expect(screen.getByTestId("remote-panel")).toBeInTheDocument();
