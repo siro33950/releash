@@ -10,10 +10,16 @@ import {
 	Loader2,
 	Plus,
 	Settings,
-	X,
+	Terminal,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+	ActivityBar,
+	type ActivityBarItem,
+} from "@/components/layout/ActivityBar";
 import { RemotePanel } from "@/components/panels/RemotePanel";
+import { SettingsPanel } from "@/components/panels/SettingsPanel";
+import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
 import { CreateWorktreeDialog } from "@/components/workspace/CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "@/components/workspace/DeleteWorktreeDialog";
@@ -27,7 +33,7 @@ import type {
 	WorktreeEntry,
 } from "@/types/git";
 import type { AgentStateSync } from "@/types/protocol";
-import type { AppSettings } from "@/types/settings";
+import { type AppSettings, buildTerminalCommand } from "@/types/settings";
 
 interface WorkspaceManagerScreenProps {
 	repoPath: string | null;
@@ -73,11 +79,38 @@ export function WorkspaceManagerScreen({
 	const [loading, setLoading] = useState(true);
 	const [showCreate, setShowCreate] = useState(false);
 	const [showSettings, setShowSettings] = useState(false);
-	const [showRemote, setShowRemote] = useState(false);
+	const [activeView, setActiveView] = useState<string | null>(null);
+	const [showTerminal, setShowTerminal] = useState(false);
 	const [deletingBranch, setDeletingBranch] = useState<BranchCard | null>(null);
 	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
 	const [folderLoading, setFolderLoading] = useState(false);
+
+	const activityBarItems: ActivityBarItem[] = useMemo(
+		() => [
+			{
+				id: "remote",
+				icon: <Globe className="size-5" />,
+				title: "Remote",
+			},
+		],
+		[],
+	);
+
+	const activityBarBottomItems: ActivityBarItem[] = useMemo(
+		() => [
+			{
+				id: "settings",
+				icon: <Settings className="size-5" />,
+				title: "Settings",
+			},
+		],
+		[],
+	);
+
+	const handleActivityItemClick = useCallback((id: string) => {
+		setActiveView((prev) => (prev === id ? null : id));
+	}, []);
 
 	const repoName = useMemo(
 		() => repoPath?.split("/").filter(Boolean).pop() ?? "",
@@ -349,18 +382,11 @@ export function WorkspaceManagerScreen({
 				<div className="flex items-center gap-2">
 					<Button
 						size="sm"
-						variant={showRemote ? "secondary" : "ghost"}
-						onClick={() => setShowRemote((v) => !v)}
-						title="Remote"
+						variant={showTerminal ? "secondary" : "ghost"}
+						onClick={() => setShowTerminal((v) => !v)}
+						title="Terminal"
 					>
-						<Globe className="size-4" />
-					</Button>
-					<Button
-						size="sm"
-						variant="ghost"
-						onClick={() => setShowSettings(true)}
-					>
-						<Settings className="size-4" />
+						<Terminal className="size-4" />
 					</Button>
 					<Button
 						size="sm"
@@ -382,8 +408,31 @@ export function WorkspaceManagerScreen({
 				</div>
 			</div>
 
-			{/* Kanban board + Remote side panel */}
+			{/* Main content: ActivityBar + Sidebar + Kanban + Terminal */}
 			<div className="flex flex-1 min-h-0">
+				{/* ActivityBar */}
+				<ActivityBar
+					items={activityBarItems}
+					bottomItems={activityBarBottomItems}
+					activeItem={activeView ?? undefined}
+					onItemClick={handleActivityItemClick}
+				/>
+
+				{/* Sidebar */}
+				{activeView && (
+					<div className="w-64 border-r border-border shrink-0">
+						{activeView === "remote" && <RemotePanel rootPath={repoPath} />}
+						{activeView === "settings" && (
+							<SettingsPanel
+								settings={settings}
+								onSave={onSettingsSave}
+								onOpenRepoSettings={() => setShowSettings(true)}
+							/>
+						)}
+					</div>
+				)}
+
+				{/* Kanban board */}
 				<div className="flex-1 p-3 min-w-0">
 					{loading ? (
 						<div className="flex items-center justify-center h-full">
@@ -423,18 +472,22 @@ export function WorkspaceManagerScreen({
 						</div>
 					)}
 				</div>
-				{showRemote && (
-					<div className="w-72 border-l border-border shrink-0 relative">
-						<button
-							type="button"
-							className="absolute top-1 right-1 p-0.5 rounded hover:bg-muted z-10"
-							onClick={() => setShowRemote(false)}
-						>
-							<X className="size-3.5 text-muted-foreground" />
-						</button>
-						<RemotePanel rootPath={repoPath} />
-					</div>
-				)}
+
+				{/* AI Terminal (display:none pattern to preserve PTY session) */}
+				<div
+					className="border-l border-border shrink-0"
+					style={{
+						width: showTerminal ? 480 : 0,
+						display: showTerminal ? undefined : "none",
+					}}
+				>
+					<TerminalPanel
+						cwd={repoPath}
+						theme={settings.theme}
+						terminalStartupCommand={buildTerminalCommand(settings)}
+						sessionKey={`${repoPath}::kanban`}
+					/>
+				</div>
 			</div>
 
 			{/* Status bar */}

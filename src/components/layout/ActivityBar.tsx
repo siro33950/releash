@@ -7,13 +7,13 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-interface ActivityBarItem {
+export interface ActivityBarItem {
 	id: string;
 	icon: React.ReactNode;
 	title: string;
 }
 
-const items: ActivityBarItem[] = [
+const defaultItems: ActivityBarItem[] = [
 	{ id: "explorer", icon: <Files className="size-5" />, title: "Explorer" },
 	{ id: "search", icon: <Search className="size-5" />, title: "Search" },
 	{
@@ -23,11 +23,21 @@ const items: ActivityBarItem[] = [
 	},
 ];
 
+const defaultBottomItems: ActivityBarItem[] = [
+	{
+		id: "settings",
+		icon: <Settings className="size-5" />,
+		title: "Settings",
+	},
+];
+
 interface ActivityBarProps {
 	className?: string;
 	activeItem?: string;
 	onItemClick?: (id: string) => void;
 	onGoHome?: () => void;
+	items?: ActivityBarItem[];
+	bottomItems?: ActivityBarItem[];
 }
 
 function ActivityBarButton({
@@ -62,12 +72,6 @@ function ActivityBarButton({
 	);
 }
 
-const settingsItem: ActivityBarItem = {
-	id: "settings",
-	icon: <Settings className="size-5" />,
-	title: "Settings",
-};
-
 const homeItem: ActivityBarItem = {
 	id: "home",
 	icon: <LayoutGrid className="size-5" />,
@@ -79,6 +83,8 @@ export function ActivityBar({
 	activeItem,
 	onItemClick,
 	onGoHome,
+	items = defaultItems,
+	bottomItems = defaultBottomItems,
 }: ActivityBarProps) {
 	return (
 		<div
@@ -106,13 +112,18 @@ export function ActivityBar({
 					onClick={() => onItemClick?.(item.id)}
 				/>
 			))}
-			<div className="mt-auto">
-				<ActivityBarButton
-					item={settingsItem}
-					isActive={activeItem === "settings"}
-					onClick={() => onItemClick?.("settings")}
-				/>
-			</div>
+			{bottomItems.length > 0 && (
+				<div className="mt-auto">
+					{bottomItems.map((item) => (
+						<ActivityBarButton
+							key={item.id}
+							item={item}
+							isActive={activeItem === item.id}
+							onClick={() => onItemClick?.(item.id)}
+						/>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }
