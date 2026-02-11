@@ -121,7 +121,14 @@ export function RemoteApp() {
 			setActiveTab("terminal");
 			setTerminalMounted(true);
 		},
-		[selectWorktree, setSelectedPath, setBranchName, resetPty, setActiveTab, setTerminalMounted],
+		[
+			selectWorktree,
+			setSelectedPath,
+			setBranchName,
+			resetPty,
+			setActiveTab,
+			setTerminalMounted,
+		],
 	);
 
 	const handleBackToWorktrees = useCallback(() => {
