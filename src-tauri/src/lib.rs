@@ -136,6 +136,7 @@ pub fn run() {
             ws_server::commands::get_server_status,
             ws_server::commands::get_server_info,
             ws_server::commands::broadcast_comments,
+            ws_server::commands::update_server_repo_paths,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

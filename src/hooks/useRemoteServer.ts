@@ -41,7 +41,9 @@ export function useRemoteServer() {
 		null,
 	);
 	const [showLanConfirm, setShowLanConfirm] = useState(false);
-	const [pendingRootPath, setPendingRootPath] = useState<string | null>(null);
+	const [pendingRepoPaths, setPendingRepoPaths] = useState<string[] | null>(
+		null,
+	);
 
 	const refreshConfig = useCallback(async () => {
 		try {
@@ -102,11 +104,11 @@ export function useRemoteServer() {
 	}, [running, qrData, refreshQr]);
 
 	const doStartServer = useCallback(
-		async (rootPath: string, bindIp: string) => {
+		async (repoPaths: string[], bindIp: string) => {
 			setError(null);
 			try {
 				const result = await invoke<StartServerResult>("start_server", {
-					rootPath,
+					repoPaths,
 					bindIp,
 				});
 				setRunning(true);
@@ -121,32 +123,40 @@ export function useRemoteServer() {
 	);
 
 	const startServer = useCallback(
-		async (rootPath: string) => {
+		async (repoPaths: string[]) => {
 			if (!selectedIp) {
 				setError("IPアドレスを選択してください");
 				return;
 			}
 			const selected = interfaces.find((i) => i.ip === selectedIp);
 			if (selected?.kind === "lan") {
-				setPendingRootPath(rootPath);
+				setPendingRepoPaths(repoPaths);
 				setShowLanConfirm(true);
 				return;
 			}
-			await doStartServer(rootPath, selectedIp);
+			await doStartServer(repoPaths, selectedIp);
 		},
 		[selectedIp, interfaces, doStartServer],
 	);
 
 	const confirmLanStart = useCallback(async () => {
 		setShowLanConfirm(false);
-		if (!pendingRootPath || !selectedIp) return;
-		await doStartServer(pendingRootPath, selectedIp);
-		setPendingRootPath(null);
-	}, [pendingRootPath, selectedIp, doStartServer]);
+		if (!pendingRepoPaths || !selectedIp) return;
+		await doStartServer(pendingRepoPaths, selectedIp);
+		setPendingRepoPaths(null);
+	}, [pendingRepoPaths, selectedIp, doStartServer]);
 
 	const cancelLanStart = useCallback(() => {
 		setShowLanConfirm(false);
-		setPendingRootPath(null);
+		setPendingRepoPaths(null);
+	}, []);
+
+	const updateRepoPaths = useCallback(async (repoPaths: string[]) => {
+		try {
+			await invoke("update_server_repo_paths", { repoPaths });
+		} catch (e) {
+			setError(String(e));
+		}
 	}, []);
 
 	const stopServer = useCallback(async () => {
@@ -205,5 +215,6 @@ export function useRemoteServer() {
 		refreshStatus,
 		updatePort,
 		regenerateToken,
+		updateRepoPaths,
 	};
 }

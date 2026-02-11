@@ -11,7 +11,7 @@ use super::{StartServerResult, WsServerHandle, WsServerState};
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn start_server(
-    root_path: String,
+    repo_paths: Vec<String>,
     bind_ip: String,
     app: tauri::AppHandle,
     handle: tauri::State<'_, WsServerHandle>,
@@ -73,14 +73,14 @@ pub async fn start_server(
         remote_dir,
         Arc::clone(&broadcaster),
         Some(Arc::clone(&pty_manager)),
-        Some(root_path),
+        repo_paths,
         Arc::clone(config_state.inner()),
         Some(app.clone()),
         cfg.server.tls.enabled,
         Arc::clone(&pr_cache),
     ));
 
-    start_ws_server(&cfg, server_state, shutdown_rx).await?;
+    start_ws_server(&cfg, Arc::clone(&server_state), shutdown_rx).await?;
 
     {
         let mut running = handle.running.lock();
@@ -90,6 +90,7 @@ pub async fn start_server(
         handle.active_bind.lock().replace(bind_ip.clone());
         *handle.tls_enabled.lock() = cfg.server.tls.enabled;
         handle.connection_mode.lock().replace(mode.clone());
+        *handle.server_state.lock() = Some(server_state);
     }
 
     Ok(StartServerResult { ip: bind_ip, mode })
@@ -109,6 +110,7 @@ pub fn stop_server(handle: tauri::State<'_, WsServerHandle>) -> Result<(), Strin
         handle.active_bind.lock().take();
         *handle.tls_enabled.lock() = false;
         handle.connection_mode.lock().take();
+        *handle.server_state.lock() = None;
         Ok(())
     } else {
         Err("サーバーは起動していません".to_string())
@@ -142,4 +144,23 @@ pub fn broadcast_comments(
     broadcaster: tauri::State<'_, Arc<WsBroadcaster>>,
 ) {
     broadcaster.try_send(crate::protocol::WsMessage::CommentsSync(comments));
+}
+
+#[tauri::command]
+pub async fn update_server_repo_paths(
+    repo_paths: Vec<String>,
+    handle: tauri::State<'_, WsServerHandle>,
+) -> Result<(), String> {
+    let server_state = {
+        let guard = handle.server_state.lock();
+        guard.clone().ok_or("サーバーが起動していません")?
+    };
+    server_state.update_repo_paths(repo_paths);
+    let worktrees = super::handlers::build_all_worktrees(&server_state).await;
+    server_state
+        .broadcaster
+        .try_send(crate::protocol::WsMessage::WorktreeListResponse(
+            crate::protocol::WorktreeListResponse { worktrees },
+        ));
+    Ok(())
 }

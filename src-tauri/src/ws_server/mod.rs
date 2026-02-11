@@ -30,6 +30,7 @@ pub struct WsServerHandle {
     active_bind: parking_lot::Mutex<Option<String>>,
     tls_enabled: parking_lot::Mutex<bool>,
     connection_mode: parking_lot::Mutex<Option<String>>,
+    server_state: parking_lot::Mutex<Option<Arc<WsServerState>>>,
 }
 
 impl Default for WsServerHandle {
@@ -40,6 +41,7 @@ impl Default for WsServerHandle {
             active_bind: parking_lot::Mutex::new(None),
             tls_enabled: parking_lot::Mutex::new(false),
             connection_mode: parking_lot::Mutex::new(None),
+            server_state: parking_lot::Mutex::new(None),
         }
     }
 }
@@ -68,7 +70,7 @@ pub(crate) struct WsServerState {
     remote_dir: Option<PathBuf>,
     broadcaster: Arc<WsBroadcaster>,
     pty_manager: Option<Arc<PtyManager>>,
-    repo_path: Option<String>,
+    repo_paths: Arc<parking_lot::RwLock<Vec<String>>>,
     app_config: Arc<AppConfig>,
     app_handle: Option<tauri::AppHandle>,
     tls_enabled: bool,
@@ -81,7 +83,7 @@ impl WsServerState {
         remote_dir: Option<PathBuf>,
         broadcaster: Arc<WsBroadcaster>,
         pty_manager: Option<Arc<PtyManager>>,
-        repo_path: Option<String>,
+        repo_paths: Vec<String>,
         app_config: Arc<AppConfig>,
         app_handle: Option<tauri::AppHandle>,
         tls_enabled: bool,
@@ -93,12 +95,20 @@ impl WsServerState {
             remote_dir,
             broadcaster,
             pty_manager,
-            repo_path,
+            repo_paths: Arc::new(parking_lot::RwLock::new(repo_paths)),
             app_config,
             app_handle,
             tls_enabled,
             pr_cache,
         }
+    }
+
+    pub(crate) fn get_repo_paths(&self) -> Vec<String> {
+        self.repo_paths.read().clone()
+    }
+
+    pub(crate) fn update_repo_paths(&self, paths: Vec<String>) {
+        *self.repo_paths.write() = paths;
     }
 
     pub(crate) fn current_token(&self) -> Result<String, String> {
@@ -109,7 +119,13 @@ impl WsServerState {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use crate::config::AppConfig;
     use crate::protocol::deserialize_message;
+    use crate::ws_bridge::WsBroadcaster;
+
+    use super::WsServerState;
 
     #[test]
     fn test_deserialize_invalid_json() {
@@ -127,5 +143,60 @@ mod tests {
     fn test_deserialize_missing_type_field() {
         let result = deserialize_message(r#"{"data": "hello"}"#);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_repo_paths_returns_initial() {
+        let config = crate::config::ReleashConfig::default();
+        let app_config = Arc::new(AppConfig::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+        let state = WsServerState::new(
+            None,
+            Arc::new(WsBroadcaster::default()),
+            None,
+            vec!["/repo/a".to_string(), "/repo/b".to_string()],
+            app_config,
+            None,
+            false,
+            Arc::new(crate::git_host::PrCache::new()),
+        );
+        assert_eq!(
+            state.get_repo_paths(),
+            vec!["/repo/a".to_string(), "/repo/b".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_update_repo_paths() {
+        let config = crate::config::ReleashConfig::default();
+        let app_config = Arc::new(AppConfig::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+        let state = WsServerState::new(
+            None,
+            Arc::new(WsBroadcaster::default()),
+            None,
+            vec!["/repo/a".to_string()],
+            app_config,
+            None,
+            false,
+            Arc::new(crate::git_host::PrCache::new()),
+        );
+        state.update_repo_paths(vec![
+            "/repo/x".to_string(),
+            "/repo/y".to_string(),
+            "/repo/z".to_string(),
+        ]);
+        assert_eq!(
+            state.get_repo_paths(),
+            vec![
+                "/repo/x".to_string(),
+                "/repo/y".to_string(),
+                "/repo/z".to_string()
+            ]
+        );
     }
 }

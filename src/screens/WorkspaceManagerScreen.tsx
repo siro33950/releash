@@ -92,9 +92,7 @@ export function WorkspaceManagerScreen({
 						maxSize="30"
 						collapsible={false}
 					>
-						{activeView === "remote" && repoPaths[0] && (
-							<RemotePanel rootPath={repoPaths[0]} />
-						)}
+						{activeView === "remote" && <RemotePanel rootPaths={repoPaths} />}
 						{activeView === "settings" && (
 							<SettingsPanel settings={settings} onSave={onSettingsSave} />
 						)}

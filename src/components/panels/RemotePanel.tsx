@@ -16,10 +16,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRemoteServer } from "@/hooks/useRemoteServer";
 
 export interface RemotePanelProps {
-	rootPath: string | null;
+	rootPaths: string[];
 }
 
-export function RemotePanel({ rootPath }: RemotePanelProps) {
+export function RemotePanel({ rootPaths }: RemotePanelProps) {
 	const {
 		running,
 		qrData,
@@ -38,6 +38,7 @@ export function RemotePanel({ rootPath }: RemotePanelProps) {
 		refreshStatus,
 		updatePort,
 		regenerateToken,
+		updateRepoPaths,
 	} = useRemoteServer();
 
 	const [portInput, setPortInput] = useState("");
@@ -52,11 +53,17 @@ export function RemotePanel({ rootPath }: RemotePanelProps) {
 		}
 	}, [config]);
 
+	useEffect(() => {
+		if (running && rootPaths.length > 0) {
+			updateRepoPaths(rootPaths);
+		}
+	}, [running, rootPaths, updateRepoPaths]);
+
 	const handleToggle = async () => {
 		if (running) {
 			await stopServer();
-		} else if (rootPath) {
-			await startServer(rootPath);
+		} else if (rootPaths.length > 0) {
+			await startServer(rootPaths);
 		}
 	};
 
@@ -106,7 +113,7 @@ export function RemotePanel({ rootPath }: RemotePanelProps) {
 							variant={running ? "destructive" : "default"}
 							className="w-full text-xs"
 							onClick={handleToggle}
-							disabled={!running && !rootPath}
+							disabled={!running && rootPaths.length === 0}
 						>
 							{running ? "Stop Server" : "Start Server"}
 						</Button>
@@ -278,7 +285,7 @@ export function RemotePanel({ rootPath }: RemotePanelProps) {
 					)}
 
 					{/* No root path warning */}
-					{!rootPath && (
+					{rootPaths.length === 0 && (
 						<p className="text-xs text-muted-foreground">
 							フォルダを開いてからサーバーを起動してください
 						</p>
