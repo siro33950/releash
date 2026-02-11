@@ -42,8 +42,9 @@ pub fn run() {
             let app_config = Arc::new(AppConfig::new(config, config_path));
             app.manage(app_config.clone());
 
-            let agent_states: hook_listener::AgentStatesMap =
-                Arc::new(parking_lot::Mutex::new(HashMap::<String, AgentStateSync>::new()));
+            let agent_states: hook_listener::AgentStatesMap = Arc::new(parking_lot::Mutex::new(
+                HashMap::<String, AgentStateSync>::new(),
+            ));
             app.manage(agent_states.clone());
 
             let hook_state = hook_listener::HookListenerState {

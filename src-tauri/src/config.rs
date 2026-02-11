@@ -234,14 +234,13 @@ pub async fn apply_hooks_config(config_json: String) -> Result<(), String> {
         let mut existing: serde_json::Value = if settings_path.exists() {
             let content = fs::read_to_string(&settings_path)
                 .map_err(|e| format!("settings.json読み込み失敗: {e}"))?;
-            serde_json::from_str(&content)
-                .map_err(|e| format!("settings.jsonパース失敗: {e}"))?
+            serde_json::from_str(&content).map_err(|e| format!("settings.jsonパース失敗: {e}"))?
         } else {
             serde_json::json!({})
         };
 
-        let new_config: serde_json::Value = serde_json::from_str(&config_json)
-            .map_err(|e| format!("設定JSONパース失敗: {e}"))?;
+        let new_config: serde_json::Value =
+            serde_json::from_str(&config_json).map_err(|e| format!("設定JSONパース失敗: {e}"))?;
 
         if let Some(hooks) = new_config.get("hooks") {
             existing["hooks"] = hooks.clone();
@@ -273,8 +272,8 @@ pub async fn get_hooks_status() -> Result<bool, String> {
 
         let content = fs::read_to_string(&settings_path)
             .map_err(|e| format!("settings.json読み込み失敗: {e}"))?;
-        let parsed: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| format!("settings.jsonパース失敗: {e}"))?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("settings.jsonパース失敗: {e}"))?;
 
         Ok(parsed.get("hooks").is_some())
     })

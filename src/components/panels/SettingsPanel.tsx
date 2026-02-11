@@ -17,10 +17,7 @@ export interface SettingsPanelProps {
 	onSave: (settings: AppSettings) => void;
 }
 
-export function SettingsPanel({
-	settings,
-	onSave,
-}: SettingsPanelProps) {
+export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 	const [draft, setDraft] = useState<AppSettings>(settings);
 
 	useEffect(() => {
@@ -32,7 +29,10 @@ export function SettingsPanel({
 	}, [draft, onSave]);
 
 	const isDirty = JSON.stringify(draft) !== JSON.stringify(settings);
-	const showAutoApprove = draft.agent !== "none" && draft.agent !== "cursor" && draft.agent !== "custom";
+	const showAutoApprove =
+		draft.agent !== "none" &&
+		draft.agent !== "cursor" &&
+		draft.agent !== "custom";
 
 	return (
 		<div className="h-full flex flex-col bg-sidebar">
@@ -54,7 +54,9 @@ export function SettingsPanel({
 						<select
 							id="theme-select"
 							value={draft.theme}
-							onChange={(e) => setDraft((d) => ({ ...d, theme: e.target.value as Theme }))}
+							onChange={(e) =>
+								setDraft((d) => ({ ...d, theme: e.target.value as Theme }))
+							}
 							className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
 						>
 							<option value="dark">Dark</option>
@@ -72,7 +74,12 @@ export function SettingsPanel({
 						<select
 							id="diff-base-select"
 							value={draft.defaultDiffBase}
-							onChange={(e) => setDraft((d) => ({ ...d, defaultDiffBase: e.target.value as DiffBase }))}
+							onChange={(e) =>
+								setDraft((d) => ({
+									...d,
+									defaultDiffBase: e.target.value as DiffBase,
+								}))
+							}
 							className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
 						>
 							<option value="staged">Staged</option>
@@ -90,7 +97,12 @@ export function SettingsPanel({
 						<select
 							id="diff-mode-select"
 							value={draft.defaultDiffMode}
-							onChange={(e) => setDraft((d) => ({ ...d, defaultDiffMode: e.target.value as DiffMode }))}
+							onChange={(e) =>
+								setDraft((d) => ({
+									...d,
+									defaultDiffMode: e.target.value as DiffMode,
+								}))
+							}
 							className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
 						>
 							<option value="gutter">Gutter</option>
@@ -113,7 +125,9 @@ export function SettingsPanel({
 							max={24}
 							step={1}
 							value={draft.fontSize}
-							onChange={(e) => setDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))}
+							onChange={(e) =>
+								setDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))
+							}
 							className="w-full accent-primary"
 						/>
 						<div className="flex justify-between text-[10px] text-muted-foreground">
@@ -132,7 +146,9 @@ export function SettingsPanel({
 						<select
 							id="agent-select"
 							value={draft.agent}
-							onChange={(e) => setDraft((d) => ({ ...d, agent: e.target.value as AgentType }))}
+							onChange={(e) =>
+								setDraft((d) => ({ ...d, agent: e.target.value as AgentType }))
+							}
 							className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
 						>
 							{AGENT_TYPE_KEYS.map((key) => (
@@ -148,7 +164,12 @@ export function SettingsPanel({
 							<input
 								type="checkbox"
 								checked={draft.agentAutoApprove}
-								onChange={(e) => setDraft((d) => ({ ...d, agentAutoApprove: e.target.checked }))}
+								onChange={(e) =>
+									setDraft((d) => ({
+										...d,
+										agentAutoApprove: e.target.checked,
+									}))
+								}
 								className="accent-primary"
 							/>
 							<span className="text-xs font-medium text-muted-foreground">
@@ -168,7 +189,12 @@ export function SettingsPanel({
 							<textarea
 								id="terminal-startup-cmd"
 								value={draft.terminalStartupCommand}
-								onChange={(e) => setDraft((d) => ({ ...d, terminalStartupCommand: e.target.value }))}
+								onChange={(e) =>
+									setDraft((d) => ({
+										...d,
+										terminalStartupCommand: e.target.value,
+									}))
+								}
 								placeholder="e.g. nvm use 18 && clear"
 								rows={3}
 								className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary resize-none"

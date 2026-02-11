@@ -143,13 +143,24 @@ export function SettingsDialog({
 		} finally {
 			setSaving(false);
 		}
-	}, [draft, selectedBase, initialBase, repoPath, onSave, onBaseBranchSaved, onClose]);
+	}, [
+		draft,
+		selectedBase,
+		initialBase,
+		repoPath,
+		onSave,
+		onBaseBranchSaved,
+		onClose,
+	]);
 
 	const settingsDirty = JSON.stringify(draft) !== JSON.stringify(settings);
 	const baseDirty = selectedBase !== initialBase;
 	const isDirty = settingsDirty || baseDirty;
 
-	const showAutoApprove = draft.agent !== "none" && draft.agent !== "cursor" && draft.agent !== "custom";
+	const showAutoApprove =
+		draft.agent !== "none" &&
+		draft.agent !== "cursor" &&
+		draft.agent !== "custom";
 
 	const sectionHeader =
 		"text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2";
@@ -176,7 +187,9 @@ export function SettingsDialog({
 							<select
 								id="sd-theme"
 								value={draft.theme}
-								onChange={(e) => setDraft((d) => ({ ...d, theme: e.target.value as Theme }))}
+								onChange={(e) =>
+									setDraft((d) => ({ ...d, theme: e.target.value as Theme }))
+								}
 								className={selectClass}
 							>
 								<option value="dark">Dark</option>
@@ -195,7 +208,9 @@ export function SettingsDialog({
 								max={24}
 								step={1}
 								value={draft.fontSize}
-								onChange={(e) => setDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))}
+								onChange={(e) =>
+									setDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))
+								}
 								className="w-full accent-primary"
 							/>
 						</div>
@@ -207,7 +222,12 @@ export function SettingsDialog({
 							<select
 								id="sd-diff-base"
 								value={draft.defaultDiffBase}
-								onChange={(e) => setDraft((d) => ({ ...d, defaultDiffBase: e.target.value as DiffBase }))}
+								onChange={(e) =>
+									setDraft((d) => ({
+										...d,
+										defaultDiffBase: e.target.value as DiffBase,
+									}))
+								}
 								className={selectClass}
 							>
 								<option value="staged">Staged</option>
@@ -222,7 +242,12 @@ export function SettingsDialog({
 							<select
 								id="sd-diff-mode"
 								value={draft.defaultDiffMode}
-								onChange={(e) => setDraft((d) => ({ ...d, defaultDiffMode: e.target.value as DiffMode }))}
+								onChange={(e) =>
+									setDraft((d) => ({
+										...d,
+										defaultDiffMode: e.target.value as DiffMode,
+									}))
+								}
 								className={selectClass}
 							>
 								<option value="gutter">Gutter</option>
@@ -243,7 +268,12 @@ export function SettingsDialog({
 							<select
 								id="sd-agent"
 								value={draft.agent}
-								onChange={(e) => setDraft((d) => ({ ...d, agent: e.target.value as AgentType }))}
+								onChange={(e) =>
+									setDraft((d) => ({
+										...d,
+										agent: e.target.value as AgentType,
+									}))
+								}
 								className={selectClass}
 							>
 								{AGENT_TYPE_KEYS.map((key) => (
@@ -259,7 +289,12 @@ export function SettingsDialog({
 								<input
 									type="checkbox"
 									checked={draft.agentAutoApprove}
-									onChange={(e) => setDraft((d) => ({ ...d, agentAutoApprove: e.target.checked }))}
+									onChange={(e) =>
+										setDraft((d) => ({
+											...d,
+											agentAutoApprove: e.target.checked,
+										}))
+									}
 									className="accent-primary"
 								/>
 								<span className={labelClass}>Auto-approve</span>
@@ -274,7 +309,12 @@ export function SettingsDialog({
 								<textarea
 									id="sd-startup-cmd"
 									value={draft.terminalStartupCommand}
-									onChange={(e) => setDraft((d) => ({ ...d, terminalStartupCommand: e.target.value }))}
+									onChange={(e) =>
+										setDraft((d) => ({
+											...d,
+											terminalStartupCommand: e.target.value,
+										}))
+									}
 									placeholder="e.g. nvm use 18 && clear"
 									rows={2}
 									className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary resize-none"
@@ -333,7 +373,8 @@ export function SettingsDialog({
 
 									{hooksSuccess && (
 										<p className="text-xs text-green-500">
-											設定を適用しました。Claude Codeを再起動すると反映されます。
+											設定を適用しました。Claude
+											Codeを再起動すると反映されます。
 										</p>
 									)}
 

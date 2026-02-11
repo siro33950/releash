@@ -54,9 +54,7 @@ pub async fn start_hook_listener(state: HookListenerState) -> Result<(), String>
         tokio::spawn(async move {
             let service = service_fn(move |req| {
                 let state = Arc::clone(&state);
-                async move {
-                    Ok::<_, std::convert::Infallible>(handle_request(req, &state).await)
-                }
+                async move { Ok::<_, std::convert::Infallible>(handle_request(req, &state).await) }
             });
 
             if let Err(e) = http1::Builder::new()
@@ -129,9 +127,7 @@ async fn handle_agent_hook(
 
     let payload: AgentHookPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
-        Err(e) => {
-            return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {e}"))
-        }
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {e}")),
     };
 
     let sync = AgentStateSync::from_payload(&payload);

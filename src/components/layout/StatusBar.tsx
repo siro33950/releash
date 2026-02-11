@@ -71,17 +71,28 @@ export function StatusBar({
 					</>
 				)}
 				{agentState && (
-					<span className={`inline-flex items-center gap-1 ${
-						agentState === "running" ? "text-blue-300" :
-						agentState === "waiting" ? "text-yellow-300" :
-						agentState === "done" ? "text-green-300" :
-						"text-red-300"
-					}`}>
-						<span className={`w-1.5 h-1.5 rounded-full ${
-							agentState === "running" ? "bg-blue-400 animate-pulse" :
-							agentState === "waiting" ? "bg-yellow-400 animate-pulse" :
-							agentState === "done" ? "bg-green-400" : "bg-red-400"
-						}`} />
+					<span
+						className={`inline-flex items-center gap-1 ${
+							agentState === "running"
+								? "text-blue-300"
+								: agentState === "waiting"
+									? "text-yellow-300"
+									: agentState === "done"
+										? "text-green-300"
+										: "text-red-300"
+						}`}
+					>
+						<span
+							className={`w-1.5 h-1.5 rounded-full ${
+								agentState === "running"
+									? "bg-blue-400 animate-pulse"
+									: agentState === "waiting"
+										? "bg-yellow-400 animate-pulse"
+										: agentState === "done"
+											? "bg-green-400"
+											: "bg-red-400"
+							}`}
+						/>
 						Agent: {agentState}
 					</span>
 				)}
