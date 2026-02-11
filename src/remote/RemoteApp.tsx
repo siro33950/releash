@@ -32,10 +32,10 @@ import { useRemoteWorktrees } from "./hooks/useRemoteWorktrees";
 import { useWebSocket } from "./hooks/useWebSocket";
 
 const tabs: { id: Tab; label: string; icon: typeof GitBranch }[] = [
+	{ id: "terminal", label: "Terminal", icon: Terminal },
 	{ id: "changes", label: "Changes", icon: GitBranch },
 	{ id: "diff", label: "Diff", icon: FileDiff },
 	{ id: "comments", label: "Comments", icon: MessageSquare },
-	{ id: "terminal", label: "Terminal", icon: Terminal },
 ];
 
 export function RemoteApp() {
@@ -118,9 +118,10 @@ export function RemoteApp() {
 			setSelectedPath(null);
 			setBranchName(null);
 			resetPty();
-			setActiveTab("changes");
+			setActiveTab("terminal");
+			setTerminalMounted(true);
 		},
-		[selectWorktree, setSelectedPath, setBranchName, resetPty, setActiveTab],
+		[selectWorktree, setSelectedPath, setBranchName, resetPty, setActiveTab, setTerminalMounted],
 	);
 
 	const handleBackToWorktrees = useCallback(() => {
