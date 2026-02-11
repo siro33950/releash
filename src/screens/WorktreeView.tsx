@@ -23,6 +23,7 @@ import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useLineComments } from "@/hooks/useLineComments";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
+import { normalizePath } from "@/lib/normalizePath";
 import type { LineComment } from "@/types/comment";
 import type { AgentState, AgentStateSync } from "@/types/protocol";
 import {
@@ -76,7 +77,9 @@ export function WorktreeView({
 
 	useEffect(() => {
 		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
-			if (event.payload.worktree_path === rootPath) {
+			if (
+				normalizePath(event.payload.worktree_path) === normalizePath(rootPath)
+			) {
 				setAgentState(event.payload.state);
 			}
 		});
