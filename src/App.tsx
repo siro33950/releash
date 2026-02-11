@@ -44,7 +44,8 @@ function App() {
 					repoPath: mainPath,
 				});
 				if (worktrees.length === 1) {
-					openWorktreeTab(worktrees[0].path, worktrees[0].branch);
+					const repoName = mainPath.split(/[\\/]/).pop() ?? mainPath;
+					openWorktreeTab(worktrees[0].path, worktrees[0].branch, repoName);
 					setInitializing(false);
 					return;
 				}

@@ -261,9 +261,12 @@ export function RepoKanbanBoard({
 	const handleDeleteConfirm = useCallback(
 		async (worktreePath: string, force: boolean) => {
 			await invoke("kill_ptys_by_worktree", { worktreePath }).catch(() => {});
-			await invoke("remove_worktree", { repoPath, worktreePath, force });
-			setDeletingBranch(null);
-			await refresh();
+			try {
+				await invoke("remove_worktree", { repoPath, worktreePath, force });
+				await refresh();
+			} finally {
+				setDeletingBranch(null);
+			}
 		},
 		[repoPath, refresh],
 	);

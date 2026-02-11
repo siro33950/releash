@@ -115,7 +115,7 @@ export function WorkspaceTabBar({
 											? "opacity-100"
 											: "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
 									)}
-									aria-label={`Close ${tab.branchName}`}
+									aria-label={`Close ${showRepoPrefix && tab.repoName ? `${tab.repoName} / ${tab.branchName}` : tab.branchName}`}
 								>
 									<X className="size-3.5" />
 								</button>

@@ -9,7 +9,9 @@ function loadRepoPaths(): string[] {
 		if (stored) {
 			const parsed = JSON.parse(stored);
 			if (Array.isArray(parsed)) {
-				return parsed.map(normalizePath);
+				return parsed
+					.filter((v): v is string => typeof v === "string")
+					.map(normalizePath);
 			}
 		}
 	} catch {
