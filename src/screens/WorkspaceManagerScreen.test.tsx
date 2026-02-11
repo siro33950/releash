@@ -135,7 +135,10 @@ function setupMockInvoke(
 	});
 }
 
-function renderScreen(repoPath: string | null = "/home/user/my-repo") {
+function renderScreen(
+	repoPath: string | null = "/home/user/my-repo",
+	isActive = true,
+) {
 	const onSelectWorktree = vi.fn();
 	const onChangeRepo = vi.fn();
 	const result = render(
@@ -143,6 +146,7 @@ function renderScreen(repoPath: string | null = "/home/user/my-repo") {
 			repoPath={repoPath}
 			settings={DEFAULT_SETTINGS}
 			providerStatus="available"
+			isActive={isActive}
 			onSettingsSave={vi.fn()}
 			onSelectWorktree={onSelectWorktree}
 			onChangeRepo={onChangeRepo}
@@ -575,6 +579,91 @@ describe("WorkspaceManagerScreen", () => {
 				"branch-list-sync",
 				expect.any(Function),
 			);
+		});
+
+		it("isActive が false→true に変わった時に refresh が呼ばれる", async () => {
+			setupMockInvoke();
+			const { rerender } = render(
+				<WorkspaceManagerScreen
+					repoPath="/home/user/my-repo"
+					settings={DEFAULT_SETTINGS}
+					providerStatus="available"
+					isActive={false}
+					onSettingsSave={vi.fn()}
+					onSelectWorktree={vi.fn()}
+					onChangeRepo={vi.fn()}
+				/>,
+			);
+
+			await act(async () => {});
+
+			const callCountBeforeActivation = mockInvoke.mock.calls.filter(
+				(c) => c[0] === "list_branches_with_status",
+			).length;
+
+			rerender(
+				<WorkspaceManagerScreen
+					repoPath="/home/user/my-repo"
+					settings={DEFAULT_SETTINGS}
+					providerStatus="available"
+					isActive={true}
+					onSettingsSave={vi.fn()}
+					onSelectWorktree={vi.fn()}
+					onChangeRepo={vi.fn()}
+				/>,
+			);
+
+			await waitFor(() => {
+				const callCountAfter = mockInvoke.mock.calls.filter(
+					(c) => c[0] === "list_branches_with_status",
+				).length;
+				expect(callCountAfter).toBeGreaterThan(callCountBeforeActivation);
+			});
+		});
+
+		it("初回マウント時 isActive=true で refresh が二重に呼ばれない", async () => {
+			setupMockInvoke();
+			renderScreen("/home/user/my-repo", true);
+
+			await act(async () => {});
+
+			// 初回マウント useEffect で1回だけ呼ばれる（遷移検知では呼ばれない）
+			const callCount = mockInvoke.mock.calls.filter(
+				(c) => c[0] === "list_branches_with_status",
+			).length;
+			expect(callCount).toBe(1);
+		});
+
+		it("isActive=false の時にポーリングが実行されない", async () => {
+			vi.useFakeTimers();
+			setupMockInvoke();
+			renderScreen("/home/user/my-repo", false);
+
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(100);
+			});
+
+			const callCountBefore = mockInvoke.mock.calls.filter(
+				(c) => c[0] === "list_branches_with_status",
+			).length;
+
+			Object.defineProperty(document, "visibilityState", {
+				value: "visible",
+				writable: true,
+				configurable: true,
+			});
+
+			// 30秒経過してもポーリングされない
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(60_000);
+			});
+
+			const callCountAfter = mockInvoke.mock.calls.filter(
+				(c) => c[0] === "list_branches_with_status",
+			).length;
+			expect(callCountAfter).toBe(callCountBefore);
+
+			vi.useRealTimers();
 		});
 
 		it("フォールバックポーリングが 30秒間隔で設定される", async () => {

@@ -102,6 +102,7 @@ function App() {
 						settings={settings}
 						providerStatus={providerStatus}
 						initializing={initializing}
+						isActive={activeTabId === "kanban"}
 						onSettingsSave={updateSettings}
 						onSelectWorktree={openWorktreeTab}
 						onChangeRepo={handleChangeRepo}

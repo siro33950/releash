@@ -11,7 +11,7 @@ import {
 	Plus,
 	Settings,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import {
 	ActivityBar,
@@ -40,6 +40,7 @@ interface WorkspaceManagerScreenProps {
 	settings: AppSettings;
 	providerStatus: ProviderStatus | null;
 	initializing?: boolean;
+	isActive?: boolean;
 	onSettingsSave: (settings: AppSettings) => void;
 	onSelectWorktree: (path: string, branchName?: string) => void;
 	onChangeRepo: (path: string | null) => void;
@@ -71,6 +72,7 @@ export function WorkspaceManagerScreen({
 	settings,
 	providerStatus,
 	initializing = false,
+	isActive = true,
 	onSettingsSave,
 	onSelectWorktree,
 	onChangeRepo,
@@ -84,6 +86,7 @@ export function WorkspaceManagerScreen({
 	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
 	const [folderLoading, setFolderLoading] = useState(false);
+	const prevActiveRef = useRef(isActive);
 
 	const activityBarItems: ActivityBarItem[] = useMemo(
 		() => [
@@ -251,14 +254,22 @@ export function WorkspaceManagerScreen({
 	}, []);
 
 	useEffect(() => {
-		if (!repoPath) return;
+		if (!repoPath || !isActive) return;
 		const id = setInterval(() => {
 			if (document.visibilityState === "visible") {
 				refresh();
 			}
 		}, 30000);
 		return () => clearInterval(id);
-	}, [repoPath, refresh]);
+	}, [repoPath, isActive, refresh]);
+
+	useEffect(() => {
+		const wasActive = prevActiveRef.current;
+		prevActiveRef.current = isActive;
+		if (isActive && !wasActive) {
+			refresh();
+		}
+	}, [isActive, refresh]);
 
 	const handleOpenBranch = useCallback(
 		async (branch: BranchCard) => {
