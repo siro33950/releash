@@ -10,15 +10,9 @@ import {
 	Loader2,
 	Plus,
 	Settings,
-	Terminal,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-	Group,
-	Panel,
-	type PanelImperativeHandle,
-	Separator,
-} from "react-resizable-panels";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import {
 	ActivityBar,
 	type ActivityBarItem,
@@ -85,9 +79,7 @@ export function WorkspaceManagerScreen({
 	const [loading, setLoading] = useState(true);
 	const [showCreate, setShowCreate] = useState(false);
 	const [showSettings, setShowSettings] = useState(false);
-	const [activeView, setActiveView] = useState<string | null>(null);
-	const [terminalOpen, setTerminalOpen] = useState(false);
-	const terminalPanelRef = useRef<PanelImperativeHandle>(null);
+	const [activeView, setActiveView] = useState<string>("remote");
 	const [deletingBranch, setDeletingBranch] = useState<BranchCard | null>(null);
 	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
@@ -114,22 +106,6 @@ export function WorkspaceManagerScreen({
 		],
 		[],
 	);
-
-	const handleActivityItemClick = useCallback((id: string) => {
-		setActiveView((prev) => (prev === id ? null : id));
-	}, []);
-
-	const handleToggleTerminal = useCallback(() => {
-		setTerminalOpen((prev) => {
-			const next = !prev;
-			if (next) {
-				terminalPanelRef.current?.resize(35);
-			} else {
-				terminalPanelRef.current?.collapse();
-			}
-			return next;
-		});
-	}, []);
 
 	const repoName = useMemo(
 		() => repoPath?.split("/").filter(Boolean).pop() ?? "",
@@ -401,14 +377,6 @@ export function WorkspaceManagerScreen({
 				<div className="flex items-center gap-2">
 					<Button
 						size="sm"
-						variant={terminalOpen ? "secondary" : "ghost"}
-						onClick={handleToggleTerminal}
-						title="Terminal"
-					>
-						<Terminal className="size-4" />
-					</Button>
-					<Button
-						size="sm"
 						variant="outline"
 						onClick={handleSelectFolder}
 						disabled={folderLoading}
@@ -433,13 +401,19 @@ export function WorkspaceManagerScreen({
 				<ActivityBar
 					items={activityBarItems}
 					bottomItems={activityBarBottomItems}
-					activeItem={activeView ?? undefined}
-					onItemClick={handleActivityItemClick}
+					activeItem={activeView}
+					onItemClick={setActiveView}
 				/>
 
-				{/* Sidebar (fixed width, outside resizable group) */}
-				{activeView && (
-					<div className="w-64 border-r border-border shrink-0">
+				<Group orientation="horizontal" className="flex-1">
+					{/* Sidebar */}
+					<Panel
+						id="sidebar"
+						defaultSize="15"
+						minSize={10}
+						maxSize="30"
+						collapsible={false}
+					>
 						{activeView === "remote" && <RemotePanel rootPath={repoPath} />}
 						{activeView === "settings" && (
 							<SettingsPanel
@@ -448,12 +422,12 @@ export function WorkspaceManagerScreen({
 								onOpenRepoSettings={() => setShowSettings(true)}
 							/>
 						)}
-					</div>
-				)}
+					</Panel>
 
-				{/* Kanban + Terminal (resizable) */}
-				<Group orientation="horizontal" className="flex-1">
-					<Panel id="kanban" minSize={30} collapsible={false}>
+					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
+
+					{/* Kanban */}
+					<Panel id="kanban" defaultSize="55" minSize={20} collapsible={false}>
 						<div className="h-full p-3 min-w-0">
 							{loading ? (
 								<div className="flex items-center justify-center h-full">
@@ -501,15 +475,13 @@ export function WorkspaceManagerScreen({
 
 					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
 
-					{/* AI Terminal (collapsible panel, PTY preserved via sessionKey) */}
+					{/* AI Terminal */}
 					<Panel
 						id="terminal"
-						panelRef={terminalPanelRef}
-						defaultSize={0}
-						minSize={15}
-						maxSize={60}
-						collapsedSize={0}
-						collapsible
+						defaultSize="30"
+						minSize={10}
+						maxSize="60"
+						collapsible={false}
 					>
 						<TerminalPanel
 							cwd={repoPath}

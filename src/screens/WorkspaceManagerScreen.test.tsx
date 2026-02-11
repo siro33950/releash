@@ -21,6 +21,16 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 	openUrl: vi.fn(),
 }));
 
+vi.mock("react-resizable-panels", () => ({
+	Group: ({ children }: { children: React.ReactNode }) => (
+		<div data-testid="panel-group">{children}</div>
+	),
+	Panel: ({ children }: { children: React.ReactNode }) => (
+		<div data-testid="panel">{children}</div>
+	),
+	Separator: () => <div data-testid="separator" />,
+}));
+
 vi.mock("@/components/panels/RemotePanel", () => ({
 	RemotePanel: () => <div data-testid="remote-panel">RemotePanel</div>,
 }));
@@ -402,22 +412,24 @@ describe("WorkspaceManagerScreen", () => {
 	});
 
 	describe("リモートパネル表示切替", () => {
-		it("ActivityBar の Remote ボタンでパネルの表示/非表示が切り替わる", async () => {
-			const user = userEvent.setup();
+		it("初期状態で Remote パネルが表示される", async () => {
 			renderScreen();
-
 			await waitFor(() => {
 				expect(screen.getByText("Todo")).toBeInTheDocument();
 			});
+			expect(screen.getByTestId("remote-panel")).toBeInTheDocument();
+		});
 
-			expect(screen.queryByTestId("remote-panel")).not.toBeInTheDocument();
-
-			const remoteBtn = screen.getByLabelText("Remote");
-			await user.click(remoteBtn);
-
+		it("ActivityBar の Settings ボタンでパネル内容が切り替わる", async () => {
+			const user = userEvent.setup();
+			renderScreen();
+			await waitFor(() => {
+				expect(screen.getByText("Todo")).toBeInTheDocument();
+			});
 			expect(screen.getByTestId("remote-panel")).toBeInTheDocument();
 
-			await user.click(remoteBtn);
+			const settingsBtn = screen.getByLabelText("Settings");
+			await user.click(settingsBtn);
 
 			expect(screen.queryByTestId("remote-panel")).not.toBeInTheDocument();
 		});
