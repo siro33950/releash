@@ -15,9 +15,14 @@ const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
 export interface SettingsPanelProps {
 	settings: AppSettings;
 	onSave: (settings: AppSettings) => void;
+	onOpenRepoSettings?: () => void;
 }
 
-export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
+export function SettingsPanel({
+	settings,
+	onSave,
+	onOpenRepoSettings,
+}: SettingsPanelProps) {
 	const [draft, setDraft] = useState<AppSettings>(settings);
 
 	useEffect(() => {
@@ -213,6 +218,17 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 					>
 						Save
 					</Button>
+
+					{onOpenRepoSettings && (
+						<Button
+							size="sm"
+							variant="outline"
+							onClick={onOpenRepoSettings}
+							className="w-full"
+						>
+							Repo Settings...
+						</Button>
+					)}
 				</div>
 			</ScrollArea>
 		</div>

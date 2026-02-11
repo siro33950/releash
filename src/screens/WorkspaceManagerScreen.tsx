@@ -10,10 +10,16 @@ import {
 	Loader2,
 	Plus,
 	Settings,
-	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Group, Panel, Separator } from "react-resizable-panels";
+import {
+	ActivityBar,
+	type ActivityBarItem,
+} from "@/components/layout/ActivityBar";
 import { RemotePanel } from "@/components/panels/RemotePanel";
+import { SettingsPanel } from "@/components/panels/SettingsPanel";
+import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
 import { CreateWorktreeDialog } from "@/components/workspace/CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "@/components/workspace/DeleteWorktreeDialog";
@@ -27,7 +33,7 @@ import type {
 	WorktreeEntry,
 } from "@/types/git";
 import type { AgentStateSync } from "@/types/protocol";
-import type { AppSettings } from "@/types/settings";
+import { type AppSettings, buildTerminalCommand } from "@/types/settings";
 
 interface WorkspaceManagerScreenProps {
 	repoPath: string | null;
@@ -73,11 +79,33 @@ export function WorkspaceManagerScreen({
 	const [loading, setLoading] = useState(true);
 	const [showCreate, setShowCreate] = useState(false);
 	const [showSettings, setShowSettings] = useState(false);
-	const [showRemote, setShowRemote] = useState(false);
+	const [activeView, setActiveView] = useState<string>("remote");
 	const [deletingBranch, setDeletingBranch] = useState<BranchCard | null>(null);
 	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
 	const [folderLoading, setFolderLoading] = useState(false);
+
+	const activityBarItems: ActivityBarItem[] = useMemo(
+		() => [
+			{
+				id: "remote",
+				icon: <Globe className="size-5" />,
+				title: "Remote",
+			},
+		],
+		[],
+	);
+
+	const activityBarBottomItems: ActivityBarItem[] = useMemo(
+		() => [
+			{
+				id: "settings",
+				icon: <Settings className="size-5" />,
+				title: "Settings",
+			},
+		],
+		[],
+	);
 
 	const repoName = useMemo(
 		() => repoPath?.split("/").filter(Boolean).pop() ?? "",
@@ -349,21 +377,6 @@ export function WorkspaceManagerScreen({
 				<div className="flex items-center gap-2">
 					<Button
 						size="sm"
-						variant={showRemote ? "secondary" : "ghost"}
-						onClick={() => setShowRemote((v) => !v)}
-						title="Remote"
-					>
-						<Globe className="size-4" />
-					</Button>
-					<Button
-						size="sm"
-						variant="ghost"
-						onClick={() => setShowSettings(true)}
-					>
-						<Settings className="size-4" />
-					</Button>
-					<Button
-						size="sm"
 						variant="outline"
 						onClick={handleSelectFolder}
 						disabled={folderLoading}
@@ -382,59 +395,102 @@ export function WorkspaceManagerScreen({
 				</div>
 			</div>
 
-			{/* Kanban board + Remote side panel */}
+			{/* Main content: ActivityBar + Sidebar + Kanban + Terminal */}
 			<div className="flex flex-1 min-h-0">
-				<div className="flex-1 p-3 min-w-0">
-					{loading ? (
-						<div className="flex items-center justify-center h-full">
-							<Loader2 className="size-5 text-muted-foreground animate-spin" />
+				{/* ActivityBar */}
+				<ActivityBar
+					items={activityBarItems}
+					bottomItems={activityBarBottomItems}
+					activeItem={activeView}
+					onItemClick={setActiveView}
+				/>
+
+				<Group orientation="horizontal" className="flex-1">
+					{/* Sidebar */}
+					<Panel
+						id="sidebar"
+						defaultSize="15"
+						minSize={10}
+						maxSize="30"
+						collapsible={false}
+					>
+						{activeView === "remote" && <RemotePanel rootPath={repoPath} />}
+						{activeView === "settings" && (
+							<SettingsPanel
+								settings={settings}
+								onSave={onSettingsSave}
+								onOpenRepoSettings={() => setShowSettings(true)}
+							/>
+						)}
+					</Panel>
+
+					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
+
+					{/* Kanban */}
+					<Panel id="kanban" defaultSize="55" minSize={20} collapsible={false}>
+						<div className="h-full p-3 min-w-0">
+							{loading ? (
+								<div className="flex items-center justify-center h-full">
+									<Loader2 className="size-5 text-muted-foreground animate-spin" />
+								</div>
+							) : (
+								<div className="flex gap-3 h-full overflow-x-auto">
+									<KanbanColumn
+										icon={
+											<CircleDot className="size-3.5 text-muted-foreground" />
+										}
+										title="Todo"
+										count={todo.length}
+									>
+										{renderCards(todo)}
+									</KanbanColumn>
+									<KanbanColumn
+										icon={<Loader2 className="size-3.5 text-blue-500" />}
+										title="In Progress"
+										count={inProgress.length}
+									>
+										{renderCards(inProgress)}
+									</KanbanColumn>
+									<KanbanColumn
+										icon={
+											<GitPullRequest className="size-3.5 text-purple-500" />
+										}
+										title="Review"
+										count={review.length}
+									>
+										{renderCards(review)}
+										<ProviderStatusGuide status={providerStatus} />
+									</KanbanColumn>
+									<KanbanColumn
+										icon={<CheckCircle2 className="size-3.5 text-green-500" />}
+										title="Done"
+										count={done.length}
+									>
+										{renderCards(done)}
+									</KanbanColumn>
+								</div>
+							)}
 						</div>
-					) : (
-						<div className="flex gap-3 h-full overflow-x-auto">
-							<KanbanColumn
-								icon={<CircleDot className="size-3.5 text-muted-foreground" />}
-								title="Todo"
-								count={todo.length}
-							>
-								{renderCards(todo)}
-							</KanbanColumn>
-							<KanbanColumn
-								icon={<Loader2 className="size-3.5 text-blue-500" />}
-								title="In Progress"
-								count={inProgress.length}
-							>
-								{renderCards(inProgress)}
-							</KanbanColumn>
-							<KanbanColumn
-								icon={<GitPullRequest className="size-3.5 text-purple-500" />}
-								title="Review"
-								count={review.length}
-							>
-								{renderCards(review)}
-								<ProviderStatusGuide status={providerStatus} />
-							</KanbanColumn>
-							<KanbanColumn
-								icon={<CheckCircle2 className="size-3.5 text-green-500" />}
-								title="Done"
-								count={done.length}
-							>
-								{renderCards(done)}
-							</KanbanColumn>
-						</div>
-					)}
-				</div>
-				{showRemote && (
-					<div className="w-72 border-l border-border shrink-0 relative">
-						<button
-							type="button"
-							className="absolute top-1 right-1 p-0.5 rounded hover:bg-muted z-10"
-							onClick={() => setShowRemote(false)}
-						>
-							<X className="size-3.5 text-muted-foreground" />
-						</button>
-						<RemotePanel rootPath={repoPath} />
-					</div>
-				)}
+					</Panel>
+
+					<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
+
+					{/* AI Terminal */}
+					<Panel
+						id="terminal"
+						defaultSize="30"
+						minSize={10}
+						maxSize="60"
+						collapsible={false}
+					>
+						<TerminalPanel
+							cwd={repoPath}
+							theme={settings.theme}
+							terminalStartupCommand={buildTerminalCommand(settings)}
+							sessionKey={`${repoPath}::kanban`}
+						/>
+					</Panel>
+				</Group>
 			</div>
 
 			{/* Status bar */}
