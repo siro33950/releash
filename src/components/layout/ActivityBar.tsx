@@ -14,13 +14,13 @@ export interface ActivityBarItem {
 }
 
 const defaultItems: ActivityBarItem[] = [
-	{ id: "explorer", icon: <Files className="size-5" />, title: "Explorer" },
-	{ id: "search", icon: <Search className="size-5" />, title: "Search" },
 	{
 		id: "git",
 		icon: <GitBranch className="size-5" />,
 		title: "Source Control",
 	},
+	{ id: "explorer", icon: <Files className="size-5" />, title: "Explorer" },
+	{ id: "search", icon: <Search className="size-5" />, title: "Search" },
 ];
 
 const defaultBottomItems: ActivityBarItem[] = [
