@@ -121,9 +121,7 @@ pub fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Res
                 let wt_path = wt.path();
                 if let Ok(wt_repo) = Repository::open(wt_path) {
                     let wt_branch = match wt_repo.head() {
-                        Ok(h) if h.is_branch() => {
-                            h.shorthand().unwrap_or("").to_string()
-                        }
+                        Ok(h) if h.is_branch() => h.shorthand().unwrap_or("").to_string(),
                         _ => continue,
                     };
                     if wt_branch == branch_name {
@@ -136,11 +134,7 @@ pub fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Res
                             .to_string();
                         drop(wt_repo);
                         drop(wt);
-                        super::worktree::remove_worktree(
-                            repo_path.clone(),
-                            wt_path_str,
-                            force,
-                        )?;
+                        super::worktree::remove_worktree(repo_path.clone(), wt_path_str, force)?;
                         break;
                     }
                 }
@@ -313,8 +307,7 @@ mod tests {
         let (_parent, repo_dir, repo) = create_test_repo_with_parent();
         create_initial_commit(&repo);
 
-        let wt_path =
-            create_worktree_helper(&repo, _parent.path(), "wt-del", "feat-del");
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-del", "feat-del");
         assert!(wt_path.exists());
 
         let repo_path = repo_dir.to_str().unwrap().to_string();
@@ -369,8 +362,7 @@ mod tests {
         let (_parent, repo_dir, repo) = create_test_repo_with_parent();
         create_initial_commit(&repo);
 
-        let wt_path =
-            create_worktree_helper(&repo, _parent.path(), "wt-dirty", "feat-dirty");
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-dirty", "feat-dirty");
         std::fs::write(wt_path.join("dirty.txt"), "uncommitted").unwrap();
 
         let repo_path = repo_dir.to_str().unwrap().to_string();
@@ -388,8 +380,7 @@ mod tests {
         let (_parent, repo_dir, repo) = create_test_repo_with_parent();
         create_initial_commit(&repo);
 
-        let wt_path =
-            create_worktree_helper(&repo, _parent.path(), "wt-dirtyf", "feat-dirtyf");
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-dirtyf", "feat-dirtyf");
         std::fs::write(wt_path.join("dirty.txt"), "uncommitted").unwrap();
 
         let repo_path = repo_dir.to_str().unwrap().to_string();
@@ -397,8 +388,6 @@ mod tests {
 
         assert!(!wt_path.exists());
         let repo = Repository::open(&repo_dir).unwrap();
-        assert!(repo
-            .find_branch("feat-dirtyf", BranchType::Local)
-            .is_err());
+        assert!(repo.find_branch("feat-dirtyf", BranchType::Local).is_err());
     }
 }
