@@ -47,9 +47,7 @@ describe("useUpdateChecker", () => {
 			downloadAndInstall: vi.fn(),
 		};
 		mockCheck.mockResolvedValue(
-			mockUpdate as ReturnType<typeof check> extends Promise<infer T>
-				? T
-				: never,
+			mockUpdate as unknown as Awaited<ReturnType<typeof check>>,
 		);
 
 		const { result } = renderHook(() => useUpdateChecker(true));
@@ -81,9 +79,7 @@ describe("useUpdateChecker", () => {
 			downloadAndInstall: vi.fn(),
 		};
 		mockCheck.mockResolvedValue(
-			mockUpdate as ReturnType<typeof check> extends Promise<infer T>
-				? T
-				: never,
+			mockUpdate as unknown as Awaited<ReturnType<typeof check>>,
 		);
 
 		const { result } = renderHook(() => useUpdateChecker(true));
@@ -109,9 +105,7 @@ describe("useUpdateChecker", () => {
 			downloadAndInstall: mockDownloadAndInstall,
 		};
 		mockCheck.mockResolvedValue(
-			mockUpdate as ReturnType<typeof check> extends Promise<infer T>
-				? T
-				: never,
+			mockUpdate as unknown as Awaited<ReturnType<typeof check>>,
 		);
 
 		const { result } = renderHook(() => useUpdateChecker(true));
