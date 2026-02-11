@@ -58,7 +58,7 @@ export function WorktreeView({
 		closeTabsByPrefix,
 	} = useEditorTabs();
 
-	const [activeView, setActiveView] = useState<string>("explorer");
+	const [activeView, setActiveView] = useState<string>("git");
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
 	const [agentState, setAgentState] = useState<AgentState | undefined>();
@@ -254,11 +254,7 @@ export function WorktreeView({
 	return (
 		<div className="flex flex-col h-full w-full overflow-hidden bg-background text-foreground">
 			<div className="flex flex-1 overflow-hidden">
-				<ActivityBar
-					activeItem={activeView}
-					onItemClick={setActiveView}
-					onGoHome={onSwitchToKanban}
-				/>
+				<ActivityBar activeItem={activeView} onItemClick={setActiveView} />
 				{!ready ? (
 					<div className="flex-1 flex items-center justify-center">
 						<Loader2 className="size-6 text-muted-foreground animate-spin" />
