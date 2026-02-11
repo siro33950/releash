@@ -9,6 +9,7 @@ import {
 	Globe,
 	Loader2,
 	Plus,
+	RefreshCw,
 	Settings,
 	X,
 } from "lucide-react";
@@ -78,6 +79,7 @@ export function WorkspaceManagerScreen({
 	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
 	const [folderLoading, setFolderLoading] = useState(false);
+	const [refreshing, setRefreshing] = useState(false);
 
 	const repoName = useMemo(
 		() => repoPath?.split("/").filter(Boolean).pop() ?? "",
@@ -232,6 +234,15 @@ export function WorkspaceManagerScreen({
 		return () => clearInterval(id);
 	}, [repoPath, refresh]);
 
+	const handleRefresh = useCallback(async () => {
+		setRefreshing(true);
+		try {
+			await refresh();
+		} finally {
+			setRefreshing(false);
+		}
+	}, [refresh]);
+
 	const handleOpenBranch = useCallback(
 		async (branch: BranchCard) => {
 			if (!repoPath) return;
@@ -347,6 +358,17 @@ export function WorkspaceManagerScreen({
 					)}
 				</div>
 				<div className="flex items-center gap-2">
+					<Button
+						size="sm"
+						variant="ghost"
+						onClick={handleRefresh}
+						disabled={refreshing}
+						title="Refresh"
+					>
+						<RefreshCw
+							className={`size-4 ${refreshing ? "animate-spin" : ""}`}
+						/>
+					</Button>
 					<Button
 						size="sm"
 						variant={showRemote ? "secondary" : "ghost"}
