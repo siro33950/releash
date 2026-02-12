@@ -153,6 +153,7 @@ export function useEditorTabs(): UseEditorTabsReturn {
 	const saveFile = useCallback(async (path: string) => {
 		const tab = tabsRef.current.find((t) => t.path === path);
 		if (!tab) return;
+		if (isImageFile(path)) return;
 
 		try {
 			await writeTextFile(path, tab.content);

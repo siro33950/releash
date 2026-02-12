@@ -10,8 +10,6 @@ const IMAGE_EXTENSIONS = new Set([
 	"tiff",
 	"tif",
 	"avif",
-	"heic",
-	"heif",
 ]);
 
 const MIME_MAP: Record<string, string> = {
@@ -26,8 +24,6 @@ const MIME_MAP: Record<string, string> = {
 	tiff: "image/tiff",
 	tif: "image/tiff",
 	avif: "image/avif",
-	heic: "image/heic",
-	heif: "image/heif",
 };
 
 export function isImageFile(path: string): boolean {
