@@ -1,6 +1,6 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink, GitBranch, Loader2, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { BranchCard as BranchCardType } from "@/types/git";
 import type { AgentState } from "@/types/protocol";
@@ -79,11 +79,11 @@ export function AgentStateBadge({
 interface BranchCardProps {
 	branch: BranchCardType;
 	opening?: boolean;
-	onOpen: () => void;
+	onOpen: (branch: BranchCardType) => void;
 	onDelete: (branch: BranchCardType) => void;
 }
 
-export function BranchCard({
+export const BranchCard = memo(function BranchCard({
 	branch,
 	opening,
 	onOpen,
@@ -150,7 +150,7 @@ export function BranchCard({
 				<Button
 					size="sm"
 					className="flex-1"
-					onClick={onOpen}
+					onClick={() => onOpen(branch)}
 					disabled={opening}
 				>
 					{opening ? <Loader2 className="size-4 animate-spin" /> : "Open"}
@@ -168,4 +168,4 @@ export function BranchCard({
 			</div>
 		</div>
 	);
-}
+});

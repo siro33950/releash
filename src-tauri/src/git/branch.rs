@@ -80,35 +80,37 @@ pub fn git_create_branch(repo_path: String, branch_name: String) -> Result<(), G
 }
 
 pub fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Result<(), GitError> {
-    let repo = Repository::open(&repo_path)?;
+    let mut worktree_to_remove: Option<String> = None;
+    {
+        let repo = Repository::open(&repo_path)?;
 
-    // デフォルトブランチの削除を拒否
-    if let Some(default) = detect_default_branch(&repo) {
-        if default == branch_name {
-            return Err(GitError::Custom(
-                "cannot delete the default branch".to_string(),
-            ));
+        // デフォルトブランチの削除を拒否
+        if let Some(default) = detect_default_branch(&repo) {
+            if default == branch_name {
+                return Err(GitError::Custom(
+                    "cannot delete the default branch".to_string(),
+                ));
+            }
         }
-    }
 
-    // 現在の HEAD ブランチの削除を拒否
-    if let Ok(head) = repo.head() {
-        if head.is_branch() {
-            if let Some(current) = head.shorthand() {
-                if current == branch_name {
-                    return Err(GitError::Custom(
-                        "cannot delete the current HEAD branch".to_string(),
-                    ));
+        // 現在の HEAD ブランチの削除を拒否
+        if let Ok(head) = repo.head() {
+            if head.is_branch() {
+                if let Some(current) = head.shorthand() {
+                    if current == branch_name {
+                        return Err(GitError::Custom(
+                            "cannot delete the current HEAD branch".to_string(),
+                        ));
+                    }
                 }
             }
         }
-    }
 
-    // ブランチの存在確認
-    repo.find_branch(&branch_name, BranchType::Local)?;
+        // ブランチの存在確認
+        repo.find_branch(&branch_name, BranchType::Local)?;
 
-    // 対象ブランチに紐づく worktree を検索 → 存在すれば先に削除
-    if let Ok(wt_names) = repo.worktrees() {
+        // 対象ブランチに紐づく worktree を検索 → 存在すれば先に削除
+        let wt_names = repo.worktrees()?;
         for i in 0..wt_names.len() {
             let wt_name = match wt_names.get(i) {
                 Some(name) => name.to_string(),
@@ -132,17 +134,19 @@ pub fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Res
                             })?
                             .trim_end_matches('/')
                             .to_string();
-                        drop(wt_repo);
-                        drop(wt);
-                        super::worktree::remove_worktree(repo_path.clone(), wt_path_str, force)?;
+                        worktree_to_remove = Some(wt_path_str);
                         break;
                     }
                 }
             }
         }
+    } // repo, wt_names ともにここで drop
+
+    if let Some(wt_path_str) = worktree_to_remove {
+        super::worktree::remove_worktree(repo_path.clone(), wt_path_str, force)?;
     }
 
-    // Repository を再 open してブランチを削除
+    // worktree 削除で repo 内部の参照が無効化されるため再 open
     let repo = Repository::open(&repo_path)?;
     let mut branch = repo.find_branch(&branch_name, BranchType::Local)?;
     branch.delete()?;
@@ -151,6 +155,17 @@ pub fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Res
 }
 
 pub(crate) fn detect_default_branch(repo: &Repository) -> Option<String> {
+    // remote origin の HEAD を優先
+    if let Ok(reference) = repo.find_reference("refs/remotes/origin/HEAD") {
+        if let Ok(resolved) = reference.resolve() {
+            if let Some(name) = resolved.shorthand() {
+                if let Some(branch) = name.strip_prefix("origin/") {
+                    return Some(branch.to_string());
+                }
+            }
+        }
+    }
+    // フォールバック
     for name in &["main", "master"] {
         if repo.find_branch(name, BranchType::Local).is_ok() {
             return Some(name.to_string());
@@ -389,5 +404,92 @@ mod tests {
         assert!(!wt_path.exists());
         let repo = Repository::open(&repo_dir).unwrap();
         assert!(repo.find_branch("feat-dirtyf", BranchType::Local).is_err());
+    }
+
+    #[test]
+    fn test_delete_branch_no_default_detected() {
+        let parent = tempfile::TempDir::new().unwrap();
+        let repo_dir = parent.path().join("no-default-repo");
+        std::fs::create_dir(&repo_dir).unwrap();
+        let repo = Repository::init(&repo_dir).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test User").unwrap();
+        config.set_str("user.email", "test@example.com").unwrap();
+
+        // HEAD を "develop" として初期コミットを作成（main/master が存在しない状態）
+        let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/develop"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        repo.set_head("refs/heads/develop").unwrap();
+
+        // detect_default_branch が None を返すことを確認
+        assert!(detect_default_branch(&repo).is_none());
+
+        // 削除対象ブランチを作成
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feat-temp", &head_commit, false).unwrap();
+
+        let repo_path = repo_dir.to_str().unwrap().to_string();
+        delete_branch(repo_path, "feat-temp".to_string(), false).unwrap();
+
+        let repo = Repository::open(&repo_dir).unwrap();
+        assert!(repo.find_branch("feat-temp", BranchType::Local).is_err());
+    }
+
+    #[test]
+    fn test_detect_default_branch_remote_head() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        // 現在の HEAD ブランチ名を取得（main or master）
+        let head_branch = repo.head().unwrap().shorthand().unwrap().to_string();
+
+        // bare リモートを作成してローカルに追加
+        let remote_dir = dir.path().join("remote.git");
+        Repository::init_bare(&remote_dir).unwrap();
+        repo.remote("origin", remote_dir.to_str().unwrap()).unwrap();
+        let mut remote = repo.find_remote("origin").unwrap();
+        let refspec = format!("refs/heads/{0}:refs/heads/{0}", head_branch);
+        remote.push(&[&refspec], None).ok();
+
+        // refs/remotes/origin/HEAD を symbolic ref として作成
+        // まず tracking ref を作成
+        let oid = repo.head().unwrap().target().unwrap();
+        let remote_ref = format!("refs/remotes/origin/{}", head_branch);
+        repo.reference(&remote_ref, oid, true, "tracking").unwrap();
+        repo.reference_symbolic(
+            "refs/remotes/origin/HEAD",
+            &remote_ref,
+            true,
+            "setting remote HEAD",
+        )
+        .unwrap();
+
+        // remote HEAD 経由でブランチが検出されることを確認
+        let result = detect_default_branch(&repo);
+        assert_eq!(result, Some(head_branch));
+    }
+
+    #[test]
+    fn test_delete_branch_with_broken_worktree() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        // 正常な worktree を作成してから壊す（ディレクトリ削除）
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-broken", "feat-broken");
+        std::fs::remove_dir_all(&wt_path).unwrap();
+
+        // 壊れた worktree は validate() 失敗するのでスキップされる
+        // 別の正常ブランチを作って削除できることを確認
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feat-ok", &head_commit, false).unwrap();
+
+        let repo_path = repo_dir.to_str().unwrap().to_string();
+        delete_branch(repo_path, "feat-ok".to_string(), false).unwrap();
+
+        let repo = Repository::open(&repo_dir).unwrap();
+        assert!(repo.find_branch("feat-ok", BranchType::Local).is_err());
     }
 }

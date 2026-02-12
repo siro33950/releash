@@ -438,7 +438,7 @@ export function SettingsDialog({
 				</div>
 
 				<AlertDialogFooter>
-					<AlertDialogCancel onClick={onClose}>Close</AlertDialogCancel>
+					<AlertDialogCancel>Close</AlertDialogCancel>
 					<Button onClick={handleSave} disabled={!isDirty || saving}>
 						{saving ? "..." : "Save"}
 					</Button>

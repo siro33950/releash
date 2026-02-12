@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
 	CheckCircle2,
@@ -12,7 +11,7 @@ import {
 	Settings,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { RemotePanel } from "@/components/panels/RemotePanel";
 import { Button } from "@/components/ui/button";
 import { CreateWorktreeDialog } from "@/components/workspace/CreateWorktreeDialog";
@@ -20,13 +19,8 @@ import { DeleteWorktreeDialog } from "@/components/workspace/DeleteWorktreeDialo
 import { KanbanColumn } from "@/components/workspace/KanbanColumn";
 import { SettingsDialog } from "@/components/workspace/SettingsDialog";
 import { BranchCard as BranchCardComponent } from "@/components/workspace/WorktreeCard";
-import type {
-	BranchCard,
-	ProviderStatus,
-	PrStatus,
-	WorktreeEntry,
-} from "@/types/git";
-import type { AgentStateSync } from "@/types/protocol";
+import { useKanbanBoard } from "@/hooks/useKanbanBoard";
+import type { BranchCard, ProviderStatus, WorktreeEntry } from "@/types/git";
 import type { AppSettings } from "@/types/settings";
 
 interface WorkspaceManagerScreenProps {
@@ -69,168 +63,29 @@ export function WorkspaceManagerScreen({
 	onSelectWorktree,
 	onChangeRepo,
 }: WorkspaceManagerScreenProps) {
-	const [branches, setBranches] = useState<BranchCard[]>([]);
-	const [loading, setLoading] = useState(true);
+	const {
+		branches,
+		loading,
+		baseBranchLabel,
+		todo,
+		inProgress,
+		review,
+		done,
+		refresh,
+		refreshBaseBranch,
+	} = useKanbanBoard(repoPath);
+
 	const [showCreate, setShowCreate] = useState(false);
 	const [showSettings, setShowSettings] = useState(false);
 	const [showRemote, setShowRemote] = useState(false);
 	const [deletingBranch, setDeletingBranch] = useState<BranchCard | null>(null);
 	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
-	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
 	const [folderLoading, setFolderLoading] = useState(false);
 
 	const repoName = useMemo(
 		() => repoPath?.split("/").filter(Boolean).pop() ?? "",
 		[repoPath],
 	);
-
-	const { todo, inProgress, review, done } = useMemo(() => {
-		const todo: BranchCard[] = [];
-		const inProgress: BranchCard[] = [];
-		const review: BranchCard[] = [];
-		const done: BranchCard[] = [];
-		for (const b of branches) {
-			if (b.is_merged) {
-				done.push(b);
-			} else if (b.has_pr) {
-				review.push(b);
-			} else if (b.worktree_path != null) {
-				inProgress.push(b);
-			} else {
-				todo.push(b);
-			}
-		}
-		return { todo, inProgress, review, done };
-	}, [branches]);
-
-	const refreshBaseBranch = useCallback(async () => {
-		if (!repoPath) {
-			setBaseBranchLabel("");
-			return;
-		}
-		try {
-			const base = await invoke<string | null>("get_releash_base", {
-				repoPath,
-			});
-			if (base) {
-				setBaseBranchLabel(base);
-			} else {
-				const detected = await invoke<string>("get_default_branch", {
-					repoPath,
-				});
-				setBaseBranchLabel(`${detected} (auto)`);
-			}
-		} catch {
-			setBaseBranchLabel("");
-		}
-	}, [repoPath]);
-
-	const enrichWithPrStatus = useCallback(
-		async (cards: BranchCard[]): Promise<BranchCard[]> => {
-			if (!repoPath) return cards;
-			try {
-				const prStatus = await invoke<PrStatus>("get_cached_pr_status", {
-					repoPath,
-				});
-				return cards.map((b) => {
-					const pr = prStatus.open_prs[b.name];
-					const isMergedViaPr = prStatus.merged_branches.includes(b.name);
-					if (pr) {
-						return {
-							...b,
-							has_pr: true,
-							pr_number: pr.number,
-							pr_url: pr.url,
-						};
-					}
-					if (isMergedViaPr && !b.is_merged) {
-						return { ...b, is_merged: true };
-					}
-					return b;
-				});
-			} catch {
-				return cards;
-			}
-		},
-		[repoPath],
-	);
-
-	const refresh = useCallback(async () => {
-		if (!repoPath) {
-			setBranches([]);
-			setLoading(false);
-			return;
-		}
-		try {
-			const cards = await invoke<BranchCard[]>("list_branches_with_status", {
-				repoPath,
-			});
-			const enriched = await enrichWithPrStatus(cards);
-			const agentStates = await invoke<Record<string, AgentStateSync>>(
-				"get_agent_states",
-			).catch((): Record<string, AgentStateSync> => ({}));
-			setBranches(
-				enriched.map((b) => {
-					const agent = b.worktree_path
-						? agentStates[b.worktree_path]
-						: undefined;
-					return agent
-						? {
-								...b,
-								agent_state: agent.state,
-								agent_state_timestamp: agent.timestamp,
-							}
-						: b;
-				}),
-			);
-		} catch (e) {
-			console.error("Failed to list branches:", e);
-		} finally {
-			setLoading(false);
-		}
-		refreshBaseBranch();
-	}, [repoPath, refreshBaseBranch, enrichWithPrStatus]);
-
-	useEffect(() => {
-		setLoading(true);
-		refresh();
-	}, [refresh]);
-
-	useEffect(() => {
-		if (!repoPath) return;
-		const unlisten = listen("branch-list-sync", () => {
-			refresh();
-		});
-		return () => {
-			unlisten.then((fn) => fn());
-		};
-	}, [repoPath, refresh]);
-
-	useEffect(() => {
-		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
-			const { worktree_path, state, timestamp } = event.payload;
-			setBranches((prev) =>
-				prev.map((b) =>
-					b.worktree_path === worktree_path
-						? { ...b, agent_state: state, agent_state_timestamp: timestamp }
-						: b,
-				),
-			);
-		});
-		return () => {
-			unlisten.then((fn) => fn());
-		};
-	}, []);
-
-	useEffect(() => {
-		if (!repoPath) return;
-		const id = setInterval(() => {
-			if (document.visibilityState === "visible") {
-				refresh();
-			}
-		}, 30000);
-		return () => clearInterval(id);
-	}, [repoPath, refresh]);
 
 	const handleOpenBranch = useCallback(
 		async (branch: BranchCard) => {
@@ -280,26 +135,29 @@ export function WorkspaceManagerScreen({
 	const handleDeleteConfirm = useCallback(
 		async (branch: BranchCard, force: boolean) => {
 			if (!repoPath) return;
-			if (branch.worktree_path) {
-				await invoke("kill_ptys_by_worktree", {
-					worktreePath: branch.worktree_path,
-				}).catch(() => {});
+			try {
+				if (branch.worktree_path) {
+					await invoke("kill_ptys_by_worktree", {
+						worktreePath: branch.worktree_path,
+					}).catch(() => {});
+				}
+				if (branch.is_merged) {
+					await invoke("delete_branch", {
+						repoPath,
+						branchName: branch.name,
+						force,
+					});
+				} else {
+					await invoke("remove_worktree", {
+						repoPath,
+						worktreePath: branch.worktree_path,
+						force,
+					});
+				}
+				await refresh();
+			} finally {
+				setDeletingBranch(null);
 			}
-			if (branch.is_merged) {
-				await invoke("delete_branch", {
-					repoPath,
-					branchName: branch.name,
-					force,
-				});
-			} else {
-				await invoke("remove_worktree", {
-					repoPath,
-					worktreePath: branch.worktree_path,
-					force,
-				});
-			}
-			setDeletingBranch(null);
-			await refresh();
 		},
 		[repoPath, refresh],
 	);
@@ -345,7 +203,7 @@ export function WorkspaceManagerScreen({
 				key={b.name}
 				branch={b}
 				opening={openingBranch === b.name}
-				onOpen={() => handleOpenBranch(b)}
+				onOpen={handleOpenBranch}
 				onDelete={setDeletingBranch}
 			/>
 		));
