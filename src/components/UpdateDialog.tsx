@@ -63,6 +63,9 @@ export function UpdateDialog({ update }: UpdateDialogProps) {
 					<p className="text-xs text-muted-foreground text-center">
 						{progress}%
 					</p>
+					<AlertDialogFooter>
+						<AlertDialogCancel onClick={dismiss}>Cancel</AlertDialogCancel>
+					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
 		);

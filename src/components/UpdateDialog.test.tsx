@@ -93,6 +93,21 @@ describe("UpdateDialog", () => {
 		expect(screen.getByText("45%")).toBeInTheDocument();
 	});
 
+	it("should call dismiss on Cancel click during downloading", () => {
+		const dismiss = vi.fn();
+		render(
+			<UpdateDialog
+				update={makeUpdate({
+					status: "downloading",
+					progress: 30,
+					dismiss,
+				})}
+			/>,
+		);
+		fireEvent.click(screen.getByText("Cancel"));
+		expect(dismiss).toHaveBeenCalled();
+	});
+
 	it("should show error message when error", () => {
 		const dismiss = vi.fn();
 		render(
