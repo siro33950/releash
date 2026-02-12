@@ -228,6 +228,40 @@ describe("useGitStatus", () => {
 		vi.useRealTimers();
 	});
 
+	it("should ignore file-change events from a path that shares the same prefix but is a different directory", async () => {
+		vi.useFakeTimers();
+		mockInvoke.mockResolvedValue([]);
+
+		type ListenCallback = (event: { payload: { path: string } }) => void;
+		let fileChangeCallback: ListenCallback | null = null;
+		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
+			if (event === "file-change") {
+				fileChangeCallback = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
+
+		renderHook(() => useGitStatus("/test/repo"));
+
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		});
+
+		act(() => {
+			fileChangeCallback?.({
+				payload: { path: "/test/repo-other/src/file.ts" },
+			});
+		});
+
+		await act(async () => {
+			vi.advanceTimersByTime(300);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+		vi.useRealTimers();
+	});
+
 	it("should cancel pending debounce when externalRefreshKey changes", async () => {
 		vi.useFakeTimers();
 		mockInvoke.mockResolvedValue([]);

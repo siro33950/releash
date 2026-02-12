@@ -93,7 +93,12 @@ export function useGitStatus(
 
 		const setup = async () => {
 			unlisten = await listen<FileChangeEvent>("file-change", (event) => {
-				if (mounted && rootPath && event.payload.path.startsWith(rootPath)) {
+				if (
+					mounted &&
+					rootPath &&
+					(event.payload.path === rootPath ||
+						event.payload.path.startsWith(`${rootPath}/`))
+				) {
 					debouncedRefresh();
 				}
 			});
