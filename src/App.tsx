@@ -125,19 +125,6 @@ function App() {
 		);
 	}, [isWorktreeActive]);
 
-	const handleOpenFolder = useCallback(async () => {
-		const selected = await open({ directory: true, multiple: false });
-		if (!selected) return;
-		try {
-			const mainPath = await invoke<string>("get_main_repo_path", {
-				anyPath: selected,
-			});
-			setMainRepoPath(mainPath);
-		} catch {
-			openWorktreeTab(selected as string);
-		}
-	}, [openWorktreeTab]);
-
 	const menuHandlers: MenuHandlers = useMemo(
 		() => ({
 			settings: () => {
@@ -145,7 +132,7 @@ function App() {
 					setKanbanRequestedView("settings");
 				}
 			},
-			"open-folder": handleOpenFolder,
+			"open-folder": handleAddRepo,
 			"theme-dark": () => updateTheme("dark"),
 			"theme-light": () => updateTheme("light"),
 			"back-to-kanban": switchToKanban,
@@ -165,7 +152,7 @@ function App() {
 				setKanbanRequestedView("remote");
 			},
 		}),
-		[activeTabId, handleOpenFolder, updateTheme, switchToKanban],
+		[activeTabId, handleAddRepo, updateTheme, switchToKanban],
 	);
 
 	useMenuEvents(menuHandlers);
