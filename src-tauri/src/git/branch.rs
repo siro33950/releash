@@ -156,7 +156,11 @@ pub fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Res
             };
 
             if wt_branch == branch_name {
-                let wt_path_str = wt_path.to_str().unwrap_or("").trim_end_matches('/').to_string();
+                let wt_path_str = wt_path
+                    .to_str()
+                    .unwrap_or("")
+                    .trim_end_matches('/')
+                    .to_string();
                 remove_worktree(repo_path.clone(), wt_path_str, force)?;
                 had_worktree = true;
             }
@@ -353,8 +357,7 @@ mod tests {
         let (parent, repo_dir, repo) = create_repo_with_parent();
         create_initial_commit(&repo);
 
-        let wt_path =
-            create_worktree_for_branch(&repo, parent.path(), "wt-del", "feat-wt-delete");
+        let wt_path = create_worktree_for_branch(&repo, parent.path(), "wt-del", "feat-wt-delete");
         assert!(wt_path.exists());
 
         let repo_path = repo_dir.to_str().unwrap().to_string();
@@ -489,8 +492,7 @@ mod tests {
         let (parent, repo_dir, repo) = create_repo_with_parent();
         create_initial_commit(&repo);
 
-        let wt_path =
-            create_worktree_for_branch(&repo, parent.path(), "wt-broken", "feat-broken");
+        let wt_path = create_worktree_for_branch(&repo, parent.path(), "wt-broken", "feat-broken");
 
         // Break the worktree by removing its directory
         std::fs::remove_dir_all(&wt_path).unwrap();
@@ -504,8 +506,6 @@ mod tests {
         delete_branch(repo_path.clone(), "feat-normal".to_string(), false).unwrap();
 
         let repo = Repository::open(&repo_path).unwrap();
-        assert!(repo
-            .find_branch("feat-normal", BranchType::Local)
-            .is_err());
+        assert!(repo.find_branch("feat-normal", BranchType::Local).is_err());
     }
 }

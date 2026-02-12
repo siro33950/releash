@@ -160,7 +160,11 @@ export function BranchCard({
 						size="icon-sm"
 						variant="ghost"
 						onClick={() => onDelete(branch)}
-						aria-label={hasWorktree ? `Delete worktree for ${branch.name}` : `Delete branch ${branch.name}`}
+						aria-label={
+							hasWorktree
+								? `Delete worktree for ${branch.name}`
+								: `Delete branch ${branch.name}`
+						}
 					>
 						<Trash2 className="size-4 text-muted-foreground" />
 					</Button>
