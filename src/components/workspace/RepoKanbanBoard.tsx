@@ -261,14 +261,27 @@ export function RepoKanbanBoard({
 	);
 
 	const handleDeleteConfirm = useCallback(
-		async (worktreePath: string, force: boolean) => {
-			await invoke("kill_ptys_by_worktree", { worktreePath }).catch(() => {});
-			try {
-				await invoke("remove_worktree", { repoPath, worktreePath, force });
-				await refresh();
-			} finally {
-				setDeletingBranch(null);
+		async (branch: BranchCard, force: boolean) => {
+			if (branch.worktree_path) {
+				await invoke("kill_ptys_by_worktree", {
+					worktreePath: branch.worktree_path,
+				}).catch(() => {});
 			}
+			if (branch.is_merged) {
+				await invoke("delete_branch", {
+					repoPath,
+					branchName: branch.name,
+					force,
+				});
+			} else if (branch.worktree_path) {
+				await invoke("remove_worktree", {
+					repoPath,
+					worktreePath: branch.worktree_path,
+					force,
+				});
+			}
+			await refresh();
+			setDeletingBranch(null);
 		},
 		[repoPath, refresh],
 	);

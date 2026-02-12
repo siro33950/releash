@@ -14,7 +14,7 @@ import type { BranchCard } from "@/types/git";
 interface DeleteWorktreeDialogProps {
 	open: boolean;
 	branch: BranchCard | null;
-	onConfirm: (worktreePath: string, force: boolean) => Promise<void>;
+	onConfirm: (branch: BranchCard, force: boolean) => Promise<void>;
 	onCancel: () => void;
 }
 
@@ -31,11 +31,11 @@ export function DeleteWorktreeDialog({
 
 	const handleDelete = useCallback(
 		async (force: boolean) => {
-			if (!branch?.worktree_path) return;
+			if (!branch || (!branch.worktree_path && !branch.is_merged)) return;
 			setDeleting(true);
 			setError(null);
 			try {
-				await onConfirm(branch.worktree_path, force);
+				await onConfirm(branch, force);
 			} catch (e) {
 				setError(String(e));
 				setDeleting(false);
@@ -57,14 +57,22 @@ export function DeleteWorktreeDialog({
 
 	if (!branch) return null;
 
+	const isMergedOnly = branch.is_merged && !branch.worktree_path;
+	const isMergedWithWorktree = branch.is_merged && !!branch.worktree_path;
+
+	const title = branch.is_merged ? "Delete Branch" : "Delete Workspace";
+	const description = isMergedOnly
+		? `Delete merged branch "${branch.name}"?`
+		: isMergedWithWorktree
+			? `Delete workspace and branch "${branch.name}"?`
+			: `Delete workspace for branch "${branch.name}"?`;
+
 	return (
 		<AlertDialog open={open} onOpenChange={handleOpenChange}>
 			<AlertDialogContent>
 				<AlertDialogHeader>
-					<AlertDialogTitle>Delete Workspace</AlertDialogTitle>
-					<AlertDialogDescription>
-						Delete workspace for branch &quot;{branch.name}&quot;?
-					</AlertDialogDescription>
+					<AlertDialogTitle>{title}</AlertDialogTitle>
+					<AlertDialogDescription>{description}</AlertDialogDescription>
 				</AlertDialogHeader>
 				<div className="grid gap-2 text-sm">
 					{branch.worktree_path && (
