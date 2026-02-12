@@ -14,8 +14,6 @@ describe("isImageFile", () => {
 		"scan.tiff",
 		"scan.tif",
 		"modern.avif",
-		"apple.heic",
-		"apple.heif",
 	])("returns true for %s", (path) => {
 		expect(isImageFile(path)).toBe(true);
 	});
@@ -26,6 +24,8 @@ describe("isImageFile", () => {
 		"data.json",
 		"style.css",
 		"noext",
+		"apple.heic",
+		"apple.heif",
 	])("returns false for %s", (path) => {
 		expect(isImageFile(path)).toBe(false);
 	});
