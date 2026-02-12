@@ -11,6 +11,7 @@ let mockTerminalInstance: {
 	write: ReturnType<typeof vi.fn>;
 	onData: ReturnType<typeof vi.fn>;
 	dispose: ReturnType<typeof vi.fn>;
+	refresh: ReturnType<typeof vi.fn>;
 	options: Record<string, unknown>;
 	rows: number;
 	cols: number;
@@ -37,6 +38,7 @@ vi.mock("@xterm/xterm", () => {
 					return { dispose: vi.fn() };
 				});
 			dispose = vi.fn();
+			refresh = vi.fn();
 			options: Record<string, unknown> = {};
 			rows = 24;
 			cols = 80;
@@ -48,13 +50,36 @@ vi.mock("@xterm/xterm", () => {
 	};
 });
 
+let mockFitAddonInstance: { fit: ReturnType<typeof vi.fn> };
+
 vi.mock("@xterm/addon-fit", () => {
 	return {
 		FitAddon: class MockFitAddon {
 			fit = vi.fn();
+
+			constructor() {
+				mockFitAddonInstance = this;
+			}
 		},
 	};
 });
+
+let resizeObserverCallback: () => void;
+let resizeObserverDisconnect: ReturnType<typeof vi.fn<() => void>>;
+
+class MockResizeObserver {
+	constructor(callback: () => void) {
+		resizeObserverCallback = callback;
+	}
+	observe = vi.fn();
+	disconnect = vi.fn().mockImplementation(() => {
+		resizeObserverDisconnect?.();
+	});
+	unobserve = vi.fn();
+}
+
+resizeObserverDisconnect = vi.fn();
+vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
 describe("useTerminal", () => {
 	let containerRef: { current: HTMLDivElement | null };
@@ -165,5 +190,81 @@ describe("useTerminal", () => {
 
 		expect(mockTerminalInstance).toBe(previousInstance);
 		expect(mockInvoke).not.toHaveBeenCalled();
+	});
+
+	describe("ResizeObserver ゼロサイズガード", () => {
+		it("コンテナが 0 次元のとき fitAddon.fit() が呼ばれない", () => {
+			renderHook(() => useTerminal(containerRef));
+
+			Object.defineProperty(containerRef.current, "clientWidth", {
+				value: 0,
+				configurable: true,
+			});
+			Object.defineProperty(containerRef.current, "clientHeight", {
+				value: 0,
+				configurable: true,
+			});
+
+			mockFitAddonInstance.fit.mockClear();
+			resizeObserverCallback();
+
+			expect(mockFitAddonInstance.fit).not.toHaveBeenCalled();
+		});
+
+		it("コンテナが 0→正の次元に戻ったとき terminal.refresh() が呼ばれる", async () => {
+			renderHook(() => useTerminal(containerRef));
+
+			Object.defineProperty(containerRef.current, "clientWidth", {
+				value: 0,
+				configurable: true,
+			});
+			Object.defineProperty(containerRef.current, "clientHeight", {
+				value: 0,
+				configurable: true,
+			});
+			resizeObserverCallback();
+
+			Object.defineProperty(containerRef.current, "clientWidth", {
+				value: 800,
+				configurable: true,
+			});
+			Object.defineProperty(containerRef.current, "clientHeight", {
+				value: 600,
+				configurable: true,
+			});
+			resizeObserverCallback();
+
+			await vi.waitFor(() => {
+				expect(mockTerminalInstance.refresh).toHaveBeenCalledWith(0, 23);
+			});
+		});
+
+		it("ゼロサイズ時に resize_pty が呼ばれない", async () => {
+			renderHook(() => useTerminal(containerRef));
+
+			await waitFor(() => {
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"get_or_spawn_pty",
+					expect.any(Object),
+				);
+			});
+
+			Object.defineProperty(containerRef.current, "clientWidth", {
+				value: 0,
+				configurable: true,
+			});
+			Object.defineProperty(containerRef.current, "clientHeight", {
+				value: 0,
+				configurable: true,
+			});
+
+			mockInvoke.mockClear();
+			resizeObserverCallback();
+
+			expect(mockInvoke).not.toHaveBeenCalledWith(
+				"resize_pty",
+				expect.any(Object),
+			);
+		});
 	});
 });

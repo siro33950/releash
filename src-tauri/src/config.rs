@@ -210,12 +210,50 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                     )
                 }]
             }],
-            "Notification": [{
+            "Notification": [
+                {
+                    "matcher": "permission_prompt",
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!(
+                            "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"notification\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                        )
+                    }]
+                },
+                {
+                    "matcher": "elicitation_dialog",
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!(
+                            "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"notification\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                        )
+                    }]
+                }
+            ],
+            "PostToolUse": [{
                 "matcher": "",
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"notification\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"post_tool_use\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                    )
+                }]
+            }],
+            "PostToolUseFailure": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!(
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"post_tool_use_failure\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                    )
+                }]
+            }],
+            "SessionStart": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!(
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"session_start\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
             }]

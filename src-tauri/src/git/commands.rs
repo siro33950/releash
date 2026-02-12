@@ -177,3 +177,16 @@ pub async fn get_file_at_ref(file_path: String, git_ref: String) -> Result<Strin
 pub async fn get_staged_content(file_path: String) -> Result<String, GitError> {
     blocking(move || super::diff::get_staged_content(file_path)).await
 }
+
+#[tauri::command]
+pub async fn get_binary_file_at_ref(
+    file_path: String,
+    git_ref: String,
+) -> Result<String, GitError> {
+    blocking(move || super::diff::get_binary_file_at_ref(file_path, git_ref)).await
+}
+
+#[tauri::command]
+pub async fn get_binary_staged_content(file_path: String) -> Result<String, GitError> {
+    blocking(move || super::diff::get_binary_staged_content(file_path)).await
+}

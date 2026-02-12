@@ -74,6 +74,24 @@ describe("useFileTree", () => {
 		expect(result.current.tree[3].type).toBe("file");
 	});
 
+	it("should show hidden files by default", async () => {
+		mockReadDir.mockResolvedValue([
+			{ name: ".git", isDirectory: true, isFile: false, isSymlink: false },
+			{ name: "src", isDirectory: true, isFile: false, isSymlink: false },
+			{ name: ".env", isDirectory: false, isFile: true, isSymlink: false },
+		]);
+
+		const { result } = renderHook(() =>
+			useFileTree({ rootPath: "/test/project" }),
+		);
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+
+		expect(result.current.tree).toHaveLength(3);
+	});
+
 	it("should filter hidden files when showHidden is false", async () => {
 		mockReadDir.mockResolvedValue([
 			{ name: ".git", isDirectory: true, isFile: false, isSymlink: false },

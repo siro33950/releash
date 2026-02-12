@@ -24,6 +24,7 @@ import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useLineComments } from "@/hooks/useLineComments";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
+import { normalizePath } from "@/lib/normalizePath";
 import type { LineComment } from "@/types/comment";
 import type { AgentState, AgentStateSync } from "@/types/protocol";
 import {
@@ -59,7 +60,7 @@ export function WorktreeView({
 		closeTabsByPrefix,
 	} = useEditorTabs();
 
-	const [activeView, setActiveView] = useState<string>("explorer");
+	const [activeView, setActiveView] = useState<string>("git");
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
 	const [agentState, setAgentState] = useState<AgentState | undefined>();
@@ -84,7 +85,9 @@ export function WorktreeView({
 
 	useEffect(() => {
 		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
-			if (event.payload.worktree_path === rootPath) {
+			if (
+				normalizePath(event.payload.worktree_path) === normalizePath(rootPath)
+			) {
 				setAgentState(event.payload.state);
 			}
 		});
@@ -262,11 +265,7 @@ export function WorktreeView({
 	return (
 		<div className="flex flex-col h-full w-full overflow-hidden bg-background text-foreground">
 			<div className="flex flex-1 overflow-hidden">
-				<ActivityBar
-					activeItem={activeView}
-					onItemClick={setActiveView}
-					onGoHome={onSwitchToKanban}
-				/>
+				<ActivityBar activeItem={activeView} onItemClick={setActiveView} />
 				{!ready ? (
 					<div className="flex-1 flex items-center justify-center">
 						<Loader2 className="size-6 text-muted-foreground animate-spin" />
