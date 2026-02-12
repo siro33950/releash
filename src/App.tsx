@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
 import { UpdateDialog } from "@/components/UpdateDialog";
+import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
 import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
@@ -12,7 +13,7 @@ import { WorktreeView } from "@/screens/WorktreeView";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
 
 function App() {
-	const { settings, updateSettings } = useSettings();
+	const { settings, updateSettings, updateTheme } = useSettings();
 	const updateChecker = useUpdateChecker(settings.autoUpdate);
 	const {
 		tabs,
@@ -28,6 +29,12 @@ function App() {
 	const [providerStatuses, setProviderStatuses] = useState<
 		Record<string, ProviderStatus | null>
 	>({});
+	const [kanbanRequestedView, setKanbanRequestedView] = useState<string | null>(
+		null,
+	);
+	const handleKanbanRequestedViewHandled = useCallback(() => {
+		setKanbanRequestedView(null);
+	}, []);
 
 	useEffect(() => {
 		const suppress = (e: MouseEvent) => e.preventDefault();
@@ -110,6 +117,46 @@ function App() {
 		[removeRepo],
 	);
 
+	// Sync menu item enabled state based on active tab
+	const isWorktreeActive = activeTabId !== "kanban";
+	useEffect(() => {
+		invoke("set_menu_items_enabled", { enabled: isWorktreeActive }).catch(
+			() => {},
+		);
+	}, [isWorktreeActive]);
+
+	const menuHandlers: MenuHandlers = useMemo(
+		() => ({
+			settings: () => {
+				if (activeTabId === "kanban") {
+					setKanbanRequestedView("settings");
+				}
+			},
+			"open-folder": handleAddRepo,
+			"theme-dark": () => updateTheme("dark"),
+			"theme-light": () => updateTheme("light"),
+			"back-to-kanban": switchToKanban,
+			"remote-start-server": () => {
+				switchToKanban();
+				setKanbanRequestedView("remote");
+			},
+			"remote-stop-server": async () => {
+				try {
+					await invoke("stop_server");
+				} catch (e) {
+					console.error("Failed to stop server:", e);
+				}
+			},
+			"remote-show-qr": () => {
+				switchToKanban();
+				setKanbanRequestedView("remote");
+			},
+		}),
+		[activeTabId, handleAddRepo, updateTheme, switchToKanban],
+	);
+
+	useMenuEvents(menuHandlers);
+
 	const worktreeTabs = useMemo(
 		() => tabs.filter((t) => t.type === "worktree"),
 		[tabs],
@@ -137,6 +184,8 @@ function App() {
 						providerStatuses={providerStatuses}
 						initializing={initializing}
 						isActive={activeTabId === "kanban"}
+						requestedView={kanbanRequestedView}
+						onRequestedViewHandled={handleKanbanRequestedViewHandled}
 						onSettingsSave={updateSettings}
 						onSelectWorktree={openWorktreeTab}
 						onAddRepo={handleAddRepo}
@@ -156,6 +205,7 @@ function App() {
 							settings={settings}
 							onSettingsSave={updateSettings}
 							onSwitchToKanban={switchToKanban}
+							isActive={activeTabId === tab.id}
 						/>
 					</div>
 				))}

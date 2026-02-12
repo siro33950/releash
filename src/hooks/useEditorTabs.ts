@@ -1,3 +1,4 @@
+import { save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { useCallback, useRef, useState } from "react";
 import { isImageFile } from "@/lib/imageUtils";
@@ -16,6 +17,7 @@ export interface UseEditorTabsReturn {
 	closeTabsByPrefix: (pathPrefix: string) => void;
 	closeAllTabs: () => void;
 	saveAllDirtyTabs: () => Promise<void>;
+	createUntitledTab: () => void;
 }
 
 function getLanguageFromPath(path: string): string {
@@ -71,6 +73,7 @@ export function useEditorTabs(): UseEditorTabsReturn {
 	const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
 	const tabsRef = useRef<TabInfo[]>([]);
 	const pendingOpenRef = useRef<Set<string>>(new Set());
+	const untitledCounterRef = useRef(0);
 	tabsRef.current = tabs;
 
 	const activeTab = tabs.find((tab) => tab.path === activeTabPath) ?? null;
@@ -156,14 +159,40 @@ export function useEditorTabs(): UseEditorTabsReturn {
 		if (isImageFile(path)) return;
 
 		try {
-			await writeTextFile(path, tab.content);
-			setTabs((prevTabs) =>
-				prevTabs.map((t) =>
-					t.path === path
-						? { ...t, originalContent: t.content, isDirty: false }
-						: t,
-				),
-			);
+			if (tab.isUntitled) {
+				const savePath = await save({
+					title: "Save File",
+					defaultPath: tab.name,
+				});
+				if (!savePath) return;
+
+				await writeTextFile(savePath, tab.content);
+				setTabs((prevTabs) =>
+					prevTabs.map((t) =>
+						t.path === path
+							? {
+									...t,
+									path: savePath,
+									name: getFileNameFromPath(savePath),
+									language: getLanguageFromPath(savePath),
+									originalContent: t.content,
+									isDirty: false,
+									isUntitled: false,
+								}
+							: t,
+					),
+				);
+				setActiveTabPath((current) => (current === path ? savePath : current));
+			} else {
+				await writeTextFile(path, tab.content);
+				setTabs((prevTabs) =>
+					prevTabs.map((t) =>
+						t.path === path
+							? { ...t, originalContent: t.content, isDirty: false }
+							: t,
+					),
+				);
+			}
 		} catch (error) {
 			console.error(`Failed to save file: ${path}`, error);
 		}
@@ -216,6 +245,25 @@ export function useEditorTabs(): UseEditorTabsReturn {
 		await Promise.all(dirtyTabs.map((t) => saveFile(t.path)));
 	}, [saveFile]);
 
+	const createUntitledTab = useCallback(() => {
+		untitledCounterRef.current += 1;
+		const count = untitledCounterRef.current;
+		const name = `Untitled-${count}`;
+		const path = `untitled:${name}`;
+		const newTab: TabInfo = {
+			path,
+			name,
+			content: "",
+			originalContent: "",
+			isDirty: true,
+			language: "plaintext",
+			eol: "LF",
+			isUntitled: true,
+		};
+		setTabs((prevTabs) => [...prevTabs, newTab]);
+		setActiveTabPath(path);
+	}, []);
+
 	const reloadTabIfClean = useCallback(async (path: string) => {
 		const existingTab = tabsRef.current.find((tab) => tab.path === path);
 		if (!existingTab || existingTab.isDirty || isImageFile(path)) {
@@ -255,5 +303,6 @@ export function useEditorTabs(): UseEditorTabsReturn {
 		closeTabsByPrefix,
 		closeAllTabs,
 		saveAllDirtyTabs,
+		createUntitledTab,
 	};
 }
