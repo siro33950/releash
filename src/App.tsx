@@ -2,8 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
+import { UpdateDialog } from "@/components/UpdateDialog";
 import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
+import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceTabs } from "@/hooks/useWorkspaceTabs";
 import { WorkspaceManagerScreen } from "@/screens/WorkspaceManagerScreen";
 import { WorktreeView } from "@/screens/WorktreeView";
@@ -11,6 +13,7 @@ import type { ProviderStatus, WorktreeEntry } from "@/types/git";
 
 function App() {
 	const { settings, updateSettings } = useSettings();
+	const updateChecker = useUpdateChecker(settings.autoUpdate);
 	const {
 		tabs,
 		activeTabId,
@@ -114,6 +117,7 @@ function App() {
 
 	return (
 		<div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+			<UpdateDialog update={updateChecker} />
 			<WorkspaceTabBar
 				tabs={tabs}
 				activeTabId={activeTabId}

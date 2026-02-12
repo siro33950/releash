@@ -30,6 +30,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))

@@ -12,6 +12,7 @@ describe("SettingsPanel", () => {
 		agent: "none",
 		agentAutoApprove: false,
 		terminalStartupCommand: "",
+		autoUpdate: true,
 	};
 
 	const defaultProps = {
