@@ -92,6 +92,14 @@ fn extract_bearer_token(req: &Request<hyper::body::Incoming>) -> Option<String> 
         .map(|s| s.to_string())
 }
 
+fn resolve_worktree_root(path: &str) -> String {
+    git2::Repository::discover(path)
+        .ok()
+        .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()))
+        .and_then(|p| p.to_str().map(|s| s.trim_end_matches('/').to_string()))
+        .unwrap_or_else(|| path.trim_end_matches('/').to_string())
+}
+
 fn error_response(status: StatusCode, msg: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -125,10 +133,11 @@ async fn handle_agent_hook(
         }
     };
 
-    let payload: AgentHookPayload = match serde_json::from_slice(&body) {
+    let mut payload: AgentHookPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {e}")),
     };
+    payload.worktree_path = resolve_worktree_root(&payload.worktree_path);
 
     let sync = AgentStateSync::from_payload(&payload);
 
@@ -199,6 +208,24 @@ mod tests {
 
     use super::*;
     use crate::protocol::{AgentState, AgentStateSync};
+
+    #[test]
+    fn resolve_worktree_root_trims_trailing_slash() {
+        let path = resolve_worktree_root("/nonexistent/repo/");
+        assert_eq!(path, "/nonexistent/repo");
+    }
+
+    #[test]
+    fn resolve_worktree_root_preserves_clean_path() {
+        let path = resolve_worktree_root("/nonexistent/path");
+        assert_eq!(path, "/nonexistent/path");
+    }
+
+    #[test]
+    fn resolve_worktree_root_with_double_slash() {
+        let path = resolve_worktree_root("/nonexistent/repo//subdir");
+        assert!(!path.ends_with('/'));
+    }
 
     #[test]
     fn same_state_transition_is_skipped() {
