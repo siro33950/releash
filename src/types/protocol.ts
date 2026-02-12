@@ -163,6 +163,7 @@ export interface WorktreeEntryMsg {
 	is_locked: boolean;
 	dirty_count: number;
 	base_branch: string | null;
+	repo_path?: string;
 	has_pr?: boolean;
 	pr_number?: number;
 	pr_url?: string;

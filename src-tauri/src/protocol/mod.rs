@@ -476,6 +476,7 @@ mod tests {
                     is_locked: false,
                     dirty_count: 0,
                     base_branch: None,
+                    repo_path: Some("/repo".to_string()),
                     has_pr: false,
                     pr_number: None,
                     pr_url: None,

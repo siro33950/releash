@@ -112,7 +112,7 @@ export const defaultEditorOptions: Monaco.editor.IStandaloneEditorConstructionOp
 		lineNumbers: "on",
 		folding: true,
 		glyphMargin: false,
-		lineDecorationsWidth: 0,
+		lineDecorationsWidth: 20,
 		lineNumbersMinChars: 4,
 	};
 
@@ -133,5 +133,6 @@ export const defaultDiffEditorOptions: Monaco.editor.IDiffEditorConstructionOpti
 		renderMarginRevertIcon: false,
 		renderGutterMenu: false,
 		glyphMargin: true,
+		lineDecorationsWidth: 20,
 		useInlineViewWhenSpaceIsLimited: false,
 	};

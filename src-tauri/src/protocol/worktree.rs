@@ -13,6 +13,8 @@ pub struct WorktreeEntryMsg {
     pub dirty_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_pr: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

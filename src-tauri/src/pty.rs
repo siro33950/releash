@@ -83,6 +83,9 @@ impl PtyManager {
     }
 
     pub fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), String> {
+        if rows == 0 || cols == 0 {
+            return Ok(());
+        }
         let sessions = self.sessions.lock();
         let session = sessions
             .get(&pty_id)
@@ -504,5 +507,26 @@ mod tests {
     #[test]
     fn test_output_buffer_capacity_value() {
         assert_eq!(OUTPUT_BUFFER_CAPACITY, 64 * 1024);
+    }
+
+    #[test]
+    fn test_resize_zero_rows_returns_ok() {
+        let pm = PtyManager::default();
+        let result = pm.resize(99999, 0, 80);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resize_zero_cols_returns_ok() {
+        let pm = PtyManager::default();
+        let result = pm.resize(99999, 24, 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resize_zero_both_returns_ok() {
+        let pm = PtyManager::default();
+        let result = pm.resize(99999, 0, 0);
+        assert!(result.is_ok());
     }
 }
