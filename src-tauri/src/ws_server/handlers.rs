@@ -427,20 +427,17 @@ pub(super) async fn handle_branch_info_request(
     .await
 }
 
-pub(super) async fn handle_worktree_list_request(state: &WsServerState) -> Option<WsMessage> {
-    let repo_path = match &state.repo_path {
-        Some(p) => p.clone(),
-        None => return Some(no_repo_error()),
-    };
+pub(crate) async fn build_all_worktrees(state: &WsServerState) -> Vec<WorktreeEntryMsg> {
+    let repo_paths = state.get_repo_paths();
     let pr_cache = state.pr_cache.clone();
-    match tokio::task::spawn_blocking(move || {
-        let pr_status = crate::git_host::fetch_pr_status_with_cache(&pr_cache, &repo_path);
-        let entries = crate::git::list_worktrees(repo_path)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|e| {
+    tokio::task::spawn_blocking(move || {
+        let mut all_entries = Vec::new();
+        for repo_path in &repo_paths {
+            let pr_status = crate::git_host::fetch_pr_status_with_cache(&pr_cache, repo_path);
+            let entries = crate::git::list_worktrees(repo_path.clone()).unwrap_or_default();
+            for e in entries {
                 let pr = pr_status.open_prs.get(&e.branch);
-                WorktreeEntryMsg {
+                all_entries.push(WorktreeEntryMsg {
                     name: e.name,
                     path: e.path,
                     branch: e.branch,
@@ -448,19 +445,28 @@ pub(super) async fn handle_worktree_list_request(state: &WsServerState) -> Optio
                     is_locked: e.is_locked,
                     dirty_count: e.dirty_count,
                     base_branch: e.base_branch,
+                    repo_path: Some(repo_path.clone()),
                     has_pr: pr.is_some(),
                     pr_number: pr.map(|p| p.number),
                     pr_url: pr.map(|p| p.url.clone()),
-                }
-            })
-            .collect();
-        WsMessage::WorktreeListResponse(WorktreeListResponse { worktrees: entries })
+                });
+            }
+        }
+        all_entries
     })
     .await
-    {
-        Ok(msg) => Some(msg),
-        Err(e) => Some(join_error_msg(e)),
+    .unwrap_or_default()
+}
+
+pub(super) async fn handle_worktree_list_request(state: &WsServerState) -> Option<WsMessage> {
+    let repo_paths = state.get_repo_paths();
+    if repo_paths.is_empty() {
+        return Some(no_repo_error());
     }
+    let worktrees = build_all_worktrees(state).await;
+    Some(WsMessage::WorktreeListResponse(WorktreeListResponse {
+        worktrees,
+    }))
 }
 
 pub(super) async fn handle_worktree_select_request(
@@ -468,19 +474,23 @@ pub(super) async fn handle_worktree_select_request(
     state: &WsServerState,
     selected_worktree: &Arc<Mutex<Option<String>>>,
 ) -> Option<WsMessage> {
-    let repo_path = match &state.repo_path {
-        Some(p) => p.clone(),
-        None => return Some(no_repo_error()),
-    };
+    let repo_paths = state.get_repo_paths();
+    if repo_paths.is_empty() {
+        return Some(no_repo_error());
+    }
     let requested_path = req.path.clone();
     let broadcaster = state.broadcaster.clone();
 
     let valid = tokio::task::spawn_blocking({
         let requested_path = requested_path.clone();
-        let repo_path = repo_path.clone();
         move || {
-            let worktrees = crate::git::list_worktrees(repo_path).unwrap_or_default();
-            worktrees.iter().any(|w| w.path == requested_path)
+            for repo_path in &repo_paths {
+                let worktrees = crate::git::list_worktrees(repo_path.clone()).unwrap_or_default();
+                if worktrees.iter().any(|w| w.path == requested_path) {
+                    return true;
+                }
+            }
+            false
         }
     })
     .await

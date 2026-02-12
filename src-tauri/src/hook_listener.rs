@@ -132,19 +132,27 @@ async fn handle_agent_hook(
 
     let sync = AgentStateSync::from_payload(&payload);
 
-    {
+    let changed = {
         let mut states = state.agent_states.lock();
-        states.insert(sync.worktree_path.clone(), sync.clone());
-    }
+        let should_update = states
+            .get(&sync.worktree_path)
+            .is_none_or(|prev| prev.state != sync.state);
+        if should_update {
+            states.insert(sync.worktree_path.clone(), sync.clone());
+        }
+        should_update
+    };
 
-    {
-        use tauri::Emitter;
-        let _ = state.app_handle.emit("agent-state-changed", &sync);
-    }
+    if changed {
+        {
+            use tauri::Emitter;
+            let _ = state.app_handle.emit("agent-state-changed", &sync);
+        }
 
-    state
-        .broadcaster
-        .try_send(WsMessage::AgentStateSync(sync.clone()));
+        state
+            .broadcaster
+            .try_send(WsMessage::AgentStateSync(sync.clone()));
+    }
 
     if let Ok(cfg) = state.app_config.get_config() {
         let url = cfg.server.notify.webhook_url.clone();
@@ -187,5 +195,95 @@ mod tests {
     #[test]
     fn extract_bearer_token_wrong_scheme() {
         assert_eq!(parse_bearer(Some("Basic abc123")), None);
+    }
+
+    use super::*;
+    use crate::protocol::{AgentState, AgentStateSync};
+
+    #[test]
+    fn same_state_transition_is_skipped() {
+        let states: AgentStatesMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let existing = AgentStateSync {
+            worktree_path: "/repo".to_string(),
+            state: AgentState::Running,
+            exit_code: None,
+            timestamp: 1000.0,
+            session_id: None,
+        };
+        states.lock().insert("/repo".to_string(), existing.clone());
+
+        let incoming = AgentStateSync {
+            worktree_path: "/repo".to_string(),
+            state: AgentState::Running,
+            exit_code: None,
+            timestamp: 2000.0,
+            session_id: None,
+        };
+
+        let map = states.lock();
+        let should_update = map
+            .get(&incoming.worktree_path)
+            .is_none_or(|prev| prev.state != incoming.state);
+        assert!(!should_update);
+
+        // timestamp は更新されない
+        let stored = map.get("/repo").unwrap();
+        assert_eq!(stored.timestamp, 1000.0);
+        drop(map);
+    }
+
+    #[test]
+    fn different_state_transition_is_applied() {
+        let states: AgentStatesMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let existing = AgentStateSync {
+            worktree_path: "/repo".to_string(),
+            state: AgentState::Waiting,
+            exit_code: None,
+            timestamp: 1000.0,
+            session_id: None,
+        };
+        states.lock().insert("/repo".to_string(), existing.clone());
+
+        let incoming = AgentStateSync {
+            worktree_path: "/repo".to_string(),
+            state: AgentState::Running,
+            exit_code: None,
+            timestamp: 2000.0,
+            session_id: None,
+        };
+
+        let mut map = states.lock();
+        let should_update = map
+            .get(&incoming.worktree_path)
+            .is_none_or(|prev| prev.state != incoming.state);
+        assert!(should_update);
+        if should_update {
+            map.insert(incoming.worktree_path.clone(), incoming.clone());
+        }
+
+        let stored = map.get("/repo").unwrap();
+        assert_eq!(stored.state, AgentState::Running);
+        assert_eq!(stored.timestamp, 2000.0);
+        drop(map);
+    }
+
+    #[test]
+    fn first_event_for_worktree_is_always_applied() {
+        let states: AgentStatesMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+
+        let incoming = AgentStateSync {
+            worktree_path: "/new-repo".to_string(),
+            state: AgentState::Running,
+            exit_code: None,
+            timestamp: 1000.0,
+            session_id: None,
+        };
+
+        let map = states.lock();
+        let should_update = map
+            .get(&incoming.worktree_path)
+            .is_none_or(|prev| prev.state != incoming.state);
+        assert!(should_update);
+        drop(map);
     }
 }

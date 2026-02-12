@@ -68,7 +68,7 @@ mod tests {
             None,
             Arc::new(WsBroadcaster::default()),
             None,
-            None,
+            vec![],
             app_config,
             None,
             false,

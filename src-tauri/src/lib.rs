@@ -23,6 +23,9 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let _ = fix_path_env::fix();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
@@ -77,6 +80,8 @@ pub fn run() {
             // Git: diff/content
             git::commands::get_file_at_ref,
             git::commands::get_staged_content,
+            git::commands::get_binary_file_at_ref,
+            git::commands::get_binary_staged_content,
             // Git: ブランチ
             git::commands::list_branches,
             git::commands::get_current_branch,
@@ -133,6 +138,7 @@ pub fn run() {
             ws_server::commands::get_server_status,
             ws_server::commands::get_server_info,
             ws_server::commands::broadcast_comments,
+            ws_server::commands::update_server_repo_paths,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
