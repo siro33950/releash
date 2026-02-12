@@ -89,6 +89,7 @@ pub fn run() {
             git::commands::get_current_branch,
             git::commands::get_default_branch,
             git::commands::git_create_branch,
+            git::commands::delete_branch,
             // Git: ステータス
             git::commands::get_git_status,
             git::commands::get_git_log,

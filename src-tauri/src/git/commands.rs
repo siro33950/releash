@@ -33,6 +33,15 @@ pub async fn git_create_branch(repo_path: String, branch_name: String) -> Result
     blocking(move || super::branch::git_create_branch(repo_path, branch_name)).await
 }
 
+#[tauri::command]
+pub async fn delete_branch(
+    repo_path: String,
+    branch_name: String,
+    force: bool,
+) -> Result<(), GitError> {
+    blocking(move || super::branch::delete_branch(repo_path, branch_name, force)).await
+}
+
 // ── worktree ──
 
 #[tauri::command]

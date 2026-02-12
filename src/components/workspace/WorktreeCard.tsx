@@ -155,12 +155,12 @@ export function BranchCard({
 				>
 					{opening ? <Loader2 className="size-4 animate-spin" /> : "Open"}
 				</Button>
-				{hasWorktree && (
+				{(hasWorktree || branch.is_merged) && (
 					<Button
 						size="icon-sm"
 						variant="ghost"
 						onClick={() => onDelete(branch)}
-						aria-label={`Delete worktree for ${branch.name}`}
+						aria-label={hasWorktree ? `Delete worktree for ${branch.name}` : `Delete branch ${branch.name}`}
 					>
 						<Trash2 className="size-4 text-muted-foreground" />
 					</Button>

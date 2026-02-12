@@ -53,7 +53,7 @@ pub fn get_worktree_dirty_count(worktree_path: String) -> Result<u32, GitError> 
     Ok(count)
 }
 
-fn get_branch_name_for_repo(repo: &Repository) -> String {
+pub(crate) fn get_branch_name_for_repo(repo: &Repository) -> String {
     match repo.head() {
         Ok(head) => {
             if head.is_branch() {
