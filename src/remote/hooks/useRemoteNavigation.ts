@@ -11,7 +11,7 @@ interface UseRemoteNavigationOptions {
 export function useRemoteNavigation({ subscribe }: UseRemoteNavigationOptions) {
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 	const [selectedWorktree, setSelectedWorktree] = useState<string | null>(null);
-	const [activeTab, setActiveTab] = useState<Tab>("changes");
+	const [activeTab, setActiveTab] = useState<Tab>("terminal");
 	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
 
 	useEffect(() => {

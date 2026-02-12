@@ -72,7 +72,7 @@ function updateNodeChildren(
 export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 	const {
 		rootPath,
-		showHidden = false,
+		showHidden = true,
 		onFileChange: onFileChangeExternal,
 	} = options;
 

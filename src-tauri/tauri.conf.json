@@ -27,6 +27,9 @@
       "endpoints": [
         "https://github.com/siro33950/releash/releases/latest/download/latest.json"
       ]
+    },
+    "fs": {
+      "requireLiteralLeadingDot": false
     }
   },
   "bundle": {

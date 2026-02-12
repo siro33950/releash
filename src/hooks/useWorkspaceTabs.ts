@@ -13,7 +13,11 @@ function fallbackBranchName(rootPath: string): string {
 export interface UseWorkspaceTabsReturn {
 	tabs: WorkspaceTab[];
 	activeTabId: string;
-	openWorktreeTab: (rootPath: string, branchName?: string) => void;
+	openWorktreeTab: (
+		rootPath: string,
+		branchName?: string,
+		repoName?: string,
+	) => void;
 	closeWorktreeTab: (id: string) => void;
 	setActiveTab: (id: string) => void;
 	switchToKanban: () => void;
@@ -24,7 +28,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 	const [activeTabId, setActiveTabId] = useState<string>("kanban");
 
 	const openWorktreeTab = useCallback(
-		(rootPath: string, branchName?: string) => {
+		(rootPath: string, branchName?: string, repoName?: string) => {
 			const normalized = normalizePath(rootPath);
 			setTabs((prev) => {
 				const existing = prev.find(
@@ -39,6 +43,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 					id: normalized,
 					rootPath: normalized,
 					branchName: branchName ?? fallbackBranchName(normalized),
+					repoName,
 				};
 				setActiveTabId(newTab.id);
 				return [...prev, newTab];
