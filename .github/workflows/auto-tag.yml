@@ -15,16 +15,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Check version change
         id: check
         run: |
           NEW=$(jq -r .version package.json)
-          OLD=$(git show HEAD~1:package.json | jq -r .version)
-          if [ "$NEW" != "$OLD" ]; then
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          else
+            OLD=$(echo "$LAST_TAG" | sed 's/^v//')
+            if [ "$NEW" != "$OLD" ]; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "version=$NEW" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Create tag

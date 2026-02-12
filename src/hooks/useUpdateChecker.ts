@@ -28,12 +28,10 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 	const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 	const [progress, setProgress] = useState(0);
 	const [error, setError] = useState<string | null>(null);
-	const checkedRef = useRef(false);
 	const updateRef = useRef<Awaited<ReturnType<typeof check>> | null>(null);
 
 	useEffect(() => {
-		if (!enabled || checkedRef.current) return;
-		checkedRef.current = true;
+		if (!enabled) return;
 
 		let cancelled = false;
 
@@ -53,10 +51,8 @@ export function useUpdateChecker(enabled: boolean): UpdateCheckResult {
 				} else {
 					setStatus("idle");
 				}
-			} catch (e) {
-				if (cancelled) return;
-				setError(e instanceof Error ? e.message : String(e));
-				setStatus("error");
+			} catch {
+				if (!cancelled) setStatus("idle");
 			}
 		})();
 

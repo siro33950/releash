@@ -61,14 +61,31 @@ describe("useUpdateChecker", () => {
 		});
 	});
 
-	it("should set status to error on check failure", async () => {
+	it("should silently return to idle on check failure", async () => {
 		mockCheck.mockRejectedValue(new Error("Network error"));
 		const { result } = renderHook(() => useUpdateChecker(true));
 
 		await waitFor(() => {
-			expect(result.current.status).toBe("error");
+			expect(result.current.status).toBe("idle");
 		});
-		expect(result.current.error).toBe("Network error");
+		expect(result.current.error).toBeNull();
+	});
+
+	it("should re-check when enabled changes from false to true", async () => {
+		mockCheck.mockResolvedValue(null);
+		const { result, rerender } = renderHook(
+			({ enabled }) => useUpdateChecker(enabled),
+			{ initialProps: { enabled: false } },
+		);
+
+		expect(mockCheck).not.toHaveBeenCalled();
+
+		rerender({ enabled: true });
+
+		expect(mockCheck).toHaveBeenCalledTimes(1);
+		await waitFor(() => {
+			expect(result.current.status).toBe("idle");
+		});
 	});
 
 	it("should return to idle on dismiss", async () => {
