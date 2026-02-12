@@ -65,6 +65,8 @@ jobs:
           APPLE_ID: op://releash/apple-signing/apple-id
           APPLE_PASSWORD: op://releash/apple-signing/app-password
           APPLE_TEAM_ID: op://releash/apple-signing/team-id
+          TAURI_SIGNING_PRIVATE_KEY: op://releash/tauri-updater/private-key
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: op://releash/tauri-updater/password
         with:
           export-env: true
 

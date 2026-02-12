@@ -47,6 +47,7 @@ export interface AppSettings {
 	agent: AgentType;
 	agentAutoApprove: boolean;
 	terminalStartupCommand: string;
+	autoUpdate: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -57,6 +58,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	agent: "none",
 	agentAutoApprove: false,
 	terminalStartupCommand: "",
+	autoUpdate: true,
 };
 
 export function buildTerminalCommand(settings: AppSettings): string {

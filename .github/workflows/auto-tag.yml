@@ -1,0 +1,41 @@
+name: Auto Tag
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Check version change
+        id: check
+        run: |
+          NEW=$(jq -r .version package.json)
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          else
+            OLD=$(echo "$LAST_TAG" | sed 's/^v//')
+            if [ "$NEW" != "$OLD" ]; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "version=$NEW" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Create tag
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git tag "v${{ steps.check.outputs.version }}"
+          git push origin "v${{ steps.check.outputs.version }}"
