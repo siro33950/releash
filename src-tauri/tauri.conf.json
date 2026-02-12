@@ -23,7 +23,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "PLACEHOLDER_UNTIL_KEY_GENERATED",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUxQTE4MjkwQzExQUREQ0IKUldUTDNSckJrSUtoVVo2RjRLUFJNMVhLVC9WTWZqa1Vhamo4NlFNcXYyd3ZZUXJVbWtQM2x5YVoK",
       "endpoints": [
         "https://github.com/siro33950/releash/releases/latest/download/latest.json"
       ]
