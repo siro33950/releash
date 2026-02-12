@@ -156,11 +156,10 @@ pub fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Res
             };
 
             if wt_branch == branch_name {
-                let wt_path_str = wt_path
-                    .to_str()
-                    .unwrap_or("")
-                    .trim_end_matches('/')
-                    .to_string();
+                let wt_path_str = match wt_path.to_str() {
+                    Some(s) => s.trim_end_matches('/').to_string(),
+                    None => continue,
+                };
                 remove_worktree(repo_path.clone(), wt_path_str, force)?;
                 had_worktree = true;
             }
