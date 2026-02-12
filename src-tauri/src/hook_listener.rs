@@ -92,12 +92,29 @@ fn extract_bearer_token(req: &Request<hyper::body::Incoming>) -> Option<String> 
         .map(|s| s.to_string())
 }
 
+fn normalize_slashes(path: &str) -> String {
+    let mut result = String::with_capacity(path.len());
+    let mut prev_slash = false;
+    for c in path.chars() {
+        if c == '/' {
+            if !prev_slash {
+                result.push(c);
+            }
+            prev_slash = true;
+        } else {
+            result.push(c);
+            prev_slash = false;
+        }
+    }
+    result.trim_end_matches('/').to_string()
+}
+
 fn resolve_worktree_root(path: &str) -> String {
     git2::Repository::discover(path)
         .ok()
         .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()))
         .and_then(|p| p.to_str().map(|s| s.trim_end_matches('/').to_string()))
-        .unwrap_or_else(|| path.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| normalize_slashes(path))
 }
 
 fn error_response(status: StatusCode, msg: &str) -> Response<Full<Bytes>> {
@@ -225,6 +242,7 @@ mod tests {
     fn resolve_worktree_root_with_double_slash() {
         let path = resolve_worktree_root("/nonexistent/repo//subdir");
         assert!(!path.ends_with('/'));
+        assert!(!path.contains("//"));
     }
 
     #[test]
