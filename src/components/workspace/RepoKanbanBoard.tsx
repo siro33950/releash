@@ -8,6 +8,7 @@ import {
 	GitPullRequest,
 	Loader2,
 	Plus,
+	RefreshCw,
 	Settings,
 	X,
 } from "lucide-react";
@@ -72,6 +73,7 @@ export function RepoKanbanBoard({
 	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
 	const [collapsed, setCollapsed] = useState(false);
+	const [refreshing, setRefreshing] = useState(false);
 
 	const repoName = useMemo(
 		() => repoPath.split("/").filter(Boolean).pop() ?? "",
@@ -271,6 +273,15 @@ export function RepoKanbanBoard({
 		[repoPath, refresh],
 	);
 
+	const handleRefresh = useCallback(async () => {
+		setRefreshing(true);
+		try {
+			await refresh();
+		} finally {
+			setRefreshing(false);
+		}
+	}, [refresh]);
+
 	const renderCards = (cards: BranchCard[]) =>
 		cards.map((b) => (
 			<BranchCardComponent
@@ -306,6 +317,18 @@ export function RepoKanbanBoard({
 					)}
 				</div>
 				<div className="flex items-center gap-1">
+					<Button
+						size="icon"
+						variant="ghost"
+						className="size-7"
+						onClick={handleRefresh}
+						disabled={refreshing}
+						title="Refresh"
+					>
+						<RefreshCw
+							className={`size-3.5 ${refreshing ? "animate-spin" : ""}`}
+						/>
+					</Button>
 					<Button
 						size="icon"
 						variant="ghost"
