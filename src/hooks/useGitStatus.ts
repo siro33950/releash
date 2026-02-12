@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileStatus } from "@/types/file-tree";
 import type { GitFileStatus } from "@/types/git";
+import type { FileChangeEvent } from "./useFileWatcher";
 
 function toFileStatus(entry: GitFileStatus): FileStatus {
 	if (entry.worktree_status === "ignored") return "ignored";
@@ -80,6 +81,8 @@ export function useGitStatus(
 
 	useEffect(() => {
 		if (externalRefreshKey != null && externalRefreshKey > 0) {
+			if (timerRef.current) clearTimeout(timerRef.current);
+			timerRef.current = null;
 			fetchStatus();
 		}
 	}, [externalRefreshKey, fetchStatus]);
@@ -89,8 +92,10 @@ export function useGitStatus(
 		let mounted = true;
 
 		const setup = async () => {
-			unlisten = await listen("file-change", () => {
-				if (mounted) debouncedRefresh();
+			unlisten = await listen<FileChangeEvent>("file-change", (event) => {
+				if (mounted && rootPath && event.payload.path.startsWith(rootPath)) {
+					debouncedRefresh();
+				}
 			});
 		};
 		setup();
@@ -100,7 +105,7 @@ export function useGitStatus(
 			unlisten?.();
 			if (timerRef.current) clearTimeout(timerRef.current);
 		};
-	}, [debouncedRefresh]);
+	}, [debouncedRefresh, rootPath]);
 
 	return { statusMap, stagedFiles, changedFiles, refresh };
 }

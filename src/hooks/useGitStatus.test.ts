@@ -162,8 +162,9 @@ describe("useGitStatus", () => {
 		vi.useFakeTimers();
 		mockInvoke.mockResolvedValue([]);
 
-		let fileChangeCallback: (() => void) | null = null;
-		mockListen.mockImplementation((event: string, cb: () => void) => {
+		type ListenCallback = (event: { payload: { path: string } }) => void;
+		let fileChangeCallback: ListenCallback | null = null;
+		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
 			if (event === "file-change") {
 				fileChangeCallback = cb;
 			}
@@ -179,12 +180,86 @@ describe("useGitStatus", () => {
 		expect(fileChangeCallback).not.toBeNull();
 
 		act(() => {
-			fileChangeCallback?.();
-			fileChangeCallback?.();
-			fileChangeCallback?.();
+			fileChangeCallback?.({ payload: { path: "/test/repo/src/a.ts" } });
+			fileChangeCallback?.({ payload: { path: "/test/repo/src/b.ts" } });
+			fileChangeCallback?.({ payload: { path: "/test/repo/src/c.ts" } });
 		});
 
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+		await act(async () => {
+			vi.advanceTimersByTime(300);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(2);
+
+		vi.useRealTimers();
+	});
+
+	it("should ignore file-change events from different rootPath", async () => {
+		vi.useFakeTimers();
+		mockInvoke.mockResolvedValue([]);
+
+		type ListenCallback = (event: { payload: { path: string } }) => void;
+		let fileChangeCallback: ListenCallback | null = null;
+		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
+			if (event === "file-change") {
+				fileChangeCallback = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
+
+		renderHook(() => useGitStatus("/test/repo-a"));
+
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		});
+
+		act(() => {
+			fileChangeCallback?.({ payload: { path: "/test/repo-b/src/file.ts" } });
+		});
+
+		await act(async () => {
+			vi.advanceTimersByTime(300);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+		vi.useRealTimers();
+	});
+
+	it("should cancel pending debounce when externalRefreshKey changes", async () => {
+		vi.useFakeTimers();
+		mockInvoke.mockResolvedValue([]);
+
+		type ListenCallback = (event: { payload: { path: string } }) => void;
+		let fileChangeCallback: ListenCallback | null = null;
+		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
+			if (event === "file-change") {
+				fileChangeCallback = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
+
+		const { rerender } = renderHook(
+			({ refreshKey }: { refreshKey: number }) =>
+				useGitStatus("/test/repo", refreshKey),
+			{ initialProps: { refreshKey: 0 } },
+		);
+
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		});
+
+		act(() => {
+			fileChangeCallback?.({ payload: { path: "/test/repo/src/a.ts" } });
+		});
+
+		rerender({ refreshKey: 1 });
+
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(2);
+		});
 
 		await act(async () => {
 			vi.advanceTimersByTime(300);
