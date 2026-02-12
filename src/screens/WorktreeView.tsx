@@ -356,6 +356,7 @@ export function WorktreeView({
 				)}
 			</div>
 			<StatusBar
+				className="shrink-0"
 				branch={branch ?? undefined}
 				language={activeTab?.language}
 				encoding={activeTab ? "UTF-8" : undefined}
