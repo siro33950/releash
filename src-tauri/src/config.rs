@@ -238,6 +238,24 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                         "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"post_tool_use\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
+            }],
+            "PostToolUseFailure": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!(
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"post_tool_use_failure\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                    )
+                }]
+            }],
+            "SessionStart": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!(
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(pwd)\" \"session_start\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                    )
+                }]
             }]
         }
     });

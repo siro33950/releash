@@ -29,11 +29,12 @@ pub struct AgentStateSync {
 impl AgentStateSync {
     pub fn from_payload(payload: &AgentHookPayload) -> Self {
         let state = match payload.event.as_str() {
-            "prompt_submit" | "post_tool_use" => AgentState::Running,
+            "prompt_submit" | "post_tool_use" | "post_tool_use_failure" => AgentState::Running,
             "stop" => match payload.exit_code {
                 Some(code) if code != 0 => AgentState::Error,
                 _ => AgentState::Done,
             },
+            "session_start" => AgentState::Done,
             "notification" => AgentState::Waiting,
             _ => AgentState::Done,
         };
@@ -117,6 +118,31 @@ mod tests {
         };
         let sync = AgentStateSync::from_payload(&payload);
         assert_eq!(sync.state, AgentState::Running);
+    }
+
+    #[test]
+    fn post_tool_use_failure_maps_to_running() {
+        let payload = AgentHookPayload {
+            worktree_path: "/repo".to_string(),
+            event: "post_tool_use_failure".to_string(),
+            exit_code: None,
+            session_id: None,
+        };
+        let sync = AgentStateSync::from_payload(&payload);
+        assert_eq!(sync.state, AgentState::Running);
+    }
+
+    #[test]
+    fn session_start_maps_to_done() {
+        let payload = AgentHookPayload {
+            worktree_path: "/repo".to_string(),
+            event: "session_start".to_string(),
+            exit_code: None,
+            session_id: Some("sess-456".to_string()),
+        };
+        let sync = AgentStateSync::from_payload(&payload);
+        assert_eq!(sync.state, AgentState::Done);
+        assert_eq!(sync.session_id, Some("sess-456".to_string()));
     }
 
     #[test]
