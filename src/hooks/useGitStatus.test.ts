@@ -158,6 +158,43 @@ describe("useGitStatus", () => {
 		expect(result.current.changedFiles).toEqual([]);
 	});
 
+	it("should debounce refresh on file-change events", async () => {
+		vi.useFakeTimers();
+		mockInvoke.mockResolvedValue([]);
+
+		let fileChangeCallback: (() => void) | null = null;
+		mockListen.mockImplementation((event: string, cb: () => void) => {
+			if (event === "file-change") {
+				fileChangeCallback = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
+
+		renderHook(() => useGitStatus("/test/repo"));
+
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		});
+
+		expect(fileChangeCallback).not.toBeNull();
+
+		act(() => {
+			fileChangeCallback?.();
+			fileChangeCallback?.();
+			fileChangeCallback?.();
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+		await act(async () => {
+			vi.advanceTimersByTime(300);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(2);
+
+		vi.useRealTimers();
+	});
+
 	it("should re-fetch when refresh is called", async () => {
 		mockInvoke.mockResolvedValue([]);
 

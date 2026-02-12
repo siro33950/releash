@@ -7,6 +7,14 @@ vi.mock("@/hooks/useCurrentBranch", () => ({
 	useCurrentBranch: () => ({ branch: "main", refresh: vi.fn() }),
 }));
 
+vi.mock("@/hooks/useFileWatcher", () => ({
+	useFileWatcher: vi.fn().mockReturnValue({
+		watcherId: 1,
+		isWatching: true,
+		error: null,
+	}),
+}));
+
 vi.mock("react-resizable-panels", () => ({
 	Group: ({ children }: { children: React.ReactNode }) => (
 		<div data-testid="panel-group">{children}</div>

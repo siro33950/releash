@@ -18,6 +18,7 @@ import {
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useEditorTabs } from "@/hooks/useEditorTabs";
+import { useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useLineComments } from "@/hooks/useLineComments";
@@ -68,6 +69,13 @@ export function WorktreeView({
 	const terminalRef = useRef<TerminalPanelHandle>(null);
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
 	const refreshGit = useCallback(() => setGitRefreshKey((k) => k + 1), []);
+	useFileWatcher({ rootPath });
+
+	useEffect(() => {
+		if (activeView === "git") {
+			refreshGit();
+		}
+	}, [activeView, refreshGit]);
 
 	useEffect(() => {
 		if (branch != null) {
