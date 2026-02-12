@@ -335,18 +335,21 @@ mod tests {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
-        let head_branch = get_branch_name_for_repo(&repo);
-        // Create another branch so default != head to isolate the HEAD check
         let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("other-default", &head_commit, false).unwrap();
+        repo.branch("non-default", &head_commit, false).unwrap();
+
+        // Switch HEAD to non-default branch so it's not the default branch
+        repo.set_head("refs/heads/non-default").unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
 
         let repo_path = dir.path().to_str().unwrap().to_string();
-        let result = delete_branch(repo_path, head_branch, false);
+        let result = delete_branch(repo_path, "non-default".to_string(), false);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("default branch") || err_msg.contains("currently checked out"),
-            "unexpected error: {}",
+            err_msg.contains("currently checked out"),
+            "expected HEAD rejection error, got: {}",
             err_msg
         );
     }
