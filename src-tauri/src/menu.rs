@@ -1,5 +1,4 @@
-use std::sync::Mutex;
-
+use parking_lot::Mutex;
 use tauri::{
     menu::{AboutMetadata, Menu, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
     App, Emitter, Manager, Wry,
@@ -44,8 +43,6 @@ pub mod ids {
 
     // Worktree
     pub const BACK_TO_KANBAN: &str = "back-to-kanban";
-    pub const CREATE_WORKTREE: &str = "create-worktree";
-    pub const DELETE_WORKTREE: &str = "delete-worktree";
 
     // Remote
     pub const REMOTE_START_SERVER: &str = "remote-start-server";
@@ -256,16 +253,9 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     // ---- Worktree menu ----
     let back_to_kanban =
         MenuItemBuilder::with_id(ids::BACK_TO_KANBAN, "Back to Kanban").build(handle)?;
-    let create_worktree =
-        MenuItemBuilder::with_id(ids::CREATE_WORKTREE, "Create Worktree...").build(handle)?;
-    let delete_worktree =
-        MenuItemBuilder::with_id(ids::DELETE_WORKTREE, "Delete Worktree...").build(handle)?;
 
     let worktree_menu = SubmenuBuilder::new(handle, "Worktree")
         .item(&back_to_kanban)
-        .separator()
-        .item(&create_worktree)
-        .item(&delete_worktree)
         .build()?;
 
     // ---- Remote menu ----
@@ -312,7 +302,7 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- Menu event handler ----
     app.on_menu_event(move |app_handle, event| {
-        let id = event.id().0.as_str();
+        let id = event.id().as_ref();
         app_handle.emit("menu-event", id).ok();
     });
 
@@ -324,7 +314,7 @@ pub fn set_menu_items_enabled(
     state: tauri::State<'_, Mutex<MenuItemsState>>,
     enabled: bool,
 ) -> Result<(), String> {
-    let guard = state.lock().map_err(|e| e.to_string())?;
+    let guard = state.lock();
     for item in &guard.worktree_items {
         item.set_enabled(enabled).map_err(|e| e.to_string())?;
     }

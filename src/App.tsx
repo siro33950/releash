@@ -29,6 +29,12 @@ function App() {
 	const [providerStatuses, setProviderStatuses] = useState<
 		Record<string, ProviderStatus | null>
 	>({});
+	const [kanbanRequestedView, setKanbanRequestedView] = useState<string | null>(
+		null,
+	);
+	const handleKanbanRequestedViewHandled = useCallback(() => {
+		setKanbanRequestedView(null);
+	}, []);
 
 	useEffect(() => {
 		const suppress = (e: MouseEvent) => e.preventDefault();
@@ -135,21 +141,17 @@ function App() {
 	const menuHandlers: MenuHandlers = useMemo(
 		() => ({
 			settings: () => {
-				// Switch to settings view within the active worktree, or kanban settings
-				// For now, handled per-worktree via WorktreeView
+				if (activeTabId === "kanban") {
+					setKanbanRequestedView("settings");
+				}
 			},
 			"open-folder": handleOpenFolder,
 			"theme-dark": () => updateTheme("dark"),
 			"theme-light": () => updateTheme("light"),
 			"back-to-kanban": switchToKanban,
-			"create-worktree": () => {
-				switchToKanban();
-			},
-			"delete-worktree": () => {
-				switchToKanban();
-			},
 			"remote-start-server": () => {
-				// Handled by WorkspaceManagerScreen's remote server UI
+				switchToKanban();
+				setKanbanRequestedView("remote");
 			},
 			"remote-stop-server": async () => {
 				try {
@@ -159,10 +161,11 @@ function App() {
 				}
 			},
 			"remote-show-qr": () => {
-				// QR Code is shown through the settings/remote panel
+				switchToKanban();
+				setKanbanRequestedView("remote");
 			},
 		}),
-		[handleOpenFolder, updateTheme, switchToKanban],
+		[activeTabId, handleOpenFolder, updateTheme, switchToKanban],
 	);
 
 	useMenuEvents(menuHandlers);
@@ -194,6 +197,8 @@ function App() {
 						providerStatuses={providerStatuses}
 						initializing={initializing}
 						isActive={activeTabId === "kanban"}
+						requestedView={kanbanRequestedView}
+						onRequestedViewHandled={handleKanbanRequestedViewHandled}
 						onSettingsSave={updateSettings}
 						onSelectWorktree={openWorktreeTab}
 						onAddRepo={handleAddRepo}

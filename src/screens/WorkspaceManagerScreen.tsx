@@ -1,5 +1,5 @@
 import { FolderOpen, Globe, Loader2, Settings } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import {
 	ActivityBar,
@@ -19,6 +19,8 @@ interface WorkspaceManagerScreenProps {
 	providerStatuses: Record<string, ProviderStatus | null>;
 	initializing?: boolean;
 	isActive?: boolean;
+	requestedView?: string | null;
+	onRequestedViewHandled?: () => void;
 	onSettingsSave: (settings: AppSettings) => void;
 	onSelectWorktree: (
 		path: string,
@@ -34,12 +36,21 @@ export function WorkspaceManagerScreen({
 	settings,
 	providerStatuses,
 	initializing = false,
+	requestedView,
+	onRequestedViewHandled,
 	onSettingsSave,
 	onSelectWorktree,
 	onAddRepo,
 	onRemoveRepo,
 }: WorkspaceManagerScreenProps) {
 	const [activeView, setActiveView] = useState<string>("remote");
+
+	useEffect(() => {
+		if (requestedView) {
+			setActiveView(requestedView);
+			onRequestedViewHandled?.();
+		}
+	}, [requestedView, onRequestedViewHandled]);
 
 	const activityBarItems: ActivityBarItem[] = useMemo(
 		() => [

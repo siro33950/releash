@@ -16,11 +16,21 @@ import {
 	type TerminalPanelHandle,
 } from "@/components/panels/TerminalPanel";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useEditorTabs } from "@/hooks/useEditorTabs";
 import { useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
-import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useLineComments } from "@/hooks/useLineComments";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
@@ -114,6 +124,21 @@ export function WorktreeView({
 	const commentsRef = useRef(comments);
 	commentsRef.current = comments;
 
+	const settingsRef = useRef(settings);
+	useEffect(() => {
+		settingsRef.current = settings;
+	}, [settings]);
+
+	const onSettingsSaveRef = useRef(onSettingsSave);
+	useEffect(() => {
+		onSettingsSaveRef.current = onSettingsSave;
+	}, [onSettingsSave]);
+
+	const [gitError, setGitError] = useState<string | null>(null);
+	const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+	const [showCreateBranch, setShowCreateBranch] = useState(false);
+	const [newBranchName, setNewBranchName] = useState("");
+
 	const broadcastComments = useCallback((commentsList: LineComment[]) => {
 		invoke("broadcast_comments", {
 			comments: {
@@ -195,8 +220,6 @@ export function WorktreeView({
 		setSearchFocusKey((k) => k + 1);
 	}, []);
 
-	useKeyboardShortcuts({ onSave: handleSave, onSearch: handleSearch });
-
 	const handleCloseActiveTab = useCallback(() => {
 		if (activeTab) {
 			const tab = tabs.find((t) => t.path === activeTab.path);
@@ -222,7 +245,7 @@ export function WorktreeView({
 				refreshGit();
 			}
 		} catch (e) {
-			console.error("Failed to stage all:", e);
+			setGitError(String(e));
 		}
 	}, [rootPath, stage, refreshGit]);
 
@@ -240,7 +263,7 @@ export function WorktreeView({
 				refreshGit();
 			}
 		} catch (e) {
-			console.error("Failed to unstage all:", e);
+			setGitError(String(e));
 		}
 	}, [rootPath, unstage, refreshGit]);
 
@@ -252,11 +275,16 @@ export function WorktreeView({
 		try {
 			await push(rootPath);
 		} catch (e) {
-			console.error("Failed to push:", e);
+			setGitError(String(e));
 		}
 	}, [rootPath, push]);
 
-	const handleGitDiscardAll = useCallback(async () => {
+	const handleGitDiscardAll = useCallback(() => {
+		setShowDiscardConfirm(true);
+	}, []);
+
+	const executeDiscardAll = useCallback(async () => {
+		setShowDiscardConfirm(false);
 		try {
 			const status = await invoke<{ changed: Array<{ path: string }> }>(
 				"get_git_status",
@@ -270,20 +298,25 @@ export function WorktreeView({
 				refreshGit();
 			}
 		} catch (e) {
-			console.error("Failed to discard all:", e);
+			setGitError(String(e));
 		}
 	}, [rootPath, discard, refreshGit]);
 
-	const handleGitCreateBranch = useCallback(async () => {
-		const name = window.prompt("Branch name:");
-		if (name) {
-			try {
-				await createBranch(rootPath, name);
-			} catch (e) {
-				console.error("Failed to create branch:", e);
-			}
+	const handleGitCreateBranch = useCallback(() => {
+		setNewBranchName("");
+		setShowCreateBranch(true);
+	}, []);
+
+	const executeCreateBranch = useCallback(async () => {
+		const name = newBranchName.trim();
+		if (!name) return;
+		setShowCreateBranch(false);
+		try {
+			await createBranch(rootPath, name);
+		} catch (e) {
+			setGitError(String(e));
 		}
-	}, [rootPath, createBranch]);
+	}, [rootPath, createBranch, newBranchName]);
 
 	const menuHandlers: MenuHandlers = useMemo(
 		() => ({
@@ -299,26 +332,32 @@ export function WorktreeView({
 				setSearchFocusKey((k) => k + 1);
 			},
 			"view-source-control": () => setActiveView("git"),
+			settings: () => setActiveView("settings"),
 			"diff-gutter": () => setDiffMode("gutter"),
 			"diff-inline": () => setDiffMode("inline"),
 			"diff-split": () => setDiffMode("split"),
-			"increase-font-size": () =>
-				onSettingsSave({ ...settings, fontSize: settings.fontSize + 1 }),
-			"decrease-font-size": () =>
-				onSettingsSave({
-					...settings,
-					fontSize: Math.max(8, settings.fontSize - 1),
-				}),
-			"reset-font-size": () => onSettingsSave({ ...settings, fontSize: 14 }),
+			"increase-font-size": () => {
+				const s = settingsRef.current;
+				onSettingsSaveRef.current({ ...s, fontSize: s.fontSize + 1 });
+			},
+			"decrease-font-size": () => {
+				const s = settingsRef.current;
+				onSettingsSaveRef.current({
+					...s,
+					fontSize: Math.max(8, s.fontSize - 1),
+				});
+			},
+			"reset-font-size": () => {
+				const s = settingsRef.current;
+				onSettingsSaveRef.current({ ...s, fontSize: 14 });
+			},
 			"git-stage-all": handleGitStageAll,
 			"git-unstage-all": handleGitUnstageAll,
 			"git-commit": handleGitCommit,
 			"git-push": handleGitPush,
 			"git-discard-all": handleGitDiscardAll,
 			"git-create-branch": handleGitCreateBranch,
-			"new-terminal": () => {
-				// Terminal is always visible; focus could be added later
-			},
+			"new-terminal": () => {},
 		}),
 		[
 			createUntitledTab,
@@ -327,8 +366,6 @@ export function WorktreeView({
 			handleCloseActiveTab,
 			closeAllTabs,
 			handleSearch,
-			settings,
-			onSettingsSave,
 			handleGitStageAll,
 			handleGitUnstageAll,
 			handleGitCommit,
@@ -533,6 +570,86 @@ export function WorktreeView({
 				onDiscard={handleUnsavedDiscard}
 				onCancel={handleUnsavedCancel}
 			/>
+			<AlertDialog
+				open={!!gitError}
+				onOpenChange={(o) => {
+					if (!o) setGitError(null);
+				}}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Git Error</AlertDialogTitle>
+						<AlertDialogDescription>{gitError}</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogAction onClick={() => setGitError(null)}>
+							OK
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+			<AlertDialog
+				open={showDiscardConfirm}
+				onOpenChange={(o) => {
+					if (!o) setShowDiscardConfirm(false);
+				}}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Discard All Changes</AlertDialogTitle>
+						<AlertDialogDescription>
+							Are you sure you want to discard all uncommitted changes? This
+							action cannot be undone.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel onClick={() => setShowDiscardConfirm(false)}>
+							Cancel
+						</AlertDialogCancel>
+						<AlertDialogAction
+							variant="destructive"
+							onClick={executeDiscardAll}
+						>
+							Discard All
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+			<AlertDialog
+				open={showCreateBranch}
+				onOpenChange={(o) => {
+					if (!o) setShowCreateBranch(false);
+				}}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Create Branch</AlertDialogTitle>
+						<AlertDialogDescription>
+							Enter a name for the new branch.
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<Input
+						value={newBranchName}
+						onChange={(e) => setNewBranchName(e.target.value)}
+						placeholder="Branch name"
+						autoFocus
+						onKeyDown={(e) => {
+							if (e.key === "Enter") executeCreateBranch();
+						}}
+					/>
+					<AlertDialogFooter>
+						<AlertDialogCancel onClick={() => setShowCreateBranch(false)}>
+							Cancel
+						</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={executeCreateBranch}
+							disabled={!newBranchName.trim()}
+						>
+							Create
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</div>
 	);
 }

@@ -1,12 +1,48 @@
 import { listen } from "@tauri-apps/api/event";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
-export type MenuHandlers = Partial<Record<string, () => void>>;
+export type MenuEventId =
+	| "new-file"
+	| "new-folder"
+	| "open-folder"
+	| "save"
+	| "save-all"
+	| "close-tab"
+	| "close-all-tabs"
+	| "find-in-files"
+	| "view-explorer"
+	| "view-search"
+	| "view-source-control"
+	| "diff-gutter"
+	| "diff-inline"
+	| "diff-split"
+	| "theme-dark"
+	| "theme-light"
+	| "increase-font-size"
+	| "decrease-font-size"
+	| "reset-font-size"
+	| "git-stage-all"
+	| "git-unstage-all"
+	| "git-commit"
+	| "git-push"
+	| "git-discard-all"
+	| "git-create-branch"
+	| "new-terminal"
+	| "back-to-kanban"
+	| "remote-start-server"
+	| "remote-stop-server"
+	| "remote-show-qr"
+	| "settings";
+
+export type MenuHandlers = Partial<Record<MenuEventId, () => void>>;
 
 export function useMenuEvents(handlers: MenuHandlers) {
+	const handlersRef = useRef(handlers);
+	handlersRef.current = handlers;
+
 	useEffect(() => {
 		const unlisten = listen<string>("menu-event", (event) => {
-			const handler = handlers[event.payload];
+			const handler = handlersRef.current[event.payload as MenuEventId];
 			if (handler) {
 				handler();
 			}
@@ -14,5 +50,5 @@ export function useMenuEvents(handlers: MenuHandlers) {
 		return () => {
 			unlisten.then((f) => f());
 		};
-	}, [handlers]);
+	}, []);
 }
