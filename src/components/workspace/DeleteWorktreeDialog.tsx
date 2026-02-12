@@ -61,7 +61,9 @@ export function DeleteWorktreeDialog({
 
 	const title = branch.is_merged ? "Delete Branch" : "Delete Workspace";
 	const description = branch.is_merged
-		? `Delete local branch and workspace for "${branch.name}"?`
+		? branch.worktree_path
+			? `Delete local branch and workspace for "${branch.name}"?`
+			: `Delete local branch "${branch.name}"?`
 		: `Delete workspace for branch "${branch.name}"?`;
 
 	return (

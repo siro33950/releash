@@ -596,6 +596,7 @@ describe("WorkspaceManagerScreen", () => {
 			Object.defineProperty(document, "visibilityState", {
 				value: "visible",
 				writable: true,
+				configurable: true,
 			});
 			await act(async () => {
 				await vi.advanceTimersByTimeAsync(1_000);
@@ -608,6 +609,9 @@ describe("WorkspaceManagerScreen", () => {
 
 			if (originalDescriptor) {
 				Object.defineProperty(document, "visibilityState", originalDescriptor);
+			} else {
+				// biome-ignore lint/suspicious/noExplicitAny: テストクリーンアップでprototype propertyに戻す
+				delete (document as any).visibilityState;
 			}
 			vi.useRealTimers();
 		});

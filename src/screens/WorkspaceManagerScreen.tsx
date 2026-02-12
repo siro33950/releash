@@ -155,8 +155,10 @@ export function WorkspaceManagerScreen({
 					});
 				}
 				await refresh();
-			} finally {
 				setDeletingBranch(null);
+			} catch (e) {
+				console.error("Failed to delete branch/worktree:", e);
+				throw e;
 			}
 		},
 		[repoPath, refresh],
