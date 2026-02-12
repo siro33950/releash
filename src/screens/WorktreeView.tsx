@@ -50,6 +50,7 @@ interface WorktreeViewProps {
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
 	onSwitchToKanban: () => void;
+	isActive: boolean;
 }
 
 export function WorktreeView({
@@ -57,6 +58,7 @@ export function WorktreeView({
 	settings,
 	onSettingsSave,
 	onSwitchToKanban,
+	isActive,
 }: WorktreeViewProps) {
 	const {
 		tabs,
@@ -125,15 +127,12 @@ export function WorktreeView({
 	commentsRef.current = comments;
 
 	const settingsRef = useRef(settings);
-	useEffect(() => {
-		settingsRef.current = settings;
-	}, [settings]);
+	settingsRef.current = settings;
 
 	const onSettingsSaveRef = useRef(onSettingsSave);
-	useEffect(() => {
-		onSettingsSaveRef.current = onSettingsSave;
-	}, [onSettingsSave]);
+	onSettingsSaveRef.current = onSettingsSave;
 
+	const [newFolderKey, setNewFolderKey] = useState(0);
 	const [gitError, setGitError] = useState<string | null>(null);
 	const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
 	const [showCreateBranch, setShowCreateBranch] = useState(false);
@@ -321,6 +320,10 @@ export function WorktreeView({
 	const menuHandlers: MenuHandlers = useMemo(
 		() => ({
 			"new-file": createUntitledTab,
+			"new-folder": () => {
+				setActiveView("explorer");
+				setNewFolderKey((k) => k + 1);
+			},
 			save: handleSave,
 			"save-all": saveAllDirtyTabs,
 			"close-tab": handleCloseActiveTab,
@@ -375,7 +378,7 @@ export function WorktreeView({
 		],
 	);
 
-	useMenuEvents(menuHandlers);
+	useMenuEvents(menuHandlers, isActive);
 
 	const handleSearchResultClick = useCallback(
 		(relativePath: string, line: number) => {
@@ -495,6 +498,7 @@ export function WorktreeView({
 									onFileChange={reloadTabIfClean}
 									onRename={handleRename}
 									onDelete={handleDelete}
+									requestNewFolderKey={newFolderKey}
 								/>
 							)}
 						</Panel>

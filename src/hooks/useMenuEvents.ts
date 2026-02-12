@@ -36,12 +36,15 @@ export type MenuEventId =
 
 export type MenuHandlers = Partial<Record<MenuEventId, () => void>>;
 
-export function useMenuEvents(handlers: MenuHandlers) {
+export function useMenuEvents(handlers: MenuHandlers, enabled = true) {
 	const handlersRef = useRef(handlers);
 	handlersRef.current = handlers;
+	const enabledRef = useRef(enabled);
+	enabledRef.current = enabled;
 
 	useEffect(() => {
 		const unlisten = listen<string>("menu-event", (event) => {
+			if (!enabledRef.current) return;
 			const handler = handlersRef.current[event.payload as MenuEventId];
 			if (handler) {
 				handler();

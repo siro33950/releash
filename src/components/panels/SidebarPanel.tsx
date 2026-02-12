@@ -5,7 +5,7 @@ import {
 	FolderPlus,
 	RefreshCw,
 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -49,6 +49,7 @@ export interface SidebarPanelProps {
 	onFileChange?: (path: string) => void;
 	onRename?: (oldPath: string, newPath: string) => void;
 	onDelete?: (path: string) => void;
+	requestNewFolderKey?: number;
 }
 
 export function SidebarPanel({
@@ -58,6 +59,7 @@ export function SidebarPanel({
 	onFileChange,
 	onRename,
 	onDelete,
+	requestNewFolderKey,
 }: SidebarPanelProps) {
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
@@ -225,6 +227,12 @@ export function SidebarPanel({
 		}
 		setCreatingNode({ parentPath, type: "folder" });
 	}, [rootPath, selectedPath, tree]);
+
+	useEffect(() => {
+		if (requestNewFolderKey && requestNewFolderKey > 0) {
+			handleToolbarNewFolder();
+		}
+	}, [requestNewFolderKey, handleToolbarNewFolder]);
 
 	const treeWithStatus = useMemo(
 		() => applyStatusToTree(tree, statusMap),
