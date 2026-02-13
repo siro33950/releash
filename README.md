@@ -69,7 +69,7 @@ A real PTY terminal, not a toy. Shell integration (Bash, Zsh) detects when comma
 
 > **Early development** — pre-built binaries are not available yet. Build from source for now.
 
-**Platforms:** macOS, Linux (Windows is untested)
+**Platforms:** macOS (Linux and Windows are not supported yet)
 
 **Prerequisites:** [Node.js](https://nodejs.org/) (v18+), [pnpm](https://pnpm.io/), [Rust](https://www.rust-lang.org/tools/install), [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)
 
@@ -82,7 +82,7 @@ pnpm tauri dev
 
 ## How It Works
 
-```
+```text
 Create worktrees for each task
         ↓
 Launch agents in their terminals
