@@ -80,7 +80,8 @@ export function WorktreeView({
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
 	const [agentState, setAgentState] = useState<AgentState | undefined>();
-	const { comments, addComment, markAsSent } = useLineComments();
+	const { comments, addComment, removeComment, updateComment, markAsSent } =
+		useLineComments();
 	const {
 		stage,
 		unstage,
@@ -173,15 +174,31 @@ export function WorktreeView({
 			addComment(file_path, line_number, content, end_line ?? undefined);
 		});
 
+		const unlistenDelete = listen<{ id: string }>(
+			"remote-comment-deleted",
+			(event) => {
+				removeComment(event.payload.id);
+			},
+		);
+
+		const unlistenUpdate = listen<{ id: string; content: string }>(
+			"remote-comment-updated",
+			(event) => {
+				updateComment(event.payload.id, event.payload.content);
+			},
+		);
+
 		const unlistenConnected = listen("remote-connected", () => {
 			broadcastComments(commentsRef.current);
 		});
 
 		return () => {
 			unlistenComment.then((f) => f());
+			unlistenDelete.then((f) => f());
+			unlistenUpdate.then((f) => f());
 			unlistenConnected.then((f) => f());
 		};
-	}, [addComment, broadcastComments]);
+	}, [addComment, removeComment, updateComment, broadcastComments]);
 
 	useEffect(() => {
 		broadcastComments(comments);
@@ -533,6 +550,8 @@ export function WorktreeView({
 								fontSize={settings.fontSize}
 								comments={comments}
 								onAddComment={addComment}
+								onDeleteComment={removeComment}
+								onUpdateComment={updateComment}
 								rootPath={rootPath}
 								onStageHunk={stageHunk}
 								onUnstageHunk={unstageHunk}

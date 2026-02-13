@@ -38,6 +38,8 @@ pub(super) async fn route_message(
             handle_worktree_select_request(req, state, selected_worktree).await
         }
         WsMessage::AddComment(comment) => handle_add_comment(comment, state),
+        WsMessage::DeleteComment(req) => handle_delete_comment(req, state),
+        WsMessage::UpdateComment(req) => handle_update_comment(req, state),
         _ => Some(WsMessage::Error(ErrorMsg {
             code: "INVALID_MESSAGE".to_string(),
             message: "Unexpected message from client".to_string(),
@@ -103,6 +105,29 @@ mod tests {
             line_number: 10,
             end_line: None,
             content: "fix this".to_string(),
+        });
+        let result = route_message(&msg, &state, &wt).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_route_delete_comment_returns_none() {
+        let state = test_state();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::DeleteComment(DeleteComment {
+            id: "comment-1".to_string(),
+        });
+        let result = route_message(&msg, &state, &wt).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_route_update_comment_returns_none() {
+        let state = test_state();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::UpdateComment(UpdateComment {
+            id: "comment-1".to_string(),
+            content: "updated content".to_string(),
         });
         let result = route_message(&msg, &state, &wt).await;
         assert!(result.is_none());

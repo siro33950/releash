@@ -63,5 +63,37 @@ export function useRemoteContent({ subscribe, send }: UseRemoteContentOptions) {
 		[send],
 	);
 
-	return { comments, branchName, setComments, setBranchName, addComment };
+	const deleteComment = useCallback(
+		(id: string) => {
+			send({
+				type: "delete_comment",
+				payload: { id },
+			});
+			setComments((prev) => prev.filter((c) => c.id !== id));
+		},
+		[send],
+	);
+
+	const updateComment = useCallback(
+		(id: string, content: string) => {
+			send({
+				type: "update_comment",
+				payload: { id, content },
+			});
+			setComments((prev) =>
+				prev.map((c) => (c.id === id ? { ...c, content } : c)),
+			);
+		},
+		[send],
+	);
+
+	return {
+		comments,
+		branchName,
+		setComments,
+		setBranchName,
+		addComment,
+		deleteComment,
+		updateComment,
+	};
 }

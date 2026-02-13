@@ -82,6 +82,10 @@ pub enum WsMessage {
     // コメント
     #[serde(rename = "add_comment")]
     AddComment(AddComment),
+    #[serde(rename = "delete_comment")]
+    DeleteComment(DeleteComment),
+    #[serde(rename = "update_comment")]
+    UpdateComment(UpdateComment),
     #[serde(rename = "comments_sync")]
     CommentsSync(CommentSync),
 
@@ -448,6 +452,13 @@ mod tests {
                 line_number: 10,
                 end_line: None,
                 content: "fix this".to_string(),
+            }),
+            WsMessage::DeleteComment(DeleteComment {
+                id: "c1".to_string(),
+            }),
+            WsMessage::UpdateComment(UpdateComment {
+                id: "c1".to_string(),
+                content: "updated".to_string(),
             }),
             WsMessage::CommentsSync(CommentSync {
                 comments: vec![CommentItem {
