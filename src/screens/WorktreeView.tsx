@@ -97,7 +97,7 @@ export function WorktreeView({
 		rootPath,
 		onFileChange: useCallback(
 			(event: FileChangeEvent) => {
-				reloadTabIfClean(event.path);
+				reloadTabIfClean(normalizePath(event.path));
 			},
 			[reloadTabIfClean],
 		),
