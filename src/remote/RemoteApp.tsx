@@ -18,6 +18,7 @@ import { RemoteSourceControl } from "./components/RemoteSourceControl";
 import { RemoteTerminalPanel } from "./components/RemoteTerminalPanel";
 import { StatusIndicator } from "./components/StatusIndicator";
 import { useAgentState } from "./hooks/useAgentState";
+import { useBrowserBackGuard } from "./hooks/useBrowserBackGuard";
 import { useMessageBus } from "./hooks/useMessageBus";
 import { usePtyManagement } from "./hooks/usePtyManagement";
 import { useRemoteContent } from "./hooks/useRemoteContent";
@@ -131,11 +132,16 @@ export function RemoteApp() {
 		],
 	);
 
-	const handleBackToWorktrees = useCallback(() => {
+	const handleBackToWorktreesAction = useCallback(() => {
 		setSelectedWorktree(null);
 		setSelectedPath(null);
 		setBranchName(null);
 	}, [setSelectedWorktree, setSelectedPath, setBranchName]);
+
+	const { navigateBack: handleBackToWorktrees } = useBrowserBackGuard({
+		selectedWorktree,
+		onBack: handleBackToWorktreesAction,
+	});
 
 	const handleConnect = useCallback((wsUrl: string, token: string) => {
 		setConnection({ url: wsUrl, token });
