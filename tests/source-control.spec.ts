@@ -105,6 +105,16 @@ test.describe("Source Control", () => {
 		const unstageAllBtn = page.getByTitle("Unstage All Changes");
 		await unstageAllBtn.click();
 
+		await page.waitForFunction(
+			() =>
+				// @ts-expect-error - テスト用グローバル
+				(window.__INVOKE_HISTORY__ ?? []).some(
+					(h: { cmd: string }) => h.cmd === "git_unstage",
+				),
+			null,
+			{ timeout: 5000 },
+		);
+
 		const history = await getInvokeHistory(page);
 		const unstageCall = history.find((h) => h.cmd === "git_unstage");
 		expect(unstageCall).toBeTruthy();
@@ -127,6 +137,16 @@ test.describe("Source Control", () => {
 		const commitBtn = page.getByRole("button", { name: "Commit" });
 		await commitBtn.click();
 
+		await page.waitForFunction(
+			() =>
+				// @ts-expect-error - テスト用グローバル
+				(window.__INVOKE_HISTORY__ ?? []).some(
+					(h: { cmd: string }) => h.cmd === "git_commit",
+				),
+			null,
+			{ timeout: 5000 },
+		);
+
 		const history = await getInvokeHistory(page);
 		const commitCall = history.find((h) => h.cmd === "git_commit");
 		expect(commitCall).toBeTruthy();
@@ -144,6 +164,16 @@ test.describe("Source Control", () => {
 		// Push ボタンをクリック
 		const pushBtn = page.getByRole("button", { name: "Push" });
 		await pushBtn.click();
+
+		await page.waitForFunction(
+			() =>
+				// @ts-expect-error - テスト用グローバル
+				(window.__INVOKE_HISTORY__ ?? []).some(
+					(h: { cmd: string }) => h.cmd === "git_push",
+				),
+			null,
+			{ timeout: 5000 },
+		);
 
 		const history = await getInvokeHistory(page);
 		const pushCall = history.find((h) => h.cmd === "git_push");
