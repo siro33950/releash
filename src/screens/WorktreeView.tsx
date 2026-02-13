@@ -29,7 +29,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useEditorTabs } from "@/hooks/useEditorTabs";
-import { useFileWatcher } from "@/hooks/useFileWatcher";
+import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useLineComments } from "@/hooks/useLineComments";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
@@ -93,7 +93,15 @@ export function WorktreeView({
 	const terminalRef = useRef<TerminalPanelHandle>(null);
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
 	const refreshGit = useCallback(() => setGitRefreshKey((k) => k + 1), []);
-	useFileWatcher({ rootPath });
+	useFileWatcher({
+		rootPath,
+		onFileChange: useCallback(
+			(event: FileChangeEvent) => {
+				reloadTabIfClean(event.path);
+			},
+			[reloadTabIfClean],
+		),
+	});
 
 	useEffect(() => {
 		if (activeView === "git") {
