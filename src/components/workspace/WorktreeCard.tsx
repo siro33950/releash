@@ -142,11 +142,11 @@ export function BranchCard({
 						)}
 						{hasWorktree &&
 							(branch.dirty_count > 0 ? (
-								<span className="shrink-0 text-[10px] text-yellow-500">
+								<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-500 font-medium">
 									{branch.dirty_count} files changed
 								</span>
 							) : (
-								<span className="shrink-0 text-[10px] text-green-500">
+								<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
 									clean
 								</span>
 							))}
