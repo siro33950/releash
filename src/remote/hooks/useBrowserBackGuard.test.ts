@@ -3,18 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useBrowserBackGuard } from "./useBrowserBackGuard";
 
 describe("useBrowserBackGuard", () => {
-	const originalReplaceState = history.replaceState;
-	const originalPushState = history.pushState;
-	let replaceStateSpy: ReturnType<typeof vi.fn>;
-	let pushStateSpy: ReturnType<typeof vi.fn>;
+	// biome-ignore lint/suspicious/noExplicitAny: テスト用のスパイ型
+	let replaceStateSpy: any;
+	// biome-ignore lint/suspicious/noExplicitAny: テスト用のスパイ型
+	let pushStateSpy: any;
 	let popStateListeners: Array<(e: PopStateEvent) => void>;
 
 	beforeEach(() => {
 		popStateListeners = [];
-		replaceStateSpy = vi.fn();
-		pushStateSpy = vi.fn();
-		history.replaceState = replaceStateSpy;
-		history.pushState = pushStateSpy;
+		replaceStateSpy = vi
+			.spyOn(history, "replaceState")
+			.mockImplementation(() => {});
+		pushStateSpy = vi.spyOn(history, "pushState").mockImplementation(() => {});
 
 		vi.spyOn(window, "addEventListener").mockImplementation(
 			(event: string, handler: unknown) => {
@@ -33,8 +33,6 @@ describe("useBrowserBackGuard", () => {
 	});
 
 	afterEach(() => {
-		history.replaceState = originalReplaceState;
-		history.pushState = originalPushState;
 		vi.restoreAllMocks();
 	});
 
