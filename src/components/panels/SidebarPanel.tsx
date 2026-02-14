@@ -298,7 +298,7 @@ export function SidebarPanel({
 			</div>
 			<ContextMenu>
 				<ContextMenuTrigger asChild>
-					<ScrollArea className="flex-1">
+					<ScrollArea className="flex-1 min-h-0">
 						<div className="p-2">
 							{loading && (
 								<div className="px-2 py-4 text-sm text-muted-foreground">
