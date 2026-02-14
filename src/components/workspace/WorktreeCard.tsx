@@ -119,7 +119,7 @@ export function BranchCard({
 								openUrl(branch.pr_url as string);
 							}}
 						>
-							PR #{branch.pr_number}
+							#{branch.pr_number}
 							<ExternalLink className="size-2.5" />
 						</button>
 					)}
