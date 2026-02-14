@@ -53,3 +53,7 @@ debug/
 # Test coverage
 coverage/
 .nyc_output/
+
+# Playwright
+test-results/
+playwright-report/
