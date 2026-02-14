@@ -71,10 +71,8 @@ test.describe("Workspace Manager (Kanban)", () => {
 		await waitForApp(page);
 
 		// feat/todo カード内の "Open" ボタンをクリック
-		// カードを特定して内部の Open ボタンを押す
-		const todoCard = page.getByText("feat/todo").locator("..");
-		const openBtn = todoCard.locator("..").getByRole("button", { name: "Open" });
-		await openBtn.click();
+		const todoCard = page.getByTestId("branch-card-feat/todo");
+		await todoCard.getByRole("button", { name: "Open" }).click();
 
 		// create_worktree は非同期で呼ばれるので待機
 		await page.waitForFunction(
@@ -100,9 +98,8 @@ test.describe("Workspace Manager (Kanban)", () => {
 		await waitForApp(page);
 
 		// feat/wip カード内の "Open" ボタンをクリック
-		const wipCard = page.getByText("feat/wip").locator("..");
-		const openBtn = wipCard.locator("..").getByRole("button", { name: "Open" });
-		await openBtn.click();
+		const wipCard = page.getByTestId("branch-card-feat/wip");
+		await wipCard.getByRole("button", { name: "Open" }).click();
 
 		// WorkspaceTabBar にタブが追加されることを確認
 		await expect(page.getByText("feat/wip").first()).toBeVisible();

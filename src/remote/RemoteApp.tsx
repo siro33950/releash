@@ -18,6 +18,7 @@ import { RemoteSourceControl } from "./components/RemoteSourceControl";
 import { RemoteTerminalPanel } from "./components/RemoteTerminalPanel";
 import { StatusIndicator } from "./components/StatusIndicator";
 import { useAgentState } from "./hooks/useAgentState";
+import { useBrowserBackGuard } from "./hooks/useBrowserBackGuard";
 import { useMessageBus } from "./hooks/useMessageBus";
 import { usePtyManagement } from "./hooks/usePtyManagement";
 import { useRemoteContent } from "./hooks/useRemoteContent";
@@ -55,12 +56,14 @@ export function RemoteApp() {
 	const {
 		selectedPath,
 		selectedWorktree,
+		worktreeLoading,
 		activeTab,
 		diffBase,
 		setSelectedPath,
 		setSelectedWorktree,
 		setActiveTab,
 		setDiffBase,
+		selectWorktreeOptimistic,
 	} = useRemoteNavigation({ subscribe });
 
 	const {
@@ -114,6 +117,7 @@ export function RemoteApp() {
 
 	const handleSelectWorktree = useCallback(
 		(worktreePath: string) => {
+			selectWorktreeOptimistic(worktreePath);
 			selectWorktree(worktreePath);
 			setSelectedPath(null);
 			setBranchName(null);
@@ -122,6 +126,7 @@ export function RemoteApp() {
 			setTerminalMounted(true);
 		},
 		[
+			selectWorktreeOptimistic,
 			selectWorktree,
 			setSelectedPath,
 			setBranchName,
@@ -131,11 +136,16 @@ export function RemoteApp() {
 		],
 	);
 
-	const handleBackToWorktrees = useCallback(() => {
+	const handleBackToWorktreesAction = useCallback(() => {
 		setSelectedWorktree(null);
 		setSelectedPath(null);
 		setBranchName(null);
 	}, [setSelectedWorktree, setSelectedPath, setBranchName]);
+
+	const { navigateBack: handleBackToWorktrees } = useBrowserBackGuard({
+		selectedWorktree,
+		onBack: handleBackToWorktreesAction,
+	});
 
 	const handleConnect = useCallback((wsUrl: string, token: string) => {
 		setConnection({ url: wsUrl, token });
@@ -273,6 +283,11 @@ export function RemoteApp() {
 			) : (
 				<>
 					<main className="flex-1 overflow-hidden relative">
+						{worktreeLoading && (
+							<div className="absolute inset-0 flex items-center justify-center bg-neutral-950/80 z-10">
+								<div className="animate-spin size-6 border-2 border-neutral-500 border-t-blue-400 rounded-full" />
+							</div>
+						)}
 						<div
 							className="absolute inset-0"
 							style={{ display: activeTab === "changes" ? undefined : "none" }}
