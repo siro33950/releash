@@ -78,8 +78,15 @@ export function RemoteApp() {
 		resetPty,
 	} = usePtyManagement({ subscribe, send });
 
-	const { comments, branchName, setComments, setBranchName, addComment } =
-		useRemoteContent({ subscribe, send });
+	const {
+		comments,
+		branchName,
+		setComments,
+		setBranchName,
+		addComment,
+		deleteComment,
+		updateComment,
+	} = useRemoteContent({ subscribe, send });
 
 	const { stagedFiles, changedFiles } = useRemoteGitStatus({ subscribe });
 	const { content, loading, requestContent } = useRemoteFileContent({
@@ -381,6 +388,8 @@ export function RemoteApp() {
 							<RemoteCommentList
 								comments={comments}
 								onSendToTerminal={handleSendToTerminal}
+								onDeleteComment={deleteComment}
+								onUpdateComment={updateComment}
 							/>
 						</div>
 

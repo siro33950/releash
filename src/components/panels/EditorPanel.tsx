@@ -52,6 +52,8 @@ export interface EditorPanelProps {
 		content: string,
 		endLine?: number,
 	) => void;
+	onDeleteComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
 	rootPath?: string | null;
 	onStageHunk?: (repoPath: string, patch: string) => Promise<void>;
 	onUnstageHunk?: (repoPath: string, patch: string) => Promise<void>;
@@ -77,6 +79,8 @@ export function EditorPanel({
 	fontSize,
 	comments,
 	onAddComment,
+	onDeleteComment,
+	onUpdateComment,
 	rootPath,
 	onStageHunk,
 	onSendToTerminal,
@@ -606,6 +610,8 @@ export function EditorPanel({
 					<ReviewPanel
 						comments={comments ?? []}
 						onCommentClick={handleCommentClick}
+						onDeleteComment={onDeleteComment}
+						onUpdateComment={onUpdateComment}
 						onSendToTerminal={onSendToTerminal}
 						cwd={rootPath}
 						theme={theme}

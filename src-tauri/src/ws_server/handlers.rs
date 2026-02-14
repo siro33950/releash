@@ -550,3 +550,23 @@ pub(super) fn handle_add_comment(comment: &AddComment, state: &WsServerState) ->
     }
     None
 }
+
+pub(super) fn handle_delete_comment(
+    req: &DeleteComment,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    if let Some(app) = &state.app_handle {
+        let _ = app.emit("remote-comment-deleted", req);
+    }
+    None
+}
+
+pub(super) fn handle_update_comment(
+    req: &UpdateComment,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    if let Some(app) = &state.app_handle {
+        let _ = app.emit("remote-comment-updated", req);
+    }
+    None
+}

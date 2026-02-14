@@ -1,16 +1,42 @@
-import { MessageSquare, Send } from "lucide-react";
+import { Check, MessageSquare, Pencil, Send, Trash2, X } from "lucide-react";
+import { useCallback, useState } from "react";
 import type { LineComment } from "@/types/comment";
 
 interface RemoteCommentListProps {
 	comments: LineComment[];
 	onSendToTerminal?: (comments: LineComment[]) => void;
+	onDeleteComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
 }
 
 export function RemoteCommentList({
 	comments,
 	onSendToTerminal,
+	onDeleteComment,
+	onUpdateComment,
 }: RemoteCommentListProps) {
 	const unsentComments = comments.filter((c) => c.status === "unsent");
+	const [editingId, setEditingId] = useState<string | null>(null);
+	const [editContent, setEditContent] = useState("");
+
+	const startEditing = useCallback((comment: LineComment) => {
+		setEditingId(comment.id);
+		setEditContent(comment.content);
+	}, []);
+
+	const cancelEditing = useCallback(() => {
+		setEditingId(null);
+		setEditContent("");
+	}, []);
+
+	const submitEdit = useCallback(() => {
+		if (!editingId) return;
+		const trimmed = editContent.trim();
+		if (!trimmed) return;
+		onUpdateComment?.(editingId, trimmed);
+		setEditingId(null);
+		setEditContent("");
+	}, [editingId, editContent, onUpdateComment]);
 
 	if (comments.length === 0) {
 		return (
@@ -69,7 +95,7 @@ export function RemoteCommentList({
 								.map((comment) => (
 									<div
 										key={comment.id}
-										className="flex items-start gap-2 px-2 py-2 text-sm rounded hover:bg-neutral-800/50 transition-colors"
+										className="group flex items-start gap-2 px-2 py-2 text-sm rounded hover:bg-neutral-800/50 transition-colors"
 									>
 										<MessageSquare className="h-4 w-4 shrink-0 mt-0.5 text-neutral-500" />
 										<div className="min-w-0 flex-1">
@@ -88,10 +114,73 @@ export function RemoteCommentList({
 													{comment.status === "sent" ? "sent" : "unsent"}
 												</span>
 											</div>
-											<div className="text-neutral-200 mt-0.5 break-words">
-												{comment.content}
-											</div>
+											{editingId === comment.id ? (
+												<div className="mt-1">
+													<textarea
+														ref={(el) => el?.focus()}
+														value={editContent}
+														onChange={(e) => setEditContent(e.target.value)}
+														onKeyDown={(e) => {
+															if (e.key === "Enter" && !e.shiftKey) {
+																e.preventDefault();
+																submitEdit();
+															}
+															if (e.key === "Escape") {
+																cancelEditing();
+															}
+														}}
+														className="w-full px-2 py-1 text-sm bg-neutral-800 border border-neutral-700 rounded resize-none focus:outline-none focus:ring-1 focus:ring-blue-500 text-neutral-100"
+														rows={2}
+													/>
+													<div className="flex gap-2 mt-1">
+														<button
+															type="button"
+															onClick={submitEdit}
+															className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors"
+														>
+															<Check className="h-3 w-3" />
+															保存
+														</button>
+														<button
+															type="button"
+															onClick={cancelEditing}
+															className="flex items-center gap-1 px-2 py-1 text-xs bg-neutral-700 text-neutral-400 rounded hover:bg-neutral-600 transition-colors"
+														>
+															<X className="h-3 w-3" />
+															キャンセル
+														</button>
+													</div>
+												</div>
+											) : (
+												<div className="text-neutral-200 mt-0.5 break-words">
+													{comment.content}
+												</div>
+											)}
 										</div>
+										{editingId !== comment.id && (
+											<div className="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+												{onUpdateComment && (
+													<button
+														type="button"
+														onClick={() => startEditing(comment)}
+														className="p-1 rounded hover:bg-neutral-700 text-neutral-500 hover:text-neutral-300 transition-colors"
+														title="編集"
+													>
+														<Pencil className="h-3.5 w-3.5" />
+													</button>
+												)}
+												{onDeleteComment && (
+													<button
+														type="button"
+														onClick={() => onDeleteComment(comment.id)}
+														className="p-1 rounded hover:bg-red-500/20 text-neutral-500 hover:text-red-400 transition-colors"
+														title="削除"
+													>
+														<Trash2 className="h-3.5 w-3.5" />
+													</button>
+												)}
+											</div>
+										)}
 									</div>
 								))}
 						</div>

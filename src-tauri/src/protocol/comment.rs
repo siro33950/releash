@@ -22,6 +22,17 @@ pub struct CommentItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteComment {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateComment {
+    pub id: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentSync {
     pub comments: Vec<CommentItem>,
 }

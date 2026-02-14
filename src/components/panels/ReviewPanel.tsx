@@ -9,6 +9,8 @@ import { TerminalPanel } from "./TerminalPanel";
 export interface ReviewPanelProps {
 	comments: LineComment[];
 	onCommentClick?: (filePath: string, lineNumber: number) => void;
+	onDeleteComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
 	onSendToTerminal?: (comments: LineComment[]) => void;
 	cwd?: string | null;
 	theme?: Theme;
@@ -19,6 +21,8 @@ type ReviewTab = "terminal" | "comments";
 export function ReviewPanel({
 	comments,
 	onCommentClick,
+	onDeleteComment,
+	onUpdateComment,
 	onSendToTerminal,
 	cwd,
 	theme,
@@ -92,7 +96,12 @@ export function ReviewPanel({
 				className="flex-1 overflow-hidden"
 				style={{ display: activeTab === "comments" ? "block" : "none" }}
 			>
-				<CommentList comments={comments} onCommentClick={onCommentClick} />
+				<CommentList
+					comments={comments}
+					onCommentClick={onCommentClick}
+					onDeleteComment={onDeleteComment}
+					onUpdateComment={onUpdateComment}
+				/>
 			</div>
 		</div>
 	);

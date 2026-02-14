@@ -147,6 +147,15 @@ export interface CommentItem {
 	created_at: number;
 }
 
+export interface DeleteComment {
+	id: string;
+}
+
+export interface UpdateComment {
+	id: string;
+	content: string;
+}
+
 export interface CommentSync {
 	comments: CommentItem[];
 }
@@ -249,6 +258,8 @@ export type WsMessage =
 	| { type: "branch_info_response"; payload: BranchInfoResponse }
 	| { type: "git_status_request"; payload: Record<string, never> }
 	| { type: "add_comment"; payload: AddComment }
+	| { type: "delete_comment"; payload: DeleteComment }
+	| { type: "update_comment"; payload: UpdateComment }
 	| { type: "comments_sync"; payload: CommentSync }
 	| { type: "worktree_list_request"; payload: WorktreeListRequest }
 	| { type: "worktree_list_response"; payload: WorktreeListResponse }
