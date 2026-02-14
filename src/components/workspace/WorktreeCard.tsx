@@ -93,6 +93,7 @@ export function BranchCard({
 
 	return (
 		<div
+			data-testid={`branch-card-${branch.name}`}
 			className={`flex flex-col gap-3 rounded-lg border p-4 transition-colors ${
 				hasWorktree
 					? "border-border bg-card hover:border-primary/50"
