@@ -43,6 +43,13 @@ describe("useBrowserBackGuard", () => {
 		}
 	}
 
+	it("マウント時にscrollRestorationをmanualに設定する", () => {
+		const onBack = vi.fn();
+		renderHook(() => useBrowserBackGuard({ selectedWorktree: null, onBack }));
+
+		expect(history.scrollRestoration).toBe("manual");
+	});
+
 	it("マウント時にガードエントリをブラウザ履歴に追加する", () => {
 		const onBack = vi.fn();
 		renderHook(() => useBrowserBackGuard({ selectedWorktree: null, onBack }));

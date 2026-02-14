@@ -31,6 +31,7 @@ export function useBrowserBackGuard({
 
 	useEffect(() => {
 		const guardState = { _remoteGuard: true };
+		history.scrollRestoration = "manual";
 		history.replaceState(guardState, "");
 		history.pushState(guardState, "");
 
