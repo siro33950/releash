@@ -267,9 +267,6 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
         };
 
         let is_default = default_branch.as_deref() == Some(&name);
-        if is_default {
-            continue;
-        }
 
         let (worktree_path, dirty_count) = match wt_map.get(&name) {
             Some(path) => {
@@ -833,12 +830,13 @@ mod tests {
     }
 
     #[test]
-    fn test_list_branches_with_status_excludes_default() {
+    fn test_list_branches_with_status_includes_default() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
         let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
-        assert!(cards.is_empty());
+        assert_eq!(cards.len(), 1);
+        assert!(cards[0].is_default);
     }
 
     #[test]
@@ -851,11 +849,11 @@ mod tests {
         repo.branch("feature-b", &head, false).unwrap();
 
         let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
-        assert_eq!(cards.len(), 2);
+        assert_eq!(cards.len(), 3);
         let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"feature-a"));
         assert!(names.contains(&"feature-b"));
-        for card in &cards {
+        for card in cards.iter().filter(|c| !c.is_default) {
             assert!(card.worktree_path.is_none());
             assert_eq!(card.dirty_count, 0);
         }
