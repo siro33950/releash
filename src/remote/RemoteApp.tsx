@@ -56,12 +56,14 @@ export function RemoteApp() {
 	const {
 		selectedPath,
 		selectedWorktree,
+		worktreeLoading,
 		activeTab,
 		diffBase,
 		setSelectedPath,
 		setSelectedWorktree,
 		setActiveTab,
 		setDiffBase,
+		selectWorktreeOptimistic,
 	} = useRemoteNavigation({ subscribe });
 
 	const {
@@ -115,6 +117,7 @@ export function RemoteApp() {
 
 	const handleSelectWorktree = useCallback(
 		(worktreePath: string) => {
+			selectWorktreeOptimistic(worktreePath);
 			selectWorktree(worktreePath);
 			setSelectedPath(null);
 			setBranchName(null);
@@ -123,6 +126,7 @@ export function RemoteApp() {
 			setTerminalMounted(true);
 		},
 		[
+			selectWorktreeOptimistic,
 			selectWorktree,
 			setSelectedPath,
 			setBranchName,
@@ -279,6 +283,11 @@ export function RemoteApp() {
 			) : (
 				<>
 					<main className="flex-1 overflow-hidden relative">
+						{worktreeLoading && (
+							<div className="absolute inset-0 flex items-center justify-center bg-neutral-950/80 z-10">
+								<div className="animate-spin size-6 border-2 border-neutral-500 border-t-blue-400 rounded-full" />
+							</div>
+						)}
 						<div
 							className="absolute inset-0"
 							style={{ display: activeTab === "changes" ? undefined : "none" }}
