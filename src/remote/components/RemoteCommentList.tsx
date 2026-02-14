@@ -30,9 +30,10 @@ export function RemoteCommentList({
 	}, []);
 
 	const submitEdit = useCallback(() => {
-		if (editingId && editContent.trim()) {
-			onUpdateComment?.(editingId, editContent.trim());
-		}
+		if (!editingId) return;
+		const trimmed = editContent.trim();
+		if (!trimmed) return;
+		onUpdateComment?.(editingId, trimmed);
 		setEditingId(null);
 		setEditContent("");
 	}, [editingId, editContent, onUpdateComment]);

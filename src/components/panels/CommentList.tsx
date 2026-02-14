@@ -35,9 +35,10 @@ export function CommentList({
 	}, []);
 
 	const submitEdit = useCallback(() => {
-		if (editingId && editContent.trim()) {
-			onUpdateComment?.(editingId, editContent.trim());
-		}
+		if (!editingId) return;
+		const trimmed = editContent.trim();
+		if (!trimmed) return;
+		onUpdateComment?.(editingId, trimmed);
 		setEditingId(null);
 		setEditContent("");
 	}, [editingId, editContent, onUpdateComment]);
@@ -98,87 +99,81 @@ export function CommentList({
 											"hover:bg-muted text-left",
 										)}
 									>
-										<button
-											type="button"
-											className="flex items-start gap-1.5 min-w-0 flex-1"
-											onClick={() =>
-												onCommentClick?.(comment.filePath, comment.lineNumber)
-											}
-										>
-											<MessageSquare className="h-3 w-3 shrink-0 mt-0.5 text-muted-foreground" />
-											<div className="min-w-0 flex-1">
-												<div className="flex items-center gap-1">
-													<span className="text-muted-foreground font-mono">
-														L{comment.lineNumber}
-														{comment.endLine != null
-															? `-${comment.endLine}`
-															: ""}
-													</span>
-													<span
-														className={cn(
-															"text-[10px] px-1 rounded",
-															comment.status === "sent"
-																? "bg-status-added/20 text-status-added"
-																: "bg-muted text-muted-foreground",
-														)}
-													>
-														{comment.status === "sent" ? "sent" : "unsent"}
-													</span>
-												</div>
-												{editingId === comment.id ? (
-													<form
-														className="mt-0.5"
-														onClick={(e) => e.stopPropagation()}
-														onKeyDown={(e) => e.stopPropagation()}
-														onSubmit={(e) => {
-															e.preventDefault();
-															submitEdit();
-														}}
-													>
-														<textarea
-															ref={(el) => el?.focus()}
-															value={editContent}
-															onChange={(e) => setEditContent(e.target.value)}
-															onKeyDown={(e) => {
-																if (e.key === "Enter" && !e.shiftKey) {
-																	e.preventDefault();
-																	submitEdit();
-																}
-																if (e.key === "Escape") {
-																	cancelEditing();
-																}
-															}}
-															className="w-full px-1 py-0.5 text-[11px] bg-background border border-border rounded resize-none focus:outline-none focus:ring-1 focus:ring-primary"
-															rows={2}
-														/>
-														<div className="flex gap-1 mt-0.5">
-															<button
-																type="submit"
-																className="p-0.5 rounded hover:bg-status-added/20 text-status-added"
-																title="保存"
-															>
-																<Check className="h-3 w-3" />
-															</button>
-															<button
-																type="button"
-																onClick={(e) => {
-																	e.stopPropagation();
-																	cancelEditing();
-																}}
-																className="p-0.5 rounded hover:bg-muted text-muted-foreground"
-																title="キャンセル"
-															>
-																<X className="h-3 w-3" />
-															</button>
-														</div>
-													</form>
-												) : (
-													<div className="truncate text-foreground">
-														{comment.content}
-													</div>
-												)}
+										<MessageSquare className="h-3 w-3 shrink-0 mt-0.5 text-muted-foreground" />
+										<div className="min-w-0 flex-1">
+											<div className="flex items-center gap-1">
+												<span className="text-muted-foreground font-mono">
+													L{comment.lineNumber}
+													{comment.endLine != null ? `-${comment.endLine}` : ""}
+												</span>
+												<span
+													className={cn(
+														"text-[10px] px-1 rounded",
+														comment.status === "sent"
+															? "bg-status-added/20 text-status-added"
+															: "bg-muted text-muted-foreground",
+													)}
+												>
+													{comment.status === "sent" ? "sent" : "unsent"}
+												</span>
 											</div>
-										</button>
+											{editingId === comment.id ? (
+												<form
+													className="mt-0.5"
+													onSubmit={(e) => {
+														e.preventDefault();
+														submitEdit();
+													}}
+												>
+													<textarea
+														ref={(el) => el?.focus()}
+														value={editContent}
+														onChange={(e) => setEditContent(e.target.value)}
+														onKeyDown={(e) => {
+															if (e.key === "Enter" && !e.shiftKey) {
+																e.preventDefault();
+																submitEdit();
+															}
+															if (e.key === "Escape") {
+																cancelEditing();
+															}
+														}}
+														className="w-full px-1 py-0.5 text-[11px] bg-background border border-border rounded resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+														rows={2}
+													/>
+													<div className="flex gap-1 mt-0.5">
+														<button
+															type="submit"
+															className="p-0.5 rounded hover:bg-status-added/20 text-status-added"
+															title="保存"
+														>
+															<Check className="h-3 w-3" />
+														</button>
+														<button
+															type="button"
+															onClick={cancelEditing}
+															className="p-0.5 rounded hover:bg-muted text-muted-foreground"
+															title="キャンセル"
+														>
+															<X className="h-3 w-3" />
+														</button>
+													</div>
+												</form>
+											) : (
+												<button
+													type="button"
+													className="block truncate text-foreground"
+													onClick={() =>
+														onCommentClick?.(
+															comment.filePath,
+															comment.lineNumber,
+														)
+													}
+												>
+													{comment.content}
+												</button>
+											)}
+										</div>
 										{editingId !== comment.id && (
 											<div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
 												{onUpdateComment && (
