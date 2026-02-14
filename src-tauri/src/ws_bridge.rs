@@ -58,6 +58,13 @@ impl WsBroadcaster {
         }
     }
 
+    pub fn send_without_buffer(&self, msg: WsMessage) {
+        let guard = self.sender.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(sender) = guard.as_ref() {
+            let _ = sender.send(msg);
+        }
+    }
+
     pub fn set_sender(&self, sender: Option<WsSender>) {
         let mut guard = self.sender.lock().unwrap_or_else(|e| e.into_inner());
         *guard = sender;
@@ -134,5 +141,34 @@ mod tests {
         }));
         assert_eq!(broadcaster.get_pty_output_buffer(1), "aaa");
         assert_eq!(broadcaster.get_pty_output_buffer(2), "bbb");
+    }
+
+    #[test]
+    fn send_without_buffer_does_not_affect_buffer() {
+        let broadcaster = WsBroadcaster::default();
+        let (tx, mut rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
+
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 1,
+            data: "original".to_string(),
+        }));
+        assert_eq!(broadcaster.get_pty_output_buffer(1), "original");
+
+        broadcaster.send_without_buffer(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 1,
+            data: "original".to_string(),
+        }));
+        assert_eq!(
+            broadcaster.get_pty_output_buffer(1),
+            "original",
+            "send_without_buffer must not append to buffer"
+        );
+
+        let mut received = vec![];
+        while let Ok(msg) = rx.try_recv() {
+            received.push(msg);
+        }
+        assert_eq!(received.len(), 2, "both messages should be sent to channel");
     }
 }

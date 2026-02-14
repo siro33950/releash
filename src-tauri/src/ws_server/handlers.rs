@@ -327,14 +327,15 @@ pub(super) fn handle_pty_output_request(
         let sessions = pm.list_pty_sessions();
         if sessions.iter().any(|s| s.pty_id == req.pty_id) {
             let buffered = state.broadcaster.get_pty_output_buffer(req.pty_id);
-            if buffered.is_empty() {
-                None
-            } else {
-                Some(WsMessage::PtyOutput(PtyOutputMsg {
-                    pty_id: req.pty_id,
-                    data: buffered,
-                }))
+            if !buffered.is_empty() {
+                state
+                    .broadcaster
+                    .send_without_buffer(WsMessage::PtyOutput(PtyOutputMsg {
+                        pty_id: req.pty_id,
+                        data: buffered,
+                    }));
             }
+            None
         } else {
             Some(WsMessage::Error(ErrorMsg {
                 code: "PTY_NOT_FOUND".to_string(),
