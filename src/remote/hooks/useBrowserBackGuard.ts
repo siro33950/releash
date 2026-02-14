@@ -31,6 +31,7 @@ export function useBrowserBackGuard({
 
 	useEffect(() => {
 		const guardState = { _remoteGuard: true };
+		const prevScrollRestoration = history.scrollRestoration;
 		history.scrollRestoration = "manual";
 		history.replaceState(guardState, "");
 		history.pushState(guardState, "");
@@ -43,7 +44,10 @@ export function useBrowserBackGuard({
 		};
 
 		window.addEventListener("popstate", handlePopState);
-		return () => window.removeEventListener("popstate", handlePopState);
+		return () => {
+			window.removeEventListener("popstate", handlePopState);
+			history.scrollRestoration = prevScrollRestoration;
+		};
 	}, []);
 
 	useEffect(() => {
