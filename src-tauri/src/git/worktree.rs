@@ -2,7 +2,7 @@ use super::branch::detect_default_branch;
 use super::error::GitError;
 use super::types::{BranchCard, WorktreeEntry};
 use git2::{
-    BranchType, ErrorCode, Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions,
+    BranchType, ErrorCode, Oid, Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions,
 };
 use std::path::{Path, PathBuf};
 
@@ -177,6 +177,24 @@ pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, GitError>
     Ok(entries)
 }
 
+fn is_on_first_parent_line(repo: &Repository, ancestor_oid: Oid, descendant_oid: Oid) -> bool {
+    let mut current = descendant_oid;
+    const MAX_DEPTH: usize = 10_000;
+    for _ in 0..MAX_DEPTH {
+        if current == ancestor_oid {
+            return true;
+        }
+        match repo.find_commit(current) {
+            Ok(commit) if commit.parent_count() > 0 => match commit.parent_id(0) {
+                Ok(parent_id) => current = parent_id,
+                Err(_) => return false,
+            },
+            _ => return false,
+        }
+    }
+    false
+}
+
 pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, GitError> {
     let repo = Repository::open(&repo_path)?;
     let default_branch = detect_default_branch(&repo);
@@ -270,7 +288,10 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
                     return Some(false);
                 }
                 let merge_base = repo.merge_base(branch_oid, t_oid).ok()?;
-                Some(merge_base == branch_oid)
+                if merge_base != branch_oid {
+                    return Some(false);
+                }
+                Some(!is_on_first_parent_line(&repo, branch_oid, t_oid))
             })
             .unwrap_or(false);
 
@@ -855,18 +876,66 @@ mod tests {
     }
 
     #[test]
-    fn test_list_branches_merged_branch() {
+    fn test_list_branches_behind_not_merged() {
         let (dir, repo) = create_test_repo();
         create_initial_commit(&repo);
 
         let head = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("feature-merged", &head, false).unwrap();
+        repo.branch("feature-behind", &head, false).unwrap();
 
         add_and_commit(&repo, "after.txt", "after", "commit after branch");
 
         let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let card = cards.iter().find(|c| c.name == "feature-behind").unwrap();
+        assert!(
+            !card.is_merged,
+            "branch with no unique commits should not be merged when base advances"
+        );
+    }
+
+    #[test]
+    fn test_list_branches_merged_via_merge_commit() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let branch_ref = repo.branch("feature-merged", &head, false).unwrap();
+        let branch_ref = branch_ref.into_reference();
+
+        repo.set_head(branch_ref.name().unwrap()).unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
+        add_and_commit(&repo, "feat.txt", "feat", "feature commit");
+        let feature_commit = repo.head().unwrap().peel_to_commit().unwrap();
+
+        let default_branch = detect_default_branch(&repo).unwrap();
+        repo.set_head(&format!("refs/heads/{}", default_branch))
+            .unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
+
+        add_and_commit(&repo, "main.txt", "main", "main commit");
+        let main_commit = repo.head().unwrap().peel_to_commit().unwrap();
+
+        let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "Merge feature-merged",
+            &tree,
+            &[&main_commit, &feature_commit],
+        )
+        .unwrap();
+
+        let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
         let card = cards.iter().find(|c| c.name == "feature-merged").unwrap();
-        assert!(card.is_merged);
+        assert!(
+            card.is_merged,
+            "branch merged via merge commit should be detected as merged"
+        );
     }
 
     #[test]
@@ -920,10 +989,34 @@ mod tests {
             .unwrap();
         add_and_commit(&repo, "dev.txt", "dev", "develop commit");
 
-        let feature_base = head;
-        repo.branch("feature-x", &feature_base, false).unwrap();
+        let develop_head = repo.head().unwrap().peel_to_commit().unwrap();
+        let feature_ref = repo.branch("feature-x", &develop_head, false).unwrap();
+        let feature_ref = feature_ref.into_reference();
 
+        repo.set_head(feature_ref.name().unwrap()).unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
+        add_and_commit(&repo, "feat.txt", "feat", "feature commit");
+        let feature_commit = repo.head().unwrap().peel_to_commit().unwrap();
+
+        repo.set_head("refs/heads/develop").unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
         add_and_commit(&repo, "dev2.txt", "dev2", "develop commit 2");
+        let develop_commit = repo.head().unwrap().peel_to_commit().unwrap();
+
+        let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "Merge feature-x into develop",
+            &tree,
+            &[&develop_commit, &feature_commit],
+        )
+        .unwrap();
 
         let default_branch = detect_default_branch(&repo).unwrap();
         repo.set_head(&format!("refs/heads/{}", default_branch))
