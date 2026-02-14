@@ -90,6 +90,7 @@ export function BranchCard({
 	onDelete,
 }: BranchCardProps) {
 	const hasWorktree = branch.worktree_path != null;
+	const hasStatusBadges = branch.is_merged || branch.agent_state || hasWorktree;
 
 	return (
 		<div
@@ -100,52 +101,56 @@ export function BranchCard({
 					: "border-border/50 bg-card/50 hover:border-border"
 			}`}
 		>
-			<div className="flex items-center gap-2 min-w-0">
-				<GitBranch
-					className={`size-4 shrink-0 ${hasWorktree ? "text-muted-foreground" : "text-muted-foreground/50"}`}
-				/>
-				<span
-					className={`text-sm font-medium truncate ${!hasWorktree ? "text-muted-foreground" : ""}`}
-				>
-					{branch.name}
-				</span>
-				{branch.has_pr && branch.pr_url && branch.pr_number != null && (
-					<button
-						type="button"
-						className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-500 font-medium hover:bg-purple-500/25 transition-colors"
-						onClick={(e) => {
-							e.stopPropagation();
-							openUrl(branch.pr_url as string);
-						}}
-					>
-						PR #{branch.pr_number}
-						<ExternalLink className="size-2.5" />
-					</button>
-				)}
-				{branch.is_merged && (
-					<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
-						merged
-					</span>
-				)}
-				{branch.agent_state && (
-					<AgentStateBadge
-						state={branch.agent_state}
-						timestamp={branch.agent_state_timestamp}
+			<div className="flex flex-col gap-1">
+				<div className="flex items-center gap-2 min-w-0">
+					<GitBranch
+						className={`size-4 shrink-0 ${hasWorktree ? "text-muted-foreground" : "text-muted-foreground/50"}`}
 					/>
-				)}
-			</div>
-
-			{hasWorktree && (
-				<div className="text-xs">
-					{branch.dirty_count > 0 ? (
-						<span className="text-yellow-500">
-							{branch.dirty_count} files changed
-						</span>
-					) : (
-						<span className="text-green-500">clean</span>
+					<span
+						className={`text-sm font-medium truncate ${!hasWorktree ? "text-muted-foreground" : ""}`}
+					>
+						{branch.name}
+					</span>
+					{branch.has_pr && branch.pr_url && branch.pr_number != null && (
+						<button
+							type="button"
+							className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-500 font-medium hover:bg-purple-500/25 transition-colors"
+							onClick={(e) => {
+								e.stopPropagation();
+								openUrl(branch.pr_url as string);
+							}}
+						>
+							#{branch.pr_number}
+							<ExternalLink className="size-2.5" />
+						</button>
 					)}
 				</div>
-			)}
+				{hasStatusBadges && (
+					<div className="flex items-center gap-1.5 ml-6 flex-wrap">
+						{branch.is_merged && (
+							<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
+								merged
+							</span>
+						)}
+						{branch.agent_state && (
+							<AgentStateBadge
+								state={branch.agent_state}
+								timestamp={branch.agent_state_timestamp}
+							/>
+						)}
+						{hasWorktree &&
+							(branch.dirty_count > 0 ? (
+								<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-500 font-medium">
+									{branch.dirty_count} files changed
+								</span>
+							) : (
+								<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
+									clean
+								</span>
+							))}
+					</div>
+				)}
+			</div>
 
 			<div className="flex items-center gap-2 mt-auto">
 				<Button

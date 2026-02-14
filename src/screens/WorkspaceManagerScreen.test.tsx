@@ -262,7 +262,7 @@ describe("WorkspaceManagerScreen", () => {
 		it("PR enrichment 後にブランチが Review 列に表示", async () => {
 			renderScreen();
 			await waitFor(() => {
-				expect(screen.getByText("PR #42")).toBeInTheDocument();
+				expect(screen.getByText("#42")).toBeInTheDocument();
 			});
 			expect(screen.getByText("Review")).toBeInTheDocument();
 		});
@@ -270,9 +270,9 @@ describe("WorkspaceManagerScreen", () => {
 		it("PRバッジが表示される", async () => {
 			renderScreen();
 			await waitFor(() => {
-				expect(screen.getByText("PR #42")).toBeInTheDocument();
+				expect(screen.getByText("#42")).toBeInTheDocument();
 			});
-			const prBadge = screen.getByText("PR #42");
+			const prBadge = screen.getByText("#42");
 			expect(prBadge.closest("button")).toBeInTheDocument();
 		});
 

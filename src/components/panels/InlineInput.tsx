@@ -22,15 +22,20 @@ export function InlineInput({
 	const committedRef = useRef(false);
 
 	useEffect(() => {
-		inputRef.current?.focus();
-		if (defaultValue) {
-			const dotIndex = defaultValue.lastIndexOf(".");
-			if (dotIndex > 0) {
-				inputRef.current?.setSelectionRange(0, dotIndex);
-			} else {
-				inputRef.current?.select();
+		// Radix UIのContextMenuが閉じる際にフォーカスをトリガー要素に戻すため、
+		// その復元処理の後にフォーカスを当てる必要がある
+		const timerId = setTimeout(() => {
+			inputRef.current?.focus();
+			if (defaultValue) {
+				const dotIndex = defaultValue.lastIndexOf(".");
+				if (dotIndex > 0) {
+					inputRef.current?.setSelectionRange(0, dotIndex);
+				} else {
+					inputRef.current?.select();
+				}
 			}
-		}
+		}, 0);
+		return () => clearTimeout(timerId);
 	}, [defaultValue]);
 
 	const handleCommit = () => {
