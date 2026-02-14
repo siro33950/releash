@@ -90,7 +90,8 @@ export function BranchCard({
 	onDelete,
 }: BranchCardProps) {
 	const hasWorktree = branch.worktree_path != null;
-	const hasStatusBadges = branch.is_merged || branch.agent_state || hasWorktree;
+	const hasStatusBadges =
+		branch.is_default || branch.is_merged || branch.agent_state || hasWorktree;
 
 	return (
 		<div
@@ -127,6 +128,11 @@ export function BranchCard({
 				</div>
 				{hasStatusBadges && (
 					<div className="flex items-center gap-1.5 ml-6 flex-wrap">
+						{branch.is_default && (
+							<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
+								base
+							</span>
+						)}
 						{branch.is_merged && (
 							<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
 								merged
@@ -161,7 +167,7 @@ export function BranchCard({
 				>
 					{opening ? <Loader2 className="size-4 animate-spin" /> : "Open"}
 				</Button>
-				{(hasWorktree || branch.is_merged) && (
+				{!branch.is_default && (hasWorktree || branch.is_merged) && (
 					<Button
 						size="icon-sm"
 						variant="ghost"
