@@ -263,6 +263,65 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
     serde_json::to_string_pretty(&hooks_json).map_err(|e| format!("JSON生成失敗: {e}"))
 }
 
+fn is_releash_hook_entry(entry: &serde_json::Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|cmd| cmd.contains("/hooks/agent"))
+            })
+        })
+}
+
+fn merge_hooks(
+    existing: &mut serde_json::Value,
+    new_config: &serde_json::Value,
+) -> Result<(), String> {
+    if let Some(serde_json::Value::Object(new_hooks)) = new_config.get("hooks") {
+        let existing_hooks = existing
+            .as_object_mut()
+            .ok_or("settings.jsonがオブジェクトではありません")?
+            .entry("hooks")
+            .or_insert_with(|| serde_json::json!({}));
+        if let serde_json::Value::Object(map) = existing_hooks {
+            for (key, new_entries) in new_hooks {
+                let existing_entries = map
+                    .entry(key.clone())
+                    .or_insert_with(|| serde_json::json!([]));
+
+                if let (Some(existing_arr), Some(new_arr)) =
+                    (existing_entries.as_array_mut(), new_entries.as_array())
+                {
+                    for new_entry in new_arr {
+                        let new_matcher = new_entry
+                            .get("matcher")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("");
+
+                        let existing_idx = existing_arr.iter().position(|e| {
+                            let matcher_matches =
+                                e.get("matcher").and_then(|m| m.as_str()).unwrap_or("")
+                                    == new_matcher;
+                            matcher_matches && is_releash_hook_entry(e)
+                        });
+
+                        match existing_idx {
+                            Some(idx) => existing_arr[idx] = new_entry.clone(),
+                            None => existing_arr.push(new_entry.clone()),
+                        }
+                    }
+                }
+            }
+        } else {
+            *existing_hooks = serde_json::Value::Object(new_hooks.clone());
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn apply_hooks_config(config_json: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
@@ -280,20 +339,7 @@ pub async fn apply_hooks_config(config_json: String) -> Result<(), String> {
         let new_config: serde_json::Value =
             serde_json::from_str(&config_json).map_err(|e| format!("設定JSONパース失敗: {e}"))?;
 
-        if let Some(serde_json::Value::Object(new_hooks)) = new_config.get("hooks") {
-            let existing_hooks = existing
-                .as_object_mut()
-                .ok_or("settings.jsonがオブジェクトではありません")?
-                .entry("hooks")
-                .or_insert_with(|| serde_json::json!({}));
-            if let serde_json::Value::Object(map) = existing_hooks {
-                for (key, value) in new_hooks {
-                    map.insert(key.clone(), value.clone());
-                }
-            } else {
-                *existing_hooks = serde_json::Value::Object(new_hooks.clone());
-            }
-        }
+        merge_hooks(&mut existing, &new_config)?;
 
         if let Some(parent) = settings_path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("ディレクトリ作成失敗: {e}"))?;
@@ -477,5 +523,144 @@ token = ""
 
         assert!(path.exists());
         assert!(!path.with_extension("toml.tmp").exists());
+    }
+
+    fn releash_hook_entry(matcher: &str, port: u16) -> serde_json::Value {
+        serde_json::json!({
+            "matcher": matcher,
+            "hooks": [{
+                "type": "command",
+                "command": format!(
+                    "curl -s -X POST http://localhost:{port}/hooks/agent -H 'Content-Type: application/json' -d '{{}}' || true"
+                )
+            }]
+        })
+    }
+
+    fn user_hook_entry(matcher: &str, command: &str) -> serde_json::Value {
+        serde_json::json!({
+            "matcher": matcher,
+            "hooks": [{
+                "type": "command",
+                "command": command
+            }]
+        })
+    }
+
+    #[test]
+    fn is_releash_hook_entry_identifies_releash_hooks() {
+        let releash = releash_hook_entry("", 19700);
+        let user = user_hook_entry("", "echo hello");
+
+        assert!(is_releash_hook_entry(&releash));
+        assert!(!is_releash_hook_entry(&user));
+    }
+
+    #[test]
+    fn merge_hooks_preserves_user_hooks() {
+        let user_entry =
+            user_hook_entry("permission_prompt", "notify-send 'Claude needs permission'");
+        let mut existing = serde_json::json!({
+            "hooks": {
+                "Notification": [user_entry.clone()]
+            }
+        });
+
+        let new_config = serde_json::json!({
+            "hooks": {
+                "Notification": [
+                    releash_hook_entry("permission_prompt", 19700),
+                    releash_hook_entry("elicitation_dialog", 19700),
+                ]
+            }
+        });
+
+        merge_hooks(&mut existing, &new_config).unwrap();
+
+        let entries = existing["hooks"]["Notification"].as_array().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0], user_entry);
+        assert!(is_releash_hook_entry(&entries[1]));
+        assert!(is_releash_hook_entry(&entries[2]));
+    }
+
+    #[test]
+    fn merge_hooks_updates_existing_releash_hooks() {
+        let user_entry = user_hook_entry("", "echo hello");
+        let old_releash = releash_hook_entry("", 19700);
+        let mut existing = serde_json::json!({
+            "hooks": {
+                "Stop": [user_entry.clone(), old_releash]
+            }
+        });
+
+        let new_releash = releash_hook_entry("", 29700);
+        let new_config = serde_json::json!({
+            "hooks": {
+                "Stop": [new_releash.clone()]
+            }
+        });
+
+        merge_hooks(&mut existing, &new_config).unwrap();
+
+        let entries = existing["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], user_entry);
+        assert_eq!(entries[1], new_releash);
+    }
+
+    #[test]
+    fn merge_hooks_adds_new_event_key() {
+        let mut existing = serde_json::json!({
+            "hooks": {
+                "Notification": [user_hook_entry("", "echo notify")]
+            }
+        });
+
+        let new_config = serde_json::json!({
+            "hooks": {
+                "SessionStart": [releash_hook_entry("", 19700)]
+            }
+        });
+
+        merge_hooks(&mut existing, &new_config).unwrap();
+
+        assert!(existing["hooks"]["Notification"].as_array().unwrap().len() == 1);
+        assert!(existing["hooks"]["SessionStart"].as_array().unwrap().len() == 1);
+    }
+
+    #[test]
+    fn merge_hooks_creates_hooks_key_when_absent() {
+        let mut existing = serde_json::json!({});
+
+        let new_config = serde_json::json!({
+            "hooks": {
+                "Stop": [releash_hook_entry("", 19700)]
+            }
+        });
+
+        merge_hooks(&mut existing, &new_config).unwrap();
+
+        let entries = existing["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(is_releash_hook_entry(&entries[0]));
+    }
+
+    #[test]
+    fn merge_hooks_preserves_non_hooks_settings() {
+        let mut existing = serde_json::json!({
+            "permissions": { "allow": ["Read"] },
+            "hooks": {}
+        });
+
+        let new_config = serde_json::json!({
+            "hooks": {
+                "Stop": [releash_hook_entry("", 19700)]
+            }
+        });
+
+        merge_hooks(&mut existing, &new_config).unwrap();
+
+        assert_eq!(existing["permissions"]["allow"][0], "Read");
     }
 }

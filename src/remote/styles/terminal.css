@@ -1,5 +1,6 @@
 .xterm {
   touch-action: none;
+  width: 100%;
 }
 
 .xterm .xterm-viewport {
@@ -27,4 +28,10 @@
   background: rgba(255, 255, 255, 0.5);
   border: 3px solid transparent;
   background-clip: padding-box;
+}
+
+@media (max-width: 768px) {
+  .xterm .xterm-scrollable-element > .scrollbar {
+    display: none !important;
+  }
 }

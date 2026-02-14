@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Subscribe } from "./useMessageBus";
 import type { DiffBase } from "./useRemoteFileContent";
 
@@ -13,11 +13,22 @@ export function useRemoteNavigation({ subscribe }: UseRemoteNavigationOptions) {
 	const [selectedWorktree, setSelectedWorktree] = useState<string | null>(null);
 	const [activeTab, setActiveTab] = useState<Tab>("terminal");
 	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
+	const [worktreeLoading, setWorktreeLoading] = useState(false);
+
+	const selectWorktreeOptimistic = useCallback((path: string) => {
+		setSelectedWorktree(path);
+		setWorktreeLoading(true);
+	}, []);
 
 	useEffect(() => {
 		return subscribe((msg) => {
-			if (msg.type === "worktree_select_response" && msg.payload.success) {
-				setSelectedWorktree(msg.payload.path);
+			if (msg.type === "worktree_select_response") {
+				if (msg.payload.success) {
+					setWorktreeLoading(false);
+				} else {
+					setSelectedWorktree(null);
+					setWorktreeLoading(false);
+				}
 			}
 		});
 	}, [subscribe]);
@@ -25,11 +36,13 @@ export function useRemoteNavigation({ subscribe }: UseRemoteNavigationOptions) {
 	return {
 		selectedPath,
 		selectedWorktree,
+		worktreeLoading,
 		activeTab,
 		diffBase,
 		setSelectedPath,
 		setSelectedWorktree,
 		setActiveTab,
 		setDiffBase,
+		selectWorktreeOptimistic,
 	};
 }
