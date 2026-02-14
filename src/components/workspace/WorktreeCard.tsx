@@ -145,7 +145,7 @@ export function BranchCard({
 			</div>
 
 			{hasWorktree && (
-				<div className="text-xs">
+				<div className="text-xs ml-6">
 					{branch.dirty_count > 0 ? (
 						<span className="text-yellow-500">
 							{branch.dirty_count} files changed
