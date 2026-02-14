@@ -256,6 +256,7 @@ impl PtyManager {
                             }
                         }
                     }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }
             }
