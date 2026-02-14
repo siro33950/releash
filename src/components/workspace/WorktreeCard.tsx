@@ -90,10 +90,7 @@ export function BranchCard({
 	onDelete,
 }: BranchCardProps) {
 	const hasWorktree = branch.worktree_path != null;
-	const hasBadges =
-		(branch.has_pr && branch.pr_url && branch.pr_number != null) ||
-		branch.is_merged ||
-		branch.agent_state;
+	const hasStatusBadges = branch.is_merged || branch.agent_state || hasWorktree;
 
 	return (
 		<div
@@ -113,22 +110,22 @@ export function BranchCard({
 					>
 						{branch.name}
 					</span>
+					{branch.has_pr && branch.pr_url && branch.pr_number != null && (
+						<button
+							type="button"
+							className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-500 font-medium hover:bg-purple-500/25 transition-colors"
+							onClick={(e) => {
+								e.stopPropagation();
+								openUrl(branch.pr_url as string);
+							}}
+						>
+							PR #{branch.pr_number}
+							<ExternalLink className="size-2.5" />
+						</button>
+					)}
 				</div>
-				{(hasBadges || hasWorktree) && (
+				{hasStatusBadges && (
 					<div className="flex items-center gap-1.5 ml-6 flex-wrap">
-						{branch.has_pr && branch.pr_url && branch.pr_number != null && (
-							<button
-								type="button"
-								className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-500 font-medium hover:bg-purple-500/25 transition-colors"
-								onClick={(e) => {
-									e.stopPropagation();
-									openUrl(branch.pr_url as string);
-								}}
-							>
-								PR #{branch.pr_number}
-								<ExternalLink className="size-2.5" />
-							</button>
-						)}
 						{branch.is_merged && (
 							<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
 								merged
