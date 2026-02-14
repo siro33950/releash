@@ -302,11 +302,9 @@ fn merge_hooks(
                             .unwrap_or("");
 
                         let existing_idx = existing_arr.iter().position(|e| {
-                            let matcher_matches = e
-                                .get("matcher")
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("")
-                                == new_matcher;
+                            let matcher_matches =
+                                e.get("matcher").and_then(|m| m.as_str()).unwrap_or("")
+                                    == new_matcher;
                             matcher_matches && is_releash_hook_entry(e)
                         });
 
@@ -560,7 +558,8 @@ token = ""
 
     #[test]
     fn merge_hooks_preserves_user_hooks() {
-        let user_entry = user_hook_entry("permission_prompt", "notify-send 'Claude needs permission'");
+        let user_entry =
+            user_hook_entry("permission_prompt", "notify-send 'Claude needs permission'");
         let mut existing = serde_json::json!({
             "hooks": {
                 "Notification": [user_entry.clone()]
