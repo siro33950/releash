@@ -114,7 +114,7 @@ export function BranchCard({
 						{branch.name}
 					</span>
 				</div>
-				{hasBadges && (
+				{(hasBadges || hasWorktree) && (
 					<div className="flex items-center gap-1.5 ml-6 flex-wrap">
 						{branch.has_pr && branch.pr_url && branch.pr_number != null && (
 							<button
@@ -140,21 +140,19 @@ export function BranchCard({
 								timestamp={branch.agent_state_timestamp}
 							/>
 						)}
+						{hasWorktree &&
+							(branch.dirty_count > 0 ? (
+								<span className="shrink-0 text-[10px] text-yellow-500">
+									{branch.dirty_count} files changed
+								</span>
+							) : (
+								<span className="shrink-0 text-[10px] text-green-500">
+									clean
+								</span>
+							))}
 					</div>
 				)}
 			</div>
-
-			{hasWorktree && (
-				<div className="text-xs ml-6">
-					{branch.dirty_count > 0 ? (
-						<span className="text-yellow-500">
-							{branch.dirty_count} files changed
-						</span>
-					) : (
-						<span className="text-green-500">clean</span>
-					)}
-				</div>
-			)}
 
 			<div className="flex items-center gap-2 mt-auto">
 				<Button
