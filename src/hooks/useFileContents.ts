@@ -134,8 +134,11 @@ export function useFileContents(): UseFileContentsReturn {
 				if (!savePath) return;
 
 				await writeTextFile(savePath, file.content);
-				setFiles((prev) =>
-					prev.map((f) =>
+				setFiles((prev) => {
+					const withoutDuplicate = prev.filter(
+						(f) => f.path !== savePath || f.path === path,
+					);
+					return withoutDuplicate.map((f) =>
 						f.path === path
 							? {
 									...f,
@@ -147,8 +150,8 @@ export function useFileContents(): UseFileContentsReturn {
 									isUntitled: false,
 								}
 							: f,
-					),
-				);
+					);
+				});
 			} else {
 				await writeTextFile(path, file.content);
 				setFiles((prev) =>

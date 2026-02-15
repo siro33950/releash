@@ -516,16 +516,25 @@ export function WorktreeView({
 
 	const handleRename = useCallback(
 		(oldPath: string, newPath: string) => {
+			const file = getFileContent(oldPath);
 			updateFilePath(oldPath, newPath);
+			editorLayout.removeTab(oldPath);
+			const newName = newPath.split(/[/\\]/).pop() ?? newPath;
+			editorLayout.addTab(newPath, newName, file?.isDirty ?? false);
 		},
-		[updateFilePath],
+		[updateFilePath, getFileContent, editorLayout],
 	);
 
 	const handleDelete = useCallback(
 		(path: string) => {
+			for (const file of files) {
+				if (file.path === path || file.path.startsWith(`${path}/`)) {
+					editorLayout.removeTab(file.path);
+				}
+			}
 			closeFilesByPrefix(path);
 		},
-		[closeFilesByPrefix],
+		[files, closeFilesByPrefix, editorLayout],
 	);
 
 	const handleSendToTerminal = useCallback(
