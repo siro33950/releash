@@ -4,9 +4,14 @@ mod git_host;
 mod hook_listener;
 mod menu;
 mod protocol;
+#[cfg(feature = "pty")]
+mod pty;
+#[cfg(not(feature = "pty"))]
+#[path = "pty_stub.rs"]
 mod pty;
 mod qr_code;
 mod search;
+#[cfg(feature = "pty")]
 mod shell_integration;
 mod tls;
 mod vpn_detect;
