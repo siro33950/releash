@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "releash",
+  "productName": "Releash",
   "version": "0.0.0",
   "identifier": "com.releash.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "releash",
+        "title": "Releash",
         "width": 800,
         "height": 600
       }
@@ -45,6 +45,11 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "files": {
+        "Resources/Assets.car": "icons/Assets.car"
+      }
+    }
   }
 }
