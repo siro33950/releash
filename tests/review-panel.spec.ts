@@ -41,7 +41,7 @@ test.describe("Review Panel", () => {
 		await page.getByRole("button", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		await expect(
-			page.getByRole("tab", { name: "README.md" }),
+			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
 		// ReviewPanel の Terminal / Comments タブが表示される
@@ -63,7 +63,7 @@ test.describe("Review Panel", () => {
 		await page.getByRole("button", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		await expect(
-			page.getByRole("tab", { name: "README.md" }),
+			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
 		// Comments タブをクリック
@@ -82,7 +82,7 @@ test.describe("Review Panel", () => {
 		await page.getByRole("button", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		await expect(
-			page.getByRole("tab", { name: "README.md" }),
+			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
 		// Terminal タブが aria-selected="true" であることを確認

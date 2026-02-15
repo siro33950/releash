@@ -9,6 +9,7 @@ import {
 	useCallback,
 	useEffect,
 	useMemo,
+	useReducer,
 	useRef,
 	useState,
 } from "react";
@@ -129,6 +130,7 @@ export function WorktreeView({
 	const editorLayout = useEditorLayout(handleTabClose);
 	removeTabRef.current = editorLayout.removeTab;
 
+	const [, forceRender] = useReducer((x: number) => x + 1, 0);
 	const activeTabPath = editorLayout.getActiveTabPath();
 	const activeTab = activeTabPath ? getFileContent(activeTabPath) : null;
 
@@ -733,6 +735,7 @@ export function WorktreeView({
 								factory={factory}
 								onAction={editorLayout.onAction}
 								onRenderTab={onRenderTab}
+								onModelChange={forceRender}
 							/>
 						</div>
 					</EditorContext.Provider>
