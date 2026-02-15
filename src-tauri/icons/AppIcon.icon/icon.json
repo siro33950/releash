@@ -6,9 +6,15 @@
     {
       "layers" : [
         {
-          "hidden" : false,
           "image-name" : "icon.png",
-          "name" : "icon"
+          "name" : "icon",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -11,
+              -39.70703125
+            ]
+          }
         }
       ],
       "shadow" : {
