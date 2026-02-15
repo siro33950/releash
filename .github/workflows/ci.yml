@@ -110,6 +110,7 @@ jobs:
     steps:
       - name: Configure git line endings
         if: matrix.os == 'windows-latest'
+        working-directory: .
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - name: Install Tauri dependencies
