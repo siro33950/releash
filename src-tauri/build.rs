@@ -2,9 +2,8 @@ fn main() {
     let mut attributes = tauri_build::Attributes::new();
     #[cfg(windows)]
     {
-        attributes = attributes.windows_attributes(
-            tauri_build::WindowsAttributes::new_without_app_manifest(),
-        );
+        attributes = attributes
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
         add_manifest();
     }
     tauri_build::try_build(attributes).unwrap();
