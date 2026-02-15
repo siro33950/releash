@@ -3,10 +3,14 @@ name: Bump Version
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "New version (e.g. 0.1.0)"
+      bump:
+        description: "Bump type"
         required: true
-        type: string
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
@@ -18,27 +22,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate version
-        env:
-          VERSION: ${{ inputs.version }}
+      - name: Calculate new version
         run: |
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid semver format. Use X.Y.Z"
-            exit 1
-          fi
+          CURRENT=$(jq -r '.version' src-tauri/tauri.conf.json)
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          case "${{ inputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+          VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Bumping $CURRENT → $VERSION (${{ inputs.bump }})"
 
       - name: Bump version in files
-        env:
-          VERSION: ${{ inputs.version }}
         run: |
-          jq --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
+          jq --tab --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
           jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
 
       - name: Create PR
         uses: peter-evans/create-pull-request@v7
         with:
-          commit-message: "release: v${{ inputs.version }}"
-          branch: release/v${{ inputs.version }}
-          title: "release: v${{ inputs.version }}"
-          body: "Bump version to ${{ inputs.version }}"
+          commit-message: "release: v${{ env.VERSION }}"
+          branch: release/v${{ env.VERSION }}
+          title: "release: v${{ env.VERSION }}"
+          body: "Bump version to ${{ env.VERSION }} (${{ inputs.bump }})"
