@@ -36,10 +36,11 @@ const path = require('path');
 })();
 "
 
-# .icns
-ICONSET="$TMP_DIR/icon.iconset"
-mkdir -p "$ICONSET"
-node -e "
+# .icns (macOS only)
+if command -v iconutil &>/dev/null; then
+  ICONSET="$TMP_DIR/icon.iconset"
+  mkdir -p "$ICONSET"
+  node -e "
 const sharp = require('sharp');
 const path = require('path');
 (async () => {
@@ -51,8 +52,11 @@ const path = require('path');
   }
 })();
 "
-iconutil -c icns "$ICONSET" -o "$ICONS_DIR/icon.icns"
-echo "  .icns done"
+  iconutil -c icns "$ICONSET" -o "$ICONS_DIR/icon.icns"
+  echo "  .icns done"
+else
+  echo "  Skipping .icns (iconutil not available, macOS only)"
+fi
 
 # .ico
 node -e "
