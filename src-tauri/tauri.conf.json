@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "releash",
+  "productName": "Releash",
   "version": "0.0.0",
   "identifier": "com.releash.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "releash",
+        "title": "Releash",
         "width": 800,
         "height": 600
       }
