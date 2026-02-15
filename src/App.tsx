@@ -22,6 +22,7 @@ function App() {
 		closeWorktreeTab,
 		setActiveTab,
 		switchToKanban,
+		reorderTabs,
 	} = useWorkspaceTabs();
 	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
 
@@ -170,6 +171,7 @@ function App() {
 				activeTabId={activeTabId}
 				onTabClick={setActiveTab}
 				onTabClose={closeWorktreeTab}
+				onReorderTabs={reorderTabs}
 			/>
 			<div className="flex-1 overflow-hidden relative">
 				<div

@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "flexlayout-react/style/dark.css";
+@import "./styles/flexlayout-custom.css";
 
 @custom-variant dark (&:is(.dark *));
 

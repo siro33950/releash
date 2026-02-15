@@ -53,6 +53,9 @@ importers:
       dompurify:
         specifier: ^3.3.1
         version: 3.3.1
+      flexlayout-react:
+        specifier: ^0.8.18
+        version: 0.8.18(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       html5-qrcode:
         specifier: ^2.3.8
         version: 2.3.8
@@ -1834,6 +1837,12 @@ packages:
     peerDependenciesMeta:
       picomatch:
         optional: true
+
+  flexlayout-react@0.8.18:
+    resolution: {integrity: sha512-xxifwxfS0NigaPHkunKZ39CafGzm7L+UDEcfuNatiOKhDQaIujmMwQrE1/B7uxbHNN3P19yoX/DJmtMo/sIiZA==}
+    peerDependencies:
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
 
   fsevents@2.3.2:
     resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
@@ -3949,6 +3958,11 @@ snapshots:
   fdir@6.5.0(picomatch@4.0.3):
     optionalDependencies:
       picomatch: 4.0.3
+
+  flexlayout-react@0.8.18(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
+    dependencies:
+      react: 19.2.4
+      react-dom: 19.2.4(react@19.2.4)
 
   fsevents@2.3.2:
     optional: true

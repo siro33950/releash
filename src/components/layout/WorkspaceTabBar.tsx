@@ -1,5 +1,6 @@
 import { GitBranch, LayoutGrid, X } from "lucide-react";
 import { ScrollArea as ScrollAreaPrimitive } from "radix-ui";
+import { useTabDrag } from "@/hooks/useTabDrag";
 import { cn } from "@/lib/utils";
 import type { AgentState } from "@/types/protocol";
 import type { WorkspaceTab } from "@/types/workspace-tab";
@@ -9,6 +10,7 @@ export interface WorkspaceTabBarProps {
 	activeTabId: string;
 	onTabClick: (id: string) => void;
 	onTabClose: (id: string) => void;
+	onReorderTabs?: (fromId: string, toId: string) => void;
 }
 
 const agentStateColor: Record<AgentState, string> = {
@@ -23,7 +25,12 @@ export function WorkspaceTabBar({
 	activeTabId,
 	onTabClick,
 	onTabClose,
+	onReorderTabs,
 }: WorkspaceTabBarProps) {
+	const { dragHandlers, draggingId, dropTarget } = useTabDrag(
+		onReorderTabs ?? (() => {}),
+	);
+
 	const worktreeTabs = tabs.filter((t) => t.type === "worktree");
 	const distinctRepoNames = new Set(
 		worktreeTabs
@@ -42,6 +49,17 @@ export function WorkspaceTabBar({
 				>
 					{tabs.map((tab) => {
 						const isActive = tab.id === activeTabId;
+						const isDragging = draggingId === tab.id;
+						const isDropLeft =
+							dropTarget?.tabId === tab.id && dropTarget.position === "left";
+						const isDropRight =
+							dropTarget?.tabId === tab.id && dropTarget.position === "right";
+						const isDraggable = tab.type !== "kanban";
+						const handlers = dragHandlers({
+							tabId: tab.id,
+							isDraggable,
+						});
+
 						if (tab.type === "kanban") {
 							return (
 								<div
@@ -51,6 +69,8 @@ export function WorkspaceTabBar({
 										isActive
 											? "bg-background text-foreground"
 											: "bg-sidebar text-muted-foreground hover:bg-sidebar-accent",
+										isDropLeft && "border-l-2 border-l-primary",
+										isDropRight && "border-r-2 border-r-primary",
 									)}
 									onClick={() => onTabClick(tab.id)}
 									onKeyDown={(e) => {
@@ -59,6 +79,9 @@ export function WorkspaceTabBar({
 											onTabClick(tab.id);
 										}
 									}}
+									onDragOver={handlers.onDragOver}
+									onDragLeave={handlers.onDragLeave}
+									onDrop={handlers.onDrop}
 									role="tab"
 									tabIndex={0}
 									aria-selected={isActive}
@@ -76,6 +99,9 @@ export function WorkspaceTabBar({
 									isActive
 										? "bg-background text-foreground"
 										: "bg-sidebar text-muted-foreground hover:bg-sidebar-accent",
+									isDragging && "opacity-50",
+									isDropLeft && "border-l-2 border-l-primary",
+									isDropRight && "border-r-2 border-r-primary",
 								)}
 								onClick={() => onTabClick(tab.id)}
 								onKeyDown={(e) => {
@@ -84,6 +110,12 @@ export function WorkspaceTabBar({
 										onTabClick(tab.id);
 									}
 								}}
+								draggable={handlers.draggable}
+								onDragStart={handlers.onDragStart}
+								onDragEnd={handlers.onDragEnd}
+								onDragOver={handlers.onDragOver}
+								onDragLeave={handlers.onDragLeave}
+								onDrop={handlers.onDrop}
 								role="tab"
 								tabIndex={0}
 								aria-selected={isActive}

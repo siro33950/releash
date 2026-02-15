@@ -15,15 +15,30 @@ vi.mock("@/hooks/useFileWatcher", () => ({
 	}),
 }));
 
-vi.mock("react-resizable-panels", () => ({
-	Group: ({ children }: { children: React.ReactNode }) => (
-		<div data-testid="panel-group">{children}</div>
-	),
-	Panel: ({ children }: { children: React.ReactNode }) => (
-		<div data-testid="panel">{children}</div>
-	),
-	Separator: () => <div data-testid="separator" />,
-}));
+vi.mock("flexlayout-react", () => {
+	const Model = {
+		fromJson: () => ({
+			getNodeById: () => null,
+			doAction: vi.fn(),
+		}),
+	};
+	const Actions = {
+		DELETE_TAB: "FlexLayout_DeleteTab",
+		addNode: vi.fn(),
+		deleteTab: vi.fn(),
+		selectTab: vi.fn(),
+		updateNodeAttributes: vi.fn(),
+	};
+	const DockLocation = { CENTER: "center" };
+	const Layout = ({
+		factory: _factory,
+	}: {
+		factory: (node: unknown) => unknown;
+	}) => {
+		return <div data-testid="flexlayout" />;
+	};
+	return { Model, Actions, DockLocation, Layout };
+});
 
 describe("WorktreeView", () => {
 	it("renders without crashing", () => {
@@ -36,6 +51,6 @@ describe("WorktreeView", () => {
 				isActive
 			/>,
 		);
-		expect(screen.getByText("No file selected")).toBeInTheDocument();
+		expect(screen.getByTestId("flexlayout")).toBeInTheDocument();
 	});
 });

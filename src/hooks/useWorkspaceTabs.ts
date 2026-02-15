@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
+import { arrayMove } from "@/lib/arrayMove";
 import { normalizePath } from "@/lib/normalizePath";
 import type { AgentStateSync } from "@/types/protocol";
 import type { WorkspaceTab, WorktreeTab } from "@/types/workspace-tab";
@@ -21,6 +22,7 @@ export interface UseWorkspaceTabsReturn {
 	closeWorktreeTab: (id: string) => void;
 	setActiveTab: (id: string) => void;
 	switchToKanban: () => void;
+	reorderTabs: (fromId: string, toId: string) => void;
 }
 
 export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
@@ -75,6 +77,16 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 		setActiveTabId("kanban");
 	}, []);
 
+	const reorderTabs = useCallback((fromId: string, toId: string) => {
+		if (fromId === toId) return;
+		setTabs((prev) => {
+			const fromIndex = prev.findIndex((t) => t.id === fromId);
+			const toIndex = prev.findIndex((t) => t.id === toId);
+			if (fromIndex === -1 || toIndex === -1) return prev;
+			return arrayMove(prev, fromIndex, toIndex);
+		});
+	}, []);
+
 	useEffect(() => {
 		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
 			const worktreePath = normalizePath(event.payload.worktree_path);
@@ -99,5 +111,6 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
 		closeWorktreeTab,
 		setActiveTab,
 		switchToKanban,
+		reorderTabs,
 	};
 }

@@ -121,4 +121,53 @@ describe("useWorkspaceTabs", () => {
 		});
 		expect(result.current.activeTabId).toBe("kanban");
 	});
+
+	describe("reorderTabs", () => {
+		it("should reorder tabs by moving fromId to toId position", () => {
+			const { result } = renderHook(() => useWorkspaceTabs());
+			act(() => {
+				result.current.openWorktreeTab("/path/a", "branch-a");
+			});
+			act(() => {
+				result.current.openWorktreeTab("/path/b", "branch-b");
+			});
+			// tabs: [kanban, /path/a, /path/b]
+			act(() => {
+				result.current.reorderTabs("/path/a", "/path/b");
+			});
+			expect(result.current.tabs.map((t) => t.id)).toEqual([
+				"kanban",
+				"/path/b",
+				"/path/a",
+			]);
+		});
+
+		it("should do nothing when fromId === toId", () => {
+			const { result } = renderHook(() => useWorkspaceTabs());
+			act(() => {
+				result.current.openWorktreeTab("/path/a", "branch-a");
+			});
+			act(() => {
+				result.current.reorderTabs("/path/a", "/path/a");
+			});
+			expect(result.current.tabs.map((t) => t.id)).toEqual([
+				"kanban",
+				"/path/a",
+			]);
+		});
+
+		it("should do nothing when id is not found", () => {
+			const { result } = renderHook(() => useWorkspaceTabs());
+			act(() => {
+				result.current.openWorktreeTab("/path/a", "branch-a");
+			});
+			act(() => {
+				result.current.reorderTabs("/nonexistent", "/path/a");
+			});
+			expect(result.current.tabs.map((t) => t.id)).toEqual([
+				"kanban",
+				"/path/a",
+			]);
+		});
+	});
 });
