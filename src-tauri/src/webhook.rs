@@ -7,10 +7,9 @@ pub async fn send_webhook(url: &str, event: &AgentStateSync) {
         return;
     }
 
-    let branch = event
-        .worktree_path
-        .rsplit('/')
-        .next()
+    let branch = std::path::Path::new(&event.worktree_path)
+        .file_name()
+        .and_then(|s| s.to_str())
         .unwrap_or(&event.worktree_path);
 
     let text = match event.state {
@@ -61,10 +60,26 @@ mod tests {
             timestamp: 0.0,
             session_id: None,
         };
-        let branch = event
-            .worktree_path
-            .rsplit('/')
-            .next()
+        let branch = std::path::Path::new(&event.worktree_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&event.worktree_path);
+        assert_eq!(branch, "feature-auth");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn webhook_text_running_windows_path() {
+        let event = AgentStateSync {
+            worktree_path: "C:\\repos\\my-project-worktrees\\feature-auth".to_string(),
+            state: AgentState::Running,
+            exit_code: None,
+            timestamp: 0.0,
+            session_id: None,
+        };
+        let branch = std::path::Path::new(&event.worktree_path)
+            .file_name()
+            .and_then(|s| s.to_str())
             .unwrap_or(&event.worktree_path);
         assert_eq!(branch, "feature-auth");
     }

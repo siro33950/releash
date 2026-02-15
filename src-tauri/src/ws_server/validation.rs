@@ -57,8 +57,20 @@ mod tests {
 
     #[test]
     fn test_validate_relative_path_rejects_absolute() {
-        let result = validate_relative_path("/etc/passwd", "/tmp");
-        assert!(result.is_err());
+        #[cfg(unix)]
+        {
+            let result = validate_relative_path("/etc/passwd", "/tmp");
+            assert!(result.is_err());
+        }
+        #[cfg(windows)]
+        {
+            let dir = tempfile::TempDir::new().unwrap();
+            let result = validate_relative_path(
+                "C:\\Windows\\System32\\cmd.exe",
+                dir.path().to_str().unwrap(),
+            );
+            assert!(result.is_err());
+        }
     }
 
     #[test]
