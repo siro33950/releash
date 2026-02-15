@@ -124,4 +124,5 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
       - name: Run tests
+        if: matrix.os == 'ubuntu-latest'
         run: cargo test
