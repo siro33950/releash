@@ -1,5 +1,4 @@
-<!-- TODO: ロゴ画像 -->
-<!-- <p align="center"><img src="docs/assets/logo.svg" alt="Releash" width="200" /></p> -->
+<p align="center"><img src="src-tauri/icons/icon.png" alt="Releash" width="120" /></p>
 
 # Releash
 
@@ -67,13 +66,15 @@ A real PTY terminal, not a toy. Shell integration (Bash, Zsh) detects when comma
 
 ## Getting Started
 
-> **Early development** — pre-built binaries are not available yet. Build from source for now.
+**Platforms:** macOS (Linux and Windows are not yet supported)
 
-**Platforms:** macOS (Linux and Windows are not supported yet)
-
-**Prerequisites:** [Node.js](https://nodejs.org/) (v18+), [pnpm](https://pnpm.io/), [Rust](https://www.rust-lang.org/tools/install), [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)
+Download the latest installer from the [Releases page](https://github.com/siro33950/releash/releases/latest).
 
 **Optional:** [GitHub CLI](https://cli.github.com/) (`gh`) — enables PR detection for Kanban board
+
+### Build from source
+
+**Prerequisites:** [Node.js](https://nodejs.org/) (v18+), [pnpm](https://pnpm.io/), [Rust](https://www.rust-lang.org/tools/install), [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 ```sh
 pnpm install
