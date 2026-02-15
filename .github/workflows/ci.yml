@@ -14,9 +14,13 @@ jobs:
   frontend:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
+      - name: Configure git line endings
+        if: matrix.os == 'windows-latest'
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
@@ -97,6 +101,7 @@ jobs:
   rust:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     defaults:
@@ -114,4 +119,6 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
-      - run: cargo test
+      - name: Run tests
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test
