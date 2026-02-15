@@ -1,20 +1,17 @@
 {
   "fill" : {
-    "automatic-gradient" : "extended-srgb:0.00000,0.53333,1.00000,1.00000"
+    "solid" : "extended-gray:0.75000,1.00000"
   },
   "groups" : [
     {
       "layers" : [
         {
+          "blend-mode" : "normal",
+          "fill" : "none",
+          "glass" : false,
+          "hidden" : false,
           "image-name" : "icon.png",
-          "name" : "icon",
-          "position" : {
-            "scale" : 1,
-            "translation-in-points" : [
-              -11,
-              -39.70703125
-            ]
-          }
+          "name" : "icon"
         }
       ],
       "shadow" : {
