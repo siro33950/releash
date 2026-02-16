@@ -80,6 +80,10 @@ export function useSettings() {
 		setSettings((prev) => ({ ...prev, agentAutoApprove }));
 	}, []);
 
+	const updateTelemetryEnabled = useCallback((telemetryEnabled: boolean) => {
+		setSettings((prev) => ({ ...prev, telemetryEnabled }));
+	}, []);
+
 	const updateSettings = useCallback((next: AppSettings) => {
 		setSettings(next);
 	}, []);
@@ -93,6 +97,7 @@ export function useSettings() {
 		updateTerminalStartupCommand,
 		updateAgent,
 		updateAgentAutoApprove,
+		updateTelemetryEnabled,
 		updateSettings,
 	};
 }

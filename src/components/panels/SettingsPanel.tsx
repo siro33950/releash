@@ -3,6 +3,7 @@ import { Check, Copy, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { trackEvent } from "@/lib/telemetry";
 import {
 	AGENT_CONFIGS,
 	type AgentType,
@@ -88,6 +89,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 
 	const handleSave = useCallback(() => {
 		onSave(draft);
+		trackEvent("settings_saved");
 	}, [draft, onSave]);
 
 	const isDirty = JSON.stringify(draft) !== JSON.stringify(settings);
@@ -243,6 +245,23 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 						/>
 						<span className="text-xs font-medium text-muted-foreground">
 							Auto-update
+						</span>
+					</label>
+
+					<label className="flex items-center gap-2 cursor-pointer">
+						<input
+							type="checkbox"
+							checked={draft.telemetryEnabled}
+							onChange={(e) =>
+								setDraft((d) => ({
+									...d,
+									telemetryEnabled: e.target.checked,
+								}))
+							}
+							className="accent-primary"
+						/>
+						<span className="text-xs font-medium text-muted-foreground">
+							Send anonymous usage data
 						</span>
 					</label>
 

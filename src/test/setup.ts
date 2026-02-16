@@ -181,6 +181,10 @@ vi.mock("@monaco-editor/react", () => ({
 	},
 }));
 
+vi.mock("@aptabase/tauri", () => ({
+	trackEvent: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@tauri-apps/plugin-fs", () => ({
 	readDir: vi.fn().mockResolvedValue([]),
 	readTextFile: vi.fn().mockResolvedValue(""),

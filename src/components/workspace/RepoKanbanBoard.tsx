@@ -19,6 +19,7 @@ import { DeleteWorktreeDialog } from "@/components/workspace/DeleteWorktreeDialo
 import { KanbanColumn } from "@/components/workspace/KanbanColumn";
 import { SettingsDialog } from "@/components/workspace/SettingsDialog";
 import { BranchCard as BranchCardComponent } from "@/components/workspace/WorktreeCard";
+import { trackEvent } from "@/lib/telemetry";
 import type {
 	BranchCard,
 	ProviderStatus,
@@ -280,6 +281,7 @@ export function RepoKanbanBoard({
 					force,
 				});
 			}
+			trackEvent("worktree_removed");
 			await refresh();
 			setDeletingBranch(null);
 		},

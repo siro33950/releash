@@ -36,6 +36,7 @@ import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
 import { normalizePath } from "@/lib/normalizePath";
+import { trackEvent } from "@/lib/telemetry";
 import type { LineComment } from "@/types/comment";
 import type { AgentState, AgentStateSync } from "@/types/protocol";
 import {
@@ -473,6 +474,7 @@ export function WorktreeView({
 			if (text && terminalRef.current) {
 				terminalRef.current.writeToTerminal(`${text}\n`);
 				markAsSent(unsent.map((c) => c.id));
+				trackEvent("comment_sent", { count: unsent.length });
 			}
 		},
 		[markAsSent],
@@ -581,6 +583,7 @@ export function WorktreeView({
 								cwd={rootPath}
 								theme={settings.theme}
 								terminalStartupCommand={buildTerminalCommand(settings)}
+								agentType={settings.agent}
 							/>
 						</Panel>
 					</Group>

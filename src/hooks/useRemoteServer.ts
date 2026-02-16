@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { trackEvent } from "@/lib/telemetry";
 
 interface QrCodeResult {
 	url: string;
@@ -114,6 +115,7 @@ export function useRemoteServer() {
 				setRunning(true);
 				setBoundIp(result.ip);
 				setConnectionMode(result.mode);
+				trackEvent("remote_server_started");
 				await refreshQr();
 			} catch (e) {
 				setError(String(e));
