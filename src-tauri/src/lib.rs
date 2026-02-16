@@ -32,6 +32,7 @@ pub fn run() {
     // Tauri Builder 起動前に Tokio ランタイムを共有する必要がある。
     // ref: https://github.com/aptabase/tauri-plugin-aptabase/issues/22
     let _runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    let _runtime_guard = _runtime.enter();
     tauri::async_runtime::set(_runtime.handle().clone());
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -49,12 +50,10 @@ pub fn run() {
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("app_data_dir の取得に失敗");
+            let data_dir = app.path().app_data_dir()?;
             let config_path = data_dir.join("releash.toml");
-            let config = load_or_create_config(&config_path).expect("設定ファイルの読み込みに失敗");
+            let config = load_or_create_config(&config_path)
+                .map_err(|e| format!("設定ファイルの読み込みに失敗: {e}"))?;
             let telemetry_enabled = config.telemetry_enabled;
 
             app.handle()
@@ -80,7 +79,7 @@ pub fn run() {
                 }
             });
 
-            menu::setup_menu(app).expect("Failed to setup menu");
+            menu::setup_menu(app)?;
 
             if telemetry_enabled {
                 let _ = app.track_event("app_started", None);
@@ -172,4 +171,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tokio_runtime_context_is_available_after_setup() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        tauri::async_runtime::set(runtime.handle().clone());
+
+        // aptabase 等のプラグインが tokio::spawn を直接呼ぶため、
+        // スレッドローカルのランタイムコンテキストが必要
+        let handle = tokio::spawn(async { 42 });
+        let result = runtime.block_on(handle).unwrap();
+        assert_eq!(result, 42);
+    }
 }
