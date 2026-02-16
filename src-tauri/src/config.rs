@@ -7,10 +7,25 @@ use std::sync::{Arc, Mutex};
 
 const TOKEN_LENGTH: usize = 48;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleashConfig {
+    #[serde(default = "default_true")]
+    pub telemetry_enabled: bool,
     #[serde(default)]
     pub server: ServerSection,
+}
+
+impl Default for ReleashConfig {
+    fn default() -> Self {
+        Self {
+            telemetry_enabled: true,
+            server: ServerSection::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +153,25 @@ pub fn write_config(path: &Path, config: &ReleashConfig) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn update_telemetry_enabled(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    enabled: bool,
+) -> Result<(), String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.telemetry_enabled = enabled;
+        write_config(&app_config.config_path, &config)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -416,6 +450,7 @@ mod tests {
         assert_eq!(config.server.port, 9700);
         assert_eq!(config.server.token.len(), TOKEN_LENGTH);
         assert!(!config.server.tls.enabled);
+        assert!(config.telemetry_enabled);
         assert!(path.exists());
     }
 
@@ -511,6 +546,30 @@ token = ""
         assert_eq!(t2.len(), TOKEN_LENGTH);
         assert!(t1.chars().all(|c| c.is_ascii_alphanumeric()));
         assert!(t2.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn telemetry_enabled_defaults_to_true() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = "[server]\nport = 9700\n";
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert!(config.telemetry_enabled);
+    }
+
+    #[test]
+    fn telemetry_disabled_persists() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = "telemetry_enabled = false\n\n[server]\nport = 9700\n";
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert!(!config.telemetry_enabled);
     }
 
     #[test]

@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@aptabase/tauri':
+        specifier: github:aptabase/tauri-plugin-aptabase
+        version: https://codeload.github.com/aptabase/tauri-plugin-aptabase/tar.gz/e896cceb12487380127f203130a999ab26132088
       '@monaco-editor/react':
         specifier: 4.8.0-rc.3
         version: 4.8.0-rc.3(monaco-editor@0.55.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -143,6 +146,10 @@ packages:
 
   '@adobe/css-tools@4.4.4':
     resolution: {integrity: sha512-Elp+iwUx5rN5+Y8xLt5/GRoG20WGoDCQ/1Fb+1LiGtvwbDavuSk0jhD/eZdckHAuzcDzccnkv+rEjyWfRx18gg==}
+
+  '@aptabase/tauri@https://codeload.github.com/aptabase/tauri-plugin-aptabase/tar.gz/e896cceb12487380127f203130a999ab26132088':
+    resolution: {tarball: https://codeload.github.com/aptabase/tauri-plugin-aptabase/tar.gz/e896cceb12487380127f203130a999ab26132088}
+    version: 0.4.2
 
   '@asamuzakjp/css-color@4.1.1':
     resolution: {integrity: sha512-B0Hv6G3gWGMn0xKJ0txEi/jM5iFpT3MfDxmhZFb4W047GvytCf1DHQ1D69W3zHI4yWe2aTZAA0JnbMZ7Xc8DuQ==}
@@ -2372,6 +2379,11 @@ snapshots:
   '@acemir/cssom@0.9.31': {}
 
   '@adobe/css-tools@4.4.4': {}
+
+  '@aptabase/tauri@https://codeload.github.com/aptabase/tauri-plugin-aptabase/tar.gz/e896cceb12487380127f203130a999ab26132088':
+    dependencies:
+      '@tauri-apps/api': 2.10.1
+      tslib: 2.8.1
 
   '@asamuzakjp/css-color@4.1.1':
     dependencies:

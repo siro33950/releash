@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { trackEvent } from "@/lib/telemetry";
 import type { BranchCard, BranchInfo, WorktreeEntry } from "@/types/git";
 
 interface CreateWorktreeDialogProps {
@@ -171,6 +172,9 @@ export function CreateWorktreeDialog({
 				branch: branchName,
 				createBranch: isNewBranch,
 				baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
+			});
+			trackEvent("worktree_created", {
+				is_new_branch: isNewBranch ? "true" : "false",
 			});
 			onCreated(entry);
 		} catch (e) {

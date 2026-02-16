@@ -48,6 +48,7 @@ export interface AppSettings {
 	agentAutoApprove: boolean;
 	terminalStartupCommand: string;
 	autoUpdate: boolean;
+	telemetryEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -59,6 +60,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	agentAutoApprove: false,
 	terminalStartupCommand: "",
 	autoUpdate: true,
+	telemetryEnabled: true,
 };
 
 export function buildTerminalCommand(settings: AppSettings): string {

@@ -13,6 +13,7 @@ describe("SettingsPanel", () => {
 		agentAutoApprove: false,
 		terminalStartupCommand: "",
 		autoUpdate: true,
+		telemetryEnabled: true,
 	};
 
 	const defaultProps = {

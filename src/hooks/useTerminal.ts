@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { FitAddon } from "@xterm/addon-fit";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { type RefObject, useCallback, useEffect, useRef } from "react";
+import { trackEvent } from "@/lib/telemetry";
 import type { Theme } from "@/types/settings";
 
 interface PtyOutput {
@@ -93,6 +94,7 @@ export function useTerminal(
 	theme?: Theme,
 	terminalStartupCommand?: string,
 	sessionKey?: string,
+	agentType?: string,
 ) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
@@ -102,6 +104,8 @@ export function useTerminal(
 	themeRef.current = theme;
 	const startupCommandRef = useRef(terminalStartupCommand);
 	startupCommandRef.current = terminalStartupCommand;
+	const agentTypeRef = useRef(agentType);
+	agentTypeRef.current = agentType;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -180,6 +184,9 @@ export function useTerminal(
 			if (result.is_new && startupCommandRef.current) {
 				const cmd = startupCommandRef.current.trim();
 				if (cmd) {
+					trackEvent("agent_started", {
+						agent_type: agentTypeRef.current ?? "unknown",
+					});
 					invoke("write_pty", {
 						ptyId: result.pty_id,
 						data: `${cmd}\n`,

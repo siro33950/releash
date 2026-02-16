@@ -23,6 +23,7 @@ describe("useSettings", () => {
 			agentAutoApprove: false,
 			terminalStartupCommand: "",
 			autoUpdate: true,
+			telemetryEnabled: true,
 		});
 	});
 
@@ -55,6 +56,7 @@ describe("useSettings", () => {
 			agentAutoApprove: false,
 			terminalStartupCommand: "",
 			autoUpdate: true,
+			telemetryEnabled: true,
 		});
 	});
 

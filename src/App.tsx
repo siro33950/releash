@@ -8,6 +8,7 @@ import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceTabs } from "@/hooks/useWorkspaceTabs";
+import { setTelemetryEnabled } from "@/lib/telemetry";
 import { WorkspaceManagerScreen } from "@/screens/WorkspaceManagerScreen";
 import { WorktreeView } from "@/screens/WorktreeView";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
@@ -36,6 +37,10 @@ function App() {
 	const handleKanbanRequestedViewHandled = useCallback(() => {
 		setKanbanRequestedView(null);
 	}, []);
+
+	useEffect(() => {
+		setTelemetryEnabled(settings.telemetryEnabled);
+	}, [settings.telemetryEnabled]);
 
 	useEffect(() => {
 		const suppress = (e: MouseEvent) => e.preventDefault();

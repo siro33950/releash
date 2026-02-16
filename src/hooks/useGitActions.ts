@@ -12,13 +12,15 @@ export function useGitActions() {
 
 	const commit = useCallback(
 		async (repoPath: string, message: string): Promise<string> => {
-			return await invoke<string>("git_commit", { repoPath, message });
+			const result = await invoke<string>("git_commit", { repoPath, message });
+			return result;
 		},
 		[],
 	);
 
 	const push = useCallback(async (repoPath: string): Promise<string> => {
-		return await invoke<string>("git_push", { repoPath });
+		const result = await invoke<string>("git_push", { repoPath });
+		return result;
 	}, []);
 
 	const stageHunk = useCallback(async (repoPath: string, patch: string) => {

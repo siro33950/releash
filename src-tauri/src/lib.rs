@@ -21,9 +21,16 @@ use std::sync::Arc;
 use config::{load_or_create_config, AppConfig};
 use protocol::AgentStateSync;
 use tauri::Manager;
+use tauri_plugin_aptabase::EventTracker;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // aptabase プラグインの setup 内で tokio::spawn が呼ばれるため、
+    // Tauri Builder 起動前に Tokio ランタイムを共有する必要がある。
+    // ref: https://github.com/aptabase/tauri-plugin-aptabase/issues/22
+    let _runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    tauri::async_runtime::set(_runtime.handle().clone());
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _ = fix_path_env::fix();
 
@@ -45,6 +52,11 @@ pub fn run() {
                 .expect("app_data_dir の取得に失敗");
             let config_path = data_dir.join("releash.toml");
             let config = load_or_create_config(&config_path).expect("設定ファイルの読み込みに失敗");
+            let telemetry_enabled = config.telemetry_enabled;
+
+            app.handle()
+                .plugin(tauri_plugin_aptabase::Builder::new("A-US-6336372584").build())?;
+
             let app_config = Arc::new(AppConfig::new(config, config_path));
             app.manage(app_config.clone());
 
@@ -66,6 +78,10 @@ pub fn run() {
             });
 
             menu::setup_menu(app).expect("Failed to setup menu");
+
+            if telemetry_enabled {
+                let _ = app.track_event("app_started", None);
+            }
 
             Ok(())
         })
@@ -132,6 +148,7 @@ pub fn run() {
             config::generate_hooks_config,
             config::apply_hooks_config,
             config::get_hooks_status,
+            config::update_telemetry_enabled,
             // Hook Listener
             hook_listener::get_agent_states,
             // ネットワーク
