@@ -26,10 +26,10 @@ use tauri_plugin_aptabase::EventTracker;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // aptabase プラグインの setup 内で tokio::spawn が呼ばれるため、
-    // Tauri Builder 起動前に Tokio ランタイムを確保する必要がある。
+    // Tauri Builder 起動前に Tokio ランタイムを共有する必要がある。
     // ref: https://github.com/aptabase/tauri-plugin-aptabase/issues/22
-    let runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    let _guard = runtime.enter();
+    let _runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    tauri::async_runtime::set(_runtime.handle().clone());
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _ = fix_path_env::fix();
