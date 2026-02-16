@@ -14,6 +14,7 @@ describe("SettingsPanel", () => {
 		terminalStartupCommand: "",
 		autoUpdate: true,
 		telemetryEnabled: true,
+		enableCrashReporting: true,
 	};
 
 	const defaultProps = {
@@ -102,5 +103,21 @@ describe("SettingsPanel", () => {
 			...defaultSettings,
 			defaultDiffMode: "split",
 		});
+	});
+
+	it("should display crash reporting toggle", () => {
+		render(<SettingsPanel {...defaultProps} />);
+		expect(screen.getByText("Send crash reports")).toBeInTheDocument();
+	});
+
+	it("should toggle crash reporting and call onSave", () => {
+		const onSave = vi.fn();
+		render(<SettingsPanel {...defaultProps} onSave={onSave} />);
+		const checkbox = screen.getByLabelText("Send crash reports");
+		fireEvent.click(checkbox);
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		expect(onSave).toHaveBeenCalledWith(
+			expect.objectContaining({ enableCrashReporting: false }),
+		);
 	});
 });

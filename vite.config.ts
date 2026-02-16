@@ -1,4 +1,5 @@
 import path from "node:path";
+import { sentryVitePlugin } from "@sentry/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
@@ -8,11 +9,28 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-	plugins: [tailwindcss(), react()],
+	plugins: [
+		tailwindcss(),
+		react(),
+		// @ts-expect-error process is a nodejs global
+		...(process.env.SENTRY_AUTH_TOKEN
+			? [
+					sentryVitePlugin({
+						// @ts-expect-error process is a nodejs global
+						org: process.env.SENTRY_ORG,
+						// @ts-expect-error process is a nodejs global
+						project: process.env.SENTRY_PROJECT,
+					}),
+				]
+			: []),
+	],
 	resolve: {
 		alias: {
 			"@": path.resolve(import.meta.dirname, "./src"),
 		},
+	},
+	build: {
+		sourcemap: true,
 	},
 	test: {
 		globals: true,

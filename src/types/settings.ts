@@ -49,6 +49,7 @@ export interface AppSettings {
 	terminalStartupCommand: string;
 	autoUpdate: boolean;
 	telemetryEnabled: boolean;
+	enableCrashReporting: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -61,6 +62,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	terminalStartupCommand: "",
 	autoUpdate: true,
 	telemetryEnabled: true,
+	enableCrashReporting: true,
 };
 
 export function buildTerminalCommand(settings: AppSettings): string {

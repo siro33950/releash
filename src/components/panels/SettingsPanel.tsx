@@ -267,6 +267,26 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 						</span>
 					</label>
 
+					<label className="flex items-center gap-2 cursor-pointer">
+						<input
+							type="checkbox"
+							checked={draft.enableCrashReporting}
+							onChange={(e) =>
+								setDraft((d) => ({
+									...d,
+									enableCrashReporting: e.target.checked,
+								}))
+							}
+							className="accent-primary"
+						/>
+						<span className="text-xs font-medium text-muted-foreground">
+							Send crash reports
+						</span>
+					</label>
+					<p className="text-[10px] text-muted-foreground -mt-2">
+						Help improve Releash by sending anonymous crash reports.
+					</p>
+
 					{draft.agent === "custom" && (
 						<div className="flex flex-col gap-1.5">
 							<label htmlFor="terminal-startup-cmd" className={labelClass}>

@@ -24,6 +24,7 @@ describe("useSettings", () => {
 			terminalStartupCommand: "",
 			autoUpdate: true,
 			telemetryEnabled: true,
+			enableCrashReporting: true,
 		});
 	});
 
@@ -57,6 +58,7 @@ describe("useSettings", () => {
 			terminalStartupCommand: "",
 			autoUpdate: true,
 			telemetryEnabled: true,
+			enableCrashReporting: true,
 		});
 	});
 
@@ -106,5 +108,19 @@ describe("useSettings", () => {
 		});
 
 		expect(result.current.settings.fontSize).toBe(18);
+	});
+
+	it("should default enableCrashReporting to true", () => {
+		const { result } = renderHook(() => useSettings());
+		expect(result.current.settings.enableCrashReporting).toBe(true);
+	});
+
+	it("should load enableCrashReporting from localStorage", () => {
+		localStorage.setItem(
+			"releash-settings",
+			JSON.stringify({ enableCrashReporting: false }),
+		);
+		const { result } = renderHook(() => useSettings());
+		expect(result.current.settings.enableCrashReporting).toBe(false);
 	});
 });

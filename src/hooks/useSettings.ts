@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import {
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
+import { setSentryEnabled } from "@/lib/sentry";
 import {
 	type AgentType,
 	type AppSettings,
@@ -84,7 +92,16 @@ export function useSettings() {
 		setSettings((prev) => ({ ...prev, telemetryEnabled }));
 	}, []);
 
+	const prevCrashReporting = useRef(settings.enableCrashReporting);
+
 	const updateSettings = useCallback((next: AppSettings) => {
+		if (next.enableCrashReporting !== prevCrashReporting.current) {
+			prevCrashReporting.current = next.enableCrashReporting;
+			setSentryEnabled(next.enableCrashReporting);
+			invoke("update_crash_reporting", {
+				enabled: next.enableCrashReporting,
+			}).catch(() => {});
+		}
 		setSettings(next);
 	}, []);
 

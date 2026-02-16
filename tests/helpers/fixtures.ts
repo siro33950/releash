@@ -68,6 +68,10 @@ export const baseIpcHandler: Record<string, unknown> = {
 	get_hooks_status: "not_configured",
 	apply_hooks_config: null,
 
+	// Telemetry
+	get_crash_reporting_enabled: true,
+	update_crash_reporting: null,
+
 	// Terminal (PTY) — モック上は何もしない
 	get_or_spawn_pty: { pty_id: 1, output: "" },
 	write_pty: null,
