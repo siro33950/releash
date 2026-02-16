@@ -1,9 +1,12 @@
 use sentry::ClientInitGuard;
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::{load_or_create_config, ReleashConfig};
 
 const SENTRY_DSN: &str = env!("SENTRY_DSN");
+
+static CRASH_REPORTING_ENABLED: AtomicBool = AtomicBool::new(true);
 
 fn load_config_direct() -> Option<ReleashConfig> {
     let data_dir = dirs::data_dir()?;
@@ -22,6 +25,8 @@ pub fn init_sentry() -> Option<ClientInitGuard> {
         .map(|c| c.telemetry.crash_reporting)
         .unwrap_or(true);
 
+    CRASH_REPORTING_ENABLED.store(enabled, Ordering::Relaxed);
+
     let guard = sentry::init(sentry::ClientOptions {
         dsn: SENTRY_DSN.parse().ok(),
         release: Some(Cow::Borrowed(env!("CARGO_PKG_VERSION"))),
@@ -34,30 +39,20 @@ pub fn init_sentry() -> Option<ClientInitGuard> {
         auto_session_tracking: true,
         traces_sample_rate: 0.0,
         before_send: Some(std::sync::Arc::new(|mut event| {
+            if !CRASH_REPORTING_ENABLED.load(Ordering::Relaxed) {
+                return None;
+            }
             scrub_event(&mut event);
             Some(event)
         })),
         ..Default::default()
     });
 
-    if !enabled {
-        sentry::Hub::current().bind_client(None);
-    }
-
     Some(guard)
 }
 
 pub fn set_crash_reporting_enabled(enabled: bool) {
-    if enabled {
-        let hub = sentry::Hub::current();
-        if hub.client().is_none() {
-            if let Some(main_hub) = sentry::Hub::main().client() {
-                hub.bind_client(Some(main_hub));
-            }
-        }
-    } else {
-        sentry::Hub::current().bind_client(None);
-    }
+    CRASH_REPORTING_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 fn scrub_event(event: &mut sentry::protocol::Event) {
