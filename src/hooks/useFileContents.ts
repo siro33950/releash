@@ -111,6 +111,7 @@ export function useFileContents(): UseFileContentsReturn {
 	}, []);
 
 	const closeFile = useCallback((path: string) => {
+		filesRef.current = filesRef.current.filter((f) => f.path !== path);
 		setFiles((prev) => prev.filter((f) => f.path !== path));
 	}, []);
 
