@@ -377,10 +377,10 @@ export function EditorTabContent({
 	}
 
 	return (
-		<div className="flex flex-col h-full">
+		<div className="absolute inset-0 flex flex-col">
 			<Breadcrumb rootPath={rootPath} filePath={filePath} />
 			<div
-				className="flex-1"
+				className="flex-1 min-h-0"
 				style={{ position: "relative", overflow: "hidden" }}
 			>
 				{isImage ? (

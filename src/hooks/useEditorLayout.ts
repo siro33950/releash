@@ -19,7 +19,8 @@ function createInitialJson(): IJsonModel {
 			tabEnableDrag: true,
 			tabEnableRename: false,
 			tabSetEnableMaximize: false,
-			tabSetEnableDeleteWhenEmpty: false,
+			tabSetEnableDeleteWhenEmpty: true,
+			enableEdgeDock: false,
 			splitterSize: 1,
 			splitterExtra: 4,
 		},
@@ -33,6 +34,8 @@ function createInitialJson(): IJsonModel {
 					weight: 15,
 					enableDrag: false,
 					enableDrop: false,
+					enableDivide: false,
+					enableDeleteWhenEmpty: false,
 					enableTabStrip: false,
 					children: [
 						{
@@ -52,6 +55,7 @@ function createInitialJson(): IJsonModel {
 							type: "tabset",
 							id: EDITOR_TABSET_ID,
 							weight: 70,
+							enableDeleteWhenEmpty: false,
 							enableTabScrollbar: true,
 							children: [],
 						},
@@ -61,6 +65,8 @@ function createInitialJson(): IJsonModel {
 							weight: 30,
 							enableDrag: false,
 							enableDrop: false,
+							enableDivide: false,
+							enableDeleteWhenEmpty: false,
 							enableTabStrip: false,
 							children: [
 								{
@@ -80,6 +86,8 @@ function createInitialJson(): IJsonModel {
 					weight: 30,
 					enableDrag: false,
 					enableDrop: false,
+					enableDivide: false,
+					enableDeleteWhenEmpty: false,
 					enableTabStrip: false,
 					children: [
 						{
@@ -115,7 +123,7 @@ export function pathFromTabId(tabId: string): string | null {
 }
 
 export function useEditorLayout(
-	onTabClose?: (path: string) => void,
+	onTabClose?: (path: string) => boolean,
 ): UseEditorLayoutReturn {
 	const model = useMemo(() => Model.fromJson(createInitialJson()), []);
 	const modelRef = useRef(model);
@@ -192,8 +200,8 @@ export function useEditorLayout(
 				if (tabId) {
 					const path = pathFromTabId(tabId);
 					if (path) {
-						onTabClose?.(path);
-						return undefined;
+						const shouldBlock = onTabClose?.(path) ?? false;
+						return shouldBlock ? undefined : action;
 					}
 				}
 			}

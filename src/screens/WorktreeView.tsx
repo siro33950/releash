@@ -112,23 +112,20 @@ export function WorktreeView({
 	} | null>(null);
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
 
-	const removeTabRef = useRef<(path: string) => void>(() => {});
-
 	const handleTabClose = useCallback(
-		(path: string) => {
+		(path: string): boolean => {
 			const file = getFileContent(path);
 			if (file?.isDirty) {
 				setClosingTabPath(path);
-			} else {
-				closeFile(path);
-				removeTabRef.current(path);
+				return true;
 			}
+			closeFile(path);
+			return false;
 		},
 		[getFileContent, closeFile],
 	);
 
 	const editorLayout = useEditorLayout(handleTabClose);
-	removeTabRef.current = editorLayout.removeTab;
 
 	const [, forceRender] = useReducer((x: number) => x + 1, 0);
 	const activeTabPath = editorLayout.getActiveTabPath();

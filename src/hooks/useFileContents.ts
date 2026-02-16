@@ -98,6 +98,10 @@ export function useFileContents(): UseFileContentsReturn {
 				language: getLanguageFromPath(path),
 				eol: detectEol(content),
 			};
+			// filesRefを即座に更新し、model.doAction後のfactory呼び出しで
+			// ファイルコンテンツが確実に取得できるようにする
+			// (SizeTrackerのReact.memoにより、後からの再レンダリングが保証されないため)
+			filesRef.current = [...filesRef.current, newFile];
 			setFiles((prev) => [...prev, newFile]);
 		} catch (error) {
 			console.error(`Failed to open file: ${path}`, error);
