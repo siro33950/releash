@@ -101,4 +101,15 @@ test.describe("Settings", () => {
 		await themeSelect.selectOption("light");
 		await expect(saveBtn).toBeEnabled();
 	});
+
+	test("クラッシュレポート設定トグルが表示される", async ({ page }) => {
+		const config = settingsConfig();
+		await setupTauriMock(page, config);
+		await waitForApp(page);
+
+		const settingsBtn = page.getByRole("button", { name: "Settings" });
+		await settingsBtn.click();
+
+		await expect(page.getByText("Send crash reports")).toBeVisible();
+	});
 });

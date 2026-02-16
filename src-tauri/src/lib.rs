@@ -7,6 +7,7 @@ mod protocol;
 mod pty;
 mod qr_code;
 mod search;
+mod sentry_integration;
 mod shell_integration;
 mod tls;
 mod vpn_detect;
@@ -25,6 +26,8 @@ use tauri_plugin_aptabase::EventTracker;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _sentry_guard = sentry_integration::init_sentry();
+
     // aptabase プラグインの setup 内で tokio::spawn が呼ばれるため、
     // Tauri Builder 起動前に Tokio ランタイムを共有する必要がある。
     // ref: https://github.com/aptabase/tauri-plugin-aptabase/issues/22
@@ -149,6 +152,8 @@ pub fn run() {
             config::apply_hooks_config,
             config::get_hooks_status,
             config::update_telemetry_enabled,
+            config::get_crash_reporting_enabled,
+            config::update_crash_reporting,
             // Hook Listener
             hook_listener::get_agent_states,
             // ネットワーク

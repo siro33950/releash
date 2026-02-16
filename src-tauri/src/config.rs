@@ -17,6 +17,26 @@ pub struct ReleashConfig {
     pub telemetry_enabled: bool,
     #[serde(default)]
     pub server: ServerSection,
+    #[serde(default)]
+    pub telemetry: TelemetrySection,
+}
+
+fn default_crash_reporting() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetrySection {
+    #[serde(default = "default_crash_reporting")]
+    pub crash_reporting: bool,
+}
+
+impl Default for TelemetrySection {
+    fn default() -> Self {
+        Self {
+            crash_reporting: true,
+        }
+    }
 }
 
 impl Default for ReleashConfig {
@@ -24,6 +44,7 @@ impl Default for ReleashConfig {
         Self {
             telemetry_enabled: true,
             server: ServerSection::default(),
+            telemetry: TelemetrySection::default(),
         }
     }
 }
@@ -430,6 +451,37 @@ pub async fn get_hooks_status(state: tauri::State<'_, Arc<AppConfig>>) -> Result
     .map_err(|e| format!("task join error: {e}"))?
 }
 
+#[tauri::command]
+pub fn get_crash_reporting_enabled(
+    state: tauri::State<'_, Arc<AppConfig>>,
+) -> Result<bool, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("ロック取得失敗: {e}"))?;
+    Ok(config.telemetry.crash_reporting)
+}
+
+#[tauri::command]
+pub async fn update_crash_reporting(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    enabled: bool,
+) -> Result<(), String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.telemetry.crash_reporting = enabled;
+        write_config(&app_config.config_path, &config)?;
+        crate::sentry_integration::set_crash_reporting_enabled(enabled);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,5 +773,43 @@ token = ""
         merge_hooks(&mut existing, &new_config).unwrap();
 
         assert_eq!(existing["permissions"]["allow"][0], "Read");
+    }
+
+    #[test]
+    fn telemetry_defaults_to_enabled() {
+        let config = ReleashConfig::default();
+        assert!(config.telemetry.crash_reporting);
+    }
+
+    #[test]
+    fn telemetry_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.telemetry.crash_reporting = false;
+        write_config(&path, &config).unwrap();
+
+        let reloaded = fs::read_to_string(&path).unwrap();
+        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
+        assert!(!reloaded.telemetry.crash_reporting);
+    }
+
+    #[test]
+    fn existing_config_without_telemetry_gets_defaults() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+bind = "127.0.0.1"
+port = 9700
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert!(config.telemetry.crash_reporting);
     }
 }

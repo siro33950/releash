@@ -67,12 +67,21 @@ jobs:
           APPLE_TEAM_ID: op://releash/apple-signing/team-id
           TAURI_SIGNING_PRIVATE_KEY: op://releash/tauri-updater/private-key
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: op://releash/tauri-updater/password
+          SENTRY_DSN: op://releash/sentry/dsn
+          SENTRY_AUTH_TOKEN: op://releash/sentry/auth-token
+          SENTRY_ORG: op://releash/sentry/org
+          SENTRY_PROJECT: op://releash/sentry/project
         with:
           export-env: true
 
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SENTRY_DSN: ${{ env.SENTRY_DSN }}
+          VITE_SENTRY_DSN: ${{ env.SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ env.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ env.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ env.SENTRY_PROJECT }}
         with:
           releaseId: ${{ needs.create-release.outputs.release-id }}
           tauriScript: pnpm tauri

@@ -196,3 +196,9 @@ vi.mock("@tauri-apps/plugin-updater", () => ({
 vi.mock("@tauri-apps/plugin-process", () => ({
 	relaunch: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock("@sentry/react", () => ({
+	init: vi.fn(),
+	getClient: vi.fn().mockReturnValue(undefined),
+	ErrorBoundary: ({ children }: { children: React.ReactNode }) => children,
+}));
