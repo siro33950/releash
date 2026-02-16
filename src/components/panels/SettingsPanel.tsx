@@ -89,7 +89,9 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 
 	const handleSave = useCallback(() => {
 		onSave(draft);
-		trackEvent("settings_saved");
+		if (draft.telemetryEnabled) {
+			trackEvent("settings_saved");
+		}
 	}, [draft, onSave]);
 
 	const isDirty = JSON.stringify(draft) !== JSON.stringify(settings);

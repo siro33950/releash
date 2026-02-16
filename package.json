@@ -19,7 +19,7 @@
 		"test:integration:ui": "playwright test --ui"
 	},
 	"dependencies": {
-		"@aptabase/tauri": "^0.4.1",
+		"@aptabase/tauri": "github:aptabase/tauri-plugin-aptabase",
 		"@monaco-editor/react": "4.8.0-rc.3",
 		"@noble/hashes": "^2.0.1",
 		"@react-symbols/icons": "^1.3.0",

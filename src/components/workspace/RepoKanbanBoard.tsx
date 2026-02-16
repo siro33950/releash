@@ -280,8 +280,8 @@ export function RepoKanbanBoard({
 					worktreePath: branch.worktree_path,
 					force,
 				});
+				trackEvent("worktree_removed");
 			}
-			trackEvent("worktree_removed");
 			await refresh();
 			setDeletingBranch(null);
 		},

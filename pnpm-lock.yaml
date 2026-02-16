@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@aptabase/tauri':
-        specifier: ^0.4.1
-        version: 0.4.1
+        specifier: github:aptabase/tauri-plugin-aptabase
+        version: https://codeload.github.com/aptabase/tauri-plugin-aptabase/tar.gz/e896cceb12487380127f203130a999ab26132088
       '@monaco-editor/react':
         specifier: 4.8.0-rc.3
         version: 4.8.0-rc.3(monaco-editor@0.55.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -147,8 +147,9 @@ packages:
   '@adobe/css-tools@4.4.4':
     resolution: {integrity: sha512-Elp+iwUx5rN5+Y8xLt5/GRoG20WGoDCQ/1Fb+1LiGtvwbDavuSk0jhD/eZdckHAuzcDzccnkv+rEjyWfRx18gg==}
 
-  '@aptabase/tauri@0.4.1':
-    resolution: {integrity: sha512-ZjCtPN1Tw0y90nxMLR64UqFjgikxfc9NZouxqXlqZFkfpF8D/tPf1xUn0Anu8nvERGND/hAkO3x7ZLyLGI1HRg==}
+  '@aptabase/tauri@https://codeload.github.com/aptabase/tauri-plugin-aptabase/tar.gz/e896cceb12487380127f203130a999ab26132088':
+    resolution: {tarball: https://codeload.github.com/aptabase/tauri-plugin-aptabase/tar.gz/e896cceb12487380127f203130a999ab26132088}
+    version: 0.4.2
 
   '@asamuzakjp/css-color@4.1.1':
     resolution: {integrity: sha512-B0Hv6G3gWGMn0xKJ0txEi/jM5iFpT3MfDxmhZFb4W047GvytCf1DHQ1D69W3zHI4yWe2aTZAA0JnbMZ7Xc8DuQ==}
@@ -1483,10 +1484,6 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7
 
-  '@tauri-apps/api@1.6.0':
-    resolution: {integrity: sha512-rqI++FWClU5I2UBp4HXFvl+sBWkdigBkxnpJDQUWttNyG7IZP4FwQGhTNL5EOw0vI8i6eSAJ5frLqO7n7jbJdg==}
-    engines: {node: '>= 14.6.0', npm: '>= 6.6.0', yarn: '>= 1.19.1'}
-
   '@tauri-apps/api@2.10.1':
     resolution: {integrity: sha512-hKL/jWf293UDSUN09rR69hrToyIXBb8CjGaWC7gfinvnQrBVvnLr08FeFi38gxtugAVyVcTa5/FD/Xnkb1siBw==}
 
@@ -2383,9 +2380,10 @@ snapshots:
 
   '@adobe/css-tools@4.4.4': {}
 
-  '@aptabase/tauri@0.4.1':
+  '@aptabase/tauri@https://codeload.github.com/aptabase/tauri-plugin-aptabase/tar.gz/e896cceb12487380127f203130a999ab26132088':
     dependencies:
-      '@tauri-apps/api': 1.6.0
+      '@tauri-apps/api': 2.10.1
+      tslib: 2.8.1
 
   '@asamuzakjp/css-color@4.1.1':
     dependencies:
@@ -3609,8 +3607,6 @@ snapshots:
       '@tailwindcss/oxide': 4.1.18
       tailwindcss: 4.1.18
       vite: 7.3.1(@types/node@25.2.0)(jiti@2.6.1)(lightningcss@1.30.2)
-
-  '@tauri-apps/api@1.6.0': {}
 
   '@tauri-apps/api@2.10.1': {}
 

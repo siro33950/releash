@@ -54,13 +54,8 @@ pub fn run() {
             let config = load_or_create_config(&config_path).expect("設定ファイルの読み込みに失敗");
             let telemetry_enabled = config.telemetry_enabled;
 
-            let aptabase_key = if telemetry_enabled {
-                "A-US-6336372584"
-            } else {
-                ""
-            };
             app.handle()
-                .plugin(tauri_plugin_aptabase::Builder::new(aptabase_key).build())?;
+                .plugin(tauri_plugin_aptabase::Builder::new("A-US-6336372584").build())?;
 
             let app_config = Arc::new(AppConfig::new(config, config_path));
             app.manage(app_config.clone());
