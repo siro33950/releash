@@ -42,7 +42,7 @@ describe("MonacoDiffViewer", () => {
 		);
 
 		const editors = container.querySelectorAll<HTMLElement>(
-			"[style*='height: 100%']",
+			"[style*='position: absolute']",
 		);
 		expect(editors.length).toBeGreaterThan(0);
 	});
@@ -57,7 +57,7 @@ describe("MonacoDiffViewer", () => {
 		);
 
 		const editors = container.querySelectorAll<HTMLElement>(
-			"[style*='height: 100%']",
+			"[style*='position: absolute']",
 		);
 		expect(editors.length).toBeGreaterThan(0);
 	});
@@ -72,7 +72,7 @@ describe("MonacoDiffViewer", () => {
 		);
 
 		const editors = container.querySelectorAll<HTMLElement>(
-			"[style*='height: 100%']",
+			"[style*='position: absolute']",
 		);
 		expect(editors.length).toBeGreaterThan(0);
 	});

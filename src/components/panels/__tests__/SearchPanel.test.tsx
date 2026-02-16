@@ -9,12 +9,6 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SearchPanel } from "../SearchPanel";
 
-vi.mock("react-resizable-panels", () => ({
-	Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-	Panel: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-	Separator: () => <div />,
-}));
-
 const mockInvoke = vi.mocked(invoke);
 
 describe("SearchPanel", () => {

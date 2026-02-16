@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "flexlayout-react/style/dark.css";
+@import "./styles/flexlayout-custom.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -164,12 +166,12 @@
 }
 
 /*
- * Isolate each resizable panel into its own stacking context.
+ * Isolate each flexlayout tab into its own stacking context.
  * Without this, Monaco Editor's high z-index elements paint on top of
  * adjacent panels (e.g. Sidebar) in production builds.
  * Must be outside @layer to avoid being overridden by Monaco's runtime CSS.
  */
-[data-panel] {
+.flexlayout__tab {
 	isolation: isolate;
 }
 

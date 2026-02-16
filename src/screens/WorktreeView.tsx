@@ -1,12 +1,23 @@
 import { loader } from "@monaco-editor/react";
+import { FileIcon } from "@react-symbols/icons/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { type ITabRenderValues, Layout, type TabNode } from "flexlayout-react";
 import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useMemo,
+	useReducer,
+	useRef,
+	useState,
+} from "react";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
-import { EditorPanel } from "@/components/panels/EditorPanel";
+import { EditorTabContent } from "@/components/panels/EditorTabContent";
+import { EmptyState } from "@/components/panels/EmptyState";
+import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
@@ -27,8 +38,13 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import {
+	EditorContext,
+	type EditorContextValue,
+} from "@/contexts/EditorContext";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
-import { useEditorTabs } from "@/hooks/useEditorTabs";
+import { useEditorLayout } from "@/hooks/useEditorLayout";
+import { useFileContents } from "@/hooks/useFileContents";
 import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useLineComments } from "@/hooks/useLineComments";
@@ -62,20 +78,19 @@ export function WorktreeView({
 	isActive,
 }: WorktreeViewProps) {
 	const {
-		tabs,
-		activeTab,
+		files,
+		getFileContent,
 		openFile,
-		closeTab,
-		setActiveTab,
-		reloadTabIfClean,
-		updateTabContent,
+		closeFile,
+		updateContent,
 		saveFile,
-		updateTabPath,
-		closeTabsByPrefix,
-		closeAllTabs,
-		saveAllDirtyTabs,
-		createUntitledTab,
-	} = useEditorTabs();
+		reloadFileIfClean,
+		updateFilePath,
+		closeFilesByPrefix,
+		closeAllFiles,
+		saveAllDirtyFiles,
+		createUntitledFile,
+	} = useFileContents();
 
 	const [activeView, setActiveView] = useState<string>("git");
 	const { branch } = useCurrentBranch(rootPath);
@@ -83,25 +98,47 @@ export function WorktreeView({
 	const [agentState, setAgentState] = useState<AgentState | undefined>();
 	const { comments, addComment, removeComment, updateComment, markAsSent } =
 		useLineComments();
-	const {
-		stage,
-		unstage,
-		push,
-		discard,
-		stageHunk,
-		unstageHunk,
-		createBranch,
-	} = useGitActions();
+	const { stage, unstage, push, discard, stageHunk, createBranch } =
+		useGitActions();
 	const terminalRef = useRef<TerminalPanelHandle>(null);
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
 	const refreshGit = useCallback(() => setGitRefreshKey((k) => k + 1), []);
+
+	const [diffBase, setDiffBase] = useState<DiffBase>(settings.defaultDiffBase);
+	const [diffMode, setDiffMode] = useState<DiffMode>(settings.defaultDiffMode);
+	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
+	const [pendingReveal, setPendingReveal] = useState<{
+		path: string;
+		line: number;
+	} | null>(null);
+	const [searchFocusKey, setSearchFocusKey] = useState(0);
+
+	const handleTabClose = useCallback(
+		(path: string): boolean => {
+			const file = getFileContent(path);
+			if (file?.isDirty) {
+				setClosingTabPath(path);
+				return true;
+			}
+			closeFile(path);
+			return false;
+		},
+		[getFileContent, closeFile],
+	);
+
+	const editorLayout = useEditorLayout(handleTabClose);
+
+	const [, forceRender] = useReducer((x: number) => x + 1, 0);
+	const activeTabPath = editorLayout.getActiveTabPath();
+	const activeTab = activeTabPath ? getFileContent(activeTabPath) : null;
+
 	useFileWatcher({
 		rootPath,
 		onFileChange: useCallback(
 			(event: FileChangeEvent) => {
-				reloadTabIfClean(normalizePath(event.path));
+				reloadFileIfClean(normalizePath(event.path));
 			},
-			[reloadTabIfClean],
+			[reloadFileIfClean],
 		),
 	});
 
@@ -214,7 +251,7 @@ export function WorktreeView({
 						const rp = rootPathRef.current;
 						if (!rp) return;
 						const absolutePath = `${rp}/${relativePath}`;
-						openFile(absolutePath);
+						handleOpenFileRef.current(absolutePath);
 						setPendingReveal({ path: absolutePath, line });
 					},
 					getRootPath: () => rootPathRef.current,
@@ -223,16 +260,33 @@ export function WorktreeView({
 			.catch((error) => {
 				console.error("Failed to initialize Monaco:", error);
 			});
-	}, [openFile]);
+	}, []);
 
-	const [diffBase, setDiffBase] = useState<DiffBase>(settings.defaultDiffBase);
-	const [diffMode, setDiffMode] = useState<DiffMode>(settings.defaultDiffMode);
-	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
-	const [pendingReveal, setPendingReveal] = useState<{
-		path: string;
-		line: number;
-	} | null>(null);
-	const [searchFocusKey, setSearchFocusKey] = useState(0);
+	// Sync file open: opens in both useFileContents and flexlayout
+	const handleOpenFile = useCallback(
+		async (path: string) => {
+			await openFile(path);
+			const file = getFileContent(path);
+			const name = path.split(/[/\\]/).pop() ?? path;
+			editorLayout.addTab(path, name, file?.isDirty ?? false);
+		},
+		[openFile, getFileContent, editorLayout],
+	);
+	const handleOpenFileRef = useRef(handleOpenFile);
+	handleOpenFileRef.current = handleOpenFile;
+
+	// Sync dirty state to flexlayout tab
+	const prevFilesRef = useRef(files);
+	useEffect(() => {
+		const prevFiles = prevFilesRef.current;
+		for (const file of files) {
+			const prev = prevFiles.find((f) => f.path === file.path);
+			if (!prev || prev.isDirty !== file.isDirty) {
+				editorLayout.updateTabDirty(file.path, file.isDirty);
+			}
+		}
+		prevFilesRef.current = files;
+	}, [files, editorLayout]);
 
 	const handleSave = useCallback(() => {
 		if (activeTab?.isDirty) {
@@ -247,14 +301,14 @@ export function WorktreeView({
 
 	const handleCloseActiveTab = useCallback(() => {
 		if (activeTab) {
-			const tab = tabs.find((t) => t.path === activeTab.path);
-			if (tab?.isDirty) {
+			if (activeTab.isDirty) {
 				setClosingTabPath(activeTab.path);
 			} else {
-				closeTab(activeTab.path);
+				closeFile(activeTab.path);
+				editorLayout.removeTab(activeTab.path);
 			}
 		}
-	}, [activeTab, tabs, closeTab]);
+	}, [activeTab, closeFile, editorLayout]);
 
 	const handleGitStageAll = useCallback(async () => {
 		try {
@@ -343,17 +397,29 @@ export function WorktreeView({
 		}
 	}, [rootPath, createBranch, newBranchName]);
 
+	const handleCreateUntitledTab = useCallback(() => {
+		const path = createUntitledFile();
+		const name = path.split(":").pop() ?? path;
+		editorLayout.addTab(path, name, true);
+	}, [createUntitledFile, editorLayout]);
+
 	const menuHandlers: MenuHandlers = useMemo(
 		() => ({
-			"new-file": createUntitledTab,
+			"new-file": handleCreateUntitledTab,
 			"new-folder": () => {
 				setActiveView("explorer");
 				setNewFolderKey((k) => k + 1);
 			},
 			save: handleSave,
-			"save-all": saveAllDirtyTabs,
+			"save-all": saveAllDirtyFiles,
 			"close-tab": handleCloseActiveTab,
-			"close-all-tabs": closeAllTabs,
+			"close-all-tabs": () => {
+				closeAllFiles();
+				// Remove all editor tabs from flexlayout
+				for (const file of files) {
+					editorLayout.removeTab(file.path);
+				}
+			},
 			"find-in-files": handleSearch,
 			"view-explorer": () => setActiveView("explorer"),
 			"view-search": () => {
@@ -389,11 +455,13 @@ export function WorktreeView({
 			"new-terminal": () => {},
 		}),
 		[
-			createUntitledTab,
+			handleCreateUntitledTab,
 			handleSave,
-			saveAllDirtyTabs,
+			saveAllDirtyFiles,
 			handleCloseActiveTab,
-			closeAllTabs,
+			closeAllFiles,
+			files,
+			editorLayout,
 			handleSearch,
 			handleGitStageAll,
 			handleGitUnstageAll,
@@ -409,10 +477,10 @@ export function WorktreeView({
 	const handleSearchResultClick = useCallback(
 		(relativePath: string, line: number) => {
 			const absolutePath = `${rootPath}/${relativePath}`;
-			openFile(absolutePath);
+			handleOpenFile(absolutePath);
 			setPendingReveal({ path: absolutePath, line });
 		},
-		[rootPath, openFile],
+		[rootPath, handleOpenFile],
 	);
 
 	const handleSearchOccurrences = useCallback((_text: string) => {
@@ -420,35 +488,25 @@ export function WorktreeView({
 		setSearchFocusKey((k) => k + 1);
 	}, []);
 
-	const handleTabClose = useCallback(
-		(path: string) => {
-			const tab = tabs.find((t) => t.path === path);
-			if (tab?.isDirty) {
-				setClosingTabPath(path);
-			} else {
-				closeTab(path);
-			}
-		},
-		[tabs, closeTab],
-	);
-
 	const handleUnsavedSave = useCallback(async () => {
 		if (!closingTabPath) return;
 		try {
 			await saveFile(closingTabPath);
-			closeTab(closingTabPath);
+			closeFile(closingTabPath);
+			editorLayout.removeTab(closingTabPath);
 			setClosingTabPath(null);
 		} catch (e) {
 			console.error("Failed to save file:", e);
 			setClosingTabPath(null);
 		}
-	}, [closingTabPath, saveFile, closeTab]);
+	}, [closingTabPath, saveFile, closeFile, editorLayout]);
 
 	const handleUnsavedDiscard = useCallback(() => {
 		if (!closingTabPath) return;
-		closeTab(closingTabPath);
+		closeFile(closingTabPath);
+		editorLayout.removeTab(closingTabPath);
 		setClosingTabPath(null);
-	}, [closingTabPath, closeTab]);
+	}, [closingTabPath, closeFile, editorLayout]);
 
 	const handleUnsavedCancel = useCallback(() => {
 		setClosingTabPath(null);
@@ -456,16 +514,25 @@ export function WorktreeView({
 
 	const handleRename = useCallback(
 		(oldPath: string, newPath: string) => {
-			updateTabPath(oldPath, newPath);
+			const file = getFileContent(oldPath);
+			updateFilePath(oldPath, newPath);
+			editorLayout.removeTab(oldPath);
+			const newName = newPath.split(/[/\\]/).pop() ?? newPath;
+			editorLayout.addTab(newPath, newName, file?.isDirty ?? false);
 		},
-		[updateTabPath],
+		[updateFilePath, getFileContent, editorLayout],
 	);
 
 	const handleDelete = useCallback(
 		(path: string) => {
-			closeTabsByPrefix(path);
+			for (const file of files) {
+				if (file.path === path || file.path.startsWith(`${path}/`)) {
+					editorLayout.removeTab(file.path);
+				}
+			}
+			closeFilesByPrefix(path);
 		},
-		[closeTabsByPrefix],
+		[files, closeFilesByPrefix, editorLayout],
 	);
 
 	const handleSendToTerminal = useCallback(
@@ -480,9 +547,186 @@ export function WorktreeView({
 		[markAsSent],
 	);
 
-	const closingTab = closingTabPath
-		? tabs.find((t) => t.path === closingTabPath)
-		: null;
+	const handleCommentClick = useCallback(
+		(commentFilePath: string, lineNumber: number) => {
+			if (activeTabPath === commentFilePath) {
+				setPendingReveal({ path: commentFilePath, line: lineNumber });
+			} else {
+				handleOpenFile(commentFilePath);
+				setPendingReveal({ path: commentFilePath, line: lineNumber });
+			}
+		},
+		[activeTabPath, handleOpenFile],
+	);
+
+	const closingTab = closingTabPath ? getFileContent(closingTabPath) : null;
+
+	// EditorContext value
+	const editorContextValue = useMemo<EditorContextValue>(
+		() => ({
+			getFileContent,
+			updateContent,
+			saveFile,
+			diffBase,
+			diffMode,
+			setDiffBase,
+			setDiffMode,
+			comments,
+			addComment,
+			deleteComment: removeComment,
+			updateComment,
+			rootPath,
+			onStageHunk: stageHunk,
+			onGitChanged: refreshGit,
+			gitRefreshKey,
+			theme: settings.theme,
+			fontSize: settings.fontSize,
+			onSearchOccurrences: handleSearchOccurrences,
+		}),
+		[
+			getFileContent,
+			updateContent,
+			saveFile,
+			diffBase,
+			diffMode,
+			comments,
+			addComment,
+			removeComment,
+			updateComment,
+			rootPath,
+			stageHunk,
+			refreshGit,
+			gitRefreshKey,
+			settings.theme,
+			settings.fontSize,
+			handleSearchOccurrences,
+		],
+	);
+
+	// flexlayout factory: renders the content of each tab
+	const factory = useCallback(
+		(node: TabNode): ReactNode => {
+			const component = node.getComponent();
+			switch (component) {
+				case "sidebar":
+					if (activeView === "git") {
+						return (
+							<SourceControlPanel
+								rootPath={rootPath}
+								onSelectFile={handleOpenFile}
+								onGitChanged={refreshGit}
+								gitRefreshKey={gitRefreshKey}
+							/>
+						);
+					}
+					if (activeView === "search") {
+						return (
+							<SearchPanel
+								rootPath={rootPath}
+								onSelectFileAtLine={handleSearchResultClick}
+								focusKey={searchFocusKey}
+							/>
+						);
+					}
+					if (activeView === "settings") {
+						return (
+							<SettingsPanel settings={settings} onSave={onSettingsSave} />
+						);
+					}
+					return (
+						<SidebarPanel
+							rootPath={rootPath}
+							onOpenFolder={onSwitchToKanban}
+							onSelectFile={handleOpenFile}
+							onFileChange={reloadFileIfClean}
+							onRename={handleRename}
+							onDelete={handleDelete}
+							requestNewFolderKey={newFolderKey}
+						/>
+					);
+				case "editor": {
+					const config = node.getConfig();
+					const filePath = config?.filePath;
+					if (!filePath) return <EmptyState />;
+					return (
+						<EditorTabContent
+							filePath={filePath}
+							externalRevealLine={pendingReveal}
+							onExternalRevealConsumed={() => setPendingReveal(null)}
+						/>
+					);
+				}
+				case "review":
+					return (
+						<ReviewPanel
+							comments={comments}
+							onCommentClick={handleCommentClick}
+							onDeleteComment={removeComment}
+							onUpdateComment={updateComment}
+							onSendToTerminal={handleSendToTerminal}
+							cwd={rootPath}
+							theme={settings.theme}
+						/>
+					);
+				case "terminal":
+					return (
+						<TerminalPanel
+							ref={terminalRef}
+							key={rootPath}
+							cwd={rootPath}
+							theme={settings.theme}
+							terminalStartupCommand={buildTerminalCommand(settings)}
+							agentType={settings.agent}
+						/>
+					);
+				default:
+					return null;
+			}
+		},
+		[
+			activeView,
+			rootPath,
+			handleOpenFile,
+			refreshGit,
+			gitRefreshKey,
+			handleSearchResultClick,
+			searchFocusKey,
+			settings,
+			onSettingsSave,
+			onSwitchToKanban,
+			reloadFileIfClean,
+			handleRename,
+			handleDelete,
+			newFolderKey,
+			pendingReveal,
+			comments,
+			handleCommentClick,
+			removeComment,
+			updateComment,
+			handleSendToTerminal,
+		],
+	);
+
+	// Custom tab rendering for editor tabs
+	const onRenderTab = useCallback(
+		(node: TabNode, renderValues: ITabRenderValues) => {
+			if (node.getComponent() === "editor") {
+				const config = node.getConfig();
+				renderValues.leading = (
+					<FileIcon fileName={node.getName()} className="h-4 w-4" />
+				);
+				if (config?.isDirty) {
+					renderValues.buttons.push(
+						<span
+							key="dirty"
+							className="w-2 h-2 rounded-full bg-foreground shrink-0"
+						/>,
+					);
+				}
+			}
+		},
+		[],
+	);
 
 	return (
 		<div className="flex flex-col h-full w-full overflow-hidden bg-background text-foreground">
@@ -493,100 +737,17 @@ export function WorktreeView({
 						<Loader2 className="size-6 text-muted-foreground animate-spin" />
 					</div>
 				) : (
-					<Group orientation="horizontal" className="flex-1">
-						{/* Sidebar */}
-						<Panel
-							id="sidebar"
-							defaultSize="15"
-							minSize={10}
-							maxSize="30"
-							collapsible={false}
-						>
-							{activeView === "git" ? (
-								<SourceControlPanel
-									rootPath={rootPath}
-									onSelectFile={openFile}
-									onGitChanged={refreshGit}
-									gitRefreshKey={gitRefreshKey}
-								/>
-							) : activeView === "search" ? (
-								<SearchPanel
-									rootPath={rootPath}
-									onSelectFileAtLine={handleSearchResultClick}
-									focusKey={searchFocusKey}
-								/>
-							) : activeView === "settings" ? (
-								<SettingsPanel settings={settings} onSave={onSettingsSave} />
-							) : (
-								<SidebarPanel
-									rootPath={rootPath}
-									onOpenFolder={onSwitchToKanban}
-									onSelectFile={openFile}
-									onFileChange={reloadTabIfClean}
-									onRename={handleRename}
-									onDelete={handleDelete}
-									requestNewFolderKey={newFolderKey}
-								/>
-							)}
-						</Panel>
-
-						<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
-
-						{/* Editor */}
-						<Panel
-							id="editor"
-							defaultSize="55"
-							minSize={20}
-							collapsible={false}
-						>
-							<EditorPanel
-								tabs={tabs}
-								activeTab={activeTab}
-								onTabClick={setActiveTab}
-								onTabClose={handleTabClose}
-								diffBase={diffBase}
-								diffMode={diffMode}
-								onDiffBaseChange={setDiffBase}
-								onDiffModeChange={setDiffMode}
-								onContentChange={updateTabContent}
-								fontSize={settings.fontSize}
-								comments={comments}
-								onAddComment={addComment}
-								onDeleteComment={removeComment}
-								onUpdateComment={updateComment}
-								rootPath={rootPath}
-								onStageHunk={stageHunk}
-								onUnstageHunk={unstageHunk}
-								onSendToTerminal={handleSendToTerminal}
-								theme={settings.theme}
-								gitRefreshKey={gitRefreshKey}
-								onGitChanged={refreshGit}
-								externalRevealLine={pendingReveal}
-								onExternalRevealConsumed={() => setPendingReveal(null)}
-								onSearchOccurrences={handleSearchOccurrences}
+					<EditorContext.Provider value={editorContextValue}>
+						<div className="flex-1 relative overflow-hidden">
+							<Layout
+								model={editorLayout.model}
+								factory={factory}
+								onAction={editorLayout.onAction}
+								onRenderTab={onRenderTab}
+								onModelChange={forceRender}
 							/>
-						</Panel>
-
-						<Separator className="w-px bg-border hover:bg-primary/50 cursor-col-resize" />
-
-						{/* Terminal */}
-						<Panel
-							id="terminal"
-							defaultSize="30"
-							minSize={10}
-							maxSize="60"
-							collapsible={false}
-						>
-							<TerminalPanel
-								ref={terminalRef}
-								key={rootPath}
-								cwd={rootPath}
-								theme={settings.theme}
-								terminalStartupCommand={buildTerminalCommand(settings)}
-								agentType={settings.agent}
-							/>
-						</Panel>
-					</Group>
+						</div>
+					</EditorContext.Provider>
 				)}
 			</div>
 			<StatusBar

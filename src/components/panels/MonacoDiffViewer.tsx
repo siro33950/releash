@@ -236,7 +236,7 @@ function GutterEditor({
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<div ref={containerRef} style={{ height: "100%", width: "100%" }} />
+				<div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 			</ContextMenuTrigger>
 			<EditorContextMenuContent actions={actions} />
 		</ContextMenu>
@@ -309,7 +309,7 @@ function DiffEditor({
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<div ref={containerRef} style={{ height: "100%", width: "100%" }} />
+				<div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
 			</ContextMenuTrigger>
 			<EditorContextMenuContent actions={actions} />
 		</ContextMenu>

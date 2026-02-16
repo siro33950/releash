@@ -1,8 +1,6 @@
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
 	forwardRef,
 	useCallback,
-	useEffect,
 	useImperativeHandle,
 	useRef,
 	useState,
@@ -15,7 +13,7 @@ import {
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { useTerminal } from "@/hooks/useTerminal";
-import { quotePathForShell, quotePathsForShell } from "@/lib/quotePathForShell";
+import { quotePathForShell } from "@/lib/quotePathForShell";
 import type { Theme } from "@/types/settings";
 import "@xterm/xterm/css/xterm.css";
 
@@ -57,46 +55,8 @@ export const TerminalPanel = forwardRef<
 		[writeToTerminal],
 	);
 
-	// Tauri OS drag & drop (Finder等からのドラッグ)
-	useEffect(() => {
-		const unlisten = getCurrentWebview().onDragDropEvent((event) => {
-			const container = containerRef.current;
-			if (!container) return;
-
-			const payload = event.payload;
-
-			if (payload.type === "enter" || payload.type === "over") {
-				const rect = container.getBoundingClientRect();
-				const { x, y } = payload.position;
-				const isInside =
-					x >= rect.left &&
-					x <= rect.right &&
-					y >= rect.top &&
-					y <= rect.bottom;
-				setIsDragOver(isInside);
-			} else if (payload.type === "drop") {
-				const rect = container.getBoundingClientRect();
-				const { x, y } = payload.position;
-				const isInside =
-					x >= rect.left &&
-					x <= rect.right &&
-					y >= rect.top &&
-					y <= rect.bottom;
-				if (isInside && payload.paths.length > 0) {
-					writeToTerminal(quotePathsForShell(payload.paths));
-				}
-				setIsDragOver(false);
-			} else if (payload.type === "leave") {
-				setIsDragOver(false);
-			}
-		});
-
-		return () => {
-			unlisten.then((fn) => fn());
-		};
-	}, [writeToTerminal]);
-
-	// アプリ内 HTML5 drag & drop (FileTreeからのドラッグ)
+	// HTML5 drag & drop (アプリ内FileTreeからのドラッグ)
+	// 外部ファイルドロップ(Finder等)はdragDropEnabled: falseではフルパス取得不可のため未対応
 	const handleDragOver = useCallback((e: React.DragEvent) => {
 		if (e.dataTransfer.types.includes("application/x-releash-file-path")) {
 			e.preventDefault();

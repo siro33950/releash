@@ -161,7 +161,7 @@ export function useMonacoDiffEditor(
 	);
 	const monacoRef = useRef<typeof Monaco | null>(null);
 	const [editorReady, setEditorReady] = useState(false);
-	const resizeObserverRef = useRef<ResizeObserver | null>(null);
+	const intersectionObserverRef = useRef<IntersectionObserver | null>(null);
 	const originalModelRef = useRef<Monaco.editor.ITextModel | null>(null);
 	const modifiedModelRef = useRef<Monaco.editor.ITextModel | null>(null);
 	const contentChangeListenerRef = useRef<Monaco.IDisposable | null>(null);
@@ -452,11 +452,20 @@ export function useMonacoDiffEditor(
 				},
 			});
 
-			const resizeObserver = new ResizeObserver(() => {
-				diffEditorRef.current?.layout();
+			// flexlayout-react hides inactive tabs with display:none.
+			// automaticLayout handles normal resizes, but ResizeObserver
+			// may not fire on display:none → visible transitions.
+			// Use IntersectionObserver with rAF to ensure layout after
+			// CSS has fully resolved.
+			const intersectionObserver = new IntersectionObserver((entries) => {
+				if (entries.some((e) => e.isIntersecting)) {
+					requestAnimationFrame(() => {
+						diffEditorRef.current?.layout();
+					});
+				}
 			});
-			resizeObserver.observe(container);
-			resizeObserverRef.current = resizeObserver;
+			intersectionObserver.observe(container);
+			intersectionObserverRef.current = intersectionObserver;
 		};
 
 		initDiffEditor().catch((error) => {
@@ -465,7 +474,7 @@ export function useMonacoDiffEditor(
 
 		return () => {
 			isMounted = false;
-			resizeObserverRef.current?.disconnect();
+			intersectionObserverRef.current?.disconnect();
 			contentChangeListenerRef.current?.dispose();
 			diffEditorRef.current?.dispose();
 			originalModelRef.current?.dispose();
