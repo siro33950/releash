@@ -16,7 +16,6 @@ export function initSentry(enabled: boolean): void {
 		tracesSampleRate: 0,
 		replaysSessionSampleRate: 0,
 		replaysOnErrorSampleRate: 0,
-		autoSessionTracking: true,
 		beforeSend(event) {
 			return scrubPaths(event);
 		},
