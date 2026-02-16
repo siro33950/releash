@@ -1,0 +1,148 @@
+.flexlayout__layout {
+  --color-text: var(--foreground);
+  --color-background: var(--background);
+  --color-base: var(--background);
+  --color-1: var(--sidebar);
+  --color-2: var(--sidebar);
+  --color-3: var(--muted);
+  --color-4: var(--border);
+  --color-5: var(--muted-foreground);
+  --color-6: var(--muted);
+  --color-drag1: var(--primary);
+  --color-drag2: var(--primary);
+  --color-drag1-background: rgba(128, 128, 128, 0.15);
+  --color-drag2-background: rgba(128, 128, 128, 0.15);
+  --font-size: 12px;
+  --font-family: inherit;
+  --color-overflow: var(--muted-foreground);
+  --color-icon: var(--muted-foreground);
+  --color-tabset-background: var(--sidebar);
+  --color-tabset-background-selected: var(--sidebar);
+  --color-tabset-divider-line: var(--border);
+  --color-tabset-header-background: var(--sidebar);
+  --color-tabset-header: var(--foreground);
+  --color-tab-content: var(--background);
+  --color-tab-selected: var(--foreground);
+  --color-tab-selected-background: var(--background);
+  --color-tab-unselected: var(--muted-foreground);
+  --color-tab-unselected-background: transparent;
+  --color-splitter: var(--border);
+  --color-splitter-hover: var(--primary);
+  --color-splitter-drag: var(--primary);
+  --color-drag-rect-border: var(--border);
+  --color-drag-rect-background: var(--sidebar);
+  --color-drag-rect: var(--foreground);
+  --color-popup-border: var(--border);
+  --color-popup-unselected: var(--foreground);
+  --color-popup-unselected-background: var(--popover);
+  --color-popup-selected: var(--foreground);
+  --color-popup-selected-background: var(--muted);
+  --color-toolbar-button-hover: var(--muted);
+}
+
+/* remove dark theme gradients */
+.flexlayout__tabset-selected {
+  background-image: none;
+}
+
+.flexlayout__tabset-maximized {
+  background-image: none;
+}
+
+/* remove dark theme box shadows */
+.flexlayout__tabset_header {
+  box-shadow: none;
+}
+
+.flexlayout__tab_top,
+.flexlayout__tab_bottom {
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.flexlayout__border_button {
+  box-shadow: none;
+}
+
+/* editor tab bar styling */
+.flexlayout__tabset_tabbar_outer {
+  height: 30px;
+}
+
+.flexlayout__tab_button {
+  padding: 0 0.75em;
+  gap: 0.5em;
+  height: 30px;
+  font-size: 13px;
+  border-right: 1px solid var(--border);
+}
+
+.flexlayout__tab_button--selected {
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+.flexlayout__tab_button--unselected {
+  background-color: var(--sidebar);
+  color: var(--muted-foreground);
+}
+
+/* hide close button on unselected tabs, show on hover */
+.flexlayout__tab_button--unselected .flexlayout__tab_button_trailing {
+  visibility: hidden;
+}
+
+@media (hover: hover) {
+  .flexlayout__tab_button:hover .flexlayout__tab_button_trailing {
+    visibility: visible;
+  }
+}
+
+.flexlayout__tab_button--selected .flexlayout__tab_button_trailing {
+  visibility: visible;
+}
+
+/* tab panel content background */
+.flexlayout__tab {
+  background-color: var(--background);
+}
+
+/* splitter */
+.flexlayout__splitter {
+  background-color: var(--border);
+}
+
+@media (hover: hover) {
+  .flexlayout__splitter:hover {
+    background-color: var(--primary);
+    opacity: 0.5;
+    border-radius: 0;
+  }
+}
+
+.flexlayout__splitter_drag {
+  background-color: var(--primary);
+  border-radius: 0;
+}
+
+/* hide splitter handle dots */
+.flexlayout__splitter_handle {
+  display: none;
+}
+
+/* tab divider (gap between tabs) */
+.flexlayout__tabset_tab_divider {
+  width: 0;
+}
+
+/* tab strip top border indicator */
+.flexlayout__tabset_tabbar_inner_tab_container_top {
+  border-top: none;
+}
+
+/* Prevent overflow:auto on tab container from breaking height:100% chain in WebKit.
+   All tab contents manage their own scrolling internally. */
+.flexlayout__tab_moveable {
+  overflow: hidden;
+}
+

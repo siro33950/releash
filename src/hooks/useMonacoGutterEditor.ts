@@ -108,7 +108,7 @@ export function useMonacoGutterEditor(
 	const modelRef = useRef<Monaco.editor.ITextModel | null>(null);
 	const monacoRef = useRef<typeof Monaco | null>(null);
 	const [, setEditorReady] = useState(false);
-	const resizeObserverRef = useRef<ResizeObserver | null>(null);
+	const intersectionObserverRef = useRef<IntersectionObserver | null>(null);
 	const decorationsRef = useRef<string[]>([]);
 	const commentDecorationsRef = useRef<string[]>([]);
 	const originalValueRef = useRef(originalValue);
@@ -377,11 +377,15 @@ export function useMonacoGutterEditor(
 				},
 			});
 
-			const resizeObserver = new ResizeObserver(() => {
-				editorRef.current?.layout();
+			const intersectionObserver = new IntersectionObserver((entries) => {
+				if (entries.some((e) => e.isIntersecting)) {
+					requestAnimationFrame(() => {
+						editorRef.current?.layout();
+					});
+				}
 			});
-			resizeObserver.observe(container);
-			resizeObserverRef.current = resizeObserver;
+			intersectionObserver.observe(container);
+			intersectionObserverRef.current = intersectionObserver;
 		};
 
 		initEditor().catch((error) => {
@@ -390,7 +394,7 @@ export function useMonacoGutterEditor(
 
 		return () => {
 			isMounted = false;
-			resizeObserverRef.current?.disconnect();
+			intersectionObserverRef.current?.disconnect();
 			editorRef.current?.dispose();
 			modelRef.current?.dispose();
 		};

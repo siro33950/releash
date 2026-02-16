@@ -21,15 +21,29 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 	openUrl: vi.fn(),
 }));
 
-vi.mock("react-resizable-panels", () => ({
-	Group: ({ children }: { children: React.ReactNode }) => (
-		<div data-testid="panel-group">{children}</div>
-	),
-	Panel: ({ children }: { children: React.ReactNode }) => (
-		<div data-testid="panel">{children}</div>
-	),
-	Separator: () => <div data-testid="separator" />,
-}));
+vi.mock("flexlayout-react", () => {
+	const Model = {
+		fromJson: () => ({
+			getNodeById: () => null,
+			doAction: vi.fn(),
+		}),
+	};
+	const Layout = ({
+		factory,
+	}: {
+		factory: (node: { getComponent: () => string }) => React.ReactNode;
+	}) => {
+		const components = ["sidebar", "kanban", "terminal"];
+		return (
+			<div data-testid="flexlayout">
+				{components.map((c) => (
+					<div key={c}>{factory({ getComponent: () => c })}</div>
+				))}
+			</div>
+		);
+	};
+	return { Model, Layout };
+});
 
 vi.mock("@/components/panels/RemotePanel", () => ({
 	RemotePanel: () => <div data-testid="remote-panel">RemotePanel</div>,

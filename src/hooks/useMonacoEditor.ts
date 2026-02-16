@@ -21,7 +21,7 @@ export function useMonacoEditor(
 	const { defaultValue = "", language = "typescript", onChange } = options;
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	const monacoRef = useRef<typeof Monaco | null>(null);
-	const resizeObserverRef = useRef<ResizeObserver | null>(null);
+	const intersectionObserverRef = useRef<IntersectionObserver | null>(null);
 	const onChangeRef = useRef(onChange);
 
 	// onChangeの参照を常に最新に保つ
@@ -64,11 +64,15 @@ export function useMonacoEditor(
 				onChangeRef.current?.(editor.getValue());
 			});
 
-			const resizeObserver = new ResizeObserver(() => {
-				editorRef.current?.layout();
+			const intersectionObserver = new IntersectionObserver((entries) => {
+				if (entries.some((e) => e.isIntersecting)) {
+					requestAnimationFrame(() => {
+						editorRef.current?.layout();
+					});
+				}
 			});
-			resizeObserver.observe(container);
-			resizeObserverRef.current = resizeObserver;
+			intersectionObserver.observe(container);
+			intersectionObserverRef.current = intersectionObserver;
 		};
 
 		initEditor().catch((error) => {
@@ -77,7 +81,7 @@ export function useMonacoEditor(
 
 		return () => {
 			isMounted = false;
-			resizeObserverRef.current?.disconnect();
+			intersectionObserverRef.current?.disconnect();
 			editorRef.current?.dispose();
 		};
 	}, [containerRef, defaultValue, language]);

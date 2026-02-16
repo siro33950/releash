@@ -92,9 +92,9 @@ test.describe("File Tree & Editor", () => {
 		await page.getByText("README.md").first().click();
 
 		// エディタタブに README.md が追加されることを確認
-		// EditorTabs は role="tab" でタブを表示する
+		// flexlayout-react のタブボタンで表示される
 		await expect(
-			page.getByRole("tab", { name: "README.md" }),
+			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 	});
 
@@ -111,17 +111,18 @@ test.describe("File Tree & Editor", () => {
 		await page.getByRole("button", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		await expect(
-			page.getByRole("tab", { name: "README.md" }),
+			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
-		// タブの Close ボタンをクリック（aria-label="Close README.md"）
+		// タブの Close ボタンをクリック（flexlayout-react の trailing ボタン）
 		await page
-			.getByRole("button", { name: "Close README.md" })
+			.locator(".flexlayout__tab_button", { hasText: "README.md" })
+			.locator(".flexlayout__tab_button_trailing")
 			.click({ force: true });
 
 		// タブが消えることを確認
 		await expect(
-			page.getByRole("tab", { name: "README.md" }),
+			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
 		).not.toBeVisible();
 	});
 
@@ -138,7 +139,7 @@ test.describe("File Tree & Editor", () => {
 		await page.getByRole("button", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		await expect(
-			page.getByRole("tab", { name: "README.md" }),
+			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
 		// Diff モードボタンが存在することを確認
