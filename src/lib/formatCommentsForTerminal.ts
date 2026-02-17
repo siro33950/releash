@@ -1,6 +1,9 @@
 import type { LineComment } from "@/types/comment";
 
-export function formatCommentsForTerminal(comments: LineComment[]): string {
+export function formatCommentsForTerminal(
+	comments: LineComment[],
+	rootPath?: string,
+): string {
 	if (comments.length === 0) return "";
 
 	const grouped = new Map<string, LineComment[]>();
@@ -13,10 +16,12 @@ export function formatCommentsForTerminal(comments: LineComment[]): string {
 		}
 	}
 
-	const lines: string[] = ["## Review Comments"];
+	const blocks: string[] = [];
 	for (const [filePath, fileComments] of grouped) {
-		const name = filePath.split("/").pop() ?? filePath;
-		lines.push(`### ${name}`);
+		const prefix = rootPath ? `${rootPath}/` : "";
+		const relativePath = filePath.startsWith(prefix)
+			? filePath.slice(prefix.length)
+			: filePath;
 		const sorted = [...fileComments].sort(
 			(a, b) => a.lineNumber - b.lineNumber,
 		);
@@ -25,9 +30,9 @@ export function formatCommentsForTerminal(comments: LineComment[]): string {
 				c.endLine != null
 					? `L${c.lineNumber}-${c.endLine}`
 					: `L${c.lineNumber}`;
-			lines.push(`- ${lineLabel}: ${c.content}`);
+			blocks.push(`${relativePath}:${lineLabel}\n${c.content}`);
 		}
 	}
 
-	return lines.join("\n");
+	return `## Review Comments\n${blocks.join("\n=====\n")}`;
 }

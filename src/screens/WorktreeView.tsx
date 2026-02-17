@@ -537,14 +537,14 @@ export function WorktreeView({
 
 	const handleSendToTerminal = useCallback(
 		(unsent: LineComment[]) => {
-			const text = formatCommentsForTerminal(unsent);
+			const text = formatCommentsForTerminal(unsent, rootPath);
 			if (text && terminalRef.current) {
 				terminalRef.current.writeToTerminal(`${text}\n`);
 				markAsSent(unsent.map((c) => c.id));
 				trackEvent("comment_sent", { count: unsent.length });
 			}
 		},
-		[markAsSent],
+		[markAsSent, rootPath],
 	);
 
 	const handleCommentClick = useCallback(
