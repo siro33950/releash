@@ -1,4 +1,11 @@
-import { Files, GitBranch, LayoutGrid, Search, Settings } from "lucide-react";
+import {
+	Files,
+	GitBranch,
+	GitPullRequest,
+	LayoutGrid,
+	Search,
+	Settings,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -21,6 +28,11 @@ const defaultItems: ActivityBarItem[] = [
 	},
 	{ id: "explorer", icon: <Files className="size-5" />, title: "Explorer" },
 	{ id: "search", icon: <Search className="size-5" />, title: "Search" },
+	{
+		id: "pr",
+		icon: <GitPullRequest className="size-5" />,
+		title: "Pull Request",
+	},
 ];
 
 const defaultBottomItems: ActivityBarItem[] = [
