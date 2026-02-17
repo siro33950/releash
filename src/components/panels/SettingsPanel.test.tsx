@@ -120,4 +120,26 @@ describe("SettingsPanel", () => {
 			expect.objectContaining({ enableCrashReporting: false }),
 		);
 	});
+
+	it("should display Notifications section", () => {
+		render(<SettingsPanel {...defaultProps} />);
+		expect(screen.getByText("Notifications")).toBeInTheDocument();
+	});
+
+	it("should display Webhook URL input field with url type", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockResolvedValue({
+			webhook_url: "",
+			on_running: false,
+			on_done: true,
+			on_error: true,
+			on_waiting: true,
+			desktop_mode: "always",
+			inactive_timeout_minutes: 2,
+		});
+		render(<SettingsPanel {...defaultProps} />);
+		const input = await screen.findByLabelText("Webhook URL");
+		expect(input).toBeInTheDocument();
+		expect(input).toHaveAttribute("type", "url");
+	});
 });

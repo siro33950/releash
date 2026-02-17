@@ -44,6 +44,17 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 		setDraft(settings);
 	}, [settings]);
 
+	const webhookUrlValue = webhook.draft.webhook_url;
+	const detectedWebhookType =
+		webhookUrlValue.includes("discord.com/api/webhooks/") ||
+		webhookUrlValue.includes("discordapp.com/api/webhooks/")
+			? "Discord"
+			: webhookUrlValue.includes("hooks.slack.com/")
+				? "Slack"
+				: webhookUrlValue
+					? "Generic (Slack format)"
+					: null;
+
 	// Load hooks config when agent is claude
 	useEffect(() => {
 		if (draft.agent !== "claude") return;
@@ -374,7 +385,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 									</label>
 									<input
 										id="webhook-url"
-										type="text"
+										type="url"
 										value={webhook.draft.webhook_url}
 										onChange={(e) =>
 											webhook.setDraft((d) => ({
@@ -382,9 +393,14 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 												webhook_url: e.target.value,
 											}))
 										}
-										placeholder="https://hooks.slack.com/..."
+										placeholder="https://hooks.slack.com/... or https://discord.com/api/webhooks/..."
 										className={selectClass}
 									/>
+									{detectedWebhookType && (
+										<p className="text-[10px] text-muted-foreground">
+											Detected: {detectedWebhookType}
+										</p>
+									)}
 								</div>
 
 								<div className="flex flex-col gap-1.5">

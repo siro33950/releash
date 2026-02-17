@@ -178,6 +178,7 @@ pub fn run() {
             config::update_notify_config,
             config::get_crash_reporting_enabled,
             config::update_crash_reporting,
+            config::update_webhook_url,
             // Hook Listener
             hook_listener::get_agent_states,
             // ネットワーク
