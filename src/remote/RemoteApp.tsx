@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { computeHunks } from "@/lib/computeHunks";
+import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { generatePatch } from "@/lib/generatePatch";
 import type { LineComment } from "@/types/comment";
@@ -211,6 +212,30 @@ export function RemoteApp() {
 		[send, activePtyId, setComments],
 	);
 
+	const handleSendComment = useCallback(
+		(comment: LineComment) => {
+			const text = formatCommentsForTerminal([comment]);
+			if (!text) return;
+			if (activePtyId != null) {
+				send({
+					type: "pty_input",
+					payload: { pty_id: activePtyId, data: `${text}\n` },
+				});
+				setComments((prev) =>
+					prev.map((c) =>
+						c.id === comment.id ? { ...c, status: "sent" as const } : c,
+					),
+				);
+			}
+		},
+		[send, activePtyId, setComments],
+	);
+
+	const handleCopyComment = useCallback((comment: LineComment) => {
+		const text = formatCommentForClipboard(comment);
+		navigator.clipboard.writeText(text).catch(() => {});
+	}, []);
+
 	const hasDiffChanges = useMemo(() => {
 		if (!content) return false;
 		return content.original !== content.modified;
@@ -390,6 +415,8 @@ export function RemoteApp() {
 								onSendToTerminal={handleSendToTerminal}
 								onDeleteComment={deleteComment}
 								onUpdateComment={updateComment}
+								onSendComment={handleSendComment}
+								onCopyComment={handleCopyComment}
 							/>
 						</div>
 

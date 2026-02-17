@@ -12,6 +12,8 @@ export interface ReviewPanelProps {
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
 	onSendToTerminal?: (comments: LineComment[]) => void;
+	onSendComment?: (comment: LineComment) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	showSentComments?: boolean;
 	onToggleShowSent?: () => void;
 	cwd?: string | null;
@@ -26,6 +28,8 @@ export function ReviewPanel({
 	onDeleteComment,
 	onUpdateComment,
 	onSendToTerminal,
+	onSendComment,
+	onCopyComment,
 	showSentComments,
 	onToggleShowSent,
 	cwd,
@@ -105,6 +109,8 @@ export function ReviewPanel({
 					onCommentClick={onCommentClick}
 					onDeleteComment={onDeleteComment}
 					onUpdateComment={onUpdateComment}
+					onSendComment={onSendComment}
+					onCopyComment={onCopyComment}
 					showSentComments={showSentComments}
 					onToggleShowSent={onToggleShowSent}
 				/>

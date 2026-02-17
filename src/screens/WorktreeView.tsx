@@ -49,6 +49,7 @@ import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useLineComments } from "@/hooks/useLineComments";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
+import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
 import { normalizePath } from "@/lib/normalizePath";
@@ -554,6 +555,24 @@ export function WorktreeView({
 		[markAsSent, rootPath],
 	);
 
+	const handleSendComment = useCallback(
+		(comment: LineComment) => {
+			const text = formatCommentsForTerminal([comment], rootPath);
+			if (text && terminalRef.current) {
+				terminalRef.current.writeToTerminal(`${text}\n`);
+				markAsSent([comment.id]);
+				trackEvent("comment_sent", { count: 1 });
+			}
+		},
+		[markAsSent, rootPath],
+	);
+
+	const handleCopyComment = useCallback((comment: LineComment) => {
+		const text = formatCommentForClipboard(comment);
+		navigator.clipboard.writeText(text).catch(() => {});
+		trackEvent("comment_copied");
+	}, []);
+
 	const handleCommentClick = useCallback(
 		(commentFilePath: string, lineNumber: number) => {
 			if (activeTabPath === commentFilePath) {
@@ -675,6 +694,8 @@ export function WorktreeView({
 							onDeleteComment={removeComment}
 							onUpdateComment={updateComment}
 							onSendToTerminal={handleSendToTerminal}
+							onSendComment={handleSendComment}
+							onCopyComment={handleCopyComment}
 							showSentComments={showSentComments}
 							onToggleShowSent={toggleShowSentComments}
 							cwd={rootPath}
@@ -717,6 +738,8 @@ export function WorktreeView({
 			removeComment,
 			updateComment,
 			handleSendToTerminal,
+			handleSendComment,
+			handleCopyComment,
 			showSentComments,
 			toggleShowSentComments,
 		],

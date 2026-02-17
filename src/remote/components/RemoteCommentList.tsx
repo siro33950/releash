@@ -1,5 +1,6 @@
 import {
 	Check,
+	Copy,
 	Eye,
 	EyeOff,
 	MessageSquare,
@@ -16,6 +17,8 @@ interface RemoteCommentListProps {
 	onSendToTerminal?: (comments: LineComment[]) => void;
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
+	onSendComment?: (comment: LineComment) => void;
+	onCopyComment?: (comment: LineComment) => void;
 }
 
 export function RemoteCommentList({
@@ -23,6 +26,8 @@ export function RemoteCommentList({
 	onSendToTerminal,
 	onDeleteComment,
 	onUpdateComment,
+	onSendComment,
+	onCopyComment,
 }: RemoteCommentListProps) {
 	const [showSentComments, setShowSentComments] = useState(false);
 	const unsentComments = comments.filter((c) => c.status === "unsent");
@@ -195,6 +200,26 @@ export function RemoteCommentList({
 										</div>
 										{editingId !== comment.id && (
 											<div className="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+												{onSendComment && comment.status === "unsent" && (
+													<button
+														type="button"
+														onClick={() => onSendComment(comment)}
+														className="p-1 rounded hover:bg-blue-500/20 text-neutral-500 hover:text-blue-400 transition-colors"
+														title="送信"
+													>
+														<Send className="h-3.5 w-3.5" />
+													</button>
+												)}
+												{onCopyComment && (
+													<button
+														type="button"
+														onClick={() => onCopyComment(comment)}
+														className="p-1 rounded hover:bg-neutral-700 text-neutral-500 hover:text-neutral-300 transition-colors"
+														title="コピー"
+													>
+														<Copy className="h-3.5 w-3.5" />
+													</button>
+												)}
 												{onUpdateComment && (
 													<button
 														type="button"
