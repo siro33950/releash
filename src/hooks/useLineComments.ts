@@ -54,6 +54,12 @@ export function useLineComments() {
 		[comments],
 	);
 
+	const [showSentComments, setShowSentComments] = useState(false);
+
+	const toggleShowSentComments = useCallback(() => {
+		setShowSentComments((prev) => !prev);
+	}, []);
+
 	const unsentComments = comments.filter((c) => c.status === "unsent");
 
 	return {
@@ -65,5 +71,7 @@ export function useLineComments() {
 		markAsSent,
 		getCommentsForFile,
 		setComments,
+		showSentComments,
+		toggleShowSentComments,
 	};
 }

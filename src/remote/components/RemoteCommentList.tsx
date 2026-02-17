@@ -1,5 +1,14 @@
-import { Check, MessageSquare, Pencil, Send, Trash2, X } from "lucide-react";
-import { useCallback, useState } from "react";
+import {
+	Check,
+	Eye,
+	EyeOff,
+	MessageSquare,
+	Pencil,
+	Send,
+	Trash2,
+	X,
+} from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 import type { LineComment } from "@/types/comment";
 
 interface RemoteCommentListProps {
@@ -15,7 +24,17 @@ export function RemoteCommentList({
 	onDeleteComment,
 	onUpdateComment,
 }: RemoteCommentListProps) {
+	const [showSentComments, setShowSentComments] = useState(false);
 	const unsentComments = comments.filter((c) => c.status === "unsent");
+	const sentCount = useMemo(
+		() => comments.filter((c) => c.status === "sent").length,
+		[comments],
+	);
+	const visibleComments = useMemo(
+		() =>
+			showSentComments ? comments : comments.filter((c) => c.status !== "sent"),
+		[comments, showSentComments],
+	);
 	const [editingId, setEditingId] = useState<string | null>(null);
 	const [editContent, setEditContent] = useState("");
 
@@ -38,7 +57,7 @@ export function RemoteCommentList({
 		setEditContent("");
 	}, [editingId, editContent, onUpdateComment]);
 
-	if (comments.length === 0) {
+	if (visibleComments.length === 0 && sentCount === 0) {
 		return (
 			<div className="flex flex-col items-center justify-center h-full gap-3 text-neutral-500 px-6">
 				<MessageSquare className="h-8 w-8" />
@@ -51,7 +70,7 @@ export function RemoteCommentList({
 	}
 
 	const grouped = new Map<string, LineComment[]>();
-	for (const comment of comments) {
+	for (const comment of visibleComments) {
 		const existing = grouped.get(comment.filePath);
 		if (existing) {
 			existing.push(comment);
@@ -63,14 +82,31 @@ export function RemoteCommentList({
 	return (
 		<div className="flex flex-col h-full">
 			<div className="flex items-center justify-between px-3 py-2 border-b border-neutral-800 bg-neutral-900 shrink-0">
-				<span className="text-xs text-neutral-400">
-					Comments
-					{unsentComments.length > 0 && (
-						<span className="ml-1.5 px-1.5 py-0.5 text-[10px] bg-blue-500/20 text-blue-400 rounded">
-							{unsentComments.length}
-						</span>
+				<div className="flex items-center gap-2">
+					<span className="text-xs text-neutral-400">
+						Comments
+						{unsentComments.length > 0 && (
+							<span className="ml-1.5 px-1.5 py-0.5 text-[10px] bg-blue-500/20 text-blue-400 rounded">
+								{unsentComments.length}
+							</span>
+						)}
+					</span>
+					{sentCount > 0 && (
+						<button
+							type="button"
+							onClick={() => setShowSentComments((prev) => !prev)}
+							className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-neutral-500 rounded hover:bg-neutral-800 transition-colors"
+							data-testid="toggle-sent-comments"
+						>
+							{showSentComments ? (
+								<EyeOff className="h-3 w-3" />
+							) : (
+								<Eye className="h-3 w-3" />
+							)}
+							送信済み ({sentCount})
+						</button>
 					)}
-				</span>
+				</div>
 				{unsentComments.length > 0 && onSendToTerminal && (
 					<button
 						type="button"

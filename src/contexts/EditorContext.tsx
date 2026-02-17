@@ -23,6 +23,9 @@ export interface EditorContextValue {
 	deleteComment: (id: string) => void;
 	updateComment: (id: string, content: string) => void;
 
+	showSentComments: boolean;
+	toggleShowSentComments: () => void;
+
 	rootPath: string;
 	onStageHunk?: (repoPath: string, patch: string) => Promise<void>;
 	onGitChanged?: () => void;

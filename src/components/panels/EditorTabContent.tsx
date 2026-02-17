@@ -51,6 +51,7 @@ export function EditorTabContent({
 		setDiffMode,
 		comments,
 		addComment,
+		showSentComments,
 		rootPath,
 		onStageHunk,
 		onGitChanged,
@@ -120,9 +121,12 @@ export function EditorTabContent({
 
 	const commentRanges = useMemo(() => {
 		return comments
-			.filter((c) => c.filePath === filePath)
+			.filter(
+				(c) =>
+					c.filePath === filePath && (showSentComments || c.status !== "sent"),
+			)
 			.map((c) => ({ start: c.lineNumber, end: c.endLine }));
-	}, [comments, filePath]);
+	}, [comments, filePath, showSentComments]);
 
 	const handleAddComment = useCallback(
 		(lineNumber: number, content: string, endLine?: number) => {
@@ -136,13 +140,14 @@ export function EditorTabContent({
 			return comments.filter(
 				(c) =>
 					c.filePath === filePath &&
+					(showSentComments || c.status !== "sent") &&
 					(c.lineNumber === lineNumber ||
 						(c.endLine != null &&
 							lineNumber >= c.lineNumber &&
 							lineNumber <= c.endLine)),
 			);
 		},
-		[comments, filePath],
+		[comments, filePath, showSentComments],
 	);
 
 	const getRelativePath = useCallback(() => {

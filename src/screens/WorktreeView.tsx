@@ -96,8 +96,15 @@ export function WorktreeView({
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
 	const [agentState, setAgentState] = useState<AgentState | undefined>();
-	const { comments, addComment, removeComment, updateComment, markAsSent } =
-		useLineComments();
+	const {
+		comments,
+		addComment,
+		removeComment,
+		updateComment,
+		markAsSent,
+		showSentComments,
+		toggleShowSentComments,
+	} = useLineComments();
 	const { stage, unstage, push, discard, stageHunk, createBranch } =
 		useGitActions();
 	const terminalRef = useRef<TerminalPanelHandle>(null);
@@ -575,6 +582,8 @@ export function WorktreeView({
 			addComment,
 			deleteComment: removeComment,
 			updateComment,
+			showSentComments,
+			toggleShowSentComments,
 			rootPath,
 			onStageHunk: stageHunk,
 			onGitChanged: refreshGit,
@@ -593,6 +602,8 @@ export function WorktreeView({
 			addComment,
 			removeComment,
 			updateComment,
+			showSentComments,
+			toggleShowSentComments,
 			rootPath,
 			stageHunk,
 			refreshGit,
@@ -664,6 +675,8 @@ export function WorktreeView({
 							onDeleteComment={removeComment}
 							onUpdateComment={updateComment}
 							onSendToTerminal={handleSendToTerminal}
+							showSentComments={showSentComments}
+							onToggleShowSent={toggleShowSentComments}
 							cwd={rootPath}
 							theme={settings.theme}
 						/>
@@ -704,6 +717,8 @@ export function WorktreeView({
 			removeComment,
 			updateComment,
 			handleSendToTerminal,
+			showSentComments,
+			toggleShowSentComments,
 		],
 	);
 
