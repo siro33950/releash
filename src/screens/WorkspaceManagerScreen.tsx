@@ -95,11 +95,13 @@ export function WorkspaceManagerScreen({
 	const [terminalVisible, setTerminalVisible] = useState(true);
 
 	const handleSidebarResize = useCallback((size: PanelSize) => {
-		setSidebarVisible(size.asPercentage > 0);
+		const visible = size.asPercentage > 0;
+		setSidebarVisible((prev) => (prev === visible ? prev : visible));
 	}, []);
 
 	const handleTerminalResize = useCallback((size: PanelSize) => {
-		setTerminalVisible(size.asPercentage > 0);
+		const visible = size.asPercentage > 0;
+		setTerminalVisible((prev) => (prev === visible ? prev : visible));
 	}, []);
 
 	const toggleSidebar = useCallback(() => {

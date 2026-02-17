@@ -729,15 +729,18 @@ export function WorktreeView({
 	const [terminalVisible, setTerminalVisible] = useState(true);
 
 	const handleSidebarResize = useCallback((size: PanelSize) => {
-		setSidebarVisible(size.asPercentage > 0);
+		const visible = size.asPercentage > 0;
+		setSidebarVisible((prev) => (prev === visible ? prev : visible));
 	}, []);
 
 	const handleReviewResize = useCallback((size: PanelSize) => {
-		setReviewVisible(size.asPercentage > 0);
+		const visible = size.asPercentage > 0;
+		setReviewVisible((prev) => (prev === visible ? prev : visible));
 	}, []);
 
 	const handleTerminalResize = useCallback((size: PanelSize) => {
-		setTerminalVisible(size.asPercentage > 0);
+		const visible = size.asPercentage > 0;
+		setTerminalVisible((prev) => (prev === visible ? prev : visible));
 	}, []);
 
 	const toggleSidebar = useCallback(() => {
