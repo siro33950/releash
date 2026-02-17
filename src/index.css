@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "flexlayout-react/style/dark.css";
 @import "./styles/flexlayout-custom.css";
+@import "./styles/resizable-panels.css";
 
 @custom-variant dark (&:is(.dark *));
 

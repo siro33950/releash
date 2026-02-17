@@ -10,21 +10,33 @@ vi.mock("flexlayout-react", () => {
 			doAction: vi.fn(),
 		}),
 	};
-	const Layout = ({
-		factory,
-	}: {
-		factory: (node: { getComponent: () => string }) => React.ReactNode;
-	}) => {
-		const components = ["sidebar", "kanban", "terminal"];
-		return (
-			<div data-testid="flexlayout">
-				{components.map((c) => (
-					<div key={c}>{factory({ getComponent: () => c })}</div>
-				))}
-			</div>
-		);
+	const Actions = {
+		DELETE_TAB: "FlexLayout_DeleteTab",
+		addNode: vi.fn(),
+		deleteTab: vi.fn(),
+		selectTab: vi.fn(),
+		updateNodeAttributes: vi.fn(),
 	};
-	return { Model, Layout };
+	const DockLocation = { CENTER: "center" };
+	const Layout = ({
+		factory: _factory,
+	}: {
+		factory: (node: unknown) => unknown;
+	}) => {
+		return <div data-testid="flexlayout" />;
+	};
+	return { Model, Actions, DockLocation, Layout };
+});
+
+vi.mock("react-resizable-panels", () => {
+	const Panel = ({ children }: { children?: React.ReactNode }) => (
+		<div data-testid="panel">{children}</div>
+	);
+	const Group = ({ children }: { children?: React.ReactNode }) => (
+		<div data-testid="panel-group">{children}</div>
+	);
+	const Separator = () => <div data-testid="separator" />;
+	return { Panel, Group, Separator };
 });
 
 const mockInvoke = vi.mocked(invoke);

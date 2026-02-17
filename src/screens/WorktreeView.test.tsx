@@ -40,6 +40,17 @@ vi.mock("flexlayout-react", () => {
 	return { Model, Actions, DockLocation, Layout };
 });
 
+vi.mock("react-resizable-panels", () => {
+	const Panel = ({ children }: { children?: React.ReactNode }) => (
+		<div data-testid="panel">{children}</div>
+	);
+	const Group = ({ children }: { children?: React.ReactNode }) => (
+		<div data-testid="panel-group">{children}</div>
+	);
+	const Separator = () => <div data-testid="separator" />;
+	return { Panel, Group, Separator };
+});
+
 describe("WorktreeView", () => {
 	it("renders without crashing", () => {
 		render(
@@ -52,5 +63,20 @@ describe("WorktreeView", () => {
 			/>,
 		);
 		expect(screen.getByTestId("flexlayout")).toBeInTheDocument();
+	});
+
+	it("renders toggle buttons for sidebar, review, terminal", () => {
+		render(
+			<WorktreeView
+				rootPath="/test/path"
+				settings={DEFAULT_SETTINGS}
+				onSettingsSave={vi.fn()}
+				onSwitchToKanban={vi.fn()}
+				isActive
+			/>,
+		);
+		expect(screen.getByLabelText("Toggle Sidebar")).toBeInTheDocument();
+		expect(screen.getByLabelText("Toggle Review")).toBeInTheDocument();
+		expect(screen.getByLabelText("Toggle Terminal")).toBeInTheDocument();
 	});
 });
