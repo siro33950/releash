@@ -1,16 +1,24 @@
-import { type IJsonModel, Layout, Model, type TabNode } from "flexlayout-react";
-import { FolderOpen, Globe, Loader2, Settings } from "lucide-react";
 import {
-	type ReactNode,
-	useCallback,
-	useEffect,
-	useMemo,
-	useState,
-} from "react";
+	FolderOpen,
+	Globe,
+	Loader2,
+	PanelLeft,
+	PanelRight,
+	Settings,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	Group,
+	Panel,
+	type PanelImperativeHandle,
+	type PanelSize,
+	Separator,
+} from "react-resizable-panels";
 import {
 	ActivityBar,
 	type ActivityBarItem,
 } from "@/components/layout/ActivityBar";
+import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { RemotePanel } from "@/components/panels/RemotePanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
@@ -18,77 +26,6 @@ import { Button } from "@/components/ui/button";
 import { RepoKanbanBoard } from "@/components/workspace/RepoKanbanBoard";
 import type { ProviderStatus } from "@/types/git";
 import type { AppSettings } from "@/types/settings";
-
-const initialJson: IJsonModel = {
-	global: {
-		tabEnableClose: false,
-		tabEnableDrag: false,
-		tabEnableRename: false,
-		tabSetEnableMaximize: false,
-		tabSetEnableDeleteWhenEmpty: false,
-		splitterSize: 1,
-		splitterExtra: 4,
-	},
-	layout: {
-		type: "row",
-		weight: 100,
-		children: [
-			{
-				type: "tabset",
-				id: "sidebar",
-				weight: 15,
-				enableDrag: false,
-				enableDrop: false,
-				enableTabStrip: false,
-				minWidth: 160,
-				children: [
-					{
-						type: "tab",
-						id: "sidebar-content",
-						component: "sidebar",
-						enableClose: false,
-						enableDrag: false,
-					},
-				],
-			},
-			{
-				type: "tabset",
-				id: "kanban",
-				weight: 55,
-				enableDrag: false,
-				enableDrop: false,
-				enableTabStrip: false,
-				children: [
-					{
-						type: "tab",
-						id: "kanban-content",
-						component: "kanban",
-						enableClose: false,
-						enableDrag: false,
-					},
-				],
-			},
-			{
-				type: "tabset",
-				id: "terminal",
-				weight: 30,
-				enableDrag: false,
-				enableDrop: false,
-				enableTabStrip: false,
-				minWidth: 200,
-				children: [
-					{
-						type: "tab",
-						id: "terminal-content",
-						component: "terminal",
-						enableClose: false,
-						enableDrag: false,
-					},
-				],
-			},
-		],
-	},
-};
 
 interface WorkspaceManagerScreenProps {
 	repoPaths: string[];
@@ -151,23 +88,106 @@ export function WorkspaceManagerScreen({
 		[],
 	);
 
-	const model = useMemo(() => Model.fromJson(initialJson), []);
+	const sidebarPanelRef = useRef<PanelImperativeHandle>(null);
+	const terminalPanelRef = useRef<PanelImperativeHandle>(null);
 
-	const factory = useCallback(
-		(node: TabNode): ReactNode => {
-			switch (node.getComponent()) {
-				case "sidebar":
-					if (activeView === "remote") {
-						return <RemotePanel rootPaths={repoPaths} />;
-					}
-					if (activeView === "settings") {
-						return (
-							<SettingsPanel settings={settings} onSave={onSettingsSave} />
-						);
-					}
-					return null;
-				case "kanban":
-					return (
+	const [sidebarVisible, setSidebarVisible] = useState(true);
+	const [terminalVisible, setTerminalVisible] = useState(true);
+
+	const handleSidebarResize = useCallback((size: PanelSize) => {
+		const visible = size.asPercentage > 0;
+		setSidebarVisible((prev) => (prev === visible ? prev : visible));
+	}, []);
+
+	const handleTerminalResize = useCallback((size: PanelSize) => {
+		const visible = size.asPercentage > 0;
+		setTerminalVisible((prev) => (prev === visible ? prev : visible));
+	}, []);
+
+	const toggleSidebar = useCallback(() => {
+		const panel = sidebarPanelRef.current;
+		if (!panel) return;
+		if (panel.isCollapsed()) {
+			panel.expand();
+		} else {
+			panel.collapse();
+		}
+	}, []);
+
+	const toggleTerminal = useCallback(() => {
+		const panel = terminalPanelRef.current;
+		if (!panel) return;
+		if (panel.isCollapsed()) {
+			panel.expand();
+		} else {
+			panel.collapse();
+		}
+	}, []);
+
+	const togglePanels = useMemo<TogglePanel[]>(
+		() => [
+			{
+				id: "sidebar",
+				icon: PanelLeft,
+				label: "Sidebar",
+				visible: sidebarVisible,
+				onToggle: toggleSidebar,
+			},
+			{
+				id: "terminal",
+				icon: PanelRight,
+				label: "Terminal",
+				visible: terminalVisible,
+				onToggle: toggleTerminal,
+			},
+		],
+		[sidebarVisible, terminalVisible, toggleSidebar, toggleTerminal],
+	);
+
+	const sidebarContent = useMemo(() => {
+		if (activeView === "remote") {
+			return <RemotePanel rootPaths={repoPaths} />;
+		}
+		if (activeView === "settings") {
+			return <SettingsPanel settings={settings} onSave={onSettingsSave} />;
+		}
+		return null;
+	}, [activeView, repoPaths, settings, onSettingsSave]);
+
+	if (repoPaths.length === 0 && initializing) {
+		return (
+			<div className="flex flex-col items-center justify-center h-full w-full bg-background text-foreground gap-4">
+				<Loader2 className="size-6 text-muted-foreground animate-spin" />
+			</div>
+		);
+	}
+
+	return (
+		<div className="flex flex-col h-full w-full bg-background text-foreground">
+			<ViewToolbar panels={togglePanels} />
+			<div className="flex flex-1 min-h-0">
+				<ActivityBar
+					items={activityBarItems}
+					bottomItems={activityBarBottomItems}
+					activeItem={activeView}
+					onItemClick={setActiveView}
+				/>
+				<Group orientation="horizontal" className="flex-1">
+					<Panel
+						panelRef={sidebarPanelRef}
+						id="sidebar"
+						defaultSize="20%"
+						minSize="10%"
+						collapsible
+						collapsedSize="0%"
+						onResize={handleSidebarResize}
+					>
+						<div className="h-full overflow-hidden border-r border-border">
+							{sidebarContent}
+						</div>
+					</Panel>
+					<Separator />
+					<Panel id="kanban" minSize="20%">
 						<div className="h-full flex flex-col">
 							<div className="flex items-center justify-between h-[30px] px-3 border-b border-border shrink-0">
 								<span className="text-xs font-semibold uppercase tracking-wide truncate">
@@ -203,46 +223,22 @@ export function WorkspaceManagerScreen({
 								)}
 							</div>
 						</div>
-					);
-				case "terminal":
-					return <TerminalPanel theme={settings.theme} sessionKey="kanban" />;
-				default:
-					return null;
-			}
-		},
-		[
-			activeView,
-			repoPaths,
-			settings,
-			providerStatuses,
-			initializing,
-			onSettingsSave,
-			onSelectWorktree,
-			onAddRepo,
-			onRemoveRepo,
-		],
-	);
-
-	if (repoPaths.length === 0 && initializing) {
-		return (
-			<div className="flex flex-col items-center justify-center h-full w-full bg-background text-foreground gap-4">
-				<Loader2 className="size-6 text-muted-foreground animate-spin" />
-			</div>
-		);
-	}
-
-	return (
-		<div className="flex flex-col h-full w-full bg-background text-foreground">
-			<div className="flex flex-1 min-h-0">
-				<ActivityBar
-					items={activityBarItems}
-					bottomItems={activityBarBottomItems}
-					activeItem={activeView}
-					onItemClick={setActiveView}
-				/>
-				<div className="flex-1 relative overflow-hidden">
-					<Layout model={model} factory={factory} />
-				</div>
+					</Panel>
+					<Separator />
+					<Panel
+						panelRef={terminalPanelRef}
+						id="terminal"
+						defaultSize="30%"
+						minSize="10%"
+						collapsible
+						collapsedSize="0%"
+						onResize={handleTerminalResize}
+					>
+						<div className="h-full overflow-hidden border-l border-border">
+							<TerminalPanel theme={settings.theme} sessionKey="kanban" />
+						</div>
+					</Panel>
+				</Group>
 			</div>
 
 			<div className="flex items-center h-6 px-3 bg-primary text-primary-foreground text-xs shrink-0">

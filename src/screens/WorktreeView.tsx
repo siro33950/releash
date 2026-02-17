@@ -3,7 +3,7 @@ import { FileIcon } from "@react-symbols/icons/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { type ITabRenderValues, Layout, type TabNode } from "flexlayout-react";
-import { Loader2 } from "lucide-react";
+import { Loader2, PanelBottom, PanelLeft, PanelRight } from "lucide-react";
 import {
 	type ReactNode,
 	useCallback,
@@ -13,8 +13,16 @@ import {
 	useRef,
 	useState,
 } from "react";
+import {
+	Group,
+	Panel,
+	type PanelImperativeHandle,
+	type PanelSize,
+	Separator,
+} from "react-resizable-panels";
 import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
+import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { EditorTabContent } from "@/components/panels/EditorTabContent";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
@@ -634,119 +642,168 @@ export function WorktreeView({
 		],
 	);
 
-	// flexlayout factory: renders the content of each tab
+	// flexlayout factory: renders the content of each editor tab
 	const factory = useCallback(
 		(node: TabNode): ReactNode => {
 			const component = node.getComponent();
-			switch (component) {
-				case "sidebar":
-					if (activeView === "git") {
-						return (
-							<SourceControlPanel
-								rootPath={rootPath}
-								onSelectFile={handleOpenFile}
-								onGitChanged={refreshGit}
-								gitRefreshKey={gitRefreshKey}
-							/>
-						);
-					}
-					if (activeView === "search") {
-						return (
-							<SearchPanel
-								rootPath={rootPath}
-								onSelectFileAtLine={handleSearchResultClick}
-								focusKey={searchFocusKey}
-							/>
-						);
-					}
-					if (activeView === "pr") {
-						return <PullRequestPanel rootPath={rootPath} branch={branch} />;
-					}
-					if (activeView === "settings") {
-						return (
-							<SettingsPanel settings={settings} onSave={onSettingsSave} />
-						);
-					}
-					return (
-						<SidebarPanel
-							rootPath={rootPath}
-							onOpenFolder={onSwitchToKanban}
-							onSelectFile={handleOpenFile}
-							onFileChange={reloadFileIfClean}
-							onRename={handleRename}
-							onDelete={handleDelete}
-							requestNewFolderKey={newFolderKey}
-						/>
-					);
-				case "editor": {
-					const config = node.getConfig();
-					const filePath = config?.filePath;
-					if (!filePath) return <EmptyState />;
-					return (
-						<EditorTabContent
-							filePath={filePath}
-							externalRevealLine={pendingReveal}
-							onExternalRevealConsumed={() => setPendingReveal(null)}
-						/>
-					);
-				}
-				case "review":
-					return (
-						<ReviewPanel
-							comments={comments}
-							onCommentClick={handleCommentClick}
-							onDeleteComment={removeComment}
-							onUpdateComment={updateComment}
-							onSendToTerminal={handleSendToTerminal}
-							onSendComment={handleSendComment}
-							onCopyComment={handleCopyComment}
-							showSentComments={showSentComments}
-							onToggleShowSent={toggleShowSentComments}
-							cwd={rootPath}
-							theme={settings.theme}
-						/>
-					);
-				case "terminal":
-					return (
-						<TerminalPanel
-							ref={terminalRef}
-							key={rootPath}
-							cwd={rootPath}
-							theme={settings.theme}
-							terminalStartupCommand={buildTerminalCommand(settings)}
-							agentType={settings.agent}
-						/>
-					);
-				default:
-					return null;
+			if (component === "editor") {
+				const config = node.getConfig();
+				const filePath = config?.filePath;
+				if (!filePath) return <EmptyState />;
+				return (
+					<EditorTabContent
+						filePath={filePath}
+						externalRevealLine={pendingReveal}
+						onExternalRevealConsumed={() => setPendingReveal(null)}
+					/>
+				);
 			}
+			return null;
 		},
+		[pendingReveal],
+	);
+
+	// Sidebar content based on activeView
+	const sidebarContent = useMemo(() => {
+		if (activeView === "git") {
+			return (
+				<SourceControlPanel
+					rootPath={rootPath}
+					onSelectFile={handleOpenFile}
+					onGitChanged={refreshGit}
+					gitRefreshKey={gitRefreshKey}
+				/>
+			);
+		}
+		if (activeView === "search") {
+			return (
+				<SearchPanel
+					rootPath={rootPath}
+					onSelectFileAtLine={handleSearchResultClick}
+					focusKey={searchFocusKey}
+				/>
+			);
+		}
+		if (activeView === "pr") {
+			return <PullRequestPanel rootPath={rootPath} branch={branch} />;
+		}
+		if (activeView === "settings") {
+			return <SettingsPanel settings={settings} onSave={onSettingsSave} />;
+		}
+		return (
+			<SidebarPanel
+				rootPath={rootPath}
+				onOpenFolder={onSwitchToKanban}
+				onSelectFile={handleOpenFile}
+				onFileChange={reloadFileIfClean}
+				onRename={handleRename}
+				onDelete={handleDelete}
+				requestNewFolderKey={newFolderKey}
+			/>
+		);
+	}, [
+		activeView,
+		rootPath,
+		handleOpenFile,
+		refreshGit,
+		gitRefreshKey,
+		handleSearchResultClick,
+		searchFocusKey,
+		settings,
+		onSettingsSave,
+		onSwitchToKanban,
+		reloadFileIfClean,
+		handleRename,
+		handleDelete,
+		newFolderKey,
+		branch,
+	]);
+
+	// Panel refs and visibility state
+	const sidebarPanelRef = useRef<PanelImperativeHandle>(null);
+	const reviewPanelRef = useRef<PanelImperativeHandle>(null);
+	const terminalPanelRef = useRef<PanelImperativeHandle>(null);
+
+	const [sidebarVisible, setSidebarVisible] = useState(true);
+	const [reviewVisible, setReviewVisible] = useState(true);
+	const [terminalVisible, setTerminalVisible] = useState(true);
+
+	const handleSidebarResize = useCallback((size: PanelSize) => {
+		const visible = size.asPercentage > 0;
+		setSidebarVisible((prev) => (prev === visible ? prev : visible));
+	}, []);
+
+	const handleReviewResize = useCallback((size: PanelSize) => {
+		const visible = size.asPercentage > 0;
+		setReviewVisible((prev) => (prev === visible ? prev : visible));
+	}, []);
+
+	const handleTerminalResize = useCallback((size: PanelSize) => {
+		const visible = size.asPercentage > 0;
+		setTerminalVisible((prev) => (prev === visible ? prev : visible));
+	}, []);
+
+	const toggleSidebar = useCallback(() => {
+		const panel = sidebarPanelRef.current;
+		if (!panel) return;
+		if (panel.isCollapsed()) {
+			panel.expand();
+		} else {
+			panel.collapse();
+		}
+	}, []);
+
+	const toggleReview = useCallback(() => {
+		const panel = reviewPanelRef.current;
+		if (!panel) return;
+		if (panel.isCollapsed()) {
+			panel.expand();
+		} else {
+			panel.collapse();
+		}
+	}, []);
+
+	const toggleTerminal = useCallback(() => {
+		const panel = terminalPanelRef.current;
+		if (!panel) return;
+		if (panel.isCollapsed()) {
+			panel.expand();
+		} else {
+			panel.collapse();
+		}
+	}, []);
+
+	const togglePanels = useMemo<TogglePanel[]>(
+		() => [
+			{
+				id: "sidebar",
+				icon: PanelLeft,
+				label: "Sidebar",
+				visible: sidebarVisible,
+				onToggle: toggleSidebar,
+			},
+			{
+				id: "review",
+				icon: PanelBottom,
+				label: "Review",
+				visible: reviewVisible,
+				onToggle: toggleReview,
+			},
+			{
+				id: "terminal",
+				icon: PanelRight,
+				label: "Terminal",
+				visible: terminalVisible,
+				onToggle: toggleTerminal,
+			},
+		],
 		[
-			activeView,
-			rootPath,
-			handleOpenFile,
-			refreshGit,
-			gitRefreshKey,
-			handleSearchResultClick,
-			searchFocusKey,
-			settings,
-			onSettingsSave,
-			onSwitchToKanban,
-			reloadFileIfClean,
-			handleRename,
-			handleDelete,
-			newFolderKey,
-			pendingReveal,
-			comments,
-			handleCommentClick,
-			removeComment,
-			updateComment,
-			handleSendToTerminal,
-			handleSendComment,
-			handleCopyComment,
-			showSentComments,
-			toggleShowSentComments,
-			branch,
+			sidebarVisible,
+			reviewVisible,
+			terminalVisible,
+			toggleSidebar,
+			toggleReview,
+			toggleTerminal,
 		],
 	);
 
@@ -773,6 +830,7 @@ export function WorktreeView({
 
 	return (
 		<div className="flex flex-col h-full w-full overflow-hidden bg-background text-foreground">
+			<ViewToolbar panels={togglePanels} />
 			<div className="flex flex-1 overflow-hidden">
 				<ActivityBar activeItem={activeView} onItemClick={setActiveView} />
 				{!ready ? (
@@ -781,15 +839,84 @@ export function WorktreeView({
 					</div>
 				) : (
 					<EditorContext.Provider value={editorContextValue}>
-						<div className="flex-1 relative overflow-hidden">
-							<Layout
-								model={editorLayout.model}
-								factory={factory}
-								onAction={editorLayout.onAction}
-								onRenderTab={onRenderTab}
-								onModelChange={forceRender}
-							/>
-						</div>
+						<Group orientation="horizontal" className="flex-1">
+							<Panel
+								panelRef={sidebarPanelRef}
+								id="sidebar"
+								defaultSize="20%"
+								minSize="10%"
+								collapsible
+								collapsedSize="0%"
+								onResize={handleSidebarResize}
+							>
+								<div className="h-full overflow-hidden border-r border-border">
+									{sidebarContent}
+								</div>
+							</Panel>
+							<Separator />
+							<Panel id="center" minSize="20%">
+								<Group orientation="vertical">
+									<Panel id="editor" minSize="20%">
+										<div className="h-full relative overflow-hidden">
+											<Layout
+												model={editorLayout.model}
+												factory={factory}
+												onAction={editorLayout.onAction}
+												onRenderTab={onRenderTab}
+												onModelChange={forceRender}
+											/>
+										</div>
+									</Panel>
+									<Separator />
+									<Panel
+										panelRef={reviewPanelRef}
+										id="review"
+										defaultSize="30%"
+										minSize="10%"
+										collapsible
+										collapsedSize="0%"
+										onResize={handleReviewResize}
+									>
+										<div className="h-full overflow-hidden border-t border-border">
+											<ReviewPanel
+												comments={comments}
+												onCommentClick={handleCommentClick}
+												onDeleteComment={removeComment}
+												onUpdateComment={updateComment}
+												onSendToTerminal={handleSendToTerminal}
+												onSendComment={handleSendComment}
+												onCopyComment={handleCopyComment}
+												showSentComments={showSentComments}
+												onToggleShowSent={toggleShowSentComments}
+												cwd={rootPath}
+												theme={settings.theme}
+											/>
+										</div>
+									</Panel>
+								</Group>
+							</Panel>
+							<Separator />
+							<Panel
+								panelRef={terminalPanelRef}
+								id="terminal"
+								defaultSize="30%"
+								minSize="10%"
+								collapsible
+								collapsedSize="0%"
+								onResize={handleTerminalResize}
+							>
+								<div className="h-full overflow-hidden border-l border-border">
+									<TerminalPanel
+										ref={terminalRef}
+										key={rootPath}
+										cwd={rootPath}
+										theme={settings.theme}
+										terminalStartupCommand={buildTerminalCommand(settings)}
+										agentType={settings.agent}
+									/>
+								</div>
+							</Panel>
+						</Group>
 					</EditorContext.Provider>
 				)}
 			</div>
