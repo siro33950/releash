@@ -17,6 +17,7 @@ import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StatusBar } from "@/components/layout/StatusBar";
 import { EditorTabContent } from "@/components/panels/EditorTabContent";
 import { EmptyState } from "@/components/panels/EmptyState";
+import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
@@ -639,6 +640,9 @@ export function WorktreeView({
 							/>
 						);
 					}
+					if (activeView === "pr") {
+						return <PullRequestPanel rootPath={rootPath} branch={branch} />;
+					}
 					if (activeView === "settings") {
 						return (
 							<SettingsPanel settings={settings} onSave={onSettingsSave} />
@@ -719,6 +723,7 @@ export function WorktreeView({
 			handleSendToTerminal,
 			showSentComments,
 			toggleShowSentComments,
+			branch,
 		],
 	);
 

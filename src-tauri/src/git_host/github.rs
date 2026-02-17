@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::types::{GitHostProvider, PrInfo};
+use super::types::{GitHostProvider, PrDetail, PrInfo};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -47,6 +47,21 @@ impl GitHostProvider for GitHubProvider {
             Some(stdout) => parse_gh_merged_pr_output(&stdout),
             None => Vec::new(),
         }
+    }
+
+    fn get_pr_detail(&self, repo_path: &str, pr_number: u64) -> Option<PrDetail> {
+        let number_str = pr_number.to_string();
+        let output = run_gh_with_timeout(
+            &[
+                "pr",
+                "view",
+                &number_str,
+                "--json",
+                "number,title,body,state,url,author,createdAt,headRefName,baseRefName,additions,deletions,changedFiles,comments,reviews",
+            ],
+            repo_path,
+        )?;
+        parse_gh_pr_detail(&output)
     }
 }
 
@@ -104,6 +119,10 @@ fn parse_gh_pr_list_output(json_str: &str) -> HashMap<String, PrInfo> {
         }
     }
     map
+}
+
+fn parse_gh_pr_detail(json_str: &str) -> Option<PrDetail> {
+    serde_json::from_str(json_str).ok()
 }
 
 fn parse_gh_merged_pr_output(json_str: &str) -> Vec<String> {
@@ -171,5 +190,79 @@ mod tests {
     fn parse_merged_prs_invalid() {
         let branches = parse_gh_merged_pr_output("invalid");
         assert!(branches.is_empty());
+    }
+
+    #[test]
+    fn parse_pr_detail_valid_json() {
+        let json = serde_json::json!({
+            "number": 42,
+            "title": "Add feature",
+            "body": "## Description\nSome changes",
+            "state": "OPEN",
+            "url": "https://github.com/owner/repo/pull/42",
+            "author": {"login": "user1"},
+            "createdAt": "2024-01-01T00:00:00Z",
+            "headRefName": "feat/login",
+            "baseRefName": "main",
+            "additions": 10,
+            "deletions": 3,
+            "changedFiles": 2,
+            "comments": [
+                {"author": {"login": "reviewer1"}, "body": "LGTM", "createdAt": "2024-01-02T00:00:00Z"}
+            ],
+            "reviews": [
+                {"author": {"login": "reviewer1"}, "body": "Approved!", "state": "APPROVED", "submittedAt": "2024-01-02T00:00:00Z"}
+            ]
+        })
+        .to_string();
+        let detail = parse_gh_pr_detail(&json).unwrap();
+        assert_eq!(detail.number, 42);
+        assert_eq!(detail.title, "Add feature");
+        assert_eq!(detail.state, "OPEN");
+        assert_eq!(detail.head_ref_name, "feat/login");
+        assert_eq!(detail.base_ref_name, "main");
+        assert_eq!(detail.additions, 10);
+        assert_eq!(detail.deletions, 3);
+        assert_eq!(detail.changed_files, 2);
+        assert_eq!(detail.comments.len(), 1);
+        assert_eq!(detail.comments[0].author.login, "reviewer1");
+        assert_eq!(detail.reviews.len(), 1);
+        assert_eq!(detail.reviews[0].state, "APPROVED");
+    }
+
+    #[test]
+    fn parse_pr_detail_empty_comments_and_reviews() {
+        let json = serde_json::json!({
+            "number": 1,
+            "title": "Fix bug",
+            "body": "",
+            "state": "MERGED",
+            "url": "https://github.com/owner/repo/pull/1",
+            "author": {"login": "dev"},
+            "createdAt": "2024-01-01T00:00:00Z",
+            "headRefName": "fix/bug",
+            "baseRefName": "main",
+            "additions": 0,
+            "deletions": 0,
+            "changedFiles": 0,
+            "comments": [],
+            "reviews": []
+        })
+        .to_string();
+        let detail = parse_gh_pr_detail(&json).unwrap();
+        assert_eq!(detail.number, 1);
+        assert!(detail.comments.is_empty());
+        assert!(detail.reviews.is_empty());
+    }
+
+    #[test]
+    fn parse_pr_detail_invalid_json() {
+        assert!(parse_gh_pr_detail("not json").is_none());
+    }
+
+    #[test]
+    fn parse_pr_detail_missing_fields() {
+        let json = serde_json::json!({"number": 1, "title": "Partial"}).to_string();
+        assert!(parse_gh_pr_detail(&json).is_none());
     }
 }
