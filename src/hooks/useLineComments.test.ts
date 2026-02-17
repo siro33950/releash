@@ -134,4 +134,27 @@ describe("useLineComments", () => {
 		expect(aComments[0].content).toBe("comment1");
 		expect(aComments[1].content).toBe("comment3");
 	});
+
+	it("should default showSentComments to false", () => {
+		const { result } = renderHook(() => useLineComments());
+		expect(result.current.showSentComments).toBe(false);
+	});
+
+	it("should toggle showSentComments", () => {
+		const { result } = renderHook(() => useLineComments());
+
+		expect(result.current.showSentComments).toBe(false);
+
+		act(() => {
+			result.current.toggleShowSentComments();
+		});
+
+		expect(result.current.showSentComments).toBe(true);
+
+		act(() => {
+			result.current.toggleShowSentComments();
+		});
+
+		expect(result.current.showSentComments).toBe(false);
+	});
 });

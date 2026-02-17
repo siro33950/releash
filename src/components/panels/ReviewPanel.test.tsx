@@ -78,4 +78,21 @@ describe("ReviewPanel", () => {
 		await user.click(screen.getByText("Send"));
 		expect(onSend).toHaveBeenCalledWith([unsent]);
 	});
+
+	it("should pass showSentComments and onToggleShowSent to CommentList", async () => {
+		const user = userEvent.setup();
+		const onToggle = vi.fn();
+		render(
+			<ReviewPanel
+				comments={[makeComment({ id: "c-1", status: "sent" })]}
+				showSentComments={false}
+				onToggleShowSent={onToggle}
+			/>,
+		);
+		await user.click(screen.getByText("Comments"));
+		const toggleBtn = screen.getByTestId("toggle-sent-comments");
+		expect(toggleBtn).toBeInTheDocument();
+		await user.click(toggleBtn);
+		expect(onToggle).toHaveBeenCalledTimes(1);
+	});
 });

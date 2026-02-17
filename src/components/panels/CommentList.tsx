@@ -1,5 +1,13 @@
-import { Check, MessageSquare, Pencil, Trash2, X } from "lucide-react";
-import { useCallback, useState } from "react";
+import {
+	Check,
+	Eye,
+	EyeOff,
+	MessageSquare,
+	Pencil,
+	Trash2,
+	X,
+} from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { LineComment } from "@/types/comment";
@@ -9,6 +17,8 @@ export interface CommentListProps {
 	onCommentClick?: (filePath: string, lineNumber: number) => void;
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
+	showSentComments?: boolean;
+	onToggleShowSent?: () => void;
 }
 
 export function CommentList({
@@ -16,6 +26,8 @@ export function CommentList({
 	onCommentClick,
 	onDeleteComment,
 	onUpdateComment,
+	showSentComments = false,
+	onToggleShowSent,
 }: CommentListProps) {
 	const [editingId, setEditingId] = useState<string | null>(null);
 	const [editContent, setEditContent] = useState("");
@@ -51,7 +63,18 @@ export function CommentList({
 		[onDeleteComment],
 	);
 
-	if (comments.length === 0) {
+	const sentCount = useMemo(
+		() => comments.filter((c) => c.status === "sent").length,
+		[comments],
+	);
+
+	const visibleComments = useMemo(
+		() =>
+			showSentComments ? comments : comments.filter((c) => c.status !== "sent"),
+		[comments, showSentComments],
+	);
+
+	if (visibleComments.length === 0 && sentCount === 0) {
 		return (
 			<div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground px-4">
 				<MessageSquare className="h-6 w-6" />
@@ -70,7 +93,7 @@ export function CommentList({
 	}
 
 	const grouped = new Map<string, LineComment[]>();
-	for (const comment of comments) {
+	for (const comment of visibleComments) {
 		const existing = grouped.get(comment.filePath);
 		if (existing) {
 			existing.push(comment);
@@ -82,6 +105,21 @@ export function CommentList({
 	return (
 		<ScrollArea className="h-full">
 			<div className="p-2">
+				{sentCount > 0 && onToggleShowSent && (
+					<button
+						type="button"
+						onClick={onToggleShowSent}
+						className="flex items-center gap-1 w-full px-1.5 py-1 mb-1.5 text-[11px] text-muted-foreground rounded hover:bg-muted transition-colors"
+						data-testid="toggle-sent-comments"
+					>
+						{showSentComments ? (
+							<EyeOff className="h-3 w-3" />
+						) : (
+							<Eye className="h-3 w-3" />
+						)}
+						送信済み ({sentCount})
+					</button>
+				)}
 				{[...grouped.entries()].map(([filePath, fileComments]) => {
 					const fileName = filePath.split("/").pop() ?? filePath;
 					return (

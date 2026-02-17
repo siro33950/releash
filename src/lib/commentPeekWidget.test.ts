@@ -356,4 +356,68 @@ describe("createCommentPeekWidget", () => {
 			preference: [1],
 		});
 	});
+
+	it("showSentComments=false で sent コメントが非表示になる", () => {
+		const comments = [
+			makeComment({ id: "c1", content: "sent comment", status: "sent" }),
+			makeComment({ id: "c2", content: "unsent comment", status: "unsent" }),
+		];
+
+		const widget = createCommentPeekWidget(mockMonaco, {
+			lineNumber: 10,
+			existingComments: comments,
+			showSentComments: false,
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+		});
+
+		const dom = widget.getDomNode();
+		const existing = dom.querySelector(".comment-peek-existing");
+		expect(existing).not.toBeNull();
+
+		const items = existing
+			? existing.querySelectorAll(".comment-peek-existing-item")
+			: [];
+		expect(items).toHaveLength(1);
+		expect(
+			items[0].querySelector(".comment-peek-comment-text")?.textContent,
+		).toBe("unsent comment");
+	});
+
+	it("showSentComments=true で全コメントが表示される", () => {
+		const comments = [
+			makeComment({ id: "c1", content: "sent comment", status: "sent" }),
+			makeComment({ id: "c2", content: "unsent comment", status: "unsent" }),
+		];
+
+		const widget = createCommentPeekWidget(mockMonaco, {
+			lineNumber: 10,
+			existingComments: comments,
+			showSentComments: true,
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+		});
+
+		const dom = widget.getDomNode();
+		const items = dom.querySelectorAll(".comment-peek-existing-item");
+		expect(items).toHaveLength(2);
+	});
+
+	it("showSentComments 未指定時はデフォルトで全コメント表示", () => {
+		const comments = [
+			makeComment({ id: "c1", content: "sent", status: "sent" }),
+			makeComment({ id: "c2", content: "unsent", status: "unsent" }),
+		];
+
+		const widget = createCommentPeekWidget(mockMonaco, {
+			lineNumber: 10,
+			existingComments: comments,
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+		});
+
+		const dom = widget.getDomNode();
+		const items = dom.querySelectorAll(".comment-peek-existing-item");
+		expect(items).toHaveLength(2);
+	});
 });

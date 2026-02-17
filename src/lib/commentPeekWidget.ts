@@ -12,6 +12,7 @@ export interface CreateCommentPeekOptions {
 	lineNumber: number;
 	endLine?: number;
 	existingComments: LineComment[];
+	showSentComments?: boolean;
 	onSubmit: (content: string) => void;
 	onCancel: () => void;
 }
@@ -20,7 +21,18 @@ export function createCommentPeekWidget(
 	monaco: typeof Monaco,
 	options: CreateCommentPeekOptions,
 ): MonacoContentWidget {
-	const { lineNumber, endLine, existingComments, onSubmit, onCancel } = options;
+	const {
+		lineNumber,
+		endLine,
+		existingComments: rawExistingComments,
+		showSentComments = true,
+		onSubmit,
+		onCancel,
+	} = options;
+
+	const existingComments = showSentComments
+		? rawExistingComments
+		: rawExistingComments.filter((c) => c.status !== "sent");
 
 	const domNode = document.createElement("div");
 	domNode.className = "comment-peek-widget";
