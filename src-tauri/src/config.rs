@@ -65,10 +65,48 @@ pub struct ServerSection {
     pub notify: NotifySection,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopNotifyMode {
+    #[default]
+    Always,
+    WhenInactive,
+}
+
+fn default_inactive_timeout() -> u32 {
+    2
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotifySection {
     #[serde(default)]
     pub webhook_url: String,
+    #[serde(default)]
+    pub on_running: bool,
+    #[serde(default = "default_true")]
+    pub on_done: bool,
+    #[serde(default = "default_true")]
+    pub on_error: bool,
+    #[serde(default = "default_true")]
+    pub on_waiting: bool,
+    #[serde(default)]
+    pub desktop_mode: DesktopNotifyMode,
+    #[serde(default = "default_inactive_timeout")]
+    pub inactive_timeout_minutes: u32,
+}
+
+impl Default for NotifySection {
+    fn default() -> Self {
+        Self {
+            webhook_url: String::new(),
+            on_running: false,
+            on_done: true,
+            on_error: true,
+            on_waiting: true,
+            desktop_mode: DesktopNotifyMode::default(),
+            inactive_timeout_minutes: default_inactive_timeout(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -452,6 +490,34 @@ pub async fn get_hooks_status(state: tauri::State<'_, Arc<AppConfig>>) -> Result
 }
 
 #[tauri::command]
+pub fn get_notify_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<NotifySection, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("ロック取得失敗: {e}"))?;
+    Ok(config.server.notify.clone())
+}
+
+#[tauri::command]
+pub async fn update_notify_config(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    notify: NotifySection,
+) -> Result<(), String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.server.notify = notify;
+        write_config(&app_config.config_path, &config)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
 pub fn get_crash_reporting_enabled(
     state: tauri::State<'_, Arc<AppConfig>>,
 ) -> Result<bool, String> {
@@ -811,5 +877,84 @@ token = "existing_token_value_here_with_enough_length_!!"
 
         let config = load_or_create_config(&path).unwrap();
         assert!(config.telemetry.crash_reporting);
+    }
+
+    #[test]
+    fn notify_section_defaults() {
+        let notify = NotifySection::default();
+        assert!(notify.webhook_url.is_empty());
+        assert!(!notify.on_running);
+        assert!(notify.on_done);
+        assert!(notify.on_error);
+        assert!(notify.on_waiting);
+        assert_eq!(notify.desktop_mode, DesktopNotifyMode::Always);
+        assert_eq!(notify.inactive_timeout_minutes, 2);
+    }
+
+    #[test]
+    fn notify_section_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.server.notify.webhook_url = "https://hooks.slack.com/test".to_string();
+        config.server.notify.on_running = true;
+        config.server.notify.on_done = false;
+        config.server.notify.desktop_mode = DesktopNotifyMode::WhenInactive;
+        config.server.notify.inactive_timeout_minutes = 5;
+        write_config(&path, &config).unwrap();
+
+        let reloaded = fs::read_to_string(&path).unwrap();
+        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
+        assert_eq!(
+            reloaded.server.notify.webhook_url,
+            "https://hooks.slack.com/test"
+        );
+        assert!(reloaded.server.notify.on_running);
+        assert!(!reloaded.server.notify.on_done);
+        assert_eq!(
+            reloaded.server.notify.desktop_mode,
+            DesktopNotifyMode::WhenInactive
+        );
+        assert_eq!(reloaded.server.notify.inactive_timeout_minutes, 5);
+    }
+
+    #[test]
+    fn existing_config_without_notify_fields_gets_defaults() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+bind = "127.0.0.1"
+port = 9700
+token = "existing_token_value_here_with_enough_length_!!"
+
+[server.notify]
+webhook_url = "https://hooks.slack.com/old"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert_eq!(
+            config.server.notify.webhook_url,
+            "https://hooks.slack.com/old"
+        );
+        assert!(!config.server.notify.on_running);
+        assert!(config.server.notify.on_done);
+        assert!(config.server.notify.on_error);
+        assert!(config.server.notify.on_waiting);
+        assert_eq!(config.server.notify.desktop_mode, DesktopNotifyMode::Always);
+        assert_eq!(config.server.notify.inactive_timeout_minutes, 2);
+    }
+
+    #[test]
+    fn desktop_mode_serializes_snake_case() {
+        let always = serde_json::to_string(&DesktopNotifyMode::Always).unwrap();
+        assert_eq!(always, r#""always""#);
+
+        let when_inactive = serde_json::to_string(&DesktopNotifyMode::WhenInactive).unwrap();
+        assert_eq!(when_inactive, r#""when_inactive""#);
     }
 }

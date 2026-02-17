@@ -1,4 +1,5 @@
 mod config;
+mod focus_tracker;
 mod git;
 mod git_host;
 mod hook_listener;
@@ -67,11 +68,28 @@ pub fn run() {
             ));
             app.manage(agent_states.clone());
 
+            let focus_tracker = Arc::new(parking_lot::Mutex::new(focus_tracker::FocusTracker::new()));
+
+            let ft = focus_tracker.clone();
+            if let Some(window) = app.get_webview_window("main") {
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(focused) = event {
+                        let mut tracker = ft.lock();
+                        if *focused {
+                            tracker.on_focus();
+                        } else {
+                            tracker.on_blur();
+                        }
+                    }
+                });
+            }
+
             let hook_state = hook_listener::HookListenerState {
                 app_config,
                 app_handle: app.handle().clone(),
                 broadcaster: app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone(),
                 agent_states,
+                focus_tracker,
             };
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = hook_listener::start_hook_listener(hook_state).await {
@@ -151,6 +169,8 @@ pub fn run() {
             config::apply_hooks_config,
             config::get_hooks_status,
             config::update_telemetry_enabled,
+            config::get_notify_config,
+            config::update_notify_config,
             config::get_crash_reporting_enabled,
             config::update_crash_reporting,
             // Hook Listener
