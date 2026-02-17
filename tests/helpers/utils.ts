@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test";
 /** アプリの初期化完了を待機 */
 export async function waitForApp(page: Page) {
 	await page.goto("/");
-	await page.waitForLoadState("networkidle");
+	await page.waitForLoadState("load");
 }
 
 /**
