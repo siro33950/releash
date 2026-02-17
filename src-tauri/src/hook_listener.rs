@@ -402,4 +402,16 @@ mod tests {
         // フォーカス中なのでblockされる
         assert!(!should_notify(&notify, &AgentState::Done, &ft));
     }
+
+    #[test]
+    fn should_notify_when_inactive_allows_after_timeout() {
+        let ft = parking_lot::Mutex::new(FocusTracker::new());
+        ft.lock().on_blur();
+        let notify = NotifySection {
+            desktop_mode: DesktopNotifyMode::WhenInactive,
+            inactive_timeout_minutes: 0,
+            ..make_notify(true, true, true, true)
+        };
+        assert!(should_notify(&notify, &AgentState::Done, &ft));
+    }
 }
