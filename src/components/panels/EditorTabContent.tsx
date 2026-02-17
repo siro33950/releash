@@ -2,6 +2,8 @@ import {
 	AlignJustify,
 	ChevronLeft,
 	ChevronRight,
+	Eye,
+	FileCode,
 	Minus,
 	SplitSquareHorizontal,
 } from "lucide-react";
@@ -19,12 +21,14 @@ import {
 } from "@/lib/computeHunks";
 import { generateGroupPatch, generatePatch } from "@/lib/generatePatch";
 import { isImageFile } from "@/lib/imageUtils";
+import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
 import type { LineComment } from "@/types/comment";
 import type { DiffBase } from "@/types/settings";
 import { Breadcrumb } from "./Breadcrumb";
 import { EmptyState } from "./EmptyState";
 import { ImageDiffViewer } from "./ImageDiffViewer";
+import { MarkdownDiffViewer } from "./MarkdownDiffViewer";
 import { MonacoDiffViewer } from "./MonacoDiffViewer";
 
 export interface EditorTabContentProps {
@@ -57,6 +61,13 @@ export function EditorTabContent({
 	} = useEditorContext();
 	const fileContent = getFileContent(filePath);
 	const isImage = isImageFile(filePath);
+	const isMarkdown = isMarkdownFile(filePath);
+	const [showPreview, setShowPreview] = useState(false);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset preview when file changes
+	useEffect(() => {
+		setShowPreview(false);
+	}, [filePath]);
 
 	const [revealLine, setRevealLine] = useState<
 		{ line: number; key: number } | undefined
@@ -378,7 +389,40 @@ export function EditorTabContent({
 
 	return (
 		<div className="absolute inset-0 flex flex-col">
-			<Breadcrumb rootPath={rootPath} filePath={filePath} />
+			<Breadcrumb rootPath={rootPath} filePath={filePath}>
+				{isMarkdown && (
+					<div className="flex items-center gap-0.5 bg-muted rounded p-0.5">
+						<button
+							type="button"
+							onClick={() => setShowPreview(false)}
+							className={cn(
+								"flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] transition-colors",
+								!showPreview
+									? "bg-background shadow-sm text-foreground"
+									: "text-muted-foreground hover:text-foreground",
+							)}
+							title="Editor"
+						>
+							<FileCode className="h-3 w-3" />
+							Editor
+						</button>
+						<button
+							type="button"
+							onClick={() => setShowPreview(true)}
+							className={cn(
+								"flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] transition-colors",
+								showPreview
+									? "bg-background shadow-sm text-foreground"
+									: "text-muted-foreground hover:text-foreground",
+							)}
+							title="Preview"
+						>
+							<Eye className="h-3 w-3" />
+							Preview
+						</button>
+					</div>
+				)}
+			</Breadcrumb>
 			<div
 				className="flex-1 min-h-0"
 				style={{ position: "relative", overflow: "hidden" }}
@@ -388,6 +432,11 @@ export function EditorTabContent({
 						originalUrl={imageDiff.originalUrl}
 						modifiedUrl={imageDiff.modifiedUrl}
 						loading={imageDiff.loading}
+					/>
+				) : isMarkdown && showPreview ? (
+					<MarkdownDiffViewer
+						originalContent={originalContent}
+						modifiedContent={modifiedContent}
 					/>
 				) : (
 					<MonacoDiffViewer
@@ -473,7 +522,7 @@ export function EditorTabContent({
 							onClick={() => setDiffMode("gutter")}
 							className={cn(
 								"flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors",
-								diffMode === "gutter"
+								diffMode === "gutter" || (showPreview && isMarkdown)
 									? "bg-background shadow-sm text-foreground"
 									: "text-muted-foreground hover:text-foreground",
 							)}
@@ -485,13 +534,20 @@ export function EditorTabContent({
 						<button
 							type="button"
 							onClick={() => setDiffMode("inline")}
+							disabled={showPreview && isMarkdown}
 							className={cn(
 								"flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors",
-								diffMode === "inline"
-									? "bg-background shadow-sm text-foreground"
-									: "text-muted-foreground hover:text-foreground",
+								showPreview && isMarkdown
+									? "text-muted-foreground/50 cursor-not-allowed"
+									: diffMode === "inline"
+										? "bg-background shadow-sm text-foreground"
+										: "text-muted-foreground hover:text-foreground",
 							)}
-							title="Inline diff"
+							title={
+								showPreview && isMarkdown
+									? "Preview mode supports Gutter only"
+									: "Inline diff"
+							}
 						>
 							<AlignJustify className="h-3.5 w-3.5" />
 							Inline
@@ -499,13 +555,20 @@ export function EditorTabContent({
 						<button
 							type="button"
 							onClick={() => setDiffMode("split")}
+							disabled={showPreview && isMarkdown}
 							className={cn(
 								"flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors",
-								diffMode === "split"
-									? "bg-background shadow-sm text-foreground"
-									: "text-muted-foreground hover:text-foreground",
+								showPreview && isMarkdown
+									? "text-muted-foreground/50 cursor-not-allowed"
+									: diffMode === "split"
+										? "bg-background shadow-sm text-foreground"
+										: "text-muted-foreground hover:text-foreground",
 							)}
-							title="Split view"
+							title={
+								showPreview && isMarkdown
+									? "Preview mode supports Gutter only"
+									: "Split view"
+							}
 						>
 							<SplitSquareHorizontal className="h-3.5 w-3.5" />
 							Split

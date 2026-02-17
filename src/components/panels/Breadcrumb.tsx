@@ -4,9 +4,10 @@ import { ChevronRight } from "lucide-react";
 interface BreadcrumbProps {
 	rootPath: string | null;
 	filePath: string | null;
+	children?: React.ReactNode;
 }
 
-export function Breadcrumb({ rootPath, filePath }: BreadcrumbProps) {
+export function Breadcrumb({ rootPath, filePath, children }: BreadcrumbProps) {
 	if (rootPath == null || filePath == null) {
 		return null;
 	}
@@ -49,6 +50,7 @@ export function Breadcrumb({ rootPath, filePath }: BreadcrumbProps) {
 					</span>
 				);
 			})}
+			{children && <div className="ml-auto flex items-center">{children}</div>}
 		</nav>
 	);
 }
