@@ -174,10 +174,10 @@ export function WorkspaceManagerScreen({
 					<Panel
 						panelRef={sidebarPanelRef}
 						id="sidebar"
-						defaultSize={15}
-						minSize={10}
+						defaultSize="20%"
+						minSize="10%"
 						collapsible
-						collapsedSize={0}
+						collapsedSize="0%"
 						onResize={handleSidebarResize}
 					>
 						<div className="h-full overflow-hidden border-r border-border">
@@ -185,7 +185,7 @@ export function WorkspaceManagerScreen({
 						</div>
 					</Panel>
 					<Separator />
-					<Panel id="kanban" minSize={20}>
+					<Panel id="kanban" minSize="20%">
 						<div className="h-full flex flex-col">
 							<div className="flex items-center justify-between h-[30px] px-3 border-b border-border shrink-0">
 								<span className="text-xs font-semibold uppercase tracking-wide truncate">
@@ -226,10 +226,10 @@ export function WorkspaceManagerScreen({
 					<Panel
 						panelRef={terminalPanelRef}
 						id="terminal"
-						defaultSize={30}
-						minSize={10}
+						defaultSize="30%"
+						minSize="10%"
 						collapsible
-						collapsedSize={0}
+						collapsedSize="0%"
 						onResize={handleTerminalResize}
 					>
 						<div className="h-full overflow-hidden border-l border-border">

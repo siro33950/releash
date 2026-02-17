@@ -840,10 +840,10 @@ export function WorktreeView({
 							<Panel
 								panelRef={sidebarPanelRef}
 								id="sidebar"
-								defaultSize={15}
-								minSize={10}
+								defaultSize="20%"
+								minSize="10%"
 								collapsible
-								collapsedSize={0}
+								collapsedSize="0%"
 								onResize={handleSidebarResize}
 							>
 								<div className="h-full overflow-hidden border-r border-border">
@@ -851,9 +851,9 @@ export function WorktreeView({
 								</div>
 							</Panel>
 							<Separator />
-							<Panel id="center" minSize={20}>
+							<Panel id="center" minSize="20%">
 								<Group orientation="vertical">
-									<Panel id="editor" minSize={20}>
+									<Panel id="editor" minSize="20%">
 										<div className="h-full relative overflow-hidden">
 											<Layout
 												model={editorLayout.model}
@@ -868,10 +868,10 @@ export function WorktreeView({
 									<Panel
 										panelRef={reviewPanelRef}
 										id="review"
-										defaultSize={30}
-										minSize={10}
+										defaultSize="30%"
+										minSize="10%"
 										collapsible
-										collapsedSize={0}
+										collapsedSize="0%"
 										onResize={handleReviewResize}
 									>
 										<div className="h-full overflow-hidden border-t border-border">
@@ -896,10 +896,10 @@ export function WorktreeView({
 							<Panel
 								panelRef={terminalPanelRef}
 								id="terminal"
-								defaultSize={30}
-								minSize={10}
+								defaultSize="30%"
+								minSize="10%"
 								collapsible
-								collapsedSize={0}
+								collapsedSize="0%"
 								onResize={handleTerminalResize}
 							>
 								<div className="h-full overflow-hidden border-l border-border">
