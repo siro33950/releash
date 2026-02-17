@@ -59,6 +59,8 @@ export const baseIpcHandler: Record<string, unknown> = {
 	// RepoKanbanBoard
 	list_branches_with_status: [],
 	get_cached_pr_status: { open_prs: {}, merged_branches: [] } satisfies PrStatus,
+	get_cached_issues: [],
+	fetch_issues: [],
 	get_agent_states: {},
 	get_releash_base: null,
 	get_default_branch: "main",
