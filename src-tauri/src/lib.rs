@@ -72,7 +72,11 @@ pub fn run() {
                 Arc::new(parking_lot::Mutex::new(focus_tracker::FocusTracker::new()));
 
             let ft = focus_tracker.clone();
-            if let Some(window) = app.get_webview_window("main") {
+            let window = app.get_webview_window("main");
+            if window.is_none() {
+                log::warn!("Main window not found; focus tracking will be disabled");
+            }
+            if let Some(window) = window {
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::Focused(focused) = event {
                         let mut tracker = ft.lock();

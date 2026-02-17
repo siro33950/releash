@@ -93,18 +93,24 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 		}
 	}, [hooksConfig]);
 
+	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
+
 	const handleSave = useCallback(async () => {
-		onSave(draft);
-		if (webhook.isDirty) {
-			await webhook.save();
+		try {
+			if (webhookIsDirty) {
+				await webhookSave();
+			}
+		} catch {
+			return;
 		}
+		onSave(draft);
 		if (draft.telemetryEnabled) {
 			trackEvent("settings_saved");
 		}
-	}, [draft, onSave, webhook]);
+	}, [draft, onSave, webhookIsDirty, webhookSave]);
 
 	const isDirty =
-		JSON.stringify(draft) !== JSON.stringify(settings) || webhook.isDirty;
+		JSON.stringify(draft) !== JSON.stringify(settings) || webhookIsDirty;
 	const showAutoApprove =
 		draft.agent !== "none" &&
 		draft.agent !== "cursor" &&
