@@ -143,9 +143,9 @@ fn should_notify(
 
     match notify.desktop_mode {
         DesktopNotifyMode::Always => true,
-        DesktopNotifyMode::WhenInactive => {
-            focus_tracker.lock().is_inactive(notify.inactive_timeout_minutes)
-        }
+        DesktopNotifyMode::WhenInactive => focus_tracker
+            .lock()
+            .is_inactive(notify.inactive_timeout_minutes),
     }
 }
 
@@ -358,7 +358,12 @@ mod tests {
         drop(map);
     }
 
-    fn make_notify(on_running: bool, on_done: bool, on_error: bool, on_waiting: bool) -> NotifySection {
+    fn make_notify(
+        on_running: bool,
+        on_done: bool,
+        on_error: bool,
+        on_waiting: bool,
+    ) -> NotifySection {
         NotifySection {
             webhook_url: "https://example.com/hook".to_string(),
             on_running,

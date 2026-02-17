@@ -68,7 +68,8 @@ pub fn run() {
             ));
             app.manage(agent_states.clone());
 
-            let focus_tracker = Arc::new(parking_lot::Mutex::new(focus_tracker::FocusTracker::new()));
+            let focus_tracker =
+                Arc::new(parking_lot::Mutex::new(focus_tracker::FocusTracker::new()));
 
             let ft = focus_tracker.clone();
             if let Some(window) = app.get_webview_window("main") {

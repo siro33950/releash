@@ -424,8 +424,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 											onChange={() =>
 												webhook.setDraft((d) => ({
 													...d,
-													desktop_mode:
-														"always" as DesktopNotifyMode,
+													desktop_mode: "always" as DesktopNotifyMode,
 												}))
 											}
 											className="accent-primary"
@@ -437,14 +436,11 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 											type="radio"
 											name="desktop-mode"
 											value="when_inactive"
-											checked={
-												webhook.draft.desktop_mode === "when_inactive"
-											}
+											checked={webhook.draft.desktop_mode === "when_inactive"}
 											onChange={() =>
 												webhook.setDraft((d) => ({
 													...d,
-													desktop_mode:
-														"when_inactive" as DesktopNotifyMode,
+													desktop_mode: "when_inactive" as DesktopNotifyMode,
 												}))
 											}
 											className="accent-primary"
@@ -456,9 +452,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 												onChange={(e) =>
 													webhook.setDraft((d) => ({
 														...d,
-														inactive_timeout_minutes: Number(
-															e.target.value,
-														),
+														inactive_timeout_minutes: Number(e.target.value),
 													}))
 												}
 												className="bg-muted border border-border rounded px-1.5 py-0.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
@@ -510,9 +504,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							}
 							className="accent-primary"
 						/>
-						<span className={labelClass}>
-							Send anonymous usage data
-						</span>
+						<span className={labelClass}>Send anonymous usage data</span>
 					</label>
 
 					<label className="flex items-center gap-2 cursor-pointer">
@@ -527,9 +519,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							}
 							className="accent-primary"
 						/>
-						<span className={labelClass}>
-							Send crash reports
-						</span>
+						<span className={labelClass}>Send crash reports</span>
 					</label>
 					<p className="text-[10px] text-muted-foreground -mt-2">
 						Help improve Releash by sending anonymous crash reports.
