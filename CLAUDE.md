@@ -24,7 +24,7 @@ Tauri + React + Monaco Editor のデスクトップGitエディタ。
 
 ## ディレクトリ構造
 
-```
+```text
 src/                        # フロントエンド
 ├── components/panels/      # EditorTabContent, FileTree, TerminalPanel, SourceControlPanel 等
 ├── components/layout/      # ActivityBar, StatusBar
