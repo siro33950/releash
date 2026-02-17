@@ -10,7 +10,7 @@ export function useBranchPr(rootPath: string, branchName: string | null) {
 	const [loading, setLoading] = useState(true);
 	const hasFetched = useRef(false);
 
-	const fetch = useCallback(async () => {
+	const fetchBranchPr = useCallback(async () => {
 		if (!branchName) {
 			setPrNumber(null);
 			setPrUrl(null);
@@ -44,10 +44,10 @@ export function useBranchPr(rootPath: string, branchName: string | null) {
 	useEffect(() => {
 		hasFetched.current = false;
 		setLoading(true);
-		fetch();
-		const id = setInterval(fetch, POLL_INTERVAL);
+		fetchBranchPr();
+		const id = setInterval(fetchBranchPr, POLL_INTERVAL);
 		return () => clearInterval(id);
-	}, [fetch]);
+	}, [fetchBranchPr]);
 
-	return { prNumber, prUrl, loading, refresh: fetch };
+	return { prNumber, prUrl, loading, refresh: fetchBranchPr };
 }
