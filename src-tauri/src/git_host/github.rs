@@ -72,7 +72,7 @@ impl GitHostProvider for GitHubProvider {
                 "--state",
                 "open",
                 "--json",
-                "number,title,state,url,author,createdAt,updatedAt,labels,assignees,body",
+                "number,title,state,url,author,createdAt,updatedAt,labels,assignees,body,milestone",
                 "--limit",
                 "100",
             ],

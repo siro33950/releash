@@ -68,6 +68,11 @@ pub struct PrDetail {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Milestone {
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueLabel {
     pub name: String,
     pub color: String,
@@ -91,7 +96,7 @@ pub struct IssueInfo {
     #[serde(default)]
     pub body: String,
     #[serde(default)]
-    pub milestone: Option<String>,
+    pub milestone: Option<Milestone>,
 }
 
 pub trait GitHostProvider: Send + Sync {

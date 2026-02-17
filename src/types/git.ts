@@ -83,6 +83,10 @@ export interface PrDetail {
 	reviews: PrReview[];
 }
 
+export interface Milestone {
+	title: string;
+}
+
 export interface IssueLabel {
 	name: string;
 	color: string;
@@ -99,7 +103,7 @@ export interface IssueInfo {
 	labels: IssueLabel[];
 	assignees: PrAuthor[];
 	body: string;
-	milestone: string | null;
+	milestone: Milestone | null;
 }
 
 export interface CommitInfo {
