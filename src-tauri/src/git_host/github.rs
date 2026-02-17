@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::types::{GitHostProvider, PrDetail, PrInfo};
+use super::types::{GitHostProvider, IssueInfo, PrDetail, PrInfo};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -62,6 +62,26 @@ impl GitHostProvider for GitHubProvider {
             repo_path,
         )?;
         parse_gh_pr_detail(&output)
+    }
+
+    fn list_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
+        let output = run_gh_with_timeout(
+            &[
+                "issue",
+                "list",
+                "--state",
+                "open",
+                "--json",
+                "number,title,state,url,author,createdAt,updatedAt,labels,assignees,body",
+                "--limit",
+                "100",
+            ],
+            repo_path,
+        );
+        match output {
+            Some(stdout) => parse_gh_issue_list_output(&stdout),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -123,6 +143,10 @@ fn parse_gh_pr_list_output(json_str: &str) -> HashMap<String, PrInfo> {
 
 fn parse_gh_pr_detail(json_str: &str) -> Option<PrDetail> {
     serde_json::from_str(json_str).ok()
+}
+
+fn parse_gh_issue_list_output(json_str: &str) -> Vec<IssueInfo> {
+    serde_json::from_str(json_str).unwrap_or_default()
 }
 
 fn parse_gh_merged_pr_output(json_str: &str) -> Vec<String> {
@@ -264,5 +288,78 @@ mod tests {
     fn parse_pr_detail_missing_fields() {
         let json = serde_json::json!({"number": 1, "title": "Partial"}).to_string();
         assert!(parse_gh_pr_detail(&json).is_none());
+    }
+
+    #[test]
+    fn parse_issue_list_valid_json() {
+        let json = serde_json::json!([
+            {
+                "number": 305,
+                "title": "Kanban画面にIssue管理パネルを追加",
+                "state": "OPEN",
+                "url": "https://github.com/owner/repo/issues/305",
+                "author": {"login": "user1"},
+                "createdAt": "2024-01-01T00:00:00Z",
+                "updatedAt": "2024-01-02T00:00:00Z",
+                "labels": [{"name": "enhancement", "color": "a2eeef"}],
+                "assignees": [{"login": "user1"}],
+                "body": "Issue body"
+            },
+            {
+                "number": 100,
+                "title": "Bug fix",
+                "state": "OPEN",
+                "url": "https://github.com/owner/repo/issues/100",
+                "author": {"login": "user2"},
+                "createdAt": "2024-01-01T00:00:00Z",
+                "updatedAt": "2024-01-01T00:00:00Z",
+                "labels": [],
+                "assignees": [],
+                "body": ""
+            }
+        ])
+        .to_string();
+        let issues = parse_gh_issue_list_output(&json);
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].number, 305);
+        assert_eq!(issues[0].title, "Kanban画面にIssue管理パネルを追加");
+        assert_eq!(issues[0].labels.len(), 1);
+        assert_eq!(issues[0].labels[0].name, "enhancement");
+        assert_eq!(issues[0].assignees.len(), 1);
+        assert_eq!(issues[1].number, 100);
+        assert!(issues[1].labels.is_empty());
+    }
+
+    #[test]
+    fn parse_issue_list_empty_array() {
+        let issues = parse_gh_issue_list_output("[]");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn parse_issue_list_invalid_json() {
+        let issues = parse_gh_issue_list_output("not json");
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn parse_issue_list_missing_optional_fields() {
+        let json = serde_json::json!([
+            {
+                "number": 1,
+                "title": "Test",
+                "state": "OPEN",
+                "url": "https://github.com/owner/repo/issues/1",
+                "author": {"login": "user"},
+                "createdAt": "2024-01-01T00:00:00Z",
+                "updatedAt": "2024-01-01T00:00:00Z"
+            }
+        ])
+        .to_string();
+        let issues = parse_gh_issue_list_output(&json);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].labels.is_empty());
+        assert!(issues[0].assignees.is_empty());
+        assert!(issues[0].body.is_empty());
     }
 }

@@ -51,6 +51,7 @@ pub fn run() {
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::PrDetailCache::new()))
+        .manage(Arc::new(git_host::IssueCache::new()))
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let config_path = data_dir.join("releash.toml");
@@ -164,6 +165,8 @@ pub fn run() {
             git_host::fetch_pr_status,
             git_host::get_cached_pr_status,
             git_host::get_pr_detail,
+            git_host::fetch_issues,
+            git_host::get_cached_issues,
             // 検索
             search::search_files,
             search::find_definition,

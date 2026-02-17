@@ -83,6 +83,25 @@ export interface PrDetail {
 	reviews: PrReview[];
 }
 
+export interface IssueLabel {
+	name: string;
+	color: string;
+}
+
+export interface IssueInfo {
+	number: number;
+	title: string;
+	state: string;
+	url: string;
+	author: PrAuthor;
+	created_at: string;
+	updated_at: string;
+	labels: IssueLabel[];
+	assignees: PrAuthor[];
+	body: string;
+	milestone: string | null;
+}
+
 export interface CommitInfo {
 	hash: string;
 	short_hash: string;

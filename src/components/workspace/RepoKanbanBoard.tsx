@@ -20,6 +20,7 @@ import { KanbanColumn } from "@/components/workspace/KanbanColumn";
 import { SettingsDialog } from "@/components/workspace/SettingsDialog";
 import { BranchCard as BranchCardComponent } from "@/components/workspace/WorktreeCard";
 import { trackEvent } from "@/lib/telemetry";
+import { branchToDir, computeWorktreeDir } from "@/lib/worktreePath";
 import type {
 	BranchCard,
 	ProviderStatus,
@@ -225,10 +226,8 @@ export function RepoKanbanBoard({
 				setOpeningBranch(null);
 				return;
 			}
-			const parent = repoPath.replace(/\/[^/]+\/?$/, "");
-			const repoDir = repoPath.split("/").filter(Boolean).pop();
-			const worktreeDir = `${parent}/${repoDir}-worktrees`;
-			const dirName = branch.name.replace(/\//g, "-");
+			const worktreeDir = computeWorktreeDir(repoPath);
+			const dirName = branchToDir(branch.name);
 			try {
 				const entry = await invoke<WorktreeEntry>("create_worktree", {
 					repoPath,

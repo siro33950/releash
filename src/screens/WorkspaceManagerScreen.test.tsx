@@ -124,6 +124,8 @@ function setupMockInvoke(
 				return Promise.resolve(branches);
 			case "get_cached_pr_status":
 				return Promise.resolve(prStatus);
+			case "get_cached_issues":
+				return Promise.resolve([]);
 			case "get_releash_base":
 				return Promise.resolve(null);
 			case "get_default_branch":
@@ -201,7 +203,8 @@ describe("WorkspaceManagerScreen", () => {
 		it("リポジトリ名をヘッダーに表示", async () => {
 			renderScreen(["/home/user/my-repo"]);
 			await waitFor(() => {
-				expect(screen.getByText("my-repo")).toBeInTheDocument();
+				const elements = screen.getAllByText("my-repo");
+				expect(elements.length).toBeGreaterThanOrEqual(1);
 			});
 		});
 
@@ -219,6 +222,8 @@ describe("WorkspaceManagerScreen", () => {
 						return Promise.resolve(allBranches);
 					case "get_cached_pr_status":
 						return Promise.resolve(defaultPrStatus);
+					case "get_cached_issues":
+						return Promise.resolve([]);
 					case "get_releash_base":
 						return Promise.resolve("develop");
 					case "get_agent_states":
@@ -358,6 +363,8 @@ describe("WorkspaceManagerScreen", () => {
 						return Promise.resolve(allBranches);
 					case "get_cached_pr_status":
 						return Promise.resolve(defaultPrStatus);
+					case "get_cached_issues":
+						return Promise.resolve([]);
 					case "get_releash_base":
 						return Promise.resolve(null);
 					case "get_default_branch":
@@ -430,12 +437,25 @@ describe("WorkspaceManagerScreen", () => {
 		});
 	});
 
-	describe("リモートパネル表示切替", () => {
-		it("初期状態で Remote パネルが表示される", async () => {
+	describe("サイドバーパネル表示切替", () => {
+		it("初期状態で Issues パネルが表示される", async () => {
 			renderScreen();
 			await waitFor(() => {
 				expect(screen.getByText("Todo")).toBeInTheDocument();
 			});
+			expect(screen.getByText("Issues")).toBeInTheDocument();
+		});
+
+		it("ActivityBar の Remote ボタンで Remote パネルに切り替わる", async () => {
+			const user = userEvent.setup();
+			renderScreen();
+			await waitFor(() => {
+				expect(screen.getByText("Todo")).toBeInTheDocument();
+			});
+
+			const remoteBtn = screen.getByLabelText("Remote");
+			await user.click(remoteBtn);
+
 			expect(screen.getByTestId("remote-panel")).toBeInTheDocument();
 		});
 
@@ -445,12 +465,11 @@ describe("WorkspaceManagerScreen", () => {
 			await waitFor(() => {
 				expect(screen.getByText("Todo")).toBeInTheDocument();
 			});
-			expect(screen.getByTestId("remote-panel")).toBeInTheDocument();
 
 			const settingsBtn = screen.getByLabelText("Settings");
 			await user.click(settingsBtn);
 
-			expect(screen.queryByTestId("remote-panel")).not.toBeInTheDocument();
+			expect(screen.queryByText("Issues")).not.toBeInTheDocument();
 		});
 	});
 
@@ -463,6 +482,8 @@ describe("WorkspaceManagerScreen", () => {
 				switch (cmd) {
 					case "list_branches_with_status":
 						return Promise.reject(new Error("network error"));
+					case "get_cached_issues":
+						return Promise.resolve([]);
 					case "get_releash_base":
 						return Promise.resolve(null);
 					case "get_default_branch":
@@ -497,6 +518,8 @@ describe("WorkspaceManagerScreen", () => {
 						return Promise.resolve([]);
 					case "get_cached_pr_status":
 						return Promise.resolve({ open_prs: {}, merged_branches: [] });
+					case "get_cached_issues":
+						return Promise.resolve([]);
 					case "get_releash_base":
 						return Promise.reject(new Error("config error"));
 					case "get_agent_states":
@@ -564,6 +587,8 @@ describe("WorkspaceManagerScreen", () => {
 							open_prs: {},
 							merged_branches: [],
 						});
+					case "get_cached_issues":
+						return Promise.resolve([]);
 					case "get_releash_base":
 						return Promise.resolve(null);
 					case "get_default_branch":
