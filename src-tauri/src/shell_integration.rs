@@ -38,6 +38,13 @@ if (( ! ${precmd_functions[(I)__releash_precmd]} )); then
 fi
 "#;
 
+const FISH_INIT_SCRIPT: &str = r#"
+# Releash shell integration for fish
+function __releash_postexec --on-event fish_postexec
+    printf '\033]777;cmd_done;%d\007' $status
+end
+"#;
+
 const OSC_PREFIX: &str = "\x1b]777;cmd_done;";
 const OSC_TERMINATOR: char = '\x07';
 
@@ -47,6 +54,9 @@ pub fn create_shell_integration_files(data_dir: &Path) -> Result<PathBuf, String
 
     std::fs::write(dir.join("bash-init.sh"), BASH_INIT_SCRIPT)
         .map_err(|e| format!("bash init書き込み失敗: {e}"))?;
+
+    std::fs::write(dir.join("fish-init.fish"), FISH_INIT_SCRIPT)
+        .map_err(|e| format!("fish init書き込み失敗: {e}"))?;
 
     let zsh_dir = dir.join("zsh");
     std::fs::create_dir_all(&zsh_dir).map_err(|e| format!("zsh dir作成失敗: {e}"))?;
@@ -144,5 +154,10 @@ mod tests {
         let zsh_content = std::fs::read_to_string(result.join("zsh").join(".zshrc")).unwrap();
         assert!(zsh_content.contains("__releash_precmd"));
         assert!(zsh_content.contains("precmd_functions"));
+
+        assert!(result.join("fish-init.fish").exists());
+        let fish_content = std::fs::read_to_string(result.join("fish-init.fish")).unwrap();
+        assert!(fish_content.contains("__releash_postexec"));
+        assert!(fish_content.contains("fish_postexec"));
     }
 }

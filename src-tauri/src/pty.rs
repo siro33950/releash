@@ -141,6 +141,14 @@ impl PtyManager {
                 c.env("RELEASH_USER_ZDOTDIR", user_zdotdir);
                 c.env("ZDOTDIR", int_dir.join("zsh"));
                 c
+            } else if shell.ends_with("/fish") {
+                let mut c = CommandBuilder::new(&shell);
+                c.arg("-C");
+                c.arg(format!(
+                    "source '{}'",
+                    int_dir.join("fish-init.fish").display()
+                ));
+                c
             } else {
                 CommandBuilder::new_default_prog()
             }
