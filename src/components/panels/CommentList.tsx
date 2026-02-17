@@ -1,9 +1,11 @@
 import {
 	Check,
+	Copy,
 	Eye,
 	EyeOff,
 	MessageSquare,
 	Pencil,
+	Send,
 	Trash2,
 	X,
 } from "lucide-react";
@@ -17,6 +19,8 @@ export interface CommentListProps {
 	onCommentClick?: (filePath: string, lineNumber: number) => void;
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
+	onSendComment?: (comment: LineComment) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	showSentComments?: boolean;
 	onToggleShowSent?: () => void;
 }
@@ -26,6 +30,8 @@ export function CommentList({
 	onCommentClick,
 	onDeleteComment,
 	onUpdateComment,
+	onSendComment,
+	onCopyComment,
 	showSentComments = false,
 	onToggleShowSent,
 }: CommentListProps) {
@@ -214,6 +220,32 @@ export function CommentList({
 										</div>
 										{editingId !== comment.id && (
 											<div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+												{onSendComment && comment.status === "unsent" && (
+													<button
+														type="button"
+														onClick={(e) => {
+															e.stopPropagation();
+															onSendComment(comment);
+														}}
+														className="p-0.5 rounded hover:bg-primary/20 text-muted-foreground hover:text-primary"
+														title="送信"
+													>
+														<Send className="h-3 w-3" />
+													</button>
+												)}
+												{onCopyComment && (
+													<button
+														type="button"
+														onClick={(e) => {
+															e.stopPropagation();
+															onCopyComment(comment);
+														}}
+														className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+														title="コピー"
+													>
+														<Copy className="h-3 w-3" />
+													</button>
+												)}
 												{onUpdateComment && (
 													<button
 														type="button"
