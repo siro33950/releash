@@ -64,6 +64,11 @@ export function EditorTabContent({
 	const isMarkdown = isMarkdownFile(filePath);
 	const [showPreview, setShowPreview] = useState(false);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset preview when file changes
+	useEffect(() => {
+		setShowPreview(false);
+	}, [filePath]);
+
 	const [revealLine, setRevealLine] = useState<
 		{ line: number; key: number } | undefined
 	>();
