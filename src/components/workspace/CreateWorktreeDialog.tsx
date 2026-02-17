@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { trackEvent } from "@/lib/telemetry";
+import { branchToDir, computeWorktreeDir } from "@/lib/worktreePath";
 import type { BranchCard, BranchInfo, WorktreeEntry } from "@/types/git";
 
 interface CreateWorktreeDialogProps {
@@ -20,16 +21,6 @@ interface CreateWorktreeDialogProps {
 	existingBranches: BranchCard[];
 	onCreated: (entry: WorktreeEntry) => void;
 	onCancel: () => void;
-}
-
-function branchToDir(branch: string): string {
-	return branch.replace(/\//g, "-");
-}
-
-function computeWorktreeDir(repoPath: string): string {
-	const parent = repoPath.replace(/\/[^/]+\/?$/, "");
-	const repoName = repoPath.split("/").filter(Boolean).pop() ?? "repo";
-	return `${parent}/${repoName}-worktrees`;
 }
 
 export function CreateWorktreeDialog({

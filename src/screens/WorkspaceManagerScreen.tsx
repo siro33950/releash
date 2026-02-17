@@ -1,4 +1,5 @@
 import {
+	CircleDot,
 	FolderOpen,
 	Globe,
 	Loader2,
@@ -19,6 +20,7 @@ import {
 	type ActivityBarItem,
 } from "@/components/layout/ActivityBar";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
+import { IssuePanel } from "@/components/panels/IssuePanel";
 import { RemotePanel } from "@/components/panels/RemotePanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
@@ -57,7 +59,7 @@ export function WorkspaceManagerScreen({
 	onAddRepo,
 	onRemoveRepo,
 }: WorkspaceManagerScreenProps) {
-	const [activeView, setActiveView] = useState<string>("remote");
+	const [activeView, setActiveView] = useState<string>("issues");
 
 	useEffect(() => {
 		if (requestedView) {
@@ -69,9 +71,9 @@ export function WorkspaceManagerScreen({
 	const activityBarItems: ActivityBarItem[] = useMemo(
 		() => [
 			{
-				id: "remote",
-				icon: <Globe className="size-5" />,
-				title: "Remote",
+				id: "issues",
+				icon: <CircleDot className="size-5" />,
+				title: "Issues",
 			},
 		],
 		[],
@@ -79,6 +81,11 @@ export function WorkspaceManagerScreen({
 
 	const activityBarBottomItems: ActivityBarItem[] = useMemo(
 		() => [
+			{
+				id: "remote",
+				icon: <Globe className="size-5" />,
+				title: "Remote",
+			},
 			{
 				id: "settings",
 				icon: <Settings className="size-5" />,
@@ -145,6 +152,15 @@ export function WorkspaceManagerScreen({
 	);
 
 	const sidebarContent = useMemo(() => {
+		if (activeView === "issues") {
+			return (
+				<IssuePanel
+					repoPaths={repoPaths}
+					providerStatuses={providerStatuses}
+					onSelectWorktree={onSelectWorktree}
+				/>
+			);
+		}
 		if (activeView === "remote") {
 			return <RemotePanel rootPaths={repoPaths} />;
 		}
@@ -152,7 +168,14 @@ export function WorkspaceManagerScreen({
 			return <SettingsPanel settings={settings} onSave={onSettingsSave} />;
 		}
 		return null;
-	}, [activeView, repoPaths, settings, onSettingsSave]);
+	}, [
+		activeView,
+		repoPaths,
+		providerStatuses,
+		onSelectWorktree,
+		settings,
+		onSettingsSave,
+	]);
 
 	if (repoPaths.length === 0 && initializing) {
 		return (

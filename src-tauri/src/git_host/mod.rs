@@ -6,10 +6,11 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use types::{GitHostProvider, PrDetail, PrStatus, ProviderStatus};
+use types::{GitHostProvider, IssueInfo, PrDetail, PrStatus, ProviderStatus};
 
 const PR_CACHE_TTL: Duration = Duration::from_secs(30);
 const PR_DETAIL_CACHE_TTL: Duration = Duration::from_secs(60);
+const ISSUE_CACHE_TTL: Duration = Duration::from_secs(30);
 
 struct CacheEntry {
     value: PrStatus,
@@ -38,6 +39,23 @@ pub struct PrDetailCache {
 }
 
 impl PrDetailCache {
+    pub fn new() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+struct IssueCacheEntry {
+    value: Vec<IssueInfo>,
+    fetched_at: Instant,
+}
+
+pub struct IssueCache {
+    entries: Mutex<HashMap<String, IssueCacheEntry>>,
+}
+
+impl IssueCache {
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
@@ -154,6 +172,53 @@ pub async fn get_cached_pr_status(
             .await
             .map_err(|e| format!("task join error: {e}"))?;
     Ok(status)
+}
+
+fn fetch_issues_inner(repo_path: &str) -> Vec<IssueInfo> {
+    let provider = create_provider(repo_path);
+    match provider {
+        Some(p) => p.list_issues(repo_path),
+        None => Vec::new(),
+    }
+}
+
+fn fetch_issues_with_cache(cache: &IssueCache, repo_path: &str) -> Vec<IssueInfo> {
+    if let Ok(map) = cache.entries.lock() {
+        if let Some(entry) = map.get(repo_path) {
+            if entry.fetched_at.elapsed() < ISSUE_CACHE_TTL {
+                return entry.value.clone();
+            }
+        }
+    }
+    let issues = fetch_issues_inner(repo_path);
+    if let Ok(mut map) = cache.entries.lock() {
+        map.insert(
+            repo_path.to_string(),
+            IssueCacheEntry {
+                value: issues.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+    issues
+}
+
+#[tauri::command]
+pub async fn fetch_issues(repo_path: String) -> Result<Vec<IssueInfo>, String> {
+    tokio::task::spawn_blocking(move || fetch_issues_inner(&repo_path))
+        .await
+        .map_err(|e| format!("task join error: {e}"))
+}
+
+#[tauri::command]
+pub async fn get_cached_issues(
+    cache: tauri::State<'_, Arc<IssueCache>>,
+    repo_path: String,
+) -> Result<Vec<IssueInfo>, String> {
+    let cache = Arc::clone(&cache);
+    tokio::task::spawn_blocking(move || fetch_issues_with_cache(&cache, &repo_path))
+        .await
+        .map_err(|e| format!("task join error: {e}"))
 }
 
 pub fn check_provider_status(repo_path: &str) -> ProviderStatus {
