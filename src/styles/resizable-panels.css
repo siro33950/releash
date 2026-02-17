@@ -4,12 +4,10 @@
 	transition: background-color 0.1s ease-out;
 }
 
-@media (hover: hover) {
-	[data-separator]:hover {
-		background-color: var(--primary);
-	}
+[data-separator="hover"] {
+	background-color: var(--primary);
 }
 
-[data-separator="dragging"] {
+[data-separator="active"] {
 	background-color: var(--primary);
 }
