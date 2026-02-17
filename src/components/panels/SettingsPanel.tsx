@@ -3,6 +3,7 @@ import { Check, Copy, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useWebhookConfig } from "@/hooks/useWebhookConfig";
 import { trackEvent } from "@/lib/telemetry";
 import {
 	AGENT_CONFIGS,
@@ -12,6 +13,10 @@ import {
 	type DiffMode,
 	type Theme,
 } from "@/types/settings";
+import {
+	type DesktopNotifyMode,
+	INACTIVE_TIMEOUT_OPTIONS,
+} from "@/types/webhook";
 
 const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
 
@@ -22,6 +27,7 @@ export interface SettingsPanelProps {
 
 export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 	const [draft, setDraft] = useState<AppSettings>(settings);
+	const webhook = useWebhookConfig();
 
 	// Hooks state
 	const [hooksConfig, setHooksConfig] = useState<string>("");
@@ -87,14 +93,24 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 		}
 	}, [hooksConfig]);
 
-	const handleSave = useCallback(() => {
+	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
+
+	const handleSave = useCallback(async () => {
+		try {
+			if (webhookIsDirty) {
+				await webhookSave();
+			}
+		} catch {
+			return;
+		}
 		onSave(draft);
 		if (draft.telemetryEnabled) {
 			trackEvent("settings_saved");
 		}
-	}, [draft, onSave]);
+	}, [draft, onSave, webhookIsDirty, webhookSave]);
 
-	const isDirty = JSON.stringify(draft) !== JSON.stringify(settings);
+	const isDirty =
+		JSON.stringify(draft) !== JSON.stringify(settings) || webhookIsDirty;
 	const showAutoApprove =
 		draft.agent !== "none" &&
 		draft.agent !== "cursor" &&
@@ -116,6 +132,9 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 
 			<ScrollArea className="flex-1 min-h-0">
 				<div className="px-3 py-3 flex flex-col gap-4">
+					{/* Appearance */}
+					<h3 className={sectionHeader}>Appearance</h3>
+
 					<div className="flex flex-col gap-1.5">
 						<label htmlFor="theme-select" className={labelClass}>
 							Theme
@@ -132,6 +151,31 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							<option value="light">Light</option>
 						</select>
 					</div>
+
+					<div className="flex flex-col gap-1.5">
+						<label htmlFor="font-size-slider" className={labelClass}>
+							Font Size: {draft.fontSize}px
+						</label>
+						<input
+							id="font-size-slider"
+							type="range"
+							min={12}
+							max={24}
+							step={1}
+							value={draft.fontSize}
+							onChange={(e) =>
+								setDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))
+							}
+							className="w-full accent-primary"
+						/>
+						<div className="flex justify-between text-[10px] text-muted-foreground">
+							<span>12px</span>
+							<span>24px</span>
+						</div>
+					</div>
+
+					{/* Editor */}
+					<h3 className={sectionHeader}>Editor</h3>
 
 					<div className="flex flex-col gap-1.5">
 						<label htmlFor="diff-base-select" className={labelClass}>
@@ -174,27 +218,8 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 						</select>
 					</div>
 
-					<div className="flex flex-col gap-1.5">
-						<label htmlFor="font-size-slider" className={labelClass}>
-							Font Size: {draft.fontSize}px
-						</label>
-						<input
-							id="font-size-slider"
-							type="range"
-							min={12}
-							max={24}
-							step={1}
-							value={draft.fontSize}
-							onChange={(e) =>
-								setDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))
-							}
-							className="w-full accent-primary"
-						/>
-						<div className="flex justify-between text-[10px] text-muted-foreground">
-							<span>12px</span>
-							<span>24px</span>
-						</div>
-					</div>
+					{/* Agent */}
+					<h3 className={sectionHeader}>Agent</h3>
 
 					<div className="flex flex-col gap-1.5">
 						<label htmlFor="agent-select" className={labelClass}>
@@ -233,60 +258,6 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 						</label>
 					)}
 
-					<label className="flex items-center gap-2 cursor-pointer">
-						<input
-							type="checkbox"
-							checked={draft.autoUpdate}
-							onChange={(e) =>
-								setDraft((d) => ({
-									...d,
-									autoUpdate: e.target.checked,
-								}))
-							}
-							className="accent-primary"
-						/>
-						<span className="text-xs font-medium text-muted-foreground">
-							Auto-update
-						</span>
-					</label>
-
-					<label className="flex items-center gap-2 cursor-pointer">
-						<input
-							type="checkbox"
-							checked={draft.telemetryEnabled}
-							onChange={(e) =>
-								setDraft((d) => ({
-									...d,
-									telemetryEnabled: e.target.checked,
-								}))
-							}
-							className="accent-primary"
-						/>
-						<span className="text-xs font-medium text-muted-foreground">
-							Send anonymous usage data
-						</span>
-					</label>
-
-					<label className="flex items-center gap-2 cursor-pointer">
-						<input
-							type="checkbox"
-							checked={draft.enableCrashReporting}
-							onChange={(e) =>
-								setDraft((d) => ({
-									...d,
-									enableCrashReporting: e.target.checked,
-								}))
-							}
-							className="accent-primary"
-						/>
-						<span className="text-xs font-medium text-muted-foreground">
-							Send crash reports
-						</span>
-					</label>
-					<p className="text-[10px] text-muted-foreground -mt-2">
-						Help improve Releash by sending anonymous crash reports.
-					</p>
-
 					{draft.agent === "custom" && (
 						<div className="flex flex-col gap-1.5">
 							<label htmlFor="terminal-startup-cmd" className={labelClass}>
@@ -310,15 +281,6 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							</p>
 						</div>
 					)}
-
-					<Button
-						size="sm"
-						onClick={handleSave}
-						disabled={!isDirty}
-						className="w-full"
-					>
-						Save
-					</Button>
 
 					{/* Claude Code Hooks */}
 					{draft.agent === "claude" && (
@@ -395,6 +357,188 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							)}
 						</div>
 					)}
+
+					{/* Notifications */}
+					<div className="flex flex-col gap-2">
+						<h3 className={sectionHeader}>Notifications</h3>
+
+						{webhook.loading ? (
+							<div className="flex items-center justify-center py-4">
+								<Loader2 className="size-4 animate-spin text-muted-foreground" />
+							</div>
+						) : (
+							<>
+								<div className="flex flex-col gap-1.5">
+									<label htmlFor="webhook-url" className={labelClass}>
+										Webhook URL
+									</label>
+									<input
+										id="webhook-url"
+										type="text"
+										value={webhook.draft.webhook_url}
+										onChange={(e) =>
+											webhook.setDraft((d) => ({
+												...d,
+												webhook_url: e.target.value,
+											}))
+										}
+										placeholder="https://hooks.slack.com/..."
+										className={selectClass}
+									/>
+								</div>
+
+								<div className="flex flex-col gap-1.5">
+									<span className={labelClass}>Notify on</span>
+									<div className="flex flex-wrap gap-x-3 gap-y-1">
+										{(
+											[
+												["on_running", "Running"],
+												["on_done", "Done"],
+												["on_error", "Error"],
+												["on_waiting", "Waiting"],
+											] as const
+										).map(([key, label]) => (
+											<label
+												key={key}
+												className="flex items-center gap-1 cursor-pointer"
+											>
+												<input
+													type="checkbox"
+													checked={webhook.draft[key]}
+													onChange={(e) =>
+														webhook.setDraft((d) => ({
+															...d,
+															[key]: e.target.checked,
+														}))
+													}
+													className="accent-primary"
+												/>
+												<span className="text-xs">{label}</span>
+											</label>
+										))}
+									</div>
+								</div>
+
+								<div className="flex flex-col gap-1.5">
+									<span className={labelClass}>Send notifications</span>
+									<label className="flex items-center gap-2 cursor-pointer">
+										<input
+											type="radio"
+											name="desktop-mode"
+											value="always"
+											checked={webhook.draft.desktop_mode === "always"}
+											onChange={() =>
+												webhook.setDraft((d) => ({
+													...d,
+													desktop_mode: "always" as DesktopNotifyMode,
+												}))
+											}
+											className="accent-primary"
+										/>
+										<span className="text-xs">Always</span>
+									</label>
+									<label className="flex items-center gap-2 cursor-pointer">
+										<input
+											type="radio"
+											name="desktop-mode"
+											value="when_inactive"
+											checked={webhook.draft.desktop_mode === "when_inactive"}
+											onChange={() =>
+												webhook.setDraft((d) => ({
+													...d,
+													desktop_mode: "when_inactive" as DesktopNotifyMode,
+												}))
+											}
+											className="accent-primary"
+										/>
+										<span className="text-xs">When inactive for</span>
+										{webhook.draft.desktop_mode === "when_inactive" && (
+											<select
+												value={webhook.draft.inactive_timeout_minutes}
+												onChange={(e) =>
+													webhook.setDraft((d) => ({
+														...d,
+														inactive_timeout_minutes: Number(e.target.value),
+													}))
+												}
+												className="bg-muted border border-border rounded px-1.5 py-0.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+											>
+												{INACTIVE_TIMEOUT_OPTIONS.map((opt) => (
+													<option key={opt.value} value={opt.value}>
+														{opt.label}
+													</option>
+												))}
+											</select>
+										)}
+									</label>
+								</div>
+
+								{webhook.error && (
+									<p className="text-xs text-red-500">{webhook.error}</p>
+								)}
+							</>
+						)}
+					</div>
+
+					{/* Privacy & Updates */}
+					<h3 className={sectionHeader}>Privacy & Updates</h3>
+
+					<label className="flex items-center gap-2 cursor-pointer">
+						<input
+							type="checkbox"
+							checked={draft.autoUpdate}
+							onChange={(e) =>
+								setDraft((d) => ({
+									...d,
+									autoUpdate: e.target.checked,
+								}))
+							}
+							className="accent-primary"
+						/>
+						<span className={labelClass}>Auto-update</span>
+					</label>
+
+					<label className="flex items-center gap-2 cursor-pointer">
+						<input
+							type="checkbox"
+							checked={draft.telemetryEnabled}
+							onChange={(e) =>
+								setDraft((d) => ({
+									...d,
+									telemetryEnabled: e.target.checked,
+								}))
+							}
+							className="accent-primary"
+						/>
+						<span className={labelClass}>Send anonymous usage data</span>
+					</label>
+
+					<label className="flex items-center gap-2 cursor-pointer">
+						<input
+							type="checkbox"
+							checked={draft.enableCrashReporting}
+							onChange={(e) =>
+								setDraft((d) => ({
+									...d,
+									enableCrashReporting: e.target.checked,
+								}))
+							}
+							className="accent-primary"
+						/>
+						<span className={labelClass}>Send crash reports</span>
+					</label>
+					<p className="text-[10px] text-muted-foreground -mt-2">
+						Help improve Releash by sending anonymous crash reports.
+					</p>
+
+					<Button
+						size="sm"
+						onClick={handleSave}
+						disabled={!isDirty}
+						className="w-full"
+					>
+						Save
+					</Button>
 				</div>
 			</ScrollArea>
 		</div>

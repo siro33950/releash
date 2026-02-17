@@ -9,8 +9,9 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
-use crate::config::AppConfig;
-use crate::protocol::{AgentHookPayload, AgentStateSync, WsMessage};
+use crate::config::{AppConfig, DesktopNotifyMode, NotifySection};
+use crate::focus_tracker::FocusTracker;
+use crate::protocol::{AgentHookPayload, AgentState, AgentStateSync, WsMessage};
 use crate::ws_bridge::WsBroadcaster;
 
 pub type AgentStatesMap = Arc<parking_lot::Mutex<HashMap<String, AgentStateSync>>>;
@@ -27,6 +28,7 @@ pub struct HookListenerState {
     pub app_handle: tauri::AppHandle,
     pub broadcaster: Arc<WsBroadcaster>,
     pub agent_states: Arc<parking_lot::Mutex<HashMap<String, AgentStateSync>>>,
+    pub focus_tracker: Arc<parking_lot::Mutex<FocusTracker>>,
 }
 
 pub async fn start_hook_listener(state: HookListenerState) -> Result<(), String> {
@@ -124,6 +126,29 @@ fn error_response(status: StatusCode, msg: &str) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
+fn should_notify(
+    notify: &NotifySection,
+    state: &AgentState,
+    focus_tracker: &parking_lot::Mutex<FocusTracker>,
+) -> bool {
+    let enabled = match state {
+        AgentState::Running => notify.on_running,
+        AgentState::Done => notify.on_done,
+        AgentState::Error => notify.on_error,
+        AgentState::Waiting => notify.on_waiting,
+    };
+    if !enabled {
+        return false;
+    }
+
+    match notify.desktop_mode {
+        DesktopNotifyMode::Always => true,
+        DesktopNotifyMode::WhenInactive => focus_tracker
+            .lock()
+            .is_inactive(notify.inactive_timeout_minutes),
+    }
+}
+
 async fn handle_agent_hook(
     req: Request<hyper::body::Incoming>,
     state: &HookListenerState,
@@ -181,8 +206,9 @@ async fn handle_agent_hook(
     }
 
     if let Ok(cfg) = state.app_config.get_config() {
-        let url = cfg.server.notify.webhook_url.clone();
-        if !url.is_empty() {
+        let notify = &cfg.server.notify;
+        let url = notify.webhook_url.clone();
+        if !url.is_empty() && should_notify(notify, &sync.state, &state.focus_tracker) {
             let sync_clone = sync;
             tokio::spawn(async move {
                 crate::webhook::send_webhook(&url, &sync_clone).await;
@@ -330,5 +356,62 @@ mod tests {
             .is_none_or(|prev| prev.state != incoming.state);
         assert!(should_update);
         drop(map);
+    }
+
+    fn make_notify(
+        on_running: bool,
+        on_done: bool,
+        on_error: bool,
+        on_waiting: bool,
+    ) -> NotifySection {
+        NotifySection {
+            webhook_url: "https://example.com/hook".to_string(),
+            on_running,
+            on_done,
+            on_error,
+            on_waiting,
+            desktop_mode: DesktopNotifyMode::Always,
+            inactive_timeout_minutes: 2,
+        }
+    }
+
+    #[test]
+    fn should_notify_filters_disabled_state() {
+        let ft = parking_lot::Mutex::new(FocusTracker::new());
+        let notify = make_notify(false, true, true, true);
+        assert!(!should_notify(&notify, &AgentState::Running, &ft));
+        assert!(should_notify(&notify, &AgentState::Done, &ft));
+        assert!(should_notify(&notify, &AgentState::Error, &ft));
+        assert!(should_notify(&notify, &AgentState::Waiting, &ft));
+    }
+
+    #[test]
+    fn should_notify_always_sends_when_focused() {
+        let ft = parking_lot::Mutex::new(FocusTracker::new());
+        let notify = make_notify(true, true, true, true);
+        assert!(should_notify(&notify, &AgentState::Done, &ft));
+    }
+
+    #[test]
+    fn should_notify_when_inactive_blocks_focused() {
+        let ft = parking_lot::Mutex::new(FocusTracker::new());
+        let notify = NotifySection {
+            desktop_mode: DesktopNotifyMode::WhenInactive,
+            ..make_notify(true, true, true, true)
+        };
+        // フォーカス中なのでblockされる
+        assert!(!should_notify(&notify, &AgentState::Done, &ft));
+    }
+
+    #[test]
+    fn should_notify_when_inactive_allows_after_timeout() {
+        let ft = parking_lot::Mutex::new(FocusTracker::new());
+        ft.lock().on_blur();
+        let notify = NotifySection {
+            desktop_mode: DesktopNotifyMode::WhenInactive,
+            inactive_timeout_minutes: 0,
+            ..make_notify(true, true, true, true)
+        };
+        assert!(should_notify(&notify, &AgentState::Done, &ft));
     }
 }

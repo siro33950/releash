@@ -143,6 +143,16 @@ function setupMockInvoke(
 				return Promise.resolve("main");
 			case "get_agent_states":
 				return Promise.resolve({});
+			case "get_notify_config":
+				return Promise.resolve({
+					webhook_url: "",
+					on_running: false,
+					on_done: true,
+					on_error: true,
+					on_waiting: true,
+					desktop_mode: "always",
+					inactive_timeout_minutes: 2,
+				});
 			default:
 				return Promise.resolve(null);
 		}
