@@ -418,6 +418,7 @@ mod tests {
     ///
     /// macOS のパイプバッファは 64KB。stdout を読まずに try_wait だけ回すと、
     /// 子プロセスが write(2) でブロックし永遠に終了しない。
+    #[cfg(unix)]
     #[test]
     fn piped_stdout_deadlocks_over_64kb() {
         // 70KB を stdout に書き出す子プロセス
@@ -455,6 +456,7 @@ mod tests {
     }
 
     /// 64KB以下の出力では同じパターンでもデッドロックしないことを確認。
+    #[cfg(unix)]
     #[test]
     fn piped_stdout_ok_under_64kb() {
         let mut child = Command::new("dd")
@@ -487,6 +489,7 @@ mod tests {
     }
 
     /// stdout を別スレッドで並行読み取りすれば 64KB超でもデッドロックしないことを検証。
+    #[cfg(unix)]
     #[test]
     fn piped_stdout_concurrent_read_avoids_deadlock() {
         use std::io::Read;
