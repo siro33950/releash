@@ -7,10 +7,7 @@ pub fn is_discord_webhook(url: &str) -> bool {
 }
 
 pub fn extract_branch(worktree_path: &str) -> &str {
-    worktree_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(worktree_path)
+    worktree_path.rsplit('/').next().unwrap_or(worktree_path)
 }
 
 pub fn build_slack_payload(event: &AgentStateSync) -> serde_json::Value {
@@ -260,10 +257,7 @@ mod tests {
     #[test]
     fn dispatches_to_discord_for_discord_url() {
         let event = make_event(AgentState::Running, None);
-        let payload = build_payload(
-            "https://discord.com/api/webhooks/123/abc",
-            &event,
-        );
+        let payload = build_payload("https://discord.com/api/webhooks/123/abc", &event);
         assert!(payload.get("embeds").is_some());
         assert!(payload.get("text").is_none());
     }
@@ -271,10 +265,7 @@ mod tests {
     #[test]
     fn dispatches_to_slack_for_slack_url() {
         let event = make_event(AgentState::Running, None);
-        let payload = build_payload(
-            "https://hooks.slack.com/services/T00/B00/xxx",
-            &event,
-        );
+        let payload = build_payload("https://hooks.slack.com/services/T00/B00/xxx", &event);
         assert!(payload.get("text").is_some());
         assert!(payload.get("embeds").is_none());
     }
