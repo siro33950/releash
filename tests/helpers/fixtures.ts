@@ -68,6 +68,18 @@ export const baseIpcHandler: Record<string, unknown> = {
 	get_hooks_status: "not_configured",
 	apply_hooks_config: null,
 
+	// Webhook notifications
+	get_notify_config: {
+		webhook_url: "",
+		on_running: false,
+		on_done: true,
+		on_error: true,
+		on_waiting: true,
+		desktop_mode: "always",
+		inactive_timeout_minutes: 2,
+	},
+	update_notify_config: null,
+
 	// Telemetry
 	get_crash_reporting_enabled: true,
 	update_crash_reporting: null,
