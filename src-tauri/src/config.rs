@@ -529,6 +529,25 @@ pub fn get_crash_reporting_enabled(
 }
 
 #[tauri::command]
+pub async fn update_webhook_url(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    url: String,
+) -> Result<(), String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.server.notify.webhook_url = url;
+        write_config(&app_config.config_path, &config)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
 pub async fn update_crash_reporting(
     state: tauri::State<'_, Arc<AppConfig>>,
     enabled: bool,
