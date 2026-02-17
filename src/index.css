@@ -450,6 +450,179 @@
 	font-weight: normal !important;
 }
 
+/* Markdown Preview */
+.markdown-preview {
+	color: var(--foreground);
+	font-size: 14px;
+	line-height: 1.7;
+}
+
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview h4,
+.markdown-preview h5,
+.markdown-preview h6 {
+	color: var(--foreground);
+	font-weight: 600;
+	margin-top: 1.5em;
+	margin-bottom: 0.5em;
+	line-height: 1.3;
+}
+
+.markdown-preview h1 {
+	font-size: 1.8em;
+	padding-bottom: 0.3em;
+	border-bottom: 1px solid var(--border);
+}
+
+.markdown-preview h2 {
+	font-size: 1.4em;
+	padding-bottom: 0.2em;
+	border-bottom: 1px solid var(--border);
+}
+
+.markdown-preview h3 { font-size: 1.2em; }
+.markdown-preview h4 { font-size: 1.05em; }
+
+.markdown-preview p {
+	margin: 0.8em 0;
+}
+
+.markdown-preview a {
+	color: var(--primary);
+	text-decoration: none;
+}
+.markdown-preview a:hover {
+	text-decoration: underline;
+}
+
+.markdown-preview ul,
+.markdown-preview ol {
+	margin: 0.5em 0;
+	padding-left: 1.8em;
+}
+.markdown-preview li {
+	margin: 0.25em 0;
+}
+.markdown-preview li > input[type="checkbox"] {
+	margin-right: 0.4em;
+}
+
+.markdown-preview blockquote {
+	margin: 0.8em 0;
+	padding: 0.2em 1em;
+	border-left: 3px solid var(--border);
+	color: var(--muted-foreground);
+}
+
+.markdown-preview table {
+	border-collapse: collapse;
+	margin: 0.8em 0;
+	width: auto;
+}
+.markdown-preview th,
+.markdown-preview td {
+	border: 1px solid var(--border);
+	padding: 6px 12px;
+	text-align: left;
+}
+.markdown-preview th {
+	font-weight: 600;
+	background: var(--muted);
+}
+
+.markdown-preview hr {
+	border: none;
+	border-top: 1px solid var(--border);
+	margin: 1.5em 0;
+}
+
+.markdown-preview img {
+	max-width: 100%;
+	height: auto;
+}
+
+.markdown-preview code {
+	font-family: var(--font-mono);
+	font-size: 0.88em;
+	padding: 0.15em 0.35em;
+	border-radius: 3px;
+	background: var(--muted);
+}
+
+.markdown-preview pre {
+	margin: 0.8em 0;
+	padding: 12px 16px;
+	border-radius: var(--radius);
+	background: var(--muted);
+	overflow-x: auto;
+}
+.markdown-preview pre code {
+	padding: 0;
+	background: transparent;
+	font-size: 13px;
+	line-height: 1.5;
+}
+
+.markdown-preview del {
+	color: var(--muted-foreground);
+}
+
+/* highlight.js dark theme (github-dark inspired) */
+.markdown-preview .hljs {
+	background: var(--muted);
+	color: var(--foreground);
+}
+.markdown-preview .hljs-keyword,
+.markdown-preview .hljs-selector-tag,
+.markdown-preview .hljs-literal { color: oklch(0.7 0.15 320); }
+.markdown-preview .hljs-string,
+.markdown-preview .hljs-addition { color: oklch(0.72 0.14 155); }
+.markdown-preview .hljs-comment,
+.markdown-preview .hljs-quote { color: var(--muted-foreground); font-style: italic; }
+.markdown-preview .hljs-number,
+.markdown-preview .hljs-regexp { color: oklch(0.75 0.15 85); }
+.markdown-preview .hljs-title,
+.markdown-preview .hljs-function,
+.markdown-preview .hljs-section { color: oklch(0.72 0.16 250); }
+.markdown-preview .hljs-built_in,
+.markdown-preview .hljs-type { color: oklch(0.75 0.12 60); }
+.markdown-preview .hljs-attr,
+.markdown-preview .hljs-variable { color: oklch(0.78 0.12 80); }
+.markdown-preview .hljs-deletion { color: oklch(0.65 0.2 25); }
+.markdown-preview .hljs-meta { color: var(--muted-foreground); }
+
+/* highlight.js light overrides */
+:root.light .markdown-preview .hljs-keyword,
+:root.light .markdown-preview .hljs-selector-tag,
+:root.light .markdown-preview .hljs-literal { color: oklch(0.5 0.2 320); }
+:root.light .markdown-preview .hljs-string,
+:root.light .markdown-preview .hljs-addition { color: oklch(0.45 0.15 155); }
+:root.light .markdown-preview .hljs-number,
+:root.light .markdown-preview .hljs-regexp { color: oklch(0.5 0.15 85); }
+:root.light .markdown-preview .hljs-title,
+:root.light .markdown-preview .hljs-function,
+:root.light .markdown-preview .hljs-section { color: oklch(0.45 0.18 250); }
+:root.light .markdown-preview .hljs-built_in,
+:root.light .markdown-preview .hljs-type { color: oklch(0.5 0.12 60); }
+:root.light .markdown-preview .hljs-attr,
+:root.light .markdown-preview .hljs-variable { color: oklch(0.45 0.12 80); }
+:root.light .markdown-preview .hljs-deletion { color: oklch(0.5 0.2 25); }
+
+/* Markdown Preview Gutter diff markers */
+.md-diff-gutter-added {
+	border-left: 4px solid var(--status-added);
+	padding-left: 0.5em;
+	margin-left: -0.5em;
+}
+
+.md-diff-gutter-modified {
+	border-left: 4px solid var(--status-modified);
+	padding-left: 0.5em;
+	margin-left: -0.5em;
+}
+
 /* Thin scrollbar */
 .scrollbar-thin {
 	scrollbar-width: thin;
