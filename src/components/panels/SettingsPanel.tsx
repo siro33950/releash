@@ -3,6 +3,7 @@ import { Check, Copy, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
 import { trackEvent } from "@/lib/telemetry";
 import {
@@ -28,6 +29,7 @@ export interface SettingsPanelProps {
 export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 	const [draft, setDraft] = useState<AppSettings>(settings);
 	const webhook = useWebhookConfig();
+	const remote = useRemoteConfig();
 
 	// Hooks state
 	const [hooksConfig, setHooksConfig] = useState<string>("");
@@ -105,11 +107,15 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 	}, [hooksConfig]);
 
 	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
+	const { isDirty: remoteIsDirty, save: remoteSave } = remote;
 
 	const handleSave = useCallback(async () => {
 		try {
 			if (webhookIsDirty) {
 				await webhookSave();
+			}
+			if (remoteIsDirty) {
+				await remoteSave();
 			}
 		} catch {
 			return;
@@ -118,10 +124,12 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 		if (draft.telemetryEnabled) {
 			trackEvent("settings_saved");
 		}
-	}, [draft, onSave, webhookIsDirty, webhookSave]);
+	}, [draft, onSave, webhookIsDirty, webhookSave, remoteIsDirty, remoteSave]);
 
 	const isDirty =
-		JSON.stringify(draft) !== JSON.stringify(settings) || webhookIsDirty;
+		JSON.stringify(draft) !== JSON.stringify(settings) ||
+		webhookIsDirty ||
+		remoteIsDirty;
 	const showAutoApprove =
 		draft.agent !== "none" &&
 		draft.agent !== "cursor" &&
@@ -368,6 +376,63 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							)}
 						</div>
 					)}
+
+					{/* Remote */}
+					<div className="flex flex-col gap-2">
+						<h3 className={sectionHeader}>Remote</h3>
+
+						{remote.loading ? (
+							<div className="flex items-center justify-center py-4">
+								<Loader2 className="size-4 animate-spin text-muted-foreground" />
+							</div>
+						) : (
+							<>
+								<label className="flex items-center gap-2 cursor-pointer">
+									<input
+										type="checkbox"
+										checked={remote.draft.auto_start}
+										onChange={(e) =>
+											remote.setDraft((d) => ({
+												...d,
+												auto_start: e.target.checked,
+												auto_start_on_lan: e.target.checked
+													? d.auto_start_on_lan
+													: false,
+											}))
+										}
+										className="accent-primary"
+									/>
+									<span className={labelClass}>Auto-start remote server</span>
+								</label>
+
+								<label
+									className={`flex items-center gap-2 ml-4 ${remote.draft.auto_start ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
+								>
+									<input
+										type="checkbox"
+										checked={remote.draft.auto_start_on_lan}
+										disabled={!remote.draft.auto_start}
+										onChange={(e) =>
+											remote.setDraft((d) => ({
+												...d,
+												auto_start_on_lan: e.target.checked,
+											}))
+										}
+										className="accent-primary"
+									/>
+									<span className={labelClass}>Allow auto-start on LAN</span>
+								</label>
+
+								<p className="text-[10px] text-muted-foreground">
+									VPN接続時は常に自動起動します。LAN接続時の自動起動は上記で制御できます。
+								</p>
+
+								{remote.error && (
+									<p className="text-xs text-red-500">{remote.error}</p>
+								)}
+							</>
+						)}
+					</div>
 
 					{/* Notifications */}
 					<div className="flex flex-col gap-2">

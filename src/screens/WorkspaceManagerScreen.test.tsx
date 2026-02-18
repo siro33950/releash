@@ -142,6 +142,11 @@ function setupMockInvoke(
 					desktop_mode: "always",
 					inactive_timeout_minutes: 2,
 				});
+			case "get_remote_config":
+				return Promise.resolve({
+					auto_start: false,
+					auto_start_on_lan: false,
+				});
 			default:
 				return Promise.resolve(null);
 		}

@@ -181,6 +181,8 @@ pub fn run() {
             config::update_telemetry_enabled,
             config::get_notify_config,
             config::update_notify_config,
+            config::get_remote_config,
+            config::update_remote_config,
             config::get_crash_reporting_enabled,
             config::update_crash_reporting,
             config::update_webhook_url,

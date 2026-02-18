@@ -19,6 +19,16 @@ pub struct ReleashConfig {
     pub server: ServerSection,
     #[serde(default)]
     pub telemetry: TelemetrySection,
+    #[serde(default)]
+    pub remote: RemoteSection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RemoteSection {
+    #[serde(default)]
+    pub auto_start: bool,
+    #[serde(default)]
+    pub auto_start_on_lan: bool,
 }
 
 fn default_crash_reporting() -> bool {
@@ -45,6 +55,7 @@ impl Default for ReleashConfig {
             telemetry_enabled: true,
             server: ServerSection::default(),
             telemetry: TelemetrySection::default(),
+            remote: RemoteSection::default(),
         }
     }
 }
@@ -518,6 +529,34 @@ pub async fn update_notify_config(
 }
 
 #[tauri::command]
+pub fn get_remote_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<RemoteSection, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("ロック取得失敗: {e}"))?;
+    Ok(config.remote.clone())
+}
+
+#[tauri::command]
+pub async fn update_remote_config(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    remote: RemoteSection,
+) -> Result<(), String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.remote = remote;
+        write_config(&app_config.config_path, &config)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
 pub fn get_crash_reporting_enabled(
     state: tauri::State<'_, Arc<AppConfig>>,
 ) -> Result<bool, String> {
@@ -975,5 +1014,47 @@ webhook_url = "https://hooks.slack.com/old"
 
         let when_inactive = serde_json::to_string(&DesktopNotifyMode::WhenInactive).unwrap();
         assert_eq!(when_inactive, r#""when_inactive""#);
+    }
+
+    #[test]
+    fn remote_section_defaults() {
+        let remote = RemoteSection::default();
+        assert!(!remote.auto_start);
+        assert!(!remote.auto_start_on_lan);
+    }
+
+    #[test]
+    fn remote_section_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.remote.auto_start = true;
+        config.remote.auto_start_on_lan = true;
+        write_config(&path, &config).unwrap();
+
+        let reloaded = fs::read_to_string(&path).unwrap();
+        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
+        assert!(reloaded.remote.auto_start);
+        assert!(reloaded.remote.auto_start_on_lan);
+    }
+
+    #[test]
+    fn existing_config_without_remote_gets_defaults() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+bind = "127.0.0.1"
+port = 9700
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert!(!config.remote.auto_start);
+        assert!(!config.remote.auto_start_on_lan);
     }
 }

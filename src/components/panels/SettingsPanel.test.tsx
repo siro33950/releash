@@ -142,4 +142,54 @@ describe("SettingsPanel", () => {
 		expect(input).toBeInTheDocument();
 		expect(input).toHaveAttribute("type", "url");
 	});
+
+	it("should display Remote section", () => {
+		render(<SettingsPanel {...defaultProps} />);
+		expect(screen.getByText("Remote")).toBeInTheDocument();
+	});
+
+	it("should enable Save when remote auto-start is toggled, and disable after Save", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const onSave = vi.fn();
+
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "get_remote_config":
+					return Promise.resolve({
+						auto_start: false,
+						auto_start_on_lan: false,
+					});
+				case "get_notify_config":
+					return Promise.resolve({
+						webhook_url: "",
+						on_running: false,
+						on_done: true,
+						on_error: true,
+						on_waiting: true,
+						desktop_mode: "always",
+						inactive_timeout_minutes: 2,
+					});
+				case "update_remote_config":
+					return Promise.resolve(null);
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		render(<SettingsPanel {...defaultProps} onSave={onSave} />);
+
+		const checkbox = await screen.findByLabelText("Auto-start remote server");
+		expect(checkbox).not.toBeChecked();
+
+		const saveBtn = screen.getByRole("button", { name: "Save" });
+		expect(saveBtn).toBeDisabled();
+
+		fireEvent.click(checkbox);
+		expect(saveBtn).toBeEnabled();
+
+		fireEvent.click(saveBtn);
+		await vi.waitFor(() => {
+			expect(saveBtn).toBeDisabled();
+		});
+	});
 });

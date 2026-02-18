@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
 import { UpdateDialog } from "@/components/UpdateDialog";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
+import { useRemoteAutoStart } from "@/hooks/useRemoteAutoStart";
 import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
@@ -28,6 +29,7 @@ function App() {
 	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
 
 	const [initializing, setInitializing] = useState(true);
+	useRemoteAutoStart(repoPaths, !initializing);
 	const [providerStatuses, setProviderStatuses] = useState<
 		Record<string, ProviderStatus | null>
 	>({});
