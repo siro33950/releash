@@ -41,6 +41,7 @@ export function DeleteWorktreeDialog({
 				await onConfirm(branch, force);
 			} catch (e) {
 				setError(String(e));
+			} finally {
 				setDeleting(false);
 				deletingRef.current = false;
 			}

@@ -107,6 +107,59 @@ describe("DeleteWorktreeDialog", () => {
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 
+	it("should reset deleting state after successful deletion so next delete works", async () => {
+		const user = userEvent.setup();
+		const onConfirm = vi.fn(() => Promise.resolve());
+		const onCancel = vi.fn();
+
+		const { rerender } = render(
+			<DeleteWorktreeDialog
+				open={true}
+				branch={baseBranch}
+				onConfirm={onConfirm}
+				onCancel={onCancel}
+			/>,
+		);
+
+		// First deletion
+		const deleteButton = screen.getByRole("button", { name: "Delete" });
+		await user.click(deleteButton);
+
+		await waitFor(() => {
+			expect(onConfirm).toHaveBeenCalledTimes(1);
+		});
+
+		// After success, button should not be stuck in "Deleting..." state
+		expect(screen.queryByText("Deleting...")).not.toBeInTheDocument();
+
+		// Simulate opening dialog for a different branch
+		const anotherBranch: BranchCard = {
+			...baseBranch,
+			name: "feature/other",
+		};
+
+		rerender(
+			<DeleteWorktreeDialog
+				open={true}
+				branch={anotherBranch}
+				onConfirm={onConfirm}
+				onCancel={onCancel}
+			/>,
+		);
+
+		// The delete button should be enabled and show "Delete", not "Deleting..."
+		const nextDeleteButton = screen.getByRole("button", { name: "Delete" });
+		expect(nextDeleteButton).not.toBeDisabled();
+		expect(screen.queryByText("Deleting...")).not.toBeInTheDocument();
+
+		// Second deletion should work
+		await user.click(nextDeleteButton);
+
+		await waitFor(() => {
+			expect(onConfirm).toHaveBeenCalledTimes(2);
+		});
+	});
+
 	it("should hide spinner and show error on failure", async () => {
 		const user = userEvent.setup();
 		const onConfirm = vi.fn(() => Promise.reject(new Error("Delete failed")));

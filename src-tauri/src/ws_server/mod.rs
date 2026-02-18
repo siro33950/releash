@@ -71,6 +71,7 @@ pub(crate) struct WsServerState {
     broadcaster: Arc<WsBroadcaster>,
     pty_manager: Option<Arc<PtyManager>>,
     repo_paths: Arc<parking_lot::RwLock<Vec<String>>>,
+    terminal_startup_command: Arc<parking_lot::RwLock<String>>,
     app_config: Arc<AppConfig>,
     app_handle: Option<tauri::AppHandle>,
     tls_enabled: bool,
@@ -96,6 +97,7 @@ impl WsServerState {
             broadcaster,
             pty_manager,
             repo_paths: Arc::new(parking_lot::RwLock::new(repo_paths)),
+            terminal_startup_command: Arc::new(parking_lot::RwLock::new(String::new())),
             app_config,
             app_handle,
             tls_enabled,
@@ -109,6 +111,14 @@ impl WsServerState {
 
     pub(crate) fn update_repo_paths(&self, paths: Vec<String>) {
         *self.repo_paths.write() = paths;
+    }
+
+    pub(crate) fn get_terminal_startup_command(&self) -> String {
+        self.terminal_startup_command.read().clone()
+    }
+
+    pub(crate) fn set_terminal_startup_command(&self, command: String) {
+        *self.terminal_startup_command.write() = command;
     }
 
     pub(crate) fn current_token(&self) -> Result<String, String> {

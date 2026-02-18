@@ -3,11 +3,12 @@ import {
 	ChevronDown,
 	ChevronRight,
 	ExternalLink,
+	FolderOpen,
 	GitBranch,
 	Loader2,
 	RefreshCw,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useIssues } from "@/hooks/useIssues";
@@ -77,8 +78,25 @@ function RepoIssueSection({
 	const [expanded, setExpanded] = useState(defaultExpanded);
 	const [titleFilter, setTitleFilter] = useState("");
 	const [labelFilter, setLabelFilter] = useState("");
+	const [milestoneFilter, setMilestoneFilter] = useState("");
 	const { issues, loading, refresh } = useIssues(repoPath);
+	const [worktrees, setWorktrees] = useState<WorktreeEntry[]>([]);
 	const repoName = repoPath.split("/").filter(Boolean).pop() ?? "repo";
+
+	const fetchWorktrees = useCallback(async () => {
+		try {
+			const result = await invoke<WorktreeEntry[]>("list_worktrees", {
+				repoPath,
+			});
+			setWorktrees(result);
+		} catch {
+			// noop: preserve previous worktrees on error
+		}
+	}, [repoPath]);
+
+	useEffect(() => {
+		fetchWorktrees();
+	}, [fetchWorktrees]);
 
 	const isAvailable = providerStatus === "available" || providerStatus === null;
 
@@ -90,6 +108,20 @@ function RepoIssueSection({
 			}
 		}
 		return Array.from(set).sort();
+	}, [issues]);
+
+	const allMilestones = useMemo(() => {
+		const set = new Set<string>();
+		let hasNone = false;
+		for (const issue of issues) {
+			if (issue.milestone) {
+				set.add(issue.milestone.title);
+			} else {
+				hasNone = true;
+			}
+		}
+		const sorted = Array.from(set).sort();
+		return { titles: sorted, hasNone };
 	}, [issues]);
 
 	const filteredIssues = useMemo(() => {
@@ -108,10 +140,20 @@ function RepoIssueSection({
 			);
 		}
 
+		if (milestoneFilter) {
+			if (milestoneFilter === "__none__") {
+				result = result.filter((issue) => issue.milestone === null);
+			} else {
+				result = result.filter(
+					(issue) => issue.milestone?.title === milestoneFilter,
+				);
+			}
+		}
+
 		result.sort((a, b) => b.number - a.number);
 
 		return result;
-	}, [issues, titleFilter, labelFilter]);
+	}, [issues, titleFilter, labelFilter, milestoneFilter]);
 
 	return (
 		<div className="border-b border-border">
@@ -161,6 +203,23 @@ function RepoIssueSection({
 									))}
 								</select>
 							)}
+							{allMilestones.titles.length > 0 && (
+								<select
+									value={milestoneFilter}
+									onChange={(e) => setMilestoneFilter(e.target.value)}
+									className="w-full bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
+								>
+									<option value="">All milestones</option>
+									{allMilestones.hasNone && (
+										<option value="__none__">未設定</option>
+									)}
+									{allMilestones.titles.map((title) => (
+										<option key={title} value={title}>
+											{title}
+										</option>
+									))}
+								</select>
+							)}
 						</div>
 					)}
 					{isAvailable && !loading && issues.length === 0 && (
@@ -177,15 +236,23 @@ function RepoIssueSection({
 							</div>
 						)}
 					{isAvailable &&
-						filteredIssues.map((issue) => (
-							<IssueCard
-								key={issue.number}
-								issue={issue}
-								repoPath={repoPath}
-								repoName={repoName}
-								onSelectWorktree={onSelectWorktree}
-							/>
-						))}
+						filteredIssues.map((issue) => {
+							const branchName = generateIssueBranchName(issue.number);
+							const matchedWorktree = worktrees.find(
+								(wt) => wt.branch === branchName,
+							);
+							return (
+								<IssueCard
+									key={issue.number}
+									issue={issue}
+									repoPath={repoPath}
+									repoName={repoName}
+									onSelectWorktree={onSelectWorktree}
+									existingWorktree={matchedWorktree}
+									onWorktreeCreated={fetchWorktrees}
+								/>
+							);
+						})}
 					{isAvailable && !loading && (
 						<div className="px-3 pt-1">
 							<Button
@@ -214,6 +281,8 @@ interface IssueCardProps {
 		branchName?: string,
 		repoName?: string,
 	) => void;
+	existingWorktree?: WorktreeEntry;
+	onWorktreeCreated: () => void;
 }
 
 function IssueCard({
@@ -221,6 +290,8 @@ function IssueCard({
 	repoPath,
 	repoName,
 	onSelectWorktree,
+	existingWorktree,
+	onWorktreeCreated,
 }: IssueCardProps) {
 	const [creating, setCreating] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -249,13 +320,21 @@ function IssueCard({
 				createBranch: true,
 				baseBranch: defaultBranch,
 			});
+			onWorktreeCreated();
 			onSelectWorktree(entry.path, branchName, repoName);
 		} catch (e) {
 			setError(String(e));
 		} finally {
 			setCreating(false);
 		}
-	}, [issue.number, repoPath, repoName, onSelectWorktree]);
+	}, [issue.number, repoPath, repoName, onSelectWorktree, onWorktreeCreated]);
+
+	const handleOpenWorktree = useCallback(() => {
+		const branchName = generateIssueBranchName(issue.number);
+		if (existingWorktree) {
+			onSelectWorktree(existingWorktree.path, branchName, repoName);
+		}
+	}, [issue.number, existingWorktree, onSelectWorktree, repoName]);
 
 	const createdDate = new Date(issue.created_at).toLocaleDateString();
 
@@ -278,7 +357,7 @@ function IssueCard({
 				</a>
 			</div>
 
-			{issue.labels.length > 0 && (
+			{(issue.labels.length > 0 || issue.milestone) && (
 				<div className="flex flex-wrap gap-1 mt-1.5">
 					{issue.labels.map((label) => {
 						const hasColor = /^[0-9a-fA-F]{6}$/.test(label.color);
@@ -304,6 +383,11 @@ function IssueCard({
 							</span>
 						);
 					})}
+					{issue.milestone && (
+						<span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium leading-none bg-muted text-muted-foreground border border-border">
+							{issue.milestone.title}
+						</span>
+					)}
 				</div>
 			)}
 
@@ -320,20 +404,32 @@ function IssueCard({
 				</div>
 			)}
 
-			<Button
-				variant="outline"
-				size="sm"
-				className="w-full mt-2 h-6 text-[10px]"
-				onClick={handleCreateWorktree}
-				disabled={creating}
-			>
-				{creating ? (
-					<Loader2 className="size-3 mr-1 animate-spin" />
-				) : (
-					<GitBranch className="size-3 mr-1" />
-				)}
-				Create Worktree
-			</Button>
+			{existingWorktree ? (
+				<Button
+					variant="outline"
+					size="sm"
+					className="w-full mt-2 h-6 text-[10px]"
+					onClick={handleOpenWorktree}
+				>
+					<FolderOpen className="size-3 mr-1" />
+					Open Worktree
+				</Button>
+			) : (
+				<Button
+					variant="outline"
+					size="sm"
+					className="w-full mt-2 h-6 text-[10px]"
+					onClick={handleCreateWorktree}
+					disabled={creating}
+				>
+					{creating ? (
+						<Loader2 className="size-3 mr-1 animate-spin" />
+					) : (
+						<GitBranch className="size-3 mr-1" />
+					)}
+					Create Worktree
+				</Button>
+			)}
 		</div>
 	);
 }
