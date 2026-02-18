@@ -1,7 +1,20 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ExternalLink, GitBranch, Loader2, Trash2 } from "lucide-react";
+import {
+	ExternalLink,
+	GitBranch,
+	GitMerge,
+	Globe,
+	Loader2,
+	Monitor,
+	Trash2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { BranchCard as BranchCardType } from "@/types/git";
 import type { AgentState } from "@/types/protocol";
 
@@ -90,8 +103,16 @@ export function BranchCard({
 	onDelete,
 }: BranchCardProps) {
 	const hasWorktree = branch.worktree_path != null;
+	const hasAheadBehind = branch.ahead > 0 || branch.behind > 0;
+	const isLocalOnly = !branch.is_remote_only && !branch.has_upstream;
 	const hasStatusBadges =
-		branch.is_default || branch.is_merged || branch.agent_state || hasWorktree;
+		branch.is_default || branch.agent_state || hasWorktree;
+
+	const BranchIcon = branch.is_remote_only
+		? Globe
+		: isLocalOnly
+			? Monitor
+			: GitBranch;
 
 	return (
 		<div
@@ -104,14 +125,29 @@ export function BranchCard({
 		>
 			<div className="flex flex-col gap-1">
 				<div className="flex items-center gap-2 min-w-0">
-					<GitBranch
+					<BranchIcon
 						className={`size-4 shrink-0 ${hasWorktree ? "text-muted-foreground" : "text-muted-foreground/50"}`}
 					/>
-					<span
-						className={`text-sm font-medium truncate ${!hasWorktree ? "text-muted-foreground" : ""}`}
-					>
-						{branch.name}
-					</span>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span
+								className={`text-sm font-medium truncate ${!hasWorktree ? "text-muted-foreground" : ""}`}
+							>
+								{branch.name}
+							</span>
+						</TooltipTrigger>
+						<TooltipContent>{branch.name}</TooltipContent>
+					</Tooltip>
+					{hasAheadBehind && (
+						<span className="shrink-0 text-[10px] text-muted-foreground">
+							{branch.ahead > 0 && `↑${branch.ahead}`}
+							{branch.ahead > 0 && branch.behind > 0 && " "}
+							{branch.behind > 0 && `↓${branch.behind}`}
+						</span>
+					)}
+					{branch.is_merged && (
+						<GitMerge className="size-4 shrink-0 text-muted-foreground/50" />
+					)}
 					{branch.has_pr && branch.pr_url && branch.pr_number != null && (
 						<button
 							type="button"
@@ -133,27 +169,17 @@ export function BranchCard({
 								base
 							</span>
 						)}
-						{branch.is_merged && (
-							<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
-								merged
-							</span>
-						)}
 						{branch.agent_state && (
 							<AgentStateBadge
 								state={branch.agent_state}
 								timestamp={branch.agent_state_timestamp}
 							/>
 						)}
-						{hasWorktree &&
-							(branch.dirty_count > 0 ? (
-								<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-500 font-medium">
-									{branch.dirty_count} files changed
-								</span>
-							) : (
-								<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
-									clean
-								</span>
-							))}
+						{hasWorktree && branch.dirty_count > 0 && (
+							<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-500 font-medium">
+								{branch.dirty_count} files changed
+							</span>
+						)}
 					</div>
 				)}
 			</div>

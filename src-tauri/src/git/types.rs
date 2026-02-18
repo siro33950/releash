@@ -44,4 +44,8 @@ pub struct BranchCard {
     pub has_pr: bool,
     pub pr_number: Option<u64>,
     pub pr_url: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+    pub is_remote_only: bool,
+    pub has_upstream: bool,
 }

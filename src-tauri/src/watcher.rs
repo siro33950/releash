@@ -122,19 +122,7 @@ pub fn start_watching(
 
 fn build_branch_list_sync(repo_path: &str) -> Option<WsMessage> {
     let branches = crate::git::list_branches_with_status(repo_path.to_string()).ok()?;
-    let branch_msgs: Vec<BranchCardMsg> = branches
-        .into_iter()
-        .map(|b| BranchCardMsg {
-            name: b.name,
-            is_default: b.is_default,
-            worktree_path: b.worktree_path,
-            dirty_count: b.dirty_count,
-            is_merged: b.is_merged,
-            has_pr: b.has_pr,
-            pr_number: b.pr_number,
-            pr_url: b.pr_url,
-        })
-        .collect();
+    let branch_msgs: Vec<BranchCardMsg> = branches.into_iter().map(BranchCardMsg::from).collect();
     Some(WsMessage::BranchListSync(BranchListSync {
         branches: branch_msgs,
     }))
