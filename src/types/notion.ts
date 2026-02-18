@@ -30,6 +30,7 @@ export interface PropertyMapping {
 	title: string;
 	labels: LabelProperty[];
 	branch_name: string;
+	branch_prefix: string;
 }
 
 export interface NotionRepoConfig {
@@ -55,6 +56,7 @@ export interface NotionLabelOption {
 	property_name: string;
 	property_type: string;
 	options: string[];
+	option_ids: string[];
 }
 
 export interface NotionValidationResult {

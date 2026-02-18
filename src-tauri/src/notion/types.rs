@@ -38,6 +38,8 @@ pub struct PropertyMapping {
     pub labels: Vec<LabelProperty>,
     #[serde(default)]
     pub branch_name: String,
+    #[serde(default)]
+    pub branch_prefix: String,
 }
 
 impl Default for PropertyMapping {
@@ -46,6 +48,7 @@ impl Default for PropertyMapping {
             title: default_title(),
             labels: vec![],
             branch_name: String::new(),
+            branch_prefix: String::new(),
         }
     }
 }
@@ -93,6 +96,8 @@ pub struct NotionLabelOption {
     pub property_name: String,
     pub property_type: String,
     pub options: Vec<String>,
+    #[serde(default)]
+    pub option_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +176,7 @@ mod tests {
         assert_eq!(mapping.title, "Name");
         assert!(mapping.labels.is_empty());
         assert!(mapping.branch_name.is_empty());
+        assert!(mapping.branch_prefix.is_empty());
     }
 
     #[test]
@@ -215,6 +221,7 @@ mod tests {
                     },
                 ],
                 branch_name: "Branch".to_string(),
+                branch_prefix: "feat/".to_string(),
             },
         };
 
@@ -230,6 +237,40 @@ mod tests {
             deserialized.property_mapping.labels[0].property_type,
             "multi_select"
         );
+        assert_eq!(deserialized.property_mapping.branch_prefix, "feat/");
+    }
+
+    #[test]
+    fn branch_prefix_defaults_empty_when_missing() {
+        let toml_str = r#"
+api_token = "ntn_test"
+database_id = "db-123"
+
+[property_mapping]
+title = "Name"
+branch_name = "Branch"
+"#;
+        let config: NotionRepoConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.property_mapping.branch_prefix.is_empty());
+    }
+
+    #[test]
+    fn branch_prefix_roundtrip_toml() {
+        let toml_str = r#"
+api_token = "ntn_test"
+database_id = "db-123"
+
+[property_mapping]
+title = "Name"
+branch_name = ""
+branch_prefix = "fix/"
+"#;
+        let config: NotionRepoConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.property_mapping.branch_prefix, "fix/");
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: NotionRepoConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.property_mapping.branch_prefix, "fix/");
     }
 
     #[test]
@@ -333,6 +374,7 @@ property_type = "multi_select"
             property_name: "Status".to_string(),
             property_type: "status".to_string(),
             options: vec!["Todo".to_string(), "In Progress".to_string()],
+            option_ids: vec![],
         };
 
         let json = serde_json::to_string(&opt).unwrap();
@@ -340,5 +382,36 @@ property_type = "multi_select"
 
         assert_eq!(deserialized.property_name, "Status");
         assert_eq!(deserialized.options.len(), 2);
+    }
+
+    #[test]
+    fn notion_label_option_with_option_ids_roundtrip() {
+        let opt = NotionLabelOption {
+            property_name: "Assignee".to_string(),
+            property_type: "people".to_string(),
+            options: vec!["Alice".to_string(), "Bob".to_string()],
+            option_ids: vec!["uuid-1".to_string(), "uuid-2".to_string()],
+        };
+
+        let json = serde_json::to_string(&opt).unwrap();
+        let deserialized: NotionLabelOption = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.property_name, "Assignee");
+        assert_eq!(deserialized.property_type, "people");
+        assert_eq!(deserialized.options, vec!["Alice", "Bob"]);
+        assert_eq!(deserialized.option_ids, vec!["uuid-1", "uuid-2"]);
+    }
+
+    #[test]
+    fn notion_label_option_without_option_ids_defaults_empty() {
+        let json = r#"{
+            "property_name": "Status",
+            "property_type": "status",
+            "options": ["Todo", "Done"]
+        }"#;
+        let deserialized: NotionLabelOption = serde_json::from_str(json).unwrap();
+
+        assert_eq!(deserialized.property_name, "Status");
+        assert!(deserialized.option_ids.is_empty());
     }
 }

@@ -41,6 +41,7 @@ describe("useNotionConfig", () => {
 				title: "Name",
 				labels: [],
 				branch_name: "",
+				branch_prefix: "",
 			},
 		};
 		vi.mocked(invoke).mockResolvedValue(mockConfig);
@@ -74,6 +75,7 @@ describe("useNotionConfig", () => {
 				{ name: "Status", property_type: "status" },
 			],
 			branch_name: "Branch",
+			branch_prefix: "feat/",
 		});
 
 		expect(invoke).toHaveBeenCalledWith("save_notion_config", {
@@ -87,6 +89,7 @@ describe("useNotionConfig", () => {
 					{ name: "Status", property_type: "status" },
 				],
 				branch_name: "Branch",
+				branch_prefix: "feat/",
 			},
 		});
 	});

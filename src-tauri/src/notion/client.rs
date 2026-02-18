@@ -5,7 +5,7 @@ use super::types::{
     NotionTask, NotionTaskPage, NotionTaskQuery, NotionValidationResult, PropertyMapping,
 };
 
-const NOTION_API_VERSION: &str = "2025-09-03";
+const NOTION_API_VERSION: &str = "2022-06-28";
 const NOTION_BASE_URL: &str = "https://api.notion.com/v1";
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const MAX_RETRIES: u32 = 2;
@@ -110,6 +110,10 @@ fn build_notion_filter(
             "rich_text" => serde_json::json!({
                 "property": prop_name,
                 "rich_text": { "contains": value }
+            }),
+            "people" => serde_json::json!({
+                "property": prop_name,
+                "people": { "contains": value }
             }),
             // select and fallback
             _ => serde_json::json!({
@@ -226,7 +230,10 @@ pub fn validate_config(config: &NotionRepoConfig) -> NotionValidationResult {
         }
     };
 
-    let properties = extract_database_properties(&json);
+    let properties = match extract_first_data_source_id(&json) {
+        Some(ds_id) => fetch_data_source_properties(&client, &ds_id).unwrap_or_default(),
+        None => extract_properties_from_json(&json),
+    };
 
     NotionValidationResult {
         status: NotionConfigStatus::Configured,
@@ -238,8 +245,136 @@ pub fn fetch_label_options(
     config: &NotionRepoConfig,
 ) -> Result<Vec<NotionLabelOption>, NotionError> {
     let client = build_client(&config.api_token)?;
-    let url = format!("{NOTION_BASE_URL}/databases/{}", config.database_id);
+    let props = fetch_database_properties(&client, &config.database_id)?;
 
+    let label_names: HashSet<&str> = config
+        .property_mapping
+        .labels
+        .iter()
+        .map(|lp| lp.name.as_str())
+        .collect();
+
+    let has_people = config
+        .property_mapping
+        .labels
+        .iter()
+        .any(|lp| lp.property_type == "people");
+
+    let workspace_users = if has_people {
+        fetch_workspace_users(&client).unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    Ok(props
+        .into_iter()
+        .filter(|p| label_names.contains(p.name.as_str()))
+        .map(|p| {
+            let mapping_type = config
+                .property_mapping
+                .labels
+                .iter()
+                .find(|lp| lp.name == p.name)
+                .map(|lp| lp.property_type.as_str())
+                .unwrap_or("");
+
+            if mapping_type == "people" {
+                NotionLabelOption {
+                    property_name: p.name,
+                    property_type: "people".to_string(),
+                    options: workspace_users
+                        .iter()
+                        .map(|(_, name)| name.clone())
+                        .collect(),
+                    option_ids: workspace_users.iter().map(|(id, _)| id.clone()).collect(),
+                }
+            } else {
+                NotionLabelOption {
+                    property_name: p.name,
+                    property_type: p.property_type,
+                    options: p.options,
+                    option_ids: vec![],
+                }
+            }
+        })
+        .collect())
+}
+
+fn fetch_workspace_users(
+    client: &reqwest::blocking::Client,
+) -> Result<Vec<(String, String)>, NotionError> {
+    let mut users = Vec::new();
+    let mut next_cursor: Option<String> = None;
+
+    loop {
+        let mut url = format!("{NOTION_BASE_URL}/users?page_size=100");
+        if let Some(ref cursor) = next_cursor {
+            url.push_str(&format!("&start_cursor={cursor}"));
+        }
+
+        let resp = client
+            .get(&url)
+            .send()
+            .map_err(|e| NotionError::RequestFailed(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            return Err(NotionError::ApiError(format!("HTTP {status}: {body}")));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .map_err(|e| NotionError::ParseError(e.to_string()))?;
+
+        if let Some(results) = json.get("results").and_then(|r| r.as_array()) {
+            for user in results {
+                let user_type = user.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                if user_type != "person" {
+                    continue;
+                }
+                let id = user.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                let name = user
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if !id.is_empty() && !name.is_empty() {
+                    users.push((id.to_string(), name.to_string()));
+                }
+            }
+        }
+
+        let has_more = json
+            .get("has_more")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !has_more {
+            break;
+        }
+        next_cursor = json
+            .get("next_cursor")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+    }
+
+    Ok(users)
+}
+
+fn extract_first_data_source_id(db_json: &serde_json::Value) -> Option<String> {
+    db_json
+        .get("data_sources")
+        .and_then(|ds| ds.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|ds| ds.get("id"))
+        .and_then(|id| id.as_str())
+        .map(String::from)
+}
+
+fn fetch_data_source_properties(
+    client: &reqwest::blocking::Client,
+    data_source_id: &str,
+) -> Result<Vec<NotionPropertyInfo>, NotionError> {
+    let url = format!("{NOTION_BASE_URL}/data_sources/{data_source_id}");
     let resp = client
         .get(&url)
         .send()
@@ -255,28 +390,37 @@ pub fn fetch_label_options(
         .json()
         .map_err(|e| NotionError::ParseError(e.to_string()))?;
 
-    let props = extract_database_properties(&json);
-
-    let label_names: HashSet<&str> = config
-        .property_mapping
-        .labels
-        .iter()
-        .map(|lp| lp.name.as_str())
-        .collect();
-
-    Ok(props
-        .into_iter()
-        .filter(|p| label_names.contains(p.name.as_str()))
-        .map(|p| NotionLabelOption {
-            property_name: p.name,
-            property_type: p.property_type,
-            options: p.options,
-        })
-        .collect())
+    Ok(extract_properties_from_json(&json))
 }
 
-fn extract_database_properties(db_json: &serde_json::Value) -> Vec<NotionPropertyInfo> {
-    let Some(props) = db_json.get("properties").and_then(|p| p.as_object()) else {
+fn fetch_database_properties(
+    client: &reqwest::blocking::Client,
+    database_id: &str,
+) -> Result<Vec<NotionPropertyInfo>, NotionError> {
+    let url = format!("{NOTION_BASE_URL}/databases/{database_id}");
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| NotionError::RequestFailed(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(NotionError::ApiError(format!("HTTP {status}: {body}")));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .map_err(|e| NotionError::ParseError(e.to_string()))?;
+
+    match extract_first_data_source_id(&json) {
+        Some(ds_id) => fetch_data_source_properties(client, &ds_id),
+        None => Ok(extract_properties_from_json(&json)),
+    }
+}
+
+fn extract_properties_from_json(json: &serde_json::Value) -> Vec<NotionPropertyInfo> {
+    let Some(props) = json.get("properties").and_then(|p| p.as_object()) else {
         return vec![];
     };
 
@@ -503,6 +647,17 @@ pub fn extract_property_value(prop: &serde_json::Value) -> String {
             .unwrap_or_default()
             .to_string(),
 
+        "people" => prop
+            .get("people")
+            .and_then(|arr| arr.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|person| person.get("name").and_then(|n| n.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+
         _ => String::new(),
     }
 }
@@ -517,6 +672,21 @@ fn extract_multi_values(prop: &serde_json::Value) -> Vec<String> {
             .map(|arr| {
                 arr.iter()
                     .filter_map(|item| item.get("name").and_then(|n| n.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+
+        "people" => prop
+            .get("people")
+            .and_then(|arr| arr.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|person| {
+                        person
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .map(String::from)
+                    })
                     .collect()
             })
             .unwrap_or_default(),
@@ -801,6 +971,7 @@ mod tests {
                 },
             ],
             branch_name: "Branch".to_string(),
+            branch_prefix: String::new(),
         };
         let tasks = parse_query_response(&json, &mapping).unwrap();
 
@@ -826,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_database_properties_basic() {
+    fn extract_properties_from_json_basic() {
         let db_json = serde_json::json!({
             "properties": {
                 "Name": { "type": "title" },
@@ -836,7 +1007,7 @@ mod tests {
             }
         });
 
-        let props = extract_database_properties(&db_json);
+        let props = extract_properties_from_json(&db_json);
         assert_eq!(props.len(), 4);
 
         let names: Vec<&str> = props.iter().map(|p| p.name.as_str()).collect();
@@ -847,14 +1018,14 @@ mod tests {
     }
 
     #[test]
-    fn extract_database_properties_empty() {
+    fn extract_properties_from_json_empty() {
         let db_json = serde_json::json!({});
-        let props = extract_database_properties(&db_json);
+        let props = extract_properties_from_json(&db_json);
         assert!(props.is_empty());
     }
 
     #[test]
-    fn extract_database_properties_with_options() {
+    fn extract_properties_from_json_with_options() {
         let db_json = serde_json::json!({
             "properties": {
                 "Status": {
@@ -889,7 +1060,7 @@ mod tests {
             }
         });
 
-        let props = extract_database_properties(&db_json);
+        let props = extract_properties_from_json(&db_json);
 
         let status = props.iter().find(|p| p.name == "Status").unwrap();
         assert_eq!(status.options, vec!["Todo", "In Progress", "Done"]);
@@ -928,6 +1099,7 @@ mod tests {
             title: "Name".to_string(),
             labels: vec![],
             branch_name: String::new(),
+            branch_prefix: String::new(),
         };
 
         let filter = build_notion_filter(&query, &mapping).unwrap();
@@ -953,6 +1125,7 @@ mod tests {
                 property_type: "status".to_string(),
             }],
             branch_name: String::new(),
+            branch_prefix: String::new(),
         };
 
         let filter = build_notion_filter(&query, &mapping).unwrap();
@@ -978,6 +1151,7 @@ mod tests {
                 property_type: "multi_select".to_string(),
             }],
             branch_name: String::new(),
+            branch_prefix: String::new(),
         };
 
         let filter = build_notion_filter(&query, &mapping).unwrap();
@@ -1003,6 +1177,7 @@ mod tests {
                 property_type: "status".to_string(),
             }],
             branch_name: String::new(),
+            branch_prefix: String::new(),
         };
 
         let filter = build_notion_filter(&query, &mapping).unwrap();
@@ -1023,5 +1198,120 @@ mod tests {
         };
         let mapping = PropertyMapping::default();
         assert!(build_notion_filter(&query, &mapping).is_none());
+    }
+
+    #[test]
+    fn extract_people_property() {
+        let prop = serde_json::json!({
+            "type": "people",
+            "people": [
+                { "object": "user", "id": "user-1", "name": "Alice" },
+                { "object": "user", "id": "user-2", "name": "Bob" }
+            ]
+        });
+        assert_eq!(extract_property_value(&prop), "Alice, Bob");
+    }
+
+    #[test]
+    fn extract_people_property_empty() {
+        let prop = serde_json::json!({
+            "type": "people",
+            "people": []
+        });
+        assert_eq!(extract_property_value(&prop), "");
+    }
+
+    #[test]
+    fn extract_multi_values_people() {
+        let prop = serde_json::json!({
+            "type": "people",
+            "people": [
+                { "object": "user", "id": "user-1", "name": "Alice" },
+                { "object": "user", "id": "user-2", "name": "Bob" }
+            ]
+        });
+        let values = extract_multi_values(&prop);
+        assert_eq!(values, vec!["Alice", "Bob"]);
+    }
+
+    #[test]
+    fn extract_multi_values_people_empty() {
+        let prop = serde_json::json!({
+            "type": "people",
+            "people": []
+        });
+        let values = extract_multi_values(&prop);
+        assert!(values.is_empty());
+    }
+
+    #[test]
+    fn build_notion_filter_people() {
+        let mut label_filters = std::collections::HashMap::new();
+        label_filters.insert("Assignee".to_string(), "user-uuid-123".to_string());
+
+        let query = NotionTaskQuery {
+            title_filter: String::new(),
+            label_filters,
+            cursor: None,
+            page_size: None,
+        };
+        let mapping = PropertyMapping {
+            title: "Name".to_string(),
+            labels: vec![LabelProperty {
+                name: "Assignee".to_string(),
+                property_type: "people".to_string(),
+            }],
+            branch_name: String::new(),
+            branch_prefix: String::new(),
+        };
+
+        let filter = build_notion_filter(&query, &mapping).unwrap();
+        assert_eq!(filter["property"], "Assignee");
+        assert_eq!(filter["people"]["contains"], "user-uuid-123");
+    }
+
+    #[test]
+    fn parse_query_response_with_people_labels() {
+        let json = serde_json::json!({
+            "results": [
+                {
+                    "id": "page-3",
+                    "url": "https://notion.so/page-3",
+                    "created_time": "2026-01-01T00:00:00.000Z",
+                    "last_edited_time": "2026-01-02T00:00:00.000Z",
+                    "properties": {
+                        "Name": {
+                            "type": "title",
+                            "title": [{ "plain_text": "People task" }]
+                        },
+                        "Assignee": {
+                            "type": "people",
+                            "people": [
+                                { "object": "user", "id": "u1", "name": "Alice" },
+                                { "object": "user", "id": "u2", "name": "Bob" }
+                            ]
+                        }
+                    }
+                }
+            ]
+        });
+
+        let mapping = PropertyMapping {
+            title: "Name".to_string(),
+            labels: vec![LabelProperty {
+                name: "Assignee".to_string(),
+                property_type: "people".to_string(),
+            }],
+            branch_name: String::new(),
+            branch_prefix: String::new(),
+        };
+        let tasks = parse_query_response(&json, &mapping).unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "People task");
+        assert_eq!(
+            tasks[0].labels.get("Assignee").unwrap(),
+            &vec!["Alice".to_string(), "Bob".to_string()]
+        );
     }
 }

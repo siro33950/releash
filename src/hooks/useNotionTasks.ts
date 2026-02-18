@@ -4,15 +4,22 @@ import type { NotionTask, NotionTaskPage } from "@/types/notion";
 
 export const DEBOUNCE_MS = 300;
 
-export function useNotionTasks(repoPath: string) {
+export interface NotionTaskFilters {
+	title: string;
+	labels: Record<string, string>;
+}
+
+export function useNotionTasks(
+	repoPath: string,
+	initialFilters?: NotionTaskFilters,
+) {
 	const [tasks, setTasks] = useState<NotionTask[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [hasMore, setHasMore] = useState(false);
 	const [cursor, setCursor] = useState<string | null>(null);
-	const filtersRef = useRef({
-		title: "",
-		labels: {} as Record<string, string>,
-	});
+	const filtersRef = useRef<NotionTaskFilters>(
+		initialFilters ?? { title: "", labels: {} },
+	);
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(
 		undefined,
 	);
@@ -55,7 +62,8 @@ export function useNotionTasks(repoPath: string) {
 	);
 
 	useEffect(() => {
-		fetchTasks("", {}, null, false);
+		const { title, labels } = filtersRef.current;
+		fetchTasks(title, labels, null, false);
 	}, [fetchTasks]);
 
 	useEffect(() => {

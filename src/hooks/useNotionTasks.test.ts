@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { NotionTaskFilters } from "./useNotionTasks";
 import { DEBOUNCE_MS, useNotionTasks } from "./useNotionTasks";
 
 describe("useNotionTasks", () => {
@@ -153,6 +154,37 @@ describe("useNotionTasks", () => {
 			query: {
 				title_filter: "",
 				label_filters: {},
+				cursor: null,
+			},
+		});
+	});
+
+	it("should use initialFilters on mount", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockResolvedValue({
+			tasks: [],
+			has_more: false,
+			next_cursor: null,
+		});
+
+		const initialFilters: NotionTaskFilters = {
+			title: "saved query",
+			labels: { Status: "In Progress" },
+		};
+
+		const { result } = renderHook(() =>
+			useNotionTasks("/test/repo", initialFilters),
+		);
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+
+		expect(invoke).toHaveBeenCalledWith("query_notion_tasks", {
+			repoPath: "/test/repo",
+			query: {
+				title_filter: "saved query",
+				label_filters: { Status: "In Progress" },
 				cursor: null,
 			},
 		});

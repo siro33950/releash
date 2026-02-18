@@ -147,6 +147,7 @@ function NotionRepoSection({
 							repoName={repoName}
 							onSelectWorktree={onSelectWorktree}
 							onShowConfig={() => setShowConfig(true)}
+							branchPrefix={config?.property_mapping.branch_prefix ?? ""}
 						/>
 					)}
 				</div>
@@ -190,6 +191,7 @@ function NotionConfigForm({
 			title: "Name",
 			labels: [],
 			branch_name: "",
+			branch_prefix: "",
 		},
 	);
 	const [validating, setValidating] = useState(false);
@@ -314,6 +316,18 @@ function NotionConfigForm({
 						onChange={(v) => setMapping((m) => ({ ...m, branch_name: v }))}
 						allowEmpty
 					/>
+					<label className="text-[10px] text-muted-foreground flex items-center gap-1">
+						<span className="w-16 shrink-0">プレフィックス</span>
+						<input
+							type="text"
+							value={mapping.branch_prefix}
+							onChange={(e) =>
+								setMapping((m) => ({ ...m, branch_prefix: e.target.value }))
+							}
+							placeholder="feat/"
+							className="flex-1 bg-muted border border-border rounded px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
+						/>
+					</label>
 				</div>
 			)}
 
@@ -456,6 +470,44 @@ interface NotionTaskListProps {
 		repoName?: string,
 	) => void;
 	onShowConfig: () => void;
+	branchPrefix: string;
+}
+
+function loadStoredFilters(repoPath: string): {
+	title: string;
+	labels: Record<string, string>;
+} {
+	try {
+		const raw = localStorage.getItem(`notion-filters:${repoPath}`);
+		if (raw) {
+			const parsed = JSON.parse(raw);
+			return {
+				title: typeof parsed.title === "string" ? parsed.title : "",
+				labels:
+					parsed.labels && typeof parsed.labels === "object"
+						? parsed.labels
+						: {},
+			};
+		}
+	} catch {
+		// ignore
+	}
+	return { title: "", labels: {} };
+}
+
+function saveStoredFilters(
+	repoPath: string,
+	title: string,
+	labels: Record<string, string>,
+) {
+	try {
+		localStorage.setItem(
+			`notion-filters:${repoPath}`,
+			JSON.stringify({ title, labels }),
+		);
+	} catch {
+		// ignore
+	}
 }
 
 function NotionTaskList({
@@ -463,12 +515,18 @@ function NotionTaskList({
 	repoName,
 	onSelectWorktree,
 	onShowConfig,
+	branchPrefix,
 }: NotionTaskListProps) {
-	const { tasks, loading, hasMore, search, loadMore, refresh } =
-		useNotionTasks(repoPath);
+	const [stored] = useState(() => loadStoredFilters(repoPath));
+	const { tasks, loading, hasMore, search, loadMore, refresh } = useNotionTasks(
+		repoPath,
+		stored,
+	);
 	const { labelOptions } = useNotionLabelOptions(repoPath);
-	const [titleFilter, setTitleFilter] = useState("");
-	const [labelFilters, setLabelFilters] = useState<Record<string, string>>({});
+	const [titleFilter, setTitleFilter] = useState(stored.title);
+	const [labelFilters, setLabelFilters] = useState<Record<string, string>>(
+		stored.labels,
+	);
 
 	const hasActiveFilters =
 		titleFilter !== "" || Object.values(labelFilters).some((v) => v !== "");
@@ -476,18 +534,20 @@ function NotionTaskList({
 	const handleTitleChange = useCallback(
 		(value: string) => {
 			setTitleFilter(value);
+			saveStoredFilters(repoPath, value, labelFilters);
 			search(value, labelFilters);
 		},
-		[labelFilters, search],
+		[repoPath, labelFilters, search],
 	);
 
 	const handleLabelChange = useCallback(
 		(propertyName: string, value: string) => {
 			const newFilters = { ...labelFilters, [propertyName]: value };
 			setLabelFilters(newFilters);
+			saveStoredFilters(repoPath, titleFilter, newFilters);
 			search(titleFilter, newFilters);
 		},
-		[titleFilter, labelFilters, search],
+		[repoPath, titleFilter, labelFilters, search],
 	);
 
 	return (
@@ -511,8 +571,11 @@ function NotionTaskList({
 							className="w-full bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
 						>
 							<option value="">{opt.property_name}: All</option>
-							{opt.options.map((v) => (
-								<option key={v} value={v}>
+							{opt.options.map((v, i) => (
+								<option
+									key={v}
+									value={opt.option_ids.length > 0 ? opt.option_ids[i] : v}
+								>
 									{v}
 								</option>
 							))}
@@ -537,6 +600,7 @@ function NotionTaskList({
 					repoPath={repoPath}
 					repoName={repoName}
 					onSelectWorktree={onSelectWorktree}
+					branchPrefix={branchPrefix}
 				/>
 			))}
 			{hasMore && (
@@ -588,6 +652,7 @@ interface NotionTaskCardProps {
 		branchName?: string,
 		repoName?: string,
 	) => void;
+	branchPrefix: string;
 }
 
 function NotionTaskCard({
@@ -595,6 +660,7 @@ function NotionTaskCard({
 	repoPath,
 	repoName,
 	onSelectWorktree,
+	branchPrefix,
 }: NotionTaskCardProps) {
 	const [creating, setCreating] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -603,9 +669,10 @@ function NotionTaskCard({
 		setCreating(true);
 		setError(null);
 		try {
+			const prefix = branchPrefix || undefined;
 			const branchName = task.branch_name
-				? generateNotionBranchName(task.branch_name, task.id)
-				: generateNotionBranchName(task.title, task.id);
+				? generateNotionBranchName(task.branch_name, task.id, prefix)
+				: generateNotionBranchName(task.title, task.id, prefix);
 			const worktreeDir = computeWorktreeDir(repoPath);
 			const worktreePath = `${worktreeDir}/${branchToDir(branchName)}`;
 
@@ -638,6 +705,7 @@ function NotionTaskCard({
 		repoPath,
 		repoName,
 		onSelectWorktree,
+		branchPrefix,
 	]);
 
 	const parsedDate = new Date(task.created_at);

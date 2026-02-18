@@ -91,4 +91,44 @@ describe("generateNotionBranchName", () => {
 			),
 		).toBe("fix-bug");
 	});
+
+	it("prepends prefix to sanitized branch name", () => {
+		expect(generateNotionBranchName("login-bug", undefined, "fix/")).toBe(
+			"fix/login-bug",
+		);
+	});
+
+	it("skips prefix when branch name already starts with it", () => {
+		expect(generateNotionBranchName("feat/add-login", undefined, "feat/")).toBe(
+			"feat/add-login",
+		);
+	});
+
+	it("prepends prefix to pageId fallback", () => {
+		expect(
+			generateNotionBranchName(
+				"機能追加",
+				"a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+				"feat/",
+			),
+		).toBe("feat/notion/a1b2c3d4");
+	});
+
+	it("prepends prefix to default fallback", () => {
+		expect(generateNotionBranchName("", undefined, "fix/")).toBe(
+			"fix/notion-task",
+		);
+	});
+
+	it("does not prepend empty prefix", () => {
+		expect(generateNotionBranchName("login-bug", undefined, "")).toBe(
+			"login-bug",
+		);
+	});
+
+	it("does not prepend undefined prefix", () => {
+		expect(generateNotionBranchName("login-bug", undefined, undefined)).toBe(
+			"login-bug",
+		);
+	});
 });

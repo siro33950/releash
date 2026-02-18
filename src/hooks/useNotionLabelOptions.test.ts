@@ -25,11 +25,13 @@ describe("useNotionLabelOptions", () => {
 				property_name: "Status",
 				property_type: "status",
 				options: ["Todo", "In Progress", "Done"],
+				option_ids: [],
 			},
 			{
 				property_name: "Tags",
 				property_type: "multi_select",
 				options: ["frontend", "backend"],
+				option_ids: [],
 			},
 		];
 		vi.mocked(invoke).mockResolvedValue(mockOptions);
@@ -45,6 +47,33 @@ describe("useNotionLabelOptions", () => {
 			"Todo",
 			"In Progress",
 			"Done",
+		]);
+	});
+
+	it("should set labelOptions with option_ids for people type", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const mockOptions = [
+			{
+				property_name: "Assignee",
+				property_type: "people",
+				options: ["Alice", "Bob"],
+				option_ids: ["uuid-1", "uuid-2"],
+			},
+		];
+		vi.mocked(invoke).mockResolvedValue(mockOptions);
+
+		const { result } = renderHook(() => useNotionLabelOptions("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.labelOptions).toHaveLength(1);
+		});
+
+		expect(result.current.labelOptions[0].property_name).toBe("Assignee");
+		expect(result.current.labelOptions[0].property_type).toBe("people");
+		expect(result.current.labelOptions[0].options).toEqual(["Alice", "Bob"]);
+		expect(result.current.labelOptions[0].option_ids).toEqual([
+			"uuid-1",
+			"uuid-2",
 		]);
 	});
 

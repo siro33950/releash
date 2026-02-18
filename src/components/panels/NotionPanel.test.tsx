@@ -62,6 +62,7 @@ describe("NotionPanel", () => {
 					{ name: "Tags", property_type: "multi_select" },
 				],
 				branch_name: "",
+				branch_prefix: "",
 			},
 		};
 		const mockTaskPage = {
@@ -87,11 +88,13 @@ describe("NotionPanel", () => {
 				property_name: "Status",
 				property_type: "status",
 				options: ["Todo", "In Progress", "Done"],
+				option_ids: [],
 			},
 			{
 				property_name: "Tags",
 				property_type: "multi_select",
 				options: ["frontend", "backend"],
+				option_ids: [],
 			},
 		];
 
@@ -112,6 +115,72 @@ describe("NotionPanel", () => {
 		expect(screen.getAllByText("frontend").length).toBeGreaterThanOrEqual(1);
 	});
 
+	it("should display people properties as badges", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const mockConfig = {
+			api_token: "ntn_test",
+			database_id: "db-123",
+			property_mapping: {
+				title: "Name",
+				labels: [
+					{ name: "Status", property_type: "status" },
+					{ name: "Assignee", property_type: "people" },
+				],
+				branch_name: "",
+				branch_prefix: "",
+			},
+		};
+		const mockTaskPage = {
+			tasks: [
+				{
+					id: "page-p1",
+					title: "People task",
+					url: "https://notion.so/page-p1",
+					labels: {
+						Status: ["In Progress"],
+						Assignee: ["Alice", "Bob"],
+					},
+					branch_name: "",
+					created_at: "2026-01-01T00:00:00.000Z",
+					last_edited_at: "2026-01-02T00:00:00.000Z",
+				},
+			],
+			has_more: false,
+			next_cursor: null,
+		};
+		const mockLabelOptions = [
+			{
+				property_name: "Status",
+				property_type: "status",
+				options: ["Todo", "In Progress", "Done"],
+				option_ids: [],
+			},
+			{
+				property_name: "Assignee",
+				property_type: "people",
+				options: ["Alice", "Bob"],
+				option_ids: ["uuid-1", "uuid-2"],
+			},
+		];
+
+		vi.mocked(invoke).mockImplementation(async (cmd) => {
+			if (cmd === "get_notion_config") return mockConfig;
+			if (cmd === "query_notion_tasks") return mockTaskPage;
+			if (cmd === "fetch_notion_label_options") return mockLabelOptions;
+			return null;
+		});
+
+		render(<NotionPanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("People task")).toBeInTheDocument();
+		});
+
+		expect(screen.getAllByText("Alice").length).toBeGreaterThanOrEqual(1);
+		expect(screen.getAllByText("Bob").length).toBeGreaterThanOrEqual(1);
+		expect(screen.getAllByText("In Progress").length).toBeGreaterThanOrEqual(1);
+	});
+
 	it("should show Create Worktree button for each task", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
 		const mockConfig = {
@@ -121,6 +190,7 @@ describe("NotionPanel", () => {
 				title: "Name",
 				labels: [],
 				branch_name: "",
+				branch_prefix: "",
 			},
 		};
 		const mockTaskPage = {
@@ -172,6 +242,7 @@ describe("NotionPanel", () => {
 				title: "Name",
 				labels: [],
 				branch_name: "",
+				branch_prefix: "",
 			},
 		};
 		const mockTaskPage = {
@@ -241,6 +312,7 @@ describe("NotionPanel", () => {
 					{ name: "Tags", property_type: "multi_select" },
 				],
 				branch_name: "",
+				branch_prefix: "",
 			},
 		};
 		const mockTaskPage = {
@@ -263,6 +335,7 @@ describe("NotionPanel", () => {
 				property_name: "Status",
 				property_type: "status",
 				options: ["Todo", "In Progress", "Done"],
+				option_ids: [],
 			},
 		];
 
@@ -280,5 +353,58 @@ describe("NotionPanel", () => {
 		});
 
 		expect(screen.getByDisplayValue("Status: All")).toBeInTheDocument();
+	});
+
+	it("should show branch prefix input in config form", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const mockConfig = {
+			api_token: "ntn_test",
+			database_id: "db-123",
+			property_mapping: {
+				title: "Name",
+				labels: [],
+				branch_name: "",
+				branch_prefix: "feat/",
+			},
+		};
+		const mockValidation = {
+			status: "configured",
+			properties: [
+				{ name: "Name", property_type: "title", options: [] },
+				{ name: "Branch", property_type: "rich_text", options: [] },
+			],
+		};
+
+		vi.mocked(invoke).mockImplementation(async (cmd) => {
+			if (cmd === "get_notion_config") return mockConfig;
+			if (cmd === "validate_notion_config") return mockValidation;
+			if (cmd === "query_notion_tasks")
+				return { tasks: [], has_more: false, next_cursor: null };
+			if (cmd === "fetch_notion_label_options") return [];
+			return null;
+		});
+
+		const user = userEvent.setup();
+		render(<NotionPanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("設定")).toBeInTheDocument();
+		});
+
+		await user.click(screen.getByText("設定"));
+
+		await waitFor(() => {
+			expect(screen.getByText("API Token")).toBeInTheDocument();
+		});
+
+		await user.click(screen.getByText("接続テスト"));
+
+		await waitFor(() => {
+			expect(screen.getByText("プレフィックス")).toBeInTheDocument();
+		});
+
+		const prefixInput = screen.getByPlaceholderText("feat/");
+		expect(prefixInput).toBeInTheDocument();
+		expect(prefixInput).toHaveValue("feat/");
 	});
 });
