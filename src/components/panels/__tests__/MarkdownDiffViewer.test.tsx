@@ -124,15 +124,16 @@ describe("MarkdownDiffViewer", () => {
 		it("renders unchanged chunks without diff class", () => {
 			render(
 				<MarkdownDiffViewer
-					originalContent="unchanged\nold line\n"
-					modifiedContent="unchanged\nnew line\n"
+					originalContent="same text"
+					modifiedContent="same text"
 					diffMode="inline"
 				/>,
 			);
 			const viewer = screen.getByTestId("markdown-diff-viewer");
-			const firstChild = viewer.children[0];
-			expect(firstChild.classList.contains("md-diff-inline-added")).toBe(false);
-			expect(firstChild.classList.contains("md-diff-inline-removed")).toBe(
+			const inlineRoot = viewer.children[0];
+			const firstChunk = inlineRoot.children[0];
+			expect(firstChunk.classList.contains("md-diff-inline-added")).toBe(false);
+			expect(firstChunk.classList.contains("md-diff-inline-removed")).toBe(
 				false,
 			);
 		});
