@@ -89,7 +89,7 @@ function RepoIssueSection({
 			});
 			setWorktrees(result);
 		} catch {
-			setWorktrees([]);
+			// noop: preserve previous worktrees on error
 		}
 	}, [repoPath]);
 
