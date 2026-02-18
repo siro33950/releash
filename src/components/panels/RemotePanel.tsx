@@ -17,9 +17,13 @@ import { useRemoteServer } from "@/hooks/useRemoteServer";
 
 export interface RemotePanelProps {
 	rootPaths: string[];
+	terminalStartupCommand: string;
 }
 
-export function RemotePanel({ rootPaths }: RemotePanelProps) {
+export function RemotePanel({
+	rootPaths,
+	terminalStartupCommand,
+}: RemotePanelProps) {
 	const {
 		running,
 		qrData,
@@ -39,6 +43,7 @@ export function RemotePanel({ rootPaths }: RemotePanelProps) {
 		updatePort,
 		regenerateToken,
 		updateRepoPaths,
+		updateTerminalStartupCommand,
 	} = useRemoteServer();
 
 	const [portInput, setPortInput] = useState("");
@@ -58,6 +63,12 @@ export function RemotePanel({ rootPaths }: RemotePanelProps) {
 			updateRepoPaths(rootPaths);
 		}
 	}, [running, rootPaths, updateRepoPaths]);
+
+	useEffect(() => {
+		if (running) {
+			updateTerminalStartupCommand(terminalStartupCommand);
+		}
+	}, [running, terminalStartupCommand, updateTerminalStartupCommand]);
 
 	const handleToggle = async () => {
 		if (running) {

@@ -161,6 +161,14 @@ export function useRemoteServer() {
 		}
 	}, []);
 
+	const updateTerminalStartupCommand = useCallback(async (command: string) => {
+		try {
+			await invoke("update_terminal_startup_command", { command });
+		} catch (e) {
+			setError(String(e));
+		}
+	}, []);
+
 	const stopServer = useCallback(async () => {
 		setError(null);
 		try {
@@ -218,5 +226,6 @@ export function useRemoteServer() {
 		updatePort,
 		regenerateToken,
 		updateRepoPaths,
+		updateTerminalStartupCommand,
 	};
 }
