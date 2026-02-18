@@ -31,7 +31,7 @@ export function MarkdownDiffViewer({
 	return (
 		<div
 			data-testid="markdown-diff-viewer"
-			className="markdown-preview h-full overflow-auto p-6 scrollbar-thin select-text"
+			className="markdown-preview h-full overflow-auto p-6 select-text"
 		>
 			<Markdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
 				{deferredModified}
