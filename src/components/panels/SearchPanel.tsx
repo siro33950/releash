@@ -38,7 +38,7 @@ function HighlightedLine({
 	return (
 		<span className="truncate">
 			{before}
-			<span className="bg-yellow-500/40 text-foreground font-semibold">
+			<span className="bg-warning/40 text-foreground font-semibold">
 				{match}
 			</span>
 			{after}

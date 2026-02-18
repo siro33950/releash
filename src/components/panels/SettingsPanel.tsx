@@ -331,10 +331,10 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 										<span className="text-xs font-medium">
 											Status:{" "}
 											{hooksStatus === "active" && (
-												<span className="text-green-500">Enabled</span>
+												<span className="text-success">Enabled</span>
 											)}
 											{hooksStatus === "token_mismatch" && (
-												<span className="text-yellow-500">
+												<span className="text-warning">
 													Token mismatch — 再設定が必要です
 												</span>
 											)}
@@ -356,7 +356,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 											onClick={handleCopyHooks}
 										>
 											{hooksCopied ? (
-												<Check className="size-3 text-green-500" />
+												<Check className="size-3 text-success" />
 											) : (
 												<Copy className="size-3 text-muted-foreground" />
 											)}
@@ -364,11 +364,11 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 									</div>
 
 									{hooksError && (
-										<p className="text-xs text-red-500">{hooksError}</p>
+										<p className="text-xs text-destructive">{hooksError}</p>
 									)}
 
 									{hooksSuccess && (
-										<p className="text-xs text-green-500">
+										<p className="text-xs text-success">
 											設定を適用しました。Claude
 											Codeを再起動すると反映されます。
 										</p>
@@ -443,7 +443,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 								</p>
 
 								{remote.error && (
-									<p className="text-xs text-red-500">{remote.error}</p>
+									<p className="text-xs text-destructive">{remote.error}</p>
 								)}
 							</>
 						)}
@@ -570,7 +570,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 								</div>
 
 								{webhook.error && (
-									<p className="text-xs text-red-500">{webhook.error}</p>
+									<p className="text-xs text-destructive">{webhook.error}</p>
 								)}
 							</>
 						)}

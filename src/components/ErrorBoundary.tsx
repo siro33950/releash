@@ -17,7 +17,7 @@ function FallbackUI({
 			<button
 				type="button"
 				onClick={resetError}
-				className="px-4 py-2 text-sm rounded bg-primary text-primary-foreground hover:opacity-90"
+				className="px-4 py-2 text-sm rounded bg-accent text-accent-foreground hover:opacity-90"
 			>
 				Retry
 			</button>

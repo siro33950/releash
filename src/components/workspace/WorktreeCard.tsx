@@ -2,7 +2,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
 	ExternalLink,
 	GitBranch,
-	GitMerge,
 	Globe,
 	Loader2,
 	Monitor,
@@ -31,27 +30,27 @@ const agentStateConfig: Record<
 	{ bg: string; text: string; dot: string; label: string }
 > = {
 	running: {
-		bg: "bg-blue-500/15",
-		text: "text-blue-500",
-		dot: "bg-blue-500 animate-pulse",
+		bg: "bg-info/15",
+		text: "text-info",
+		dot: "bg-info animate-pulse",
 		label: "Running",
 	},
 	done: {
-		bg: "bg-green-500/15",
-		text: "text-green-500",
-		dot: "bg-green-500",
+		bg: "bg-success/15",
+		text: "text-success",
+		dot: "bg-success",
 		label: "Done",
 	},
 	waiting: {
-		bg: "bg-yellow-500/15",
-		text: "text-yellow-500",
-		dot: "bg-yellow-500 animate-pulse",
+		bg: "bg-warning/15",
+		text: "text-warning",
+		dot: "bg-warning animate-pulse",
 		label: "Waiting",
 	},
 	error: {
-		bg: "bg-red-500/15",
-		text: "text-red-500",
-		dot: "bg-red-500",
+		bg: "bg-destructive/15",
+		text: "text-destructive",
+		dot: "bg-destructive",
 		label: "Error",
 	},
 };
@@ -116,30 +115,46 @@ export function BranchCard({
 			? Monitor
 			: GitBranch;
 
+	const hasSecondRow =
+		hasAheadBehind ||
+		branch.is_merged ||
+		(branch.has_pr && branch.pr_url && branch.pr_number != null) ||
+		hasStatusBadges;
+
 	return (
-		<div
+		<button
+			type="button"
 			data-testid={`branch-card-${branch.name}`}
-			className={`flex flex-col gap-3 rounded-lg border p-4 transition-colors ${
+			className={`group relative flex flex-col gap-3 rounded-lg border p-3 transition-colors cursor-pointer text-left ${
 				hasWorktree
 					? "border-border bg-card hover:border-primary/50"
 					: "border-border/50 bg-card/50 hover:border-border"
 			}`}
+			onClick={opening ? undefined : onOpen}
 		>
-			<div className="flex flex-col gap-1">
-				<div className="flex items-center gap-2 min-w-0">
-					<BranchIcon
-						className={`size-4 shrink-0 ${hasWorktree ? "text-muted-foreground" : "text-muted-foreground/50"}`}
-					/>
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<span
-								className={`text-sm font-medium truncate ${!hasWorktree ? "text-muted-foreground" : ""}`}
-							>
-								{branch.name}
-							</span>
-						</TooltipTrigger>
-						<TooltipContent>{branch.name}</TooltipContent>
-					</Tooltip>
+			{/* 1行目: ブランチアイコン + ブランチ名 */}
+			<div className="flex items-center gap-2 min-w-0">
+				<BranchIcon
+					className={`size-4 shrink-0 ${hasWorktree ? "text-muted-foreground" : "text-muted-foreground/50"}`}
+				/>
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span
+							className={`text-sm font-medium truncate ${!hasWorktree ? "text-muted-foreground" : ""}`}
+						>
+							{branch.name}
+						</span>
+					</TooltipTrigger>
+					<TooltipContent>{branch.name}</TooltipContent>
+				</Tooltip>
+				{opening && (
+					<Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+				)}
+			</div>
+
+			{/* 2行目: バッジ類（インデントなし） */}
+			{hasSecondRow && (
+				<div className="flex items-center gap-1.5 flex-wrap">
 					{hasAheadBehind && (
 						<span className="shrink-0 text-[10px] text-muted-foreground">
 							{branch.ahead > 0 && `↑${branch.ahead}`}
@@ -148,12 +163,14 @@ export function BranchCard({
 						</span>
 					)}
 					{branch.is_merged && (
-						<GitMerge className="size-4 shrink-0 text-muted-foreground/50" />
+						<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">
+							merged
+						</span>
 					)}
 					{branch.has_pr && branch.pr_url && branch.pr_number != null && (
 						<button
 							type="button"
-							className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-500 font-medium hover:bg-purple-500/25 transition-colors"
+							className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-info/15 text-info font-medium hover:bg-info/25 transition-colors"
 							onClick={(e) => {
 								e.stopPropagation();
 								openUrl(branch.pr_url as string);
@@ -163,53 +180,44 @@ export function BranchCard({
 							<ExternalLink className="size-2.5" />
 						</button>
 					)}
+					{branch.is_default && (
+						<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-success/15 text-success font-medium">
+							base
+						</span>
+					)}
+					{branch.agent_state && (
+						<AgentStateBadge
+							state={branch.agent_state}
+							timestamp={branch.agent_state_timestamp}
+						/>
+					)}
+					{hasWorktree && branch.dirty_count > 0 && (
+						<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-warning/15 text-warning font-medium">
+							{branch.dirty_count} changed
+						</span>
+					)}
 				</div>
-				{hasStatusBadges && (
-					<div className="flex items-center gap-1.5 ml-6 flex-wrap">
-						{branch.is_default && (
-							<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-green-500/15 text-green-500 font-medium">
-								base
-							</span>
-						)}
-						{branch.agent_state && (
-							<AgentStateBadge
-								state={branch.agent_state}
-								timestamp={branch.agent_state_timestamp}
-							/>
-						)}
-						{hasWorktree && branch.dirty_count > 0 && (
-							<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-500 font-medium">
-								{branch.dirty_count} files changed
-							</span>
-						)}
-					</div>
-				)}
-			</div>
+			)}
 
-			<div className="flex items-center gap-2 mt-auto">
+			{/* 削除ボタン: hover時のみ表示 */}
+			{!branch.is_default && (hasWorktree || branch.is_merged) && (
 				<Button
-					size="sm"
-					className="flex-1"
-					onClick={onOpen}
-					disabled={opening}
+					size="icon-xs"
+					variant="ghost"
+					className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+					onClick={(e) => {
+						e.stopPropagation();
+						onDelete(branch);
+					}}
+					aria-label={
+						hasWorktree
+							? `Delete worktree for ${branch.name}`
+							: `Delete branch ${branch.name}`
+					}
 				>
-					{opening ? <Loader2 className="size-4 animate-spin" /> : "Open"}
+					<Trash2 className="size-3 text-muted-foreground" />
 				</Button>
-				{!branch.is_default && (hasWorktree || branch.is_merged) && (
-					<Button
-						size="icon-sm"
-						variant="ghost"
-						onClick={() => onDelete(branch)}
-						aria-label={
-							hasWorktree
-								? `Delete worktree for ${branch.name}`
-								: `Delete branch ${branch.name}`
-						}
-					>
-						<Trash2 className="size-4 text-muted-foreground" />
-					</Button>
-				)}
-			</div>
-		</div>
+			)}
+		</button>
 	);
 }

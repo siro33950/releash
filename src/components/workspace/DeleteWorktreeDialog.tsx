@@ -90,7 +90,7 @@ export function DeleteWorktreeDialog({
 						</div>
 					)}
 					{hasDirty && (
-						<p className="text-yellow-500">
+						<p className="text-warning">
 							This workspace has {branch.dirty_count} uncommitted change(s).
 							Force delete is required.
 						</p>

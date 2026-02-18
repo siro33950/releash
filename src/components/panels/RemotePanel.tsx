@@ -113,7 +113,7 @@ export function RemotePanel({
 					<div className="flex flex-col gap-2">
 						<div className="flex items-center gap-2">
 							<div
-								className={`size-2 rounded-full ${running ? "bg-green-500" : "bg-muted-foreground"}`}
+								className={`size-2 rounded-full ${running ? "bg-success" : "bg-muted-foreground"}`}
 							/>
 							<span className="text-xs text-muted-foreground">
 								{running ? "Running" : "Stopped"}
@@ -139,7 +139,7 @@ export function RemotePanel({
 
 					{/* LAN Mode Warning */}
 					{running && connectionMode === "lan" && (
-						<div className="text-xs text-yellow-200 bg-yellow-900/40 border border-yellow-700/50 rounded px-2 py-1.5">
+						<div className="text-xs text-warning bg-warning/10 border border-warning/30 rounded px-2 py-1.5">
 							LAN接続モード — 同一ネットワーク上のデバイスがアクセス可能です
 						</div>
 					)}
