@@ -1,6 +1,8 @@
+import { listen } from "@tauri-apps/api/event";
 import {
 	forwardRef,
 	useCallback,
+	useEffect,
 	useImperativeHandle,
 	useRef,
 	useState,
@@ -12,8 +14,9 @@ import {
 	ContextMenuSeparator,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import type { NativeFileDropPayload } from "@/hooks/useNativeFileDrop";
 import { useTerminal } from "@/hooks/useTerminal";
-import { quotePathForShell } from "@/lib/quotePathForShell";
+import { quotePathForShell, quotePathsForShell } from "@/lib/quotePathForShell";
 import type { Theme } from "@/types/settings";
 import "@xterm/xterm/css/xterm.css";
 
@@ -46,6 +49,7 @@ export const TerminalPanel = forwardRef<
 		agentType,
 	);
 	const [isDragOver, setIsDragOver] = useState(false);
+	const isDragOverRef = useRef(false);
 
 	useImperativeHandle(
 		ref,
@@ -55,18 +59,42 @@ export const TerminalPanel = forwardRef<
 		[writeToTerminal],
 	);
 
-	// HTML5 drag & drop (アプリ内FileTreeからのドラッグ)
-	// 外部ファイルドロップ(Finder等)はdragDropEnabled: falseではフルパス取得不可のため未対応
+	// ネイティブドロップ時はHTML5のdropイベントが発火しないため、
+	// isDragOverRefでドラッグ状態を追跡し、自身のターミナルにパスを書き込む
+	useEffect(() => {
+		const unlisten = listen<NativeFileDropPayload>(
+			"native-file-drop",
+			(event) => {
+				if (isDragOverRef.current) {
+					const { paths } = event.payload;
+					if (paths.length > 0) {
+						writeToTerminal(quotePathsForShell(paths));
+					}
+				}
+				isDragOverRef.current = false;
+				setIsDragOver(false);
+			},
+		);
+		return () => {
+			unlisten.then((f) => f());
+		};
+	}, [writeToTerminal]);
+
 	const handleDragOver = useCallback((e: React.DragEvent) => {
-		if (e.dataTransfer.types.includes("application/x-releash-file-path")) {
+		if (
+			e.dataTransfer.types.includes("application/x-releash-file-path") ||
+			e.dataTransfer.types.includes("Files")
+		) {
 			e.preventDefault();
 			e.dataTransfer.dropEffect = "copy";
+			isDragOverRef.current = true;
 			setIsDragOver(true);
 		}
 	}, []);
 
 	const handleDragLeave = useCallback((e: React.DragEvent) => {
 		if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+			isDragOverRef.current = false;
 			setIsDragOver(false);
 		}
 	}, []);
@@ -74,6 +102,7 @@ export const TerminalPanel = forwardRef<
 	const handleDrop = useCallback(
 		(e: React.DragEvent) => {
 			e.preventDefault();
+			isDragOverRef.current = false;
 			setIsDragOver(false);
 			const filePath = e.dataTransfer.getData(
 				"application/x-releash-file-path",

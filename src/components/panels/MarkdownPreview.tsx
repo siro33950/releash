@@ -33,7 +33,7 @@ export function MarkdownPreview({ content, className }: MarkdownPreviewProps) {
 		<div
 			data-testid="markdown-preview"
 			className={cn(
-				"markdown-preview h-full overflow-auto p-6 scrollbar-thin",
+				"markdown-preview h-full overflow-auto p-6 select-text",
 				className,
 			)}
 		>

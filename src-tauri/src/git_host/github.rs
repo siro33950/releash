@@ -94,6 +94,14 @@ fn run_gh_with_timeout(args: &[&str], repo_path: &str) -> Option<String> {
         .spawn()
         .ok()?;
 
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        stdout.read_to_end(&mut buf).ok()?;
+        Some(buf)
+    });
+
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -115,8 +123,8 @@ fn run_gh_with_timeout(args: &[&str], repo_path: &str) -> Option<String> {
         }
     }
 
-    let output = child.wait_with_output().ok()?;
-    String::from_utf8(output.stdout).ok()
+    let buf = reader.join().ok()??;
+    String::from_utf8(buf).ok()
 }
 
 fn parse_gh_pr_list_output(json_str: &str) -> HashMap<String, PrInfo> {
@@ -361,5 +369,169 @@ mod tests {
         assert!(issues[0].labels.is_empty());
         assert!(issues[0].assignees.is_empty());
         assert!(issues[0].body.is_empty());
+    }
+
+    #[test]
+    fn parse_issue_list_real_gh_output() {
+        // gh issue list --json の実際の出力形式（余分なフィールド含む）
+        let json = serde_json::json!([
+            {
+                "assignees": [],
+                "author": {"id": "MDQ6VXNlcjMwNjAxMTM2", "is_bot": false, "login": "siro33950", "name": "siro33950"},
+                "body": "Issue body",
+                "createdAt": "2026-02-17T18:05:54Z",
+                "labels": [],
+                "milestone": {"number": 11, "title": "マルチPTY管理", "description": "", "dueOn": null},
+                "number": 313,
+                "state": "OPEN",
+                "title": "tmuxベースのPTYセッション永続化",
+                "updatedAt": "2026-02-17T18:05:54Z",
+                "url": "https://github.com/siro33950/releash/issues/313"
+            },
+            {
+                "assignees": [],
+                "author": {"id": "MDQ6VXNlcjMwNjAxMTM2", "is_bot": false, "login": "siro33950", "name": "siro33950"},
+                "body": "",
+                "createdAt": "2026-02-17T17:46:06Z",
+                "labels": [{"id": "LA_kwDORH7BOc8AAAACW7Y17Q", "name": "enhancement", "description": "New feature or request", "color": "a2eeef"}],
+                "milestone": null,
+                "number": 312,
+                "state": "OPEN",
+                "title": "Notionタスク管理パネルを追加",
+                "updatedAt": "2026-02-17T17:56:51Z",
+                "url": "https://github.com/siro33950/releash/issues/312"
+            }
+        ])
+        .to_string();
+        let issues = parse_gh_issue_list_output(&json);
+        assert_eq!(issues.len(), 2, "deserialization failed: got empty vec");
+        assert_eq!(issues[0].number, 313);
+        assert!(issues[0].milestone.is_some());
+        assert_eq!(issues[0].milestone.as_ref().unwrap().title, "マルチPTY管理");
+        assert_eq!(issues[1].number, 312);
+        assert!(issues[1].milestone.is_none());
+        assert_eq!(issues[1].labels.len(), 1);
+    }
+
+    /// run_gh_with_timeout と同じパターン（try_wait ポーリング + 後から stdout 読み取り）で
+    /// 64KB超の出力がパイプバッファ溢れによりデッドロックすることを再現するテスト。
+    ///
+    /// macOS のパイプバッファは 64KB。stdout を読まずに try_wait だけ回すと、
+    /// 子プロセスが write(2) でブロックし永遠に終了しない。
+    #[cfg(unix)]
+    #[test]
+    fn piped_stdout_deadlocks_over_64kb() {
+        // 70KB を stdout に書き出す子プロセス
+        let mut child = Command::new("dd")
+            .args(["if=/dev/zero", "bs=1024", "count=70"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let timeout = Duration::from_secs(3);
+        let start = Instant::now();
+        let mut timed_out = false;
+
+        loop {
+            match child.try_wait().unwrap() {
+                Some(_) => break,
+                None => {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        timed_out = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+
+        // 64KB超ではパイプバッファが詰まり、子プロセスが終了できずタイムアウトする
+        assert!(
+            timed_out,
+            "expected deadlock timeout, but process exited — pipe buffer may be >64KB on this OS"
+        );
+    }
+
+    /// 64KB以下の出力では同じパターンでもデッドロックしないことを確認。
+    #[cfg(unix)]
+    #[test]
+    fn piped_stdout_ok_under_64kb() {
+        let mut child = Command::new("dd")
+            .args(["if=/dev/zero", "bs=1024", "count=60"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let timeout = Duration::from_secs(3);
+        let start = Instant::now();
+        let mut timed_out = false;
+
+        loop {
+            match child.try_wait().unwrap() {
+                Some(_) => break,
+                None => {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        timed_out = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+
+        assert!(!timed_out, "should not deadlock with <64KB output");
+    }
+
+    /// stdout を別スレッドで並行読み取りすれば 64KB超でもデッドロックしないことを検証。
+    #[cfg(unix)]
+    #[test]
+    fn piped_stdout_concurrent_read_avoids_deadlock() {
+        use std::io::Read;
+
+        let mut child = Command::new("dd")
+            .args(["if=/dev/zero", "bs=1024", "count=70"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let mut stdout = child.stdout.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            stdout.read_to_end(&mut buf).unwrap();
+            buf
+        });
+
+        let timeout = Duration::from_secs(3);
+        let start = Instant::now();
+        let mut timed_out = false;
+
+        loop {
+            match child.try_wait().unwrap() {
+                Some(status) => {
+                    assert!(status.success());
+                    break;
+                }
+                None => {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        timed_out = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+
+        assert!(!timed_out, "concurrent read should prevent deadlock");
+        let buf = reader.join().unwrap();
+        assert_eq!(buf.len(), 70 * 1024);
     }
 }

@@ -23,6 +23,7 @@ import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { IssuePanel } from "@/components/panels/IssuePanel";
 import { RemotePanel } from "@/components/panels/RemotePanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
+import type { TerminalPanelHandle } from "@/components/panels/TerminalPanel";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
 import { RepoKanbanBoard } from "@/components/workspace/RepoKanbanBoard";
@@ -97,6 +98,7 @@ export function WorkspaceManagerScreen({
 
 	const sidebarPanelRef = useRef<PanelImperativeHandle>(null);
 	const terminalPanelRef = useRef<PanelImperativeHandle>(null);
+	const terminalRef = useRef<TerminalPanelHandle>(null);
 
 	const [sidebarVisible, setSidebarVisible] = useState(true);
 	const [terminalVisible, setTerminalVisible] = useState(true);
@@ -263,7 +265,11 @@ export function WorkspaceManagerScreen({
 						onResize={handleTerminalResize}
 					>
 						<div className="h-full overflow-hidden border-l border-border">
-							<TerminalPanel theme={settings.theme} sessionKey="kanban" />
+							<TerminalPanel
+								ref={terminalRef}
+								theme={settings.theme}
+								sessionKey="kanban"
+							/>
 						</div>
 					</Panel>
 				</Group>
