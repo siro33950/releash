@@ -27,7 +27,7 @@ import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
 import { RepoKanbanBoard } from "@/components/workspace/RepoKanbanBoard";
 import type { ProviderStatus } from "@/types/git";
-import type { AppSettings } from "@/types/settings";
+import { type AppSettings, buildTerminalCommand } from "@/types/settings";
 
 interface WorkspaceManagerScreenProps {
 	repoPaths: string[];
@@ -162,7 +162,12 @@ export function WorkspaceManagerScreen({
 			);
 		}
 		if (activeView === "remote") {
-			return <RemotePanel rootPaths={repoPaths} />;
+			return (
+				<RemotePanel
+					rootPaths={repoPaths}
+					terminalStartupCommand={buildTerminalCommand(settings)}
+				/>
+			);
 		}
 		if (activeView === "settings") {
 			return <SettingsPanel settings={settings} onSave={onSettingsSave} />;

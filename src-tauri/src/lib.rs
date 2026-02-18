@@ -197,6 +197,7 @@ pub fn run() {
             ws_server::commands::get_server_info,
             ws_server::commands::broadcast_comments,
             ws_server::commands::update_server_repo_paths,
+            ws_server::commands::update_terminal_startup_command,
             // Menu
             menu::set_menu_items_enabled,
         ])
