@@ -16,7 +16,7 @@ const mockIssues: IssueInfo[] = [
 		labels: [{ name: "enhancement", color: "a2eeef" }],
 		assignees: [{ login: "user1" }],
 		body: "Issue body",
-		milestone: null,
+		milestone: { title: "v1.0" },
 	},
 	{
 		number: 100,
@@ -206,6 +206,60 @@ describe("IssuePanel", () => {
 		await user.type(filterInput, "zzz");
 
 		expect(screen.getByText("No matching issues")).toBeInTheDocument();
+	});
+
+	it("should display milestone badge", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockResolvedValue(mockIssues);
+
+		render(<IssuePanel {...defaultProps} />);
+		await waitFor(() => {
+			const elements = screen.getAllByText("v1.0");
+			const badge = elements.find(
+				(el) => el.tagName === "SPAN" && el.closest(".bg-card"),
+			);
+			expect(badge).toBeDefined();
+		});
+	});
+
+	it("should filter issues by milestone", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		const user = userEvent.setup();
+
+		render(<IssuePanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("#305")).toBeInTheDocument();
+		});
+
+		const milestoneSelect = screen.getByDisplayValue("All milestones");
+		await user.selectOptions(milestoneSelect, "v1.0");
+
+		expect(
+			screen.getByText("Kanban画面にIssue管理パネルを追加"),
+		).toBeInTheDocument();
+		expect(screen.queryByText("Bug fix")).not.toBeInTheDocument();
+	});
+
+	it("should filter issues with no milestone", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		const user = userEvent.setup();
+
+		render(<IssuePanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("#305")).toBeInTheDocument();
+		});
+
+		const milestoneSelect = screen.getByDisplayValue("All milestones");
+		await user.selectOptions(milestoneSelect, "__none__");
+
+		expect(screen.getByText("Bug fix")).toBeInTheDocument();
+		expect(
+			screen.queryByText("Kanban画面にIssue管理パネルを追加"),
+		).not.toBeInTheDocument();
 	});
 
 	it("should filter issues by label", async () => {

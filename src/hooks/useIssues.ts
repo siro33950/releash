@@ -21,7 +21,8 @@ export function useIssues(repoPath: string) {
 					repoPath,
 				});
 				setIssues(result);
-			} catch {
+			} catch (e) {
+				console.error(`[useIssues] ${command} failed for ${repoPath}:`, e);
 				setIssues([]);
 			} finally {
 				hasFetched.current = true;

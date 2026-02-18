@@ -79,20 +79,37 @@ impl GitHostProvider for GitHubProvider {
             repo_path,
         );
         match output {
-            Some(stdout) => parse_gh_issue_list_output(&stdout),
-            None => Vec::new(),
+            Some(stdout) => {
+                let issues = parse_gh_issue_list_output(&stdout);
+                if issues.is_empty() && stdout.trim() != "[]" && !stdout.trim().is_empty() {
+                    eprintln!(
+                        "[list_issues] parse returned 0 issues from non-empty output: {stdout}"
+                    );
+                }
+                issues
+            }
+            None => {
+                eprintln!("[list_issues] gh command returned no output for {repo_path}");
+                Vec::new()
+            }
         }
     }
 }
 
 fn run_gh_with_timeout(args: &[&str], repo_path: &str) -> Option<String> {
-    let mut child = Command::new("gh")
+    let mut child = match Command::new("gh")
         .args(args)
         .current_dir(repo_path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .ok()?;
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[run_gh] spawn failed: {e}");
+            return None;
+        }
+    };
 
     let mut stdout = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
@@ -107,6 +124,19 @@ fn run_gh_with_timeout(args: &[&str], repo_path: &str) -> Option<String> {
         match child.try_wait() {
             Ok(Some(status)) => {
                 if !status.success() {
+                    let stderr = child
+                        .stderr
+                        .take()
+                        .and_then(|mut s| {
+                            let mut buf = String::new();
+                            std::io::Read::read_to_string(&mut s, &mut buf).ok()?;
+                            Some(buf)
+                        })
+                        .unwrap_or_default();
+                    eprintln!(
+                        "[run_gh] exit {status} for `gh {}` in {repo_path}: {stderr}",
+                        args.join(" ")
+                    );
                     return None;
                 }
                 break;
@@ -115,11 +145,18 @@ fn run_gh_with_timeout(args: &[&str], repo_path: &str) -> Option<String> {
                 if start.elapsed() > GH_TIMEOUT {
                     let _ = child.kill();
                     let _ = child.wait();
+                    eprintln!(
+                        "[run_gh] timeout for `gh {}` in {repo_path}",
+                        args.join(" ")
+                    );
                     return None;
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            Err(_) => return None,
+            Err(e) => {
+                eprintln!("[run_gh] try_wait error: {e}");
+                return None;
+            }
         }
     }
 
