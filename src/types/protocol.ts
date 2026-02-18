@@ -203,6 +203,11 @@ export interface BranchCardMsg {
 	has_pr?: boolean;
 	pr_number?: number;
 	pr_url?: string;
+	ahead: number;
+	behind: number;
+	is_remote_only: boolean;
+	has_upstream: boolean;
+	remote_name?: string;
 }
 
 export interface BranchListSync {
