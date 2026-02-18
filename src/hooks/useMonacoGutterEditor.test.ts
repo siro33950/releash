@@ -108,6 +108,7 @@ describe("useMonacoGutterEditor", () => {
 	});
 
 	it("should not call onContentChange during programmatic setValue", async () => {
+		const OriginalIntersectionObserver = globalThis.IntersectionObserver;
 		globalThis.IntersectionObserver = class IntersectionObserver {
 			observe() {}
 			unobserve() {}
@@ -176,6 +177,8 @@ describe("useMonacoGutterEditor", () => {
 
 		expect(editorInstance.setValue).toHaveBeenCalledWith("updated externally");
 		expect(onContentChange).not.toHaveBeenCalled();
+
+		globalThis.IntersectionObserver = OriginalIntersectionObserver;
 	});
 
 	it("should handle diff between original and modified content", async () => {

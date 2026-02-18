@@ -957,14 +957,15 @@ export function WorktreeView({
 			>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>外部変更の競合</AlertDialogTitle>
+						<AlertDialogTitle>External Change Conflict</AlertDialogTitle>
 						<AlertDialogDescription>
-							このファイルは外部で変更されています。上書き保存しますか？
+							This file has been modified externally. Do you want to overwrite
+							it?
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
 						<AlertDialogCancel onClick={() => setSavingConflictPath(null)}>
-							キャンセル
+							Cancel
 						</AlertDialogCancel>
 						<AlertDialogAction
 							onClick={() => {
@@ -975,7 +976,7 @@ export function WorktreeView({
 								setSavingConflictPath(null);
 							}}
 						>
-							上書き保存
+							Overwrite
 						</AlertDialogAction>
 					</AlertDialogFooter>
 				</AlertDialogContent>
