@@ -195,6 +195,21 @@ fn is_on_first_parent_line(repo: &Repository, ancestor_oid: Oid, descendant_oid:
     false
 }
 
+fn compute_is_merged(repo: &Repository, branch_oid: Oid, base_target_oid: Option<Oid>) -> bool {
+    base_target_oid
+        .and_then(|t_oid| {
+            if branch_oid == t_oid {
+                return Some(false);
+            }
+            let merge_base = repo.merge_base(branch_oid, t_oid).ok()?;
+            if merge_base != branch_oid {
+                return Some(false);
+            }
+            Some(!is_on_first_parent_line(repo, branch_oid, t_oid))
+        })
+        .unwrap_or(false)
+}
+
 pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, GitError> {
     let repo = Repository::open(&repo_path)?;
     let default_branch = detect_default_branch(&repo);
@@ -276,20 +291,10 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
             None => (None, 0),
         };
 
-        let target_oid = base_target_oid;
-
-        let is_merged = target_oid
-            .and_then(|t_oid| {
-                let branch_oid = branch.get().target()?;
-                if branch_oid == t_oid {
-                    return Some(false);
-                }
-                let merge_base = repo.merge_base(branch_oid, t_oid).ok()?;
-                if merge_base != branch_oid {
-                    return Some(false);
-                }
-                Some(!is_on_first_parent_line(&repo, branch_oid, t_oid))
-            })
+        let is_merged = branch
+            .get()
+            .target()
+            .map(|oid| compute_is_merged(&repo, oid, base_target_oid))
             .unwrap_or(false);
 
         let upstream = branch.upstream().ok();
@@ -315,11 +320,22 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
             behind,
             is_remote_only: false,
             has_upstream,
+            remote_name: None,
         });
     }
 
     let mut local_names: std::collections::HashSet<String> =
         cards.iter().map(|c| c.name.clone()).collect();
+
+    let remote_names: Vec<String> = repo
+        .remotes()
+        .map(|remotes| {
+            let mut names: Vec<String> =
+                remotes.iter().filter_map(|r| r.map(String::from)).collect();
+            names.sort_by_key(|b| std::cmp::Reverse(b.len()));
+            names
+        })
+        .unwrap_or_default();
 
     if let Ok(remote_branches) = repo.branches(Some(BranchType::Remote)) {
         for branch in remote_branches {
@@ -336,28 +352,35 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
                 continue;
             }
 
-            let short_name = full_name
-                .find('/')
-                .map(|i| &full_name[i + 1..])
-                .unwrap_or(&full_name)
-                .to_string();
+            let (matched_remote, short_name) = remote_names
+                .iter()
+                .find_map(|remote| {
+                    full_name
+                        .strip_prefix(remote.as_str())
+                        .and_then(|rest| rest.strip_prefix('/'))
+                        .map(|branch_name| (remote.clone(), branch_name.to_string()))
+                })
+                .unwrap_or_else(|| {
+                    let short = full_name
+                        .find('/')
+                        .map(|i| &full_name[i + 1..])
+                        .unwrap_or(&full_name)
+                        .to_string();
+                    let remote = full_name
+                        .find('/')
+                        .map(|i| full_name[..i].to_string())
+                        .unwrap_or_default();
+                    (remote, short)
+                });
 
             if !local_names.insert(short_name.clone()) {
                 continue;
             }
 
-            let is_merged = base_target_oid
-                .and_then(|t_oid| {
-                    let branch_oid = branch.get().target()?;
-                    if branch_oid == t_oid {
-                        return Some(false);
-                    }
-                    let merge_base = repo.merge_base(branch_oid, t_oid).ok()?;
-                    if merge_base != branch_oid {
-                        return Some(false);
-                    }
-                    Some(!is_on_first_parent_line(&repo, branch_oid, t_oid))
-                })
+            let is_merged = branch
+                .get()
+                .target()
+                .map(|oid| compute_is_merged(&repo, oid, base_target_oid))
                 .unwrap_or(false);
 
             cards.push(BranchCard {
@@ -373,6 +396,7 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
                 behind: 0,
                 is_remote_only: true,
                 has_upstream: false,
+                remote_name: Some(matched_remote),
             });
         }
     }

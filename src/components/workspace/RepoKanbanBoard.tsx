@@ -234,7 +234,9 @@ export function RepoKanbanBoard({
 					worktreePath: `${worktreeDir}/${dirName}`,
 					branch: branch.name,
 					createBranch: branch.is_remote_only,
-					baseBranch: branch.is_remote_only ? `origin/${branch.name}` : null,
+					baseBranch: branch.is_remote_only
+						? `${branch.remote_name ?? "origin"}/${branch.name}`
+						: null,
 				});
 				onSelectWorktree(entry.path, branch.name, repoName);
 				setOpeningBranch(null);

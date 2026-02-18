@@ -23,6 +23,8 @@ pub struct BranchCardMsg {
     pub is_remote_only: bool,
     #[serde(default)]
     pub has_upstream: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_name: Option<String>,
 }
 
 impl From<BranchCard> for BranchCardMsg {
@@ -40,6 +42,7 @@ impl From<BranchCard> for BranchCardMsg {
             behind: b.behind,
             is_remote_only: b.is_remote_only,
             has_upstream: b.has_upstream,
+            remote_name: b.remote_name,
         }
     }
 }

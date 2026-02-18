@@ -13,6 +13,11 @@ export interface BranchCard {
 	has_pr: boolean;
 	pr_number: number | null;
 	pr_url: string | null;
+	ahead: number;
+	behind: number;
+	is_remote_only: boolean;
+	has_upstream: boolean;
+	remote_name: string | null;
 	agent_state?: "running" | "done" | "error" | "waiting";
 	agent_state_timestamp?: number;
 }
@@ -129,6 +134,11 @@ export const kanbanBranches: BranchCard[] = [
 		has_pr: false,
 		pr_number: null,
 		pr_url: null,
+		ahead: 0,
+		behind: 0,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
 	},
 	{
 		name: "feat/wip",
@@ -139,6 +149,11 @@ export const kanbanBranches: BranchCard[] = [
 		has_pr: false,
 		pr_number: null,
 		pr_url: null,
+		ahead: 0,
+		behind: 0,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
 	},
 	{
 		name: "feat/review",
@@ -149,6 +164,11 @@ export const kanbanBranches: BranchCard[] = [
 		has_pr: true,
 		pr_number: 42,
 		pr_url: "https://github.com/test/repo/pull/42",
+		ahead: 0,
+		behind: 0,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
 	},
 	{
 		name: "feat/done",
@@ -159,6 +179,11 @@ export const kanbanBranches: BranchCard[] = [
 		has_pr: false,
 		pr_number: null,
 		pr_url: null,
+		ahead: 0,
+		behind: 0,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
 	},
 ];
 

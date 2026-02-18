@@ -106,7 +106,9 @@ export function BranchCard({
 	const hasAheadBehind = branch.ahead > 0 || branch.behind > 0;
 	const isLocalOnly = !branch.is_remote_only && !branch.has_upstream;
 	const hasStatusBadges =
-		branch.is_default || branch.agent_state || hasWorktree;
+		branch.is_default ||
+		branch.agent_state ||
+		(hasWorktree && branch.dirty_count > 0);
 
 	const BranchIcon = branch.is_remote_only
 		? Globe

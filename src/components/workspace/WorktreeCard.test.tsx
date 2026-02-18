@@ -21,6 +21,7 @@ function makeBranch(overrides: Partial<BranchCardType> = {}): BranchCardType {
 		behind: 0,
 		is_remote_only: false,
 		has_upstream: true,
+		remote_name: null,
 		...overrides,
 	};
 }

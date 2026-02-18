@@ -32,6 +32,7 @@ export interface BranchCard {
 	behind: number;
 	is_remote_only: boolean;
 	has_upstream: boolean;
+	remote_name: string | null;
 	agent_state?: "running" | "done" | "error" | "waiting";
 	agent_state_timestamp?: number;
 }

@@ -52,6 +52,7 @@ const todoBranch: BranchCard = {
 	behind: 0,
 	is_remote_only: false,
 	has_upstream: true,
+	remote_name: null,
 };
 
 const inProgressBranch: BranchCard = {
@@ -67,6 +68,7 @@ const inProgressBranch: BranchCard = {
 	behind: 0,
 	is_remote_only: false,
 	has_upstream: true,
+	remote_name: null,
 };
 
 const inProgressCleanBranch: BranchCard = {
@@ -82,6 +84,7 @@ const inProgressCleanBranch: BranchCard = {
 	behind: 0,
 	is_remote_only: false,
 	has_upstream: true,
+	remote_name: null,
 };
 
 const reviewBranch: BranchCard = {
@@ -97,6 +100,7 @@ const reviewBranch: BranchCard = {
 	behind: 0,
 	is_remote_only: false,
 	has_upstream: true,
+	remote_name: null,
 };
 
 const doneBranch: BranchCard = {
@@ -112,6 +116,7 @@ const doneBranch: BranchCard = {
 	behind: 0,
 	is_remote_only: false,
 	has_upstream: true,
+	remote_name: null,
 };
 
 const allBranches: BranchCard[] = [
@@ -329,6 +334,7 @@ describe("WorkspaceManagerScreen", () => {
 				behind: 0,
 				is_remote_only: false,
 				has_upstream: true,
+				remote_name: null,
 			};
 			const prStatus: PrStatus = {
 				open_prs: {
@@ -610,6 +616,7 @@ describe("WorkspaceManagerScreen", () => {
 					behind: 0,
 					is_remote_only: false,
 					has_upstream: true,
+					remote_name: null,
 				},
 			];
 			mockInvoke.mockImplementation((cmd: string) => {

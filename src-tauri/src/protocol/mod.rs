@@ -515,6 +515,7 @@ mod tests {
                     behind: 1,
                     is_remote_only: false,
                     has_upstream: true,
+                    remote_name: None,
                 }],
             }),
             WsMessage::AgentStateSync(AgentStateSync {

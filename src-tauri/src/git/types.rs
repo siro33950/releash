@@ -48,4 +48,5 @@ pub struct BranchCard {
     pub behind: usize,
     pub is_remote_only: bool,
     pub has_upstream: bool,
+    pub remote_name: Option<String>,
 }
