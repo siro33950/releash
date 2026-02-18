@@ -85,6 +85,7 @@ export function WorkspaceTabBar({
 									role="tab"
 									tabIndex={0}
 									aria-selected={isActive}
+									aria-label="Kanban"
 								>
 									<LayoutGrid className="size-4 shrink-0" />
 								</div>
