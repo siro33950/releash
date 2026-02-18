@@ -87,7 +87,6 @@ export function WorkspaceTabBar({
 									aria-selected={isActive}
 								>
 									<LayoutGrid className="size-4 shrink-0" />
-									<span>Kanban</span>
 								</div>
 							);
 						}

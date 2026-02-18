@@ -21,7 +21,8 @@ describe("WorkspaceTabBar", () => {
 				onTabClose={vi.fn()}
 			/>,
 		);
-		expect(screen.getByText("Kanban")).toBeInTheDocument();
+		const tab = screen.getByRole("tab");
+		expect(tab).toBeInTheDocument();
 		expect(screen.queryByLabelText(/Close/)).not.toBeInTheDocument();
 	});
 
