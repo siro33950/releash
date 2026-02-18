@@ -28,6 +28,8 @@ export interface SettingsPanelProps {
 
 export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 	const [draft, setDraft] = useState<AppSettings>(settings);
+	const [appDirty, setAppDirty] = useState(false);
+	const [saving, setSaving] = useState(false);
 	const webhook = useWebhookConfig();
 	const remote = useRemoteConfig();
 
@@ -44,7 +46,16 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 
 	useEffect(() => {
 		setDraft(settings);
+		setAppDirty(false);
 	}, [settings]);
+
+	const updateDraft = useCallback(
+		(updater: (d: AppSettings) => AppSettings) => {
+			setDraft(updater);
+			setAppDirty(true);
+		},
+		[],
+	);
 
 	const webhookUrlValue = webhook.draft.webhook_url;
 	const detectedWebhookType =
@@ -110,6 +121,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 	const { isDirty: remoteIsDirty, save: remoteSave } = remote;
 
 	const handleSave = useCallback(async () => {
+		setSaving(true);
 		try {
 			if (webhookIsDirty) {
 				await webhookSave();
@@ -117,19 +129,19 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 			if (remoteIsDirty) {
 				await remoteSave();
 			}
+			onSave(draft);
+			setAppDirty(false);
+			if (draft.telemetryEnabled) {
+				trackEvent("settings_saved");
+			}
 		} catch {
-			return;
-		}
-		onSave(draft);
-		if (draft.telemetryEnabled) {
-			trackEvent("settings_saved");
+			// webhook/remote の保存失敗時はここに来る
+		} finally {
+			setSaving(false);
 		}
 	}, [draft, onSave, webhookIsDirty, webhookSave, remoteIsDirty, remoteSave]);
 
-	const isDirty =
-		JSON.stringify(draft) !== JSON.stringify(settings) ||
-		webhookIsDirty ||
-		remoteIsDirty;
+	const isDirty = appDirty || webhookIsDirty || remoteIsDirty;
 	const showAutoApprove =
 		draft.agent !== "none" &&
 		draft.agent !== "cursor" &&
@@ -162,7 +174,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							id="theme-select"
 							value={draft.theme}
 							onChange={(e) =>
-								setDraft((d) => ({ ...d, theme: e.target.value as Theme }))
+								updateDraft((d) => ({ ...d, theme: e.target.value as Theme }))
 							}
 							className={selectClass}
 						>
@@ -183,7 +195,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							step={1}
 							value={draft.fontSize}
 							onChange={(e) =>
-								setDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))
+								updateDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))
 							}
 							className="w-full accent-primary"
 						/>
@@ -204,7 +216,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							id="diff-base-select"
 							value={draft.defaultDiffBase}
 							onChange={(e) =>
-								setDraft((d) => ({
+								updateDraft((d) => ({
 									...d,
 									defaultDiffBase: e.target.value as DiffBase,
 								}))
@@ -224,7 +236,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							id="diff-mode-select"
 							value={draft.defaultDiffMode}
 							onChange={(e) =>
-								setDraft((d) => ({
+								updateDraft((d) => ({
 									...d,
 									defaultDiffMode: e.target.value as DiffMode,
 								}))
@@ -248,7 +260,10 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							id="agent-select"
 							value={draft.agent}
 							onChange={(e) =>
-								setDraft((d) => ({ ...d, agent: e.target.value as AgentType }))
+								updateDraft((d) => ({
+									...d,
+									agent: e.target.value as AgentType,
+								}))
 							}
 							className={selectClass}
 						>
@@ -266,7 +281,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 								type="checkbox"
 								checked={draft.agentAutoApprove}
 								onChange={(e) =>
-									setDraft((d) => ({
+									updateDraft((d) => ({
 										...d,
 										agentAutoApprove: e.target.checked,
 									}))
@@ -286,7 +301,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 								id="terminal-startup-cmd"
 								value={draft.terminalStartupCommand}
 								onChange={(e) =>
-									setDraft((d) => ({
+									updateDraft((d) => ({
 										...d,
 										terminalStartupCommand: e.target.value,
 									}))
@@ -569,7 +584,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							type="checkbox"
 							checked={draft.autoUpdate}
 							onChange={(e) =>
-								setDraft((d) => ({
+								updateDraft((d) => ({
 									...d,
 									autoUpdate: e.target.checked,
 								}))
@@ -584,7 +599,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							type="checkbox"
 							checked={draft.telemetryEnabled}
 							onChange={(e) =>
-								setDraft((d) => ({
+								updateDraft((d) => ({
 									...d,
 									telemetryEnabled: e.target.checked,
 								}))
@@ -599,7 +614,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 							type="checkbox"
 							checked={draft.enableCrashReporting}
 							onChange={(e) =>
-								setDraft((d) => ({
+								updateDraft((d) => ({
 									...d,
 									enableCrashReporting: e.target.checked,
 								}))
@@ -613,12 +628,13 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 					</p>
 
 					<Button
+						type="button"
 						size="sm"
 						onClick={handleSave}
-						disabled={!isDirty}
+						disabled={!isDirty || saving}
 						className="w-full"
 					>
-						Save
+						{saving ? <Loader2 className="size-3.5 animate-spin" /> : "Save"}
 					</Button>
 				</div>
 			</ScrollArea>

@@ -70,6 +70,17 @@ describe("SettingsPanel", () => {
 		});
 	});
 
+	it("should disable Save button after saving AppSettings change", () => {
+		const onSave = vi.fn();
+		render(<SettingsPanel {...defaultProps} onSave={onSave} />);
+		const select = screen.getByLabelText("Theme");
+		fireEvent.change(select, { target: { value: "light" } });
+		const saveBtn = screen.getByRole("button", { name: "Save" });
+		expect(saveBtn).toBeEnabled();
+		fireEvent.click(saveBtn);
+		expect(saveBtn).toBeDisabled();
+	});
+
 	it("should show light theme option", () => {
 		render(
 			<SettingsPanel
