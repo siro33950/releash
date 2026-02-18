@@ -305,9 +305,10 @@ pub(super) async fn handle_pty_spawn_request(
         Ok(Ok(pty_id)) => {
             broadcaster.try_send(WsMessage::PtyReady(PtyReady { pty_id, cols, rows }));
             let startup_cmd = state.get_terminal_startup_command();
-            if !startup_cmd.is_empty() {
+            let trimmed_cmd = startup_cmd.trim();
+            if !trimmed_cmd.is_empty() {
                 if let Some(pm) = &state.pty_manager {
-                    let data = format!("{}\n", startup_cmd.trim());
+                    let data = format!("{}\n", trimmed_cmd);
                     if let Err(e) = pm.write(pty_id, &data) {
                         log::warn!("Failed to write startup command to PTY {}: {}", pty_id, e);
                     }
