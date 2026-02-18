@@ -5,7 +5,7 @@ use super::types::{
     NotionTask, NotionTaskPage, NotionTaskQuery, NotionValidationResult, PropertyMapping,
 };
 
-const NOTION_API_VERSION: &str = "2022-06-28";
+const NOTION_API_VERSION: &str = "2025-09-03";
 const NOTION_BASE_URL: &str = "https://api.notion.com/v1";
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const MAX_RETRIES: u32 = 2;

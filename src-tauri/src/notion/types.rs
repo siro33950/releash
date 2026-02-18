@@ -2,12 +2,22 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NotionRepoConfig {
     pub api_token: String,
     pub database_id: String,
     #[serde(default)]
     pub property_mapping: PropertyMapping,
+}
+
+impl std::fmt::Debug for NotionRepoConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotionRepoConfig")
+            .field("api_token", &"[REDACTED]")
+            .field("database_id", &self.database_id)
+            .field("property_mapping", &self.property_mapping)
+            .finish()
+    }
 }
 
 fn default_title() -> String {
@@ -126,12 +136,12 @@ pub enum NotionConfigStatus {
     InvalidDatabase,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum NotionError {
     RequestFailed(String),
     ApiError(String),
     ParseError(String),
+    #[allow(dead_code)]
     PropertyNotFound(String),
 }
 

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { NotionTask, NotionTaskPage } from "@/types/notion";
 
-const DEBOUNCE_MS = 300;
+export const DEBOUNCE_MS = 300;
 
 export function useNotionTasks(repoPath: string) {
 	const [tasks, setTasks] = useState<NotionTask[]>([]);

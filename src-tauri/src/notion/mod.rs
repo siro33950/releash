@@ -59,20 +59,17 @@ pub async fn save_notion_config(
 ) -> Result<(), String> {
     let app_config = app_config.inner().clone();
     tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .get_config()
-            .map_err(|e| format!("設定取得失敗: {e}"))?;
-        config.notion.insert(
-            repo_path,
-            NotionRepoConfig {
-                api_token,
-                database_id,
-                property_mapping,
-            },
-        );
-        crate::config::write_config(&app_config.config_path(), &config)?;
-        app_config.set_config(config)?;
-        Ok(())
+        app_config.with_config_mut(|config| {
+            config.notion.insert(
+                repo_path,
+                NotionRepoConfig {
+                    api_token,
+                    database_id,
+                    property_mapping,
+                },
+            );
+            Ok(())
+        })
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
@@ -94,13 +91,10 @@ pub async fn delete_notion_config(
 ) -> Result<(), String> {
     let app_config = app_config.inner().clone();
     tokio::task::spawn_blocking(move || {
-        let mut config = app_config
-            .get_config()
-            .map_err(|e| format!("設定取得失敗: {e}"))?;
-        config.notion.remove(&repo_path);
-        crate::config::write_config(&app_config.config_path(), &config)?;
-        app_config.set_config(config)?;
-        Ok(())
+        app_config.with_config_mut(|config| {
+            config.notion.remove(&repo_path);
+            Ok(())
+        })
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?

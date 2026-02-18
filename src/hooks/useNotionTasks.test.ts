@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { useNotionTasks } from "./useNotionTasks";
+import { DEBOUNCE_MS, useNotionTasks } from "./useNotionTasks";
 
 describe("useNotionTasks", () => {
 	it("should invoke query_notion_tasks on mount", async () => {
@@ -160,45 +160,47 @@ describe("useNotionTasks", () => {
 
 	it("should debounce search calls", async () => {
 		vi.useFakeTimers();
-		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue({
-			tasks: [],
-			has_more: false,
-			next_cursor: null,
-		});
+		try {
+			const { invoke } = await import("@tauri-apps/api/core");
+			vi.mocked(invoke).mockResolvedValue({
+				tasks: [],
+				has_more: false,
+				next_cursor: null,
+			});
 
-		const { result } = renderHook(() => useNotionTasks("/test/repo"));
+			const { result } = renderHook(() => useNotionTasks("/test/repo"));
 
-		await act(async () => {
-			await vi.runAllTimersAsync();
-		});
+			await act(async () => {
+				await vi.runAllTimersAsync();
+			});
 
-		vi.mocked(invoke).mockClear();
-		vi.mocked(invoke).mockResolvedValue({
-			tasks: [],
-			has_more: false,
-			next_cursor: null,
-		});
+			vi.mocked(invoke).mockClear();
+			vi.mocked(invoke).mockResolvedValue({
+				tasks: [],
+				has_more: false,
+				next_cursor: null,
+			});
 
-		act(() => {
-			result.current.search("query", { Status: "Todo" });
-		});
+			act(() => {
+				result.current.search("query", { Status: "Todo" });
+			});
 
-		expect(invoke).not.toHaveBeenCalled();
+			expect(invoke).not.toHaveBeenCalled();
 
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(300);
-		});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+			});
 
-		expect(invoke).toHaveBeenCalledWith("query_notion_tasks", {
-			repoPath: "/test/repo",
-			query: {
-				title_filter: "query",
-				label_filters: { Status: "Todo" },
-				cursor: null,
-			},
-		});
-
-		vi.useRealTimers();
+			expect(invoke).toHaveBeenCalledWith("query_notion_tasks", {
+				repoPath: "/test/repo",
+				query: {
+					title_filter: "query",
+					label_filters: { Status: "Todo" },
+					cursor: null,
+				},
+			});
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

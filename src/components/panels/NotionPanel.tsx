@@ -197,6 +197,7 @@ function NotionConfigForm({
 	const [properties, setProperties] = useState<NotionPropertyInfo[]>([]);
 	const [validationStatus, setValidationStatus] = useState<string | null>(null);
 	const [deleting, setDeleting] = useState(false);
+	const [saveError, setSaveError] = useState<string | null>(null);
 
 	const handleValidate = useCallback(async () => {
 		setValidating(true);
@@ -222,10 +223,11 @@ function NotionConfigForm({
 
 	const handleSave = useCallback(async () => {
 		setSaving(true);
+		setSaveError(null);
 		try {
 			await onSave(apiToken, databaseId, mapping);
-		} catch {
-			// error handled by parent
+		} catch (e) {
+			setSaveError(String(e));
 		} finally {
 			setSaving(false);
 		}
@@ -343,6 +345,9 @@ function NotionConfigForm({
 					保存
 				</Button>
 			</div>
+			{saveError && (
+				<div className="text-[10px] text-destructive">{saveError}</div>
+			)}
 		</div>
 	);
 }

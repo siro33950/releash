@@ -171,17 +171,17 @@ impl AppConfig {
         Ok(config.clone())
     }
 
-    pub fn set_config(&self, new_config: ReleashConfig) -> Result<(), String> {
+    pub fn with_config_mut<F, R>(&self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&mut ReleashConfig) -> Result<R, String>,
+    {
         let mut config = self
             .config
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        *config = new_config;
-        Ok(())
-    }
-
-    pub fn config_path(&self) -> PathBuf {
-        self.config_path.clone()
+        let result = f(&mut config)?;
+        write_config(&self.config_path, &config)?;
+        Ok(result)
     }
 }
 

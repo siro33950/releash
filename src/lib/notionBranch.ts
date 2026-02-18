@@ -7,7 +7,7 @@ export function generateNotionBranchName(
 		.replace(/\s+/g, "-")
 		.replace(/[^a-zA-Z0-9/_-]/g, "")
 		.replace(/-{2,}/g, "-")
-		.replace(/^-+|-+$/g, "");
+		.replace(/^[-/]+|[-/]+$/g, "");
 
 	if (sanitized) return sanitized;
 
