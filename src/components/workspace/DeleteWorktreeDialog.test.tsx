@@ -13,6 +13,11 @@ const baseBranch: BranchCard = {
 	has_pr: false,
 	pr_number: null,
 	pr_url: null,
+	ahead: 0,
+	behind: 0,
+	is_remote_only: false,
+	has_upstream: false,
+	remote_name: null,
 };
 
 const dirtyBranch: BranchCard = {
