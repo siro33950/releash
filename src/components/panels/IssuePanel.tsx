@@ -77,6 +77,7 @@ function RepoIssueSection({
 	const [expanded, setExpanded] = useState(defaultExpanded);
 	const [titleFilter, setTitleFilter] = useState("");
 	const [labelFilter, setLabelFilter] = useState("");
+	const [milestoneFilter, setMilestoneFilter] = useState("");
 	const { issues, loading, refresh } = useIssues(repoPath);
 	const repoName = repoPath.split("/").filter(Boolean).pop() ?? "repo";
 
@@ -90,6 +91,20 @@ function RepoIssueSection({
 			}
 		}
 		return Array.from(set).sort();
+	}, [issues]);
+
+	const allMilestones = useMemo(() => {
+		const set = new Set<string>();
+		let hasNone = false;
+		for (const issue of issues) {
+			if (issue.milestone) {
+				set.add(issue.milestone.title);
+			} else {
+				hasNone = true;
+			}
+		}
+		const sorted = Array.from(set).sort();
+		return { titles: sorted, hasNone };
 	}, [issues]);
 
 	const filteredIssues = useMemo(() => {
@@ -108,10 +123,20 @@ function RepoIssueSection({
 			);
 		}
 
+		if (milestoneFilter) {
+			if (milestoneFilter === "__none__") {
+				result = result.filter((issue) => issue.milestone === null);
+			} else {
+				result = result.filter(
+					(issue) => issue.milestone?.title === milestoneFilter,
+				);
+			}
+		}
+
 		result.sort((a, b) => b.number - a.number);
 
 		return result;
-	}, [issues, titleFilter, labelFilter]);
+	}, [issues, titleFilter, labelFilter, milestoneFilter]);
 
 	return (
 		<div className="border-b border-border">
@@ -157,6 +182,23 @@ function RepoIssueSection({
 									{allLabels.map((label) => (
 										<option key={label} value={label}>
 											{label}
+										</option>
+									))}
+								</select>
+							)}
+							{allMilestones.titles.length > 0 && (
+								<select
+									value={milestoneFilter}
+									onChange={(e) => setMilestoneFilter(e.target.value)}
+									className="w-full bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
+								>
+									<option value="">All milestones</option>
+									{allMilestones.hasNone && (
+										<option value="__none__">未設定</option>
+									)}
+									{allMilestones.titles.map((title) => (
+										<option key={title} value={title}>
+											{title}
 										</option>
 									))}
 								</select>
@@ -278,7 +320,7 @@ function IssueCard({
 				</a>
 			</div>
 
-			{issue.labels.length > 0 && (
+			{(issue.labels.length > 0 || issue.milestone) && (
 				<div className="flex flex-wrap gap-1 mt-1.5">
 					{issue.labels.map((label) => {
 						const hasColor = /^[0-9a-fA-F]{6}$/.test(label.color);
@@ -304,6 +346,11 @@ function IssueCard({
 							</span>
 						);
 					})}
+					{issue.milestone && (
+						<span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-medium leading-none bg-muted text-muted-foreground border border-border">
+							{issue.milestone.title}
+						</span>
+					)}
 				</div>
 			)}
 
