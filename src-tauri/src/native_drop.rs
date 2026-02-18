@@ -1,6 +1,7 @@
 use tauri::WebviewWindow;
 
 #[derive(Clone, serde::Serialize)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct NativeFileDrop {
     pub paths: Vec<String>,
     pub position: (f64, f64),
