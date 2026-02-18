@@ -232,6 +232,60 @@ describe("useFileContents", () => {
 		});
 	});
 
+	describe("markExternalChange / clearExternalChange", () => {
+		it("should set hasExternalChange flag", async () => {
+			const { result } = renderHook(() => useFileContents());
+
+			await act(async () => {
+				await result.current.openFile("/test/file.ts");
+			});
+			expect(result.current.files[0].hasExternalChange).toBeFalsy();
+
+			act(() => {
+				result.current.markExternalChange("/test/file.ts");
+			});
+			expect(result.current.files[0].hasExternalChange).toBe(true);
+		});
+
+		it("should clear hasExternalChange flag", async () => {
+			const { result } = renderHook(() => useFileContents());
+
+			await act(async () => {
+				await result.current.openFile("/test/file.ts");
+			});
+
+			act(() => {
+				result.current.markExternalChange("/test/file.ts");
+			});
+			expect(result.current.files[0].hasExternalChange).toBe(true);
+
+			act(() => {
+				result.current.clearExternalChange("/test/file.ts");
+			});
+			expect(result.current.files[0].hasExternalChange).toBe(false);
+		});
+
+		it("should clear hasExternalChange on save", async () => {
+			const { result } = renderHook(() => useFileContents());
+
+			await act(async () => {
+				await result.current.openFile("/test/file.ts");
+			});
+
+			act(() => {
+				result.current.updateContent("/test/file.ts", "edited");
+				result.current.markExternalChange("/test/file.ts");
+			});
+
+			await act(async () => {
+				await result.current.saveFile("/test/file.ts");
+			});
+
+			expect(result.current.files[0].hasExternalChange).toBe(false);
+			expect(result.current.files[0].isDirty).toBe(false);
+		});
+	});
+
 	describe("createUntitledFile", () => {
 		it("should create an untitled file and return its path", () => {
 			const { result } = renderHook(() => useFileContents());

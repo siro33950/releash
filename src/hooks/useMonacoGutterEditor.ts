@@ -122,6 +122,7 @@ export function useMonacoGutterEditor(
 	const dragRangeDecorationsRef = useRef<string[]>([]);
 	const hoverLineRef = useRef<number | null>(null);
 	const hoverDecorationsRef = useRef<string[]>([]);
+	const isProgrammaticUpdateRef = useRef(false);
 	const themeRef = useRef(theme);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
@@ -222,6 +223,7 @@ export function useMonacoGutterEditor(
 
 			editor.onDidChangeModelContent(() => {
 				updateDecorations();
+				if (isProgrammaticUpdateRef.current) return;
 				onContentChangeRef.current?.(editor.getValue());
 			});
 
@@ -415,7 +417,12 @@ export function useMonacoGutterEditor(
 			const scrollTop = editor.getScrollTop();
 			const position = editor.getPosition();
 
-			editor.setValue(modifiedValue);
+			isProgrammaticUpdateRef.current = true;
+			try {
+				editor.setValue(modifiedValue);
+			} finally {
+				isProgrammaticUpdateRef.current = false;
+			}
 
 			editor.setScrollTop(scrollTop);
 			if (position) {

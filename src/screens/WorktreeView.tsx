@@ -93,6 +93,8 @@ export function WorktreeView({
 		updateContent,
 		saveFile,
 		reloadFileIfClean,
+		markExternalChange,
+		clearExternalChange,
 		updateFilePath,
 		closeFilesByPrefix,
 		closeAllFiles,
@@ -122,6 +124,9 @@ export function WorktreeView({
 	const [diffBase, setDiffBase] = useState<DiffBase>(settings.defaultDiffBase);
 	const [diffMode, setDiffMode] = useState<DiffMode>(settings.defaultDiffMode);
 	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
+	const [savingConflictPath, setSavingConflictPath] = useState<string | null>(
+		null,
+	);
 	const [pendingReveal, setPendingReveal] = useState<{
 		path: string;
 		line: number;
@@ -151,9 +156,15 @@ export function WorktreeView({
 		rootPath,
 		onFileChange: useCallback(
 			(event: FileChangeEvent) => {
-				reloadFileIfClean(normalizePath(event.path));
+				const path = normalizePath(event.path);
+				const file = getFileContent(path);
+				if (file?.isDirty) {
+					markExternalChange(path);
+				} else {
+					reloadFileIfClean(path);
+				}
 			},
-			[reloadFileIfClean],
+			[reloadFileIfClean, getFileContent, markExternalChange],
 		),
 	});
 
@@ -304,7 +315,10 @@ export function WorktreeView({
 	}, [files, editorLayout]);
 
 	const handleSave = useCallback(() => {
-		if (activeTab?.isDirty) {
+		if (!activeTab?.isDirty) return;
+		if (activeTab.hasExternalChange) {
+			setSavingConflictPath(activeTab.path);
+		} else {
 			saveFile(activeTab.path);
 		}
 	}, [activeTab, saveFile]);
@@ -931,6 +945,38 @@ export function WorktreeView({
 				onDiscard={handleUnsavedDiscard}
 				onCancel={handleUnsavedCancel}
 			/>
+			<AlertDialog
+				open={!!savingConflictPath}
+				onOpenChange={(o) => {
+					if (!o) setSavingConflictPath(null);
+				}}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>External Change Conflict</AlertDialogTitle>
+						<AlertDialogDescription>
+							This file has been modified externally. Do you want to overwrite
+							it?
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel onClick={() => setSavingConflictPath(null)}>
+							Cancel
+						</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={() => {
+								if (savingConflictPath) {
+									clearExternalChange(savingConflictPath);
+									saveFile(savingConflictPath);
+								}
+								setSavingConflictPath(null);
+							}}
+						>
+							Overwrite
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 			<AlertDialog
 				open={!!gitError}
 				onOpenChange={(o) => {
