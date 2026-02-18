@@ -122,6 +122,8 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 
 	const handleSave = useCallback(async () => {
 		setSaving(true);
+		onSave(draft);
+		setAppDirty(false);
 		try {
 			if (webhookIsDirty) {
 				await webhookSave();
@@ -129,8 +131,6 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 			if (remoteIsDirty) {
 				await remoteSave();
 			}
-			onSave(draft);
-			setAppDirty(false);
 			if (draft.telemetryEnabled) {
 				trackEvent("settings_saved");
 			}

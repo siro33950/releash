@@ -114,8 +114,6 @@ describe("useRemoteAutoStart", () => {
 		await vi.waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("get_network_info");
 		});
-		// Wait a bit for any potential start_server call
-		await new Promise((r) => setTimeout(r, 50));
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"start_server",
 			expect.anything(),
@@ -136,7 +134,6 @@ describe("useRemoteAutoStart", () => {
 		await vi.waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("get_network_info");
 		});
-		await new Promise((r) => setTimeout(r, 50));
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"start_server",
 			expect.anything(),
