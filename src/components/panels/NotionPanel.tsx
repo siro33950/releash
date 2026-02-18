@@ -198,6 +198,7 @@ function NotionConfigForm({
 	const [validationStatus, setValidationStatus] = useState<string | null>(null);
 	const [deleting, setDeleting] = useState(false);
 	const [saveError, setSaveError] = useState<string | null>(null);
+	const [deleteError, setDeleteError] = useState<string | null>(null);
 
 	const handleValidate = useCallback(async () => {
 		setValidating(true);
@@ -211,6 +212,8 @@ function NotionConfigForm({
 				setValidationStatus("APIトークンが無効です");
 			} else if (result.status === "invalid_database") {
 				setValidationStatus("データベースIDが無効です");
+			} else if (result.status === "network_error") {
+				setValidationStatus("ネットワークエラー: 接続を確認してください");
 			} else {
 				setValidationStatus("設定が不完全です");
 			}
@@ -236,8 +239,11 @@ function NotionConfigForm({
 	const handleDelete = useCallback(async () => {
 		if (!onDelete) return;
 		setDeleting(true);
+		setDeleteError(null);
 		try {
 			await onDelete();
+		} catch (e) {
+			setDeleteError(String(e));
 		} finally {
 			setDeleting(false);
 		}
@@ -347,6 +353,9 @@ function NotionConfigForm({
 			</div>
 			{saveError && (
 				<div className="text-[10px] text-destructive">{saveError}</div>
+			)}
+			{deleteError && (
+				<div className="text-[10px] text-destructive">{deleteError}</div>
 			)}
 		</div>
 	);

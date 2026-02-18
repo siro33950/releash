@@ -134,6 +134,7 @@ pub enum NotionConfigStatus {
     Configured,
     InvalidToken,
     InvalidDatabase,
+    NetworkError,
 }
 
 #[derive(Debug, Clone)]

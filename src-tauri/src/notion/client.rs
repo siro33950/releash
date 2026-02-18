@@ -56,7 +56,8 @@ fn send_with_retry(
                 .get("Retry-After")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(1);
+                .unwrap_or(1)
+                .min(60);
             std::thread::sleep(std::time::Duration::from_secs(retry_after));
             retries += 1;
             continue;
@@ -185,7 +186,7 @@ pub fn validate_config(config: &NotionRepoConfig) -> NotionValidationResult {
         Ok(r) => r,
         Err(_) => {
             return NotionValidationResult {
-                status: NotionConfigStatus::InvalidToken,
+                status: NotionConfigStatus::NetworkError,
                 properties: vec![],
             };
         }

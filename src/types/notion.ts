@@ -42,7 +42,8 @@ export type NotionConfigStatus =
 	| "not_configured"
 	| "configured"
 	| "invalid_token"
-	| "invalid_database";
+	| "invalid_database"
+	| "network_error";
 
 export interface NotionPropertyInfo {
 	name: string;
