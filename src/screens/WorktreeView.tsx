@@ -58,6 +58,7 @@ import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useLineComments } from "@/hooks/useLineComments";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
+import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
 import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
@@ -76,7 +77,6 @@ interface WorktreeViewProps {
 	rootPath: string;
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
-	onSwitchToKanban: () => void;
 	isActive: boolean;
 }
 
@@ -84,7 +84,6 @@ export function WorktreeView({
 	rootPath,
 	settings,
 	onSettingsSave,
-	onSwitchToKanban,
 	isActive,
 }: WorktreeViewProps) {
 	const {
@@ -95,6 +94,8 @@ export function WorktreeView({
 		updateContent,
 		saveFile,
 		reloadFileIfClean,
+		markExternalChange,
+		clearExternalChange,
 		updateFilePath,
 		closeFilesByPrefix,
 		closeAllFiles,
@@ -124,6 +125,9 @@ export function WorktreeView({
 	const [diffBase, setDiffBase] = useState<DiffBase>(settings.defaultDiffBase);
 	const [diffMode, setDiffMode] = useState<DiffMode>(settings.defaultDiffMode);
 	const [closingTabPath, setClosingTabPath] = useState<string | null>(null);
+	const [savingConflictPath, setSavingConflictPath] = useState<string | null>(
+		null,
+	);
 	const [pendingReveal, setPendingReveal] = useState<{
 		path: string;
 		line: number;
@@ -153,9 +157,15 @@ export function WorktreeView({
 		rootPath,
 		onFileChange: useCallback(
 			(event: FileChangeEvent) => {
-				reloadFileIfClean(normalizePath(event.path));
+				const path = normalizePath(event.path);
+				const file = getFileContent(path);
+				if (file?.isDirty) {
+					markExternalChange(path);
+				} else {
+					reloadFileIfClean(path);
+				}
 			},
-			[reloadFileIfClean],
+			[reloadFileIfClean, getFileContent, markExternalChange],
 		),
 	});
 
@@ -195,6 +205,27 @@ export function WorktreeView({
 
 	const onSettingsSaveRef = useRef(onSettingsSave);
 	onSettingsSaveRef.current = onSettingsSave;
+
+	const [editorDragOver, setEditorDragOver] = useState(false);
+
+	const handleEditorDragOver = useCallback((e: React.DragEvent) => {
+		if (e.dataTransfer.types.includes("Files")) {
+			e.preventDefault();
+			e.dataTransfer.dropEffect = "copy";
+			setEditorDragOver(true);
+		}
+	}, []);
+
+	const handleEditorDragLeave = useCallback((e: React.DragEvent) => {
+		if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+			setEditorDragOver(false);
+		}
+	}, []);
+
+	const handleEditorDrop = useCallback((e: React.DragEvent) => {
+		e.preventDefault();
+		setEditorDragOver(false);
+	}, []);
 
 	const [newFolderKey, setNewFolderKey] = useState(0);
 	const [gitError, setGitError] = useState<string | null>(null);
@@ -292,6 +323,20 @@ export function WorktreeView({
 	const handleOpenFileRef = useRef(handleOpenFile);
 	handleOpenFileRef.current = handleOpenFile;
 
+	const { registerDropZone } = useNativeFileDrop({
+		onDropToEditor: useCallback((paths: string[]) => {
+			setEditorDragOver(false);
+			for (const path of paths) {
+				handleOpenFileRef.current(path);
+			}
+		}, []),
+	});
+
+	const editorDropZoneRef = useCallback(
+		(el: HTMLDivElement | null) => registerDropZone("editor", el),
+		[registerDropZone],
+	);
+
 	// Sync dirty state to flexlayout tab
 	const prevFilesRef = useRef(files);
 	useEffect(() => {
@@ -306,7 +351,10 @@ export function WorktreeView({
 	}, [files, editorLayout]);
 
 	const handleSave = useCallback(() => {
-		if (activeTab?.isDirty) {
+		if (!activeTab?.isDirty) return;
+		if (activeTab.hasExternalChange) {
+			setSavingConflictPath(activeTab.path);
+		} else {
 			saveFile(activeTab.path);
 		}
 	}, [activeTab, saveFile]);
@@ -693,7 +741,6 @@ export function WorktreeView({
 		return (
 			<SidebarPanel
 				rootPath={rootPath}
-				onOpenFolder={onSwitchToKanban}
 				onSelectFile={handleOpenFile}
 				onFileChange={reloadFileIfClean}
 				onRename={handleRename}
@@ -711,7 +758,6 @@ export function WorktreeView({
 		searchFocusKey,
 		settings,
 		onSettingsSave,
-		onSwitchToKanban,
 		reloadFileIfClean,
 		handleRename,
 		handleDelete,
@@ -857,7 +903,14 @@ export function WorktreeView({
 							<Panel id="center" minSize="20%">
 								<Group orientation="vertical">
 									<Panel id="editor" minSize="20%">
-										<div className="h-full relative overflow-hidden">
+										<div
+											ref={editorDropZoneRef}
+											role="application"
+											className="h-full relative overflow-hidden"
+											onDragOver={handleEditorDragOver}
+											onDragLeave={handleEditorDragLeave}
+											onDrop={handleEditorDrop}
+										>
 											<Layout
 												model={editorLayout.model}
 												factory={factory}
@@ -865,6 +918,13 @@ export function WorktreeView({
 												onRenderTab={onRenderTab}
 												onModelChange={forceRender}
 											/>
+											{editorDragOver && (
+												<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none">
+													<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
+														ドロップしてファイルを開く
+													</span>
+												</div>
+											)}
 										</div>
 									</Panel>
 									<Separator />
@@ -935,6 +995,38 @@ export function WorktreeView({
 				onDiscard={handleUnsavedDiscard}
 				onCancel={handleUnsavedCancel}
 			/>
+			<AlertDialog
+				open={!!savingConflictPath}
+				onOpenChange={(o) => {
+					if (!o) setSavingConflictPath(null);
+				}}
+			>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>External Change Conflict</AlertDialogTitle>
+						<AlertDialogDescription>
+							This file has been modified externally. Do you want to overwrite
+							it?
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel onClick={() => setSavingConflictPath(null)}>
+							Cancel
+						</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={() => {
+								if (savingConflictPath) {
+									clearExternalChange(savingConflictPath);
+									saveFile(savingConflictPath);
+								}
+								setSavingConflictPath(null);
+							}}
+						>
+							Overwrite
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 			<AlertDialog
 				open={!!gitError}
 				onOpenChange={(o) => {

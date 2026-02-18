@@ -58,7 +58,6 @@ describe("WorktreeView", () => {
 				rootPath="/test/path"
 				settings={DEFAULT_SETTINGS}
 				onSettingsSave={vi.fn()}
-				onSwitchToKanban={vi.fn()}
 				isActive
 			/>,
 		);
@@ -71,7 +70,6 @@ describe("WorktreeView", () => {
 				rootPath="/test/path"
 				settings={DEFAULT_SETTINGS}
 				onSettingsSave={vi.fn()}
-				onSwitchToKanban={vi.fn()}
 				isActive
 			/>,
 		);

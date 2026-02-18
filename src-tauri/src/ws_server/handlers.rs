@@ -365,19 +365,7 @@ pub(super) async fn handle_git_commit_request(
                 let branch = crate::git::get_current_branch(repo_path.clone()).unwrap_or_default();
                 broadcaster.try_send(WsMessage::BranchInfoResponse(BranchInfoResponse { branch }));
                 if let Ok(cards) = crate::git::list_branches_with_status(repo_path) {
-                    let branch_msgs = cards
-                        .into_iter()
-                        .map(|b| BranchCardMsg {
-                            name: b.name,
-                            is_default: b.is_default,
-                            worktree_path: b.worktree_path,
-                            dirty_count: b.dirty_count,
-                            is_merged: b.is_merged,
-                            has_pr: b.has_pr,
-                            pr_number: b.pr_number,
-                            pr_url: b.pr_url,
-                        })
-                        .collect();
+                    let branch_msgs = cards.into_iter().map(BranchCardMsg::from).collect();
                     broadcaster.try_send(WsMessage::BranchListSync(BranchListSync {
                         branches: branch_msgs,
                     }));

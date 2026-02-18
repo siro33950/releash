@@ -213,7 +213,6 @@ function App() {
 							rootPath={tab.rootPath}
 							settings={settings}
 							onSettingsSave={updateSettings}
-							onSwitchToKanban={switchToKanban}
 							isActive={activeTabId === tab.id}
 						/>
 					</div>

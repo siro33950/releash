@@ -1,5 +1,5 @@
 import { loader } from "@monaco-editor/react";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computeDiff, useMonacoGutterEditor } from "./useMonacoGutterEditor";
 
@@ -105,6 +105,80 @@ describe("useMonacoGutterEditor", () => {
 		await vi.waitFor(() => {
 			expect(loader.init).toHaveBeenCalled();
 		});
+	});
+
+	it("should not call onContentChange during programmatic setValue", async () => {
+		const OriginalIntersectionObserver = globalThis.IntersectionObserver;
+		globalThis.IntersectionObserver = class IntersectionObserver {
+			observe() {}
+			unobserve() {}
+			disconnect() {}
+		} as unknown as typeof globalThis.IntersectionObserver;
+
+		const monaco = await loader.init();
+
+		// Add OverviewRulerLane needed by updateDecorations
+		(monaco.editor as Record<string, unknown>).OverviewRulerLane = {
+			Full: 7,
+		};
+
+		let contentChangeHandler: (() => void) | null = null;
+		const editorInstance = {
+			...monaco.editor.create(),
+			onDidChangeModelContent: vi
+				.fn()
+				.mockImplementation((handler: () => void) => {
+					contentChangeHandler = handler;
+					return { dispose: vi.fn() };
+				}),
+			getValue: vi.fn().mockReturnValue("initial"),
+			setValue: vi.fn(),
+			getScrollTop: vi.fn().mockReturnValue(0),
+			setScrollTop: vi.fn(),
+			getPosition: vi.fn().mockReturnValue(null),
+			setPosition: vi.fn(),
+			deltaDecorations: vi.fn().mockReturnValue([]),
+			onMouseDown: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			onMouseMove: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			onMouseUp: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+			addAction: vi.fn(),
+			dispose: vi.fn(),
+			layout: vi.fn(),
+		};
+		vi.mocked(monaco.editor.create).mockReturnValue(editorInstance);
+
+		const onContentChange = vi.fn();
+		const container = document.createElement("div");
+		const containerRef = { current: container };
+
+		const { rerender } = renderHook(
+			(props: { modifiedValue: string }) =>
+				useMonacoGutterEditor(containerRef, {
+					originalValue: "original",
+					modifiedValue: props.modifiedValue,
+					onContentChange,
+				}),
+			{ initialProps: { modifiedValue: "initial" } },
+		);
+
+		await vi.waitFor(() => {
+			expect(contentChangeHandler).not.toBeNull();
+		});
+
+		onContentChange.mockClear();
+
+		editorInstance.setValue.mockImplementation(() => {
+			contentChangeHandler?.();
+		});
+
+		act(() => {
+			rerender({ modifiedValue: "updated externally" });
+		});
+
+		expect(editorInstance.setValue).toHaveBeenCalledWith("updated externally");
+		expect(onContentChange).not.toHaveBeenCalled();
+
+		globalThis.IntersectionObserver = OriginalIntersectionObserver;
 	});
 
 	it("should handle diff between original and modified content", async () => {

@@ -1,10 +1,4 @@
-import {
-	ChevronsDownUp,
-	FilePlus,
-	FolderOpen,
-	FolderPlus,
-	RefreshCw,
-} from "lucide-react";
+import { ChevronsDownUp, FilePlus, FolderPlus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	ContextMenu,
@@ -43,8 +37,7 @@ function findNodeByPath(
 }
 
 export interface SidebarPanelProps {
-	rootPath: string | null;
-	onOpenFolder: () => void;
+	rootPath: string;
 	onSelectFile?: (path: string) => void;
 	onFileChange?: (path: string) => void;
 	onRename?: (oldPath: string, newPath: string) => void;
@@ -54,7 +47,6 @@ export interface SidebarPanelProps {
 
 export function SidebarPanel({
 	rootPath,
-	onOpenFolder,
 	onSelectFile,
 	onFileChange,
 	onRename,
@@ -285,15 +277,6 @@ export function SidebarPanel({
 					>
 						<ChevronsDownUp className="h-3.5 w-3.5 text-muted-foreground" />
 					</button>
-					<button
-						type="button"
-						onClick={onOpenFolder}
-						className="p-1 hover:bg-sidebar-accent rounded transition-colors"
-						title="Open Folder"
-						aria-label="Open Folder"
-					>
-						<FolderOpen className="h-3.5 w-3.5 text-muted-foreground" />
-					</button>
 				</div>
 			</div>
 			<ContextMenu>
@@ -312,20 +295,7 @@ export function SidebarPanel({
 								</div>
 							)}
 
-							{!rootPath && !loading && (
-								<div className="px-2 py-4 text-center">
-									<button
-										type="button"
-										onClick={onOpenFolder}
-										className="inline-flex items-center gap-2 px-4 py-2 text-sm bg-sidebar-accent hover:bg-sidebar-accent/80 rounded transition-colors"
-									>
-										<FolderOpen className="h-4 w-4" />
-										Open Folder
-									</button>
-								</div>
-							)}
-
-							{rootPath && !loading && !error && (
+							{!loading && !error && (
 								<FileTree
 									rootPath={rootPath}
 									tree={treeWithStatus}

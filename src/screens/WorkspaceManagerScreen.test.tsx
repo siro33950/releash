@@ -48,6 +48,11 @@ const todoBranch: BranchCard = {
 	has_pr: false,
 	pr_number: null,
 	pr_url: null,
+	ahead: 0,
+	behind: 0,
+	is_remote_only: false,
+	has_upstream: true,
+	remote_name: null,
 };
 
 const inProgressBranch: BranchCard = {
@@ -59,6 +64,11 @@ const inProgressBranch: BranchCard = {
 	has_pr: false,
 	pr_number: null,
 	pr_url: null,
+	ahead: 0,
+	behind: 0,
+	is_remote_only: false,
+	has_upstream: true,
+	remote_name: null,
 };
 
 const inProgressCleanBranch: BranchCard = {
@@ -70,6 +80,11 @@ const inProgressCleanBranch: BranchCard = {
 	has_pr: false,
 	pr_number: null,
 	pr_url: null,
+	ahead: 0,
+	behind: 0,
+	is_remote_only: false,
+	has_upstream: true,
+	remote_name: null,
 };
 
 const reviewBranch: BranchCard = {
@@ -81,6 +96,11 @@ const reviewBranch: BranchCard = {
 	has_pr: false,
 	pr_number: null,
 	pr_url: null,
+	ahead: 0,
+	behind: 0,
+	is_remote_only: false,
+	has_upstream: true,
+	remote_name: null,
 };
 
 const doneBranch: BranchCard = {
@@ -92,6 +112,11 @@ const doneBranch: BranchCard = {
 	has_pr: false,
 	pr_number: null,
 	pr_url: null,
+	ahead: 0,
+	behind: 0,
+	is_remote_only: false,
+	has_upstream: true,
+	remote_name: null,
 };
 
 const allBranches: BranchCard[] = [
@@ -246,11 +271,14 @@ describe("WorkspaceManagerScreen", () => {
 
 	describe("Kanban 分類ロジック", () => {
 		it("is_merged=true のブランチが Done 列に表示", async () => {
-			renderScreen();
+			const { container } = renderScreen();
 			await waitFor(() => {
 				expect(screen.getByText("feat/merged-branch")).toBeInTheDocument();
 			});
-			expect(screen.getByText("merged")).toBeInTheDocument();
+			const card = container.querySelector(
+				'[data-testid="branch-card-feat/merged-branch"]',
+			);
+			expect(card?.querySelector(".lucide-git-merge")).toBeInTheDocument();
 		});
 
 		it("worktree_path ありのブランチが In Progress 列に表示", async () => {
@@ -307,6 +335,11 @@ describe("WorkspaceManagerScreen", () => {
 				has_pr: false,
 				pr_number: null,
 				pr_url: null,
+				ahead: 0,
+				behind: 0,
+				is_remote_only: false,
+				has_upstream: true,
+				remote_name: null,
 			};
 			const prStatus: PrStatus = {
 				open_prs: {
@@ -318,19 +351,22 @@ describe("WorkspaceManagerScreen", () => {
 				merged_branches: [],
 			};
 			setupMockInvoke([mergedWithPr], prStatus);
-			renderScreen();
+			const { container } = renderScreen();
 			await waitFor(() => {
 				expect(screen.getByText("feat/merged-with-pr")).toBeInTheDocument();
 			});
-			expect(screen.getByText("merged")).toBeInTheDocument();
+			const card = container.querySelector(
+				'[data-testid="branch-card-feat/merged-with-pr"]',
+			);
+			expect(card?.querySelector(".lucide-git-merge")).toBeInTheDocument();
 		});
 
-		it("dirty_count=0 で worktree がある場合 clean と表示", async () => {
+		it("dirty_count=0 で worktree がある場合 clean バッジを表示しない", async () => {
 			renderScreen();
 			await waitFor(() => {
 				expect(screen.getByText("feat/clean-active")).toBeInTheDocument();
 			});
-			expect(screen.getByText("clean")).toBeInTheDocument();
+			expect(screen.queryByText("clean")).not.toBeInTheDocument();
 		});
 	});
 
@@ -581,6 +617,11 @@ describe("WorkspaceManagerScreen", () => {
 					has_pr: false,
 					pr_number: null,
 					pr_url: null,
+					ahead: 0,
+					behind: 0,
+					is_remote_only: false,
+					has_upstream: true,
+					remote_name: null,
 				},
 			];
 			mockInvoke.mockImplementation((cmd: string) => {

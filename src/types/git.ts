@@ -28,6 +28,11 @@ export interface BranchCard {
 	has_pr: boolean;
 	pr_number: number | null;
 	pr_url: string | null;
+	ahead: number;
+	behind: number;
+	is_remote_only: boolean;
+	has_upstream: boolean;
+	remote_name: string | null;
 	agent_state?: "running" | "done" | "error" | "waiting";
 	agent_state_timestamp?: number;
 }
