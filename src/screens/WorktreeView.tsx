@@ -58,6 +58,7 @@ import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useLineComments } from "@/hooks/useLineComments";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
+import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
 import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
@@ -196,6 +197,27 @@ export function WorktreeView({
 	const onSettingsSaveRef = useRef(onSettingsSave);
 	onSettingsSaveRef.current = onSettingsSave;
 
+	const [editorDragOver, setEditorDragOver] = useState(false);
+
+	const handleEditorDragOver = useCallback((e: React.DragEvent) => {
+		if (e.dataTransfer.types.includes("Files")) {
+			e.preventDefault();
+			e.dataTransfer.dropEffect = "copy";
+			setEditorDragOver(true);
+		}
+	}, []);
+
+	const handleEditorDragLeave = useCallback((e: React.DragEvent) => {
+		if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+			setEditorDragOver(false);
+		}
+	}, []);
+
+	const handleEditorDrop = useCallback((e: React.DragEvent) => {
+		e.preventDefault();
+		setEditorDragOver(false);
+	}, []);
+
 	const [newFolderKey, setNewFolderKey] = useState(0);
 	const [gitError, setGitError] = useState<string | null>(null);
 	const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
@@ -291,6 +313,20 @@ export function WorktreeView({
 	);
 	const handleOpenFileRef = useRef(handleOpenFile);
 	handleOpenFileRef.current = handleOpenFile;
+
+	const { registerDropZone } = useNativeFileDrop({
+		onDropToEditor: useCallback((paths: string[]) => {
+			setEditorDragOver(false);
+			for (const path of paths) {
+				handleOpenFileRef.current(path);
+			}
+		}, []),
+	});
+
+	const editorDropZoneRef = useCallback(
+		(el: HTMLDivElement | null) => registerDropZone("editor", el),
+		[registerDropZone],
+	);
 
 	// Sync dirty state to flexlayout tab
 	const prevFilesRef = useRef(files);
@@ -857,7 +893,14 @@ export function WorktreeView({
 							<Panel id="center" minSize="20%">
 								<Group orientation="vertical">
 									<Panel id="editor" minSize="20%">
-										<div className="h-full relative overflow-hidden">
+										<div
+											ref={editorDropZoneRef}
+											role="application"
+											className="h-full relative overflow-hidden"
+											onDragOver={handleEditorDragOver}
+											onDragLeave={handleEditorDragLeave}
+											onDrop={handleEditorDrop}
+										>
 											<Layout
 												model={editorLayout.model}
 												factory={factory}
@@ -865,6 +908,13 @@ export function WorktreeView({
 												onRenderTab={onRenderTab}
 												onModelChange={forceRender}
 											/>
+											{editorDragOver && (
+												<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none">
+													<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
+														ドロップしてファイルを開く
+													</span>
+												</div>
+											)}
 										</div>
 									</Panel>
 									<Separator />

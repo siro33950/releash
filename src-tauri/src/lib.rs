@@ -4,6 +4,7 @@ mod git;
 mod git_host;
 mod hook_listener;
 mod menu;
+mod native_drop;
 mod protocol;
 mod pty;
 mod qr_code;
@@ -105,6 +106,10 @@ pub fn run() {
             });
 
             menu::setup_menu(app)?;
+
+            if let Some(window) = app.get_webview_window("main") {
+                native_drop::install(&window);
+            }
 
             if telemetry_enabled {
                 let _ = app.track_event("app_started", None);

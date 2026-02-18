@@ -59,6 +59,11 @@ tauri-plugin-aptabase = "1.0.0"
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", branch = "release" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSObject", "NSURL", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSDragging", "NSPasteboard", "NSPasteboardItem", "NSView", "NSWindow", "NSResponder"] }
+
 [features]
 vendored-openssl = ["git2/vendored-openssl"]
 
