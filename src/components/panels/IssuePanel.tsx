@@ -3,11 +3,12 @@ import {
 	ChevronDown,
 	ChevronRight,
 	ExternalLink,
+	FolderOpen,
 	GitBranch,
 	Loader2,
 	RefreshCw,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useIssues } from "@/hooks/useIssues";
@@ -79,7 +80,23 @@ function RepoIssueSection({
 	const [labelFilter, setLabelFilter] = useState("");
 	const [milestoneFilter, setMilestoneFilter] = useState("");
 	const { issues, loading, refresh } = useIssues(repoPath);
+	const [worktrees, setWorktrees] = useState<WorktreeEntry[]>([]);
 	const repoName = repoPath.split("/").filter(Boolean).pop() ?? "repo";
+
+	const fetchWorktrees = useCallback(async () => {
+		try {
+			const result = await invoke<WorktreeEntry[]>("list_worktrees", {
+				repoPath,
+			});
+			setWorktrees(result);
+		} catch {
+			// noop: preserve previous worktrees on error
+		}
+	}, [repoPath]);
+
+	useEffect(() => {
+		fetchWorktrees();
+	}, [fetchWorktrees]);
 
 	const isAvailable = providerStatus === "available" || providerStatus === null;
 
@@ -219,15 +236,23 @@ function RepoIssueSection({
 							</div>
 						)}
 					{isAvailable &&
-						filteredIssues.map((issue) => (
-							<IssueCard
-								key={issue.number}
-								issue={issue}
-								repoPath={repoPath}
-								repoName={repoName}
-								onSelectWorktree={onSelectWorktree}
-							/>
-						))}
+						filteredIssues.map((issue) => {
+							const branchName = generateIssueBranchName(issue.number);
+							const matchedWorktree = worktrees.find(
+								(wt) => wt.branch === branchName,
+							);
+							return (
+								<IssueCard
+									key={issue.number}
+									issue={issue}
+									repoPath={repoPath}
+									repoName={repoName}
+									onSelectWorktree={onSelectWorktree}
+									existingWorktree={matchedWorktree}
+									onWorktreeCreated={fetchWorktrees}
+								/>
+							);
+						})}
 					{isAvailable && !loading && (
 						<div className="px-3 pt-1">
 							<Button
@@ -256,6 +281,8 @@ interface IssueCardProps {
 		branchName?: string,
 		repoName?: string,
 	) => void;
+	existingWorktree?: WorktreeEntry;
+	onWorktreeCreated: () => void;
 }
 
 function IssueCard({
@@ -263,6 +290,8 @@ function IssueCard({
 	repoPath,
 	repoName,
 	onSelectWorktree,
+	existingWorktree,
+	onWorktreeCreated,
 }: IssueCardProps) {
 	const [creating, setCreating] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -291,13 +320,21 @@ function IssueCard({
 				createBranch: true,
 				baseBranch: defaultBranch,
 			});
+			onWorktreeCreated();
 			onSelectWorktree(entry.path, branchName, repoName);
 		} catch (e) {
 			setError(String(e));
 		} finally {
 			setCreating(false);
 		}
-	}, [issue.number, repoPath, repoName, onSelectWorktree]);
+	}, [issue.number, repoPath, repoName, onSelectWorktree, onWorktreeCreated]);
+
+	const handleOpenWorktree = useCallback(() => {
+		const branchName = generateIssueBranchName(issue.number);
+		if (existingWorktree) {
+			onSelectWorktree(existingWorktree.path, branchName, repoName);
+		}
+	}, [issue.number, existingWorktree, onSelectWorktree, repoName]);
 
 	const createdDate = new Date(issue.created_at).toLocaleDateString();
 
@@ -367,20 +404,32 @@ function IssueCard({
 				</div>
 			)}
 
-			<Button
-				variant="outline"
-				size="sm"
-				className="w-full mt-2 h-6 text-[10px]"
-				onClick={handleCreateWorktree}
-				disabled={creating}
-			>
-				{creating ? (
-					<Loader2 className="size-3 mr-1 animate-spin" />
-				) : (
-					<GitBranch className="size-3 mr-1" />
-				)}
-				Create Worktree
-			</Button>
+			{existingWorktree ? (
+				<Button
+					variant="outline"
+					size="sm"
+					className="w-full mt-2 h-6 text-[10px]"
+					onClick={handleOpenWorktree}
+				>
+					<FolderOpen className="size-3 mr-1" />
+					Open Worktree
+				</Button>
+			) : (
+				<Button
+					variant="outline"
+					size="sm"
+					className="w-full mt-2 h-6 text-[10px]"
+					onClick={handleCreateWorktree}
+					disabled={creating}
+				>
+					{creating ? (
+						<Loader2 className="size-3 mr-1 animate-spin" />
+					) : (
+						<GitBranch className="size-3 mr-1" />
+					)}
+					Create Worktree
+				</Button>
+			)}
 		</div>
 	);
 }

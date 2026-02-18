@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { IssueInfo } from "@/types/git";
+import type { IssueInfo, WorktreeEntry } from "@/types/git";
 import { IssuePanel } from "./IssuePanel";
 
 const mockIssues: IssueInfo[] = [
@@ -33,6 +33,12 @@ const mockIssues: IssueInfo[] = [
 	},
 ];
 
+function mockInvokeDefault(command: string) {
+	if (command === "get_cached_issues") return Promise.resolve(mockIssues);
+	if (command === "list_worktrees") return Promise.resolve([]);
+	return Promise.resolve(null);
+}
+
 describe("IssuePanel", () => {
 	const defaultProps = {
 		repoPaths: ["/path/to/repo"],
@@ -42,7 +48,7 @@ describe("IssuePanel", () => {
 
 	it("should render Issues header", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 
 		render(<IssuePanel {...defaultProps} />);
 		expect(screen.getByText("Issues")).toBeInTheDocument();
@@ -50,7 +56,7 @@ describe("IssuePanel", () => {
 
 	it("should display issue titles after loading", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 
 		render(<IssuePanel {...defaultProps} />);
 		await waitFor(() => {
@@ -63,7 +69,7 @@ describe("IssuePanel", () => {
 
 	it("should display issue numbers", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 
 		render(<IssuePanel {...defaultProps} />);
 		await waitFor(() => {
@@ -74,7 +80,7 @@ describe("IssuePanel", () => {
 
 	it("should display labels with color", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 
 		render(<IssuePanel {...defaultProps} />);
 		await waitFor(() => {
@@ -87,7 +93,7 @@ describe("IssuePanel", () => {
 
 	it("should display assignees", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 
 		render(<IssuePanel {...defaultProps} />);
 		await waitFor(() => {
@@ -97,7 +103,7 @@ describe("IssuePanel", () => {
 
 	it("should show Create Worktree buttons", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 
 		render(<IssuePanel {...defaultProps} />);
 		await waitFor(() => {
@@ -119,7 +125,11 @@ describe("IssuePanel", () => {
 
 	it("should show no open issues when issue list is empty", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue([]);
+		vi.mocked(invoke).mockImplementation((command: string) => {
+			if (command === "get_cached_issues") return Promise.resolve([]);
+			if (command === "list_worktrees") return Promise.resolve([]);
+			return Promise.resolve(null);
+		});
 
 		render(<IssuePanel {...defaultProps} />);
 		await waitFor(() => {
@@ -129,7 +139,7 @@ describe("IssuePanel", () => {
 
 	it("should collapse and expand repo section on click", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 		const user = userEvent.setup();
 
 		render(<IssuePanel {...defaultProps} />);
@@ -158,7 +168,7 @@ describe("IssuePanel", () => {
 
 	it("should sort issues by number descending", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 
 		render(<IssuePanel {...defaultProps} />);
 
@@ -173,7 +183,7 @@ describe("IssuePanel", () => {
 
 	it("should filter issues by title prefix", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 		const user = userEvent.setup();
 
 		render(<IssuePanel {...defaultProps} />);
@@ -193,7 +203,7 @@ describe("IssuePanel", () => {
 
 	it("should show no matching issues when filter has no matches", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 		const user = userEvent.setup();
 
 		render(<IssuePanel {...defaultProps} />);
@@ -264,7 +274,7 @@ describe("IssuePanel", () => {
 
 	it("should filter issues by label", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue(mockIssues);
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
 		const user = userEvent.setup();
 
 		render(<IssuePanel {...defaultProps} />);
@@ -280,5 +290,117 @@ describe("IssuePanel", () => {
 			screen.getByText("Kanban画面にIssue管理パネルを追加"),
 		).toBeInTheDocument();
 		expect(screen.queryByText("Bug fix")).not.toBeInTheDocument();
+	});
+
+	it("should show Open Worktree button when worktree exists for an issue", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const mockWorktrees: WorktreeEntry[] = [
+			{
+				name: "feat-issues-305",
+				path: "/worktrees/feat-issues-305",
+				branch: "feat/issues/305",
+				is_main: false,
+				is_locked: false,
+				dirty_count: 0,
+				base_branch: "main",
+			},
+		];
+		vi.mocked(invoke).mockImplementation((command: string) => {
+			if (command === "get_cached_issues") return Promise.resolve(mockIssues);
+			if (command === "list_worktrees") return Promise.resolve(mockWorktrees);
+			return Promise.resolve(null);
+		});
+
+		render(<IssuePanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Open Worktree")).toBeInTheDocument();
+		});
+		const createButtons = screen.getAllByText("Create Worktree");
+		expect(createButtons).toHaveLength(1);
+	});
+
+	it("should call onSelectWorktree with existing worktree path when Open Worktree is clicked", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const onSelectWorktree = vi.fn();
+		const mockWorktrees: WorktreeEntry[] = [
+			{
+				name: "feat-issues-305",
+				path: "/worktrees/feat-issues-305",
+				branch: "feat/issues/305",
+				is_main: false,
+				is_locked: false,
+				dirty_count: 0,
+				base_branch: "main",
+			},
+		];
+		vi.mocked(invoke).mockImplementation((command: string) => {
+			if (command === "get_cached_issues") return Promise.resolve(mockIssues);
+			if (command === "list_worktrees") return Promise.resolve(mockWorktrees);
+			return Promise.resolve(null);
+		});
+		const user = userEvent.setup();
+
+		render(
+			<IssuePanel
+				repoPaths={["/path/to/repo"]}
+				providerStatuses={{ "/path/to/repo": "available" }}
+				onSelectWorktree={onSelectWorktree}
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByText("Open Worktree")).toBeInTheDocument();
+		});
+
+		await user.click(screen.getByText("Open Worktree"));
+
+		expect(onSelectWorktree).toHaveBeenCalledWith(
+			"/worktrees/feat-issues-305",
+			"feat/issues/305",
+			"repo",
+		);
+	});
+
+	it("should re-fetch worktrees after Create Worktree succeeds", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const createdEntry: WorktreeEntry = {
+			name: "feat-issues-100",
+			path: "/worktrees/feat-issues-100",
+			branch: "feat/issues/100",
+			is_main: false,
+			is_locked: false,
+			dirty_count: 0,
+			base_branch: "main",
+		};
+		let listWorktreeCallCount = 0;
+		vi.mocked(invoke).mockImplementation((command: string) => {
+			if (command === "get_cached_issues") return Promise.resolve(mockIssues);
+			if (command === "list_worktrees") {
+				listWorktreeCallCount++;
+				if (listWorktreeCallCount >= 2) {
+					return Promise.resolve([createdEntry]);
+				}
+				return Promise.resolve([]);
+			}
+			if (command === "get_default_branch") return Promise.resolve("main");
+			if (command === "create_worktree") return Promise.resolve(createdEntry);
+			return Promise.resolve(null);
+		});
+		const user = userEvent.setup();
+
+		render(<IssuePanel {...defaultProps} />);
+
+		await waitFor(() => {
+			const buttons = screen.getAllByText("Create Worktree");
+			expect(buttons).toHaveLength(2);
+		});
+
+		const createButtons = screen.getAllByText("Create Worktree");
+		await user.click(createButtons[1]);
+
+		await waitFor(() => {
+			expect(listWorktreeCallCount).toBeGreaterThanOrEqual(2);
+		});
 	});
 });
