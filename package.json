@@ -10,6 +10,7 @@
 		"build:remote": "vite build --config vite.config.remote.ts",
 		"preview": "vite preview",
 		"tauri": "tauri",
+		"tauri:build": "tauri build --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"format": "biome format --write .",
