@@ -6,6 +6,7 @@ import {
 	PanelLeft,
 	PanelRight,
 	Settings,
+	StickyNote,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -21,6 +22,7 @@ import {
 } from "@/components/layout/ActivityBar";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { IssuePanel } from "@/components/panels/IssuePanel";
+import { NotionPanel } from "@/components/panels/NotionPanel";
 import { RemotePanel } from "@/components/panels/RemotePanel";
 import { SettingsPanel } from "@/components/panels/SettingsPanel";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
@@ -74,6 +76,11 @@ export function WorkspaceManagerScreen({
 				id: "issues",
 				icon: <CircleDot className="size-5" />,
 				title: "Issues",
+			},
+			{
+				id: "notion",
+				icon: <StickyNote className="size-5" />,
+				title: "Notion Tasks",
 			},
 		],
 		[],
@@ -157,6 +164,14 @@ export function WorkspaceManagerScreen({
 				<IssuePanel
 					repoPaths={repoPaths}
 					providerStatuses={providerStatuses}
+					onSelectWorktree={onSelectWorktree}
+				/>
+			);
+		}
+		if (activeView === "notion") {
+			return (
+				<NotionPanel
+					repoPaths={repoPaths}
 					onSelectWorktree={onSelectWorktree}
 				/>
 			);

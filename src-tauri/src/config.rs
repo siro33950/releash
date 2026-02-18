@@ -1,9 +1,12 @@
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+use crate::notion::types::NotionRepoConfig;
 
 const TOKEN_LENGTH: usize = 48;
 
@@ -19,6 +22,8 @@ pub struct ReleashConfig {
     pub server: ServerSection,
     #[serde(default)]
     pub telemetry: TelemetrySection,
+    #[serde(default)]
+    pub notion: HashMap<String, NotionRepoConfig>,
 }
 
 fn default_crash_reporting() -> bool {
@@ -45,6 +50,7 @@ impl Default for ReleashConfig {
             telemetry_enabled: true,
             server: ServerSection::default(),
             telemetry: TelemetrySection::default(),
+            notion: HashMap::new(),
         }
     }
 }
@@ -163,6 +169,19 @@ impl AppConfig {
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
         Ok(config.clone())
+    }
+
+    pub fn set_config(&self, new_config: ReleashConfig) -> Result<(), String> {
+        let mut config = self
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        *config = new_config;
+        Ok(())
+    }
+
+    pub fn config_path(&self) -> PathBuf {
+        self.config_path.clone()
     }
 }
 
@@ -975,5 +994,48 @@ webhook_url = "https://hooks.slack.com/old"
 
         let when_inactive = serde_json::to_string(&DesktopNotifyMode::WhenInactive).unwrap();
         assert_eq!(when_inactive, r#""when_inactive""#);
+    }
+
+    #[test]
+    fn existing_config_without_notion_gets_empty_default() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+bind = "127.0.0.1"
+port = 9700
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert!(config.notion.is_empty());
+    }
+
+    #[test]
+    fn notion_config_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.notion.insert(
+            "/path/to/repo".to_string(),
+            NotionRepoConfig {
+                api_token: "ntn_test_token".to_string(),
+                database_id: "db-id-456".to_string(),
+                property_mapping: crate::notion::types::PropertyMapping::default(),
+            },
+        );
+        write_config(&path, &config).unwrap();
+
+        let reloaded = fs::read_to_string(&path).unwrap();
+        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
+        assert_eq!(reloaded.notion.len(), 1);
+        let repo_config = reloaded.notion.get("/path/to/repo").unwrap();
+        assert_eq!(repo_config.api_token, "ntn_test_token");
+        assert_eq!(repo_config.database_id, "db-id-456");
+        assert_eq!(repo_config.property_mapping.title, "Name");
     }
 }

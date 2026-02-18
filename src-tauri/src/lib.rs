@@ -4,6 +4,7 @@ mod git;
 mod git_host;
 mod hook_listener;
 mod menu;
+mod notion;
 mod protocol;
 mod pty;
 mod qr_code;
@@ -167,6 +168,13 @@ pub fn run() {
             git_host::get_pr_detail,
             git_host::fetch_issues,
             git_host::get_cached_issues,
+            // Notion
+            notion::query_notion_tasks,
+            notion::fetch_notion_label_options,
+            notion::save_notion_config,
+            notion::get_notion_config,
+            notion::delete_notion_config,
+            notion::validate_notion_config,
             // 検索
             search::search_files,
             search::find_definition,
