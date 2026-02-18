@@ -150,4 +150,30 @@ describe("rehypeSourceLines", () => {
 			"md-diff-gutter-added",
 		]);
 	});
+
+	it("uses custom classPrefix when provided", () => {
+		const ranges: DiffRange[] = [{ startLine: 1, endLine: 1, type: "added" }];
+		const tree = makeRoot([makeElement("p", 1, 1)]);
+
+		const plugin = rehypeSourceLines(ranges, "md-diff-split");
+		// biome-ignore lint/suspicious/noExplicitAny: test helper
+		plugin()(tree as any);
+
+		expect(tree.children[0]).toHaveProperty("properties.className", [
+			"md-diff-split-added",
+		]);
+	});
+
+	it("supports deleted type with custom prefix", () => {
+		const ranges: DiffRange[] = [{ startLine: 1, endLine: 2, type: "deleted" }];
+		const tree = makeRoot([makeElement("p", 1, 2)]);
+
+		const plugin = rehypeSourceLines(ranges, "md-diff-split");
+		// biome-ignore lint/suspicious/noExplicitAny: test helper
+		plugin()(tree as any);
+
+		expect(tree.children[0]).toHaveProperty("properties.className", [
+			"md-diff-split-deleted",
+		]);
+	});
 });
