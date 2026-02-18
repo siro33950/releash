@@ -442,6 +442,7 @@ export function EditorTabContent({
 					<MarkdownDiffViewer
 						originalContent={originalContent}
 						modifiedContent={modifiedContent}
+						diffMode={diffMode}
 					/>
 				) : (
 					<MonacoDiffViewer
@@ -527,7 +528,7 @@ export function EditorTabContent({
 							onClick={() => setDiffMode("gutter")}
 							className={cn(
 								"flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors",
-								diffMode === "gutter" || (showPreview && isMarkdown)
+								diffMode === "gutter"
 									? "bg-background shadow-sm text-foreground"
 									: "text-muted-foreground hover:text-foreground",
 							)}
@@ -539,20 +540,13 @@ export function EditorTabContent({
 						<button
 							type="button"
 							onClick={() => setDiffMode("inline")}
-							disabled={showPreview && isMarkdown}
 							className={cn(
 								"flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors",
-								showPreview && isMarkdown
-									? "text-muted-foreground/50 cursor-not-allowed"
-									: diffMode === "inline"
-										? "bg-background shadow-sm text-foreground"
-										: "text-muted-foreground hover:text-foreground",
+								diffMode === "inline"
+									? "bg-background shadow-sm text-foreground"
+									: "text-muted-foreground hover:text-foreground",
 							)}
-							title={
-								showPreview && isMarkdown
-									? "Preview mode supports Gutter only"
-									: "Inline diff"
-							}
+							title="Inline diff"
 						>
 							<AlignJustify className="h-3.5 w-3.5" />
 							Inline
@@ -560,20 +554,13 @@ export function EditorTabContent({
 						<button
 							type="button"
 							onClick={() => setDiffMode("split")}
-							disabled={showPreview && isMarkdown}
 							className={cn(
 								"flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors",
-								showPreview && isMarkdown
-									? "text-muted-foreground/50 cursor-not-allowed"
-									: diffMode === "split"
-										? "bg-background shadow-sm text-foreground"
-										: "text-muted-foreground hover:text-foreground",
+								diffMode === "split"
+									? "bg-background shadow-sm text-foreground"
+									: "text-muted-foreground hover:text-foreground",
 							)}
-							title={
-								showPreview && isMarkdown
-									? "Preview mode supports Gutter only"
-									: "Split view"
-							}
+							title="Split view"
 						>
 							<SplitSquareHorizontal className="h-3.5 w-3.5" />
 							Split

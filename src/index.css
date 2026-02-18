@@ -151,9 +151,38 @@
 @layer base {
 	* {
 		@apply border-border outline-ring/50;
+
+		scrollbar-width: thin;
+		scrollbar-color: oklch(0.56 0 0 / 0.4) transparent;
+	}
+	*::-webkit-scrollbar {
+		height: 10px;
+		width: 10px;
+	}
+	*::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	*::-webkit-scrollbar-thumb {
+		background: oklch(0.56 0 0 / 0.4);
+	}
+	*::-webkit-scrollbar-thumb:hover {
+		background: oklch(0.49 0 0 / 0.7);
+	}
+	:root.light * {
+		scrollbar-color: oklch(0.45 0 0 / 0.55) transparent;
+	}
+	:root.light *::-webkit-scrollbar-thumb {
+		background: oklch(0.45 0 0 / 0.55);
+	}
+	:root.light *::-webkit-scrollbar-thumb:hover {
+		background: oklch(0.30 0 0 / 0.75);
 	}
 	body {
-		@apply bg-background text-foreground;
+		@apply bg-background text-foreground select-none;
+	}
+	input,
+	textarea {
+		user-select: text;
 	}
 	html,
 	body,
@@ -327,8 +356,6 @@
 	max-height: 112px;
 	overflow-y: auto;
 	border-bottom: 1px solid var(--border);
-	scrollbar-width: thin;
-	scrollbar-color: oklch(0.4 0 0 / 0.5) transparent;
 }
 
 .comment-peek-existing-item {
@@ -643,6 +670,42 @@
 	border-left: 4px solid var(--status-modified);
 	padding-left: 0.5em;
 	margin-left: -0.5em;
+}
+
+/* Markdown Preview Split Grid layout */
+.md-split-container {
+	height: 100%;
+	overflow: auto;
+}
+.md-split-row {
+	display: grid;
+	grid-template-columns: 1fr 1px 1fr;
+}
+.md-split-separator {
+	background-color: var(--border);
+}
+.md-split-cell {
+	padding: 0 1.5rem;
+	min-width: 0;
+	overflow-wrap: break-word;
+}
+.md-split-cell-deleted {
+	background-color: oklch(0.6 0.2 25 / 0.15);
+}
+.md-split-cell-added {
+	background-color: oklch(0.65 0.18 145 / 0.15);
+}
+.md-split-cell-empty {
+	background-color: transparent;
+}
+
+/* Markdown Preview Inline diff highlights */
+.md-diff-inline-added {
+	background-color: oklch(0.65 0.18 145 / 0.15);
+}
+
+.md-diff-inline-removed {
+	background-color: oklch(0.6 0.2 25 / 0.15);
 }
 
 /* Thin scrollbar */

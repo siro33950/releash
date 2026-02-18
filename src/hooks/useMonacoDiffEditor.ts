@@ -181,6 +181,7 @@ export function useMonacoDiffEditor(
 	const dragRangeDecorationsRef = useRef<string[]>([]);
 	const hoverLineRef = useRef<number | null>(null);
 	const hoverDecorationsRef = useRef<string[]>([]);
+	const isProgrammaticUpdateRef = useRef(false);
 	const themeRef = useRef(theme);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
@@ -260,6 +261,7 @@ export function useMonacoDiffEditor(
 			contentChangeListenerRef.current = diffEditor
 				.getModifiedEditor()
 				.onDidChangeModelContent(() => {
+					if (isProgrammaticUpdateRef.current) return;
 					onContentChangeRef.current?.(modifiedModel.getValue());
 				});
 
@@ -507,7 +509,12 @@ export function useMonacoDiffEditor(
 			const scrollTop = modifiedEditor.getScrollTop();
 			const position = modifiedEditor.getPosition();
 
-			modifiedModel.setValue(modifiedValue);
+			isProgrammaticUpdateRef.current = true;
+			try {
+				modifiedModel.setValue(modifiedValue);
+			} finally {
+				isProgrammaticUpdateRef.current = false;
+			}
 
 			modifiedEditor.setScrollTop(scrollTop);
 			if (position) {

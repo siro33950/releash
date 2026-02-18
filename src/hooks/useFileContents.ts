@@ -12,6 +12,8 @@ export interface UseFileContentsReturn {
 	updateContent: (path: string, content: string) => void;
 	saveFile: (path: string) => Promise<void>;
 	reloadFileIfClean: (path: string) => Promise<void>;
+	markExternalChange: (path: string) => void;
+	clearExternalChange: (path: string) => void;
 	updateFilePath: (oldPath: string, newPath: string) => void;
 	closeFilesByPrefix: (pathPrefix: string) => void;
 	closeAllFiles: () => void;
@@ -162,7 +164,12 @@ export function useFileContents(): UseFileContentsReturn {
 				setFiles((prev) =>
 					prev.map((f) =>
 						f.path === path
-							? { ...f, originalContent: f.content, isDirty: false }
+							? {
+									...f,
+									originalContent: f.content,
+									isDirty: false,
+									hasExternalChange: false,
+								}
 							: f,
 					),
 				);
@@ -194,6 +201,22 @@ export function useFileContents(): UseFileContentsReturn {
 		} catch (error) {
 			console.error(`Failed to reload file: ${path}`, error);
 		}
+	}, []);
+
+	const markExternalChange = useCallback((path: string) => {
+		setFiles((prev) =>
+			prev.map((f) =>
+				f.path === path ? { ...f, hasExternalChange: true } : f,
+			),
+		);
+	}, []);
+
+	const clearExternalChange = useCallback((path: string) => {
+		setFiles((prev) =>
+			prev.map((f) =>
+				f.path === path ? { ...f, hasExternalChange: false } : f,
+			),
+		);
 	}, []);
 
 	const updateFilePath = useCallback((oldPath: string, newPath: string) => {
@@ -255,6 +278,8 @@ export function useFileContents(): UseFileContentsReturn {
 		updateContent,
 		saveFile,
 		reloadFileIfClean,
+		markExternalChange,
+		clearExternalChange,
 		updateFilePath,
 		closeFilesByPrefix,
 		closeAllFiles,

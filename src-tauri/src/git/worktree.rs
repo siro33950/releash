@@ -195,6 +195,21 @@ fn is_on_first_parent_line(repo: &Repository, ancestor_oid: Oid, descendant_oid:
     false
 }
 
+fn compute_is_merged(repo: &Repository, branch_oid: Oid, base_target_oid: Option<Oid>) -> bool {
+    base_target_oid
+        .and_then(|t_oid| {
+            if branch_oid == t_oid {
+                return Some(false);
+            }
+            let merge_base = repo.merge_base(branch_oid, t_oid).ok()?;
+            if merge_base != branch_oid {
+                return Some(false);
+            }
+            Some(!is_on_first_parent_line(repo, branch_oid, t_oid))
+        })
+        .unwrap_or(false)
+}
+
 pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, GitError> {
     let repo = Repository::open(&repo_path)?;
     let default_branch = detect_default_branch(&repo);
@@ -276,21 +291,21 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
             None => (None, 0),
         };
 
-        let target_oid = base_target_oid;
-
-        let is_merged = target_oid
-            .and_then(|t_oid| {
-                let branch_oid = branch.get().target()?;
-                if branch_oid == t_oid {
-                    return Some(false);
-                }
-                let merge_base = repo.merge_base(branch_oid, t_oid).ok()?;
-                if merge_base != branch_oid {
-                    return Some(false);
-                }
-                Some(!is_on_first_parent_line(&repo, branch_oid, t_oid))
-            })
+        let is_merged = branch
+            .get()
+            .target()
+            .map(|oid| compute_is_merged(&repo, oid, base_target_oid))
             .unwrap_or(false);
+
+        let upstream = branch.upstream().ok();
+        let has_upstream = upstream.is_some();
+        let (ahead, behind) = upstream
+            .and_then(|u| {
+                let local_oid = branch.get().target()?;
+                let remote_oid = u.get().target()?;
+                repo.graph_ahead_behind(local_oid, remote_oid).ok()
+            })
+            .unwrap_or((0, 0));
 
         cards.push(BranchCard {
             name,
@@ -301,7 +316,89 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
             has_pr: false,
             pr_number: None,
             pr_url: None,
+            ahead,
+            behind,
+            is_remote_only: false,
+            has_upstream,
+            remote_name: None,
         });
+    }
+
+    let mut local_names: std::collections::HashSet<String> =
+        cards.iter().map(|c| c.name.clone()).collect();
+
+    let remote_names: Vec<String> = repo
+        .remotes()
+        .map(|remotes| {
+            let mut names: Vec<String> =
+                remotes.iter().filter_map(|r| r.map(String::from)).collect();
+            names.sort_by_key(|b| std::cmp::Reverse(b.len()));
+            names
+        })
+        .unwrap_or_default();
+
+    if let Ok(remote_branches) = repo.branches(Some(BranchType::Remote)) {
+        for branch in remote_branches {
+            let (branch, _) = match branch {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let full_name = match branch.name() {
+                Ok(Some(n)) => n.to_string(),
+                _ => continue,
+            };
+
+            if full_name.ends_with("/HEAD") {
+                continue;
+            }
+
+            let (matched_remote, short_name) = remote_names
+                .iter()
+                .find_map(|remote| {
+                    full_name
+                        .strip_prefix(remote.as_str())
+                        .and_then(|rest| rest.strip_prefix('/'))
+                        .map(|branch_name| (remote.clone(), branch_name.to_string()))
+                })
+                .unwrap_or_else(|| {
+                    let short = full_name
+                        .find('/')
+                        .map(|i| &full_name[i + 1..])
+                        .unwrap_or(&full_name)
+                        .to_string();
+                    let remote = full_name
+                        .find('/')
+                        .map(|i| full_name[..i].to_string())
+                        .unwrap_or_default();
+                    (remote, short)
+                });
+
+            if !local_names.insert(short_name.clone()) {
+                continue;
+            }
+
+            let is_merged = branch
+                .get()
+                .target()
+                .map(|oid| compute_is_merged(&repo, oid, base_target_oid))
+                .unwrap_or(false);
+
+            cards.push(BranchCard {
+                name: short_name,
+                is_default: false,
+                worktree_path: None,
+                dirty_count: 0,
+                is_merged,
+                has_pr: false,
+                pr_number: None,
+                pr_url: None,
+                ahead: 0,
+                behind: 0,
+                is_remote_only: true,
+                has_upstream: false,
+                remote_name: Some(matched_remote),
+            });
+        }
     }
 
     Ok(cards)
@@ -1039,5 +1136,100 @@ mod tests {
             card.is_merged,
             "with releash.base=develop, should be merged"
         );
+    }
+
+    fn setup_remote_repo() -> (tempfile::TempDir, PathBuf, Repository) {
+        let parent = tempfile::TempDir::new().unwrap();
+
+        let bare_dir = parent.path().join("bare.git");
+        let bare = Repository::init_bare(&bare_dir).unwrap();
+        {
+            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+            let tree_id = bare.treebuilder(None).unwrap().write().unwrap();
+            let tree = bare.find_tree(tree_id).unwrap();
+            bare.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+            bare.set_head("refs/heads/main").unwrap();
+        }
+
+        let clone_dir = parent.path().join("clone");
+        let repo = Repository::clone(bare_dir.to_str().unwrap(), &clone_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "Test").unwrap();
+            config.set_str("user.email", "test@example.com").unwrap();
+        }
+
+        (parent, clone_dir, repo)
+    }
+
+    #[test]
+    fn test_list_branches_with_status_ahead_behind() {
+        let (_parent, clone_dir, repo) = setup_remote_repo();
+
+        add_and_commit(&repo, "local.txt", "local", "local commit");
+
+        let cards = list_branches_with_status(clone_dir.to_str().unwrap().to_string()).unwrap();
+        let card = cards.iter().find(|c| c.name == "main").unwrap();
+        assert_eq!(card.ahead, 1);
+        assert_eq!(card.behind, 0);
+        assert!(!card.is_remote_only);
+    }
+
+    #[test]
+    fn test_list_branches_with_status_no_upstream() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("no-upstream", &head, false).unwrap();
+
+        let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
+        let card = cards.iter().find(|c| c.name == "no-upstream").unwrap();
+        assert_eq!(card.ahead, 0);
+        assert_eq!(card.behind, 0);
+        assert!(!card.is_remote_only);
+    }
+
+    #[test]
+    fn test_list_branches_with_status_remote_only() {
+        let (_parent, clone_dir, repo) = setup_remote_repo();
+
+        let bare_dir = _parent.path().join("bare.git");
+        let bare = Repository::open(&bare_dir).unwrap();
+        {
+            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+            let head = bare
+                .find_reference("refs/heads/main")
+                .unwrap()
+                .peel_to_commit()
+                .unwrap();
+            let tree = head.tree().unwrap();
+            bare.commit(
+                Some("refs/heads/remote-feat"),
+                &sig,
+                &sig,
+                "remote feature",
+                &tree,
+                &[&head],
+            )
+            .unwrap();
+        }
+
+        // fetch to update remote refs
+        repo.find_remote("origin")
+            .unwrap()
+            .fetch(&["refs/heads/*:refs/remotes/origin/*"], None, None)
+            .unwrap();
+
+        let cards = list_branches_with_status(clone_dir.to_str().unwrap().to_string()).unwrap();
+
+        let remote_card = cards.iter().find(|c| c.name == "remote-feat").unwrap();
+        assert!(remote_card.is_remote_only);
+        assert_eq!(remote_card.worktree_path, None);
+        assert_eq!(remote_card.dirty_count, 0);
+
+        let main_card = cards.iter().find(|c| c.name == "main").unwrap();
+        assert!(!main_card.is_remote_only);
     }
 }
