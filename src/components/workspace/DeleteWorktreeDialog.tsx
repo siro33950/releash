@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -26,6 +27,7 @@ export function DeleteWorktreeDialog({
 }: DeleteWorktreeDialogProps) {
 	const [deleting, setDeleting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const deletingRef = useRef(false);
 
 	const hasDirty = (branch?.dirty_count ?? 0) > 0;
 
@@ -33,12 +35,14 @@ export function DeleteWorktreeDialog({
 		async (force: boolean) => {
 			if (!branch || (!branch.worktree_path && !branch.is_merged)) return;
 			setDeleting(true);
+			deletingRef.current = true;
 			setError(null);
 			try {
 				await onConfirm(branch, force);
 			} catch (e) {
 				setError(String(e));
 				setDeleting(false);
+				deletingRef.current = false;
 			}
 		},
 		[branch, onConfirm],
@@ -47,8 +51,8 @@ export function DeleteWorktreeDialog({
 	const handleOpenChange = useCallback(
 		(o: boolean) => {
 			if (!o) {
+				if (deletingRef.current) return;
 				setError(null);
-				setDeleting(false);
 				onCancel();
 			}
 		},
@@ -69,7 +73,11 @@ export function DeleteWorktreeDialog({
 
 	return (
 		<AlertDialog open={open} onOpenChange={handleOpenChange}>
-			<AlertDialogContent>
+			<AlertDialogContent
+				onEscapeKeyDown={(e) => {
+					if (deleting) e.preventDefault();
+				}}
+			>
 				<AlertDialogHeader>
 					<AlertDialogTitle>{title}</AlertDialogTitle>
 					<AlertDialogDescription>{description}</AlertDialogDescription>
@@ -98,6 +106,7 @@ export function DeleteWorktreeDialog({
 							onClick={() => handleDelete(true)}
 							disabled={deleting}
 						>
+							{deleting && <Loader2 className="size-3.5 mr-1 animate-spin" />}
 							{deleting ? "Deleting..." : "Force Delete"}
 						</AlertDialogAction>
 					) : (
@@ -106,6 +115,7 @@ export function DeleteWorktreeDialog({
 							onClick={() => handleDelete(false)}
 							disabled={deleting}
 						>
+							{deleting && <Loader2 className="size-3.5 mr-1 animate-spin" />}
 							{deleting ? "Deleting..." : "Delete"}
 						</AlertDialogAction>
 					)}
