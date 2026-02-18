@@ -164,3 +164,16 @@ pub async fn update_server_repo_paths(
         ));
     Ok(())
 }
+
+#[tauri::command]
+pub fn update_terminal_startup_command(
+    command: String,
+    handle: tauri::State<'_, WsServerHandle>,
+) -> Result<(), String> {
+    let server_state = {
+        let guard = handle.server_state.lock();
+        guard.clone().ok_or("サーバーが起動していません")?
+    };
+    server_state.set_terminal_startup_command(command);
+    Ok(())
+}
