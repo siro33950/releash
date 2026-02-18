@@ -123,7 +123,8 @@ mod macos {
 
         // ウィンドウ座標 → ビューローカル座標に変換（fromView: nil = ウィンドウ座標系）
         // draggingLocation はポイント単位（= CSSピクセル）なので scale_factor 不要
-        let local: NSPoint = msg_send![view, convertPoint: location, fromView: std::ptr::null::<AnyObject>()];
+        let local: NSPoint =
+            msg_send![view, convertPoint: location, fromView: std::ptr::null::<AnyObject>()];
         let bounds: objc2_foundation::NSRect = msg_send![view, bounds];
 
         // Cocoa座標（左下原点）→ CSS座標（左上原点）
