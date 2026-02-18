@@ -55,7 +55,11 @@ function findMatchingRange(
 	);
 }
 
-function visitBlock(node: HastNode, diffRanges: DiffRange[]): void {
+function visitBlock(
+	node: HastNode,
+	diffRanges: DiffRange[],
+	classPrefix: string,
+): void {
 	if (
 		node.type === "element" &&
 		node.tagName &&
@@ -72,20 +76,23 @@ function visitBlock(node: HastNode, diffRanges: DiffRange[]): void {
 				node.properties = {};
 			}
 			const className = node.properties.className ?? [];
-			className.push(`md-diff-gutter-${match.type}`);
+			className.push(`${classPrefix}-${match.type}`);
 			node.properties.className = className;
 		}
 	}
 
 	if (node.children) {
 		for (const child of node.children) {
-			visitBlock(child, diffRanges);
+			visitBlock(child, diffRanges, classPrefix);
 		}
 	}
 }
 
-export function rehypeSourceLines(diffRanges: DiffRange[]) {
+export function rehypeSourceLines(
+	diffRanges: DiffRange[],
+	classPrefix = "md-diff-gutter",
+) {
 	return () => (tree: HastNode) => {
-		visitBlock(tree, diffRanges);
+		visitBlock(tree, diffRanges, classPrefix);
 	};
 }

@@ -672,3 +672,58 @@
 	margin-left: -0.5em;
 }
 
+/* Markdown Preview Split Grid layout */
+.md-split-container {
+	height: 100%;
+	overflow: auto;
+}
+.md-split-row {
+	display: grid;
+	grid-template-columns: 1fr 1px 1fr;
+}
+.md-split-separator {
+	background-color: var(--border);
+}
+.md-split-cell {
+	padding: 0 1.5rem;
+	min-width: 0;
+	overflow-wrap: break-word;
+}
+.md-split-cell-deleted {
+	background-color: oklch(0.6 0.2 25 / 0.15);
+}
+.md-split-cell-added {
+	background-color: oklch(0.65 0.18 145 / 0.15);
+}
+.md-split-cell-empty {
+	background-color: transparent;
+}
+
+/* Markdown Preview Inline diff highlights */
+.md-diff-inline-added {
+	background-color: oklch(0.65 0.18 145 / 0.15);
+}
+
+.md-diff-inline-removed {
+	background-color: oklch(0.6 0.2 25 / 0.15);
+}
+
+/* Thin scrollbar */
+.scrollbar-thin {
+	scrollbar-width: thin;
+	scrollbar-color: oklch(0.4 0 0 / 0.5) transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+	height: 6px !important;
+	width: 6px !important;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+	background: transparent !important;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+	background: oklch(0.4 0 0 / 0.5) !important;
+	border-radius: 1px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+	background: oklch(0.5 0 0 / 0.7) !important;
+}
