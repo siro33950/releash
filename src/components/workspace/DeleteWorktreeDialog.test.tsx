@@ -16,7 +16,7 @@ const baseBranch: BranchCard = {
 	ahead: 0,
 	behind: 0,
 	is_remote_only: false,
-	has_upstream: false,
+	has_upstream: true,
 	remote_name: null,
 };
 
