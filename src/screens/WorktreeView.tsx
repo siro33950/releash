@@ -76,7 +76,6 @@ interface WorktreeViewProps {
 	rootPath: string;
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
-	onSwitchToKanban: () => void;
 	isActive: boolean;
 }
 
@@ -84,7 +83,6 @@ export function WorktreeView({
 	rootPath,
 	settings,
 	onSettingsSave,
-	onSwitchToKanban,
 	isActive,
 }: WorktreeViewProps) {
 	const {
@@ -693,7 +691,6 @@ export function WorktreeView({
 		return (
 			<SidebarPanel
 				rootPath={rootPath}
-				onOpenFolder={onSwitchToKanban}
 				onSelectFile={handleOpenFile}
 				onFileChange={reloadFileIfClean}
 				onRename={handleRename}
@@ -711,7 +708,6 @@ export function WorktreeView({
 		searchFocusKey,
 		settings,
 		onSettingsSave,
-		onSwitchToKanban,
 		reloadFileIfClean,
 		handleRename,
 		handleDelete,
