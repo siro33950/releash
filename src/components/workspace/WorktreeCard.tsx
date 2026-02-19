@@ -127,7 +127,7 @@ export function BranchCard({
 			role="button"
 			tabIndex={0}
 			data-testid={`branch-card-${branch.name}`}
-			className={`group relative flex flex-col gap-3 rounded-lg border p-3 transition-colors text-left ${opening ? "cursor-default" : "cursor-pointer"} ${
+			className={`group relative flex flex-col gap-3 rounded-lg border p-3 transition-colors text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 ${opening ? "cursor-default" : "cursor-pointer"} ${
 				hasWorktree
 					? "border-border bg-card hover:border-primary/50"
 					: "border-border/50 bg-card/50 hover:border-border"
