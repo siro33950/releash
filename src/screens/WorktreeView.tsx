@@ -362,6 +362,7 @@ export function WorktreeView({
 
 	const handleSearch = useCallback(() => {
 		setActiveView("search");
+		setSearchInitialQuery("");
 		setSearchFocusKey((k) => k + 1);
 	}, []);
 
@@ -490,6 +491,7 @@ export function WorktreeView({
 			"view-explorer": () => setActiveView("explorer"),
 			"view-search": () => {
 				setActiveView("search");
+				setSearchInitialQuery("");
 				setSearchFocusKey((k) => k + 1);
 			},
 			"view-source-control": () => setActiveView("git"),
