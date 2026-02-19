@@ -1,14 +1,7 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import {
-	ArrowDown,
-	ArrowUp,
-	Minus,
-	Pencil,
-	Plus,
-	RefreshCw,
-	X,
-} from "lucide-react";
+import { ArrowDown, ArrowUp, RefreshCw, X } from "lucide-react";
 import { useCallback, useState } from "react";
+import { FileStatusItem } from "@/components/panels/FileStatusItem";
 import { SourceControlContextMenu } from "@/components/panels/SourceControlContextMenu";
 import {
 	AlertDialog,
@@ -26,101 +19,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitStatus } from "@/hooks/useGitStatus";
 import { cn } from "@/lib/utils";
-import type { GitFileStatus } from "@/types/git";
 import { EmptyState } from "./EmptyState";
-
-function statusColor(status: string): string {
-	switch (status) {
-		case "new":
-			return "text-status-untracked";
-		case "modified":
-			return "text-status-modified";
-		case "deleted":
-			return "text-status-deleted";
-		case "renamed":
-			return "text-status-modified";
-		default:
-			return "text-muted-foreground";
-	}
-}
-
-function StatusIcon({ status }: { status: string }) {
-	const color = statusColor(status);
-	const iconClass = cn("h-3.5 w-3.5 shrink-0", color);
-	switch (status) {
-		case "modified":
-		case "renamed":
-			return <Pencil className={iconClass} />;
-		case "new":
-			return <Plus className={iconClass} />;
-		case "deleted":
-			return <Minus className={iconClass} />;
-		default:
-			return null;
-	}
-}
-
-function formatPath(path: string): { dir: string; name: string } {
-	const parts = path.split("/");
-	const name = parts.pop() ?? path;
-	const dir = parts.length > 0 ? `${parts.join("/")}/` : "";
-	return { dir, name };
-}
-
-function FileStatusItem({
-	entry,
-	statusField,
-	rootPath,
-	onSelect,
-	actionLabel,
-	onAction,
-}: {
-	entry: GitFileStatus;
-	statusField: "index_status" | "worktree_status";
-	rootPath: string;
-	onSelect?: (path: string) => void;
-	actionLabel: string;
-	onAction: () => void;
-}) {
-	const status = entry[statusField];
-	const { dir, name } = formatPath(entry.path);
-
-	return (
-		// biome-ignore lint/a11y/useSemanticElements: outer element cannot be <button> because it contains a nested <button> for the action
-		<div
-			role="button"
-			tabIndex={0}
-			className="group flex w-full items-center gap-1.5 px-4 py-1 text-sm hover:bg-sidebar-accent transition-colors"
-			onClick={() => onSelect?.(`${rootPath}/${entry.path}`)}
-			onKeyDown={(e) => {
-				if (e.key === "Enter" || e.key === " ") {
-					onSelect?.(`${rootPath}/${entry.path}`);
-				}
-			}}
-		>
-			<StatusIcon status={status} />
-			<span className="truncate flex-1 text-left">
-				<span className="text-muted-foreground">{dir}</span>
-				<span className="font-semibold">{name}</span>
-			</span>
-			<button
-				type="button"
-				className="hidden group-hover:inline-flex items-center justify-center h-5 w-5 rounded hover:bg-sidebar-accent-foreground/10 shrink-0"
-				onClick={(e) => {
-					e.stopPropagation();
-					onAction();
-				}}
-				title={actionLabel}
-			>
-				{statusField === "worktree_status" ? (
-					<Plus className="h-3.5 w-3.5" />
-				) : (
-					<Minus className="h-3.5 w-3.5" />
-				)}
-			</button>
-		</div>
-	);
-}
 
 export interface SourceControlPanelProps {
 	rootPath: string | null;
@@ -267,7 +166,7 @@ export function SourceControlPanel({
 				<CollapsibleSection
 					title="Unstaged Files"
 					count={changedFiles.length}
-					headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide hover:bg-sidebar-accent"
+					headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide"
 					chevronClassName="h-3.5 w-3.5"
 					actions={
 						<button
@@ -312,8 +211,7 @@ export function SourceControlPanel({
 							<FileStatusItem
 								entry={entry}
 								statusField="worktree_status"
-								rootPath={rootPath}
-								onSelect={onSelectFile}
+								onSelect={(e) => onSelectFile?.(`${rootPath}/${e.path}`)}
 								actionLabel="Stage"
 								onAction={() => handleStage([entry.path])}
 							/>
@@ -324,7 +222,7 @@ export function SourceControlPanel({
 				<CollapsibleSection
 					title="Staged Files"
 					count={stagedFiles.length}
-					headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide hover:bg-sidebar-accent"
+					headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide"
 					chevronClassName="h-3.5 w-3.5"
 					actions={
 						<button
@@ -363,8 +261,7 @@ export function SourceControlPanel({
 							<FileStatusItem
 								entry={entry}
 								statusField="index_status"
-								rootPath={rootPath}
-								onSelect={onSelectFile}
+								onSelect={(e) => onSelectFile?.(`${rootPath}/${e.path}`)}
 								actionLabel="Unstage"
 								onAction={() => handleUnstage([entry.path])}
 							/>
