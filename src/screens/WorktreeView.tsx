@@ -133,6 +133,7 @@ export function WorktreeView({
 		line: number;
 	} | null>(null);
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
+	const [searchInitialQuery, setSearchInitialQuery] = useState<string>("");
 
 	const handleTabClose = useCallback(
 		(path: string): boolean => {
@@ -548,8 +549,9 @@ export function WorktreeView({
 		[rootPath, handleOpenFile],
 	);
 
-	const handleSearchOccurrences = useCallback((_text: string) => {
+	const handleSearchOccurrences = useCallback((text: string) => {
 		setActiveView("search");
+		setSearchInitialQuery(text);
 		setSearchFocusKey((k) => k + 1);
 	}, []);
 
@@ -735,6 +737,7 @@ export function WorktreeView({
 					rootPath={rootPath}
 					onSelectFileAtLine={handleSearchResultClick}
 					focusKey={searchFocusKey}
+					initialQuery={searchInitialQuery}
 				/>
 			);
 		}
@@ -762,6 +765,7 @@ export function WorktreeView({
 		gitRefreshKey,
 		handleSearchResultClick,
 		searchFocusKey,
+		searchInitialQuery,
 		settings,
 		onSettingsSave,
 		reloadFileIfClean,

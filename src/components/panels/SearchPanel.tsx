@@ -52,12 +52,14 @@ export interface SearchPanelProps {
 	rootPath: string | null;
 	onSelectFileAtLine?: (relativePath: string, line: number) => void;
 	focusKey?: number;
+	initialQuery?: string;
 }
 
 export function SearchPanel({
 	rootPath,
 	onSelectFileAtLine,
 	focusKey,
+	initialQuery,
 }: SearchPanelProps) {
 	const { result, loading, error, search, clear } = useSearch(rootPath);
 	const [query, setQuery] = useState("");
@@ -115,6 +117,15 @@ export function SearchPanel({
 			inputRef.current?.focus();
 		}
 	}, [focusKey]);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: focusKey is intentionally included to re-trigger search for the same query
+	useEffect(() => {
+		if (initialQuery != null && initialQuery !== "") {
+			setQuery(initialQuery);
+			if (debounceRef.current) clearTimeout(debounceRef.current);
+			search(initialQuery, { caseSensitive, isRegex });
+		}
+	}, [initialQuery, focusKey]);
 
 	const grouped = result ? groupByFile(result.matches) : [];
 	const fileCount = grouped.length;
