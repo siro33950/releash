@@ -122,8 +122,10 @@ export function BranchCard({
 		hasStatusBadges;
 
 	return (
-		<button
-			type="button"
+		// biome-ignore lint/a11y/useSemanticElements: <button> cannot nest <button> (PR badge, delete btn)
+		<div
+			role="button"
+			tabIndex={0}
 			data-testid={`branch-card-${branch.name}`}
 			className={`group relative flex flex-col gap-3 rounded-lg border p-3 transition-colors cursor-pointer text-left ${
 				hasWorktree
@@ -131,6 +133,12 @@ export function BranchCard({
 					: "border-border/50 bg-card/50 hover:border-border"
 			}`}
 			onClick={opening ? undefined : onOpen}
+			onKeyDown={(e) => {
+				if ((e.key === "Enter" || e.key === " ") && !opening) {
+					e.preventDefault();
+					onOpen();
+				}
+			}}
 		>
 			{/* 1行目: ブランチアイコン + ブランチ名 */}
 			<div className="flex items-center gap-2 min-w-0">
@@ -218,6 +226,6 @@ export function BranchCard({
 					<Trash2 className="size-3 text-muted-foreground" />
 				</Button>
 			)}
-		</button>
+		</div>
 	);
 }
