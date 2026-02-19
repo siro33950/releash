@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Check, Copy, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
@@ -463,9 +464,11 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 									<label htmlFor="webhook-url" className={labelClass}>
 										Webhook URL
 									</label>
-									<input
+									<Input
 										id="webhook-url"
 										type="url"
+										variant="panel"
+										size="sm"
 										value={webhook.draft.webhook_url}
 										onChange={(e) =>
 											webhook.setDraft((d) => ({
@@ -474,7 +477,6 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 											}))
 										}
 										placeholder="https://hooks.slack.com/... or https://discord.com/api/webhooks/..."
-										className={selectClass}
 									/>
 									{detectedWebhookType && (
 										<p className="text-[10px] text-muted-foreground">

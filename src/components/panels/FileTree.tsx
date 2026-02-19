@@ -296,10 +296,7 @@ export function FileTree({
 	return (
 		<div className="py-1">
 			{creatingNode && creatingNode.parentPath === rootPath && (
-				<div
-					className="flex items-center gap-1 px-2 py-1"
-					style={{ paddingLeft: "8px" }}
-				>
+				<div className="flex items-center gap-1 py-1 px-2">
 					{creatingNode.type === "folder" ? (
 						<FolderIcon folderName="" className="h-4 w-4 shrink-0" />
 					) : (

@@ -10,7 +10,9 @@ import {
 	Trash2,
 } from "lucide-react";
 import { useCallback, useState } from "react";
+import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNotionConfig } from "@/hooks/useNotionConfig";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
@@ -53,9 +55,11 @@ export function NotionPanel({ repoPaths, onSelectWorktree }: NotionPanelProps) {
 					/>
 				))}
 				{repoPaths.length === 0 && (
-					<div className="px-3 py-4 text-xs text-muted-foreground text-center">
-						No repositories
-					</div>
+					<EmptyState
+						compact
+						title="No repositories"
+						className="px-3 py-4 text-center"
+					/>
 				)}
 			</ScrollArea>
 		</div>
@@ -253,24 +257,30 @@ function NotionConfigForm({
 
 	return (
 		<div className="px-2 py-1.5 flex flex-col gap-1.5">
+			{/* biome-ignore lint/a11y/noLabelWithoutControl: Input renders <input> inside label */}
 			<label className="text-[10px] text-muted-foreground">
 				API Token
-				<input
+				<Input
 					type="password"
+					variant="panel"
+					size="xs"
+					className="mt-0.5"
 					value={apiToken}
 					onChange={(e) => setApiToken(e.target.value)}
 					placeholder="ntn_..."
-					className="w-full mt-0.5 bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
 				/>
 			</label>
+			{/* biome-ignore lint/a11y/noLabelWithoutControl: Input renders <input> inside label */}
 			<label className="text-[10px] text-muted-foreground">
 				Database ID
-				<input
+				<Input
 					type="text"
+					variant="panel"
+					size="xs"
+					className="mt-0.5"
 					value={databaseId}
 					onChange={(e) => setDatabaseId(e.target.value)}
 					placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-					className="w-full mt-0.5 bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
 				/>
 			</label>
 
@@ -316,16 +326,19 @@ function NotionConfigForm({
 						onChange={(v) => setMapping((m) => ({ ...m, branch_name: v }))}
 						allowEmpty
 					/>
+					{/* biome-ignore lint/a11y/noLabelWithoutControl: Input renders <input> inside label */}
 					<label className="text-[10px] text-muted-foreground flex items-center gap-1">
 						<span className="w-16 shrink-0">プレフィックス</span>
-						<input
+						<Input
 							type="text"
+							variant="panel"
+							size="xs"
+							className="flex-1"
 							value={mapping.branch_prefix}
 							onChange={(e) =>
 								setMapping((m) => ({ ...m, branch_prefix: e.target.value }))
 							}
 							placeholder="feat/"
-							className="flex-1 bg-muted border border-border rounded px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
 						/>
 					</label>
 				</div>
@@ -554,12 +567,13 @@ function NotionTaskList({
 		<>
 			{(tasks.length > 0 || hasActiveFilters) && (
 				<div className="px-2 py-1.5 flex flex-col gap-1">
-					<input
+					<Input
 						type="text"
+						variant="panel"
+						size="xs"
 						placeholder="Filter by title..."
 						value={titleFilter}
 						onChange={(e) => handleTitleChange(e.target.value)}
-						className="w-full bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
 					/>
 					{labelOptions.map((opt) => (
 						<select
@@ -589,9 +603,11 @@ function NotionTaskList({
 				</div>
 			)}
 			{!loading && tasks.length === 0 && (
-				<div className="px-3 py-2 text-[10px] text-muted-foreground">
-					No tasks
-				</div>
+				<EmptyState
+					compact
+					title="No tasks"
+					className="px-3 py-2 text-[10px]"
+				/>
 			)}
 			{tasks.map((task) => (
 				<NotionTaskCard

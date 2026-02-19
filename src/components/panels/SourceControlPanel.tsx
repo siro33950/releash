@@ -22,11 +22,13 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitStatus } from "@/hooks/useGitStatus";
 import { cn } from "@/lib/utils";
 import type { GitFileStatus } from "@/types/git";
+import { EmptyState } from "./EmptyState";
 
 function statusColor(status: string): string {
 	switch (status) {
@@ -291,8 +293,8 @@ export function SourceControlPanel({
 
 	if (!rootPath) {
 		return (
-			<div className="h-full flex items-center justify-center bg-sidebar">
-				<span className="text-sm text-muted-foreground">No folder opened</span>
+			<div className="h-full bg-sidebar">
+				<EmptyState title="No folder opened" />
 			</div>
 		);
 	}
@@ -324,9 +326,11 @@ export function SourceControlPanel({
 					onAction={() => handleStage([])}
 				>
 					{changedFiles.length === 0 && (
-						<div className="px-4 py-1.5 text-xs text-muted-foreground">
-							No unstaged changes
-						</div>
+						<EmptyState
+							compact
+							title="No unstaged changes"
+							className="px-4 py-1.5"
+						/>
 					)}
 					{changedFiles.map((entry) => (
 						<SourceControlContextMenu
@@ -370,9 +374,11 @@ export function SourceControlPanel({
 					onAction={() => handleUnstage([])}
 				>
 					{stagedFiles.length === 0 && (
-						<div className="px-4 py-1.5 text-xs text-muted-foreground">
-							No staged changes
-						</div>
+						<EmptyState
+							compact
+							title="No staged changes"
+							className="px-4 py-1.5"
+						/>
 					)}
 					{stagedFiles.map((entry) => (
 						<SourceControlContextMenu
@@ -403,18 +409,22 @@ export function SourceControlPanel({
 				</CollapsibleSection>
 
 				{totalChanges === 0 && (
-					<div className="px-3 py-4 text-sm text-muted-foreground">
-						No changes
-					</div>
+					<EmptyState
+						compact
+						title="No changes"
+						className="px-3 py-4 text-sm"
+					/>
 				)}
 			</ScrollArea>
 
 			{/* Commit Area (bottom fixed) */}
 			<div className="border-t border-border px-3 py-2 shrink-0 flex flex-col gap-1.5">
 				<div className="relative">
-					<input
+					<Input
 						type="text"
-						className="w-full bg-transparent border border-border rounded px-2 py-1 text-xs outline-none focus:border-primary pr-8"
+						variant="panel"
+						size="sm"
+						className="pr-8"
 						placeholder="Commit summary"
 						value={commitSummary}
 						onChange={(e) => setCommitSummary(e.target.value)}

@@ -9,7 +9,9 @@ import {
 	RefreshCw,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useIssues } from "@/hooks/useIssues";
 import { generateIssueBranchName } from "@/lib/issueBranch";
@@ -49,9 +51,11 @@ export function IssuePanel({
 					/>
 				))}
 				{repoPaths.length === 0 && (
-					<div className="px-3 py-4 text-xs text-muted-foreground text-center">
-						No repositories
-					</div>
+					<EmptyState
+						compact
+						title="No repositories"
+						className="px-3 py-4 text-center"
+					/>
 				)}
 			</ScrollArea>
 		</div>
@@ -182,12 +186,13 @@ function RepoIssueSection({
 					)}
 					{isAvailable && !loading && issues.length > 0 && (
 						<div className="px-2 py-1.5 flex flex-col gap-1">
-							<input
+							<Input
 								type="text"
+								variant="panel"
+								size="xs"
 								placeholder="Filter by title..."
 								value={titleFilter}
 								onChange={(e) => setTitleFilter(e.target.value)}
-								className="w-full bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
 							/>
 							{allLabels.length > 0 && (
 								<select
@@ -223,17 +228,21 @@ function RepoIssueSection({
 						</div>
 					)}
 					{isAvailable && !loading && issues.length === 0 && (
-						<div className="px-3 py-2 text-[10px] text-muted-foreground">
-							No open issues
-						</div>
+						<EmptyState
+							compact
+							title="No open issues"
+							className="px-3 py-2 text-[10px]"
+						/>
 					)}
 					{isAvailable &&
 						!loading &&
 						issues.length > 0 &&
 						filteredIssues.length === 0 && (
-							<div className="px-3 py-2 text-[10px] text-muted-foreground">
-								No matching issues
-							</div>
+							<EmptyState
+								compact
+								title="No matching issues"
+								className="px-3 py-2 text-[10px]"
+							/>
 						)}
 					{isAvailable &&
 						filteredIssues.map((issue) => {

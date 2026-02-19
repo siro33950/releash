@@ -17,8 +17,8 @@ describe("MonacoDiffViewer", () => {
 
 		const el = container.firstChild as HTMLElement;
 		expect(el).toHaveClass("bg-background");
-		expect(el.style.position).toBe("absolute");
-		expect(el.style.inset).toBe("0");
+		expect(el).toHaveClass("absolute");
+		expect(el).toHaveClass("inset-0");
 	});
 
 	it("should apply custom className", () => {
@@ -41,9 +41,8 @@ describe("MonacoDiffViewer", () => {
 			/>,
 		);
 
-		const editors = container.querySelectorAll<HTMLElement>(
-			"[style*='position: absolute']",
-		);
+		const editors =
+			container.querySelectorAll<HTMLElement>(".absolute.inset-0");
 		expect(editors.length).toBeGreaterThan(0);
 	});
 
@@ -56,9 +55,8 @@ describe("MonacoDiffViewer", () => {
 			/>,
 		);
 
-		const editors = container.querySelectorAll<HTMLElement>(
-			"[style*='position: absolute']",
-		);
+		const editors =
+			container.querySelectorAll<HTMLElement>(".absolute.inset-0");
 		expect(editors.length).toBeGreaterThan(0);
 	});
 
@@ -71,9 +69,8 @@ describe("MonacoDiffViewer", () => {
 			/>,
 		);
 
-		const editors = container.querySelectorAll<HTMLElement>(
-			"[style*='position: absolute']",
-		);
+		const editors =
+			container.querySelectorAll<HTMLElement>(".absolute.inset-0");
 		expect(editors.length).toBeGreaterThan(0);
 	});
 });
