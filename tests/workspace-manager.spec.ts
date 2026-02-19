@@ -50,7 +50,7 @@ test.describe("Workspace Manager (Kanban)", () => {
 		await expect(page.getByText("feat/done")).toBeVisible();
 	});
 
-	test("Todoブランチの Open クリックで worktree 作成が呼ばれる", async ({
+	test("Todoブランチのカードクリックで worktree 作成が呼ばれる", async ({
 		page,
 	}) => {
 		const createdEntry: WorktreeEntry = {
@@ -90,7 +90,7 @@ test.describe("Workspace Manager (Kanban)", () => {
 		expect(createCall).toBeTruthy();
 	});
 
-	test("InProgressブランチの Open クリックでタブが開く", async ({ page }) => {
+	test("InProgressブランチのカードクリックでタブが開く", async ({ page }) => {
 		const config = buildMockConfig({
 			list_branches_with_status: kanbanBranches,
 		});

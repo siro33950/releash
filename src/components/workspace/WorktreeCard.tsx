@@ -127,13 +127,14 @@ export function BranchCard({
 			role="button"
 			tabIndex={0}
 			data-testid={`branch-card-${branch.name}`}
-			className={`group relative flex flex-col gap-3 rounded-lg border p-3 transition-colors cursor-pointer text-left ${
+			className={`group relative flex flex-col gap-3 rounded-lg border p-3 transition-colors text-left ${opening ? "cursor-default" : "cursor-pointer"} ${
 				hasWorktree
 					? "border-border bg-card hover:border-primary/50"
 					: "border-border/50 bg-card/50 hover:border-border"
 			}`}
 			onClick={opening ? undefined : onOpen}
 			onKeyDown={(e) => {
+				if (e.target !== e.currentTarget) return;
 				if ((e.key === "Enter" || e.key === " ") && !opening) {
 					e.preventDefault();
 					onOpen();
