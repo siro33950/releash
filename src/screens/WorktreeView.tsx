@@ -604,7 +604,8 @@ export function WorktreeView({
 		(unsent: LineComment[]) => {
 			const text = formatCommentsForTerminal(unsent, rootPath);
 			if (text && terminalRef.current) {
-				terminalRef.current.writeToTerminal(`${text}\n`);
+				terminalRef.current.writeToTerminal(text);
+				terminalRef.current.writeToTerminal("\r");
 				markAsSent(unsent.map((c) => c.id));
 				trackEvent("comment_sent", { count: unsent.length });
 			}
@@ -616,7 +617,8 @@ export function WorktreeView({
 		(comment: LineComment) => {
 			const text = formatCommentsForTerminal([comment], rootPath);
 			if (text && terminalRef.current) {
-				terminalRef.current.writeToTerminal(`${text}\n`);
+				terminalRef.current.writeToTerminal(text);
+				terminalRef.current.writeToTerminal("\r");
 				markAsSent([comment.id]);
 				trackEvent("comment_sent", { count: 1 });
 			}

@@ -198,7 +198,11 @@ export function RemoteApp() {
 			if (activePtyId != null) {
 				send({
 					type: "pty_input",
-					payload: { pty_id: activePtyId, data: `${text}\n` },
+					payload: { pty_id: activePtyId, data: text },
+				});
+				send({
+					type: "pty_input",
+					payload: { pty_id: activePtyId, data: "\r" },
 				});
 				setComments((prev) =>
 					prev.map((c) =>
@@ -219,7 +223,11 @@ export function RemoteApp() {
 			if (activePtyId != null) {
 				send({
 					type: "pty_input",
-					payload: { pty_id: activePtyId, data: `${text}\n` },
+					payload: { pty_id: activePtyId, data: text },
+				});
+				send({
+					type: "pty_input",
+					payload: { pty_id: activePtyId, data: "\r" },
 				});
 				setComments((prev) =>
 					prev.map((c) =>
