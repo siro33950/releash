@@ -1,13 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
 	ExternalLink,
+	FolderOpen,
 	GitBranch,
 	Loader2,
 	RefreshCw,
 	Settings,
 	Trash2,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
@@ -90,6 +91,22 @@ function NotionRepoSection({
 		isConfigured,
 	} = useNotionConfig(repoPath);
 	const repoName = repoPath.split("/").filter(Boolean).pop() ?? "repo";
+	const [worktrees, setWorktrees] = useState<WorktreeEntry[]>([]);
+
+	const fetchWorktrees = useCallback(async () => {
+		try {
+			const result = await invoke<WorktreeEntry[]>("list_worktrees", {
+				repoPath,
+			});
+			setWorktrees(result);
+		} catch {
+			// noop: preserve previous worktrees on error
+		}
+	}, [repoPath]);
+
+	useEffect(() => {
+		fetchWorktrees();
+	}, [fetchWorktrees]);
 
 	return (
 		<CollapsibleSection
@@ -145,6 +162,8 @@ function NotionRepoSection({
 						onSelectWorktree={onSelectWorktree}
 						onShowConfig={() => setShowConfig(true)}
 						branchPrefix={config?.property_mapping.branch_prefix ?? ""}
+						worktrees={worktrees}
+						onWorktreeCreated={fetchWorktrees}
 					/>
 				)}
 			</div>
@@ -476,6 +495,8 @@ interface NotionTaskListProps {
 	) => void;
 	onShowConfig: () => void;
 	branchPrefix: string;
+	worktrees: WorktreeEntry[];
+	onWorktreeCreated: () => void;
 }
 
 function loadStoredFilters(repoPath: string): {
@@ -521,6 +542,8 @@ function NotionTaskList({
 	onSelectWorktree,
 	onShowConfig,
 	branchPrefix,
+	worktrees,
+	onWorktreeCreated,
 }: NotionTaskListProps) {
 	const [stored] = useState(() => loadStoredFilters(repoPath));
 	const { tasks, loading, hasMore, search, loadMore, refresh } = useNotionTasks(
@@ -602,16 +625,27 @@ function NotionTaskList({
 					className="px-3 py-2 text-[10px]"
 				/>
 			)}
-			{tasks.map((task) => (
-				<NotionTaskCard
-					key={task.id}
-					task={task}
-					repoPath={repoPath}
-					repoName={repoName}
-					onSelectWorktree={onSelectWorktree}
-					branchPrefix={branchPrefix}
-				/>
-			))}
+			{tasks.map((task) => {
+				const prefix = branchPrefix || undefined;
+				const branchName = task.branch_name
+					? generateNotionBranchName(task.branch_name, task.id, prefix)
+					: generateNotionBranchName(task.title, task.id, prefix);
+				const matchedWorktree = worktrees.find(
+					(wt) => wt.branch === branchName,
+				);
+				return (
+					<NotionTaskCard
+						key={task.id}
+						task={task}
+						repoPath={repoPath}
+						repoName={repoName}
+						onSelectWorktree={onSelectWorktree}
+						branchName={branchName}
+						existingWorktree={matchedWorktree}
+						onWorktreeCreated={onWorktreeCreated}
+					/>
+				);
+			})}
 			{hasMore && (
 				<div className="px-3 py-1">
 					<Button
@@ -661,7 +695,9 @@ interface NotionTaskCardProps {
 		branchName?: string,
 		repoName?: string,
 	) => void;
-	branchPrefix: string;
+	branchName: string;
+	existingWorktree?: WorktreeEntry;
+	onWorktreeCreated: () => void;
 }
 
 function NotionTaskCard({
@@ -669,7 +705,9 @@ function NotionTaskCard({
 	repoPath,
 	repoName,
 	onSelectWorktree,
-	branchPrefix,
+	branchName,
+	existingWorktree,
+	onWorktreeCreated,
 }: NotionTaskCardProps) {
 	const [creating, setCreating] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -678,10 +716,6 @@ function NotionTaskCard({
 		setCreating(true);
 		setError(null);
 		try {
-			const prefix = branchPrefix || undefined;
-			const branchName = task.branch_name
-				? generateNotionBranchName(task.branch_name, task.id, prefix)
-				: generateNotionBranchName(task.title, task.id, prefix);
 			const worktreeDir = computeWorktreeDir(repoPath);
 			const worktreePath = `${worktreeDir}/${branchToDir(branchName)}`;
 
@@ -701,21 +735,20 @@ function NotionTaskCard({
 				createBranch: true,
 				baseBranch: defaultBranch,
 			});
+			onWorktreeCreated();
 			onSelectWorktree(entry.path, branchName, repoName);
 		} catch (e) {
 			setError(String(e));
 		} finally {
 			setCreating(false);
 		}
-	}, [
-		task.branch_name,
-		task.title,
-		task.id,
-		repoPath,
-		repoName,
-		onSelectWorktree,
-		branchPrefix,
-	]);
+	}, [branchName, repoPath, repoName, onSelectWorktree, onWorktreeCreated]);
+
+	const handleOpenWorktree = useCallback(() => {
+		if (existingWorktree) {
+			onSelectWorktree(existingWorktree.path, branchName, repoName);
+		}
+	}, [branchName, existingWorktree, onSelectWorktree, repoName]);
 
 	const parsedDate = new Date(task.created_at);
 	const createdDate = Number.isNaN(parsedDate.getTime())
@@ -763,20 +796,32 @@ function NotionTaskCard({
 				</div>
 			)}
 
-			<Button
-				variant="outline"
-				size="sm"
-				className="w-full mt-2 h-6 text-[10px]"
-				onClick={handleCreateWorktree}
-				disabled={creating}
-			>
-				{creating ? (
-					<Loader2 className="size-3 mr-1 animate-spin" />
-				) : (
-					<GitBranch className="size-3 mr-1" />
-				)}
-				Create Worktree
-			</Button>
+			{existingWorktree ? (
+				<Button
+					variant="outline"
+					size="sm"
+					className="w-full mt-2 h-6 text-[10px]"
+					onClick={handleOpenWorktree}
+				>
+					<FolderOpen className="size-3 mr-1" />
+					Open Worktree
+				</Button>
+			) : (
+				<Button
+					variant="outline"
+					size="sm"
+					className="w-full mt-2 h-6 text-[10px]"
+					onClick={handleCreateWorktree}
+					disabled={creating}
+				>
+					{creating ? (
+						<Loader2 className="size-3 mr-1 animate-spin" />
+					) : (
+						<GitBranch className="size-3 mr-1" />
+					)}
+					Create Worktree
+				</Button>
+			)}
 		</div>
 	);
 }
