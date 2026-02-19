@@ -6,7 +6,7 @@ import {
 	RefreshCw,
 } from "lucide-react";
 import { useMemo } from "react";
-import { AgentStateBadge } from "@/components/workspace/WorktreeCard";
+import { AgentStateBadge } from "@/components/ui/agent-state-badge";
 import type { AgentStateSync, WorktreeEntryMsg } from "@/types/protocol";
 
 interface RemoteDashboardProps {

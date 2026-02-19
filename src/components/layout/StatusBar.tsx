@@ -1,4 +1,5 @@
 import { GitBranch } from "lucide-react";
+import { AgentStateBadge } from "@/components/ui/agent-state-badge";
 import { cn } from "@/lib/utils";
 import type { AgentState } from "@/types/protocol";
 
@@ -70,32 +71,7 @@ export function StatusBar({
 						<span>{branch}</span>
 					</>
 				)}
-				{agentState && (
-					<span
-						className={`inline-flex items-center gap-1 ${
-							agentState === "running"
-								? "text-info"
-								: agentState === "waiting"
-									? "text-warning"
-									: agentState === "done"
-										? "text-success"
-										: "text-destructive"
-						}`}
-					>
-						<span
-							className={`w-1.5 h-1.5 rounded-full ${
-								agentState === "running"
-									? "bg-info animate-pulse"
-									: agentState === "waiting"
-										? "bg-warning animate-pulse"
-										: agentState === "done"
-											? "bg-success"
-											: "bg-destructive"
-							}`}
-						/>
-						Agent: {agentState}
-					</span>
-				)}
+				{agentState && <AgentStateBadge state={agentState} variant="inline" />}
 			</div>
 			{hasFileInfo && (
 				<div className="flex items-center gap-4">
