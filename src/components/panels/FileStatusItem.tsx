@@ -95,6 +95,7 @@ export function FileStatusItem({
 					onAction();
 				}}
 				title={actionLabel}
+				aria-label={actionLabel}
 			>
 				{statusField === "worktree_status" ? (
 					<Plus className="h-3.5 w-3.5" />
