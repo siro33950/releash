@@ -1,7 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
-	ChevronDown,
-	ChevronRight,
 	ExternalLink,
 	FolderOpen,
 	GitBranch,
@@ -11,6 +9,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useIssues } from "@/hooks/useIssues";
@@ -79,7 +78,6 @@ function RepoIssueSection({
 	onSelectWorktree,
 	defaultExpanded,
 }: RepoIssueSectionProps) {
-	const [expanded, setExpanded] = useState(defaultExpanded);
 	const [titleFilter, setTitleFilter] = useState("");
 	const [labelFilter, setLabelFilter] = useState("");
 	const [milestoneFilter, setMilestoneFilter] = useState("");
@@ -160,125 +158,121 @@ function RepoIssueSection({
 	}, [issues, titleFilter, labelFilter, milestoneFilter]);
 
 	return (
-		<div className="border-b border-border">
-			<button
-				type="button"
-				className="flex items-center gap-1.5 w-full px-3 py-1.5 text-xs font-medium hover:bg-accent/50"
-				onClick={() => setExpanded((v) => !v)}
-			>
-				{expanded ? (
-					<ChevronDown className="size-3 shrink-0" />
-				) : (
-					<ChevronRight className="size-3 shrink-0" />
-				)}
-				<span className="truncate">{repoName}</span>
-				{loading && <Loader2 className="size-3 animate-spin ml-auto" />}
-				{!loading && (
-					<span className="ml-auto text-muted-foreground">{issues.length}</span>
-				)}
-			</button>
-			{expanded && (
-				<div className="pb-1">
-					{!isAvailable && (
-						<div className="px-3 py-2 text-[10px] text-muted-foreground">
-							GitHub CLI (gh) が利用できません
-						</div>
+		<CollapsibleSection
+			title={repoName}
+			defaultOpen={defaultExpanded}
+			className="border-b border-border"
+			actions={
+				<>
+					{loading && <Loader2 className="size-3 animate-spin ml-auto" />}
+					{!loading && (
+						<span className="ml-auto text-muted-foreground">
+							{issues.length}
+						</span>
 					)}
-					{isAvailable && !loading && issues.length > 0 && (
-						<div className="px-2 py-1.5 flex flex-col gap-1">
-							<Input
-								type="text"
-								variant="panel"
-								size="xs"
-								placeholder="Filter by title..."
-								aria-label="Filter issues by title"
-								value={titleFilter}
-								onChange={(e) => setTitleFilter(e.target.value)}
-							/>
-							{allLabels.length > 0 && (
-								<select
-									value={labelFilter}
-									onChange={(e) => setLabelFilter(e.target.value)}
-									className="w-full bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
-								>
-									<option value="">All labels</option>
-									{allLabels.map((label) => (
-										<option key={label} value={label}>
-											{label}
-										</option>
-									))}
-								</select>
-							)}
-							{allMilestones.titles.length > 0 && (
-								<select
-									value={milestoneFilter}
-									onChange={(e) => setMilestoneFilter(e.target.value)}
-									className="w-full bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
-								>
-									<option value="">All milestones</option>
-									{allMilestones.hasNone && (
-										<option value="__none__">未設定</option>
-									)}
-									{allMilestones.titles.map((title) => (
-										<option key={title} value={title}>
-											{title}
-										</option>
-									))}
-								</select>
-							)}
-						</div>
-					)}
-					{isAvailable && !loading && issues.length === 0 && (
+				</>
+			}
+		>
+			<div className="pb-1">
+				{!isAvailable && (
+					<div className="px-3 py-2 text-[10px] text-muted-foreground">
+						GitHub CLI (gh) が利用できません
+					</div>
+				)}
+				{isAvailable && !loading && issues.length > 0 && (
+					<div className="px-2 py-1.5 flex flex-col gap-1">
+						<Input
+							type="text"
+							variant="panel"
+							size="xs"
+							placeholder="Filter by title..."
+							aria-label="Filter issues by title"
+							value={titleFilter}
+							onChange={(e) => setTitleFilter(e.target.value)}
+						/>
+						{allLabels.length > 0 && (
+							<select
+								value={labelFilter}
+								onChange={(e) => setLabelFilter(e.target.value)}
+								className="w-full bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
+							>
+								<option value="">All labels</option>
+								{allLabels.map((label) => (
+									<option key={label} value={label}>
+										{label}
+									</option>
+								))}
+							</select>
+						)}
+						{allMilestones.titles.length > 0 && (
+							<select
+								value={milestoneFilter}
+								onChange={(e) => setMilestoneFilter(e.target.value)}
+								className="w-full bg-muted border border-border rounded px-2 py-1 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
+							>
+								<option value="">All milestones</option>
+								{allMilestones.hasNone && (
+									<option value="__none__">未設定</option>
+								)}
+								{allMilestones.titles.map((title) => (
+									<option key={title} value={title}>
+										{title}
+									</option>
+								))}
+							</select>
+						)}
+					</div>
+				)}
+				{isAvailable && !loading && issues.length === 0 && (
+					<EmptyState
+						compact
+						title="No open issues"
+						className="px-3 py-2 text-[10px]"
+					/>
+				)}
+				{isAvailable &&
+					!loading &&
+					issues.length > 0 &&
+					filteredIssues.length === 0 && (
 						<EmptyState
 							compact
-							title="No open issues"
+							title="No matching issues"
 							className="px-3 py-2 text-[10px]"
 						/>
 					)}
-					{isAvailable &&
-						!loading &&
-						issues.length > 0 &&
-						filteredIssues.length === 0 && (
-							<EmptyState
-								compact
-								title="No matching issues"
-								className="px-3 py-2 text-[10px]"
+				{isAvailable &&
+					filteredIssues.map((issue) => {
+						const branchName = generateIssueBranchName(issue.number);
+						const matchedWorktree = worktrees.find(
+							(wt) => wt.branch === branchName,
+						);
+						return (
+							<IssueCard
+								key={issue.number}
+								issue={issue}
+								repoPath={repoPath}
+								repoName={repoName}
+								onSelectWorktree={onSelectWorktree}
+								existingWorktree={matchedWorktree}
+								onWorktreeCreated={fetchWorktrees}
 							/>
-						)}
-					{isAvailable &&
-						filteredIssues.map((issue) => {
-							const branchName = generateIssueBranchName(issue.number);
-							const matchedWorktree = worktrees.find(
-								(wt) => wt.branch === branchName,
-							);
-							return (
-								<IssueCard
-									key={issue.number}
-									issue={issue}
-									repoPath={repoPath}
-									repoName={repoName}
-									onSelectWorktree={onSelectWorktree}
-									existingWorktree={matchedWorktree}
-									onWorktreeCreated={fetchWorktrees}
-								/>
-							);
-						})}
-					{isAvailable && !loading && (
-						<div className="px-3 pt-1">
-							<Button
-								variant="ghost"
-								size="sm"
-								className="h-5 px-1.5 text-[10px] text-muted-foreground"
-								onClick={refresh}
-							>
-								<RefreshCw className="size-2.5 mr-1" />
-								Refresh
-							</Button>
-						</div>
-					)}
-				</div>
-			)}
-		</div>
+						);
+					})}
+				{isAvailable && !loading && (
+					<div className="px-3 pt-1">
+						<Button
+							variant="ghost"
+							size="sm"
+							className="h-5 px-1.5 text-[10px] text-muted-foreground"
+							onClick={refresh}
+						>
+							<RefreshCw className="size-2.5 mr-1" />
+							Refresh
+						</Button>
+					</div>
+				)}
+			</div>
+		</CollapsibleSection>
 	);
 }
 

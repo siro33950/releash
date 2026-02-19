@@ -2,8 +2,6 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
 	ArrowDown,
 	ArrowUp,
-	ChevronDown,
-	ChevronRight,
 	Minus,
 	Pencil,
 	Plus,
@@ -22,6 +20,7 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useGitActions } from "@/hooks/useGitActions";
@@ -119,59 +118,6 @@ function FileStatusItem({
 					<Minus className="h-3.5 w-3.5" />
 				)}
 			</button>
-		</div>
-	);
-}
-
-function CollapsibleSection({
-	title,
-	count,
-	defaultOpen = true,
-	actionLabel,
-	actionIcon,
-	onAction,
-	children,
-}: {
-	title: string;
-	count?: number;
-	defaultOpen?: boolean;
-	actionLabel?: string;
-	actionIcon?: React.ReactNode;
-	onAction?: () => void;
-	children: React.ReactNode;
-}) {
-	const [open, setOpen] = useState(defaultOpen);
-
-	return (
-		<div className="overflow-hidden">
-			<div className="flex items-center gap-1 px-2 py-1 text-xs font-semibold uppercase tracking-wide hover:bg-sidebar-accent transition-colors">
-				<button
-					type="button"
-					className="flex flex-1 min-w-0 items-center gap-1"
-					onClick={() => setOpen(!open)}
-				>
-					{open ? (
-						<ChevronDown className="h-3.5 w-3.5 shrink-0" />
-					) : (
-						<ChevronRight className="h-3.5 w-3.5 shrink-0" />
-					)}
-					<span className="flex-1 text-left truncate">
-						{title}
-						{count != null ? ` (${count})` : ""}
-					</span>
-				</button>
-				{actionLabel && onAction && (
-					<button
-						type="button"
-						className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
-						onClick={onAction}
-						title={actionLabel}
-					>
-						{actionIcon}
-					</button>
-				)}
-			</div>
-			{open && children}
 		</div>
 	);
 }
@@ -321,9 +267,18 @@ export function SourceControlPanel({
 				<CollapsibleSection
 					title="Unstaged Files"
 					count={changedFiles.length}
-					actionLabel="Stage All Changes"
-					actionIcon={<ArrowDown className="h-3.5 w-3.5" />}
-					onAction={() => handleStage([])}
+					headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide hover:bg-sidebar-accent"
+					chevronClassName="h-3.5 w-3.5"
+					actions={
+						<button
+							type="button"
+							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+							onClick={() => handleStage([])}
+							title="Stage All Changes"
+						>
+							<ArrowDown className="h-3.5 w-3.5" />
+						</button>
+					}
 				>
 					{changedFiles.length === 0 && (
 						<EmptyState
@@ -369,9 +324,18 @@ export function SourceControlPanel({
 				<CollapsibleSection
 					title="Staged Files"
 					count={stagedFiles.length}
-					actionLabel="Unstage All Changes"
-					actionIcon={<ArrowUp className="h-3.5 w-3.5" />}
-					onAction={() => handleUnstage([])}
+					headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide hover:bg-sidebar-accent"
+					chevronClassName="h-3.5 w-3.5"
+					actions={
+						<button
+							type="button"
+							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+							onClick={() => handleUnstage([])}
+							title="Unstage All Changes"
+						>
+							<ArrowUp className="h-3.5 w-3.5" />
+						</button>
+					}
 				>
 					{stagedFiles.length === 0 && (
 						<EmptyState

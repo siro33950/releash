@@ -1,7 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
-	ChevronDown,
-	ChevronRight,
 	ExternalLink,
 	GitBranch,
 	Loader2,
@@ -12,6 +10,7 @@ import {
 import { useCallback, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNotionConfig } from "@/hooks/useNotionConfig";
@@ -81,7 +80,6 @@ function NotionRepoSection({
 	onSelectWorktree,
 	defaultExpanded,
 }: NotionRepoSectionProps) {
-	const [expanded, setExpanded] = useState(defaultExpanded);
 	const [showConfig, setShowConfig] = useState(false);
 	const {
 		config,
@@ -94,69 +92,63 @@ function NotionRepoSection({
 	const repoName = repoPath.split("/").filter(Boolean).pop() ?? "repo";
 
 	return (
-		<div className="border-b border-border">
-			<button
-				type="button"
-				className="flex items-center gap-1.5 w-full px-3 py-1.5 text-xs font-medium hover:bg-accent/50"
-				onClick={() => setExpanded((v) => !v)}
-			>
-				{expanded ? (
-					<ChevronDown className="size-3 shrink-0" />
-				) : (
-					<ChevronRight className="size-3 shrink-0" />
-				)}
-				<span className="truncate">{repoName}</span>
-				{configLoading && <Loader2 className="size-3 animate-spin ml-auto" />}
-			</button>
-			{expanded && (
-				<div className="pb-1">
-					{!isConfigured && !configLoading && !showConfig && (
-						<div className="px-3 py-2">
-							<div className="text-[10px] text-muted-foreground mb-2">
-								Notion連携が未設定です
-							</div>
-							<Button
-								variant="outline"
-								size="sm"
-								className="w-full h-6 text-[10px]"
-								onClick={() => setShowConfig(true)}
-							>
-								<Settings className="size-3 mr-1" />
-								設定する
-							</Button>
+		<CollapsibleSection
+			title={repoName}
+			defaultOpen={defaultExpanded}
+			className="border-b border-border"
+			actions={
+				configLoading ? (
+					<Loader2 className="size-3 animate-spin ml-auto" />
+				) : undefined
+			}
+		>
+			<div className="pb-1">
+				{!isConfigured && !configLoading && !showConfig && (
+					<div className="px-3 py-2">
+						<div className="text-[10px] text-muted-foreground mb-2">
+							Notion連携が未設定です
 						</div>
-					)}
-					{showConfig && (
-						<NotionConfigForm
-							initialConfig={config}
-							onSave={async (apiToken, databaseId, mapping) => {
-								await save(apiToken, databaseId, mapping);
-								setShowConfig(false);
-							}}
-							onCancel={() => setShowConfig(false)}
-							onDelete={
-								isConfigured
-									? async () => {
-											await remove();
-											setShowConfig(false);
-										}
-									: undefined
-							}
-							validate={validate}
-						/>
-					)}
-					{isConfigured && !showConfig && (
-						<NotionTaskList
-							repoPath={repoPath}
-							repoName={repoName}
-							onSelectWorktree={onSelectWorktree}
-							onShowConfig={() => setShowConfig(true)}
-							branchPrefix={config?.property_mapping.branch_prefix ?? ""}
-						/>
-					)}
-				</div>
-			)}
-		</div>
+						<Button
+							variant="outline"
+							size="sm"
+							className="w-full h-6 text-[10px]"
+							onClick={() => setShowConfig(true)}
+						>
+							<Settings className="size-3 mr-1" />
+							設定する
+						</Button>
+					</div>
+				)}
+				{showConfig && (
+					<NotionConfigForm
+						initialConfig={config}
+						onSave={async (apiToken, databaseId, mapping) => {
+							await save(apiToken, databaseId, mapping);
+							setShowConfig(false);
+						}}
+						onCancel={() => setShowConfig(false)}
+						onDelete={
+							isConfigured
+								? async () => {
+										await remove();
+										setShowConfig(false);
+									}
+								: undefined
+						}
+						validate={validate}
+					/>
+				)}
+				{isConfigured && !showConfig && (
+					<NotionTaskList
+						repoPath={repoPath}
+						repoName={repoName}
+						onSelectWorktree={onSelectWorktree}
+						onShowConfig={() => setShowConfig(true)}
+						branchPrefix={config?.property_mapping.branch_prefix ?? ""}
+					/>
+				)}
+			</div>
+		</CollapsibleSection>
 	);
 }
 
