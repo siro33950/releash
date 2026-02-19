@@ -102,6 +102,7 @@ describe("NotionPanel", () => {
 			if (cmd === "get_notion_config") return mockConfig;
 			if (cmd === "query_notion_tasks") return mockTaskPage;
 			if (cmd === "fetch_notion_label_options") return mockLabelOptions;
+			if (cmd === "list_worktrees") return [];
 			return null;
 		});
 
@@ -167,6 +168,7 @@ describe("NotionPanel", () => {
 			if (cmd === "get_notion_config") return mockConfig;
 			if (cmd === "query_notion_tasks") return mockTaskPage;
 			if (cmd === "fetch_notion_label_options") return mockLabelOptions;
+			if (cmd === "list_worktrees") return [];
 			return null;
 		});
 
@@ -222,6 +224,7 @@ describe("NotionPanel", () => {
 			if (cmd === "get_notion_config") return mockConfig;
 			if (cmd === "query_notion_tasks") return mockTaskPage;
 			if (cmd === "fetch_notion_label_options") return [];
+			if (cmd === "list_worktrees") return [];
 			return null;
 		});
 
@@ -265,6 +268,7 @@ describe("NotionPanel", () => {
 			if (cmd === "get_notion_config") return mockConfig;
 			if (cmd === "query_notion_tasks") return mockTaskPage;
 			if (cmd === "fetch_notion_label_options") return [];
+			if (cmd === "list_worktrees") return [];
 			return null;
 		});
 
@@ -343,6 +347,7 @@ describe("NotionPanel", () => {
 			if (cmd === "get_notion_config") return mockConfig;
 			if (cmd === "query_notion_tasks") return mockTaskPage;
 			if (cmd === "fetch_notion_label_options") return mockLabelOptions;
+			if (cmd === "list_worktrees") return [];
 			return null;
 		});
 
@@ -381,6 +386,7 @@ describe("NotionPanel", () => {
 			if (cmd === "query_notion_tasks")
 				return { tasks: [], has_more: false, next_cursor: null };
 			if (cmd === "fetch_notion_label_options") return [];
+			if (cmd === "list_worktrees") return [];
 			return null;
 		});
 
@@ -406,5 +412,126 @@ describe("NotionPanel", () => {
 		const prefixInput = screen.getByPlaceholderText("feat/");
 		expect(prefixInput).toBeInTheDocument();
 		expect(prefixInput).toHaveValue("feat/");
+	});
+
+	it("should show Open Worktree when worktree already exists for a task", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const mockConfig = {
+			api_token: "ntn_test",
+			database_id: "db-123",
+			property_mapping: {
+				title: "Name",
+				labels: [],
+				branch_name: "",
+				branch_prefix: "",
+			},
+		};
+		const mockTaskPage = {
+			tasks: [
+				{
+					id: "page-1",
+					title: "Existing task",
+					url: "https://notion.so/page-1",
+					labels: {},
+					branch_name: "",
+					created_at: "2026-01-01T00:00:00.000Z",
+					last_edited_at: "2026-01-01T00:00:00.000Z",
+				},
+			],
+			has_more: false,
+			next_cursor: null,
+		};
+		const mockWorktrees = [
+			{
+				path: "/worktrees/Existing-task-page1",
+				branch: "Existing-task",
+				is_main: false,
+			},
+		];
+
+		vi.mocked(invoke).mockImplementation(async (cmd) => {
+			if (cmd === "get_notion_config") return mockConfig;
+			if (cmd === "query_notion_tasks") return mockTaskPage;
+			if (cmd === "fetch_notion_label_options") return [];
+			if (cmd === "list_worktrees") return mockWorktrees;
+			return null;
+		});
+
+		render(<NotionPanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Open Worktree")).toBeInTheDocument();
+		});
+		expect(screen.queryByText("Create Worktree")).not.toBeInTheDocument();
+	});
+
+	it("should refresh worktree list after creating a worktree", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const mockConfig = {
+			api_token: "ntn_test",
+			database_id: "db-123",
+			property_mapping: {
+				title: "Name",
+				labels: [],
+				branch_name: "",
+				branch_prefix: "",
+			},
+		};
+		const mockTaskPage = {
+			tasks: [
+				{
+					id: "page-1",
+					title: "New task",
+					url: "https://notion.so/page-1",
+					labels: {},
+					branch_name: "",
+					created_at: "2026-01-01T00:00:00.000Z",
+					last_edited_at: "2026-01-01T00:00:00.000Z",
+				},
+			],
+			has_more: false,
+			next_cursor: null,
+		};
+
+		let worktreeCallCount = 0;
+		vi.mocked(invoke).mockImplementation(async (cmd) => {
+			if (cmd === "get_notion_config") return mockConfig;
+			if (cmd === "query_notion_tasks") return mockTaskPage;
+			if (cmd === "fetch_notion_label_options") return [];
+			if (cmd === "list_worktrees") {
+				worktreeCallCount++;
+				if (worktreeCallCount >= 2) {
+					return [
+						{
+							path: "/worktrees/New-task",
+							branch: "New-task",
+							is_main: false,
+						},
+					];
+				}
+				return [];
+			}
+			if (cmd === "get_default_branch") return "main";
+			if (cmd === "create_worktree")
+				return {
+					path: "/worktrees/New-task",
+					branch: "New-task",
+					is_main: false,
+				};
+			return null;
+		});
+
+		const user = userEvent.setup();
+		render(<NotionPanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Create Worktree")).toBeInTheDocument();
+		});
+
+		await user.click(screen.getByText("Create Worktree"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Open Worktree")).toBeInTheDocument();
+		});
 	});
 });
