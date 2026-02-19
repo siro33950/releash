@@ -1,8 +1,8 @@
 import { GitBranch, LayoutGrid, X } from "lucide-react";
 import { ScrollArea as ScrollAreaPrimitive } from "radix-ui";
+import { AgentStateBadge } from "@/components/ui/agent-state-badge";
 import { useTabDrag } from "@/hooks/useTabDrag";
 import { cn } from "@/lib/utils";
-import type { AgentState } from "@/types/protocol";
 import type { WorkspaceTab } from "@/types/workspace-tab";
 
 export interface WorkspaceTabBarProps {
@@ -12,13 +12,6 @@ export interface WorkspaceTabBarProps {
 	onTabClose: (id: string) => void;
 	onReorderTabs?: (fromId: string, toId: string) => void;
 }
-
-const agentStateColor: Record<AgentState, string> = {
-	running: "bg-info animate-pulse",
-	waiting: "bg-warning animate-pulse",
-	done: "bg-success",
-	error: "bg-destructive",
-};
 
 export function WorkspaceTabBar({
 	tabs,
@@ -127,13 +120,7 @@ export function WorkspaceTabBar({
 										: tab.branchName}
 								</span>
 								{tab.agentState && (
-									<span
-										className={cn(
-											"w-2 h-2 rounded-full shrink-0",
-											agentStateColor[tab.agentState],
-										)}
-										title={tab.agentState}
-									/>
+									<AgentStateBadge state={tab.agentState} variant="dot" />
 								)}
 								<button
 									type="button"

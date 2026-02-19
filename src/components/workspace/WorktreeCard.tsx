@@ -7,7 +7,7 @@ import {
 	Monitor,
 	Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AgentStateBadge } from "@/components/ui/agent-state-badge";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -15,78 +15,6 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { BranchCard as BranchCardType } from "@/types/git";
-import type { AgentState } from "@/types/protocol";
-
-function formatElapsed(timestampSec: number): string {
-	const now = Date.now() / 1000;
-	const diff = Math.max(0, Math.floor(now - timestampSec));
-	if (diff < 60) return `${diff}s`;
-	if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-	return `${Math.floor(diff / 3600)}h`;
-}
-
-const agentStateConfig: Record<
-	AgentState,
-	{ bg: string; text: string; dot: string; label: string }
-> = {
-	running: {
-		bg: "bg-info/15",
-		text: "text-info",
-		dot: "bg-info animate-pulse",
-		label: "Running",
-	},
-	done: {
-		bg: "bg-success/15",
-		text: "text-success",
-		dot: "bg-success",
-		label: "Done",
-	},
-	waiting: {
-		bg: "bg-warning/15",
-		text: "text-warning",
-		dot: "bg-warning animate-pulse",
-		label: "Waiting",
-	},
-	error: {
-		bg: "bg-destructive/15",
-		text: "text-destructive",
-		dot: "bg-destructive",
-		label: "Error",
-	},
-};
-
-export function AgentStateBadge({
-	state,
-	timestamp,
-}: {
-	state: AgentState;
-	timestamp?: number;
-}) {
-	const [, setTick] = useState(0);
-	const config = agentStateConfig[state];
-
-	useEffect(() => {
-		if (!timestamp) return;
-		const id = setInterval(() => setTick((t) => t + 1), 10000);
-		return () => clearInterval(id);
-	}, [timestamp]);
-
-	return (
-		<span className="shrink-0 inline-flex items-center gap-1">
-			<span
-				className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-medium ${config.bg} ${config.text}`}
-			>
-				<span className={`w-1.5 h-1.5 rounded-full ${config.dot}`} />
-				{config.label}
-			</span>
-			{timestamp && (
-				<span className="text-[10px] text-muted-foreground">
-					{formatElapsed(timestamp)}
-				</span>
-			)}
-		</span>
-	);
-}
 
 interface BranchCardProps {
 	branch: BranchCardType;
