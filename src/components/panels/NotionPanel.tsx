@@ -572,6 +572,7 @@ function NotionTaskList({
 						variant="panel"
 						size="xs"
 						placeholder="Filter by title..."
+						aria-label="Filter tasks by title"
 						value={titleFilter}
 						onChange={(e) => handleTitleChange(e.target.value)}
 					/>

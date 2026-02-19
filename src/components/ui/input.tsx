@@ -11,7 +11,7 @@ const inputVariants = cva(
 				default:
 					"dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]",
 				panel:
-					"bg-muted border-border focus:outline-none focus:ring-1 focus:ring-primary",
+					"bg-muted border-border focus-visible:ring-1 focus-visible:ring-primary",
 			},
 			size: {
 				default: "h-9 px-3 py-1 text-base md:text-sm",

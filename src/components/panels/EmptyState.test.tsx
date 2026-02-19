@@ -5,9 +5,10 @@ import { EmptyState } from "./EmptyState";
 
 describe("EmptyState", () => {
 	it("should render title and default icon", () => {
-		render(<EmptyState title="No file selected" />);
+		const { container } = render(<EmptyState title="No file selected" />);
 
 		expect(screen.getByText("No file selected")).toBeInTheDocument();
+		expect(container.querySelector("svg")).toBeInTheDocument();
 	});
 
 	it("should render description when provided", () => {

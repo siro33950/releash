@@ -191,6 +191,7 @@ function RepoIssueSection({
 								variant="panel"
 								size="xs"
 								placeholder="Filter by title..."
+								aria-label="Filter issues by title"
 								value={titleFilter}
 								onChange={(e) => setTitleFilter(e.target.value)}
 							/>
