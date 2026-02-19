@@ -10,6 +10,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { useWorkspaceTabs } from "@/hooks/useWorkspaceTabs";
 import { setTelemetryEnabled } from "@/lib/telemetry";
+import { cn } from "@/lib/utils";
 import { WorkspaceManagerScreen } from "@/screens/WorkspaceManagerScreen";
 import { WorktreeView } from "@/screens/WorktreeView";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
@@ -182,10 +183,10 @@ function App() {
 			/>
 			<div className="flex-1 overflow-hidden relative">
 				<div
-					style={{
-						display: activeTabId === "kanban" ? "contents" : "none",
-					}}
-					className="h-full"
+					className={cn(
+						"h-full",
+						activeTabId === "kanban" ? "contents" : "hidden",
+					)}
 				>
 					<WorkspaceManagerScreen
 						repoPaths={repoPaths}
@@ -204,10 +205,10 @@ function App() {
 				{worktreeTabs.map((tab) => (
 					<div
 						key={tab.id}
-						style={{
-							display: activeTabId === tab.id ? "contents" : "none",
-						}}
-						className="h-full"
+						className={cn(
+							"h-full",
+							activeTabId === tab.id ? "contents" : "hidden",
+						)}
 					>
 						<WorktreeView
 							rootPath={tab.rootPath}

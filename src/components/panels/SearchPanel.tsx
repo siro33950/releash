@@ -1,9 +1,11 @@
 import { CaseSensitive, Regex, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSearch } from "@/hooks/useSearch";
 import { cn } from "@/lib/utils";
 import type { SearchMatch } from "@/types/search";
+import { EmptyState } from "./EmptyState";
 
 interface GroupedMatches {
 	path: string;
@@ -120,8 +122,8 @@ export function SearchPanel({
 
 	if (!rootPath) {
 		return (
-			<div className="h-full flex items-center justify-center bg-sidebar">
-				<span className="text-sm text-muted-foreground">No folder opened</span>
+			<div className="h-full bg-sidebar">
+				<EmptyState title="No folder opened" />
 			</div>
 		);
 	}
@@ -137,10 +139,12 @@ export function SearchPanel({
 			<div className="px-3 py-2 shrink-0 flex flex-col gap-1.5">
 				<div className="flex items-center gap-1">
 					<div className="relative flex-1">
-						<input
+						<Input
 							ref={inputRef}
 							type="text"
-							className="w-full bg-transparent border border-border rounded px-2 py-1 text-xs outline-none focus:border-primary pr-6"
+							variant="panel"
+							size="sm"
+							className="pr-6"
 							placeholder="Search files..."
 							value={query}
 							onChange={handleInputChange}

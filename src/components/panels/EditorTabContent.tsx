@@ -389,7 +389,12 @@ export function EditorTabContent({
 	);
 
 	if (!fileContent) {
-		return <EmptyState />;
+		return (
+			<EmptyState
+				title="No file selected"
+				description="Select a file from the explorer to view its contents"
+			/>
+		);
 	}
 
 	return (
@@ -428,10 +433,7 @@ export function EditorTabContent({
 					</div>
 				)}
 			</Breadcrumb>
-			<div
-				className="flex-1 min-h-0"
-				style={{ position: "relative", overflow: "hidden" }}
-			>
+			<div className="flex-1 min-h-0 relative overflow-hidden">
 				{isImage ? (
 					<ImageDiffViewer
 						originalUrl={imageDiff.originalUrl}

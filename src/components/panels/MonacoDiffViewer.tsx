@@ -236,7 +236,7 @@ function GutterEditor({
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
+				<div ref={containerRef} className="absolute inset-0" />
 			</ContextMenuTrigger>
 			<EditorContextMenuContent actions={actions} />
 		</ContextMenu>
@@ -309,7 +309,7 @@ function DiffEditor({
 	return (
 		<ContextMenu>
 			<ContextMenuTrigger asChild>
-				<div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
+				<div ref={containerRef} className="absolute inset-0" />
 			</ContextMenuTrigger>
 			<EditorContextMenuContent actions={actions} />
 		</ContextMenu>
@@ -377,10 +377,7 @@ export function MonacoDiffViewer({
 		: undefined;
 
 	return (
-		<div
-			style={{ position: "absolute", inset: 0 }}
-			className={cn("bg-background", className)}
-		>
+		<div className={cn("absolute inset-0 bg-background", className)}>
 			{diffMode === "gutter" && (
 				<GutterEditor
 					originalContent={originalContent}

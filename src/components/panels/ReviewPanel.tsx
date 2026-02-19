@@ -91,8 +91,10 @@ export function ReviewPanel({
 					)}
 			</div>
 			<div
-				className="flex-1 overflow-hidden"
-				style={{ display: activeTab === "terminal" ? "block" : "none" }}
+				className={cn(
+					"flex-1 overflow-hidden",
+					activeTab !== "terminal" && "hidden",
+				)}
 			>
 				<TerminalPanel
 					cwd={cwd}
@@ -101,8 +103,10 @@ export function ReviewPanel({
 				/>
 			</div>
 			<div
-				className="flex-1 overflow-hidden"
-				style={{ display: activeTab === "comments" ? "block" : "none" }}
+				className={cn(
+					"flex-1 overflow-hidden",
+					activeTab !== "comments" && "hidden",
+				)}
 			>
 				<CommentList
 					comments={comments}

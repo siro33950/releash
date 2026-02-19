@@ -697,7 +697,13 @@ export function WorktreeView({
 			if (component === "editor") {
 				const config = node.getConfig();
 				const filePath = config?.filePath;
-				if (!filePath) return <EmptyState />;
+				if (!filePath)
+					return (
+						<EmptyState
+							title="No file selected"
+							description="Select a file from the explorer to view its contents"
+						/>
+					);
 				return (
 					<EditorTabContent
 						filePath={filePath}

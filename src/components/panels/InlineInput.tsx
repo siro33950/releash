@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 const INVALID_CHARS = /[/\\:]/;
@@ -73,7 +74,7 @@ export function InlineInput({
 
 	return (
 		<div className={cn("flex flex-col", className)}>
-			<input
+			<Input
 				ref={inputRef}
 				type="text"
 				value={value}
@@ -81,7 +82,7 @@ export function InlineInput({
 				onKeyDown={handleKeyDown}
 				onBlur={handleCommit}
 				onClick={(e) => e.stopPropagation()}
-				className="h-[22px] px-1 text-sm bg-input border border-primary rounded-sm outline-none w-full"
+				className="h-[22px] px-1 text-sm bg-input border border-primary rounded-sm shadow-none outline-none focus-visible:ring-0 w-full"
 			/>
 			{error && (
 				<span className="text-[10px] text-destructive px-1">{error}</span>
