@@ -1,149 +1,8 @@
-import {
-	ArrowUpFromLine,
-	Check,
-	ChevronDown,
-	ChevronRight,
-	Loader2,
-	Minus,
-	Pencil,
-	Plus,
-	RefreshCw,
-	X,
-} from "lucide-react";
+import { ArrowUpFromLine, Check, Loader2, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FileStatusItem } from "@/components/panels/FileStatusItem";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import type { GitFileStatus } from "@/types/git";
-
-function statusColor(status: string): string {
-	switch (status) {
-		case "new":
-			return "text-green-400";
-		case "modified":
-			return "text-yellow-400";
-		case "deleted":
-			return "text-red-400";
-		case "renamed":
-			return "text-yellow-400";
-		default:
-			return "text-neutral-500";
-	}
-}
-
-function StatusIcon({ status }: { status: string }) {
-	const color = statusColor(status);
-	const iconClass = `h-3.5 w-3.5 shrink-0 ${color}`;
-	switch (status) {
-		case "modified":
-		case "renamed":
-			return <Pencil className={iconClass} />;
-		case "new":
-			return <Plus className={iconClass} />;
-		case "deleted":
-			return <Minus className={iconClass} />;
-		default:
-			return null;
-	}
-}
-
-function formatPath(path: string): { dir: string; name: string } {
-	const parts = path.split("/");
-	const name = parts.pop() ?? path;
-	const dir = parts.length > 0 ? `${parts.join("/")}/` : "";
-	return { dir, name };
-}
-
-function FileStatusItem({
-	entry,
-	statusField,
-	selectedPath,
-	onSelect,
-	actionLabel,
-	onAction,
-}: {
-	entry: GitFileStatus;
-	statusField: "index_status" | "worktree_status";
-	selectedPath: string | null;
-	onSelect?: (path: string) => void;
-	actionLabel: string;
-	onAction: () => void;
-}) {
-	const status = entry[statusField];
-	const { dir, name } = formatPath(entry.path);
-	const isSelected = selectedPath === entry.path;
-
-	return (
-		// biome-ignore lint/a11y/useSemanticElements: ネストされたbuttonがあるためdiv+role使用
-		<div
-			role="button"
-			tabIndex={0}
-			className={`group flex w-full items-center gap-1.5 px-4 py-1 text-sm transition-colors cursor-pointer ${
-				isSelected ? "bg-neutral-700" : "hover:bg-neutral-800"
-			}`}
-			onClick={() => onSelect?.(entry.path)}
-			onKeyDown={(e) => {
-				if (e.key === "Enter" || e.key === " ") {
-					e.preventDefault();
-					onSelect?.(entry.path);
-				}
-			}}
-		>
-			<StatusIcon status={status} />
-			<span className="truncate flex-1 text-left">
-				<span className="text-neutral-500">{dir}</span>
-				<span className="font-semibold">{name}</span>
-			</span>
-			<button
-				type="button"
-				className="inline-flex items-center justify-center h-5 w-5 rounded active:bg-neutral-600 shrink-0"
-				onClick={(e) => {
-					e.stopPropagation();
-					onAction();
-				}}
-				title={actionLabel}
-			>
-				{statusField === "worktree_status" ? (
-					<Plus className="h-3.5 w-3.5" />
-				) : (
-					<Minus className="h-3.5 w-3.5" />
-				)}
-			</button>
-		</div>
-	);
-}
-
-function CollapsibleSection({
-	title,
-	count,
-	defaultOpen = true,
-	children,
-}: {
-	title: string;
-	count?: number;
-	defaultOpen?: boolean;
-	children: React.ReactNode;
-}) {
-	const [open, setOpen] = useState(defaultOpen);
-
-	return (
-		<div className="overflow-hidden">
-			<button
-				type="button"
-				className="flex w-full items-center gap-1 px-2 py-1 text-xs font-semibold uppercase tracking-wide hover:bg-neutral-800 transition-colors"
-				onClick={() => setOpen(!open)}
-			>
-				{open ? (
-					<ChevronDown className="h-3.5 w-3.5 shrink-0" />
-				) : (
-					<ChevronRight className="h-3.5 w-3.5 shrink-0" />
-				)}
-				<span className="flex-1 text-left truncate">
-					{title}
-					{count != null ? ` (${count})` : ""}
-				</span>
-			</button>
-			{open && children}
-		</div>
-	);
-}
 
 interface RemoteSourceControlProps {
 	stagedFiles: GitFileStatus[];
@@ -251,10 +110,11 @@ export function RemoteSourceControl({
 							key={`changed-${entry.path}`}
 							entry={entry}
 							statusField="worktree_status"
-							selectedPath={selectedPath}
-							onSelect={handleSelectFile}
+							selected={selectedPath === entry.path}
+							onSelect={(e) => handleSelectFile(e.path)}
 							actionLabel="Stage"
 							onAction={() => onStage([entry.path])}
+							alwaysShowAction
 						/>
 					))}
 				</CollapsibleSection>
@@ -281,10 +141,11 @@ export function RemoteSourceControl({
 							key={`staged-${entry.path}`}
 							entry={entry}
 							statusField="index_status"
-							selectedPath={selectedPath}
-							onSelect={handleSelectFile}
+							selected={selectedPath === entry.path}
+							onSelect={(e) => handleSelectFile(e.path)}
 							actionLabel="Unstage"
 							onAction={() => onUnstage([entry.path])}
+							alwaysShowAction
 						/>
 					))}
 				</CollapsibleSection>
