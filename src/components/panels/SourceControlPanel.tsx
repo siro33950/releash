@@ -449,7 +449,7 @@ export function SourceControlPanel({
 				<div className="flex gap-1.5">
 					<button
 						type="button"
-						className="flex-1 flex items-center justify-center gap-1 bg-primary text-primary-foreground rounded px-2 py-1 text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+						className="flex-1 flex items-center justify-center gap-1 bg-accent text-accent-foreground rounded px-2 py-1 text-xs font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 						disabled={
 							!commitSummary.trim() || stagedFiles.length === 0 || loading
 						}

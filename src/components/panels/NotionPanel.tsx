@@ -289,7 +289,7 @@ function NotionConfigForm({
 				<div className="text-[10px] text-destructive">{validationStatus}</div>
 			)}
 			{validationStatus === "success" && (
-				<div className="text-[10px] text-green-600">接続成功</div>
+				<div className="text-[10px] text-success">接続成功</div>
 			)}
 
 			{properties.length > 0 && (

@@ -14,10 +14,10 @@ interface PullRequestPanelProps {
 function StateBadge({ state }: { state: string }) {
 	const color =
 		state === "OPEN"
-			? "bg-green-600/20 text-green-400"
+			? "bg-success/20 text-success"
 			: state === "MERGED"
-				? "bg-purple-600/20 text-purple-400"
-				: "bg-red-600/20 text-red-400";
+				? "bg-info/20 text-info"
+				: "bg-destructive/20 text-destructive";
 	return (
 		<span
 			className={cn(
@@ -39,10 +39,10 @@ function ReviewStateBadge({ state }: { state: string }) {
 				: "Commented";
 	const color =
 		state === "APPROVED"
-			? "bg-green-600/20 text-green-400"
+			? "bg-success/20 text-success"
 			: state === "CHANGES_REQUESTED"
-				? "bg-yellow-600/20 text-yellow-400"
-				: "bg-blue-600/20 text-blue-400";
+				? "bg-warning/20 text-warning"
+				: "bg-info/20 text-info";
 	return (
 		<span
 			className={cn(
@@ -180,10 +180,10 @@ export function PullRequestPanel({ rootPath, branch }: PullRequestPanelProps) {
 							{detail.base_ref_name} ← {detail.head_ref_name}
 						</div>
 						<div className="flex items-center gap-3 text-xs">
-							<span className="text-green-400 font-medium">
+							<span className="text-success font-medium">
 								+{detail.additions}
 							</span>
-							<span className="text-red-400 font-medium">
+							<span className="text-destructive font-medium">
 								-{detail.deletions}
 							</span>
 							<span className="text-muted-foreground">

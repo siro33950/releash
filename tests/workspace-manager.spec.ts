@@ -50,7 +50,7 @@ test.describe("Workspace Manager (Kanban)", () => {
 		await expect(page.getByText("feat/done")).toBeVisible();
 	});
 
-	test("Todoブランチの Open クリックで worktree 作成が呼ばれる", async ({
+	test("Todoブランチのカードクリックで worktree 作成が呼ばれる", async ({
 		page,
 	}) => {
 		const createdEntry: WorktreeEntry = {
@@ -70,9 +70,9 @@ test.describe("Workspace Manager (Kanban)", () => {
 		await trackInvocations(page);
 		await waitForApp(page);
 
-		// feat/todo カード内の "Open" ボタンをクリック
+		// feat/todo カードをクリック（カード全体がボタン）
 		const todoCard = page.getByTestId("branch-card-feat/todo");
-		await todoCard.getByRole("button", { name: "Open" }).click();
+		await todoCard.click();
 
 		// create_worktree は非同期で呼ばれるので待機
 		await page.waitForFunction(
@@ -90,16 +90,16 @@ test.describe("Workspace Manager (Kanban)", () => {
 		expect(createCall).toBeTruthy();
 	});
 
-	test("InProgressブランチの Open クリックでタブが開く", async ({ page }) => {
+	test("InProgressブランチのカードクリックでタブが開く", async ({ page }) => {
 		const config = buildMockConfig({
 			list_branches_with_status: kanbanBranches,
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// feat/wip カード内の "Open" ボタンをクリック
+		// feat/wip カードをクリック（カード全体がボタン）
 		const wipCard = page.getByTestId("branch-card-feat/wip");
-		await wipCard.getByRole("button", { name: "Open" }).click();
+		await wipCard.click();
 
 		// WorkspaceTabBar にタブが追加されることを確認
 		await expect(page.getByText("feat/wip").first()).toBeVisible();

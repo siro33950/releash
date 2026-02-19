@@ -14,10 +14,10 @@ export interface WorkspaceTabBarProps {
 }
 
 const agentStateColor: Record<AgentState, string> = {
-	running: "bg-blue-500 animate-pulse",
-	waiting: "bg-yellow-500 animate-pulse",
-	done: "bg-green-500",
-	error: "bg-red-500",
+	running: "bg-info animate-pulse",
+	waiting: "bg-warning animate-pulse",
+	done: "bg-success",
+	error: "bg-destructive",
 };
 
 export function WorkspaceTabBar({

@@ -271,14 +271,11 @@ describe("WorkspaceManagerScreen", () => {
 
 	describe("Kanban 分類ロジック", () => {
 		it("is_merged=true のブランチが Done 列に表示", async () => {
-			const { container } = renderScreen();
+			renderScreen();
 			await waitFor(() => {
 				expect(screen.getByText("feat/merged-branch")).toBeInTheDocument();
 			});
-			const card = container.querySelector(
-				'[data-testid="branch-card-feat/merged-branch"]',
-			);
-			expect(card?.querySelector(".lucide-git-merge")).toBeInTheDocument();
+			expect(screen.getByText("merged")).toBeInTheDocument();
 		});
 
 		it("worktree_path ありのブランチが In Progress 列に表示", async () => {
@@ -286,7 +283,7 @@ describe("WorkspaceManagerScreen", () => {
 			await waitFor(() => {
 				expect(screen.getByText("feat/active-branch")).toBeInTheDocument();
 			});
-			expect(screen.getByText("3 files changed")).toBeInTheDocument();
+			expect(screen.getByText("3 changed")).toBeInTheDocument();
 		});
 
 		it("worktree_path なし & is_merged=false のブランチが Todo 列に表示", async () => {
@@ -351,14 +348,11 @@ describe("WorkspaceManagerScreen", () => {
 				merged_branches: [],
 			};
 			setupMockInvoke([mergedWithPr], prStatus);
-			const { container } = renderScreen();
+			renderScreen();
 			await waitFor(() => {
 				expect(screen.getByText("feat/merged-with-pr")).toBeInTheDocument();
 			});
-			const card = container.querySelector(
-				'[data-testid="branch-card-feat/merged-with-pr"]',
-			);
-			expect(card?.querySelector(".lucide-git-merge")).toBeInTheDocument();
+			expect(screen.getByText("merged")).toBeInTheDocument();
 		});
 
 		it("dirty_count=0 で worktree がある場合 clean バッジを表示しない", async () => {
@@ -379,13 +373,10 @@ describe("WorkspaceManagerScreen", () => {
 				expect(screen.getByText("feat/active-branch")).toBeInTheDocument();
 			});
 
-			const activeBranchCard = screen
-				.getByText("feat/active-branch")
-				.closest("[class*='flex flex-col gap-3']");
-			const openBtn = activeBranchCard?.querySelector("button");
-			if (openBtn) {
-				await user.click(openBtn);
-			}
+			const activeBranchCard = screen.getByTestId(
+				"branch-card-feat/active-branch",
+			);
+			await user.click(activeBranchCard);
 
 			await waitFor(() => {
 				expect(onSelectWorktree).toHaveBeenCalledWith(
@@ -433,13 +424,8 @@ describe("WorkspaceManagerScreen", () => {
 				expect(screen.getByText("feat/todo-branch")).toBeInTheDocument();
 			});
 
-			const todoCard = screen
-				.getByText("feat/todo-branch")
-				.closest("[class*='flex flex-col gap-3']");
-			const openBtn = todoCard?.querySelector("button");
-			if (openBtn) {
-				await user.click(openBtn);
-			}
+			const todoCard = screen.getByTestId("branch-card-feat/todo-branch");
+			await user.click(todoCard);
 
 			await waitFor(() => {
 				expect(mockInvoke).toHaveBeenCalledWith("create_worktree", {

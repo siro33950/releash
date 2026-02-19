@@ -392,14 +392,14 @@ export function RepoKanbanBoard({
 								{renderCards(todo)}
 							</KanbanColumn>
 							<KanbanColumn
-								icon={<Loader2 className="size-3.5 text-blue-500" />}
+								icon={<Loader2 className="size-3.5 text-info" />}
 								title="In Progress"
 								count={inProgress.length}
 							>
 								{renderCards(inProgress)}
 							</KanbanColumn>
 							<KanbanColumn
-								icon={<GitPullRequest className="size-3.5 text-purple-500" />}
+								icon={<GitPullRequest className="size-3.5 text-info" />}
 								title="Review"
 								count={review.length}
 							>
@@ -407,7 +407,7 @@ export function RepoKanbanBoard({
 								<ProviderStatusGuide status={providerStatus} />
 							</KanbanColumn>
 							<KanbanColumn
-								icon={<CheckCircle2 className="size-3.5 text-green-500" />}
+								icon={<CheckCircle2 className="size-3.5 text-success" />}
 								title="Done"
 								count={done.length}
 							>
