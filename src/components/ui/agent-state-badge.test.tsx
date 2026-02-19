@@ -24,6 +24,26 @@ describe("formatElapsed", () => {
 		const now = Date.now() / 1000;
 		expect(formatElapsed(now + 100)).toBe("0s");
 	});
+
+	it("should return '59s' at the upper boundary of seconds", () => {
+		const now = Date.now() / 1000;
+		expect(formatElapsed(now - 59)).toBe("59s");
+	});
+
+	it("should return '1m' at the lower boundary of minutes", () => {
+		const now = Date.now() / 1000;
+		expect(formatElapsed(now - 60)).toBe("1m");
+	});
+
+	it("should return '59m' at the upper boundary of minutes", () => {
+		const now = Date.now() / 1000;
+		expect(formatElapsed(now - 3599)).toBe("59m");
+	});
+
+	it("should return '1h' at the lower boundary of hours", () => {
+		const now = Date.now() / 1000;
+		expect(formatElapsed(now - 3600)).toBe("1h");
+	});
 });
 
 describe("AgentStateBadge", () => {
