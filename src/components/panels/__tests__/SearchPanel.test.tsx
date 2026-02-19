@@ -92,6 +92,137 @@ describe("SearchPanel", () => {
 		});
 	});
 
+	it("should execute search immediately when initialQuery is provided", async () => {
+		const mockResult = {
+			matches: [
+				{
+					path: "src/app.ts",
+					line_number: 3,
+					line_content: "const foo = 42;",
+					match_start: 6,
+					match_end: 9,
+				},
+			],
+			total_matches: 1,
+			truncated: false,
+		};
+		mockInvoke.mockResolvedValue(mockResult);
+
+		render(<SearchPanel rootPath="/root" initialQuery="foo" focusKey={1} />);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("search_files", {
+				rootPath: "/root",
+				pattern: "foo",
+				caseSensitive: false,
+				isRegex: false,
+				maxResults: 1000,
+			});
+		});
+
+		const input = screen.getByTestId("search-input");
+		expect(input).toHaveValue("foo");
+	});
+
+	it("should not execute search when initialQuery is empty", () => {
+		render(<SearchPanel rootPath="/root" initialQuery="" focusKey={1} />);
+
+		expect(mockInvoke).not.toHaveBeenCalled();
+	});
+
+	it("should re-search when focusKey changes with the same initialQuery", async () => {
+		const mockResult = {
+			matches: [],
+			total_matches: 0,
+			truncated: false,
+		};
+		mockInvoke.mockResolvedValue(mockResult);
+
+		const { rerender } = render(
+			<SearchPanel rootPath="/root" initialQuery="bar" focusKey={1} />,
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		});
+
+		mockInvoke.mockClear();
+
+		rerender(<SearchPanel rootPath="/root" initialQuery="bar" focusKey={2} />);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("search_files", {
+				rootPath: "/root",
+				pattern: "bar",
+				caseSensitive: false,
+				isRegex: false,
+				maxResults: 1000,
+			});
+		});
+	});
+
+	it("should not reset query when caseSensitive is toggled after initialQuery", async () => {
+		mockInvoke.mockResolvedValue({
+			matches: [],
+			total_matches: 0,
+			truncated: false,
+		});
+
+		render(<SearchPanel rootPath="/root" initialQuery="foo" focusKey={1} />);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		});
+
+		mockInvoke.mockClear();
+
+		const toggle = screen.getByTestId("toggle-case");
+		fireEvent.click(toggle);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("search_files", {
+				rootPath: "/root",
+				pattern: "foo",
+				caseSensitive: true,
+				isRegex: false,
+				maxResults: 1000,
+			});
+		});
+
+		expect(screen.getByTestId("search-input")).toHaveValue("foo");
+	});
+
+	it("should not reset query when isRegex is toggled after initialQuery", async () => {
+		mockInvoke.mockResolvedValue({
+			matches: [],
+			total_matches: 0,
+			truncated: false,
+		});
+
+		render(<SearchPanel rootPath="/root" initialQuery="foo" focusKey={1} />);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		});
+
+		mockInvoke.mockClear();
+
+		const toggle = screen.getByTestId("toggle-regex");
+		fireEvent.click(toggle);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("search_files", {
+				rootPath: "/root",
+				pattern: "foo",
+				caseSensitive: false,
+				isRegex: true,
+				maxResults: 1000,
+			});
+		});
+
+		expect(screen.getByTestId("search-input")).toHaveValue("foo");
+	});
+
 	it("should call onSelectFileAtLine when result is clicked", async () => {
 		const mockResult = {
 			matches: [
