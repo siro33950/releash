@@ -51,19 +51,19 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 	};
 
 	return (
-		<div className="flex items-center justify-center min-h-dvh bg-neutral-950 text-neutral-100">
+		<div className="flex items-center justify-center min-h-dvh bg-background text-foreground">
 			<form
 				onSubmit={handleSubmit}
-				className="w-full max-w-md p-4 sm:p-8 space-y-6 bg-neutral-900 rounded-xl border border-neutral-800"
+				className="w-full max-w-md p-4 sm:p-8 space-y-6 bg-card rounded-xl border border-border"
 			>
 				<h1 className="text-2xl font-bold text-center">Releash Remote</h1>
-				<p className="text-sm text-neutral-400 text-center">
+				<p className="text-sm text-muted-foreground text-center">
 					Mac上のReleashに接続します
 				</p>
 
 				<div className="space-y-2">
 					<label
-						className="block text-sm font-medium text-neutral-300"
+						className="block text-sm font-medium text-secondary-foreground"
 						htmlFor="host"
 					>
 						ホスト (IP:ポート)
@@ -74,13 +74,13 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 						value={host}
 						onChange={(e) => setHost(e.target.value)}
 						placeholder="192.168.1.100:9700"
-						className="w-full px-4 py-2 rounded-lg bg-neutral-800 border border-neutral-700 text-neutral-100 placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+						className="w-full px-4 py-2 rounded-lg bg-input border border-border text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 					/>
 				</div>
 
 				<div className="space-y-2">
 					<label
-						className="block text-sm font-medium text-neutral-300"
+						className="block text-sm font-medium text-secondary-foreground"
 						htmlFor="token"
 					>
 						トークン
@@ -92,12 +92,12 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 							value={token}
 							onChange={(e) => setToken(e.target.value)}
 							placeholder="認証トークンを入力"
-							className="flex-1 px-4 py-2 rounded-lg bg-neutral-800 border border-neutral-700 text-neutral-100 placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+							className="flex-1 px-4 py-2 rounded-lg bg-input border border-border text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 						/>
 						<button
 							type="button"
 							onClick={() => setScanning(true)}
-							className="px-3 py-2 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-sm font-medium transition-colors shrink-0"
+							className="px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80 text-secondary-foreground text-sm font-medium transition-colors shrink-0"
 						>
 							QRスキャン
 						</button>
@@ -107,7 +107,7 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 				<button
 					type="submit"
 					disabled={!host || !token}
-					className="w-full py-3 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
+					className="w-full py-3 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
 				>
 					接続
 				</button>

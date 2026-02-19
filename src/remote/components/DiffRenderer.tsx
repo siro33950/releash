@@ -67,15 +67,15 @@ function buildDiffLines(hunk: Hunk): DiffLine[] {
 }
 
 function lineStyle(prefix: string): string {
-	if (prefix === "+") return "bg-green-950/40 text-green-300";
-	if (prefix === "-") return "bg-red-950/40 text-red-300";
-	return "bg-neutral-950 text-neutral-300";
+	if (prefix === "+") return "bg-diff-added-bg text-diff-added-fg";
+	if (prefix === "-") return "bg-diff-deleted-bg text-diff-deleted-fg";
+	return "bg-background text-foreground";
 }
 
 const LONG_PRESS_MS = 500;
 
 const lineNumberClass =
-	"w-12 text-right px-2 text-neutral-600 select-none border-r border-neutral-800 font-mono text-xs";
+	"w-12 text-right px-2 text-muted-foreground select-none border-r border-border font-mono text-xs";
 
 function isInRange(lineNum: number, range: LineRange | null): boolean {
 	if (!range) return false;
@@ -142,7 +142,7 @@ export function DiffRenderer({
 
 	if (hunks.length === 0) {
 		return (
-			<div className="flex items-center justify-center h-full text-neutral-500 text-sm">
+			<div className="flex items-center justify-center h-full text-muted-foreground text-sm">
 				No changes
 			</div>
 		);
@@ -212,10 +212,10 @@ function HunkRows({
 
 	return (
 		<>
-			<tr className="bg-neutral-900/80">
+			<tr className="bg-card/80">
 				<td
 					colSpan={3}
-					className="px-3 py-1 text-neutral-500 text-xs select-none"
+					className="px-3 py-1 text-muted-foreground text-xs select-none"
 				>
 					@@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines}{" "}
 					@@
@@ -229,9 +229,9 @@ function HunkRows({
 
 				let rowHighlight = "";
 				if (isRangeHighlight) {
-					rowHighlight = "ring-1 ring-blue-500 bg-blue-950/30";
+					rowHighlight = "ring-1 ring-primary bg-primary/10";
 				} else if (isSelStart) {
-					rowHighlight = "ring-1 ring-amber-500 bg-amber-950/30";
+					rowHighlight = "ring-1 ring-warning bg-warning/10";
 				}
 
 				const group = hasGroupButtons
@@ -248,7 +248,7 @@ function HunkRows({
 						onUnstageGroup={onUnstageGroup}
 					>
 						<tr
-							className={`${lineStyle(line.prefix)} select-none ${tappable ? "active:bg-neutral-700/50" : ""} ${rowHighlight} ${isStaged ? "opacity-50" : ""}`}
+							className={`${lineStyle(line.prefix)} select-none ${tappable ? "active:bg-muted/50" : ""} ${rowHighlight} ${isStaged ? "opacity-50" : ""}`}
 							onPointerDown={
 								tappable ? () => onPointerDown(newLine) : undefined
 							}
@@ -287,11 +287,11 @@ function GroupButtonWrapper({
 
 	return (
 		<>
-			<tr className="bg-neutral-900/60">
+			<tr className="bg-card/60">
 				<td colSpan={3} className="px-3 py-0.5 select-none">
 					<div className="flex items-center gap-1.5">
 						{isStaged && (
-							<span className="text-[10px] text-green-500 font-medium">
+							<span className="text-[10px] text-success font-medium">
 								Staged
 							</span>
 						)}
@@ -299,7 +299,7 @@ function GroupButtonWrapper({
 							<button
 								type="button"
 								onClick={() => onStageGroup(group.groupIndex)}
-								className="text-[10px] px-1.5 py-0 rounded bg-green-800/80 hover:bg-green-700 text-green-100 transition-colors"
+								className="text-[10px] px-1.5 py-0 rounded bg-success/80 hover:bg-success/70 text-success-foreground transition-colors"
 							>
 								Stage
 							</button>
@@ -308,7 +308,7 @@ function GroupButtonWrapper({
 							<button
 								type="button"
 								onClick={() => onUnstageGroup(group.groupIndex)}
-								className="text-[10px] px-1.5 py-0 rounded bg-amber-800/80 hover:bg-amber-700 text-amber-100 transition-colors"
+								className="text-[10px] px-1.5 py-0 rounded bg-warning/80 hover:bg-warning/70 text-warning-foreground transition-colors"
 							>
 								Unstage
 							</button>

@@ -64,7 +64,7 @@ export function RemoteCommentList({
 
 	if (visibleComments.length === 0 && sentCount === 0) {
 		return (
-			<div className="flex flex-col items-center justify-center h-full gap-3 text-neutral-500 px-6">
+			<div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground px-6">
 				<MessageSquare className="h-8 w-8" />
 				<span className="text-sm font-medium">コメントなし</span>
 				<p className="text-xs text-center leading-relaxed">
@@ -86,12 +86,12 @@ export function RemoteCommentList({
 
 	return (
 		<div className="flex flex-col h-full">
-			<div className="flex items-center justify-between px-3 py-2 border-b border-neutral-800 bg-neutral-900 shrink-0">
+			<div className="flex items-center justify-between px-3 py-2 border-b border-border bg-card shrink-0">
 				<div className="flex items-center gap-2">
-					<span className="text-xs text-neutral-400">
+					<span className="text-xs text-muted-foreground">
 						Comments
 						{unsentComments.length > 0 && (
-							<span className="ml-1.5 px-1.5 py-0.5 text-[10px] bg-blue-500/20 text-blue-400 rounded">
+							<span className="ml-1.5 px-1.5 py-0.5 text-[10px] bg-primary/20 text-primary rounded">
 								{unsentComments.length}
 							</span>
 						)}
@@ -100,7 +100,7 @@ export function RemoteCommentList({
 						<button
 							type="button"
 							onClick={() => setShowSentComments((prev) => !prev)}
-							className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-neutral-500 rounded hover:bg-neutral-800 transition-colors"
+							className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-muted-foreground rounded hover:bg-muted transition-colors"
 							data-testid="toggle-sent-comments"
 						>
 							{showSentComments ? (
@@ -116,7 +116,7 @@ export function RemoteCommentList({
 					<button
 						type="button"
 						onClick={() => onSendToTerminal(unsentComments)}
-						className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors min-h-[32px]"
+						className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-primary/20 text-primary rounded hover:bg-primary/30 transition-colors min-h-[32px]"
 					>
 						<Send className="h-3.5 w-3.5" />
 						送信
@@ -128,7 +128,7 @@ export function RemoteCommentList({
 					const fileName = filePath.split("/").pop() ?? filePath;
 					return (
 						<div key={filePath} className="mb-3">
-							<div className="text-xs font-medium px-2 py-1 text-neutral-300 truncate">
+							<div className="text-xs font-medium px-2 py-1 text-secondary-foreground truncate">
 								{fileName}
 							</div>
 							{fileComments
@@ -136,20 +136,20 @@ export function RemoteCommentList({
 								.map((comment) => (
 									<div
 										key={comment.id}
-										className="group flex items-start gap-2 px-2 py-2 text-sm rounded hover:bg-neutral-800/50 transition-colors"
+										className="group flex items-start gap-2 px-2 py-2 text-sm rounded hover:bg-muted/50 transition-colors"
 									>
-										<MessageSquare className="h-4 w-4 shrink-0 mt-0.5 text-neutral-500" />
+										<MessageSquare className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />
 										<div className="min-w-0 flex-1">
 											<div className="flex items-center gap-1.5">
-												<span className="text-neutral-500 font-mono text-xs">
+												<span className="text-muted-foreground font-mono text-xs">
 													L{comment.lineNumber}
 													{comment.endLine != null ? `-${comment.endLine}` : ""}
 												</span>
 												<span
 													className={`text-[10px] px-1 rounded ${
 														comment.status === "sent"
-															? "bg-green-500/20 text-green-400"
-															: "bg-neutral-700 text-neutral-400"
+															? "bg-success/20 text-success"
+															: "bg-muted text-muted-foreground"
 													}`}
 												>
 													{comment.status === "sent" ? "sent" : "unsent"}
@@ -170,14 +170,14 @@ export function RemoteCommentList({
 																cancelEditing();
 															}
 														}}
-														className="w-full px-2 py-1 text-sm bg-neutral-800 border border-neutral-700 rounded resize-none focus:outline-none focus:ring-1 focus:ring-blue-500 text-neutral-100"
+														className="w-full px-2 py-1 text-sm bg-input border border-border rounded resize-none focus:outline-none focus:ring-1 focus:ring-ring text-foreground"
 														rows={2}
 													/>
 													<div className="flex gap-2 mt-1">
 														<button
 															type="button"
 															onClick={submitEdit}
-															className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors"
+															className="flex items-center gap-1 px-2 py-1 text-xs bg-primary/20 text-primary rounded hover:bg-primary/30 transition-colors"
 														>
 															<Check className="h-3 w-3" />
 															保存
@@ -185,7 +185,7 @@ export function RemoteCommentList({
 														<button
 															type="button"
 															onClick={cancelEditing}
-															className="flex items-center gap-1 px-2 py-1 text-xs bg-neutral-700 text-neutral-400 rounded hover:bg-neutral-600 transition-colors"
+															className="flex items-center gap-1 px-2 py-1 text-xs bg-secondary text-secondary-foreground rounded hover:bg-secondary/80 transition-colors"
 														>
 															<X className="h-3 w-3" />
 															キャンセル
@@ -193,7 +193,7 @@ export function RemoteCommentList({
 													</div>
 												</div>
 											) : (
-												<div className="text-neutral-200 mt-0.5 break-words">
+												<div className="text-foreground mt-0.5 break-words">
 													{comment.content}
 												</div>
 											)}
@@ -204,7 +204,7 @@ export function RemoteCommentList({
 													<button
 														type="button"
 														onClick={() => onSendComment(comment)}
-														className="p-1 rounded hover:bg-blue-500/20 text-neutral-500 hover:text-blue-400 transition-colors"
+														className="p-1 rounded hover:bg-primary/20 text-muted-foreground hover:text-primary transition-colors"
 														title="送信"
 													>
 														<Send className="h-3.5 w-3.5" />
@@ -214,7 +214,7 @@ export function RemoteCommentList({
 													<button
 														type="button"
 														onClick={() => onCopyComment(comment)}
-														className="p-1 rounded hover:bg-neutral-700 text-neutral-500 hover:text-neutral-300 transition-colors"
+														className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-secondary-foreground transition-colors"
 														title="コピー"
 													>
 														<Copy className="h-3.5 w-3.5" />
@@ -224,7 +224,7 @@ export function RemoteCommentList({
 													<button
 														type="button"
 														onClick={() => startEditing(comment)}
-														className="p-1 rounded hover:bg-neutral-700 text-neutral-500 hover:text-neutral-300 transition-colors"
+														className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-secondary-foreground transition-colors"
 														title="編集"
 													>
 														<Pencil className="h-3.5 w-3.5" />
@@ -234,7 +234,7 @@ export function RemoteCommentList({
 													<button
 														type="button"
 														onClick={() => onDeleteComment(comment.id)}
-														className="p-1 rounded hover:bg-red-500/20 text-neutral-500 hover:text-red-400 transition-colors"
+														className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
 														title="削除"
 													>
 														<Trash2 className="h-3.5 w-3.5" />

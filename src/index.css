@@ -59,6 +59,12 @@
 	--status-deleted: oklch(0.6 0.2 25);
 	--status-untracked: oklch(0.75 0.14 155);
 	--status-ignored: oklch(0.63 0 0);
+
+	/* Diff行ハイライト */
+	--diff-added-bg: oklch(0.28 0.08 145 / 0.4);
+	--diff-deleted-bg: oklch(0.28 0.08 25 / 0.4);
+	--diff-added-fg: oklch(0.75 0.15 145);
+	--diff-deleted-fg: oklch(0.75 0.15 25);
 }
 
 :root.light {
@@ -109,6 +115,11 @@
 	--status-deleted: oklch(0.5 0.2 25);
 	--status-untracked: oklch(0.55 0.14 155);
 	--status-ignored: oklch(0.55 0 0);
+
+	--diff-added-bg: oklch(0.85 0.08 145 / 0.3);
+	--diff-deleted-bg: oklch(0.85 0.08 25 / 0.3);
+	--diff-added-fg: oklch(0.4 0.15 145);
+	--diff-deleted-fg: oklch(0.4 0.15 25);
 }
 
 @theme inline {
@@ -164,6 +175,10 @@
 	--color-status-deleted: var(--status-deleted);
 	--color-status-untracked: var(--status-untracked);
 	--color-status-ignored: var(--status-ignored);
+	--color-diff-added-bg: var(--diff-added-bg);
+	--color-diff-deleted-bg: var(--diff-deleted-bg);
+	--color-diff-added-fg: var(--diff-added-fg);
+	--color-diff-deleted-fg: var(--diff-deleted-fg);
 }
 
 @layer base {

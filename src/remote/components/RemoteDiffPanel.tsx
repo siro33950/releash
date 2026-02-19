@@ -196,7 +196,7 @@ export function RemoteDiffPanel({
 
 	if (!path) {
 		return (
-			<div className="flex items-center justify-center h-full text-neutral-500 text-sm">
+			<div className="flex items-center justify-center h-full text-muted-foreground text-sm">
 				Select a file to view diff
 			</div>
 		);
@@ -204,7 +204,7 @@ export function RemoteDiffPanel({
 
 	if (loading) {
 		return (
-			<div className="flex items-center justify-center h-full text-neutral-500 text-sm">
+			<div className="flex items-center justify-center h-full text-muted-foreground text-sm">
 				Loading...
 			</div>
 		);
@@ -213,14 +213,14 @@ export function RemoteDiffPanel({
 	return (
 		<div className="flex flex-col h-full">
 			{selectionStart != null && (
-				<div className="flex items-center px-3 py-1 border-b border-amber-800/50 bg-amber-950/30 shrink-0">
-					<span className="text-xs text-amber-400">
+				<div className="flex items-center px-3 py-1 border-b border-warning/50 bg-warning/10 shrink-0">
+					<span className="text-xs text-warning">
 						L{selectionStart} から範囲選択中 — 終了行をタップ
 					</span>
 					<button
 						type="button"
 						onClick={() => setSelectionStart(null)}
-						className="ml-auto text-xs px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700 transition-colors"
+						className="ml-auto text-xs px-2 py-0.5 rounded bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors"
 					>
 						キャンセル
 					</button>
