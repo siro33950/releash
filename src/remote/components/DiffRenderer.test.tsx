@@ -33,7 +33,7 @@ describe("DiffRenderer", () => {
 				{...defaultProps}
 			/>,
 		);
-		const addedRows = container.querySelectorAll("tr.bg-green-950\\/40");
+		const addedRows = container.querySelectorAll("tr.bg-diff-added-bg");
 		expect(addedRows.length).toBeGreaterThan(0);
 	});
 
@@ -45,7 +45,7 @@ describe("DiffRenderer", () => {
 				{...defaultProps}
 			/>,
 		);
-		const deletedRows = container.querySelectorAll("tr.bg-red-950\\/40");
+		const deletedRows = container.querySelectorAll("tr.bg-diff-deleted-bg");
 		expect(deletedRows.length).toBeGreaterThan(0);
 	});
 
@@ -160,7 +160,7 @@ describe("DiffRenderer", () => {
 				selectionStart={1}
 			/>,
 		);
-		const highlighted = container.querySelectorAll("tr.ring-amber-500");
+		const highlighted = container.querySelectorAll("tr.ring-warning");
 		expect(highlighted.length).toBe(1);
 	});
 
@@ -173,7 +173,7 @@ describe("DiffRenderer", () => {
 				highlightRange={{ start: 2, end: 3 }}
 			/>,
 		);
-		const highlighted = container.querySelectorAll("tr.ring-blue-500");
+		const highlighted = container.querySelectorAll("tr.ring-primary");
 		expect(highlighted.length).toBe(2);
 	});
 });

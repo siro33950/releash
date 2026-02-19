@@ -34,21 +34,21 @@ function WorktreeCard({
 		<button
 			key={wt.path}
 			type="button"
-			className="flex flex-col gap-3 p-4 rounded-lg border border-neutral-800 bg-neutral-900/50 hover:border-neutral-600 hover:bg-neutral-800/50 transition-colors text-left w-full"
+			className="flex flex-col gap-3 p-4 rounded-lg border border-border bg-card/50 hover:border-muted-foreground hover:bg-card transition-colors text-left w-full"
 			onClick={() => onSelect?.(wt.path)}
 		>
 			<div className="flex items-center gap-2 min-w-0">
-				<GitBranch className="size-4 shrink-0 text-neutral-500" />
+				<GitBranch className="size-4 shrink-0 text-muted-foreground" />
 				<span className="text-sm font-medium truncate">{wt.branch}</span>
-				{wt.is_locked && <Lock className="size-3 text-yellow-500 shrink-0" />}
+				{wt.is_locked && <Lock className="size-3 text-warning shrink-0" />}
 				{wt.has_pr && (
-					<span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 font-medium">
+					<span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-info/15 text-info font-medium">
 						<GitPullRequest className="size-2.5" />
 						{wt.pr_number && `#${wt.pr_number}`}
 					</span>
 				)}
 				{wt.is_main && (
-					<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 font-medium">
+					<span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary font-medium">
 						main
 					</span>
 				)}
@@ -58,11 +58,9 @@ function WorktreeCard({
 			</div>
 			<div className="text-xs">
 				{wt.dirty_count > 0 ? (
-					<span className="text-yellow-500">
-						{wt.dirty_count} files changed
-					</span>
+					<span className="text-warning">{wt.dirty_count} files changed</span>
 				) : (
-					<span className="text-green-500">clean</span>
+					<span className="text-success">clean</span>
 				)}
 			</div>
 		</button>
@@ -94,29 +92,29 @@ export function RemoteDashboard({
 
 	return (
 		<div className="flex flex-col h-full">
-			<div className="flex items-center justify-between px-3 py-2 border-b border-neutral-800">
-				<span className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">
+			<div className="flex items-center justify-between px-3 py-2 border-b border-border">
+				<span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
 					Workspaces
 				</span>
 				<button
 					type="button"
 					onClick={onRefresh}
-					className="p-1 hover:bg-neutral-800 rounded transition-colors"
+					className="p-1 hover:bg-muted rounded transition-colors"
 					aria-label="Refresh"
 				>
 					<RefreshCw
-						className={`h-3.5 w-3.5 text-neutral-400 ${loading ? "animate-spin" : ""}`}
+						className={`h-3.5 w-3.5 text-muted-foreground ${loading ? "animate-spin" : ""}`}
 					/>
 				</button>
 			</div>
 			<div className="flex-1 overflow-y-auto p-3">
 				{worktrees.length === 0 && !loading && (
-					<p className="text-sm text-neutral-500 text-center py-8">
+					<p className="text-sm text-muted-foreground text-center py-8">
 						No worktrees found
 					</p>
 				)}
 				{loading && worktrees.length === 0 && (
-					<p className="text-sm text-neutral-500 text-center py-8">
+					<p className="text-sm text-muted-foreground text-center py-8">
 						Loading...
 					</p>
 				)}
@@ -125,8 +123,8 @@ export function RemoteDashboard({
 						<div key={repoPath || "__single"}>
 							{isMultiRepo && repoPath && (
 								<div className="flex items-center gap-1.5 mb-2 mt-1">
-									<FolderGit2 className="size-3.5 text-neutral-500" />
-									<span className="text-xs font-medium text-neutral-400">
+									<FolderGit2 className="size-3.5 text-muted-foreground" />
+									<span className="text-xs font-medium text-muted-foreground">
 										{repoDisplayName(repoPath)}
 									</span>
 								</div>

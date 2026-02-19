@@ -70,15 +70,15 @@ export function RemoteSourceControl({
 	const handleUnstageAll = useCallback(() => onUnstage([]), [onUnstage]);
 
 	return (
-		<div className="h-full flex flex-col bg-neutral-900">
-			<div className="flex items-center gap-2 h-[30px] px-3 border-b border-neutral-800 shrink-0">
-				<span className="text-xs font-semibold uppercase tracking-wide truncate text-neutral-400 flex-1">
+		<div className="h-full flex flex-col bg-card">
+			<div className="flex items-center gap-2 h-[30px] px-3 border-b border-border shrink-0">
+				<span className="text-xs font-semibold uppercase tracking-wide truncate text-muted-foreground flex-1">
 					{totalChanges} file changes
 				</span>
 				{onRefresh && (
 					<button
 						type="button"
-						className="inline-flex items-center justify-center h-5 w-5 rounded text-neutral-400 hover:text-neutral-200 hover:bg-neutral-700 transition-colors shrink-0"
+						className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
 						onClick={onRefresh}
 						title="Refresh"
 					>
@@ -90,7 +90,7 @@ export function RemoteSourceControl({
 			<div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
 				<CollapsibleSection title="Unstaged" count={changedFiles.length}>
 					{changedFiles.length === 0 && (
-						<div className="px-4 py-1.5 text-xs text-neutral-500">
+						<div className="px-4 py-1.5 text-xs text-muted-foreground">
 							No unstaged changes
 						</div>
 					)}
@@ -98,7 +98,7 @@ export function RemoteSourceControl({
 						<div className="flex justify-end px-2 py-0.5">
 							<button
 								type="button"
-								className="text-[10px] text-neutral-400 hover:text-neutral-200 transition-colors"
+								className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
 								onClick={handleStageAll}
 							>
 								Stage All
@@ -121,7 +121,7 @@ export function RemoteSourceControl({
 
 				<CollapsibleSection title="Staged" count={stagedFiles.length}>
 					{stagedFiles.length === 0 && (
-						<div className="px-4 py-1.5 text-xs text-neutral-500">
+						<div className="px-4 py-1.5 text-xs text-muted-foreground">
 							No staged changes
 						</div>
 					)}
@@ -129,7 +129,7 @@ export function RemoteSourceControl({
 						<div className="flex justify-end px-2 py-0.5">
 							<button
 								type="button"
-								className="text-[10px] text-neutral-400 hover:text-neutral-200 transition-colors"
+								className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
 								onClick={handleUnstageAll}
 							>
 								Unstage All
@@ -151,17 +151,19 @@ export function RemoteSourceControl({
 				</CollapsibleSection>
 
 				{totalChanges === 0 && (
-					<div className="px-3 py-4 text-sm text-neutral-500">No changes</div>
+					<div className="px-3 py-4 text-sm text-muted-foreground">
+						No changes
+					</div>
 				)}
 			</div>
 
-			<div className="px-3 py-2 border-t border-neutral-800 shrink-0">
+			<div className="px-3 py-2 border-t border-border shrink-0">
 				<textarea
 					value={commitMessage}
 					onChange={(e) => setCommitMessage(e.target.value)}
 					placeholder="Commit message..."
 					rows={2}
-					className="w-full px-2 py-1.5 text-sm bg-neutral-800 text-neutral-200 border border-neutral-700 rounded resize-none outline-none focus:border-blue-500 placeholder:text-neutral-500"
+					className="w-full px-2 py-1.5 text-sm bg-input text-foreground border border-border rounded resize-none outline-none focus:border-primary placeholder:text-muted-foreground"
 				/>
 				<div className="flex gap-2 mt-1.5">
 					<button
@@ -169,7 +171,7 @@ export function RemoteSourceControl({
 						disabled={
 							!commitMessage.trim() || stagedFiles.length === 0 || committing
 						}
-						className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-green-700 hover:bg-green-600 text-green-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+						className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-success hover:bg-success/90 text-success-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 						onClick={handleCommit}
 					>
 						{committing ? (
@@ -182,7 +184,7 @@ export function RemoteSourceControl({
 					<button
 						type="button"
 						disabled={pushing}
-						className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-blue-700 hover:bg-blue-600 text-blue-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+						className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-primary hover:bg-primary/90 text-primary-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 						onClick={onPush}
 					>
 						{pushing ? (
@@ -196,7 +198,7 @@ export function RemoteSourceControl({
 			</div>
 
 			{pushResult && (
-				<div className="flex items-start gap-1 px-3 py-2 text-green-400 text-xs border-t border-neutral-800">
+				<div className="flex items-start gap-1 px-3 py-2 text-success text-xs border-t border-border">
 					<span className="flex-1 break-all">{pushResult}</span>
 					<button
 						type="button"
@@ -210,7 +212,7 @@ export function RemoteSourceControl({
 			)}
 
 			{error && (
-				<div className="flex items-start gap-1 px-3 py-2 text-red-400 text-xs border-t border-neutral-800">
+				<div className="flex items-start gap-1 px-3 py-2 text-destructive text-xs border-t border-border">
 					<span className="flex-1 break-all">{error}</span>
 					<button
 						type="button"

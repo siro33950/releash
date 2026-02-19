@@ -208,19 +208,19 @@ export function RemoteTerminalPanel({
 
 	const ctrlButtonClass = modifier
 		? modifier.locked
-			? "bg-blue-600 text-white ring-2 ring-blue-400"
-			: "bg-blue-600 text-white"
-		: "bg-[#333] text-[#ccc] active:bg-[#555]";
+			? "bg-primary text-primary-foreground ring-2 ring-ring"
+			: "bg-primary text-primary-foreground"
+		: "bg-muted text-muted-foreground active:bg-muted/80";
 
 	return (
-		<div ref={rootRef} className="flex flex-col h-full bg-[#1a1a1a]">
+		<div ref={rootRef} className="flex flex-col h-full bg-terminal-bg">
 			<div
 				ref={containerRef}
-				className="flex-1 overflow-hidden bg-[#1a1a1a]"
+				className="flex-1 overflow-hidden bg-terminal-bg"
 				style={{ minHeight: 0 }}
 			/>
 
-			<div className="flex items-center px-2 py-1 bg-[#252525] border-t border-[#333] shrink-0">
+			<div className="flex items-center px-2 py-1 bg-card border-t border-border shrink-0">
 				<div className="flex gap-1 overflow-x-auto flex-1">
 					{BAR_KEYS.map((def) => {
 						const isCtrl = "modifier" in def;
@@ -231,7 +231,7 @@ export function RemoteTerminalPanel({
 								className={`px-2 py-1 text-xs rounded shrink-0 ${
 									isCtrl
 										? ctrlButtonClass
-										: "bg-[#333] text-[#ccc] active:bg-[#555]"
+										: "bg-muted text-muted-foreground active:bg-muted/80"
 								}`}
 								onPointerDown={(e) => {
 									e.preventDefault();
@@ -249,8 +249,8 @@ export function RemoteTerminalPanel({
 						type="button"
 						className={`px-2 py-1 text-xs rounded shrink-0 ${
 							menuOpen
-								? "bg-blue-600 text-white"
-								: "bg-[#333] text-[#ccc] active:bg-[#555]"
+								? "bg-primary text-primary-foreground"
+								: "bg-muted text-muted-foreground active:bg-muted/80"
 						}`}
 						onPointerDown={(e) => {
 							e.preventDefault();
@@ -263,7 +263,7 @@ export function RemoteTerminalPanel({
 
 					{menuOpen && (
 						<div
-							className="absolute bottom-full right-0 mb-1 bg-[#2d2d2d] border border-[#555] rounded p-1 grid grid-cols-4 gap-1 z-50"
+							className="absolute bottom-full right-0 mb-1 bg-input border border-border rounded p-1 grid grid-cols-4 gap-1 z-50"
 							style={{ minWidth: "180px" }}
 							onPointerDown={(e) => e.stopPropagation()}
 						>
@@ -271,7 +271,7 @@ export function RemoteTerminalPanel({
 								<button
 									key={sc.label}
 									type="button"
-									className="px-2 py-1.5 text-xs bg-[#333] text-[#ccc] rounded active:bg-[#555] whitespace-nowrap"
+									className="px-2 py-1.5 text-xs bg-muted text-muted-foreground rounded active:bg-muted/80 whitespace-nowrap"
 									onPointerDown={(e) => {
 										e.preventDefault();
 										handleShortcut(sc.key);
@@ -285,7 +285,7 @@ export function RemoteTerminalPanel({
 				</div>
 			</div>
 
-			<div className="flex gap-2 px-2 py-2 bg-[#1e1e1e] border-t border-[#333] shrink-0">
+			<div className="flex gap-2 px-2 py-2 bg-background border-t border-border shrink-0">
 				<textarea
 					ref={inputRef}
 					value={inputValue}
@@ -295,12 +295,12 @@ export function RemoteTerminalPanel({
 					autoCorrect="off"
 					autoCapitalize="off"
 					spellCheck={false}
-					className="flex-1 px-3 py-2 bg-[#2d2d2d] text-[#e0e0e0] border border-[#444] rounded text-sm outline-none focus:border-blue-500 resize-none max-h-24 leading-5"
+					className="flex-1 px-3 py-2 bg-input text-foreground border border-border rounded text-sm outline-none focus:border-primary resize-none max-h-24 leading-5"
 					placeholder="コマンドを入力..."
 				/>
 				<button
 					type="button"
-					className="px-4 py-2 bg-blue-600 text-white rounded text-sm active:bg-blue-700 shrink-0"
+					className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm active:bg-primary/90 shrink-0"
 					onClick={handleSubmit}
 				>
 					送信

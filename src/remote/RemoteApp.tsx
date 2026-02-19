@@ -270,14 +270,14 @@ export function RemoteApp() {
 	}
 
 	return (
-		<div className="flex flex-col h-dvh bg-neutral-950 text-neutral-100">
-			<header className="flex items-center justify-between px-3 py-1.5 border-b border-neutral-800 bg-neutral-900 shrink-0">
+		<div className="flex flex-col h-dvh bg-background text-foreground">
+			<header className="flex items-center justify-between px-3 py-1.5 border-b border-border bg-card shrink-0">
 				<div className="flex items-center gap-2 min-w-0">
 					{selectedWorktree && (
 						<button
 							type="button"
 							onClick={handleBackToWorktrees}
-							className="p-1 -ml-1 rounded hover:bg-neutral-800 transition-colors shrink-0"
+							className="p-1 -ml-1 rounded hover:bg-muted transition-colors shrink-0"
 							aria-label="Back"
 						>
 							<ArrowLeft className="size-4" />
@@ -285,7 +285,7 @@ export function RemoteApp() {
 					)}
 					<h1 className="text-sm font-semibold shrink-0">Releash Remote</h1>
 					{branchName && (
-						<span className="text-xs text-neutral-400 truncate font-mono">
+						<span className="text-xs text-muted-foreground truncate font-mono">
 							{branchName}
 						</span>
 					)}
@@ -295,7 +295,7 @@ export function RemoteApp() {
 					<button
 						type="button"
 						onClick={handleDisconnect}
-						className="text-xs px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 transition-colors"
+						className="text-xs px-2 py-0.5 rounded bg-secondary hover:bg-secondary/80 text-secondary-foreground transition-colors"
 					>
 						切断
 					</button>
@@ -316,8 +316,8 @@ export function RemoteApp() {
 				<>
 					<main className="flex-1 overflow-hidden relative">
 						{worktreeLoading && (
-							<div className="absolute inset-0 flex items-center justify-center bg-neutral-950/80 z-10">
-								<div className="animate-spin size-6 border-2 border-neutral-500 border-t-blue-400 rounded-full" />
+							<div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+								<div className="animate-spin size-6 border-2 border-muted-foreground border-t-primary rounded-full" />
 							</div>
 						)}
 						<div
@@ -349,8 +349,8 @@ export function RemoteApp() {
 							style={{ display: activeTab === "diff" ? undefined : "none" }}
 						>
 							{selectedPath && (
-								<div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-neutral-800 bg-neutral-900 shrink-0">
-									<span className="text-xs text-neutral-500 truncate flex-1 min-w-0">
+								<div className="flex items-center justify-between gap-2 px-3 py-1 border-b border-border bg-card shrink-0">
+									<span className="text-xs text-muted-foreground truncate flex-1 min-w-0">
 										{selectedPath}
 									</span>
 									<div className="flex items-center gap-1.5 shrink-0">
@@ -359,7 +359,7 @@ export function RemoteApp() {
 											onChange={(e) =>
 												handleDiffBaseChange(e.target.value as DiffBase)
 											}
-											className="text-xs bg-neutral-800 text-neutral-300 border border-neutral-700 rounded px-1.5 py-0.5"
+											className="text-xs bg-input text-secondary-foreground border border-border rounded px-1.5 py-0.5"
 										>
 											<option value="HEAD">HEAD</option>
 											<option value="staged">Staged</option>
@@ -368,7 +368,7 @@ export function RemoteApp() {
 											<button
 												type="button"
 												onClick={handleStageAll}
-												className="text-xs px-2 py-0.5 rounded bg-green-800 hover:bg-green-700 text-green-100 transition-colors"
+												className="text-xs px-2 py-0.5 rounded bg-success/80 hover:bg-success/70 text-success-foreground transition-colors"
 											>
 												Stage All
 											</button>
@@ -378,7 +378,7 @@ export function RemoteApp() {
 												<button
 													type="button"
 													onClick={handleUnstageAll}
-													className="text-xs px-2 py-0.5 rounded bg-amber-800 hover:bg-amber-700 text-amber-100 transition-colors"
+													className="text-xs px-2 py-0.5 rounded bg-warning/80 hover:bg-warning/70 text-warning-foreground transition-colors"
 												>
 													Unstage All
 												</button>
@@ -399,7 +399,7 @@ export function RemoteApp() {
 										onAddComment={addComment}
 									/>
 								) : (
-									<div className="flex items-center justify-center h-full text-neutral-500">
+									<div className="flex items-center justify-center h-full text-muted-foreground">
 										<p>接続中...</p>
 									</div>
 								)}
@@ -432,15 +432,15 @@ export function RemoteApp() {
 							ptySessions.length > 0 ? (
 								<>
 									{ptySessions.length > 1 && (
-										<div className="flex items-center gap-1 px-2 py-1 border-b border-neutral-800 bg-neutral-900 shrink-0 overflow-x-auto">
+										<div className="flex items-center gap-1 px-2 py-1 border-b border-border bg-card shrink-0 overflow-x-auto">
 											{ptySessions.map((s) => (
 												<button
 													key={s.ptyId}
 													type="button"
 													className={`px-2 py-0.5 text-xs rounded transition-colors shrink-0 ${
 														activePtyId === s.ptyId
-															? "bg-blue-600 text-white"
-															: "bg-neutral-800 text-neutral-400 hover:bg-neutral-700"
+															? "bg-primary text-primary-foreground"
+															: "bg-secondary text-muted-foreground hover:bg-secondary/80"
 													}`}
 													onClick={() => setActivePtyId(s.ptyId)}
 												>
@@ -468,34 +468,34 @@ export function RemoteApp() {
 							) : activeTab === "terminal" &&
 								status === "connected" &&
 								ptySessions.length === 0 ? (
-								<div className="flex flex-col items-center justify-center h-full gap-3 text-neutral-500">
+								<div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
 									<p>ターミナルセッションがありません</p>
 									<button
 										type="button"
 										onClick={spawnPty}
 										disabled={ptySpawning || !selectedWorktree}
-										className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm transition-colors"
+										className="px-4 py-2 rounded bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed text-primary-foreground text-sm transition-colors"
 									>
 										{ptySpawning ? "起動中..." : "ターミナルを起動"}
 									</button>
 									{ptySpawnError && (
-										<p className="text-red-400 text-xs">{ptySpawnError}</p>
+										<p className="text-destructive text-xs">{ptySpawnError}</p>
 									)}
 									{!selectedWorktree && (
-										<p className="text-neutral-600 text-xs">
+										<p className="text-muted-foreground text-xs">
 											Worktreeを選択してください
 										</p>
 									)}
 								</div>
 							) : activeTab === "terminal" && status !== "connected" ? (
-								<div className="flex items-center justify-center h-full text-neutral-500">
+								<div className="flex items-center justify-center h-full text-muted-foreground">
 									<p>接続されていません</p>
 								</div>
 							) : null}
 						</div>
 					</main>
 
-					<nav className="flex shrink-0 border-t border-neutral-800 bg-neutral-900">
+					<nav className="flex shrink-0 border-t border-border bg-card">
 						{tabs.map((tab) => {
 							const Icon = tab.icon;
 							const isActive = activeTab === tab.id;
@@ -505,8 +505,8 @@ export function RemoteApp() {
 									type="button"
 									className={`flex-1 flex flex-col items-center justify-center h-12 gap-0.5 transition-colors ${
 										isActive
-											? "text-blue-400 border-t-2 border-blue-400"
-											: "text-neutral-500"
+											? "text-primary border-t-2 border-primary"
+											: "text-muted-foreground"
 									}`}
 									onClick={() => {
 										setActiveTab(tab.id);

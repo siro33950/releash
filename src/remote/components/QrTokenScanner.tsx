@@ -42,15 +42,15 @@ export function QrTokenScanner({ onScan, onClose }: QrTokenScannerProps) {
 
 	return (
 		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-			<div className="w-full max-w-sm mx-4 bg-neutral-900 rounded-xl border border-neutral-700 overflow-hidden">
-				<div className="flex items-center justify-between px-4 py-3 border-b border-neutral-700">
-					<span className="text-sm font-medium text-neutral-100">
+			<div className="w-full max-w-sm mx-4 bg-card rounded-xl border border-border overflow-hidden">
+				<div className="flex items-center justify-between px-4 py-3 border-b border-border">
+					<span className="text-sm font-medium text-card-foreground">
 						トークンQRをスキャン
 					</span>
 					<button
 						type="button"
 						onClick={onClose}
-						className="text-neutral-400 hover:text-neutral-100 text-lg leading-none"
+						className="text-muted-foreground hover:text-card-foreground text-lg leading-none"
 					>
 						&times;
 					</button>
