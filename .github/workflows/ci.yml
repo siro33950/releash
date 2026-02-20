@@ -222,7 +222,7 @@ jobs:
             const status = passed ? 'All screenshots match' : 'Screenshot differences detected';
             const testFiles = '${{ steps.check.outputs.test_files }}'.trim();
             const screens = testFiles
-              ? testFiles.split(/\s+/).map(f => f.replace('tests/screenshots/', '').replace('.screenshot.ts', '')).join(', ')
+              ? testFiles.split(/\s+/).map(f => f.replace('tests/screenshots/', '').replace('.screenshot.ts', '')).filter(Boolean).join(', ') || 'all'
               : 'all';
             const lines = [
               `## ${icon} Screenshot Tests: ${status}`,
