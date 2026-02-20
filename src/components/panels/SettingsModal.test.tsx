@@ -1,9 +1,46 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings } from "@/types/settings";
 import { SettingsModal } from "./SettingsModal";
 
+// Radix UI uses pointer events; jsdom doesn't implement them
+beforeAll(() => {
+	HTMLElement.prototype.hasPointerCapture = vi.fn() as never;
+	HTMLElement.prototype.releasePointerCapture = vi.fn() as never;
+	HTMLElement.prototype.setPointerCapture = vi.fn() as never;
+	HTMLElement.prototype.scrollIntoView = vi.fn() as never;
+});
+
 describe("SettingsModal", () => {
+	beforeEach(async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "get_notify_config":
+					return Promise.resolve({
+						webhook_url: "",
+						on_running: false,
+						on_done: true,
+						on_error: true,
+						on_waiting: true,
+						desktop_mode: "always",
+						inactive_timeout_minutes: 2,
+					});
+				case "get_remote_config":
+					return Promise.resolve({
+						auto_start: false,
+						auto_start_on_lan: false,
+					});
+				case "update_remote_config":
+				case "update_notify_config":
+					return Promise.resolve(null);
+				default:
+					return Promise.resolve(null);
+			}
+		});
+	});
+
 	const defaultSettings: AppSettings = {
 		theme: "dark",
 		fontSize: 14,
@@ -31,8 +68,8 @@ describe("SettingsModal", () => {
 
 	it("should display current theme value", () => {
 		render(<SettingsModal {...defaultProps} />);
-		const select = screen.getByLabelText("Theme") as HTMLSelectElement;
-		expect(select.value).toBe("dark");
+		const trigger = screen.getByRole("combobox", { name: "Theme" });
+		expect(trigger).toHaveTextContent("Dark");
 	});
 
 	it("should display current font size", () => {
@@ -51,35 +88,41 @@ describe("SettingsModal", () => {
 		expect(saveBtn).toBeDisabled();
 	});
 
-	it("Save button is enabled after draft change", () => {
+	it("Save button is enabled after draft change", async () => {
+		const user = userEvent.setup();
 		render(<SettingsModal {...defaultProps} />);
-		const select = screen.getByLabelText("Theme");
-		fireEvent.change(select, { target: { value: "light" } });
+		fireEvent.click(screen.getByText("Privacy & Updates"));
+		const checkbox = screen.getByRole("checkbox", { name: "Auto-update" });
+		await user.click(checkbox);
 		const saveBtn = screen.getByRole("button", { name: "Save" });
 		expect(saveBtn).toBeEnabled();
 	});
 
-	it("should call onSave with updated settings on Save click", () => {
+	it("should call onSave with updated settings on Save click", async () => {
+		const user = userEvent.setup();
 		const onSave = vi.fn();
 		render(<SettingsModal {...defaultProps} onSave={onSave} />);
-		const select = screen.getByLabelText("Theme");
-		fireEvent.change(select, { target: { value: "light" } });
+		fireEvent.click(screen.getByText("Privacy & Updates"));
+		const checkbox = screen.getByRole("checkbox", { name: "Auto-update" });
+		await user.click(checkbox);
 		const saveBtn = screen.getByRole("button", { name: "Save" });
-		fireEvent.click(saveBtn);
+		await user.click(saveBtn);
 		expect(onSave).toHaveBeenCalledWith({
 			...defaultSettings,
-			theme: "light",
+			autoUpdate: false,
 		});
 	});
 
-	it("should disable Save button after saving AppSettings change", () => {
+	it("should disable Save button after saving AppSettings change", async () => {
+		const user = userEvent.setup();
 		const onSave = vi.fn();
 		render(<SettingsModal {...defaultProps} onSave={onSave} />);
-		const select = screen.getByLabelText("Theme");
-		fireEvent.change(select, { target: { value: "light" } });
+		fireEvent.click(screen.getByText("Privacy & Updates"));
+		const checkbox = screen.getByRole("checkbox", { name: "Auto-update" });
+		await user.click(checkbox);
 		const saveBtn = screen.getByRole("button", { name: "Save" });
 		expect(saveBtn).toBeEnabled();
-		fireEvent.click(saveBtn);
+		await user.click(saveBtn);
 		expect(saveBtn).toBeDisabled();
 	});
 
@@ -90,30 +133,36 @@ describe("SettingsModal", () => {
 				settings={{ ...defaultSettings, theme: "light" }}
 			/>,
 		);
-		const select = screen.getByLabelText("Theme") as HTMLSelectElement;
-		expect(select.value).toBe("light");
+		const trigger = screen.getByRole("combobox", { name: "Theme" });
+		expect(trigger).toHaveTextContent("Light");
 	});
 
-	it("should navigate to Editor section and update diff base", () => {
+	it("should update draft when diff base is changed via select", async () => {
+		const user = userEvent.setup();
 		const onSave = vi.fn();
 		render(<SettingsModal {...defaultProps} onSave={onSave} />);
 		fireEvent.click(screen.getByText("Editor"));
-		const select = screen.getByLabelText("Default Base");
-		fireEvent.change(select, { target: { value: "HEAD" } });
-		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		const trigger = screen.getByRole("combobox", { name: "Default Base" });
+		await user.click(trigger);
+		const option = screen.getByRole("option", { name: "HEAD" });
+		await user.click(option);
+		await user.click(screen.getByRole("button", { name: "Save" }));
 		expect(onSave).toHaveBeenCalledWith({
 			...defaultSettings,
 			defaultDiffBase: "HEAD",
 		});
 	});
 
-	it("should navigate to Editor section and update diff mode", () => {
+	it("should update draft when diff mode is changed via select", async () => {
+		const user = userEvent.setup();
 		const onSave = vi.fn();
 		render(<SettingsModal {...defaultProps} onSave={onSave} />);
 		fireEvent.click(screen.getByText("Editor"));
-		const select = screen.getByLabelText("Default View");
-		fireEvent.change(select, { target: { value: "split" } });
-		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		const trigger = screen.getByRole("combobox", { name: "Default View" });
+		await user.click(trigger);
+		const option = screen.getByRole("option", { name: "Split" });
+		await user.click(option);
+		await user.click(screen.getByRole("button", { name: "Save" }));
 		expect(onSave).toHaveBeenCalledWith({
 			...defaultSettings,
 			defaultDiffMode: "split",
@@ -126,13 +175,16 @@ describe("SettingsModal", () => {
 		expect(screen.getByText("Send crash reports")).toBeInTheDocument();
 	});
 
-	it("should toggle crash reporting and call onSave", () => {
+	it("should toggle crash reporting and call onSave", async () => {
+		const user = userEvent.setup();
 		const onSave = vi.fn();
 		render(<SettingsModal {...defaultProps} onSave={onSave} />);
 		fireEvent.click(screen.getByText("Privacy & Updates"));
-		const checkbox = screen.getByLabelText("Send crash reports");
-		fireEvent.click(checkbox);
-		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		const checkbox = screen.getByRole("checkbox", {
+			name: "Send crash reports",
+		});
+		await user.click(checkbox);
+		await user.click(screen.getByRole("button", { name: "Save" }));
 		expect(onSave).toHaveBeenCalledWith(
 			expect.objectContaining({ enableCrashReporting: false }),
 		);
@@ -144,16 +196,6 @@ describe("SettingsModal", () => {
 	});
 
 	it("should display Webhook URL input field with url type", async () => {
-		const { invoke } = await import("@tauri-apps/api/core");
-		vi.mocked(invoke).mockResolvedValue({
-			webhook_url: "",
-			on_running: false,
-			on_done: true,
-			on_error: true,
-			on_waiting: true,
-			desktop_mode: "always",
-			inactive_timeout_minutes: 2,
-		});
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Notifications"));
 		const input = await screen.findByLabelText("Webhook URL");
@@ -197,8 +239,10 @@ describe("SettingsModal", () => {
 		render(<SettingsModal {...defaultProps} onSave={onSave} />);
 		fireEvent.click(screen.getByText("Remote"));
 
-		const checkbox = await screen.findByLabelText("Auto-start remote server");
-		expect(checkbox).not.toBeChecked();
+		const checkbox = await screen.findByRole("checkbox", {
+			name: "Auto-start remote server",
+		});
+		expect(checkbox).toHaveAttribute("aria-checked", "false");
 
 		const saveBtn = screen.getByRole("button", { name: "Save" });
 		expect(saveBtn).toBeDisabled();
@@ -214,17 +258,17 @@ describe("SettingsModal", () => {
 
 	it("should show Appearance section by default", () => {
 		render(<SettingsModal {...defaultProps} />);
-		expect(screen.getByLabelText("Theme")).toBeInTheDocument();
+		expect(screen.getByText("Theme")).toBeInTheDocument();
 		expect(screen.getByText("Font Size: 14px")).toBeInTheDocument();
 	});
 
 	it("should switch sections when nav is clicked", () => {
 		render(<SettingsModal {...defaultProps} />);
-		expect(screen.getByLabelText("Theme")).toBeInTheDocument();
+		expect(screen.getByText("Theme")).toBeInTheDocument();
 
 		fireEvent.click(screen.getByText("Editor"));
-		expect(screen.getByLabelText("Default Base")).toBeInTheDocument();
-		expect(screen.queryByLabelText("Theme")).not.toBeInTheDocument();
+		expect(screen.getByText("Default Base")).toBeInTheDocument();
+		expect(screen.queryByText(/^Theme$/)).not.toBeInTheDocument();
 	});
 
 	it("should highlight active section in nav", () => {
