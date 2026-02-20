@@ -1,7 +1,7 @@
-import { render, screen } from "@testing-library/react";
-import { FolderOpen } from "lucide-react";
-import { describe, expect, it } from "vitest";
-import { EmptyState } from "./EmptyState";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { FolderOpen, Plus } from "lucide-react";
+import { describe, expect, it, vi } from "vitest";
+import { EmptyState } from "./empty-state";
 
 describe("EmptyState", () => {
 	it("should render title and default icon", () => {
@@ -28,15 +28,14 @@ describe("EmptyState", () => {
 	it("should not render description when not provided", () => {
 		const { container } = render(<EmptyState title="Empty" />);
 
-		expect(container.querySelector("p")).toBeNull();
+		expect(container.querySelector("div.text-\\[11px\\]")).toBeNull();
 	});
 
 	it("should render compact mode with text only", () => {
 		const { container } = render(<EmptyState compact title="No changes" />);
 
 		expect(screen.getByText("No changes")).toBeInTheDocument();
-		// compact mode should not render h3 or svg icon
-		expect(container.querySelector("h3")).toBeNull();
+		expect(container.querySelector("span.text-xs")).toBeNull();
 		expect(container.querySelector("svg")).toBeNull();
 	});
 
@@ -65,14 +64,58 @@ describe("EmptyState", () => {
 		expect(screen.getByText("No folder")).toBeInTheDocument();
 	});
 
-	it("should render children when provided", () => {
-		render(
-			<EmptyState title="Empty">
-				<button type="button">Action</button>
-			</EmptyState>,
+	it("should render action button", () => {
+		const onClick = vi.fn();
+		render(<EmptyState title="Empty" action={{ label: "Create", onClick }} />);
+
+		const button = screen.getByRole("button", { name: "Create" });
+		expect(button).toBeInTheDocument();
+		fireEvent.click(button);
+		expect(onClick).toHaveBeenCalledOnce();
+	});
+
+	it("should render action button with icon", () => {
+		const onClick = vi.fn();
+		const { container } = render(
+			<EmptyState
+				title="Empty"
+				action={{ label: "Add", onClick, icon: Plus }}
+			/>,
 		);
 
-		expect(screen.getByRole("button", { name: "Action" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Add" })).toBeInTheDocument();
+		const svgs = container.querySelectorAll("svg");
+		expect(svgs.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("should render ReactNode description", () => {
+		render(
+			<EmptyState
+				title="Test"
+				description={
+					<p>
+						Press <kbd>⌘K</kbd> to add
+					</p>
+				}
+			/>,
+		);
+
+		expect(screen.getByText("⌘K")).toBeInTheDocument();
+	});
+
+	it("should not render action in compact mode", () => {
+		const onClick = vi.fn();
+		render(
+			<EmptyState
+				compact
+				title="Empty"
+				action={{ label: "Create", onClick }}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "Create" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("should render children in compact mode", () => {

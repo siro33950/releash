@@ -1,11 +1,11 @@
-import { CaseSensitive, Regex, X } from "lucide-react";
+import { CaseSensitive, Regex, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSearch } from "@/hooks/useSearch";
 import { cn } from "@/lib/utils";
 import type { SearchMatch } from "@/types/search";
-import { EmptyState } from "./EmptyState";
 
 interface GroupedMatches {
 	path: string;
@@ -211,6 +211,13 @@ export function SearchPanel({
 			</div>
 
 			<ScrollArea className="flex-1 min-h-0 [&>[data-slot=scroll-area-viewport]>div]:block!">
+				{result && matchCount === 0 && !loading && (
+					<EmptyState
+						icon={Search}
+						title="No results found"
+						description="Try different keywords or regex"
+					/>
+				)}
 				{grouped.map((group) => (
 					<div key={group.path}>
 						<div className="px-3 py-1 text-[11px] font-semibold text-muted-foreground truncate bg-sidebar-accent/50">

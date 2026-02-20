@@ -19,7 +19,7 @@ function makeComment(overrides: Partial<LineComment> = {}): LineComment {
 describe("CommentList", () => {
 	it("should show empty state with hints when no comments", () => {
 		render(<CommentList comments={[]} />);
-		expect(screen.getByText("コメントなし")).toBeInTheDocument();
+		expect(screen.getByText("No comments")).toBeInTheDocument();
 		expect(
 			screen.getByText(/行番号の左マージンをクリック/),
 		).toBeInTheDocument();

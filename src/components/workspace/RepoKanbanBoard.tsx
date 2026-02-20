@@ -14,8 +14,8 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { CreateWorktreeDialog } from "@/components/workspace/CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "@/components/workspace/DeleteWorktreeDialog";
 import { KanbanColumn } from "@/components/workspace/KanbanColumn";
@@ -388,13 +388,14 @@ export function RepoKanbanBoard({
 						<EmptyState
 							icon={GitBranch}
 							title="No worktrees"
-							description="Create a branch to start working with worktrees"
-						>
-							<Button className="mt-4" onClick={() => setShowCreate(true)}>
-								<Plus className="size-4 mr-2" />
-								New
-							</Button>
-						</EmptyState>
+							description="Create a new worktree to get started"
+							action={{
+								label: "Create worktree",
+								onClick: () => setShowCreate(true),
+								icon: Plus,
+							}}
+							className="py-8"
+						/>
 					) : (
 						<div className="flex gap-3 h-full overflow-x-auto">
 							<KanbanColumn
