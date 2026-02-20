@@ -5,6 +5,7 @@ import {
 	ChevronDown,
 	ChevronRight,
 	CircleDot,
+	GitBranch,
 	GitPullRequest,
 	Loader2,
 	Plus,
@@ -13,6 +14,7 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
 import { CreateWorktreeDialog } from "@/components/workspace/CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "@/components/workspace/DeleteWorktreeDialog";
@@ -382,6 +384,17 @@ export function RepoKanbanBoard({
 						<div className="flex items-center justify-center py-8">
 							<Loader2 className="size-5 text-muted-foreground animate-spin" />
 						</div>
+					) : branches.length === 0 ? (
+						<EmptyState
+							icon={GitBranch}
+							title="ワークツリーがありません"
+							description="ブランチを作成してワークツリーで作業を始めましょう"
+						>
+							<Button className="mt-4" onClick={() => setShowCreate(true)}>
+								<Plus className="size-4 mr-2" />
+								新規作成
+							</Button>
+						</EmptyState>
 					) : (
 						<div className="flex gap-3 h-full overflow-x-auto">
 							<KanbanColumn
