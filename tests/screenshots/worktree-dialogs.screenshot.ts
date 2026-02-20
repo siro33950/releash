@@ -8,6 +8,7 @@ import {
 	xtermMask,
 	monacoMask,
 } from "../helpers/screenshot-utils";
+import { emitTauriEvent } from "../helpers/tauri-mock";
 
 test.describe("Worktree Dialogs", () => {
 	test("branch creation dialog", async ({ page }) => {
@@ -30,9 +31,8 @@ test.describe("Worktree Dialogs", () => {
 			get_git_status: mixedChanges,
 			git_discard: null,
 		});
-		// Discard All ボタンを探す
-		const discardAllBtn = page.getByTitle("Discard All Changes");
-		await discardAllBtn.click();
+		// Discard All はTauriメニューイベント経由
+		await emitTauriEvent(page, "menu-event", "git-discard-all");
 		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-discard-all.png",
