@@ -68,6 +68,16 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			// ユーザー定義コマンド
 			if (cmd in cfg.ipcHandler) {
 				const value = cfg.ipcHandler[cmd];
+				// { __mockError: "message" } の場合はエラーを投げる
+				if (
+					value &&
+					typeof value === "object" &&
+					"__mockError" in (value as Record<string, unknown>)
+				) {
+					throw new Error(
+						(value as { __mockError: string }).__mockError,
+					);
+				}
 				return value;
 			}
 
