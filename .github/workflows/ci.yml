@@ -92,6 +92,9 @@ jobs:
   screenshots:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -210,6 +213,51 @@ jobs:
           path: test-results/
           retention-days: 7
 
+      - name: Push diff images to temp branch
+        if: always() && steps.screenshots.outcome == 'failure' && steps.check.outputs.should_run == 'true'
+        id: push-diffs
+        continue-on-error: true
+        run: |
+          TMP=$(mktemp -d)
+          FILE_PATHS=""
+
+          for diff_file in $(find test-results -name '*-diff.png' 2>/dev/null | sort); do
+            REL_PATH="${diff_file#test-results/}"
+            DIR_NAME=$(dirname "$REL_PATH")
+            BASE="${diff_file%-diff.png}"
+
+            mkdir -p "$TMP/$DIR_NAME"
+            cp "$diff_file" "$TMP/$DIR_NAME/"
+            [ -f "${BASE}-actual.png" ] && cp "${BASE}-actual.png" "$TMP/$DIR_NAME/"
+            [ -f "${BASE}-expected.png" ] && cp "${BASE}-expected.png" "$TMP/$DIR_NAME/"
+
+            FILE_PATHS="${FILE_PATHS:+$FILE_PATHS|}${REL_PATH}"
+          done
+
+          if [ -z "$FILE_PATHS" ]; then
+            echo "No diff images found"
+            exit 0
+          fi
+
+          BRANCH="screenshot-diffs/pr-${{ github.event.pull_request.number }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout --orphan "$BRANCH"
+          git rm -rf . > /dev/null 2>&1 || true
+
+          cp -r "$TMP"/* .
+          git add -A
+          git commit -m "Screenshot diffs for PR #${{ github.event.pull_request.number }}"
+          COMMIT_SHA=$(git rev-parse HEAD)
+          git push origin "$BRANCH" --force
+
+          echo "has_diffs=true" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "files=$FILE_PATHS" >> "$GITHUB_OUTPUT"
+
       - name: Post PR comment with screenshot results
         if: always() && steps.check.outputs.should_run == 'true' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -230,10 +278,47 @@ jobs:
               `**Tested screens:** ${screens}`,
             ];
             if (!passed) {
+              const hasDiffs = '${{ steps.push-diffs.outputs.has_diffs }}' === 'true';
+              const commitSha = '${{ steps.push-diffs.outputs.commit_sha }}';
+
+              if (hasDiffs && commitSha) {
+                const { owner, repo } = context.repo;
+                const diffFiles = '${{ steps.push-diffs.outputs.files }}'.trim().split('|').filter(Boolean);
+
+                lines.push('');
+
+                for (const relPath of diffFiles) {
+                  const dirName = relPath.split('/')[0];
+                  const basePath = relPath.replace(/-diff\.png$/, '');
+
+                  const diffUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${commitSha}/${relPath}`;
+                  const actualUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${commitSha}/${basePath}-actual.png`;
+                  const expectedUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${commitSha}/${basePath}-expected.png`;
+
+                  const displayName = dirName
+                    .replace(/-chromium$/, '')
+                    .replace(/-webkit$/, '')
+                    .replace(/-firefox$/, '');
+
+                  lines.push(
+                    '<details>',
+                    `<summary>📸 ${displayName}</summary>`,
+                    '',
+                    '| Expected | Actual |',
+                    '|----------|--------|',
+                    `| ![expected](${expectedUrl}) | ![actual](${actualUrl}) |`,
+                    '',
+                    '**Diff:**',
+                    '',
+                    `![diff](${diffUrl})`,
+                    '',
+                    '</details>',
+                    '',
+                  );
+                }
+              }
+
               lines.push(
-                '',
-                `📦 [Download diff artifacts](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
-                '',
                 '💡 To accept these changes as the new baseline, comment `/update-screenshots` on this PR.',
               );
             }
