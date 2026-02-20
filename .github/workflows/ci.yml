@@ -204,7 +204,7 @@ jobs:
         if: steps.check.outputs.should_run == 'true'
         id: screenshots
         continue-on-error: true
-        run: pnpm test:screenshots:update ${{ steps.check.outputs.test_files }}
+        run: pnpm test:screenshots:update -- ${{ steps.check.outputs.test_files }}
 
       - uses: actions/upload-artifact@v4
         if: always() && steps.check.outputs.should_run == 'true'
