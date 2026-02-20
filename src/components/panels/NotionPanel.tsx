@@ -7,6 +7,7 @@ import {
 	RefreshCw,
 	Settings,
 	Trash2,
+	X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
@@ -559,6 +560,14 @@ function NotionTaskList({
 	const hasActiveFilters =
 		titleFilter !== "" || Object.values(labelFilters).some((v) => v !== "");
 
+	const clearFilters = useCallback(() => {
+		setTitleFilter("");
+		const emptyLabels: Record<string, string> = {};
+		setLabelFilters(emptyLabels);
+		saveStoredFilters(repoPath, "", emptyLabels);
+		search("", emptyLabels);
+	}, [repoPath, search]);
+
 	const handleTitleChange = useCallback(
 		(value: string) => {
 			setTitleFilter(value);
@@ -582,15 +591,27 @@ function NotionTaskList({
 		<>
 			{(tasks.length > 0 || hasActiveFilters) && (
 				<div className="px-2 py-1.5 flex flex-col gap-1">
-					<Input
-						type="text"
-						variant="panel"
-						size="xs"
-						placeholder="Filter by title..."
-						aria-label="Filter tasks by title"
-						value={titleFilter}
-						onChange={(e) => handleTitleChange(e.target.value)}
-					/>
+					<div className="flex items-center gap-1">
+						<Input
+							type="text"
+							variant="panel"
+							size="xs"
+							placeholder="Filter by title..."
+							aria-label="Filter tasks by title"
+							value={titleFilter}
+							onChange={(e) => handleTitleChange(e.target.value)}
+						/>
+						{hasActiveFilters && (
+							<button
+								type="button"
+								onClick={clearFilters}
+								className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground rounded"
+								aria-label="Clear filters"
+							>
+								<X className="size-3" />
+							</button>
+						)}
+					</div>
 					{labelOptions.map((opt) => (
 						<select
 							key={opt.property_name}
@@ -623,7 +644,17 @@ function NotionTaskList({
 					compact
 					title="No tasks"
 					className="px-3 py-2 text-[10px]"
-				/>
+				>
+					{hasActiveFilters && (
+						<button
+							type="button"
+							className="ml-2 text-primary hover:underline"
+							onClick={clearFilters}
+						>
+							Clear filters
+						</button>
+					)}
+				</EmptyState>
 			)}
 			{tasks.map((task) => {
 				const prefix = branchPrefix || undefined;

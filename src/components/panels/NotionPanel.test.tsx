@@ -1,9 +1,13 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NotionPanel } from "./NotionPanel";
 
 describe("NotionPanel", () => {
+	beforeEach(() => {
+		localStorage.clear();
+	});
+
 	const defaultProps = {
 		repoPaths: ["/path/to/repo"],
 		onSelectWorktree: vi.fn(),
@@ -532,6 +536,134 @@ describe("NotionPanel", () => {
 
 		await waitFor(() => {
 			expect(screen.getByText("Open Worktree")).toBeInTheDocument();
+		});
+	});
+
+	it("should show Clear filters link when filter results in no tasks", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const mockConfig = {
+			api_token: "ntn_test",
+			database_id: "db-123",
+			property_mapping: {
+				title: "Name",
+				labels: [],
+				branch_name: "",
+				branch_prefix: "",
+			},
+		};
+		const mockTaskPage = {
+			tasks: [
+				{
+					id: "page-1",
+					title: "Task A",
+					url: "https://notion.so/page-1",
+					labels: {},
+					branch_name: "",
+					created_at: "2026-01-01T00:00:00.000Z",
+					last_edited_at: "2026-01-01T00:00:00.000Z",
+				},
+			],
+			has_more: false,
+			next_cursor: null,
+		};
+		const emptyTaskPage = {
+			tasks: [],
+			has_more: false,
+			next_cursor: null,
+		};
+
+		let queryCount = 0;
+		vi.mocked(invoke).mockImplementation(async (cmd) => {
+			if (cmd === "get_notion_config") return mockConfig;
+			if (cmd === "query_notion_tasks") {
+				queryCount++;
+				return queryCount === 1 ? mockTaskPage : emptyTaskPage;
+			}
+			if (cmd === "fetch_notion_label_options") return [];
+			if (cmd === "list_worktrees") return [];
+			return null;
+		});
+
+		const user = userEvent.setup();
+		render(<NotionPanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Task A")).toBeInTheDocument();
+		});
+
+		const filterInput = screen.getByPlaceholderText("Filter by title...");
+		await user.type(filterInput, "zzz");
+
+		await waitFor(() => {
+			expect(screen.getByText("No tasks")).toBeInTheDocument();
+		});
+
+		expect(screen.getByText("Clear filters")).toBeInTheDocument();
+	});
+
+	it("should clear filters and re-search when Clear filters is clicked", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const mockConfig = {
+			api_token: "ntn_test",
+			database_id: "db-123",
+			property_mapping: {
+				title: "Name",
+				labels: [],
+				branch_name: "",
+				branch_prefix: "",
+			},
+		};
+		const mockTaskPage = {
+			tasks: [
+				{
+					id: "page-1",
+					title: "Task A",
+					url: "https://notion.so/page-1",
+					labels: {},
+					branch_name: "",
+					created_at: "2026-01-01T00:00:00.000Z",
+					last_edited_at: "2026-01-01T00:00:00.000Z",
+				},
+			],
+			has_more: false,
+			next_cursor: null,
+		};
+		const emptyTaskPage = {
+			tasks: [],
+			has_more: false,
+			next_cursor: null,
+		};
+
+		vi.mocked(invoke).mockImplementation(async (cmd, args?: unknown) => {
+			if (cmd === "get_notion_config") return mockConfig;
+			if (cmd === "query_notion_tasks") {
+				const query = (args as { query?: { title_filter?: string } })?.query;
+				if (query?.title_filter) return emptyTaskPage;
+				return mockTaskPage;
+			}
+			if (cmd === "fetch_notion_label_options") return [];
+			if (cmd === "list_worktrees") return [];
+			return null;
+		});
+
+		const user = userEvent.setup();
+		render(<NotionPanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("Task A")).toBeInTheDocument();
+		});
+
+		const filterInput = screen.getByPlaceholderText("Filter by title...");
+		await user.type(filterInput, "zzz");
+
+		await waitFor(() => {
+			expect(screen.getByText("Clear filters")).toBeInTheDocument();
+		});
+
+		await user.click(screen.getByText("Clear filters"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Task A")).toBeInTheDocument();
 		});
 	});
 });

@@ -403,4 +403,65 @@ describe("IssuePanel", () => {
 			expect(listWorktreeCallCount).toBeGreaterThanOrEqual(2);
 		});
 	});
+
+	it("should show Clear filters link when filter has no matches", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
+		const user = userEvent.setup();
+
+		render(<IssuePanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("#305")).toBeInTheDocument();
+		});
+
+		const filterInput = screen.getByPlaceholderText("Filter by title...");
+		await user.type(filterInput, "zzz");
+
+		expect(screen.getByText("Clear filters")).toBeInTheDocument();
+	});
+
+	it("should clear all filters and show all issues when Clear filters is clicked", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
+		const user = userEvent.setup();
+
+		render(<IssuePanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("#305")).toBeInTheDocument();
+		});
+
+		const filterInput = screen.getByPlaceholderText("Filter by title...");
+		await user.type(filterInput, "zzz");
+
+		expect(screen.getByText("No matching issues")).toBeInTheDocument();
+
+		await user.click(screen.getByText("Clear filters"));
+
+		await waitFor(() => {
+			expect(screen.getByText("#305")).toBeInTheDocument();
+		});
+		expect(screen.getByText("Bug fix")).toBeInTheDocument();
+		expect(screen.queryByText("No matching issues")).not.toBeInTheDocument();
+	});
+
+	it("should show clear filters X button when filters are active", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation(mockInvokeDefault as never);
+		const user = userEvent.setup();
+
+		render(<IssuePanel {...defaultProps} />);
+
+		await waitFor(() => {
+			expect(screen.getByText("#305")).toBeInTheDocument();
+		});
+
+		expect(screen.queryByLabelText("Clear filters")).not.toBeInTheDocument();
+
+		const filterInput = screen.getByPlaceholderText("Filter by title...");
+		await user.type(filterInput, "Bug");
+
+		expect(screen.getByLabelText("Clear filters")).toBeInTheDocument();
+	});
 });

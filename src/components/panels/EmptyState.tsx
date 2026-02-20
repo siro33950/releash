@@ -23,6 +23,7 @@ export function EmptyState({
 		return (
 			<div className={cn("px-3 py-2 text-xs text-muted-foreground", className)}>
 				{title}
+				{children}
 			</div>
 		);
 	}

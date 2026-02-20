@@ -5,6 +5,7 @@ import {
 	GitBranch,
 	Loader2,
 	RefreshCw,
+	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
@@ -126,6 +127,15 @@ function RepoIssueSection({
 		return { titles: sorted, hasNone };
 	}, [issues]);
 
+	const hasActiveFilters =
+		titleFilter !== "" || labelFilter !== "" || milestoneFilter !== "";
+
+	const clearFilters = useCallback(() => {
+		setTitleFilter("");
+		setLabelFilter("");
+		setMilestoneFilter("");
+	}, []);
+
 	const filteredIssues = useMemo(() => {
 		let result = [...issues];
 
@@ -181,15 +191,27 @@ function RepoIssueSection({
 				)}
 				{isAvailable && !loading && issues.length > 0 && (
 					<div className="px-2 py-1.5 flex flex-col gap-1">
-						<Input
-							type="text"
-							variant="panel"
-							size="xs"
-							placeholder="Filter by title..."
-							aria-label="Filter issues by title"
-							value={titleFilter}
-							onChange={(e) => setTitleFilter(e.target.value)}
-						/>
+						<div className="flex items-center gap-1">
+							<Input
+								type="text"
+								variant="panel"
+								size="xs"
+								placeholder="Filter by title..."
+								aria-label="Filter issues by title"
+								value={titleFilter}
+								onChange={(e) => setTitleFilter(e.target.value)}
+							/>
+							{hasActiveFilters && (
+								<button
+									type="button"
+									onClick={clearFilters}
+									className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground rounded"
+									aria-label="Clear filters"
+								>
+									<X className="size-3" />
+								</button>
+							)}
+						</div>
 						{allLabels.length > 0 && (
 							<select
 								value={labelFilter}
@@ -238,7 +260,15 @@ function RepoIssueSection({
 							compact
 							title="No matching issues"
 							className="px-3 py-2 text-[10px]"
-						/>
+						>
+							<button
+								type="button"
+								className="ml-2 text-primary hover:underline"
+								onClick={clearFilters}
+							>
+								Clear filters
+							</button>
+						</EmptyState>
 					)}
 				{isAvailable &&
 					filteredIssues.map((issue) => {
