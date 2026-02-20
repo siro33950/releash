@@ -2,7 +2,6 @@ import { expect, test } from "@playwright/test";
 import {
 	fsPluginCommands,
 	rootDirEntries,
-	srcDirEntries,
 } from "../helpers/fixtures";
 import {
 	setupWorktreeView,
@@ -64,10 +63,8 @@ test.describe("File Tree Panel", () => {
 		await switchToView(page, "Explorer");
 		await page.waitForTimeout(300);
 		const newFileBtn = page.getByTitle("New File");
-		if (await newFileBtn.isVisible()) {
-			await newFileBtn.click();
-			await page.waitForTimeout(300);
-		}
+		await newFileBtn.click();
+		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-file-tree-new-file.png",
 			{ mask: xtermMask(page) },
@@ -82,10 +79,8 @@ test.describe("File Tree Panel", () => {
 		await switchToView(page, "Explorer");
 		await page.waitForTimeout(300);
 		const newFolderBtn = page.getByTitle("New Folder");
-		if (await newFolderBtn.isVisible()) {
-			await newFolderBtn.click();
-			await page.waitForTimeout(300);
-		}
+		await newFolderBtn.click();
+		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-file-tree-new-folder.png",
 			{ mask: xtermMask(page) },
@@ -103,10 +98,8 @@ test.describe("File Tree Panel", () => {
 		await file.click({ button: "right" });
 		await page.waitForTimeout(200);
 		const deleteItem = page.getByText("Delete").first();
-		if (await deleteItem.isVisible()) {
-			await deleteItem.click();
-			await page.waitForTimeout(300);
-		}
+		await deleteItem.click();
+		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-file-tree-delete-dialog.png",
 			{ mask: xtermMask(page) },

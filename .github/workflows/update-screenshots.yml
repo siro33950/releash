@@ -59,9 +59,11 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
 
       - name: Update screenshot baselines
+        id: test
         run: pnpm test:screenshots:update
 
       - name: Check for changes
+        if: steps.test.outcome == 'success'
         id: diff
         run: |
           CHANGED=$(git diff --name-only tests/__screenshots__/ | wc -l | tr -d ' ')
@@ -102,10 +104,13 @@ jobs:
         with:
           script: |
             const count = parseInt('${{ steps.diff.outputs.count }}' || '0', 10);
+            const testFailed = '${{ steps.test.outcome }}' === 'failure';
             const verifyFailed = '${{ steps.verify.outcome }}' === 'failure';
 
             let body;
-            if (verifyFailed) {
+            if (testFailed) {
+              body = '❌ **Screenshot update failed**: `pnpm test:screenshots:update` failed. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.';
+            } else if (verifyFailed) {
               body = '⚠️ **Screenshot update aborted**: PR head changed during the run. Please comment `/update-screenshots` again.';
             } else if (count === 0) {
               body = '✅ **Screenshot baselines**: No changes detected — all baselines are already up to date.';

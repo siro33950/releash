@@ -56,9 +56,7 @@ test.describe("Search Panel", () => {
 		await page.waitForTimeout(300);
 		// Match Case ボタンをクリック
 		const caseSensitiveBtn = page.getByTitle("Match Case");
-		if (await caseSensitiveBtn.isVisible()) {
-			await caseSensitiveBtn.click();
-		}
+		await caseSensitiveBtn.click();
 		const searchInput = page.getByPlaceholder("Search");
 		await searchInput.fill("useState");
 		await page.waitForTimeout(500);
@@ -76,9 +74,7 @@ test.describe("Search Panel", () => {
 		await page.waitForTimeout(300);
 		// Regex ボタンをクリック
 		const regexBtn = page.getByTitle("Use Regular Expression");
-		if (await regexBtn.isVisible()) {
-			await regexBtn.click();
-		}
+		await regexBtn.click();
 		const searchInput = page.getByPlaceholder("Search");
 		await searchInput.fill("use.*State");
 		await page.waitForTimeout(500);
@@ -95,13 +91,9 @@ test.describe("Search Panel", () => {
 		await switchToView(page, "Search");
 		await page.waitForTimeout(300);
 		const caseSensitiveBtn = page.getByTitle("Match Case");
-		if (await caseSensitiveBtn.isVisible()) {
-			await caseSensitiveBtn.click();
-		}
+		await caseSensitiveBtn.click();
 		const regexBtn = page.getByTitle("Use Regular Expression");
-		if (await regexBtn.isVisible()) {
-			await regexBtn.click();
-		}
+		await regexBtn.click();
 		const searchInput = page.getByPlaceholder("Search");
 		await searchInput.fill("use[A-Z]\\w+");
 		await page.waitForTimeout(500);

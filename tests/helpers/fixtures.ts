@@ -617,7 +617,7 @@ export const kanbanBranchesFull: BranchCard[] = [
 		has_upstream: true,
 		remote_name: null,
 		agent_state: "running",
-		agent_state_timestamp: Date.now(),
+		agent_state_timestamp: 9999999999,
 	},
 	// In Progress: agent done
 	{
@@ -635,7 +635,7 @@ export const kanbanBranchesFull: BranchCard[] = [
 		has_upstream: true,
 		remote_name: null,
 		agent_state: "done",
-		agent_state_timestamp: Date.now(),
+		agent_state_timestamp: 9999999999,
 	},
 	// Review: PR あり
 	{

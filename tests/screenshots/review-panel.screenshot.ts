@@ -19,10 +19,8 @@ test.describe("Review Panel", () => {
 		await setupWorktreeView(page);
 		// Comments タブに切り替え
 		const commentsTab = page.getByRole("tab", { name: /Comments/i });
-		if (await commentsTab.isVisible()) {
-			await commentsTab.click();
-			await page.waitForTimeout(300);
-		}
+		await commentsTab.click();
+		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-review-comments-empty.png",
 			{ mask: xtermMask(page) },
@@ -34,14 +32,12 @@ test.describe("Review Panel", () => {
 	// スクリーンショットテストとしては空の状態とタブ切り替えに焦点を当てる。
 
 	test("comments tab with unsent comment", async ({ page }) => {
-		// EditorContext のコメントはMonaco操作で追加されるため、
-		// ここではコメントリストUIの空でない状態をevaluateで注入テスト
+		// TODO: EditorContext のコメントはMonaco操作で追加されるため、
+		// 現状では空の状態と同じ。evaluate での注入は未実装。
 		await setupWorktreeView(page);
 		const commentsTab = page.getByRole("tab", { name: /Comments/i });
-		if (await commentsTab.isVisible()) {
-			await commentsTab.click();
-			await page.waitForTimeout(300);
-		}
+		await commentsTab.click();
+		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-review-comments-tab.png",
 			{ mask: xtermMask(page) },

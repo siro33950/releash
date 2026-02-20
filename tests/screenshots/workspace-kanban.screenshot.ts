@@ -102,7 +102,7 @@ test.describe("Workspace Kanban Board", () => {
 			get_agent_states: {
 				"feat/agent-running": {
 					state: "running",
-					timestamp: Date.now(),
+					timestamp: 9999999999,
 				},
 			},
 		});
@@ -119,7 +119,7 @@ test.describe("Workspace Kanban Board", () => {
 			get_agent_states: {
 				"feat/agent-done": {
 					state: "done",
-					timestamp: Date.now(),
+					timestamp: 9999999999,
 				},
 			},
 		});
@@ -198,10 +198,10 @@ test.describe("Workspace Kanban Board", () => {
 		await setupWorkspaceManager(page, {
 			list_branches_with_status: agentBranches,
 			get_agent_states: {
-				"feat/agent-1": { state: "running", timestamp: Date.now() },
-				"feat/agent-2": { state: "done", timestamp: Date.now() },
-				"feat/agent-3": { state: "error", timestamp: Date.now() },
-				"feat/agent-4": { state: "waiting", timestamp: Date.now() },
+				"feat/agent-1": { state: "running", timestamp: 9999999999 },
+				"feat/agent-2": { state: "done", timestamp: 9999999999 },
+				"feat/agent-3": { state: "error", timestamp: 9999999999 },
+				"feat/agent-4": { state: "waiting", timestamp: 9999999999 },
 			},
 		});
 		await page.waitForTimeout(500);

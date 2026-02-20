@@ -17,10 +17,8 @@ test.describe("Worktree Dialogs", () => {
 		});
 		// ブランチ作成ダイアログを開く（StatusBar or Sourceのボタンから）
 		const branchBtn = page.getByText("feat/test").first();
-		if (await branchBtn.isVisible()) {
-			await branchBtn.click();
-			await page.waitForTimeout(300);
-		}
+		await branchBtn.click();
+		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-branch-create.png",
 			{ mask: [...xtermMask(page), ...monacoMask(page)] },
@@ -34,10 +32,8 @@ test.describe("Worktree Dialogs", () => {
 		});
 		// Discard All ボタンを探す
 		const discardAllBtn = page.getByTitle("Discard All Changes");
-		if (await discardAllBtn.isVisible()) {
-			await discardAllBtn.click();
-			await page.waitForTimeout(300);
-		}
+		await discardAllBtn.click();
+		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-discard-all.png",
 			{ mask: [...xtermMask(page), ...monacoMask(page)] },
@@ -84,10 +80,8 @@ test.describe("Worktree Dialogs", () => {
 		await explorerBtn.click();
 		await page.waitForTimeout(300);
 		const file = page.getByText("test.txt").first();
-		if (await file.isVisible()) {
-			await file.click();
-			await page.waitForTimeout(500);
-		}
+		await file.click();
+		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-unsaved.png",
 			{ mask: [...xtermMask(page), ...monacoMask(page)] },
@@ -103,10 +97,8 @@ test.describe("Worktree Dialogs", () => {
 			},
 		});
 		const pushBtn = page.getByRole("button", { name: "Push" });
-		if (await pushBtn.isVisible()) {
-			await pushBtn.click();
-			await page.waitForTimeout(500);
-		}
+		await pushBtn.click();
+		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-push-error.png",
 			{ mask: [...xtermMask(page), ...monacoMask(page)] },
