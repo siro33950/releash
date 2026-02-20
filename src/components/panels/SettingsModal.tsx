@@ -713,9 +713,9 @@ export function SettingsModal({
 
 	const handleSave = useCallback(async () => {
 		setSaving(true);
-		onSave(draft);
 		setAppDirty(false);
 		try {
+			onSave(draft);
 			if (webhookIsDirty) {
 				await webhookSave();
 			}
@@ -726,7 +726,7 @@ export function SettingsModal({
 				trackEvent("settings_saved");
 			}
 		} catch {
-			// webhook/remote の保存失敗時はここに来る
+			// webhook/remote の保存失敗はフック内部でerror stateに反映されUIに表示される
 		} finally {
 			setSaving(false);
 		}
