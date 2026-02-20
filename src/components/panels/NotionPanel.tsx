@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Input } from "@/components/ui/input";
+import { Message } from "@/components/ui/message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNotionConfig } from "@/hooks/useNotionConfig";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
@@ -307,10 +308,10 @@ function NotionConfigForm({
 			</Button>
 
 			{validationStatus && validationStatus !== "success" && (
-				<div className="text-[10px] text-destructive">{validationStatus}</div>
+				<Message message={validationStatus} size="xs" />
 			)}
 			{validationStatus === "success" && (
-				<div className="text-[10px] text-success">接続成功</div>
+				<Message severity="success" message="接続成功" size="xs" />
 			)}
 
 			{properties.length > 0 && (
@@ -389,12 +390,8 @@ function NotionConfigForm({
 					保存
 				</Button>
 			</div>
-			{saveError && (
-				<div className="text-[10px] text-destructive">{saveError}</div>
-			)}
-			{deleteError && (
-				<div className="text-[10px] text-destructive">{deleteError}</div>
-			)}
+			{saveError && <Message message={saveError} size="xs" />}
+			{deleteError && <Message message={deleteError} size="xs" />}
 		</div>
 	);
 }
@@ -790,11 +787,7 @@ function NotionTaskCard({
 				<span className="ml-auto">{createdDate}</span>
 			</div>
 
-			{error && (
-				<div className="mt-1.5 text-[10px] text-destructive break-all">
-					{error}
-				</div>
-			)}
+			{error && <Message message={error} size="xs" className="mt-1.5" />}
 
 			{existingWorktree ? (
 				<Button

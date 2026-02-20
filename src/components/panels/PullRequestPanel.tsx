@@ -1,6 +1,7 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink, GitPullRequest, Loader2, RefreshCw } from "lucide-react";
 import { MarkdownPreview } from "@/components/panels/MarkdownPreview";
+import { Message } from "@/components/ui/message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useBranchPr } from "@/hooks/useBranchPr";
 import { usePrDetail } from "@/hooks/usePrDetail";
@@ -113,17 +114,12 @@ export function PullRequestPanel({ rootPath, branch }: PullRequestPanelProps) {
 
 	if (error && !detail) {
 		return (
-			<div className="h-full flex flex-col items-center justify-center bg-sidebar gap-2">
-				<span className="text-sm text-destructive">
-					Failed to load PR details
-				</span>
-				<button
-					type="button"
-					className="text-xs text-muted-foreground hover:text-foreground underline"
-					onClick={refresh}
-				>
-					Retry
-				</button>
+			<div className="h-full flex flex-col items-center justify-center bg-sidebar">
+				<Message
+					variant="block"
+					message="Failed to load PR details"
+					onRetry={refresh}
+				/>
 			</div>
 		);
 	}

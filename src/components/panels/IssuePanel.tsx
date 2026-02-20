@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Input } from "@/components/ui/input";
+import { Message } from "@/components/ui/message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useIssues } from "@/hooks/useIssues";
 import { generateIssueBranchName } from "@/lib/issueBranch";
@@ -402,11 +403,7 @@ function IssueCard({
 				<span className="ml-auto">{createdDate}</span>
 			</div>
 
-			{error && (
-				<div className="mt-1.5 text-[10px] text-destructive break-all">
-					{error}
-				</div>
-			)}
+			{error && <Message message={error} size="xs" className="mt-1.5" />}
 
 			{existingWorktree ? (
 				<Button
