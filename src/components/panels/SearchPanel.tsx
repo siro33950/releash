@@ -1,5 +1,6 @@
 import { CaseSensitive, Regex, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { InlineMessage } from "@/components/ui/inline-message";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSearch } from "@/hooks/useSearch";
@@ -207,7 +208,7 @@ export function SearchPanel({
 				{loading && (
 					<div className="text-[10px] text-muted-foreground">Searching...</div>
 				)}
-				{error && <div className="text-[10px] text-destructive">{error}</div>}
+				{error && <InlineMessage size="xs">{error}</InlineMessage>}
 			</div>
 
 			<ScrollArea className="flex-1 min-h-0 [&>[data-slot=scroll-area-viewport]>div]:block!">

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { InlineMessage } from "@/components/ui/inline-message";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -85,7 +86,9 @@ export function InlineInput({
 				className="h-[22px] px-1 text-sm bg-input border border-primary rounded-sm shadow-none outline-none focus-visible:ring-0 w-full"
 			/>
 			{error && (
-				<span className="text-[10px] text-destructive px-1">{error}</span>
+				<InlineMessage size="xs" className="px-1">
+					{error}
+				</InlineMessage>
 			)}
 		</div>
 	);

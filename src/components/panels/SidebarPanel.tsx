@@ -7,6 +7,7 @@ import {
 	ContextMenuSeparator,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { InlineMessage } from "@/components/ui/inline-message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useFileOperations } from "@/hooks/useFileOperations";
 import { useFileTree } from "@/hooks/useFileTree";
@@ -290,9 +291,9 @@ export function SidebarPanel({
 							)}
 
 							{error && (
-								<div className="px-2 py-4 text-sm text-destructive">
+								<InlineMessage size="default" className="px-2 py-4">
 									{error}
-								</div>
+								</InlineMessage>
 							)}
 
 							{!loading && !error && (

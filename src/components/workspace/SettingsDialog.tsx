@@ -9,6 +9,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { InlineMessage } from "@/components/ui/inline-message";
 import type { BranchInfo } from "@/types/git";
 
 interface SettingsDialogProps {
@@ -99,7 +100,7 @@ export function SettingsDialog({
 									</option>
 								))}
 							</select>
-							{error && <p className="text-xs text-destructive">{error}</p>}
+							{error && <InlineMessage>{error}</InlineMessage>}
 						</div>
 					</div>
 				</div>

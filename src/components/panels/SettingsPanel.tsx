@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Check, Copy, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { InlineMessage } from "@/components/ui/inline-message";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
@@ -364,15 +365,13 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 										</button>
 									</div>
 
-									{hooksError && (
-										<p className="text-xs text-destructive">{hooksError}</p>
-									)}
+									{hooksError && <InlineMessage>{hooksError}</InlineMessage>}
 
 									{hooksSuccess && (
-										<p className="text-xs text-success">
+										<InlineMessage type="success">
 											設定を適用しました。Claude
 											Codeを再起動すると反映されます。
-										</p>
+										</InlineMessage>
 									)}
 
 									<div className="flex justify-end">
@@ -443,9 +442,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 									VPN接続時は常に自動起動します。LAN接続時の自動起動は上記で制御できます。
 								</p>
 
-								{remote.error && (
-									<p className="text-xs text-destructive">{remote.error}</p>
-								)}
+								{remote.error && <InlineMessage>{remote.error}</InlineMessage>}
 							</>
 						)}
 					</div>
@@ -572,7 +569,7 @@ export function SettingsPanel({ settings, onSave }: SettingsPanelProps) {
 								</div>
 
 								{webhook.error && (
-									<p className="text-xs text-destructive">{webhook.error}</p>
+									<InlineMessage>{webhook.error}</InlineMessage>
 								)}
 							</>
 						)}

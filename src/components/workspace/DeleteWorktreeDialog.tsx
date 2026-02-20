@@ -10,6 +10,7 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { InlineMessage } from "@/components/ui/inline-message";
 import type { BranchCard } from "@/types/git";
 
 interface DeleteWorktreeDialogProps {
@@ -95,7 +96,7 @@ export function DeleteWorktreeDialog({
 							Force delete is required.
 						</p>
 					)}
-					{error && <p className="text-destructive">{error}</p>}
+					{error && <InlineMessage size="default">{error}</InlineMessage>}
 				</div>
 				<AlertDialogFooter>
 					<AlertDialogCancel onClick={onCancel} disabled={deleting}>

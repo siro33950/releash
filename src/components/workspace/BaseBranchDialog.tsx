@@ -10,6 +10,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { InlineMessage } from "@/components/ui/inline-message";
 import type { BranchInfo } from "@/types/git";
 
 interface BaseBranchDialogProps {
@@ -86,7 +87,7 @@ export function BaseBranchDialog({
 							</option>
 						))}
 					</select>
-					{error && <p className="text-sm text-destructive">{error}</p>}
+					{error && <InlineMessage size="default">{error}</InlineMessage>}
 				</div>
 				<AlertDialogFooter>
 					<AlertDialogCancel onClick={onCancel} disabled={saving}>

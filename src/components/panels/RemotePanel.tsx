@@ -12,6 +12,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { InlineMessage } from "@/components/ui/inline-message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRemoteServer } from "@/hooks/useRemoteServer";
 
@@ -131,17 +132,13 @@ export function RemotePanel({
 					</div>
 
 					{/* Error */}
-					{error && (
-						<div className="text-xs text-destructive bg-destructive/10 rounded px-2 py-1.5 break-all">
-							{error}
-						</div>
-					)}
+					{error && <InlineMessage filled>{error}</InlineMessage>}
 
 					{/* LAN Mode Warning */}
 					{running && connectionMode === "lan" && (
-						<div className="text-xs text-warning bg-warning/10 border border-warning/30 rounded px-2 py-1.5">
+						<InlineMessage type="warning" filled>
 							LAN接続モード — 同一ネットワーク上のデバイスがアクセス可能です
-						</div>
+						</InlineMessage>
 					)}
 
 					{/* Network */}

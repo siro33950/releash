@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
+import { InlineMessage } from "@/components/ui/inline-message";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useIssues } from "@/hooks/useIssues";
@@ -403,9 +404,9 @@ function IssueCard({
 			</div>
 
 			{error && (
-				<div className="mt-1.5 text-[10px] text-destructive break-all">
+				<InlineMessage size="xs" className="mt-1.5">
 					{error}
-				</div>
+				</InlineMessage>
 			)}
 
 			{existingWorktree ? (

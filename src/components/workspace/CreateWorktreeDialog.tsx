@@ -10,6 +10,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { InlineMessage } from "@/components/ui/inline-message";
 import { Input } from "@/components/ui/input";
 import { trackEvent } from "@/lib/telemetry";
 import { branchToDir, computeWorktreeDir } from "@/lib/worktreePath";
@@ -215,7 +216,7 @@ export function CreateWorktreeDialog({
 									</select>
 								</div>
 							)}
-							{error && <p className="text-sm text-destructive">{error}</p>}
+							{error && <InlineMessage size="default">{error}</InlineMessage>}
 						</div>
 						<AlertDialogFooter>
 							<AlertDialogCancel

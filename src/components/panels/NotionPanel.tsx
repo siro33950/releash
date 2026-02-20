@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
+import { InlineMessage } from "@/components/ui/inline-message";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNotionConfig } from "@/hooks/useNotionConfig";
@@ -307,10 +308,12 @@ function NotionConfigForm({
 			</Button>
 
 			{validationStatus && validationStatus !== "success" && (
-				<div className="text-[10px] text-destructive">{validationStatus}</div>
+				<InlineMessage size="xs">{validationStatus}</InlineMessage>
 			)}
 			{validationStatus === "success" && (
-				<div className="text-[10px] text-success">接続成功</div>
+				<InlineMessage type="success" size="xs">
+					接続成功
+				</InlineMessage>
 			)}
 
 			{properties.length > 0 && (
@@ -389,12 +392,8 @@ function NotionConfigForm({
 					保存
 				</Button>
 			</div>
-			{saveError && (
-				<div className="text-[10px] text-destructive">{saveError}</div>
-			)}
-			{deleteError && (
-				<div className="text-[10px] text-destructive">{deleteError}</div>
-			)}
+			{saveError && <InlineMessage size="xs">{saveError}</InlineMessage>}
+			{deleteError && <InlineMessage size="xs">{deleteError}</InlineMessage>}
 		</div>
 	);
 }
@@ -791,9 +790,9 @@ function NotionTaskCard({
 			</div>
 
 			{error && (
-				<div className="mt-1.5 text-[10px] text-destructive break-all">
+				<InlineMessage size="xs" className="mt-1.5">
 					{error}
-				</div>
+				</InlineMessage>
 			)}
 
 			{existingWorktree ? (

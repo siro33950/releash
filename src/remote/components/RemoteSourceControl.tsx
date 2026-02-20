@@ -1,7 +1,8 @@
-import { ArrowUpFromLine, Check, Loader2, RefreshCw, X } from "lucide-react";
+import { ArrowUpFromLine, Check, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileStatusItem } from "@/components/panels/FileStatusItem";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
+import { InlineMessage } from "@/components/ui/inline-message";
 import type { GitFileStatus } from "@/types/git";
 
 interface RemoteSourceControlProps {
@@ -198,31 +199,22 @@ export function RemoteSourceControl({
 			</div>
 
 			{pushResult && (
-				<div className="flex items-start gap-1 px-3 py-2 text-success text-xs border-t border-border">
-					<span className="flex-1 break-all">{pushResult}</span>
-					<button
-						type="button"
-						className="shrink-0"
-						aria-label="閉じる"
-						onClick={onClearPushResult}
-					>
-						<X className="h-3 w-3" />
-					</button>
-				</div>
+				<InlineMessage
+					type="success"
+					className="px-3 py-2 border-t border-border"
+					onDismiss={onClearPushResult}
+				>
+					{pushResult}
+				</InlineMessage>
 			)}
 
 			{error && (
-				<div className="flex items-start gap-1 px-3 py-2 text-destructive text-xs border-t border-border">
-					<span className="flex-1 break-all">{error}</span>
-					<button
-						type="button"
-						className="shrink-0"
-						aria-label="エラーを閉じる"
-						onClick={onClearError}
-					>
-						<X className="h-3 w-3" />
-					</button>
-				</div>
+				<InlineMessage
+					className="px-3 py-2 border-t border-border"
+					onDismiss={onClearError}
+				>
+					{error}
+				</InlineMessage>
 			)}
 		</div>
 	);
