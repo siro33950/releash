@@ -89,6 +89,180 @@ jobs:
               });
             }
 
+  screenshots:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            shared:
+              - 'src/components/ui/**'
+              - 'src/components/layout/**'
+              - 'src/hooks/**'
+              - 'src/contexts/**'
+              - 'src/lib/**'
+              - 'tailwind.config.*'
+              - 'index.html'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'tests/helpers/**'
+              - 'playwright.screenshot.config.ts'
+            source-control:
+              - 'src/components/panels/SourceControl*'
+            file-tree:
+              - 'src/components/panels/FileTree*'
+              - 'src/components/panels/Sidebar*'
+            search:
+              - 'src/components/panels/SearchPanel*'
+            settings:
+              - 'src/components/panels/SettingsPanel*'
+            pull-request:
+              - 'src/components/panels/PullRequest*'
+            review:
+              - 'src/components/panels/ReviewPanel*'
+            editor:
+              - 'src/components/panels/EditorTabContent*'
+              - 'src/components/panels/MonacoDiff*'
+              - 'src/components/panels/ImageDiff*'
+              - 'src/components/panels/MarkdownDiff*'
+            worktree-view:
+              - 'src/screens/WorktreeView*'
+            workspace:
+              - 'src/screens/WorkspaceManager*'
+              - 'src/components/workspace/**'
+              - 'src/components/panels/IssuePanel*'
+              - 'src/components/panels/NotionPanel*'
+              - 'src/components/panels/RemotePanel*'
+
+      - name: Determine which screenshot tests to run
+        id: check
+        run: |
+          TEST_FILES=""
+          SHARED="${{ steps.filter.outputs.shared }}"
+
+          if [ "$SHARED" = "true" ]; then
+            # shared変更なら全テスト
+            TEST_FILES="tests/screenshots/"
+          else
+            # 個別パネルの変更を検出
+            if [ "${{ steps.filter.outputs.source-control }}" = "true" ]; then
+              TEST_FILES="$TEST_FILES tests/screenshots/source-control.screenshot.ts"
+            fi
+            if [ "${{ steps.filter.outputs.file-tree }}" = "true" ]; then
+              TEST_FILES="$TEST_FILES tests/screenshots/file-tree.screenshot.ts"
+            fi
+            if [ "${{ steps.filter.outputs.search }}" = "true" ]; then
+              TEST_FILES="$TEST_FILES tests/screenshots/search-panel.screenshot.ts"
+            fi
+            if [ "${{ steps.filter.outputs.settings }}" = "true" ]; then
+              TEST_FILES="$TEST_FILES tests/screenshots/settings-panel.screenshot.ts"
+            fi
+            if [ "${{ steps.filter.outputs.pull-request }}" = "true" ]; then
+              TEST_FILES="$TEST_FILES tests/screenshots/pull-request.screenshot.ts"
+            fi
+            if [ "${{ steps.filter.outputs.review }}" = "true" ]; then
+              TEST_FILES="$TEST_FILES tests/screenshots/review-panel.screenshot.ts"
+            fi
+            if [ "${{ steps.filter.outputs.editor }}" = "true" ] || [ "${{ steps.filter.outputs.worktree-view }}" = "true" ]; then
+              TEST_FILES="$TEST_FILES tests/screenshots/editor-layout.screenshot.ts tests/screenshots/worktree-dialogs.screenshot.ts"
+            fi
+            if [ "${{ steps.filter.outputs.workspace }}" = "true" ]; then
+              TEST_FILES="$TEST_FILES tests/screenshots/workspace-kanban.screenshot.ts tests/screenshots/workspace-panels.screenshot.ts"
+            fi
+          fi
+
+          TEST_FILES=$(echo "$TEST_FILES" | xargs)
+          if [ -n "$TEST_FILES" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "test_files=$TEST_FILES" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "test_files=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: steps.check.outputs.should_run == 'true'
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.should_run == 'true'
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        if: steps.check.outputs.should_run == 'true'
+      - run: pnpm exec playwright install --with-deps chromium
+        if: steps.check.outputs.should_run == 'true'
+
+      - name: Run screenshot tests
+        if: steps.check.outputs.should_run == 'true'
+        id: screenshots
+        continue-on-error: true
+        run: pnpm test:screenshots ${{ steps.check.outputs.test_files }}
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.check.outputs.should_run == 'true'
+        with:
+          name: screenshot-diffs
+          path: test-results/
+          retention-days: 7
+
+      - name: Post PR comment with screenshot results
+        if: always() && steps.check.outputs.should_run == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request?.number;
+            if (!prNumber) return;
+            const passed = '${{ steps.screenshots.outcome }}' !== 'failure';
+            const icon = passed ? '✅' : '❌';
+            const status = passed ? 'All screenshots match' : 'Screenshot differences detected';
+            const testFiles = '${{ steps.check.outputs.test_files }}'.trim();
+            const screens = testFiles
+              ? testFiles.split(/\s+/).map(f => f.replace('tests/screenshots/', '').replace('.screenshot.ts', '')).join(', ')
+              : 'all';
+            const lines = [
+              `## ${icon} Screenshot Tests: ${status}`,
+              '',
+              `**Tested screens:** ${screens}`,
+            ];
+            if (!passed) {
+              lines.push(
+                '',
+                `📦 [Download diff artifacts](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+                '',
+                '💡 To accept these changes as the new baseline, comment `/update-screenshots` on this PR.',
+              );
+            }
+            lines.push('', '_Generated by Playwright screenshot tests_');
+            const body = lines.join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            const existing = comments.find(c =>
+              c.user?.type === 'Bot' && c.body?.includes('Screenshot Tests:')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
   rust:
     runs-on: ubuntu-latest
     defaults:

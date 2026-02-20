@@ -1,0 +1,121 @@
+name: Update Screenshots
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-screenshots-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/update-screenshots')
+    steps:
+      - name: React to comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes',
+            });
+
+      - name: Get PR info
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_sha', pr.head.sha);
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_ref }}
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+
+      - name: Update screenshot baselines
+        run: pnpm test:screenshots:update
+
+      - name: Check for changes
+        id: diff
+        run: |
+          CHANGED=$(git diff --name-only tests/__screenshots__/ | wc -l | tr -d ' ')
+          NEW=$(git ls-files --others --exclude-standard tests/__screenshots__/ | wc -l | tr -d ' ')
+          TOTAL=$((CHANGED + NEW))
+          echo "count=$TOTAL" >> "$GITHUB_OUTPUT"
+
+      - name: Verify head SHA unchanged
+        if: steps.diff.outputs.count != '0'
+        id: verify
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const expected = '${{ steps.pr.outputs.head_sha }}';
+            if (pr.head.sha !== expected) {
+              core.setFailed(
+                `PR head moved during run (expected ${expected.slice(0,7)}, got ${pr.head.sha.slice(0,7)}). Aborting to avoid overwriting new commits.`
+              );
+            }
+
+      - name: Commit and push
+        if: steps.diff.outputs.count != '0' && steps.verify.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/__screenshots__/
+          git commit -m "chore: update screenshot baselines [skip ci]"
+          git push
+
+      - name: Post result comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const count = parseInt('${{ steps.diff.outputs.count }}' || '0', 10);
+            const verifyFailed = '${{ steps.verify.outcome }}' === 'failure';
+
+            let body;
+            if (verifyFailed) {
+              body = '⚠️ **Screenshot update aborted**: PR head changed during the run. Please comment `/update-screenshots` again.';
+            } else if (count === 0) {
+              body = '✅ **Screenshot baselines**: No changes detected — all baselines are already up to date.';
+            } else {
+              body = `📸 **Screenshot baselines updated**: ${count} file(s) changed and pushed to this PR.`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
