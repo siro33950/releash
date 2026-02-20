@@ -35,6 +35,10 @@
 	--ring: oklch(0.6116 0.0714 197.91);
 	--radius: 0.375rem;
 
+	/* ActivityBar */
+	--activity-bar: oklch(0.14 0.005 260);
+	--activity-bar-border: oklch(0.25 0.005 260);
+
 	/* サイドバー */
 	--sidebar: oklch(0.17 0.005 260);
 	--sidebar-foreground: oklch(0.85 0 0);
@@ -93,6 +97,9 @@
 	--border: oklch(0.85 0.005 260);
 	--input: oklch(0.93 0.005 260);
 	--ring: oklch(0.6116 0.0714 197.91);
+
+	--activity-bar: oklch(0.92 0.005 260);
+	--activity-bar-border: oklch(0.82 0.005 260);
 
 	--sidebar: oklch(0.95 0.005 260);
 	--sidebar-foreground: oklch(0.2 0 0);
@@ -156,6 +163,8 @@
 	--radius-md: calc(var(--radius) - 2px);
 	--radius-lg: var(--radius);
 	--radius-xl: calc(var(--radius) + 4px);
+	--color-activity-bar: var(--activity-bar);
+	--color-activity-bar-border: var(--activity-bar-border);
 	--color-sidebar: var(--sidebar);
 	--color-sidebar-foreground: var(--sidebar-foreground);
 	--color-sidebar-primary: var(--sidebar-primary);

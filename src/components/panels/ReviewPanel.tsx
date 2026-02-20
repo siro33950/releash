@@ -39,7 +39,7 @@ export function ReviewPanel({
 	const unsentComments = comments.filter((c) => c.status === "unsent");
 
 	return (
-		<div className="flex flex-col h-full border-t border-border">
+		<div className="flex flex-col h-full">
 			<div className="flex items-center justify-between border-b border-border bg-card">
 				<div className="flex items-center" role="tablist">
 					<button

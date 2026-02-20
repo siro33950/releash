@@ -102,7 +102,7 @@ export function ActivityBar({
 		<div
 			className={cn(
 				"flex flex-col items-center w-12 py-1",
-				"bg-sidebar border-r border-sidebar-border",
+				"bg-activity-bar border-r border-activity-bar-border",
 				className,
 			)}
 		>
@@ -113,7 +113,7 @@ export function ActivityBar({
 						isActive={false}
 						onClick={onGoHome}
 					/>
-					<div className="w-8 border-b border-sidebar-border my-1" />
+					<div className="w-8 border-b border-activity-bar-border my-1" />
 				</>
 			)}
 			{items.map((item) => (
