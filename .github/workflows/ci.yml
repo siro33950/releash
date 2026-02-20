@@ -121,7 +121,7 @@ jobs:
             search:
               - 'src/components/panels/SearchPanel*'
             settings:
-              - 'src/components/panels/SettingsPanel*'
+              - 'src/components/panels/SettingsModal*'
             pull-request:
               - 'src/components/panels/PullRequest*'
             review:

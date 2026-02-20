@@ -486,7 +486,7 @@ describe("WorkspaceManagerScreen", () => {
 			expect(screen.getByTestId("remote-panel")).toBeInTheDocument();
 		});
 
-		it("ActivityBar の Settings ボタンでパネル内容が切り替わる", async () => {
+		it("ActivityBar の Settings ボタンで設定モーダルが開く", async () => {
 			const user = userEvent.setup();
 			renderScreen();
 			await waitFor(() => {
@@ -496,7 +496,7 @@ describe("WorkspaceManagerScreen", () => {
 			const settingsBtn = screen.getByLabelText("Settings");
 			await user.click(settingsBtn);
 
-			expect(screen.queryByText("Issues")).not.toBeInTheDocument();
+			expect(screen.getByRole("dialog")).toBeInTheDocument();
 		});
 	});
 
