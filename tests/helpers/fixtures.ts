@@ -120,6 +120,26 @@ export const baseIpcHandler: Record<string, unknown> = {
 
 	// Search
 	search_files: { matches: [], total_matches: 0, truncated: false },
+
+	// PullRequestPanel
+	get_pr_detail: null,
+
+	// IssuePanel
+	list_branches: [],
+
+	// NotionPanel
+	get_notion_config: null,
+	save_notion_config: null,
+	delete_notion_config: null,
+	validate_notion_config: {
+		status: "configured",
+		properties: [],
+	},
+	query_notion_tasks: { tasks: [], has_more: false, next_cursor: null },
+	fetch_notion_label_options: [],
+
+	// Worktree作成
+	create_worktree: null,
 };
 
 // -------------------------------------------------------
@@ -276,6 +296,380 @@ export const searchResults = {
 	total_matches: 3,
 	truncated: false,
 };
+
+// -------------------------------------------------------
+// PrDetail フィクスチャ（PullRequestPanel用）
+// -------------------------------------------------------
+
+export interface PrAuthor {
+	login: string;
+}
+
+export interface PrComment {
+	author: PrAuthor;
+	body: string;
+	created_at: string;
+}
+
+export interface PrReview {
+	author: PrAuthor;
+	body: string;
+	state: string;
+	submitted_at: string;
+}
+
+export interface PrDetail {
+	number: number;
+	title: string;
+	body: string;
+	state: string;
+	url: string;
+	author: PrAuthor;
+	created_at: string;
+	head_ref_name: string;
+	base_ref_name: string;
+	additions: number;
+	deletions: number;
+	changed_files: number;
+	comments: PrComment[];
+	reviews: PrReview[];
+}
+
+export const prDetailOpen: PrDetail = {
+	number: 42,
+	title: "feat: add screenshot testing infrastructure",
+	body: "## Summary\n\nAdds Playwright-based visual regression testing.\n\n## Changes\n- New config file\n- Helper utilities\n- 84 screenshot tests",
+	state: "OPEN",
+	url: "https://github.com/test/repo/pull/42",
+	author: { login: "testuser" },
+	created_at: "2026-01-15T10:00:00Z",
+	head_ref_name: "feat/screenshot-tests",
+	base_ref_name: "main",
+	additions: 1200,
+	deletions: 50,
+	changed_files: 15,
+	comments: [
+		{
+			author: { login: "reviewer1" },
+			body: "Looks good overall! A few minor suggestions.",
+			created_at: "2026-01-16T09:00:00Z",
+		},
+	],
+	reviews: [
+		{
+			author: { login: "reviewer1" },
+			body: "Nice work!",
+			state: "APPROVED",
+			submitted_at: "2026-01-16T10:00:00Z",
+		},
+	],
+};
+
+export const prDetailMerged: PrDetail = {
+	...prDetailOpen,
+	state: "MERGED",
+	title: "fix: resolve flaky test in CI",
+};
+
+export const prDetailChangesRequested: PrDetail = {
+	...prDetailOpen,
+	state: "OPEN",
+	title: "refactor: restructure panel components",
+	reviews: [
+		{
+			author: { login: "reviewer2" },
+			body: "Please address the following concerns before merging.",
+			state: "CHANGES_REQUESTED",
+			submitted_at: "2026-01-16T11:00:00Z",
+		},
+	],
+};
+
+// -------------------------------------------------------
+// IssueInfo フィクスチャ（IssuePanel用）
+// -------------------------------------------------------
+
+export interface IssueLabel {
+	name: string;
+	color: string;
+}
+
+export interface Milestone {
+	title: string;
+}
+
+export interface IssueInfo {
+	number: number;
+	title: string;
+	state: string;
+	url: string;
+	author: PrAuthor;
+	created_at: string;
+	updated_at: string;
+	labels: IssueLabel[];
+	assignees: PrAuthor[];
+	body: string;
+	milestone: Milestone | null;
+}
+
+export const issueList: IssueInfo[] = [
+	{
+		number: 101,
+		title: "Add dark mode support for mobile view",
+		state: "open",
+		url: "https://github.com/test/repo/issues/101",
+		author: { login: "dev1" },
+		created_at: "2026-01-10T08:00:00Z",
+		updated_at: "2026-01-12T14:00:00Z",
+		labels: [
+			{ name: "enhancement", color: "a2eeef" },
+			{ name: "ui", color: "d4c5f9" },
+		],
+		assignees: [{ login: "dev1" }],
+		body: "Mobile view should support dark mode theme switching.",
+		milestone: { title: "v0.2.0" },
+	},
+	{
+		number: 102,
+		title: "Fix commit message validation",
+		state: "open",
+		url: "https://github.com/test/repo/issues/102",
+		author: { login: "dev2" },
+		created_at: "2026-01-11T09:00:00Z",
+		updated_at: "2026-01-11T09:00:00Z",
+		labels: [{ name: "bug", color: "d73a4a" }],
+		assignees: [],
+		body: "Commit message with special characters causes an error.",
+		milestone: null,
+	},
+	{
+		number: 103,
+		title: "Improve search performance for large repos",
+		state: "open",
+		url: "https://github.com/test/repo/issues/103",
+		author: { login: "dev3" },
+		created_at: "2026-01-12T10:00:00Z",
+		updated_at: "2026-01-13T16:00:00Z",
+		labels: [{ name: "performance", color: "fbca04" }],
+		assignees: [{ login: "dev1" }, { login: "dev3" }],
+		body: "Search is slow on repos with 10k+ files.",
+		milestone: { title: "v0.2.0" },
+	},
+];
+
+// -------------------------------------------------------
+// Notion フィクスチャ（NotionPanel用）
+// -------------------------------------------------------
+
+export interface NotionRepoConfig {
+	api_token: string;
+	database_id: string;
+	property_mapping: {
+		title: string;
+		labels: { name: string; property_type: string }[];
+		branch_name: string;
+		branch_prefix: string;
+	};
+}
+
+export interface NotionTask {
+	id: string;
+	title: string;
+	url: string;
+	labels: Record<string, string[]>;
+	branch_name: string;
+	created_at: string;
+	last_edited_at: string;
+}
+
+export interface NotionLabelOption {
+	property_name: string;
+	property_type: string;
+	options: string[];
+	option_ids: string[];
+}
+
+export const notionConfig: NotionRepoConfig = {
+	api_token: "ntn_test_token_xxxxx",
+	database_id: "abc123-def456",
+	property_mapping: {
+		title: "Name",
+		labels: [
+			{ name: "Status", property_type: "select" },
+			{ name: "Priority", property_type: "select" },
+		],
+		branch_name: "Branch",
+		branch_prefix: "notion/",
+	},
+};
+
+export const notionTasks: NotionTask[] = [
+	{
+		id: "task-1",
+		title: "Design new onboarding flow",
+		url: "https://notion.so/task-1",
+		labels: { Status: ["In Progress"], Priority: ["High"] },
+		branch_name: "notion/design-onboarding",
+		created_at: "2026-01-10T08:00:00Z",
+		last_edited_at: "2026-01-15T12:00:00Z",
+	},
+	{
+		id: "task-2",
+		title: "Update API documentation",
+		url: "https://notion.so/task-2",
+		labels: { Status: ["Todo"], Priority: ["Medium"] },
+		branch_name: "notion/update-api-docs",
+		created_at: "2026-01-11T09:00:00Z",
+		last_edited_at: "2026-01-14T10:00:00Z",
+	},
+	{
+		id: "task-3",
+		title: "Fix notification bug on Safari",
+		url: "https://notion.so/task-3",
+		labels: { Status: ["Todo"], Priority: ["Low"] },
+		branch_name: "notion/fix-safari-notification",
+		created_at: "2026-01-12T10:00:00Z",
+		last_edited_at: "2026-01-13T11:00:00Z",
+	},
+];
+
+export const notionLabelOptions: NotionLabelOption[] = [
+	{
+		property_name: "Status",
+		property_type: "select",
+		options: ["Todo", "In Progress", "Done"],
+		option_ids: ["opt-1", "opt-2", "opt-3"],
+	},
+	{
+		property_name: "Priority",
+		property_type: "select",
+		options: ["High", "Medium", "Low"],
+		option_ids: ["opt-4", "opt-5", "opt-6"],
+	},
+];
+
+// -------------------------------------------------------
+// Kanban フルバリエーション（7件、全カード状態を網羅）
+// -------------------------------------------------------
+
+export const kanbanBranchesFull: BranchCard[] = [
+	// Todo: ローカルブランチ（worktreeなし）
+	{
+		name: "feat/todo-item",
+		is_default: false,
+		worktree_path: null,
+		dirty_count: 0,
+		is_merged: false,
+		has_pr: false,
+		pr_number: null,
+		pr_url: null,
+		ahead: 0,
+		behind: 0,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
+	},
+	// Todo: リモートオンリーブランチ
+	{
+		name: "feat/remote-only",
+		is_default: false,
+		worktree_path: null,
+		dirty_count: 0,
+		is_merged: false,
+		has_pr: false,
+		pr_number: null,
+		pr_url: null,
+		ahead: 0,
+		behind: 0,
+		is_remote_only: true,
+		has_upstream: false,
+		remote_name: "origin",
+	},
+	// In Progress: dirty + ahead/behind
+	{
+		name: "feat/active-work",
+		is_default: false,
+		worktree_path: "/test/repo-worktrees/feat-active-work",
+		dirty_count: 5,
+		is_merged: false,
+		has_pr: false,
+		pr_number: null,
+		pr_url: null,
+		ahead: 3,
+		behind: 1,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
+	},
+	// In Progress: agent running
+	{
+		name: "feat/agent-running",
+		is_default: false,
+		worktree_path: "/test/repo-worktrees/feat-agent-running",
+		dirty_count: 0,
+		is_merged: false,
+		has_pr: false,
+		pr_number: null,
+		pr_url: null,
+		ahead: 1,
+		behind: 0,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
+		agent_state: "running",
+		agent_state_timestamp: 9999999999,
+	},
+	// In Progress: agent done
+	{
+		name: "feat/agent-done",
+		is_default: false,
+		worktree_path: "/test/repo-worktrees/feat-agent-done",
+		dirty_count: 2,
+		is_merged: false,
+		has_pr: false,
+		pr_number: null,
+		pr_url: null,
+		ahead: 2,
+		behind: 0,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
+		agent_state: "done",
+		agent_state_timestamp: 9999999999,
+	},
+	// Review: PR あり
+	{
+		name: "feat/in-review",
+		is_default: false,
+		worktree_path: "/test/repo-worktrees/feat-in-review",
+		dirty_count: 0,
+		is_merged: false,
+		has_pr: true,
+		pr_number: 88,
+		pr_url: "https://github.com/test/repo/pull/88",
+		ahead: 0,
+		behind: 0,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
+	},
+	// Done: merged
+	{
+		name: "feat/completed",
+		is_default: false,
+		worktree_path: null,
+		dirty_count: 0,
+		is_merged: true,
+		has_pr: true,
+		pr_number: 80,
+		pr_url: "https://github.com/test/repo/pull/80",
+		ahead: 0,
+		behind: 0,
+		is_remote_only: false,
+		has_upstream: true,
+		remote_name: null,
+	},
+];
 
 // -------------------------------------------------------
 // ブランチ一覧（CreateWorktreeDialog用）
