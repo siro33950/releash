@@ -1,9 +1,5 @@
 config_version = "0"
 
-[[source]]
-name = "default"
-default = true
-
 exclude_patterns = [
     "**/node_modules/**",
     "**/target/**",
@@ -13,11 +9,16 @@ exclude_patterns = [
     "src-tauri/resources/**",
 ]
 
+[[source]]
+name = "default"
+default = true
+
 [[plugin]]
 name = "clippy"
 
 [[plugin]]
 name = "biome"
+version = "2.3.14"
 
 [smells.function_complexity]
 threshold = 20
