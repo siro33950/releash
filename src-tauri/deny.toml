@@ -1,7 +1,10 @@
 [advisories]
 unmaintained = "workspace"
+unsound = "workspace"
 yanked = "warn"
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0008", reason = "git2 0.19.0 - awaiting upstream fix" },
+]
 
 [licenses]
 allow = [
@@ -30,5 +33,4 @@ unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/tauri-apps/fix-path-env-rs",
-    "https://github.com/nickelpack/nck",
 ]
