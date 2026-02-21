@@ -640,11 +640,7 @@ function NotionTaskList({
 				</div>
 			)}
 			{!loading && tasks.length === 0 && (
-				<EmptyState
-					compact
-					title="No tasks"
-					className="px-3 py-2 text-[10px]"
-				>
+				<EmptyState compact title="No tasks" className="px-3 py-2 text-[10px]">
 					{hasActiveFilters && (
 						<button
 							type="button"
