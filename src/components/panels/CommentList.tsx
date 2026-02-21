@@ -70,10 +70,7 @@ export function CommentList({
 		[onDeleteComment],
 	);
 
-	const sentCount = useMemo(
-		() => comments.filter((c) => c.status === "sent").length,
-		[comments],
-	);
+	const sentCount = comments.filter((c) => c.status === "sent").length;
 
 	const visibleComments = useMemo(
 		() =>

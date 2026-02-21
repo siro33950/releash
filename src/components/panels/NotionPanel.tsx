@@ -9,7 +9,7 @@ import {
 	Trash2,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
@@ -173,6 +173,78 @@ function NotionRepoSection({
 	);
 }
 
+interface ConfigFormState {
+	apiToken: string;
+	databaseId: string;
+	mapping: PropertyMapping;
+	validating: boolean;
+	saving: boolean;
+	properties: NotionPropertyInfo[];
+	validationStatus: string | null;
+	deleting: boolean;
+	saveError: string | null;
+	deleteError: string | null;
+}
+
+type ConfigFormAction =
+	| { type: "SET_API_TOKEN"; value: string }
+	| { type: "SET_DATABASE_ID"; value: string }
+	| { type: "UPDATE_MAPPING"; update: Partial<PropertyMapping> }
+	| { type: "VALIDATE_START" }
+	| {
+			type: "VALIDATE_SUCCESS";
+			properties: NotionPropertyInfo[];
+			status: string;
+	  }
+	| { type: "VALIDATE_ERROR"; error: string }
+	| { type: "SAVE_START" }
+	| { type: "SAVE_ERROR"; error: string }
+	| { type: "SAVE_END" }
+	| { type: "DELETE_START" }
+	| { type: "DELETE_ERROR"; error: string }
+	| { type: "DELETE_END" };
+
+export function configFormReducer(
+	state: ConfigFormState,
+	action: ConfigFormAction,
+): ConfigFormState {
+	switch (action.type) {
+		case "SET_API_TOKEN":
+			return { ...state, apiToken: action.value };
+		case "SET_DATABASE_ID":
+			return { ...state, databaseId: action.value };
+		case "UPDATE_MAPPING":
+			return { ...state, mapping: { ...state.mapping, ...action.update } };
+		case "VALIDATE_START":
+			return { ...state, validating: true, validationStatus: null };
+		case "VALIDATE_SUCCESS":
+			return {
+				...state,
+				validating: false,
+				properties: action.properties,
+				validationStatus: action.status,
+			};
+		case "VALIDATE_ERROR":
+			return {
+				...state,
+				validating: false,
+				validationStatus: action.error,
+			};
+		case "SAVE_START":
+			return { ...state, saving: true, saveError: null };
+		case "SAVE_ERROR":
+			return { ...state, saving: false, saveError: action.error };
+		case "SAVE_END":
+			return { ...state, saving: false };
+		case "DELETE_START":
+			return { ...state, deleting: true, deleteError: null };
+		case "DELETE_ERROR":
+			return { ...state, deleting: false, deleteError: action.error };
+		case "DELETE_END":
+			return { ...state, deleting: false };
+	}
+}
+
 interface NotionConfigFormProps {
 	initialConfig: {
 		api_token: string;
@@ -199,72 +271,82 @@ function NotionConfigForm({
 	onDelete,
 	validate,
 }: NotionConfigFormProps) {
-	const [apiToken, setApiToken] = useState(initialConfig?.api_token ?? "");
-	const [databaseId, setDatabaseId] = useState(
-		initialConfig?.database_id ?? "",
-	);
-	const [mapping, setMapping] = useState<PropertyMapping>(
-		initialConfig?.property_mapping ?? {
+	const [form, dispatch] = useReducer(configFormReducer, {
+		apiToken: initialConfig?.api_token ?? "",
+		databaseId: initialConfig?.database_id ?? "",
+		mapping: initialConfig?.property_mapping ?? {
 			title: "Name",
 			labels: [],
 			branch_name: "",
 			branch_prefix: "",
 		},
-	);
-	const [validating, setValidating] = useState(false);
-	const [saving, setSaving] = useState(false);
-	const [properties, setProperties] = useState<NotionPropertyInfo[]>([]);
-	const [validationStatus, setValidationStatus] = useState<string | null>(null);
-	const [deleting, setDeleting] = useState(false);
-	const [saveError, setSaveError] = useState<string | null>(null);
-	const [deleteError, setDeleteError] = useState<string | null>(null);
+		validating: false,
+		saving: false,
+		properties: [],
+		validationStatus: null,
+		deleting: false,
+		saveError: null,
+		deleteError: null,
+	});
+	const {
+		apiToken,
+		databaseId,
+		mapping,
+		validating,
+		saving,
+		properties,
+		validationStatus,
+		deleting,
+		saveError,
+		deleteError,
+	} = form;
 
 	const handleValidate = useCallback(async () => {
-		setValidating(true);
-		setValidationStatus(null);
+		dispatch({ type: "VALIDATE_START" });
 		try {
 			const result = await validate(apiToken, databaseId);
-			setProperties(result.properties);
+			let status: string;
 			if (result.status === "configured") {
-				setValidationStatus("success");
+				status = "success";
 			} else if (result.status === "invalid_token") {
-				setValidationStatus("APIトークンが無効です");
+				status = "APIトークンが無効です";
 			} else if (result.status === "invalid_database") {
-				setValidationStatus("データベースIDが無効です");
+				status = "データベースIDが無効です";
 			} else if (result.status === "network_error") {
-				setValidationStatus("ネットワークエラー: 接続を確認してください");
+				status = "ネットワークエラー: 接続を確認してください";
 			} else {
-				setValidationStatus("設定が不完全です");
+				status = "設定が不完全です";
 			}
+			dispatch({
+				type: "VALIDATE_SUCCESS",
+				properties: result.properties,
+				status,
+			});
 		} catch (e) {
-			setValidationStatus(String(e));
-		} finally {
-			setValidating(false);
+			dispatch({ type: "VALIDATE_ERROR", error: String(e) });
 		}
 	}, [apiToken, databaseId, validate]);
 
 	const handleSave = useCallback(async () => {
-		setSaving(true);
-		setSaveError(null);
+		dispatch({ type: "SAVE_START" });
 		try {
 			await onSave(apiToken, databaseId, mapping);
 		} catch (e) {
-			setSaveError(String(e));
+			dispatch({ type: "SAVE_ERROR", error: String(e) });
 		} finally {
-			setSaving(false);
+			dispatch({ type: "SAVE_END" });
 		}
 	}, [apiToken, databaseId, mapping, onSave]);
 
 	const handleDelete = useCallback(async () => {
 		if (!onDelete) return;
-		setDeleting(true);
-		setDeleteError(null);
+		dispatch({ type: "DELETE_START" });
 		try {
 			await onDelete();
 		} catch (e) {
-			setDeleteError(String(e));
+			dispatch({ type: "DELETE_ERROR", error: String(e) });
 		} finally {
-			setDeleting(false);
+			dispatch({ type: "DELETE_END" });
 		}
 	}, [onDelete]);
 
@@ -279,7 +361,9 @@ function NotionConfigForm({
 					size="xs"
 					className="mt-0.5"
 					value={apiToken}
-					onChange={(e) => setApiToken(e.target.value)}
+					onChange={(e) =>
+						dispatch({ type: "SET_API_TOKEN", value: e.target.value })
+					}
 					placeholder="ntn_..."
 				/>
 			</label>
@@ -292,7 +376,9 @@ function NotionConfigForm({
 					size="xs"
 					className="mt-0.5"
 					value={databaseId}
-					onChange={(e) => setDatabaseId(e.target.value)}
+					onChange={(e) =>
+						dispatch({ type: "SET_DATABASE_ID", value: e.target.value })
+					}
 					placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 				/>
 			</label>
@@ -324,19 +410,25 @@ function NotionConfigForm({
 						label="タイトル"
 						value={mapping.title}
 						properties={properties}
-						onChange={(v) => setMapping((m) => ({ ...m, title: v }))}
+						onChange={(v) =>
+							dispatch({ type: "UPDATE_MAPPING", update: { title: v } })
+						}
 					/>
 					<PropertyCheckboxGroup
 						label="ラベル"
 						selected={mapping.labels}
 						properties={properties}
-						onChange={(v) => setMapping((m) => ({ ...m, labels: v }))}
+						onChange={(v) =>
+							dispatch({ type: "UPDATE_MAPPING", update: { labels: v } })
+						}
 					/>
 					<PropertySelect
 						label="ブランチ名"
 						value={mapping.branch_name}
 						properties={properties}
-						onChange={(v) => setMapping((m) => ({ ...m, branch_name: v }))}
+						onChange={(v) =>
+							dispatch({ type: "UPDATE_MAPPING", update: { branch_name: v } })
+						}
 						allowEmpty
 					/>
 					{/* biome-ignore lint/a11y/noLabelWithoutControl: Input renders <input> inside label */}
@@ -349,7 +441,10 @@ function NotionConfigForm({
 							className="flex-1"
 							value={mapping.branch_prefix}
 							onChange={(e) =>
-								setMapping((m) => ({ ...m, branch_prefix: e.target.value }))
+								dispatch({
+									type: "UPDATE_MAPPING",
+									update: { branch_prefix: e.target.value },
+								})
 							}
 							placeholder="feat/"
 						/>

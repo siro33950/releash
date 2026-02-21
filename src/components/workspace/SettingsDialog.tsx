@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer } from "react";
 import {
 	AlertDialog,
 	AlertDialogCancel,
@@ -10,6 +10,59 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import type { BranchInfo } from "@/types/git";
+
+interface SettingsDialogState {
+	branches: BranchInfo[];
+	selectedBase: string;
+	initialBase: string;
+	saving: boolean;
+	error: string | null;
+}
+
+type SettingsDialogAction =
+	| { type: "LOAD_SUCCESS"; branches: BranchInfo[]; base: string }
+	| { type: "LOAD_ERROR"; error: string }
+	| { type: "RESET" }
+	| { type: "SELECT_BASE"; base: string }
+	| { type: "SAVE_START" }
+	| { type: "SAVE_ERROR"; error: string }
+	| { type: "SAVE_END" };
+
+const initialState: SettingsDialogState = {
+	branches: [],
+	selectedBase: "",
+	initialBase: "",
+	saving: false,
+	error: null,
+};
+
+function settingsDialogReducer(
+	state: SettingsDialogState,
+	action: SettingsDialogAction,
+): SettingsDialogState {
+	switch (action.type) {
+		case "RESET":
+			return { ...initialState };
+		case "LOAD_SUCCESS":
+			return {
+				...state,
+				branches: action.branches,
+				selectedBase: action.base,
+				initialBase: action.base,
+				error: null,
+			};
+		case "LOAD_ERROR":
+			return { ...state, error: action.error };
+		case "SELECT_BASE":
+			return { ...state, selectedBase: action.base };
+		case "SAVE_START":
+			return { ...state, saving: true, error: null };
+		case "SAVE_ERROR":
+			return { ...state, saving: false, error: action.error };
+		case "SAVE_END":
+			return { ...state, saving: false };
+	}
+}
 
 interface SettingsDialogProps {
 	open: boolean;
@@ -24,46 +77,41 @@ export function SettingsDialog({
 	onBaseBranchSaved,
 	onClose,
 }: SettingsDialogProps) {
-	const [branches, setBranches] = useState<BranchInfo[]>([]);
-	const [selectedBase, setSelectedBase] = useState<string>("");
-	const [initialBase, setInitialBase] = useState<string>("");
-	const [saving, setSaving] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [state, dispatch] = useReducer(settingsDialogReducer, initialState);
+	const { branches, selectedBase, initialBase, saving, error } = state;
 
 	useEffect(() => {
 		if (!open) return;
-		setError(null);
-		setSaving(false);
+		dispatch({ type: "RESET" });
 
 		Promise.all([
 			invoke<BranchInfo[]>("list_branches", { repoPath }),
 			invoke<string | null>("get_releash_base", { repoPath }),
 		])
 			.then(([branchList, currentBase]) => {
-				setBranches(branchList.filter((b) => !b.is_remote));
-				const base = currentBase ?? "";
-				setSelectedBase(base);
-				setInitialBase(base);
+				dispatch({
+					type: "LOAD_SUCCESS",
+					branches: branchList.filter((b) => !b.is_remote),
+					base: currentBase ?? "",
+				});
 			})
 			.catch((e) => {
-				setError(String(e));
+				dispatch({ type: "LOAD_ERROR", error: String(e) });
 			});
 	}, [open, repoPath]);
 
 	const handleSave = useCallback(async () => {
-		setSaving(true);
-		setError(null);
+		dispatch({ type: "SAVE_START" });
 		try {
 			await invoke("set_releash_base", {
 				repoPath,
 				base: selectedBase || null,
 			});
+			dispatch({ type: "SAVE_END" });
 			onBaseBranchSaved();
 			onClose();
 		} catch (e) {
-			setError(String(e));
-		} finally {
-			setSaving(false);
+			dispatch({ type: "SAVE_ERROR", error: String(e) });
 		}
 	}, [selectedBase, repoPath, onBaseBranchSaved, onClose]);
 
@@ -89,7 +137,9 @@ export function SettingsDialog({
 							<select
 								id="sd-base-branch"
 								value={selectedBase}
-								onChange={(e) => setSelectedBase(e.target.value)}
+								onChange={(e) =>
+									dispatch({ type: "SELECT_BASE", base: e.target.value })
+								}
 								className={selectClass}
 							>
 								<option value="">Auto (main/master)</option>

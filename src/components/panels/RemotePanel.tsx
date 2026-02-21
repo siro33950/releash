@@ -1,5 +1,3 @@
-import DOMPurify from "dompurify";
-import { Copy, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
 	AlertDialog,
@@ -11,10 +9,12 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
-import { Message } from "@/components/ui/message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRemoteServer } from "@/hooks/useRemoteServer";
+import { NetworkConfig } from "./NetworkConfig";
+import { QrDisplay } from "./QrDisplay";
+import { ServerControl } from "./ServerControl";
+import { ServerSettings } from "./ServerSettings";
 
 export interface RemotePanelProps {
 	rootPaths: string[];
@@ -43,7 +43,6 @@ export function RemotePanel({
 		refreshStatus,
 		updatePort,
 		regenerateToken,
-		updateRepoPaths,
 		updateTerminalStartupCommand,
 	} = useRemoteServer();
 
@@ -53,29 +52,18 @@ export function RemotePanel({
 		refreshStatus();
 	}, [refreshStatus]);
 
-	useEffect(() => {
-		if (config) {
-			setPortInput(String(config.port));
-		}
-	}, [config]);
-
-	useEffect(() => {
-		if (running) {
-			updateRepoPaths(rootPaths);
-		}
-	}, [running, rootPaths, updateRepoPaths]);
-
-	useEffect(() => {
-		if (running) {
-			updateTerminalStartupCommand(terminalStartupCommand);
-		}
-	}, [running, terminalStartupCommand, updateTerminalStartupCommand]);
+	const [prevConfigPort, setPrevConfigPort] = useState<number | null>(null);
+	if (config && config.port !== prevConfigPort) {
+		setPrevConfigPort(config.port);
+		setPortInput(String(config.port));
+	}
 
 	const handleToggle = async () => {
 		if (running) {
 			await stopServer();
 		} else if (rootPaths.length > 0) {
 			await startServer(rootPaths);
+			updateTerminalStartupCommand(terminalStartupCommand);
 		}
 	};
 
@@ -110,196 +98,41 @@ export function RemotePanel({
 
 			<ScrollArea className="flex-1 min-h-0">
 				<div className="px-3 py-3 flex flex-col gap-4">
-					{/* Server Control */}
-					<div className="flex flex-col gap-2">
-						<div className="flex items-center gap-2">
-							<div
-								className={`size-2 rounded-full ${running ? "bg-success" : "bg-muted-foreground"}`}
-							/>
-							<span className="text-xs text-muted-foreground">
-								{running ? "Running" : "Stopped"}
-							</span>
-						</div>
-						<Button
-							size="sm"
-							variant={running ? "destructive" : "default"}
-							className="w-full text-xs"
-							onClick={handleToggle}
-							disabled={!running && rootPaths.length === 0}
-						>
-							{running ? "Stop Server" : "Start Server"}
-						</Button>
-					</div>
+					<ServerControl
+						running={running}
+						error={error}
+						connectionMode={connectionMode}
+						rootPaths={rootPaths}
+						onToggle={handleToggle}
+					/>
 
-					{/* Error */}
-					{error && (
-						<Message
-							message={error}
-							className="bg-destructive/10 rounded px-2 py-1.5"
-						/>
-					)}
+					<NetworkConfig
+						interfaces={interfaces}
+						selectedIp={selectedIp}
+						setSelectedIp={setSelectedIp}
+						running={running}
+						boundIp={boundIp}
+					/>
 
-					{/* LAN Mode Warning */}
-					{running && connectionMode === "lan" && (
-						<Message
-							severity="warning"
-							message="LAN接続モード — 同一ネットワーク上のデバイスがアクセス可能です"
-							className="bg-warning/10 border border-warning/30 rounded px-2 py-1.5"
-						/>
-					)}
-
-					{/* Network */}
-					<div className="flex flex-col gap-1.5 border-t border-border pt-3">
-						<span className="text-xs font-medium text-muted-foreground">
-							Network
-						</span>
-						<div className="flex flex-col gap-0.5 bg-muted rounded px-2 py-1.5">
-							{interfaces.length === 0 && (
-								<span className="text-[10px] text-muted-foreground">
-									ネットワークが検出されません
-								</span>
-							)}
-							{interfaces.map((iface) => (
-								<label
-									key={iface.ip}
-									className={`flex items-center gap-2 py-0.5 cursor-pointer ${running ? "opacity-50 pointer-events-none" : ""}`}
-								>
-									<input
-										type="radio"
-										name="bind-ip"
-										value={iface.ip}
-										checked={selectedIp === iface.ip}
-										onChange={() => setSelectedIp(iface.ip)}
-										disabled={running}
-										className="accent-primary size-3"
-									/>
-									<span className="text-[10px] text-muted-foreground uppercase w-8 shrink-0">
-										{iface.kind === "vpn" ? "VPN" : "LAN"}
-									</span>
-									<span className="text-[10px] text-muted-foreground truncate">
-										{iface.name}
-									</span>
-									<span className="text-[10px] font-mono text-foreground ml-auto shrink-0">
-										{iface.ip}
-									</span>
-								</label>
-							))}
-							{running && boundIp && (
-								<div className="flex justify-between items-center pt-1 border-t border-border/50">
-									<span className="text-[10px] text-muted-foreground">
-										Bind
-									</span>
-									<span className="text-[10px] font-mono text-foreground">
-										{boundIp}
-									</span>
-								</div>
-							)}
-						</div>
-					</div>
-
-					{/* Connection QR */}
 					{running && qrData && (
-						<div className="flex flex-col gap-2 border-t border-border pt-3">
-							<span className="text-xs font-medium text-muted-foreground">
-								Connection
-							</span>
-							<div
-								className="w-full flex justify-center"
-								// biome-ignore lint/security/noDangerouslySetInnerHtml: SVG sanitized by DOMPurify
-								dangerouslySetInnerHTML={{
-									__html: DOMPurify.sanitize(qrData.svg, {
-										USE_PROFILES: { svg: true },
-									}),
-								}}
-							/>
-							<div className="flex items-center gap-1">
-								<span className="flex-1 text-[10px] text-muted-foreground font-mono truncate">
-									{qrData.url}
-								</span>
-								<Button
-									variant="ghost"
-									size="icon"
-									className="size-5 shrink-0"
-									onClick={handleCopyUrl}
-								>
-									<Copy className="size-3" />
-								</Button>
-							</div>
-						</div>
+						<QrDisplay
+							qrData={qrData}
+							config={config}
+							onCopyUrl={handleCopyUrl}
+							onCopyToken={handleCopyToken}
+							onRegenerateToken={regenerateToken}
+						/>
 					)}
 
-					{/* Auth Token QR */}
-					{running && qrData && config && (
-						<div className="flex flex-col gap-2 border-t border-border pt-3">
-							<span className="text-xs font-medium text-muted-foreground">
-								Auth Token
-							</span>
-							<div
-								className="w-full flex justify-center"
-								// biome-ignore lint/security/noDangerouslySetInnerHtml: SVG sanitized by DOMPurify
-								dangerouslySetInnerHTML={{
-									__html: DOMPurify.sanitize(qrData.token_svg, {
-										USE_PROFILES: { svg: true },
-									}),
-								}}
-							/>
-							<div className="flex items-center gap-1">
-								<span className="flex-1 text-[10px] text-muted-foreground font-mono truncate bg-muted border border-border rounded px-2 py-1">
-									{config.token.slice(0, 8)}...
-								</span>
-								<Button
-									variant="ghost"
-									size="icon"
-									className="size-5 shrink-0"
-									onClick={handleCopyToken}
-									title="Copy token"
-								>
-									<Copy className="size-3" />
-								</Button>
-								<Button
-									variant="ghost"
-									size="icon"
-									className="size-5 shrink-0"
-									onClick={regenerateToken}
-									title="Regenerate token"
-								>
-									<RefreshCw className="size-3" />
-								</Button>
-							</div>
-						</div>
-					)}
-
-					{/* Server Settings */}
 					{config && (
-						<div className="flex flex-col gap-3 border-t border-border pt-3">
-							<span className="text-xs font-medium text-muted-foreground">
-								Settings
-							</span>
-
-							{/* Port */}
-							<div className="flex flex-col gap-1">
-								<label
-									htmlFor="remote-port"
-									className="text-[10px] text-muted-foreground"
-								>
-									Port
-								</label>
-								<input
-									id="remote-port"
-									type="number"
-									min={1024}
-									max={65535}
-									value={portInput}
-									onChange={(e) => setPortInput(e.target.value)}
-									onBlur={handlePortBlur}
-									disabled={running}
-									className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
-								/>
-							</div>
-						</div>
+						<ServerSettings
+							portInput={portInput}
+							running={running}
+							onPortInputChange={setPortInput}
+							onPortBlur={handlePortBlur}
+						/>
 					)}
 
-					{/* No root path warning */}
 					{rootPaths.length === 0 && (
 						<p className="text-xs text-muted-foreground">
 							フォルダを開いてからサーバーを起動してください

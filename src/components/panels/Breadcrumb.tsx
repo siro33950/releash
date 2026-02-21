@@ -32,7 +32,7 @@ export function Breadcrumb({ rootPath, filePath, children }: BreadcrumbProps) {
 				const isLast = index === segments.length - 1;
 				return (
 					<span
-						key={`${index}-${segment}`}
+						key={segments.slice(0, index + 1).join("/")}
 						className="flex items-center shrink-0"
 					>
 						{index > 0 && (

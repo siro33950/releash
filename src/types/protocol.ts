@@ -2,22 +2,22 @@ import type { GitFileStatus } from "./git";
 
 // --- 認証 ---
 
-export interface AuthChallenge {
+interface AuthChallenge {
 	challenge: string;
 }
 
-export interface AuthResponse {
+interface AuthResponse {
 	hmac: string;
 }
 
-export interface AuthResult {
+interface AuthResult {
 	success: boolean;
 	message?: string;
 }
 
 // --- ターミナル ---
 
-export interface PtyOutputMsg {
+interface PtyOutputMsg {
 	pty_id: number;
 	data: string;
 }
@@ -70,7 +70,7 @@ export interface FileContentRequest {
 	diff_base?: "HEAD" | "staged";
 }
 
-export interface FileContentResponse {
+interface FileContentResponse {
 	path: string;
 	original: string;
 	modified: string;
@@ -92,7 +92,7 @@ export interface GitUnstage {
 	paths: string[];
 }
 
-export interface GitStageResult {
+interface GitStageResult {
 	success: boolean;
 	error?: string;
 	files: GitFileStatus[];
@@ -194,7 +194,7 @@ export interface WorktreeSelectResponse {
 
 // --- ブランチリスト同期 ---
 
-export interface BranchCardMsg {
+interface BranchCardMsg {
 	name: string;
 	is_default: boolean;
 	worktree_path: string | null;
@@ -273,8 +273,6 @@ export type WsMessage =
 	| { type: "branch_list_sync"; payload: BranchListSync }
 	| { type: "agent_state_sync"; payload: AgentStateSync }
 	| { type: "error"; payload: ErrorMsg };
-
-export type WsMessageType = WsMessage["type"];
 
 export function serializeMessage(msg: WsMessage): string {
 	return JSON.stringify(msg);

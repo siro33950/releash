@@ -106,7 +106,7 @@ export function RemoteTerminalPanel({
 		};
 
 		viewport.addEventListener("resize", update);
-		viewport.addEventListener("scroll", update);
+		viewport.addEventListener("scroll", update, { passive: true });
 		window.addEventListener("orientationchange", handleOrientationChange);
 		return () => {
 			viewport.removeEventListener("resize", update);

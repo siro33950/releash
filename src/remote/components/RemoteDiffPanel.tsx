@@ -74,7 +74,7 @@ export function RemoteDiffPanel({
 	const [selectionStart, setSelectionStart] = useState<number | null>(null);
 	const [commentRange, setCommentRange] = useState<LineRange | null>(null);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: path変更時に選択状態をリセットする意図的な依存
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset selection state when file path changes
 	useEffect(() => {
 		setSelectionStart(null);
 		setCommentRange(null);

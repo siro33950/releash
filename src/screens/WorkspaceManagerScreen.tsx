@@ -8,7 +8,7 @@ import {
 	Settings,
 	StickyNote,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useReducer, useRef } from "react";
 import {
 	Group,
 	Panel,
@@ -31,6 +31,50 @@ import { Button } from "@/components/ui/button";
 import { RepoKanbanBoard } from "@/components/workspace/RepoKanbanBoard";
 import type { ProviderStatus } from "@/types/git";
 import { type AppSettings, buildTerminalCommand } from "@/types/settings";
+
+// --- Workspace Reducer ---
+interface WorkspaceState {
+	activeView: string;
+	isSettingsOpen: boolean;
+	sidebarVisible: boolean;
+	terminalVisible: boolean;
+	prevRequestedView: string | null | undefined;
+}
+
+type WorkspaceAction =
+	| { type: "SET_ACTIVE_VIEW"; view: string }
+	| { type: "SET_SETTINGS_OPEN"; open: boolean }
+	| { type: "SET_SIDEBAR_VISIBLE"; visible: boolean }
+	| { type: "SET_TERMINAL_VISIBLE"; visible: boolean }
+	| {
+			type: "SYNC_REQUESTED_VIEW";
+			requestedView: string | null | undefined;
+	  };
+
+export function workspaceReducer(
+	state: WorkspaceState,
+	action: WorkspaceAction,
+): WorkspaceState {
+	switch (action.type) {
+		case "SET_ACTIVE_VIEW":
+			return { ...state, activeView: action.view };
+		case "SET_SETTINGS_OPEN":
+			return { ...state, isSettingsOpen: action.open };
+		case "SET_SIDEBAR_VISIBLE":
+			return { ...state, sidebarVisible: action.visible };
+		case "SET_TERMINAL_VISIBLE":
+			return { ...state, terminalVisible: action.visible };
+		case "SYNC_REQUESTED_VIEW": {
+			if (action.requestedView === state.prevRequestedView) return state;
+			const next = { ...state, prevRequestedView: action.requestedView };
+			if (!action.requestedView) return next;
+			if (action.requestedView === "settings") {
+				return { ...next, isSettingsOpen: true };
+			}
+			return { ...next, activeView: action.requestedView };
+		}
+	}
+}
 
 interface WorkspaceManagerScreenProps {
 	repoPaths: string[];
@@ -62,19 +106,25 @@ export function WorkspaceManagerScreen({
 	onAddRepo,
 	onRemoveRepo,
 }: WorkspaceManagerScreenProps) {
-	const [activeView, setActiveView] = useState<string>("issues");
-	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+	const [state, dispatch] = useReducer(
+		workspaceReducer,
+		requestedView,
+		(initialRequestedView) => ({
+			activeView: "issues",
+			isSettingsOpen: false,
+			sidebarVisible: true,
+			terminalVisible: true,
+			prevRequestedView: initialRequestedView,
+		}),
+	);
+	const { activeView, isSettingsOpen, sidebarVisible, terminalVisible } = state;
 
-	useEffect(() => {
+	if (requestedView !== state.prevRequestedView) {
+		dispatch({ type: "SYNC_REQUESTED_VIEW", requestedView });
 		if (requestedView) {
-			if (requestedView === "settings") {
-				setIsSettingsOpen(true);
-			} else {
-				setActiveView(requestedView);
-			}
 			onRequestedViewHandled?.();
 		}
-	}, [requestedView, onRequestedViewHandled]);
+	}
 
 	const activityBarItems: ActivityBarItem[] = useMemo(
 		() => [
@@ -112,17 +162,12 @@ export function WorkspaceManagerScreen({
 	const terminalPanelRef = useRef<PanelImperativeHandle>(null);
 	const terminalRef = useRef<TerminalPanelHandle>(null);
 
-	const [sidebarVisible, setSidebarVisible] = useState(true);
-	const [terminalVisible, setTerminalVisible] = useState(true);
-
 	const handleSidebarResize = useCallback((size: PanelSize) => {
-		const visible = size.asPercentage > 0;
-		setSidebarVisible((prev) => (prev === visible ? prev : visible));
+		dispatch({ type: "SET_SIDEBAR_VISIBLE", visible: size.asPercentage > 0 });
 	}, []);
 
 	const handleTerminalResize = useCallback((size: PanelSize) => {
-		const visible = size.asPercentage > 0;
-		setTerminalVisible((prev) => (prev === visible ? prev : visible));
+		dispatch({ type: "SET_TERMINAL_VISIBLE", visible: size.asPercentage > 0 });
 	}, []);
 
 	const toggleSidebar = useCallback(() => {
@@ -212,9 +257,9 @@ export function WorkspaceManagerScreen({
 					activeItem={activeView}
 					onItemClick={(id) => {
 						if (id === "settings") {
-							setIsSettingsOpen(true);
+							dispatch({ type: "SET_SETTINGS_OPEN", open: true });
 						} else {
-							setActiveView(id);
+							dispatch({ type: "SET_ACTIVE_VIEW", view: id });
 						}
 					}}
 				/>
@@ -300,7 +345,7 @@ export function WorkspaceManagerScreen({
 			</div>
 			<SettingsModal
 				open={isSettingsOpen}
-				onOpenChange={setIsSettingsOpen}
+				onOpenChange={(open) => dispatch({ type: "SET_SETTINGS_OPEN", open })}
 				settings={settings}
 				onSave={onSettingsSave}
 			/>

@@ -43,13 +43,3 @@ export async function getInvokeHistory(
 	);
 }
 
-/**
- * 指定コマンドが invoke された回数を返す。
- */
-export async function getInvokeCount(
-	page: Page,
-	cmd: string,
-): Promise<number> {
-	const history = await getInvokeHistory(page);
-	return history.filter((h) => h.cmd === cmd).length;
-}

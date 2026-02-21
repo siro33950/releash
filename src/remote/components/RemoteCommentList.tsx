@@ -31,10 +31,7 @@ export function RemoteCommentList({
 }: RemoteCommentListProps) {
 	const [showSentComments, setShowSentComments] = useState(false);
 	const unsentComments = comments.filter((c) => c.status === "unsent");
-	const sentCount = useMemo(
-		() => comments.filter((c) => c.status === "sent").length,
-		[comments],
-	);
+	const sentCount = comments.filter((c) => c.status === "sent").length;
 	const visibleComments = useMemo(
 		() =>
 			showSentComments ? comments : comments.filter((c) => c.status !== "sent"),
