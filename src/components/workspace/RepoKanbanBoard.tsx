@@ -47,11 +47,11 @@ function ProviderStatusGuide({ status }: { status: ProviderStatus | null }) {
 
 	let message: string;
 	if (typeof status === "object" && "cli_not_found" in status) {
-		message = `PR検出を有効にするには ${status.cli_not_found.cli} CLI をインストールしてください`;
+		message = `Install the ${status.cli_not_found.cli} CLI to enable PR detection`;
 	} else if (status === "not_authenticated") {
-		message = "gh auth login で認証してください";
+		message = "Run gh auth login to authenticate";
 	} else if (status === "unsupported_platform") {
-		message = "PR検出は現在GitHubに対応しています";
+		message = "PR detection is currently supported for GitHub";
 	} else {
 		return null;
 	}
