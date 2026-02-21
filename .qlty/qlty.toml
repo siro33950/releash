@@ -1,0 +1,25 @@
+config_version = "0"
+
+exclude_patterns = [
+    "**/node_modules/**",
+    "**/target/**",
+    "**/dist/**",
+    "**/coverage/**",
+    "**/*.min.js",
+    "src-tauri/resources/**",
+]
+
+[[plugin]]
+name = "clippy"
+
+[[plugin]]
+name = "biome"
+
+[smells.function_complexity]
+threshold = 20
+
+[smells.nested_control_flow]
+threshold = 5
+
+[smells.duplication]
+threshold = 12
