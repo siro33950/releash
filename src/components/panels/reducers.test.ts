@@ -131,7 +131,7 @@ describe("configFormReducer", () => {
 		},
 		validating: false,
 		saving: false,
-		properties: [] as { name: string; property_type: string }[],
+		properties: [] as { name: string; property_type: string; options: string[] }[],
 		validationStatus: null as string | null,
 		deleting: false,
 		saveError: null as string | null,
@@ -184,7 +184,7 @@ describe("configFormReducer", () => {
 	});
 
 	it("VALIDATE_SUCCESS sets properties and validationStatus", () => {
-		const properties = [{ name: "Name", property_type: "title" }];
+		const properties = [{ name: "Name", property_type: "title", options: [] }];
 		const state = configFormReducer(initial, {
 			type: "VALIDATE_SUCCESS",
 			properties,
