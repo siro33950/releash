@@ -113,9 +113,7 @@ function AppearanceSection({
 					max={24}
 					step={1}
 					value={[draft.fontSize]}
-					onValueChange={([v]) =>
-						updateDraft((d) => ({ ...d, fontSize: v }))
-					}
+					onValueChange={([v]) => updateDraft((d) => ({ ...d, fontSize: v }))}
 				/>
 				<div className="flex justify-between text-[10px] text-muted-foreground">
 					<span>12px</span>
@@ -388,9 +386,8 @@ function RemoteSection({
 								remote.setDraft((d) => ({
 									...d,
 									auto_start: checked === true,
-									auto_start_on_lan: checked === true
-										? d.auto_start_on_lan
-										: false,
+									auto_start_on_lan:
+										checked === true ? d.auto_start_on_lan : false,
 								}))
 							}
 						/>
@@ -565,10 +562,7 @@ function NotificationsSection({
 										</SelectTrigger>
 										<SelectContent>
 											{INACTIVE_TIMEOUT_OPTIONS.map((opt) => (
-												<SelectItem
-													key={opt.value}
-													value={String(opt.value)}
-												>
+												<SelectItem key={opt.value} value={String(opt.value)}>
 													{opt.label}
 												</SelectItem>
 											))}
@@ -608,10 +602,7 @@ function PrivacySection({
 						}))
 					}
 				/>
-				<label
-					htmlFor="auto-update"
-					className={`${labelClass} cursor-pointer`}
-				>
+				<label htmlFor="auto-update" className={`${labelClass} cursor-pointer`}>
 					Auto-update
 				</label>
 			</div>
