@@ -46,39 +46,39 @@ export function SourceControlContextMenu({
 			<ContextMenuContent className="w-56">
 				<ContextMenuItem onClick={onOpenChanges}>
 					<FilePen />
-					変更を開く
+					Open Changes
 				</ContextMenuItem>
 				{variant === "unstaged" && onStage && (
 					<ContextMenuItem onClick={onStage}>
 						<Plus />
-						ステージ
+						Stage
 					</ContextMenuItem>
 				)}
 				{variant === "staged" && onUnstage && (
 					<ContextMenuItem onClick={onUnstage}>
 						<Minus />
-						アンステージ
+						アンStage
 					</ContextMenuItem>
 				)}
 				{variant === "unstaged" && onDiscard && (
 					<ContextMenuItem onClick={onDiscard} variant="destructive">
 						<Undo2 />
-						変更を破棄
+						Discard
 					</ContextMenuItem>
 				)}
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={onCopyPath}>
 					<Clipboard />
-					パスをコピー
+					Copy Path
 				</ContextMenuItem>
 				<ContextMenuItem onClick={onCopyRelativePath}>
 					<Clipboard />
-					相対パスをコピー
+					相対Copy Path
 				</ContextMenuItem>
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={onRevealInFinder}>
 					<ExternalLink />
-					Finder で表示
+					Reveal in Finder
 				</ContextMenuItem>
 			</ContextMenuContent>
 		</ContextMenu>

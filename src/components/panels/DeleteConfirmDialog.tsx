@@ -26,14 +26,14 @@ export function DeleteConfirmDialog({
 		<AlertDialog open={open} onOpenChange={(o) => !o && onCancel()}>
 			<AlertDialogContent>
 				<AlertDialogHeader>
-					<AlertDialogTitle>削除の確認</AlertDialogTitle>
+					<AlertDialogTitle>Confirm Deletion</AlertDialogTitle>
 					<AlertDialogDescription>
-						「{itemName}」を削除しますか？この操作は取り消せません。
+						Delete "{itemName}"? This action cannot be undone.
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel onClick={onCancel}>キャンセル</AlertDialogCancel>
-					<AlertDialogAction onClick={onConfirm}>削除</AlertDialogAction>
+					<AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
+					<AlertDialogAction onClick={onConfirm}>Delete</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>
 		</AlertDialog>

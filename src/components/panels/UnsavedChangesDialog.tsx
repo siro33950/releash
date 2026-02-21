@@ -28,20 +28,20 @@ export function UnsavedChangesDialog({
 		<AlertDialog open={open} onOpenChange={(o) => !o && onCancel()}>
 			<AlertDialogContent>
 				<AlertDialogHeader>
-					<AlertDialogTitle>未保存の変更</AlertDialogTitle>
+					<AlertDialogTitle>Unsaved Changes</AlertDialogTitle>
 					<AlertDialogDescription>
-						「{fileName}」に未保存の変更があります。保存しますか？
+						"{fileName}" has unsaved changes. Save them?
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel onClick={onCancel}>キャンセル</AlertDialogCancel>
+					<AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
 					<AlertDialogAction
 						onClick={onDiscard}
 						className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
 					>
-						保存しない
+						Don't Save
 					</AlertDialogAction>
-					<AlertDialogAction onClick={onSave}>保存</AlertDialogAction>
+					<AlertDialogAction onClick={onSave}>Save</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>
 		</AlertDialog>

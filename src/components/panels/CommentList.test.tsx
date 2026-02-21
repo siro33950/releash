@@ -21,7 +21,7 @@ describe("CommentList", () => {
 		render(<CommentList comments={[]} />);
 		expect(screen.getByText("No comments")).toBeInTheDocument();
 		expect(
-			screen.getByText(/行番号の左マージンをクリック/),
+			screen.getByText(/Click the left margin of a line number/),
 		).toBeInTheDocument();
 		expect(screen.getByText("⌘K")).toBeInTheDocument();
 	});

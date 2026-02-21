@@ -85,7 +85,9 @@ export function CommentList({
 				title="No comments"
 				description={
 					<>
-						<p>行番号の左マージンをクリック、またはドラッグで範囲選択</p>
+						<p>
+							Click the left margin of a line number, or drag to select a range
+						</p>
 						<p className="mt-0.5">
 							<kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">
 								⌘K

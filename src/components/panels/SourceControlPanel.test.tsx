@@ -267,12 +267,12 @@ describe("SourceControlPanel", () => {
 			await user.pointer({ keys: "[MouseRight]", target: fileItem });
 
 			await waitFor(() => {
-				expect(screen.getByText("変更を開く")).toBeInTheDocument();
-				expect(screen.getByText("ステージ")).toBeInTheDocument();
-				expect(screen.getByText("変更を破棄")).toBeInTheDocument();
-				expect(screen.getByText("パスをコピー")).toBeInTheDocument();
-				expect(screen.getByText("相対パスをコピー")).toBeInTheDocument();
-				expect(screen.getByText("Finder で表示")).toBeInTheDocument();
+				expect(screen.getByText("Open Changes")).toBeInTheDocument();
+				expect(screen.getByText("Stage")).toBeInTheDocument();
+				expect(screen.getByText("Discard")).toBeInTheDocument();
+				expect(screen.getByText("Copy Path")).toBeInTheDocument();
+				expect(screen.getByText("相対Copy Path")).toBeInTheDocument();
+				expect(screen.getByText("Reveal in Finder")).toBeInTheDocument();
 			});
 		});
 
@@ -291,10 +291,10 @@ describe("SourceControlPanel", () => {
 			await user.pointer({ keys: "[MouseRight]", target: fileItem });
 
 			await waitFor(() => {
-				expect(screen.getByText("変更を開く")).toBeInTheDocument();
-				expect(screen.getByText("アンステージ")).toBeInTheDocument();
-				expect(screen.queryByText("変更を破棄")).not.toBeInTheDocument();
-				expect(screen.getByText("パスをコピー")).toBeInTheDocument();
+				expect(screen.getByText("Open Changes")).toBeInTheDocument();
+				expect(screen.getByText("アンStage")).toBeInTheDocument();
+				expect(screen.queryByText("Discard")).not.toBeInTheDocument();
+				expect(screen.getByText("Copy Path")).toBeInTheDocument();
 			});
 		});
 
@@ -313,15 +313,15 @@ describe("SourceControlPanel", () => {
 			await user.pointer({ keys: "[MouseRight]", target: fileItem });
 
 			await waitFor(() => {
-				expect(screen.getByText("変更を破棄")).toBeInTheDocument();
+				expect(screen.getByText("Discard")).toBeInTheDocument();
 			});
 
-			await user.click(screen.getByText("変更を破棄"));
+			await user.click(screen.getByText("Discard"));
 
 			await waitFor(() => {
-				expect(screen.getByText("変更の破棄")).toBeInTheDocument();
+				expect(screen.getByText("Discard Changes")).toBeInTheDocument();
 				expect(
-					screen.getByText(/file\.txt.*の変更を破棄しますか/),
+					screen.getByText(/Discard changes in "file\.txt"/),
 				).toBeInTheDocument();
 			});
 		});
@@ -341,16 +341,16 @@ describe("SourceControlPanel", () => {
 			await user.pointer({ keys: "[MouseRight]", target: fileItem });
 
 			await waitFor(() => {
-				expect(screen.getByText("変更を破棄")).toBeInTheDocument();
+				expect(screen.getByText("Discard")).toBeInTheDocument();
 			});
 
-			await user.click(screen.getByText("変更を破棄"));
+			await user.click(screen.getByText("Discard"));
 
 			await waitFor(() => {
-				expect(screen.getByText("変更の破棄")).toBeInTheDocument();
+				expect(screen.getByText("Discard Changes")).toBeInTheDocument();
 			});
 
-			await user.click(screen.getByText("破棄"));
+			await user.click(screen.getByText("Discard"));
 
 			await waitFor(() => {
 				expect(mockGitActions.discard).toHaveBeenCalledWith("/test/repo", [
@@ -375,10 +375,10 @@ describe("SourceControlPanel", () => {
 			await user.pointer({ keys: "[MouseRight]", target: fileItem });
 
 			await waitFor(() => {
-				expect(screen.getByText("ステージ")).toBeInTheDocument();
+				expect(screen.getByText("Stage")).toBeInTheDocument();
 			});
 
-			await user.click(screen.getByText("ステージ"));
+			await user.click(screen.getByText("Stage"));
 
 			await waitFor(() => {
 				expect(mockGitActions.stage).toHaveBeenCalledWith("/test/repo", [
@@ -402,10 +402,10 @@ describe("SourceControlPanel", () => {
 			await user.pointer({ keys: "[MouseRight]", target: fileItem });
 
 			await waitFor(() => {
-				expect(screen.getByText("アンステージ")).toBeInTheDocument();
+				expect(screen.getByText("アンStage")).toBeInTheDocument();
 			});
 
-			await user.click(screen.getByText("アンステージ"));
+			await user.click(screen.getByText("アンStage"));
 
 			await waitFor(() => {
 				expect(mockGitActions.unstage).toHaveBeenCalledWith("/test/repo", [

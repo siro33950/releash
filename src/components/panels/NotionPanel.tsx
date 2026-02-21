@@ -9,7 +9,7 @@ import {
 	Trash2,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
@@ -19,6 +19,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNotionConfig } from "@/hooks/useNotionConfig";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
+import { formatUserFriendlyError } from "@/lib/errorHandler";
 import { generateNotionBranchName } from "@/lib/notionBranch";
 import { branchToDir, computeWorktreeDir } from "@/lib/worktreePath";
 import type { WorktreeEntry } from "@/types/git";
@@ -125,7 +126,7 @@ function NotionRepoSection({
 				{!isConfigured && !configLoading && !showConfig && (
 					<div className="px-3 py-2">
 						<div className="text-[10px] text-muted-foreground mb-2">
-							Notion連携が未設定です
+							Notion integration not configured
 						</div>
 						<Button
 							variant="outline"
@@ -134,7 +135,7 @@ function NotionRepoSection({
 							onClick={() => setShowConfig(true)}
 						>
 							<Settings className="size-3 mr-1" />
-							設定する
+							Configure
 						</Button>
 					</div>
 				)}
@@ -173,78 +174,6 @@ function NotionRepoSection({
 	);
 }
 
-interface ConfigFormState {
-	apiToken: string;
-	databaseId: string;
-	mapping: PropertyMapping;
-	validating: boolean;
-	saving: boolean;
-	properties: NotionPropertyInfo[];
-	validationStatus: string | null;
-	deleting: boolean;
-	saveError: string | null;
-	deleteError: string | null;
-}
-
-type ConfigFormAction =
-	| { type: "SET_API_TOKEN"; value: string }
-	| { type: "SET_DATABASE_ID"; value: string }
-	| { type: "UPDATE_MAPPING"; update: Partial<PropertyMapping> }
-	| { type: "VALIDATE_START" }
-	| {
-			type: "VALIDATE_SUCCESS";
-			properties: NotionPropertyInfo[];
-			status: string;
-	  }
-	| { type: "VALIDATE_ERROR"; error: string }
-	| { type: "SAVE_START" }
-	| { type: "SAVE_ERROR"; error: string }
-	| { type: "SAVE_END" }
-	| { type: "DELETE_START" }
-	| { type: "DELETE_ERROR"; error: string }
-	| { type: "DELETE_END" };
-
-export function configFormReducer(
-	state: ConfigFormState,
-	action: ConfigFormAction,
-): ConfigFormState {
-	switch (action.type) {
-		case "SET_API_TOKEN":
-			return { ...state, apiToken: action.value };
-		case "SET_DATABASE_ID":
-			return { ...state, databaseId: action.value };
-		case "UPDATE_MAPPING":
-			return { ...state, mapping: { ...state.mapping, ...action.update } };
-		case "VALIDATE_START":
-			return { ...state, validating: true, validationStatus: null };
-		case "VALIDATE_SUCCESS":
-			return {
-				...state,
-				validating: false,
-				properties: action.properties,
-				validationStatus: action.status,
-			};
-		case "VALIDATE_ERROR":
-			return {
-				...state,
-				validating: false,
-				validationStatus: action.error,
-			};
-		case "SAVE_START":
-			return { ...state, saving: true, saveError: null };
-		case "SAVE_ERROR":
-			return { ...state, saving: false, saveError: action.error };
-		case "SAVE_END":
-			return { ...state, saving: false };
-		case "DELETE_START":
-			return { ...state, deleting: true, deleteError: null };
-		case "DELETE_ERROR":
-			return { ...state, deleting: false, deleteError: action.error };
-		case "DELETE_END":
-			return { ...state, deleting: false };
-	}
-}
-
 interface NotionConfigFormProps {
 	initialConfig: {
 		api_token: string;
@@ -271,82 +200,72 @@ function NotionConfigForm({
 	onDelete,
 	validate,
 }: NotionConfigFormProps) {
-	const [form, dispatch] = useReducer(configFormReducer, {
-		apiToken: initialConfig?.api_token ?? "",
-		databaseId: initialConfig?.database_id ?? "",
-		mapping: initialConfig?.property_mapping ?? {
+	const [apiToken, setApiToken] = useState(initialConfig?.api_token ?? "");
+	const [databaseId, setDatabaseId] = useState(
+		initialConfig?.database_id ?? "",
+	);
+	const [mapping, setMapping] = useState<PropertyMapping>(
+		initialConfig?.property_mapping ?? {
 			title: "Name",
 			labels: [],
 			branch_name: "",
 			branch_prefix: "",
 		},
-		validating: false,
-		saving: false,
-		properties: [],
-		validationStatus: null,
-		deleting: false,
-		saveError: null,
-		deleteError: null,
-	});
-	const {
-		apiToken,
-		databaseId,
-		mapping,
-		validating,
-		saving,
-		properties,
-		validationStatus,
-		deleting,
-		saveError,
-		deleteError,
-	} = form;
+	);
+	const [validating, setValidating] = useState(false);
+	const [saving, setSaving] = useState(false);
+	const [properties, setProperties] = useState<NotionPropertyInfo[]>([]);
+	const [validationStatus, setValidationStatus] = useState<string | null>(null);
+	const [deleting, setDeleting] = useState(false);
+	const [saveError, setSaveError] = useState<string | null>(null);
+	const [deleteError, setDeleteError] = useState<string | null>(null);
 
 	const handleValidate = useCallback(async () => {
-		dispatch({ type: "VALIDATE_START" });
+		setValidating(true);
+		setValidationStatus(null);
 		try {
 			const result = await validate(apiToken, databaseId);
-			let status: string;
+			setProperties(result.properties);
 			if (result.status === "configured") {
-				status = "success";
+				setValidationStatus("success");
 			} else if (result.status === "invalid_token") {
-				status = "APIトークンが無効です";
+				setValidationStatus("Invalid API token");
 			} else if (result.status === "invalid_database") {
-				status = "データベースIDが無効です";
+				setValidationStatus("Invalid database ID");
 			} else if (result.status === "network_error") {
-				status = "ネットワークエラー: 接続を確認してください";
+				setValidationStatus("Network error: Check your connection");
 			} else {
-				status = "設定が不完全です";
+				setValidationStatus("Configuration incomplete");
 			}
-			dispatch({
-				type: "VALIDATE_SUCCESS",
-				properties: result.properties,
-				status,
-			});
 		} catch (e) {
-			dispatch({ type: "VALIDATE_ERROR", error: String(e) });
+			setValidationStatus(String(e));
+		} finally {
+			setValidating(false);
 		}
 	}, [apiToken, databaseId, validate]);
 
 	const handleSave = useCallback(async () => {
-		dispatch({ type: "SAVE_START" });
+		setSaving(true);
+		setSaveError(null);
 		try {
 			await onSave(apiToken, databaseId, mapping);
 		} catch (e) {
-			dispatch({ type: "SAVE_ERROR", error: String(e) });
+			setSaveError(String(e));
 		} finally {
-			dispatch({ type: "SAVE_END" });
+			setSaving(false);
 		}
 	}, [apiToken, databaseId, mapping, onSave]);
 
 	const handleDelete = useCallback(async () => {
 		if (!onDelete) return;
-		dispatch({ type: "DELETE_START" });
+		setDeleting(true);
+		setDeleteError(null);
 		try {
 			await onDelete();
 		} catch (e) {
-			dispatch({ type: "DELETE_ERROR", error: String(e) });
+			setDeleteError(String(e));
 		} finally {
-			dispatch({ type: "DELETE_END" });
+			setDeleting(false);
 		}
 	}, [onDelete]);
 
@@ -361,9 +280,7 @@ function NotionConfigForm({
 					size="xs"
 					className="mt-0.5"
 					value={apiToken}
-					onChange={(e) =>
-						dispatch({ type: "SET_API_TOKEN", value: e.target.value })
-					}
+					onChange={(e) => setApiToken(e.target.value)}
 					placeholder="ntn_..."
 				/>
 			</label>
@@ -376,9 +293,7 @@ function NotionConfigForm({
 					size="xs"
 					className="mt-0.5"
 					value={databaseId}
-					onChange={(e) =>
-						dispatch({ type: "SET_DATABASE_ID", value: e.target.value })
-					}
+					onChange={(e) => setDatabaseId(e.target.value)}
 					placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 				/>
 			</label>
@@ -391,49 +306,43 @@ function NotionConfigForm({
 				disabled={validating || !apiToken || !databaseId}
 			>
 				{validating ? <Loader2 className="size-3 mr-1 animate-spin" /> : null}
-				接続テスト
+				Test Connection
 			</Button>
 
 			{validationStatus && validationStatus !== "success" && (
 				<Message message={validationStatus} size="xs" />
 			)}
 			{validationStatus === "success" && (
-				<Message severity="success" message="接続成功" size="xs" />
+				<Message severity="success" message="Connection successful" size="xs" />
 			)}
 
 			{properties.length > 0 && (
 				<div className="flex flex-col gap-1 mt-1">
 					<div className="text-[10px] font-medium text-muted-foreground">
-						プロパティマッピング
+						Property Mapping
 					</div>
 					<PropertySelect
-						label="タイトル"
+						label="Title"
 						value={mapping.title}
 						properties={properties}
-						onChange={(v) =>
-							dispatch({ type: "UPDATE_MAPPING", update: { title: v } })
-						}
+						onChange={(v) => setMapping((m) => ({ ...m, title: v }))}
 					/>
 					<PropertyCheckboxGroup
-						label="ラベル"
+						label="Labels"
 						selected={mapping.labels}
 						properties={properties}
-						onChange={(v) =>
-							dispatch({ type: "UPDATE_MAPPING", update: { labels: v } })
-						}
+						onChange={(v) => setMapping((m) => ({ ...m, labels: v }))}
 					/>
 					<PropertySelect
-						label="ブランチ名"
+						label="Branch Name"
 						value={mapping.branch_name}
 						properties={properties}
-						onChange={(v) =>
-							dispatch({ type: "UPDATE_MAPPING", update: { branch_name: v } })
-						}
+						onChange={(v) => setMapping((m) => ({ ...m, branch_name: v }))}
 						allowEmpty
 					/>
 					{/* biome-ignore lint/a11y/noLabelWithoutControl: Input renders <input> inside label */}
 					<label className="text-[10px] text-muted-foreground flex items-center gap-1">
-						<span className="w-16 shrink-0">プレフィックス</span>
+						<span className="w-16 shrink-0">Prefix</span>
 						<Input
 							type="text"
 							variant="panel"
@@ -441,10 +350,7 @@ function NotionConfigForm({
 							className="flex-1"
 							value={mapping.branch_prefix}
 							onChange={(e) =>
-								dispatch({
-									type: "UPDATE_MAPPING",
-									update: { branch_prefix: e.target.value },
-								})
+								setMapping((m) => ({ ...m, branch_prefix: e.target.value }))
 							}
 							placeholder="feat/"
 						/>
@@ -483,7 +389,7 @@ function NotionConfigForm({
 					disabled={saving || !apiToken || !databaseId}
 				>
 					{saving ? <Loader2 className="size-3 mr-1 animate-spin" /> : null}
-					保存
+					Save
 				</Button>
 			</div>
 			{saveError && <Message message={saveError} size="xs" />}
@@ -515,7 +421,7 @@ function PropertySelect({
 				onChange={(e) => onChange(e.target.value)}
 				className="flex-1 bg-muted border border-border rounded px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-primary"
 			>
-				{allowEmpty && <option value="">（未設定）</option>}
+				{allowEmpty && <option value="">(Not set)</option>}
 				{properties.map((prop) => (
 					<option key={prop.name} value={prop.name}>
 						{prop.name} ({prop.property_type})
@@ -797,7 +703,7 @@ function NotionTaskList({
 						onClick={onShowConfig}
 					>
 						<Settings className="size-2.5 mr-1" />
-						設定
+						Settings
 					</Button>
 				</div>
 			)}
@@ -857,7 +763,7 @@ function NotionTaskCard({
 			onWorktreeCreated();
 			onSelectWorktree(entry.path, branchName, repoName);
 		} catch (e) {
-			setError(String(e));
+			setError(formatUserFriendlyError(e, { operation: "create worktree" }));
 		} finally {
 			setCreating(false);
 		}

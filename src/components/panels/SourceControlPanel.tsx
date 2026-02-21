@@ -7,6 +7,7 @@ import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitStatus } from "@/hooks/useGitStatus";
+import { formatGitError } from "@/lib/errorHandler";
 import { EmptyState } from "./EmptyState";
 import { CommitForm, DiscardConfirmDialog } from "./SourceControlCommitForm";
 
@@ -109,7 +110,7 @@ export function SourceControlPanel({
 				refreshStatus();
 				onGitChanged?.();
 			} catch (e) {
-				dispatch({ type: "SET_ERROR", error: String(e) });
+				dispatch({ type: "SET_ERROR", error: formatGitError(e) });
 			}
 		},
 		[rootPath, stage, refreshStatus, onGitChanged],
@@ -124,7 +125,7 @@ export function SourceControlPanel({
 				refreshStatus();
 				onGitChanged?.();
 			} catch (e) {
-				dispatch({ type: "SET_ERROR", error: String(e) });
+				dispatch({ type: "SET_ERROR", error: formatGitError(e) });
 			}
 		},
 		[rootPath, unstage, refreshStatus, onGitChanged],
@@ -138,7 +139,7 @@ export function SourceControlPanel({
 			refreshStatus();
 			onGitChanged?.();
 		} catch (e) {
-			dispatch({ type: "SET_ERROR", error: String(e) });
+			dispatch({ type: "SET_ERROR", error: formatGitError(e) });
 		} finally {
 			dispatch({ type: "CLEAR_DISCARD" });
 		}
@@ -156,7 +157,7 @@ export function SourceControlPanel({
 			refreshStatus();
 			onGitChanged?.();
 		} catch (e) {
-			dispatch({ type: "COMMIT_ERROR", error: String(e) });
+			dispatch({ type: "COMMIT_ERROR", error: formatGitError(e) });
 		}
 	}, [
 		rootPath,
@@ -176,7 +177,7 @@ export function SourceControlPanel({
 			refreshStatus();
 			onGitChanged?.();
 		} catch (e) {
-			dispatch({ type: "PUSH_ERROR", error: String(e) });
+			dispatch({ type: "PUSH_ERROR", error: formatGitError(e) });
 		}
 	}, [rootPath, push, refreshStatus, onGitChanged]);
 
