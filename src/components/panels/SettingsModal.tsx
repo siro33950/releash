@@ -96,6 +96,7 @@ export function hooksReducer(
 			return {
 				...state,
 				loading: false,
+				error: null,
 				config: action.config,
 				status: action.status,
 			};
@@ -109,6 +110,7 @@ export function hooksReducer(
 				applying: false,
 				status: "active",
 				success: true,
+				error: null,
 			};
 		case "APPLY_ERROR":
 			return { ...state, applying: false, error: action.error };

@@ -374,14 +374,15 @@ describe("hooksReducer", () => {
 		expect(state.success).toBe(false);
 	});
 
-	it("LOAD_SUCCESS sets config and status, clears loading", () => {
-		const prev = { ...initial, loading: true };
+	it("LOAD_SUCCESS sets config and status, clears loading and error", () => {
+		const prev = { ...initial, loading: true, error: "old error" };
 		const state = hooksReducer(prev, {
 			type: "LOAD_SUCCESS",
 			config: '{"hooks":[]}',
 			status: "active",
 		});
 		expect(state.loading).toBe(false);
+		expect(state.error).toBeNull();
 		expect(state.config).toBe('{"hooks":[]}');
 		expect(state.status).toBe("active");
 	});
@@ -403,12 +404,13 @@ describe("hooksReducer", () => {
 		expect(state.error).toBeNull();
 	});
 
-	it("APPLY_SUCCESS sets status=active and success=true", () => {
-		const prev = { ...initial, applying: true };
+	it("APPLY_SUCCESS sets status=active and success=true, clears error", () => {
+		const prev = { ...initial, applying: true, error: "old error" };
 		const state = hooksReducer(prev, { type: "APPLY_SUCCESS" });
 		expect(state.applying).toBe(false);
 		expect(state.status).toBe("active");
 		expect(state.success).toBe(true);
+		expect(state.error).toBeNull();
 	});
 
 	it("APPLY_ERROR sets error and clears applying", () => {

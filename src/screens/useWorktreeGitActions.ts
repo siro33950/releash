@@ -207,10 +207,11 @@ export function useWorktreeGitActions({
 	const handleGitPush = useCallback(async () => {
 		try {
 			await push(rootPath);
+			refreshGit();
 		} catch (e) {
 			dispatchGit({ type: "SET_GIT_ERROR", error: String(e) });
 		}
-	}, [rootPath, push, dispatchGit]);
+	}, [rootPath, push, refreshGit, dispatchGit]);
 
 	const handleGitDiscardAll = useCallback(() => {
 		dispatchUI({ type: "SET_DISCARD_CONFIRM", show: true });
