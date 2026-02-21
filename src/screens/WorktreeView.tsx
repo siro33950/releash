@@ -28,7 +28,7 @@ import { EmptyState } from "@/components/panels/EmptyState";
 import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { SearchPanel } from "@/components/panels/SearchPanel";
-import { SettingsPanel } from "@/components/panels/SettingsPanel";
+import { SettingsModal } from "@/components/panels/SettingsModal";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
 import {
@@ -134,6 +134,7 @@ export function WorktreeView({
 	} | null>(null);
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
 	const [searchInitialQuery, setSearchInitialQuery] = useState<string>("");
+	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
 	const handleTabClose = useCallback(
 		(path: string): boolean => {
@@ -495,7 +496,7 @@ export function WorktreeView({
 				setSearchFocusKey((k) => k + 1);
 			},
 			"view-source-control": () => setActiveView("git"),
-			settings: () => setActiveView("settings"),
+			settings: () => setIsSettingsOpen(true),
 			"diff-gutter": () => setDiffMode("gutter"),
 			"diff-inline": () => setDiffMode("inline"),
 			"diff-split": () => setDiffMode("split"),
@@ -748,9 +749,6 @@ export function WorktreeView({
 		if (activeView === "pr") {
 			return <PullRequestPanel rootPath={rootPath} branch={branch} />;
 		}
-		if (activeView === "settings") {
-			return <SettingsPanel settings={settings} onSave={onSettingsSave} />;
-		}
 		return (
 			<SidebarPanel
 				rootPath={rootPath}
@@ -770,8 +768,6 @@ export function WorktreeView({
 		handleSearchResultClick,
 		searchFocusKey,
 		searchInitialQuery,
-		settings,
-		onSettingsSave,
 		reloadFileIfClean,
 		handleRename,
 		handleDelete,
@@ -892,7 +888,16 @@ export function WorktreeView({
 		<div className="flex flex-col h-full w-full overflow-hidden bg-background text-foreground">
 			<ViewToolbar panels={togglePanels} />
 			<div className="flex flex-1 overflow-hidden">
-				<ActivityBar activeItem={activeView} onItemClick={setActiveView} />
+				<ActivityBar
+					activeItem={activeView}
+					onItemClick={(id) => {
+						if (id === "settings") {
+							setIsSettingsOpen(true);
+						} else {
+							setActiveView(id);
+						}
+					}}
+				/>
 				{!ready ? (
 					<div className="flex-1 flex items-center justify-center">
 						<Loader2 className="size-6 text-muted-foreground animate-spin" />
@@ -1121,6 +1126,12 @@ export function WorktreeView({
 					</AlertDialogFooter>
 				</AlertDialogContent>
 			</AlertDialog>
+			<SettingsModal
+				open={isSettingsOpen}
+				onOpenChange={setIsSettingsOpen}
+				settings={settings}
+				onSave={onSettingsSave}
+			/>
 		</div>
 	);
 }

@@ -27,7 +27,7 @@ function settingsConfig(overrides: Record<string, unknown> = {}) {
 }
 
 test.describe("Settings", () => {
-	test("ActivityBar の Settings クリックで設定パネルが表示される", async ({
+	test("ActivityBar の Settings クリックで設定モーダルが表示される", async ({
 		page,
 	}) => {
 		const config = settingsConfig();
@@ -38,9 +38,11 @@ test.describe("Settings", () => {
 		const settingsBtn = page.getByRole("button", { name: "Settings" });
 		await settingsBtn.click();
 
-		// Settings パネルのヘッダー（"SETTINGS" テキストがパネル上部に表示される）
+		// Settings モーダルが開き、デフォルトの Appearance セクションが表示される
 		await expect(page.locator("#theme-select")).toBeVisible();
-		// Default Base セレクトも表示される
+
+		// Editor セクションに切り替えると Default Base セレクトが表示される
+		await page.getByText("Editor").click();
 		await expect(page.locator("#diff-base-select")).toBeVisible();
 	});
 
@@ -72,6 +74,9 @@ test.describe("Settings", () => {
 
 		const settingsBtn = page.getByRole("button", { name: "Settings" });
 		await settingsBtn.click();
+
+		// Editor セクションに切り替え
+		await page.getByText("Editor").click();
 
 		const diffModeSelect = page.locator("#diff-mode-select");
 		await expect(diffModeSelect).toBeVisible();
@@ -109,6 +114,9 @@ test.describe("Settings", () => {
 
 		const settingsBtn = page.getByRole("button", { name: "Settings" });
 		await settingsBtn.click();
+
+		// Privacy & Updates セクションに切り替え
+		await page.getByText("Privacy & Updates").click();
 
 		await expect(page.getByText("Send crash reports")).toBeVisible();
 	});

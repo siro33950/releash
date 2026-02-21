@@ -24,7 +24,7 @@ import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { IssuePanel } from "@/components/panels/IssuePanel";
 import { NotionPanel } from "@/components/panels/NotionPanel";
 import { RemotePanel } from "@/components/panels/RemotePanel";
-import { SettingsPanel } from "@/components/panels/SettingsPanel";
+import { SettingsModal } from "@/components/panels/SettingsModal";
 import type { TerminalPanelHandle } from "@/components/panels/TerminalPanel";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
@@ -63,10 +63,15 @@ export function WorkspaceManagerScreen({
 	onRemoveRepo,
 }: WorkspaceManagerScreenProps) {
 	const [activeView, setActiveView] = useState<string>("issues");
+	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
 	useEffect(() => {
 		if (requestedView) {
-			setActiveView(requestedView);
+			if (requestedView === "settings") {
+				setIsSettingsOpen(true);
+			} else {
+				setActiveView(requestedView);
+			}
 			onRequestedViewHandled?.();
 		}
 	}, [requestedView, onRequestedViewHandled]);
@@ -186,18 +191,8 @@ export function WorkspaceManagerScreen({
 				/>
 			);
 		}
-		if (activeView === "settings") {
-			return <SettingsPanel settings={settings} onSave={onSettingsSave} />;
-		}
 		return null;
-	}, [
-		activeView,
-		repoPaths,
-		providerStatuses,
-		onSelectWorktree,
-		settings,
-		onSettingsSave,
-	]);
+	}, [activeView, repoPaths, providerStatuses, onSelectWorktree, settings]);
 
 	if (repoPaths.length === 0 && initializing) {
 		return (
@@ -215,7 +210,13 @@ export function WorkspaceManagerScreen({
 					items={activityBarItems}
 					bottomItems={activityBarBottomItems}
 					activeItem={activeView}
-					onItemClick={setActiveView}
+					onItemClick={(id) => {
+						if (id === "settings") {
+							setIsSettingsOpen(true);
+						} else {
+							setActiveView(id);
+						}
+					}}
 				/>
 				<Group orientation="horizontal" className="flex-1">
 					<Panel
@@ -297,6 +298,12 @@ export function WorkspaceManagerScreen({
 						: "No repository"}
 				</span>
 			</div>
+			<SettingsModal
+				open={isSettingsOpen}
+				onOpenChange={setIsSettingsOpen}
+				settings={settings}
+				onSave={onSettingsSave}
+			/>
 		</div>
 	);
 }
