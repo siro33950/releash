@@ -108,7 +108,10 @@ export function useWorktreeMenuHandlers({
 				dispatchGit({ type: "SET_DIFF_MODE", value: "split" }),
 			"increase-font-size": () => {
 				const s = settingsRef.current;
-				onSettingsSaveRef.current({ ...s, fontSize: s.fontSize + 1 });
+				onSettingsSaveRef.current({
+					...s,
+					fontSize: Math.min(24, s.fontSize + 1),
+				});
 			},
 			"decrease-font-size": () => {
 				const s = settingsRef.current;

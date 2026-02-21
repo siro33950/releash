@@ -345,9 +345,10 @@ describe("settingsReducer", () => {
 		expect(state.saving).toBe(false);
 	});
 
-	it("SAVE_ERROR sets appDirty back to true", () => {
+	it("SAVE_ERROR sets appDirty back to true and clears saving", () => {
 		const prev = { ...initial, saving: true, appDirty: false };
 		const state = settingsReducer(prev, { type: "SAVE_ERROR" });
+		expect(state.saving).toBe(false);
 		expect(state.appDirty).toBe(true);
 	});
 });

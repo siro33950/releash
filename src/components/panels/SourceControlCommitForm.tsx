@@ -53,6 +53,7 @@ export function CommitForm({
 						if (
 							e.key === "Enter" &&
 							!e.shiftKey &&
+							commitSummary.trim() &&
 							stagedFilesCount > 0 &&
 							!loading
 						)

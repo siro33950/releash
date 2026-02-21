@@ -759,7 +759,7 @@ export function settingsReducer(
 		case "SAVE_END":
 			return { ...state, saving: false };
 		case "SAVE_ERROR":
-			return { ...state, appDirty: true };
+			return { ...state, saving: false, appDirty: true };
 	}
 }
 
@@ -793,6 +793,9 @@ export function SettingsModal({
 	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
 		dispatchSettings({ type: "SYNC_OPEN", open, settings });
+		if (open) {
+			dispatchHooks({ type: "LOAD_START" });
+		}
 	}
 
 	const updateDraft = useCallback(

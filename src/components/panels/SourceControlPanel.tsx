@@ -173,10 +173,12 @@ export function SourceControlPanel({
 			dispatch({ type: "PUSH_START" });
 			await push(rootPath);
 			dispatch({ type: "PUSH_END" });
+			refreshStatus();
+			onGitChanged?.();
 		} catch (e) {
 			dispatch({ type: "PUSH_ERROR", error: String(e) });
 		}
-	}, [rootPath, push]);
+	}, [rootPath, push, refreshStatus, onGitChanged]);
 
 	if (!rootPath) {
 		return (

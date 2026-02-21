@@ -131,7 +131,7 @@ export function CreateBranchDialog({
 					placeholder="Branch name"
 					autoFocus
 					onKeyDown={(e) => {
-						if (e.key === "Enter") onCreate();
+						if (e.key === "Enter" && branchName.trim()) onCreate();
 					}}
 				/>
 				<AlertDialogFooter>

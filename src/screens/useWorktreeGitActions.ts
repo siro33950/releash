@@ -245,10 +245,18 @@ export function useWorktreeGitActions({
 		dispatchUI({ type: "CLOSE_CREATE_BRANCH" });
 		try {
 			await createBranch(rootPath, name);
+			refreshGit();
 		} catch (e) {
 			dispatchGit({ type: "SET_GIT_ERROR", error: String(e) });
 		}
-	}, [rootPath, createBranch, newBranchName, dispatchGit, dispatchUI]);
+	}, [
+		rootPath,
+		createBranch,
+		newBranchName,
+		refreshGit,
+		dispatchGit,
+		dispatchUI,
+	]);
 
 	return {
 		handleGitStageAll,

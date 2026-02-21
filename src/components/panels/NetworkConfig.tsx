@@ -1,4 +1,4 @@
-interface DetectedInterface {
+export interface DetectedInterface {
 	name: string;
 	ip: string;
 	kind: "vpn" | "lan";

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	type ChangeGroup,
 	computeChangeGroups,
@@ -73,6 +73,12 @@ export function RemoteDiffPanel({
 }: RemoteDiffPanelProps) {
 	const [selectionStart, setSelectionStart] = useState<number | null>(null);
 	const [commentRange, setCommentRange] = useState<LineRange | null>(null);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset selection state when file path changes
+	useEffect(() => {
+		setSelectionStart(null);
+		setCommentRange(null);
+	}, [path]);
 
 	const hunks = useMemo(
 		() => (path ? computeHunks(original, modified, path) : []),

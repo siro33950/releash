@@ -203,9 +203,9 @@ export function PullRequestPanel({ rootPath, branch }: PullRequestPanelProps) {
 					{detail.reviews.length > 0 && (
 						<div className="space-y-3">
 							<SectionHeader title="Reviews" count={detail.reviews.length} />
-							{detail.reviews.map((review, _i) => (
+							{detail.reviews.map((review, i) => (
 								<div
-									key={`review-${review.author.login}-${review.submitted_at}`}
+									key={`review-${review.author.login}-${review.submitted_at}-${i}`}
 									className="border border-border rounded-md p-3 space-y-2"
 								>
 									<div className="flex items-center gap-2 flex-wrap">
@@ -231,9 +231,9 @@ export function PullRequestPanel({ rootPath, branch }: PullRequestPanelProps) {
 					{detail.comments.length > 0 && (
 						<div className="space-y-3">
 							<SectionHeader title="Comments" count={detail.comments.length} />
-							{detail.comments.map((comment, _i) => (
+							{detail.comments.map((comment, i) => (
 								<div
-									key={`comment-${comment.author.login}-${comment.created_at}`}
+									key={`comment-${comment.author.login}-${comment.created_at}-${i}`}
 									className="border border-border rounded-md p-3 space-y-2"
 								>
 									<div className="flex items-center gap-2">
