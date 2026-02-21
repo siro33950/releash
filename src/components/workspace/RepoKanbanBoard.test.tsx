@@ -71,9 +71,11 @@ describe("RepoKanbanBoard", () => {
 			expect(screen.getByText("No worktrees")).toBeInTheDocument();
 		});
 		expect(
-			screen.getByText("Create a branch to start working with worktrees"),
+			screen.getByText("Create a new worktree to get started"),
 		).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "New" })).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Create worktree" }),
+		).toBeInTheDocument();
 	});
 
 	it("should show kanban columns when branches exist", async () => {
@@ -95,10 +97,14 @@ describe("RepoKanbanBoard", () => {
 		render(<RepoKanbanBoard {...defaultProps} />);
 
 		await waitFor(() => {
-			expect(screen.getByRole("button", { name: "New" })).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: "Create worktree" }),
+			).toBeInTheDocument();
 		});
 
-		await user.click(screen.getByRole("button", { name: "New" }));
+		await user.click(
+			screen.getByRole("button", { name: "Create worktree" }),
+		);
 
 		await waitFor(() => {
 			expect(screen.getByText("New Workspace")).toBeInTheDocument();
