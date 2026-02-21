@@ -75,15 +75,33 @@ describe("EmptyState", () => {
 		expect(screen.getByRole("button", { name: "Action" })).toBeInTheDocument();
 	});
 
-	it("should not render children in compact mode", () => {
+	it("should render children in compact mode", () => {
 		render(
-			<EmptyState compact title="Empty">
-				<button type="button">Action</button>
+			<EmptyState compact title="No results">
+				<button type="button">Clear</button>
 			</EmptyState>,
 		);
 
-		expect(
-			screen.queryByRole("button", { name: "Action" }),
-		).not.toBeInTheDocument();
+		expect(screen.getByText("No results")).toBeInTheDocument();
+		expect(screen.getByText("Clear")).toBeInTheDocument();
+	});
+
+	it("should render children in normal mode with description", () => {
+		render(
+			<EmptyState title="No results" description="Try adjusting filters">
+				<button type="button">Reset</button>
+			</EmptyState>,
+		);
+
+		expect(screen.getByText("No results")).toBeInTheDocument();
+		expect(screen.getByText("Try adjusting filters")).toBeInTheDocument();
+		expect(screen.getByText("Reset")).toBeInTheDocument();
+	});
+
+	it("should not render children when not provided", () => {
+		render(<EmptyState compact title="Empty" />);
+
+		expect(screen.getByText("Empty")).toBeInTheDocument();
+		expect(screen.queryByRole("button")).toBeNull();
 	});
 });
