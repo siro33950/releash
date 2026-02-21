@@ -1,26 +1,73 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { ArrowDown, ArrowUp, RefreshCw } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useReducer } from "react";
 import { FileStatusItem } from "@/components/panels/FileStatusItem";
 import { SourceControlContextMenu } from "@/components/panels/SourceControlContextMenu";
-import {
-	AlertDialog,
-	AlertDialogAction,
-	AlertDialogCancel,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
-import { Input } from "@/components/ui/input";
-import { Message } from "@/components/ui/message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitStatus } from "@/hooks/useGitStatus";
-import { cn } from "@/lib/utils";
 import { EmptyState } from "./EmptyState";
+import { CommitForm, DiscardConfirmDialog } from "./SourceControlCommitForm";
+
+interface CommitFormState {
+	summary: string;
+	description: string;
+	error: string | null;
+	loading: boolean;
+	discardTarget: { path: string; paths: string[] } | null;
+}
+
+type CommitFormAction =
+	| { type: "SET_SUMMARY"; value: string }
+	| { type: "SET_DESCRIPTION"; value: string }
+	| { type: "SET_ERROR"; error: string | null }
+	| { type: "COMMIT_START" }
+	| { type: "COMMIT_SUCCESS" }
+	| { type: "COMMIT_ERROR"; error: string }
+	| { type: "PUSH_START" }
+	| { type: "PUSH_END" }
+	| { type: "PUSH_ERROR"; error: string }
+	| { type: "SET_DISCARD_TARGET"; target: CommitFormState["discardTarget"] }
+	| { type: "CLEAR_DISCARD" };
+
+const initialCommitForm: CommitFormState = {
+	summary: "",
+	description: "",
+	error: null,
+	loading: false,
+	discardTarget: null,
+};
+
+export function commitFormReducer(
+	state: CommitFormState,
+	action: CommitFormAction,
+): CommitFormState {
+	switch (action.type) {
+		case "SET_SUMMARY":
+			return { ...state, summary: action.value };
+		case "SET_DESCRIPTION":
+			return { ...state, description: action.value };
+		case "SET_ERROR":
+			return { ...state, error: action.error };
+		case "COMMIT_START":
+			return { ...state, loading: true, error: null };
+		case "COMMIT_SUCCESS":
+			return { ...state, loading: false, summary: "", description: "" };
+		case "COMMIT_ERROR":
+			return { ...state, loading: false, error: action.error };
+		case "PUSH_START":
+			return { ...state, loading: true, error: null };
+		case "PUSH_END":
+			return { ...state, loading: false };
+		case "PUSH_ERROR":
+			return { ...state, loading: false, error: action.error };
+		case "SET_DISCARD_TARGET":
+			return { ...state, discardTarget: action.target };
+		case "CLEAR_DISCARD":
+			return { ...state, discardTarget: null };
+	}
+}
 
 export interface SourceControlPanelProps {
 	rootPath: string | null;
@@ -42,14 +89,14 @@ export function SourceControlPanel({
 	} = useGitStatus(rootPath, gitRefreshKey);
 	const { stage, unstage, discard, commit, push } = useGitActions();
 
-	const [commitSummary, setCommitSummary] = useState("");
-	const [commitDescription, setCommitDescription] = useState("");
-	const [error, setError] = useState<string | null>(null);
-	const [loading, setLoading] = useState(false);
-	const [discardTarget, setDiscardTarget] = useState<{
-		path: string;
-		paths: string[];
-	} | null>(null);
+	const [form, dispatch] = useReducer(commitFormReducer, initialCommitForm);
+	const {
+		summary: commitSummary,
+		description: commitDescription,
+		error,
+		loading,
+		discardTarget,
+	} = form;
 
 	const totalChanges = stagedFiles.length + changedFiles.length;
 
@@ -57,12 +104,12 @@ export function SourceControlPanel({
 		async (paths: string[]) => {
 			if (!rootPath) return;
 			try {
-				setError(null);
+				dispatch({ type: "SET_ERROR", error: null });
 				await stage(rootPath, paths);
 				refreshStatus();
 				onGitChanged?.();
 			} catch (e) {
-				setError(String(e));
+				dispatch({ type: "SET_ERROR", error: String(e) });
 			}
 		},
 		[rootPath, stage, refreshStatus, onGitChanged],
@@ -72,12 +119,12 @@ export function SourceControlPanel({
 		async (paths: string[]) => {
 			if (!rootPath) return;
 			try {
-				setError(null);
+				dispatch({ type: "SET_ERROR", error: null });
 				await unstage(rootPath, paths);
 				refreshStatus();
 				onGitChanged?.();
 			} catch (e) {
-				setError(String(e));
+				dispatch({ type: "SET_ERROR", error: String(e) });
 			}
 		},
 		[rootPath, unstage, refreshStatus, onGitChanged],
@@ -86,14 +133,14 @@ export function SourceControlPanel({
 	const handleDiscard = useCallback(async () => {
 		if (!rootPath || !discardTarget) return;
 		try {
-			setError(null);
+			dispatch({ type: "SET_ERROR", error: null });
 			await discard(rootPath, discardTarget.paths);
 			refreshStatus();
 			onGitChanged?.();
 		} catch (e) {
-			setError(String(e));
+			dispatch({ type: "SET_ERROR", error: String(e) });
 		} finally {
-			setDiscardTarget(null);
+			dispatch({ type: "CLEAR_DISCARD" });
 		}
 	}, [rootPath, discardTarget, discard, refreshStatus, onGitChanged]);
 
@@ -103,17 +150,13 @@ export function SourceControlPanel({
 			? `${commitSummary}\n\n${commitDescription}`
 			: commitSummary;
 		try {
-			setError(null);
-			setLoading(true);
+			dispatch({ type: "COMMIT_START" });
 			await commit(rootPath, message);
-			setCommitSummary("");
-			setCommitDescription("");
+			dispatch({ type: "COMMIT_SUCCESS" });
 			refreshStatus();
 			onGitChanged?.();
 		} catch (e) {
-			setError(String(e));
-		} finally {
-			setLoading(false);
+			dispatch({ type: "COMMIT_ERROR", error: String(e) });
 		}
 	}, [
 		rootPath,
@@ -127,13 +170,11 @@ export function SourceControlPanel({
 	const handlePush = useCallback(async () => {
 		if (!rootPath) return;
 		try {
-			setError(null);
-			setLoading(true);
+			dispatch({ type: "PUSH_START" });
 			await push(rootPath);
+			dispatch({ type: "PUSH_END" });
 		} catch (e) {
-			setError(String(e));
-		} finally {
-			setLoading(false);
+			dispatch({ type: "PUSH_ERROR", error: String(e) });
 		}
 	}, [rootPath, push]);
 
@@ -194,9 +235,12 @@ export function SourceControlPanel({
 							onOpenChanges={() => onSelectFile?.(`${rootPath}/${entry.path}`)}
 							onStage={() => handleStage([entry.path])}
 							onDiscard={() =>
-								setDiscardTarget({
-									path: entry.path,
-									paths: [entry.path],
+								dispatch({
+									type: "SET_DISCARD_TARGET",
+									target: {
+										path: entry.path,
+										paths: [entry.path],
+									},
 								})
 							}
 							onCopyPath={() =>
@@ -280,89 +324,27 @@ export function SourceControlPanel({
 			</ScrollArea>
 
 			{/* Commit Area (bottom fixed) */}
-			<div className="border-t border-border px-3 py-2 shrink-0 flex flex-col gap-1.5">
-				<div className="relative">
-					<Input
-						type="text"
-						variant="panel"
-						size="sm"
-						className="pr-8"
-						placeholder="Commit summary"
-						value={commitSummary}
-						onChange={(e) => setCommitSummary(e.target.value)}
-						onKeyDown={(e) => {
-							if (
-								e.key === "Enter" &&
-								!e.shiftKey &&
-								stagedFiles.length > 0 &&
-								!loading
-							)
-								handleCommit();
-						}}
-					/>
-					<span
-						className={cn(
-							"absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono",
-							commitSummary.length > 72
-								? "text-destructive"
-								: "text-muted-foreground",
-						)}
-					>
-						{commitSummary.length}
-					</span>
-				</div>
-				<textarea
-					className="w-full bg-transparent border border-border rounded px-2 py-1 text-xs outline-none focus:border-primary resize-y min-h-[40px]"
-					placeholder="Description"
-					value={commitDescription}
-					onChange={(e) => setCommitDescription(e.target.value)}
-					rows={2}
-				/>
-				<div className="flex gap-1.5">
-					<button
-						type="button"
-						className="flex-1 flex items-center justify-center gap-1 bg-accent text-accent-foreground rounded px-2 py-1 text-xs font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-						disabled={
-							!commitSummary.trim() || stagedFiles.length === 0 || loading
-						}
-						onClick={handleCommit}
-					>
-						Commit
-					</button>
-					<button
-						type="button"
-						className="flex items-center justify-center gap-1 border border-border rounded px-2 py-1 text-xs font-medium hover:bg-sidebar-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-						disabled={loading}
-						onClick={handlePush}
-					>
-						Push
-						<ArrowUp className="h-3 w-3" />
-					</button>
-				</div>
-				{error && <Message message={error} onDismiss={() => setError(null)} />}
-			</div>
+			<CommitForm
+				commitSummary={commitSummary}
+				commitDescription={commitDescription}
+				loading={loading}
+				error={error}
+				stagedFilesCount={stagedFiles.length}
+				onSummaryChange={(value) => dispatch({ type: "SET_SUMMARY", value })}
+				onDescriptionChange={(value) =>
+					dispatch({ type: "SET_DESCRIPTION", value })
+				}
+				onCommit={handleCommit}
+				onPush={handlePush}
+				onDismissError={() => dispatch({ type: "SET_ERROR", error: null })}
+			/>
 
 			{/* Discard Confirm Dialog */}
-			<AlertDialog
-				open={discardTarget !== null}
-				onOpenChange={(o) => !o && setDiscardTarget(null)}
-			>
-				<AlertDialogContent>
-					<AlertDialogHeader>
-						<AlertDialogTitle>変更の破棄</AlertDialogTitle>
-						<AlertDialogDescription>
-							「{discardTarget?.path}
-							」の変更を破棄しますか？この操作は取り消せません。
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter>
-						<AlertDialogCancel onClick={() => setDiscardTarget(null)}>
-							キャンセル
-						</AlertDialogCancel>
-						<AlertDialogAction onClick={handleDiscard}>破棄</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
+			<DiscardConfirmDialog
+				target={discardTarget}
+				onConfirm={handleDiscard}
+				onCancel={() => dispatch({ type: "CLEAR_DISCARD" })}
+			/>
 		</div>
 	);
 }

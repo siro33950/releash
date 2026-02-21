@@ -38,7 +38,7 @@ export function computeHunks(
 	}));
 }
 
-export function splitHunkIntoGroups(
+function splitHunkIntoGroups(
 	hunk: Hunk,
 	startGroupIndex: number,
 ): ChangeGroup[] {

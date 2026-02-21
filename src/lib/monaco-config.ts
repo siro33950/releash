@@ -4,8 +4,6 @@ import type { Theme } from "@/types/settings";
 export const MONACO_DARK_THEME_NAME = "releash-dark";
 export const MONACO_LIGHT_THEME_NAME = "releash-light";
 
-export const MONACO_THEME_NAME = MONACO_DARK_THEME_NAME;
-
 export const monacoTheme: Monaco.editor.IStandaloneThemeData = {
 	base: "vs-dark",
 	inherit: true,
@@ -35,7 +33,6 @@ export const monacoTheme: Monaco.editor.IStandaloneThemeData = {
 
 export const DIFF_ADDED_COLOR = "#9ccc2c";
 export const DIFF_MODIFIED_COLOR = "#9ccc2c";
-export const DIFF_DELETED_COLOR = "#ff0000";
 
 export const monacoLightTheme: Monaco.editor.IStandaloneThemeData = {
 	base: "vs",

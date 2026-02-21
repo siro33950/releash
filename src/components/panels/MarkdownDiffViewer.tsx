@@ -84,8 +84,11 @@ function SplitView({
 			className="md-split-container scrollbar-thin"
 			data-testid="md-split-grid"
 		>
-			{rows.map((row, i) => (
-				<div key={`${row.type}-${i}`} className="md-split-row">
+			{rows.map((row) => (
+				<div
+					key={`${row.type}-${row.left ?? ""}-${row.right ?? ""}`}
+					className="md-split-row"
+				>
 					<div className={splitCellClass(row.type, "left")}>
 						{row.left != null && (
 							<div className="markdown-preview">
@@ -131,7 +134,7 @@ function InlineView({
 	const rehypePlugins = useMemo(() => [rehypeHighlight], []);
 	return (
 		<div className="markdown-preview h-full overflow-auto p-6 scrollbar-thin">
-			{chunks.map((chunk, i) => {
+			{chunks.map((chunk) => {
 				const className =
 					chunk.type === "added"
 						? "md-diff-inline-added"
@@ -139,7 +142,10 @@ function InlineView({
 							? "md-diff-inline-removed"
 							: undefined;
 				return (
-					<div key={`${chunk.type}-${i}`} className={className}>
+					<div
+						key={`${chunk.type}-${chunk.content.slice(0, 50)}`}
+						className={className}
+					>
 						<Markdown
 							remarkPlugins={remarkPlugins}
 							rehypePlugins={rehypePlugins}

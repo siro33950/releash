@@ -4,7 +4,7 @@ import type { MockConfig } from "./tauri-mock";
 // 型定義（src/types/ と同じ構造。import は避けて自己完結させる）
 // -------------------------------------------------------
 
-export interface BranchCard {
+interface BranchCard {
 	name: string;
 	is_default: boolean;
 	worktree_path: string | null;
@@ -22,13 +22,13 @@ export interface BranchCard {
 	agent_state_timestamp?: number;
 }
 
-export interface GitFileStatus {
+interface GitFileStatus {
 	path: string;
 	index_status: "new" | "modified" | "deleted" | "renamed" | "none";
 	worktree_status: "new" | "modified" | "deleted" | "ignored" | "none";
 }
 
-export interface WorktreeEntry {
+interface WorktreeEntry {
 	name: string;
 	path: string;
 	branch: string;
@@ -38,7 +38,7 @@ export interface WorktreeEntry {
 	base_branch: string | null;
 }
 
-export interface PrStatus {
+interface PrStatus {
 	open_prs: Record<string, { number: number; url: string }>;
 	merged_branches: string[];
 }
@@ -47,7 +47,7 @@ export interface PrStatus {
 // App.tsx 初期化に必要な最小レスポンスセット
 // -------------------------------------------------------
 
-export const baseIpcHandler: Record<string, unknown> = {
+const baseIpcHandler: Record<string, unknown> = {
 	// App.tsx 初期化
 	get_cwd: "/test/repo",
 	get_main_repo_path: "/test/repo",
@@ -301,24 +301,24 @@ export const searchResults = {
 // PrDetail フィクスチャ（PullRequestPanel用）
 // -------------------------------------------------------
 
-export interface PrAuthor {
+interface PrAuthor {
 	login: string;
 }
 
-export interface PrComment {
+interface PrComment {
 	author: PrAuthor;
 	body: string;
 	created_at: string;
 }
 
-export interface PrReview {
+interface PrReview {
 	author: PrAuthor;
 	body: string;
 	state: string;
 	submitted_at: string;
 }
 
-export interface PrDetail {
+interface PrDetail {
 	number: number;
 	title: string;
 	body: string;
@@ -389,16 +389,16 @@ export const prDetailChangesRequested: PrDetail = {
 // IssueInfo フィクスチャ（IssuePanel用）
 // -------------------------------------------------------
 
-export interface IssueLabel {
+interface IssueLabel {
 	name: string;
 	color: string;
 }
 
-export interface Milestone {
+interface Milestone {
 	title: string;
 }
 
-export interface IssueInfo {
+interface IssueInfo {
 	number: number;
 	title: string;
 	state: string;
@@ -461,7 +461,7 @@ export const issueList: IssueInfo[] = [
 // Notion フィクスチャ（NotionPanel用）
 // -------------------------------------------------------
 
-export interface NotionRepoConfig {
+interface NotionRepoConfig {
 	api_token: string;
 	database_id: string;
 	property_mapping: {
@@ -472,7 +472,7 @@ export interface NotionRepoConfig {
 	};
 }
 
-export interface NotionTask {
+interface NotionTask {
 	id: string;
 	title: string;
 	url: string;
@@ -482,7 +482,7 @@ export interface NotionTask {
 	last_edited_at: string;
 }
 
-export interface NotionLabelOption {
+interface NotionLabelOption {
 	property_name: string;
 	property_type: string;
 	options: string[];
@@ -675,7 +675,7 @@ export const kanbanBranchesFull: BranchCard[] = [
 // ブランチ一覧（CreateWorktreeDialog用）
 // -------------------------------------------------------
 
-export interface BranchInfo {
+interface BranchInfo {
 	name: string;
 	is_remote: boolean;
 }

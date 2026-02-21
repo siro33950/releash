@@ -4,7 +4,7 @@ import { type RefObject, useEffect, useRef } from "react";
 import {
 	defaultEditorOptions,
 	disableBuiltinDiagnostics,
-	MONACO_THEME_NAME,
+	MONACO_DARK_THEME_NAME,
 	monacoTheme,
 } from "@/lib/monaco-config";
 
@@ -43,14 +43,14 @@ export function useMonacoEditor(
 			monacoRef.current = monaco;
 			disableBuiltinDiagnostics(monaco);
 
-			monaco.editor.defineTheme(MONACO_THEME_NAME, monacoTheme);
-			monaco.editor.setTheme(MONACO_THEME_NAME);
+			monaco.editor.defineTheme(MONACO_DARK_THEME_NAME, monacoTheme);
+			monaco.editor.setTheme(MONACO_DARK_THEME_NAME);
 
 			const editor = monaco.editor.create(container, {
 				...defaultEditorOptions,
 				value: defaultValue,
 				language,
-				theme: MONACO_THEME_NAME,
+				theme: MONACO_DARK_THEME_NAME,
 			});
 
 			if (!isMounted) {

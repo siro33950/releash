@@ -1,0 +1,132 @@
+import { ArrowUp } from "lucide-react";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
+import { Message } from "@/components/ui/message";
+import { cn } from "@/lib/utils";
+
+interface CommitFormProps {
+	commitSummary: string;
+	commitDescription: string;
+	loading: boolean;
+	error: string | null;
+	stagedFilesCount: number;
+	onSummaryChange: (value: string) => void;
+	onDescriptionChange: (value: string) => void;
+	onCommit: () => void;
+	onPush: () => void;
+	onDismissError: () => void;
+}
+
+export function CommitForm({
+	commitSummary,
+	commitDescription,
+	loading,
+	error,
+	stagedFilesCount,
+	onSummaryChange,
+	onDescriptionChange,
+	onCommit,
+	onPush,
+	onDismissError,
+}: CommitFormProps) {
+	return (
+		<div className="border-t border-border px-3 py-2 shrink-0 flex flex-col gap-1.5">
+			<div className="relative">
+				<Input
+					type="text"
+					variant="panel"
+					size="sm"
+					className="pr-8"
+					placeholder="Commit summary"
+					value={commitSummary}
+					onChange={(e) => onSummaryChange(e.target.value)}
+					onKeyDown={(e) => {
+						if (
+							e.key === "Enter" &&
+							!e.shiftKey &&
+							stagedFilesCount > 0 &&
+							!loading
+						)
+							onCommit();
+					}}
+				/>
+				<span
+					className={cn(
+						"absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono",
+						commitSummary.length > 72
+							? "text-destructive"
+							: "text-muted-foreground",
+					)}
+				>
+					{commitSummary.length}
+				</span>
+			</div>
+			<textarea
+				className="w-full bg-transparent border border-border rounded px-2 py-1 text-xs outline-none focus:border-primary resize-y min-h-[40px]"
+				placeholder="Description"
+				value={commitDescription}
+				onChange={(e) => onDescriptionChange(e.target.value)}
+				rows={2}
+			/>
+			<div className="flex gap-1.5">
+				<button
+					type="button"
+					className="flex-1 flex items-center justify-center gap-1 bg-accent text-accent-foreground rounded px-2 py-1 text-xs font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+					disabled={!commitSummary.trim() || stagedFilesCount === 0 || loading}
+					onClick={onCommit}
+				>
+					Commit
+				</button>
+				<button
+					type="button"
+					className="flex items-center justify-center gap-1 border border-border rounded px-2 py-1 text-xs font-medium hover:bg-sidebar-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+					disabled={loading}
+					onClick={onPush}
+				>
+					Push
+					<ArrowUp className="h-3 w-3" />
+				</button>
+			</div>
+			{error && <Message message={error} onDismiss={onDismissError} />}
+		</div>
+	);
+}
+
+interface DiscardConfirmDialogProps {
+	target: { path: string; paths: string[] } | null;
+	onConfirm: () => void;
+	onCancel: () => void;
+}
+
+export function DiscardConfirmDialog({
+	target,
+	onConfirm,
+	onCancel,
+}: DiscardConfirmDialogProps) {
+	return (
+		<AlertDialog open={target !== null} onOpenChange={(o) => !o && onCancel()}>
+			<AlertDialogContent>
+				<AlertDialogHeader>
+					<AlertDialogTitle>変更の破棄</AlertDialogTitle>
+					<AlertDialogDescription>
+						「{target?.path}
+						」の変更を破棄しますか？この操作は取り消せません。
+					</AlertDialogDescription>
+				</AlertDialogHeader>
+				<AlertDialogFooter>
+					<AlertDialogCancel onClick={onCancel}>キャンセル</AlertDialogCancel>
+					<AlertDialogAction onClick={onConfirm}>破棄</AlertDialogAction>
+				</AlertDialogFooter>
+			</AlertDialogContent>
+		</AlertDialog>
+	);
+}

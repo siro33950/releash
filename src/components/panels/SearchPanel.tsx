@@ -225,10 +225,10 @@ export function SearchPanel({
 							<div className="px-3 py-1 text-[11px] font-semibold text-muted-foreground truncate bg-sidebar-accent/50">
 								{group.path}
 							</div>
-							{group.matches.map((m, i) => (
+							{group.matches.map((m, _i) => (
 								<button
 									type="button"
-									key={`${m.line_number}-${i}`}
+									key={`${m.line_number}-${m.match_start}-${m.match_end}`}
 									className="flex w-full items-center gap-2 px-4 py-0.5 text-xs hover:bg-sidebar-accent transition-colors text-left"
 									onClick={() => onSelectFileAtLine?.(m.path, m.line_number)}
 								>

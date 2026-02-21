@@ -8,13 +8,6 @@ export interface NotionTask {
 	last_edited_at: string;
 }
 
-export interface NotionTaskQuery {
-	title_filter: string;
-	label_filters: Record<string, string>;
-	cursor: string | null;
-	page_size?: number;
-}
-
 export interface NotionTaskPage {
 	tasks: NotionTask[];
 	has_more: boolean;
@@ -39,7 +32,7 @@ export interface NotionRepoConfig {
 	property_mapping: PropertyMapping;
 }
 
-export type NotionConfigStatus =
+type NotionConfigStatus =
 	| "not_configured"
 	| "configured"
 	| "invalid_token"

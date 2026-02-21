@@ -221,7 +221,7 @@ function HunkRows({
 					@@
 				</td>
 			</tr>
-			{diffLines.map((line, i) => {
+			{diffLines.map((line, _i) => {
 				const { newLine } = line;
 				const tappable = newLine != null;
 				const isSelStart = selectionStart != null && newLine === selectionStart;
@@ -241,7 +241,7 @@ function HunkRows({
 
 				return (
 					<GroupButtonWrapper
-						key={`${hunk.index}-${i}`}
+						key={`${hunk.index}-${line.newLine ?? line.oldLine}-${line.prefix}`}
 						group={group}
 						isStaged={isStaged}
 						onStageGroup={onStageGroup}

@@ -1,7 +1,10 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkspaceManagerScreen } from "./WorkspaceManagerScreen";
+import {
+	WorkspaceManagerScreen,
+	workspaceReducer,
+} from "./WorkspaceManagerScreen";
 
 const mockInvoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -210,6 +213,95 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+});
+
+describe("workspaceReducer", () => {
+	const initial = {
+		activeView: "issues",
+		isSettingsOpen: false,
+		sidebarVisible: true,
+		terminalVisible: true,
+		prevRequestedView: null as string | null | undefined,
+	};
+
+	it("SET_ACTIVE_VIEW updates activeView", () => {
+		const state = workspaceReducer(initial, {
+			type: "SET_ACTIVE_VIEW",
+			view: "notion",
+		});
+		expect(state.activeView).toBe("notion");
+	});
+
+	it("SET_SETTINGS_OPEN updates isSettingsOpen", () => {
+		const state = workspaceReducer(initial, {
+			type: "SET_SETTINGS_OPEN",
+			open: true,
+		});
+		expect(state.isSettingsOpen).toBe(true);
+	});
+
+	it("SET_SIDEBAR_VISIBLE updates sidebarVisible", () => {
+		const state = workspaceReducer(initial, {
+			type: "SET_SIDEBAR_VISIBLE",
+			visible: false,
+		});
+		expect(state.sidebarVisible).toBe(false);
+	});
+
+	it("SET_TERMINAL_VISIBLE updates terminalVisible", () => {
+		const state = workspaceReducer(initial, {
+			type: "SET_TERMINAL_VISIBLE",
+			visible: false,
+		});
+		expect(state.terminalVisible).toBe(false);
+	});
+
+	it("SYNC_REQUESTED_VIEW returns same state when requestedView equals prevRequestedView", () => {
+		const prev = { ...initial, prevRequestedView: "issues" };
+		const state = workspaceReducer(prev, {
+			type: "SYNC_REQUESTED_VIEW",
+			requestedView: "issues",
+		});
+		expect(state).toBe(prev);
+	});
+
+	it("SYNC_REQUESTED_VIEW with null/undefined only updates prevRequestedView", () => {
+		const state = workspaceReducer(initial, {
+			type: "SYNC_REQUESTED_VIEW",
+			requestedView: undefined,
+		});
+		expect(state.prevRequestedView).toBeUndefined();
+		expect(state.activeView).toBe("issues");
+		expect(state.isSettingsOpen).toBe(false);
+	});
+
+	it("SYNC_REQUESTED_VIEW with null updates prevRequestedView to null", () => {
+		const prev = { ...initial, prevRequestedView: "issues" };
+		const state = workspaceReducer(prev, {
+			type: "SYNC_REQUESTED_VIEW",
+			requestedView: null,
+		});
+		expect(state.prevRequestedView).toBeNull();
+		expect(state.activeView).toBe("issues");
+	});
+
+	it("SYNC_REQUESTED_VIEW with 'settings' sets isSettingsOpen=true", () => {
+		const state = workspaceReducer(initial, {
+			type: "SYNC_REQUESTED_VIEW",
+			requestedView: "settings",
+		});
+		expect(state.isSettingsOpen).toBe(true);
+		expect(state.prevRequestedView).toBe("settings");
+	});
+
+	it("SYNC_REQUESTED_VIEW with a normal view updates activeView", () => {
+		const state = workspaceReducer(initial, {
+			type: "SYNC_REQUESTED_VIEW",
+			requestedView: "remote",
+		});
+		expect(state.activeView).toBe("remote");
+		expect(state.prevRequestedView).toBe("remote");
+	});
 });
 
 describe("WorkspaceManagerScreen", () => {

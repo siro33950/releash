@@ -10,7 +10,7 @@ import {
 	Palette,
 	Shield,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -50,6 +50,74 @@ import {
 } from "@/types/webhook";
 
 const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
+
+interface HooksState {
+	config: string;
+	loading: boolean;
+	applying: boolean;
+	status: "active" | "token_mismatch" | "not_configured";
+	copied: boolean;
+	error: string | null;
+	success: boolean;
+}
+
+const initialHooksState: HooksState = {
+	config: "",
+	loading: false,
+	applying: false,
+	status: "not_configured",
+	copied: false,
+	error: null,
+	success: false,
+};
+
+type HooksAction =
+	| { type: "LOAD_START" }
+	| {
+			type: "LOAD_SUCCESS";
+			config: string;
+			status: HooksState["status"];
+	  }
+	| { type: "LOAD_ERROR"; error: string }
+	| { type: "APPLY_START" }
+	| { type: "APPLY_SUCCESS" }
+	| { type: "APPLY_ERROR"; error: string }
+	| { type: "SET_COPIED"; copied: boolean }
+	| { type: "COPY_ERROR"; error: string };
+
+export function hooksReducer(
+	state: HooksState,
+	action: HooksAction,
+): HooksState {
+	switch (action.type) {
+		case "LOAD_START":
+			return { ...state, loading: true, error: null, success: false };
+		case "LOAD_SUCCESS":
+			return {
+				...state,
+				loading: false,
+				config: action.config,
+				status: action.status,
+			};
+		case "LOAD_ERROR":
+			return { ...state, loading: false, error: action.error };
+		case "APPLY_START":
+			return { ...state, applying: true, error: null };
+		case "APPLY_SUCCESS":
+			return {
+				...state,
+				applying: false,
+				status: "active",
+				success: true,
+			};
+		case "APPLY_ERROR":
+			return { ...state, applying: false, error: action.error };
+		case "SET_COPIED":
+			return { ...state, copied: action.copied };
+		case "COPY_ERROR":
+			return { ...state, error: action.error };
+	}
+}
 
 type SettingsSection =
 	| "appearance"
@@ -651,6 +719,50 @@ function PrivacySection({
 	);
 }
 
+interface SettingsState {
+	activeSection: SettingsSection;
+	draft: AppSettings;
+	appDirty: boolean;
+	saving: boolean;
+	prevOpen: boolean;
+}
+
+type SettingsAction =
+	| { type: "SET_SECTION"; section: SettingsSection }
+	| { type: "UPDATE_DRAFT"; updater: (d: AppSettings) => AppSettings }
+	| { type: "SYNC_OPEN"; open: boolean; settings: AppSettings }
+	| { type: "SAVE_START" }
+	| { type: "SAVE_END" }
+	| { type: "SAVE_ERROR" };
+
+export function settingsReducer(
+	state: SettingsState,
+	action: SettingsAction,
+): SettingsState {
+	switch (action.type) {
+		case "SET_SECTION":
+			return { ...state, activeSection: action.section };
+		case "UPDATE_DRAFT":
+			return { ...state, draft: action.updater(state.draft), appDirty: true };
+		case "SYNC_OPEN":
+			if (action.open && !state.prevOpen) {
+				return {
+					...state,
+					prevOpen: action.open,
+					draft: action.settings,
+					appDirty: false,
+				};
+			}
+			return { ...state, prevOpen: action.open };
+		case "SAVE_START":
+			return { ...state, saving: true, appDirty: false };
+		case "SAVE_END":
+			return { ...state, saving: false };
+		case "SAVE_ERROR":
+			return { ...state, appDirty: true };
+	}
+}
+
 export interface SettingsModalProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -664,37 +776,28 @@ export function SettingsModal({
 	settings,
 	onSave,
 }: SettingsModalProps) {
-	const [activeSection, setActiveSection] =
-		useState<SettingsSection>("appearance");
-	const [draft, setDraft] = useState<AppSettings>(settings);
-	const [appDirty, setAppDirty] = useState(false);
-	const [saving, setSaving] = useState(false);
+	const [state, dispatchSettings] = useReducer(settingsReducer, {
+		activeSection: "appearance" as SettingsSection,
+		draft: settings,
+		appDirty: false,
+		saving: false,
+		prevOpen: open,
+	});
+	const { activeSection, draft, appDirty, saving } = state;
 	const webhook = useWebhookConfig();
 	const remote = useRemoteConfig();
 
 	// Hooks state
-	const [hooksConfig, setHooksConfig] = useState<string>("");
-	const [hooksLoading, setHooksLoading] = useState(false);
-	const [hooksApplying, setHooksApplying] = useState(false);
-	const [hooksStatus, setHooksStatus] = useState<
-		"active" | "token_mismatch" | "not_configured"
-	>("not_configured");
-	const [hooksCopied, setHooksCopied] = useState(false);
-	const [hooksError, setHooksError] = useState<string | null>(null);
-	const [hooksSuccess, setHooksSuccess] = useState(false);
+	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
 
 	// Reset draft when dialog opens
-	useEffect(() => {
-		if (open) {
-			setDraft(settings);
-			setAppDirty(false);
-		}
-	}, [open, settings]);
+	if (open !== state.prevOpen) {
+		dispatchSettings({ type: "SYNC_OPEN", open, settings });
+	}
 
 	const updateDraft = useCallback(
 		(updater: (d: AppSettings) => AppSettings) => {
-			setDraft(updater);
-			setAppDirty(true);
+			dispatchSettings({ type: "UPDATE_DRAFT", updater });
 		},
 		[],
 	);
@@ -702,58 +805,52 @@ export function SettingsModal({
 	// Load hooks config when agent is claude
 	useEffect(() => {
 		if (draft.agent !== "claude") return;
-		setHooksLoading(true);
-		setHooksError(null);
-		setHooksSuccess(false);
+		dispatchHooks({ type: "LOAD_START" });
 
 		Promise.all([
 			invoke<string>("generate_hooks_config"),
 			invoke<string>("get_hooks_status"),
 		])
 			.then(([json, status]) => {
-				setHooksConfig(json);
-				setHooksStatus(
-					status as "active" | "token_mismatch" | "not_configured",
-				);
+				dispatchHooks({
+					type: "LOAD_SUCCESS",
+					config: json,
+					status: status as HooksState["status"],
+				});
 			})
 			.catch((e) => {
-				setHooksError(String(e));
-			})
-			.finally(() => {
-				setHooksLoading(false);
+				dispatchHooks({ type: "LOAD_ERROR", error: String(e) });
 			});
 	}, [draft.agent]);
 
 	const handleApplyHooks = useCallback(async () => {
-		setHooksApplying(true);
-		setHooksError(null);
+		dispatchHooks({ type: "APPLY_START" });
 		try {
-			await invoke("apply_hooks_config", { configJson: hooksConfig });
-			setHooksStatus("active");
-			setHooksSuccess(true);
+			await invoke("apply_hooks_config", { configJson: hooks.config });
+			dispatchHooks({ type: "APPLY_SUCCESS" });
 		} catch (e) {
-			setHooksError(String(e));
-		} finally {
-			setHooksApplying(false);
+			dispatchHooks({ type: "APPLY_ERROR", error: String(e) });
 		}
-	}, [hooksConfig]);
+	}, [hooks.config]);
 
 	const handleCopyHooks = useCallback(async () => {
 		try {
-			await navigator.clipboard.writeText(hooksConfig);
-			setHooksCopied(true);
-			setTimeout(() => setHooksCopied(false), 2000);
+			await navigator.clipboard.writeText(hooks.config);
+			dispatchHooks({ type: "SET_COPIED", copied: true });
+			setTimeout(
+				() => dispatchHooks({ type: "SET_COPIED", copied: false }),
+				2000,
+			);
 		} catch (e) {
-			setHooksError(`Copy failed: ${String(e)}`);
+			dispatchHooks({ type: "COPY_ERROR", error: `Copy failed: ${String(e)}` });
 		}
-	}, [hooksConfig]);
+	}, [hooks.config]);
 
 	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
 	const { isDirty: remoteIsDirty, save: remoteSave } = remote;
 
 	const handleSave = useCallback(async () => {
-		setSaving(true);
-		setAppDirty(false);
+		dispatchSettings({ type: "SAVE_START" });
 		try {
 			onSave(draft);
 			if (webhookIsDirty) {
@@ -767,9 +864,9 @@ export function SettingsModal({
 			}
 		} catch {
 			// webhook/remote の保存失敗はフック内部でerror stateに反映されUIに表示される
-			setAppDirty(true);
+			dispatchSettings({ type: "SAVE_ERROR" });
 		} finally {
-			setSaving(false);
+			dispatchSettings({ type: "SAVE_END" });
 		}
 	}, [draft, onSave, webhookIsDirty, webhookSave, remoteIsDirty, remoteSave]);
 
@@ -786,13 +883,13 @@ export function SettingsModal({
 					<AgentSection
 						draft={draft}
 						updateDraft={updateDraft}
-						hooksConfig={hooksConfig}
-						hooksLoading={hooksLoading}
-						hooksApplying={hooksApplying}
-						hooksStatus={hooksStatus}
-						hooksCopied={hooksCopied}
-						hooksError={hooksError}
-						hooksSuccess={hooksSuccess}
+						hooksConfig={hooks.config}
+						hooksLoading={hooks.loading}
+						hooksApplying={hooks.applying}
+						hooksStatus={hooks.status}
+						hooksCopied={hooks.copied}
+						hooksError={hooks.error}
+						hooksSuccess={hooks.success}
 						onApplyHooks={handleApplyHooks}
 						onCopyHooks={handleCopyHooks}
 					/>
@@ -824,7 +921,12 @@ export function SettingsModal({
 								<button
 									key={section.id}
 									type="button"
-									onClick={() => setActiveSection(section.id)}
+									onClick={() =>
+										dispatchSettings({
+											type: "SET_SECTION",
+											section: section.id,
+										})
+									}
 									className={cn(
 										"flex items-center gap-2 w-full px-4 py-1.5 text-sm text-left transition-colors",
 										activeSection === section.id
