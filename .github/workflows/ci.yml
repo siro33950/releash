@@ -413,4 +413,5 @@ jobs:
         with:
           fetch-depth: 0
       - uses: qltysh/qlty-action/install@v2
-      - run: qlty check --no-progress
+      - run: qlty init --no-progress || true
+      - run: qlty check --no-progress --all

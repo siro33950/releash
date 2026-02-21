@@ -20,6 +20,3 @@ threshold = 20
 
 [smells.nested_control_flow]
 threshold = 5
-
-[smells.duplication]
-threshold = 12
