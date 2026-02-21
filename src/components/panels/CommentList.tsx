@@ -125,7 +125,7 @@ export function CommentList({
 						) : (
 							<Eye className="h-3 w-3" />
 						)}
-						送信済み ({sentCount})
+						Sent ({sentCount})
 					</button>
 				)}
 				{[...grouped.entries()].map(([filePath, fileComments]) => {
@@ -191,7 +191,7 @@ export function CommentList({
 														<button
 															type="submit"
 															className="p-0.5 rounded hover:bg-status-added/20 text-status-added"
-															title="保存"
+															title="Save"
 														>
 															<Check className="h-3 w-3" />
 														</button>
@@ -199,7 +199,7 @@ export function CommentList({
 															type="button"
 															onClick={cancelEditing}
 															className="p-0.5 rounded hover:bg-muted text-muted-foreground"
-															title="キャンセル"
+															title="Cancel"
 														>
 															<X className="h-3 w-3" />
 														</button>
@@ -230,7 +230,7 @@ export function CommentList({
 															onSendComment(comment);
 														}}
 														className="p-0.5 rounded hover:bg-primary/20 text-muted-foreground hover:text-primary"
-														title="送信"
+														title="Send"
 													>
 														<Send className="h-3 w-3" />
 													</button>
@@ -243,7 +243,7 @@ export function CommentList({
 															onCopyComment(comment);
 														}}
 														className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-														title="コピー"
+														title="Copy"
 													>
 														<Copy className="h-3 w-3" />
 													</button>
@@ -253,7 +253,7 @@ export function CommentList({
 														type="button"
 														onClick={(e) => startEditing(e, comment)}
 														className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-														title="編集"
+														title="Edit"
 													>
 														<Pencil className="h-3 w-3" />
 													</button>
@@ -263,7 +263,7 @@ export function CommentList({
 														type="button"
 														onClick={(e) => handleDelete(e, comment.id)}
 														className="p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
-														title="削除"
+														title="Delete"
 													>
 														<Trash2 className="h-3 w-3" />
 													</button>

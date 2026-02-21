@@ -238,7 +238,7 @@ function NotionConfigForm({
 				setValidationStatus("Configuration incomplete");
 			}
 		} catch (e) {
-			setValidationStatus(String(e));
+			setValidationStatus(formatUserFriendlyError(e));
 		} finally {
 			setValidating(false);
 		}
@@ -250,7 +250,7 @@ function NotionConfigForm({
 		try {
 			await onSave(apiToken, databaseId, mapping);
 		} catch (e) {
-			setSaveError(String(e));
+			setSaveError(formatUserFriendlyError(e));
 		} finally {
 			setSaving(false);
 		}
@@ -263,7 +263,7 @@ function NotionConfigForm({
 		try {
 			await onDelete();
 		} catch (e) {
-			setDeleteError(String(e));
+			setDeleteError(formatUserFriendlyError(e));
 		} finally {
 			setDeleting(false);
 		}

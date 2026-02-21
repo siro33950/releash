@@ -125,7 +125,7 @@ describe("CommentList", () => {
 			/>,
 		);
 		expect(screen.getByTestId("toggle-sent-comments")).toBeInTheDocument();
-		expect(screen.getByText(/送信済み \(2\)/)).toBeInTheDocument();
+		expect(screen.getByText(/Sent \(2\)/)).toBeInTheDocument();
 	});
 
 	it("should call onToggleShowSent when toggle button is clicked", async () => {
@@ -162,7 +162,7 @@ describe("CommentList", () => {
 				onSendComment={vi.fn()}
 			/>,
 		);
-		expect(screen.getByTitle("送信")).toBeInTheDocument();
+		expect(screen.getByTitle("Send")).toBeInTheDocument();
 	});
 
 	it("should not show send button for sent comment", () => {
@@ -173,12 +173,12 @@ describe("CommentList", () => {
 				showSentComments={true}
 			/>,
 		);
-		expect(screen.queryByTitle("送信")).not.toBeInTheDocument();
+		expect(screen.queryByTitle("Send")).not.toBeInTheDocument();
 	});
 
 	it("should not show send button when onSendComment is not provided", () => {
 		render(<CommentList comments={[makeComment({ status: "unsent" })]} />);
-		expect(screen.queryByTitle("送信")).not.toBeInTheDocument();
+		expect(screen.queryByTitle("Send")).not.toBeInTheDocument();
 	});
 
 	it("should call onSendComment when send button is clicked", async () => {
@@ -186,7 +186,7 @@ describe("CommentList", () => {
 		const onSend = vi.fn();
 		const comment = makeComment({ status: "unsent" });
 		render(<CommentList comments={[comment]} onSendComment={onSend} />);
-		await user.click(screen.getByTitle("送信"));
+		await user.click(screen.getByTitle("Send"));
 		expect(onSend).toHaveBeenCalledWith(comment);
 	});
 
@@ -198,7 +198,7 @@ describe("CommentList", () => {
 				showSentComments={true}
 			/>,
 		);
-		expect(screen.getByTitle("コピー")).toBeInTheDocument();
+		expect(screen.getByTitle("Copy")).toBeInTheDocument();
 	});
 
 	it("should call onCopyComment when copy button is clicked", async () => {
@@ -206,7 +206,7 @@ describe("CommentList", () => {
 		const onCopy = vi.fn();
 		const comment = makeComment();
 		render(<CommentList comments={[comment]} onCopyComment={onCopy} />);
-		await user.click(screen.getByTitle("コピー"));
+		await user.click(screen.getByTitle("Copy"));
 		expect(onCopy).toHaveBeenCalledWith(comment);
 	});
 });

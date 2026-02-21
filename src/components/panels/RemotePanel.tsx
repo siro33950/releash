@@ -81,13 +81,21 @@ export function RemotePanel({
 
 	const handleCopyUrl = async () => {
 		if (qrData?.url) {
-			await navigator.clipboard.writeText(qrData.url);
+			try {
+				await navigator.clipboard.writeText(qrData.url);
+			} catch {
+				// clipboard access denied — silently ignore
+			}
 		}
 	};
 
 	const handleCopyToken = async () => {
 		if (config?.token) {
-			await navigator.clipboard.writeText(config.token);
+			try {
+				await navigator.clipboard.writeText(config.token);
+			} catch {
+				// clipboard access denied — silently ignore
+			}
 		}
 	};
 
