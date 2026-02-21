@@ -1,5 +1,9 @@
 config_version = "0"
 
+[[source]]
+name = "default"
+default = true
+
 exclude_patterns = [
     "**/node_modules/**",
     "**/target/**",
