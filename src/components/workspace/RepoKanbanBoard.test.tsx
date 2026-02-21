@@ -73,9 +73,7 @@ describe("RepoKanbanBoard", () => {
 		expect(
 			screen.getByText("Create a branch to start working with worktrees"),
 		).toBeInTheDocument();
-		expect(
-			screen.getByRole("button", { name: "New" }),
-		).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "New" })).toBeInTheDocument();
 	});
 
 	it("should show kanban columns when branches exist", async () => {
@@ -88,9 +86,7 @@ describe("RepoKanbanBoard", () => {
 		expect(screen.getByText("In Progress")).toBeInTheDocument();
 		expect(screen.getByText("Review")).toBeInTheDocument();
 		expect(screen.getByText("Done")).toBeInTheDocument();
-		expect(
-			screen.queryByText("No worktrees"),
-		).not.toBeInTheDocument();
+		expect(screen.queryByText("No worktrees")).not.toBeInTheDocument();
 	});
 
 	it("should open create dialog when empty state button is clicked", async () => {
@@ -99,9 +95,7 @@ describe("RepoKanbanBoard", () => {
 		render(<RepoKanbanBoard {...defaultProps} />);
 
 		await waitFor(() => {
-			expect(
-				screen.getByRole("button", { name: "New" }),
-			).toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "New" })).toBeInTheDocument();
 		});
 
 		await user.click(screen.getByRole("button", { name: "New" }));
