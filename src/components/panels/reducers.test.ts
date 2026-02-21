@@ -397,11 +397,12 @@ describe("hooksReducer", () => {
 		expect(state.error).toBe("load failed");
 	});
 
-	it("APPLY_START sets applying=true and clears error", () => {
-		const prev = { ...initial, error: "old" };
+	it("APPLY_START sets applying=true and clears error and success", () => {
+		const prev = { ...initial, error: "old", success: true };
 		const state = hooksReducer(prev, { type: "APPLY_START" });
 		expect(state.applying).toBe(true);
 		expect(state.error).toBeNull();
+		expect(state.success).toBe(false);
 	});
 
 	it("APPLY_SUCCESS sets status=active and success=true, clears error", () => {

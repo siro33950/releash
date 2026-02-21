@@ -103,7 +103,7 @@ export function hooksReducer(
 		case "LOAD_ERROR":
 			return { ...state, loading: false, error: action.error };
 		case "APPLY_START":
-			return { ...state, applying: true, error: null };
+			return { ...state, applying: true, error: null, success: false };
 		case "APPLY_SUCCESS":
 			return {
 				...state,
@@ -795,7 +795,7 @@ export function SettingsModal({
 	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
 		dispatchSettings({ type: "SYNC_OPEN", open, settings });
-		if (open) {
+		if (open && settings.agent === "claude") {
 			dispatchHooks({ type: "LOAD_START" });
 		}
 	}

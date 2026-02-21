@@ -243,9 +243,9 @@ export function useWorktreeGitActions({
 	const executeCreateBranch = useCallback(async () => {
 		const name = newBranchName.trim();
 		if (!name) return;
-		dispatchUI({ type: "CLOSE_CREATE_BRANCH" });
 		try {
 			await createBranch(rootPath, name);
+			dispatchUI({ type: "CLOSE_CREATE_BRANCH" });
 			refreshGit();
 		} catch (e) {
 			dispatchGit({ type: "SET_GIT_ERROR", error: String(e) });
