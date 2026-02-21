@@ -92,7 +92,7 @@ export function CommentList({
 							<kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">
 								⌘K
 							</kbd>{" "}
-							でカーソル行にも追加できます
+							to add a comment on the current cursor line
 						</p>
 					</>
 				}

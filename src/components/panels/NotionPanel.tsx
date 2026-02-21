@@ -365,7 +365,7 @@ function NotionConfigForm({
 					className="flex-1 h-6 text-[10px]"
 					onClick={onCancel}
 				>
-					キャンセル
+					Cancel
 				</Button>
 				{onDelete && (
 					<Button

@@ -271,7 +271,7 @@ describe("SourceControlPanel", () => {
 				expect(screen.getByText("Stage")).toBeInTheDocument();
 				expect(screen.getByText("Discard")).toBeInTheDocument();
 				expect(screen.getByText("Copy Path")).toBeInTheDocument();
-				expect(screen.getByText("相対Copy Path")).toBeInTheDocument();
+				expect(screen.getByText("Copy Relative Path")).toBeInTheDocument();
 				expect(screen.getByText("Reveal in Finder")).toBeInTheDocument();
 			});
 		});
@@ -292,7 +292,7 @@ describe("SourceControlPanel", () => {
 
 			await waitFor(() => {
 				expect(screen.getByText("Open Changes")).toBeInTheDocument();
-				expect(screen.getByText("アンStage")).toBeInTheDocument();
+				expect(screen.getByText("Unstage")).toBeInTheDocument();
 				expect(screen.queryByText("Discard")).not.toBeInTheDocument();
 				expect(screen.getByText("Copy Path")).toBeInTheDocument();
 			});
@@ -402,10 +402,10 @@ describe("SourceControlPanel", () => {
 			await user.pointer({ keys: "[MouseRight]", target: fileItem });
 
 			await waitFor(() => {
-				expect(screen.getByText("アンStage")).toBeInTheDocument();
+				expect(screen.getByText("Unstage")).toBeInTheDocument();
 			});
 
-			await user.click(screen.getByText("アンStage"));
+			await user.click(screen.getByText("Unstage"));
 
 			await waitFor(() => {
 				expect(mockGitActions.unstage).toHaveBeenCalledWith("/test/repo", [

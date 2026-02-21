@@ -88,11 +88,11 @@ export function FileTreeContextMenu({
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={onCopyPath}>
 					<Clipboard />
-					パスをCopy
+					Copy Path
 				</ContextMenuItem>
 				<ContextMenuItem onClick={onCopyRelativePath}>
 					<Clipboard />
-					相対パスをCopy
+					Copy Relative Path
 				</ContextMenuItem>
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={onRename}>

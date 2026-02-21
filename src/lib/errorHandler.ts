@@ -8,6 +8,7 @@ export function formatUserFriendlyError(
 	context?: ErrorContext,
 ): string {
 	const errorMessage = String(error);
+	const lowerMessage = errorMessage.toLowerCase();
 
 	// TypeError: null reading
 	if (errorMessage.includes("Cannot read properties of null")) {
@@ -22,10 +23,11 @@ export function formatUserFriendlyError(
 		return "Data is not ready yet. Please wait a moment.";
 	}
 
-	// Network errors
+	// Network errors - more specific patterns to avoid false positives
 	if (
-		errorMessage.includes("Network error") ||
-		errorMessage.includes("fetch")
+		lowerMessage.includes("network error") ||
+		lowerMessage.includes("failed to fetch") ||
+		lowerMessage.includes("network request failed")
 	) {
 		return "Network connection error. Please check your connection and try again.";
 	}
@@ -36,7 +38,7 @@ export function formatUserFriendlyError(
 	}
 
 	// Git errors - pass through with prefix
-	if (errorMessage.toLowerCase().includes("git")) {
+	if (lowerMessage.includes("git")) {
 		return `Git operation failed: ${errorMessage}`;
 	}
 

@@ -117,15 +117,14 @@ export function DiscardConfirmDialog({
 		<AlertDialog open={target !== null} onOpenChange={(o) => !o && onCancel()}>
 			<AlertDialogContent>
 				<AlertDialogHeader>
-					<AlertDialogTitle>変更の破棄</AlertDialogTitle>
+					<AlertDialogTitle>Discard Changes</AlertDialogTitle>
 					<AlertDialogDescription>
-						「{target?.path}
-						」の変更を破棄しますか？この操作は取り消せません。
+						Discard changes in "{target?.path}"? This action cannot be undone.
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel onClick={onCancel}>キャンセル</AlertDialogCancel>
-					<AlertDialogAction onClick={onConfirm}>破棄</AlertDialogAction>
+					<AlertDialogCancel onClick={onCancel}>Cancel</AlertDialogCancel>
+					<AlertDialogAction onClick={onConfirm}>Discard</AlertDialogAction>
 				</AlertDialogFooter>
 			</AlertDialogContent>
 		</AlertDialog>

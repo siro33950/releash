@@ -57,7 +57,7 @@ export function SourceControlContextMenu({
 				{variant === "staged" && onUnstage && (
 					<ContextMenuItem onClick={onUnstage}>
 						<Minus />
-						アンStage
+						Unstage
 					</ContextMenuItem>
 				)}
 				{variant === "unstaged" && onDiscard && (
@@ -73,7 +73,7 @@ export function SourceControlContextMenu({
 				</ContextMenuItem>
 				<ContextMenuItem onClick={onCopyRelativePath}>
 					<Clipboard />
-					相対Copy Path
+					Copy Relative Path
 				</ContextMenuItem>
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={onRevealInFinder}>
