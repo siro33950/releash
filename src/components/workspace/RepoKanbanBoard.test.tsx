@@ -102,9 +102,7 @@ describe("RepoKanbanBoard", () => {
 			).toBeInTheDocument();
 		});
 
-		await user.click(
-			screen.getByRole("button", { name: "Create worktree" }),
-		);
+		await user.click(screen.getByRole("button", { name: "Create worktree" }));
 
 		await waitFor(() => {
 			expect(screen.getByText("New Workspace")).toBeInTheDocument();
