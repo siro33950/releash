@@ -387,12 +387,12 @@ export function RepoKanbanBoard({
 					) : branches.length === 0 ? (
 						<EmptyState
 							icon={GitBranch}
-							title="ワークツリーがありません"
-							description="ブランチを作成してワークツリーで作業を始めましょう"
+							title="No worktrees"
+							description="Create a branch to start working with worktrees"
 						>
 							<Button className="mt-4" onClick={() => setShowCreate(true)}>
 								<Plus className="size-4 mr-2" />
-								新規作成
+								New
 							</Button>
 						</EmptyState>
 					) : (

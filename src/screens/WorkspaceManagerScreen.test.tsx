@@ -533,7 +533,7 @@ describe("WorkspaceManagerScreen", () => {
 
 			await waitFor(() => {
 				expect(
-					screen.getByText("ワークツリーがありません"),
+					screen.getByText("No worktrees"),
 				).toBeInTheDocument();
 			});
 
@@ -562,7 +562,7 @@ describe("WorkspaceManagerScreen", () => {
 
 			await waitFor(() => {
 				expect(
-					screen.getByText("ワークツリーがありません"),
+					screen.getByText("No worktrees"),
 				).toBeInTheDocument();
 			});
 

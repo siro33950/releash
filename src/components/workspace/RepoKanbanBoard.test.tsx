@@ -68,13 +68,13 @@ describe("RepoKanbanBoard", () => {
 		render(<RepoKanbanBoard {...defaultProps} />);
 
 		await waitFor(() => {
-			expect(screen.getByText("ワークツリーがありません")).toBeInTheDocument();
+			expect(screen.getByText("No worktrees")).toBeInTheDocument();
 		});
 		expect(
-			screen.getByText("ブランチを作成してワークツリーで作業を始めましょう"),
+			screen.getByText("Create a branch to start working with worktrees"),
 		).toBeInTheDocument();
 		expect(
-			screen.getByRole("button", { name: /新規作成/ }),
+			screen.getByRole("button", { name: "New" }),
 		).toBeInTheDocument();
 	});
 
@@ -89,7 +89,7 @@ describe("RepoKanbanBoard", () => {
 		expect(screen.getByText("Review")).toBeInTheDocument();
 		expect(screen.getByText("Done")).toBeInTheDocument();
 		expect(
-			screen.queryByText("ワークツリーがありません"),
+			screen.queryByText("No worktrees"),
 		).not.toBeInTheDocument();
 	});
 
@@ -100,11 +100,11 @@ describe("RepoKanbanBoard", () => {
 
 		await waitFor(() => {
 			expect(
-				screen.getByRole("button", { name: /新規作成/ }),
+				screen.getByRole("button", { name: "New" }),
 			).toBeInTheDocument();
 		});
 
-		await user.click(screen.getByRole("button", { name: /新規作成/ }));
+		await user.click(screen.getByRole("button", { name: "New" }));
 
 		await waitFor(() => {
 			expect(screen.getByText("New Workspace")).toBeInTheDocument();
