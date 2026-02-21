@@ -376,7 +376,7 @@ function AgentSection({
 									)}
 									{hooksStatus === "token_mismatch" && (
 										<span className="text-warning">
-											Token mismatch — 再設定が必要です
+											Token mismatch — Reconfiguration required
 										</span>
 									)}
 									{hooksStatus === "not_configured" && (
@@ -410,7 +410,7 @@ function AgentSection({
 
 							{hooksSuccess && (
 								<p className="text-xs text-success">
-									設定を適用しました。Claude Codeを再起動すると反映されます。
+									Settings applied. Restart Claude Code to take effect.
 								</p>
 							)}
 
@@ -424,7 +424,7 @@ function AgentSection({
 									{hooksApplying ? (
 										<Loader2 className="size-3.5 mr-1 animate-spin" />
 									) : null}
-									{hooksStatus === "active" ? "再設定" : "設定を適用"}
+									{hooksStatus === "active" ? "Reconfigure" : "Apply Settings"}
 								</Button>
 							</div>
 						</>
@@ -492,7 +492,8 @@ function RemoteSection({
 					</div>
 
 					<p className="text-[10px] text-muted-foreground">
-						VPN接続時は常に自動起動します。LAN接続時の自動起動は上記で制御できます。
+						Auto-starts on VPN connection. Auto-start on LAN can be controlled
+						above.
 					</p>
 
 					{remote.error && (

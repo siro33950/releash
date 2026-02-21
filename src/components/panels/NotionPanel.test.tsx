@@ -33,7 +33,9 @@ describe("NotionPanel", () => {
 		render(<NotionPanel {...defaultProps} />);
 
 		await waitFor(() => {
-			expect(screen.getByText("Notion連携が未設定です")).toBeInTheDocument();
+			expect(
+				screen.getByText("Notion integration not configured"),
+			).toBeInTheDocument();
 		});
 	});
 
@@ -45,10 +47,10 @@ describe("NotionPanel", () => {
 		render(<NotionPanel {...defaultProps} />);
 
 		await waitFor(() => {
-			expect(screen.getByText("設定する")).toBeInTheDocument();
+			expect(screen.getByText("Configure")).toBeInTheDocument();
 		});
 
-		await user.click(screen.getByText("設定する"));
+		await user.click(screen.getByText("Configure"));
 
 		expect(screen.getByText("API Token")).toBeInTheDocument();
 		expect(screen.getByText("Database ID")).toBeInTheDocument();
@@ -291,20 +293,24 @@ describe("NotionPanel", () => {
 		render(<NotionPanel {...defaultProps} />);
 
 		await waitFor(() => {
-			expect(screen.getByText("Notion連携が未設定です")).toBeInTheDocument();
+			expect(
+				screen.getByText("Notion integration not configured"),
+			).toBeInTheDocument();
 		});
 
 		const repoButton = screen.getByText("repo");
 		await user.click(repoButton);
 
 		expect(
-			screen.queryByText("Notion連携が未設定です"),
+			screen.queryByText("Notion integration not configured"),
 		).not.toBeInTheDocument();
 
 		await user.click(repoButton);
 
 		await waitFor(() => {
-			expect(screen.getByText("Notion連携が未設定です")).toBeInTheDocument();
+			expect(
+				screen.getByText("Notion integration not configured"),
+			).toBeInTheDocument();
 		});
 	});
 
@@ -398,19 +404,19 @@ describe("NotionPanel", () => {
 		render(<NotionPanel {...defaultProps} />);
 
 		await waitFor(() => {
-			expect(screen.getByText("設定")).toBeInTheDocument();
+			expect(screen.getByText("Settings")).toBeInTheDocument();
 		});
 
-		await user.click(screen.getByText("設定"));
+		await user.click(screen.getByText("Settings"));
 
 		await waitFor(() => {
 			expect(screen.getByText("API Token")).toBeInTheDocument();
 		});
 
-		await user.click(screen.getByText("接続テスト"));
+		await user.click(screen.getByText("Test Connection"));
 
 		await waitFor(() => {
-			expect(screen.getByText("プレフィックス")).toBeInTheDocument();
+			expect(screen.getByText("Prefix")).toBeInTheDocument();
 		});
 
 		const prefixInput = screen.getByPlaceholderText("feat/");

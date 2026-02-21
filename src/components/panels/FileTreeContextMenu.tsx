@@ -62,51 +62,51 @@ export function FileTreeContextMenu({
 					<>
 						<ContextMenuItem onClick={onNewFile}>
 							<FilePlus />
-							新規ファイル
+							New File
 						</ContextMenuItem>
 						<ContextMenuItem onClick={onNewFolder}>
 							<FolderPlus />
-							新規フォルダ
+							New Folder
 						</ContextMenuItem>
 						<ContextMenuSeparator />
 					</>
 				)}
 				<ContextMenuItem onClick={onCut}>
 					<Scissors />
-					切り取り
+					Cut
 				</ContextMenuItem>
 				<ContextMenuItem onClick={onCopy}>
 					<Copy />
-					コピー
+					Copy
 				</ContextMenuItem>
 				{clipboard && (
 					<ContextMenuItem onClick={onPaste}>
 						<ClipboardPaste />
-						貼り付け
+						Paste
 					</ContextMenuItem>
 				)}
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={onCopyPath}>
 					<Clipboard />
-					パスをコピー
+					Copy Path
 				</ContextMenuItem>
 				<ContextMenuItem onClick={onCopyRelativePath}>
 					<Clipboard />
-					相対パスをコピー
+					Copy Relative Path
 				</ContextMenuItem>
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={onRename}>
 					<Pencil />
-					名前の変更
+					Rename
 				</ContextMenuItem>
 				<ContextMenuItem onClick={onDelete} variant="destructive">
 					<Trash2 />
-					削除
+					Delete
 				</ContextMenuItem>
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={onRevealInFinder}>
 					<ExternalLink />
-					Finder で表示
+					Reveal in Finder
 				</ContextMenuItem>
 			</ContextMenuContent>
 		</ContextMenu>

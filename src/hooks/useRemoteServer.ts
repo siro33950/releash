@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { formatRemoteServerError } from "@/lib/errorHandler";
 import { trackEvent } from "@/lib/telemetry";
 
 interface QrCodeResult {
@@ -51,7 +52,7 @@ export function useRemoteServer() {
 			const cfg = await invoke<ServerConfig>("get_server_config");
 			setConfig({ port: cfg.port, token: cfg.token });
 		} catch (e) {
-			setError(String(e));
+			setError(formatRemoteServerError(e));
 		}
 	}, []);
 
@@ -65,7 +66,7 @@ export function useRemoteServer() {
 				return vpn ? vpn.ip : (detected[0]?.ip ?? null);
 			});
 		} catch (e) {
-			setError(String(e));
+			setError(formatRemoteServerError(e));
 		}
 	}, []);
 
@@ -78,7 +79,7 @@ export function useRemoteServer() {
 				setConnectionMode(info.connection_mode);
 			}
 		} catch (e) {
-			setError(String(e));
+			setError(formatRemoteServerError(e));
 		}
 	}, []);
 
@@ -94,7 +95,7 @@ export function useRemoteServer() {
 			setQrData(result);
 			setError(null);
 		} catch (e) {
-			setError(String(e));
+			setError(formatRemoteServerError(e));
 		}
 	}, []);
 
@@ -118,7 +119,7 @@ export function useRemoteServer() {
 				trackEvent("remote_server_started");
 				await refreshQr();
 			} catch (e) {
-				setError(String(e));
+				setError(formatRemoteServerError(e));
 			}
 		},
 		[refreshQr],
@@ -127,7 +128,7 @@ export function useRemoteServer() {
 	const startServer = useCallback(
 		async (repoPaths: string[]) => {
 			if (!selectedIp) {
-				setError("IPアドレスを選択してください");
+				setError("Please select an IP address");
 				return;
 			}
 			const selected = interfaces.find((i) => i.ip === selectedIp);
@@ -157,7 +158,7 @@ export function useRemoteServer() {
 		try {
 			await invoke("update_server_repo_paths", { repoPaths });
 		} catch (e) {
-			setError(String(e));
+			setError(formatRemoteServerError(e));
 		}
 	}, []);
 
@@ -165,7 +166,7 @@ export function useRemoteServer() {
 		try {
 			await invoke("update_terminal_startup_command", { command });
 		} catch (e) {
-			setError(String(e));
+			setError(formatRemoteServerError(e));
 		}
 	}, []);
 
@@ -178,7 +179,7 @@ export function useRemoteServer() {
 			setBoundIp(null);
 			setConnectionMode(null);
 		} catch (e) {
-			setError(String(e));
+			setError(formatRemoteServerError(e));
 		}
 	}, []);
 
@@ -189,7 +190,7 @@ export function useRemoteServer() {
 				await invoke("update_server_port", { port });
 				await refreshConfig();
 			} catch (e) {
-				setError(String(e));
+				setError(formatRemoteServerError(e));
 			}
 		},
 		[refreshConfig],
@@ -202,7 +203,7 @@ export function useRemoteServer() {
 			setConfig((prev) => (prev ? { ...prev, token } : null));
 			await refreshQr();
 		} catch (e) {
-			setError(String(e));
+			setError(formatRemoteServerError(e));
 		}
 	}, [refreshQr]);
 
