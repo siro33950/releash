@@ -532,7 +532,7 @@ describe("WorkspaceManagerScreen", () => {
 			});
 
 			await waitFor(() => {
-				expect(screen.getByText("Todo")).toBeInTheDocument();
+				expect(screen.getByText("No worktrees")).toBeInTheDocument();
 			});
 
 			consoleSpy.mockRestore();
@@ -559,7 +559,7 @@ describe("WorkspaceManagerScreen", () => {
 			renderScreen();
 
 			await waitFor(() => {
-				expect(screen.getByText("Todo")).toBeInTheDocument();
+				expect(screen.getByText("No worktrees")).toBeInTheDocument();
 			});
 
 			expect(screen.queryByText(/base:/)).not.toBeInTheDocument();

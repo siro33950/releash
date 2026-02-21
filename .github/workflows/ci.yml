@@ -233,7 +233,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git checkout -B "$UPDATE_BRANCH"
+          cp -r tests/__screenshots__/ /tmp/updated-screenshots/
+
+          git fetch origin "$HEAD_BRANCH"
+          git checkout -B "$UPDATE_BRANCH" "origin/$HEAD_BRANCH"
+
+          rm -rf tests/__screenshots__/
+          cp -r /tmp/updated-screenshots/ tests/__screenshots__/
           git add tests/__screenshots__/
           git commit -m "chore: update screenshot baselines for PR #${PR_NUMBER}"
           git push origin "$UPDATE_BRANCH" --force

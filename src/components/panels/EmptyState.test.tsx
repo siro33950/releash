@@ -64,4 +64,26 @@ describe("EmptyState", () => {
 		expect(container.querySelector("svg")).toBeInTheDocument();
 		expect(screen.getByText("No folder")).toBeInTheDocument();
 	});
+
+	it("should render children when provided", () => {
+		render(
+			<EmptyState title="Empty">
+				<button type="button">Action</button>
+			</EmptyState>,
+		);
+
+		expect(screen.getByRole("button", { name: "Action" })).toBeInTheDocument();
+	});
+
+	it("should not render children in compact mode", () => {
+		render(
+			<EmptyState compact title="Empty">
+				<button type="button">Action</button>
+			</EmptyState>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "Action" }),
+		).not.toBeInTheDocument();
+	});
 });
