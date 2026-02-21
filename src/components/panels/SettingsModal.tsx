@@ -727,6 +727,7 @@ export function SettingsModal({
 			}
 		} catch {
 			// webhook/remote の保存失敗はフック内部でerror stateに反映されUIに表示される
+			setAppDirty(true);
 		} finally {
 			setSaving(false);
 		}

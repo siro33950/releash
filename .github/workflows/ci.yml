@@ -227,7 +227,7 @@ jobs:
         id: update-pr
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
+          HEAD_BRANCH="$PR_HEAD_REF"
           UPDATE_BRANCH="screenshot-update/pr-${PR_NUMBER}"
 
           git config user.name "github-actions[bot]"
@@ -262,12 +262,13 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
 
       - name: Close stale update PR (no diffs)
         if: steps.diff.outputs.count == '0' && steps.check.outputs.should_run == 'true' && steps.screenshots.outcome == 'success'
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
+          HEAD_BRANCH="$PR_HEAD_REF"
           UPDATE_BRANCH="screenshot-update/pr-${PR_NUMBER}"
 
           EXISTING_PR=$(gh pr list --head "$UPDATE_BRANCH" --base "$HEAD_BRANCH" --json number --jq '.[0].number' 2>/dev/null || echo "")
@@ -276,6 +277,7 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
 
       - name: Post PR comment with screenshot results
         if: always() && steps.check.outputs.should_run == 'true'
