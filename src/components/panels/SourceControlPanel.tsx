@@ -1,5 +1,5 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { ArrowDown, ArrowUp, RefreshCw, X } from "lucide-react";
+import { ArrowDown, ArrowUp, RefreshCw } from "lucide-react";
 import { useCallback, useState } from "react";
 import { FileStatusItem } from "@/components/panels/FileStatusItem";
 import { SourceControlContextMenu } from "@/components/panels/SourceControlContextMenu";
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Input } from "@/components/ui/input";
+import { Message } from "@/components/ui/message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitStatus } from "@/hooks/useGitStatus";
@@ -338,18 +339,7 @@ export function SourceControlPanel({
 						<ArrowUp className="h-3 w-3" />
 					</button>
 				</div>
-				{error && (
-					<div className="flex items-start gap-1 text-destructive text-xs">
-						<span className="flex-1 break-all">{error}</span>
-						<button
-							type="button"
-							className="shrink-0"
-							onClick={() => setError(null)}
-						>
-							<X className="h-3 w-3" />
-						</button>
-					</div>
-				)}
+				{error && <Message message={error} onDismiss={() => setError(null)} />}
 			</div>
 
 			{/* Discard Confirm Dialog */}
