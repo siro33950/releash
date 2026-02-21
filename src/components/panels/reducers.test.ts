@@ -131,7 +131,11 @@ describe("configFormReducer", () => {
 		},
 		validating: false,
 		saving: false,
-		properties: [] as { name: string; property_type: string; options: string[] }[],
+		properties: [] as {
+			name: string;
+			property_type: string;
+			options: string[];
+		}[],
 		validationStatus: null as string | null,
 		deleting: false,
 		saveError: null as string | null,
