@@ -1,11 +1,12 @@
-/* Separator: transparent by default, visible on hover/drag (VSCode sash style) */
+/* Separator: border color by default, primary on hover/drag */
 [data-separator] {
-	background-color: transparent;
-	transition: background-color 0.1s ease-out;
+	background-color: var(--border);
+	transition: background-color 0.15s ease-out;
 }
 
 [data-separator="hover"] {
 	background-color: var(--primary);
+	opacity: 0.7;
 }
 
 [data-separator="active"] {
