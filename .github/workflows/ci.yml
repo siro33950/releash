@@ -410,6 +410,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: qltysh/qlty-action/check@main
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      - uses: qltysh/qlty-action/install@v2
+      - run: qlty check --no-progress
