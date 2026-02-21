@@ -18,12 +18,23 @@ gh label create "ui-improvement" --color "1d76db" --description "UI改善提案"
 
 ---
 
-### Step 1: スクリーンショット一覧取得
+### Step 1: マスクなしスクリーンショット撮影
 
-Globツールで `tests/__screenshots__/chromium/*.png` を取得する。
+UIレビュー用にマスクなしのスクリーンショットを撮影する。
 
-- **0枚の場合**: 「スクリーンショットが見つかりません。先に `pnpm test:integration --update-snapshots` でスクリーンショットを生成してください。」と案内して終了。
-- **1枚以上**: 枚数を報告し、Step 2に進む。
+```bash
+UI_REVIEW=1 pnpm test:screenshots:update
+```
+
+- `UI_REVIEW=1` により `xtermMask` / `monacoMask` が無効化され、ターミナルやエディタ領域もマスクなしで撮影される
+- **テスト失敗の場合**: エラー内容を報告して終了
+- **成功の場合**: Globツールで `tests/__screenshots__/chromium/*.png` を取得し、枚数を報告してStep 2に進む
+
+**重要**: 分析完了後（Step 5の後）に必ず以下を実行してマスク付きスクリーンショットを復元する:
+
+```bash
+git checkout -- tests/__screenshots__/
+```
 
 ---
 
@@ -222,4 +233,12 @@ EOF
 1. #<番号> <タイトル>
 2. #<番号> <タイトル>
 ...
+```
+
+#### スクリーンショット復元
+
+サマリー報告後、マスク付きスクリーンショットを復元する:
+
+```bash
+git checkout -- tests/__screenshots__/
 ```

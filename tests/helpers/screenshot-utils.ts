@@ -63,14 +63,18 @@ export async function switchToView(
 /**
  * Monaco Editor 領域のマスク用ロケーター。
  * スクリーンショット比較時に非決定的なエディタ内容をマスクする。
+ * UI_REVIEW=1 の場合はマスクを無効化する。
  */
 export function monacoMask(page: Page): Locator[] {
+	if (process.env.UI_REVIEW) return [];
 	return [page.locator(".monaco-editor")];
 }
 
 /**
  * xterm ターミナル領域のマスク用ロケーター。
+ * UI_REVIEW=1 の場合はマスクを無効化する。
  */
 export function xtermMask(page: Page): Locator[] {
+	if (process.env.UI_REVIEW) return [];
 	return [page.locator(".xterm")];
 }
