@@ -1,4 +1,10 @@
-import { ChevronsDownUp, FilePlus, FolderPlus, RefreshCw } from "lucide-react";
+import {
+	ChevronsDownUp,
+	FilePlus,
+	FolderOpen,
+	FolderPlus,
+	RefreshCw,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	ContextMenu,
@@ -7,6 +13,7 @@ import {
 	ContextMenuSeparator,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useFileOperations } from "@/hooks/useFileOperations";
 import { useFileTree } from "@/hooks/useFileTree";
@@ -295,7 +302,15 @@ export function SidebarPanel({
 								</div>
 							)}
 
-							{!loading && !error && (
+							{!loading && !error && treeWithStatus.length === 0 && (
+								<EmptyState
+									icon={FolderOpen}
+									title="No files"
+									description="Add files to the repository to get started"
+								/>
+							)}
+
+							{!loading && !error && treeWithStatus.length > 0 && (
 								<FileTree
 									rootPath={rootPath}
 									tree={treeWithStatus}

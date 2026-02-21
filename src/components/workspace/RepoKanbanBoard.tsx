@@ -14,8 +14,8 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { CreateWorktreeDialog } from "@/components/workspace/CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "@/components/workspace/DeleteWorktreeDialog";
 import { KanbanColumn } from "@/components/workspace/KanbanColumn";
@@ -47,11 +47,11 @@ function ProviderStatusGuide({ status }: { status: ProviderStatus | null }) {
 
 	let message: string;
 	if (typeof status === "object" && "cli_not_found" in status) {
-		message = `PR検出を有効にするには ${status.cli_not_found.cli} CLI をインストールしてください`;
+		message = `Install the ${status.cli_not_found.cli} CLI to enable PR detection`;
 	} else if (status === "not_authenticated") {
-		message = "gh auth login で認証してください";
+		message = "Run gh auth login to authenticate";
 	} else if (status === "unsupported_platform") {
-		message = "PR検出は現在GitHubに対応しています";
+		message = "PR detection is currently supported for GitHub";
 	} else {
 		return null;
 	}
@@ -388,13 +388,14 @@ export function RepoKanbanBoard({
 						<EmptyState
 							icon={GitBranch}
 							title="No worktrees"
-							description="Create a branch to start working with worktrees"
-						>
-							<Button className="mt-4" onClick={() => setShowCreate(true)}>
-								<Plus className="size-4 mr-2" />
-								New
-							</Button>
-						</EmptyState>
+							description="Create a new worktree to get started"
+							action={{
+								label: "Create worktree",
+								onClick: () => setShowCreate(true),
+								icon: Plus,
+							}}
+							className="py-8"
+						/>
 					) : (
 						<div className="flex gap-3 h-full overflow-x-auto">
 							<KanbanColumn

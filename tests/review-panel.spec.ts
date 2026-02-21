@@ -69,8 +69,8 @@ test.describe("Review Panel", () => {
 		// Comments タブをクリック
 		await page.getByRole("tab", { name: /Comments/ }).click();
 
-		// 空メッセージ "コメントなし" が表示される
-		await expect(page.getByText("コメントなし")).toBeVisible();
+		// 空メッセージ "No comments" が表示される
+		await expect(page.getByText("No comments")).toBeVisible();
 	});
 
 	test("Terminal タブがデフォルトで選択されている", async ({ page }) => {

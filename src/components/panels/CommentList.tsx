@@ -10,6 +10,7 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { LineComment } from "@/types/comment";
@@ -82,19 +83,21 @@ export function CommentList({
 
 	if (visibleComments.length === 0 && sentCount === 0) {
 		return (
-			<div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground px-4">
-				<MessageSquare className="h-6 w-6" />
-				<span className="text-xs font-medium">コメントなし</span>
-				<div className="text-[11px] text-center leading-relaxed">
-					<p>行番号の左マージンをクリック、またはドラッグで範囲選択</p>
-					<p className="mt-0.5">
-						<kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">
-							⌘K
-						</kbd>{" "}
-						でカーソル行にも追加できます
-					</p>
-				</div>
-			</div>
+			<EmptyState
+				icon={MessageSquare}
+				title="No comments"
+				description={
+					<>
+						<p>行番号の左マージンをクリック、またはドラッグで範囲選択</p>
+						<p className="mt-0.5">
+							<kbd className="px-1 py-0.5 bg-muted rounded text-[10px] font-mono">
+								⌘K
+							</kbd>{" "}
+							でカーソル行にも追加できます
+						</p>
+					</>
+				}
+			/>
 		);
 	}
 

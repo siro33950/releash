@@ -40,7 +40,7 @@ describe("ReviewPanel", () => {
 		const user = userEvent.setup();
 		render(<ReviewPanel comments={[]} />);
 		await user.click(screen.getByText("Comments"));
-		expect(screen.getByText("コメントなし")).toBeInTheDocument();
+		expect(screen.getByText("No comments")).toBeInTheDocument();
 	});
 
 	it("should show unsent count badge on comments tab", () => {

@@ -1,6 +1,7 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink, GitPullRequest, Loader2, RefreshCw } from "lucide-react";
 import { MarkdownPreview } from "@/components/panels/MarkdownPreview";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Message } from "@/components/ui/message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useBranchPr } from "@/hooks/useBranchPr";
@@ -95,11 +96,11 @@ export function PullRequestPanel({ rootPath, branch }: PullRequestPanelProps) {
 
 	if (!prNumber) {
 		return (
-			<div className="h-full flex flex-col items-center justify-center bg-sidebar gap-2">
-				<GitPullRequest className="size-8 text-muted-foreground" />
-				<span className="text-sm text-muted-foreground">
-					No pull request for this branch
-				</span>
+			<div className="h-full bg-sidebar">
+				<EmptyState
+					icon={GitPullRequest}
+					title="No pull request for this branch"
+				/>
 			</div>
 		);
 	}

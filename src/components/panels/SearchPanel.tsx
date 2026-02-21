@@ -1,11 +1,11 @@
-import { CaseSensitive, Regex, X } from "lucide-react";
+import { CaseSensitive, Regex, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useSearch } from "@/hooks/useSearch";
 import { cn } from "@/lib/utils";
 import type { SearchMatch } from "@/types/search";
-import { EmptyState } from "./EmptyState";
 
 interface GroupedMatches {
 	path: string;
@@ -210,32 +210,42 @@ export function SearchPanel({
 				{error && <div className="text-[10px] text-destructive">{error}</div>}
 			</div>
 
-			<ScrollArea className="flex-1 min-h-0 [&>[data-slot=scroll-area-viewport]>div]:block!">
-				{grouped.map((group) => (
-					<div key={group.path}>
-						<div className="px-3 py-1 text-[11px] font-semibold text-muted-foreground truncate bg-sidebar-accent/50">
-							{group.path}
+			{result && matchCount === 0 && !loading ? (
+				<div className="flex-1 min-h-0">
+					<EmptyState
+						icon={Search}
+						title="No results found"
+						description="Try different keywords or regex"
+					/>
+				</div>
+			) : (
+				<ScrollArea className="flex-1 min-h-0 [&>[data-slot=scroll-area-viewport]>div]:block!">
+					{grouped.map((group) => (
+						<div key={group.path}>
+							<div className="px-3 py-1 text-[11px] font-semibold text-muted-foreground truncate bg-sidebar-accent/50">
+								{group.path}
+							</div>
+							{group.matches.map((m, i) => (
+								<button
+									type="button"
+									key={`${m.line_number}-${i}`}
+									className="flex w-full items-center gap-2 px-4 py-0.5 text-xs hover:bg-sidebar-accent transition-colors text-left"
+									onClick={() => onSelectFileAtLine?.(m.path, m.line_number)}
+								>
+									<span className="text-muted-foreground font-mono w-8 text-right shrink-0">
+										{m.line_number}
+									</span>
+									<HighlightedLine
+										line={m.line_content}
+										matchStart={m.match_start}
+										matchEnd={m.match_end}
+									/>
+								</button>
+							))}
 						</div>
-						{group.matches.map((m, i) => (
-							<button
-								type="button"
-								key={`${m.line_number}-${i}`}
-								className="flex w-full items-center gap-2 px-4 py-0.5 text-xs hover:bg-sidebar-accent transition-colors text-left"
-								onClick={() => onSelectFileAtLine?.(m.path, m.line_number)}
-							>
-								<span className="text-muted-foreground font-mono w-8 text-right shrink-0">
-									{m.line_number}
-								</span>
-								<HighlightedLine
-									line={m.line_content}
-									matchStart={m.match_start}
-									matchEnd={m.match_end}
-								/>
-							</button>
-						))}
-					</div>
-				))}
-			</ScrollArea>
+					))}
+				</ScrollArea>
+			)}
 		</div>
 	);
 }
