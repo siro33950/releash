@@ -756,7 +756,7 @@ function NotionTaskCard({
 		: parsedDate.toLocaleDateString();
 
 	return (
-		<div className="mx-2 mb-1 rounded border border-border bg-card p-2">
+		<div className="mx-2 mb-1 rounded border border-border bg-card p-2 shadow-sm transition-[border-color,box-shadow] hover:shadow-md hover:border-primary/30">
 			<div className="flex items-start gap-1.5">
 				<span className="text-xs font-medium leading-tight flex-1 break-words">
 					{task.title}
