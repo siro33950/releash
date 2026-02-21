@@ -5,7 +5,7 @@ import {
 	xtermMask,
 } from "../helpers/screenshot-utils";
 
-test.describe("Settings Panel", () => {
+test.describe("Settings Modal", () => {
 	async function openSettings(
 		page: Parameters<typeof setupWorktreeView>[0],
 		overrides: Record<string, unknown> = {},
@@ -19,9 +19,9 @@ test.describe("Settings Panel", () => {
 		page: Parameters<typeof setupWorktreeView>[0],
 		tabName: string,
 	) {
-		const tab = page.getByText(tabName, { exact: true }).first();
+		const tab = page.locator("nav").getByText(tabName, { exact: true });
 		await tab.click();
-		await page.waitForTimeout(200);
+		await expect(tab).toHaveClass(/bg-accent/);
 	}
 
 	test("appearance section (default)", async ({ page }) => {
