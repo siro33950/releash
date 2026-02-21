@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
 	Dialog,
 	DialogContent,
@@ -21,7 +22,16 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
 import { trackEvent } from "@/lib/telemetry";
@@ -63,8 +73,6 @@ const SETTINGS_SECTIONS: {
 ];
 
 const labelClass = "text-xs font-medium text-muted-foreground";
-const selectClass =
-	"w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary";
 
 function AppearanceSection({
 	draft,
@@ -79,34 +87,33 @@ function AppearanceSection({
 				<label htmlFor="theme-select" className={labelClass}>
 					Theme
 				</label>
-				<select
-					id="theme-select"
+				<Select
 					value={draft.theme}
-					onChange={(e) =>
-						updateDraft((d) => ({ ...d, theme: e.target.value as Theme }))
+					onValueChange={(value) =>
+						updateDraft((d) => ({ ...d, theme: value as Theme }))
 					}
-					className={selectClass}
 				>
-					<option value="dark">Dark</option>
-					<option value="light">Light</option>
-				</select>
+					<SelectTrigger id="theme-select">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="dark">Dark</SelectItem>
+						<SelectItem value="light">Light</SelectItem>
+					</SelectContent>
+				</Select>
 			</div>
 
 			<div className="flex flex-col gap-1.5">
 				<label htmlFor="font-size-slider" className={labelClass}>
 					Font Size: {draft.fontSize}px
 				</label>
-				<input
+				<Slider
 					id="font-size-slider"
-					type="range"
 					min={12}
 					max={24}
 					step={1}
-					value={draft.fontSize}
-					onChange={(e) =>
-						updateDraft((d) => ({ ...d, fontSize: Number(e.target.value) }))
-					}
-					className="w-full accent-primary"
+					value={[draft.fontSize]}
+					onValueChange={([v]) => updateDraft((d) => ({ ...d, fontSize: v }))}
 				/>
 				<div className="flex justify-between text-[10px] text-muted-foreground">
 					<span>12px</span>
@@ -130,41 +137,47 @@ function EditorSection({
 				<label htmlFor="diff-base-select" className={labelClass}>
 					Default Base
 				</label>
-				<select
-					id="diff-base-select"
+				<Select
 					value={draft.defaultDiffBase}
-					onChange={(e) =>
+					onValueChange={(value) =>
 						updateDraft((d) => ({
 							...d,
-							defaultDiffBase: e.target.value as DiffBase,
+							defaultDiffBase: value as DiffBase,
 						}))
 					}
-					className={selectClass}
 				>
-					<option value="staged">Staged</option>
-					<option value="HEAD">HEAD</option>
-				</select>
+					<SelectTrigger id="diff-base-select">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="staged">Staged</SelectItem>
+						<SelectItem value="HEAD">HEAD</SelectItem>
+					</SelectContent>
+				</Select>
 			</div>
 
 			<div className="flex flex-col gap-1.5">
 				<label htmlFor="diff-mode-select" className={labelClass}>
 					Default View
 				</label>
-				<select
-					id="diff-mode-select"
+				<Select
 					value={draft.defaultDiffMode}
-					onChange={(e) =>
+					onValueChange={(value) =>
 						updateDraft((d) => ({
 							...d,
-							defaultDiffMode: e.target.value as DiffMode,
+							defaultDiffMode: value as DiffMode,
 						}))
 					}
-					className={selectClass}
 				>
-					<option value="gutter">Gutter</option>
-					<option value="inline">Inline</option>
-					<option value="split">Split</option>
-				</select>
+					<SelectTrigger id="diff-mode-select">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="gutter">Gutter</SelectItem>
+						<SelectItem value="inline">Inline</SelectItem>
+						<SelectItem value="split">Split</SelectItem>
+					</SelectContent>
+				</Select>
 			</div>
 		</div>
 	);
@@ -206,40 +219,47 @@ function AgentSection({
 				<label htmlFor="agent-select" className={labelClass}>
 					Agent
 				</label>
-				<select
-					id="agent-select"
+				<Select
 					value={draft.agent}
-					onChange={(e) =>
+					onValueChange={(value) =>
 						updateDraft((d) => ({
 							...d,
-							agent: e.target.value as AgentType,
+							agent: value as AgentType,
 						}))
 					}
-					className={selectClass}
 				>
-					{AGENT_TYPE_KEYS.map((key) => (
-						<option key={key} value={key}>
-							{AGENT_CONFIGS[key].label}
-						</option>
-					))}
-				</select>
+					<SelectTrigger id="agent-select">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						{AGENT_TYPE_KEYS.map((key) => (
+							<SelectItem key={key} value={key}>
+								{AGENT_CONFIGS[key].label}
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
 			</div>
 
 			{showAutoApprove && (
-				<label className="flex items-center gap-2 cursor-pointer">
-					<input
-						type="checkbox"
+				<div className="flex items-center gap-2">
+					<Checkbox
+						id="agent-auto-approve"
 						checked={draft.agentAutoApprove}
-						onChange={(e) =>
+						onCheckedChange={(checked) =>
 							updateDraft((d) => ({
 								...d,
-								agentAutoApprove: e.target.checked,
+								agentAutoApprove: checked === true,
 							}))
 						}
-						className="accent-primary"
 					/>
-					<span className={labelClass}>Auto-approve</span>
-				</label>
+					<label
+						htmlFor="agent-auto-approve"
+						className={`${labelClass} cursor-pointer`}
+					>
+						Auto-approve
+					</label>
+				</div>
 			)}
 
 			{draft.agent === "custom" && (
@@ -358,41 +378,48 @@ function RemoteSection({
 				</div>
 			) : (
 				<>
-					<label className="flex items-center gap-2 cursor-pointer">
-						<input
-							type="checkbox"
+					<div className="flex items-center gap-2">
+						<Checkbox
+							id="remote-auto-start"
 							checked={remote.draft.auto_start}
-							onChange={(e) =>
+							onCheckedChange={(checked) =>
 								remote.setDraft((d) => ({
 									...d,
-									auto_start: e.target.checked,
-									auto_start_on_lan: e.target.checked
-										? d.auto_start_on_lan
-										: false,
+									auto_start: checked === true,
+									auto_start_on_lan:
+										checked === true ? d.auto_start_on_lan : false,
 								}))
 							}
-							className="accent-primary"
 						/>
-						<span className={labelClass}>Auto-start remote server</span>
-					</label>
+						<label
+							htmlFor="remote-auto-start"
+							className={`${labelClass} cursor-pointer`}
+						>
+							Auto-start remote server
+						</label>
+					</div>
 
-					<label
-						className={`flex items-center gap-2 ml-4 ${remote.draft.auto_start ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}
+					<div
+						className={`flex items-center gap-2 ml-4 ${remote.draft.auto_start ? "" : "cursor-not-allowed opacity-50"}`}
 					>
-						<input
-							type="checkbox"
+						<Checkbox
+							id="remote-auto-start-lan"
 							checked={remote.draft.auto_start_on_lan}
 							disabled={!remote.draft.auto_start}
-							onChange={(e) =>
+							onCheckedChange={(checked) =>
 								remote.setDraft((d) => ({
 									...d,
-									auto_start_on_lan: e.target.checked,
+									auto_start_on_lan: checked === true,
 								}))
 							}
-							className="accent-primary"
 						/>
-						<span className={labelClass}>Allow auto-start on LAN</span>
-					</label>
+						<label
+							htmlFor="remote-auto-start-lan"
+							className={`${labelClass} ${remote.draft.auto_start ? "cursor-pointer" : ""}`}
+						>
+							Allow auto-start on LAN
+						</label>
+					</div>
 
 					<p className="text-[10px] text-muted-foreground">
 						VPN接続時は常に自動起動します。LAN接続時の自動起動は上記で制御できます。
@@ -467,79 +494,83 @@ function NotificationsSection({
 									["on_waiting", "Waiting"],
 								] as const
 							).map(([key, label]) => (
-								<label
-									key={key}
-									className="flex items-center gap-1 cursor-pointer"
-								>
-									<input
-										type="checkbox"
+								<div key={key} className="flex items-center gap-1">
+									<Checkbox
+										id={`notify-${key}`}
 										checked={webhook.draft[key]}
-										onChange={(e) =>
+										onCheckedChange={(checked) =>
 											webhook.setDraft((d) => ({
 												...d,
-												[key]: e.target.checked,
+												[key]: checked === true,
 											}))
 										}
-										className="accent-primary"
 									/>
-									<span className="text-xs">{label}</span>
-								</label>
+									<label
+										htmlFor={`notify-${key}`}
+										className="text-xs cursor-pointer"
+									>
+										{label}
+									</label>
+								</div>
 							))}
 						</div>
 					</div>
 
 					<div className="flex flex-col gap-1.5">
 						<span className={labelClass}>Send notifications</span>
-						<label className="flex items-center gap-2 cursor-pointer">
-							<input
-								type="radio"
-								name="desktop-mode"
-								value="always"
-								checked={webhook.draft.desktop_mode === "always"}
-								onChange={() =>
-									webhook.setDraft((d) => ({
-										...d,
-										desktop_mode: "always" as DesktopNotifyMode,
-									}))
-								}
-								className="accent-primary"
-							/>
-							<span className="text-xs">Always</span>
-						</label>
-						<label className="flex items-center gap-2 cursor-pointer">
-							<input
-								type="radio"
-								name="desktop-mode"
-								value="when_inactive"
-								checked={webhook.draft.desktop_mode === "when_inactive"}
-								onChange={() =>
-									webhook.setDraft((d) => ({
-										...d,
-										desktop_mode: "when_inactive" as DesktopNotifyMode,
-									}))
-								}
-								className="accent-primary"
-							/>
-							<span className="text-xs">When inactive for</span>
-							{webhook.draft.desktop_mode === "when_inactive" && (
-								<select
-									value={webhook.draft.inactive_timeout_minutes}
-									onChange={(e) =>
-										webhook.setDraft((d) => ({
-											...d,
-											inactive_timeout_minutes: Number(e.target.value),
-										}))
-									}
-									className="bg-muted border border-border rounded px-1.5 py-0.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+						<RadioGroup
+							value={webhook.draft.desktop_mode}
+							onValueChange={(value) =>
+								webhook.setDraft((d) => ({
+									...d,
+									desktop_mode: value as DesktopNotifyMode,
+								}))
+							}
+						>
+							<div className="flex items-center gap-2">
+								<RadioGroupItem value="always" id="desktop-always" />
+								<label
+									htmlFor="desktop-always"
+									className="text-xs cursor-pointer"
 								>
-									{INACTIVE_TIMEOUT_OPTIONS.map((opt) => (
-										<option key={opt.value} value={opt.value}>
-											{opt.label}
-										</option>
-									))}
-								</select>
-							)}
-						</label>
+									Always
+								</label>
+							</div>
+							<div className="flex items-center gap-2">
+								<RadioGroupItem
+									value="when_inactive"
+									id="desktop-when-inactive"
+								/>
+								<label
+									htmlFor="desktop-when-inactive"
+									className="text-xs cursor-pointer"
+								>
+									When inactive for
+								</label>
+								{webhook.draft.desktop_mode === "when_inactive" && (
+									<Select
+										value={String(webhook.draft.inactive_timeout_minutes)}
+										onValueChange={(value) =>
+											webhook.setDraft((d) => ({
+												...d,
+												inactive_timeout_minutes: Number(value),
+											}))
+										}
+									>
+										<SelectTrigger className="w-auto min-w-[80px]">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											{INACTIVE_TIMEOUT_OPTIONS.map((opt) => (
+												<SelectItem key={opt.value} value={String(opt.value)}>
+													{opt.label}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+								)}
+							</div>
+						</RadioGroup>
 					</div>
 
 					{webhook.error && (
@@ -560,50 +591,59 @@ function PrivacySection({
 }) {
 	return (
 		<div className="flex flex-col gap-4">
-			<label className="flex items-center gap-2 cursor-pointer">
-				<input
-					type="checkbox"
+			<div className="flex items-center gap-2">
+				<Checkbox
+					id="auto-update"
 					checked={draft.autoUpdate}
-					onChange={(e) =>
+					onCheckedChange={(checked) =>
 						updateDraft((d) => ({
 							...d,
-							autoUpdate: e.target.checked,
+							autoUpdate: checked === true,
 						}))
 					}
-					className="accent-primary"
 				/>
-				<span className={labelClass}>Auto-update</span>
-			</label>
+				<label htmlFor="auto-update" className={`${labelClass} cursor-pointer`}>
+					Auto-update
+				</label>
+			</div>
 
-			<label className="flex items-center gap-2 cursor-pointer">
-				<input
-					type="checkbox"
+			<div className="flex items-center gap-2">
+				<Checkbox
+					id="telemetry-enabled"
 					checked={draft.telemetryEnabled}
-					onChange={(e) =>
+					onCheckedChange={(checked) =>
 						updateDraft((d) => ({
 							...d,
-							telemetryEnabled: e.target.checked,
+							telemetryEnabled: checked === true,
 						}))
 					}
-					className="accent-primary"
 				/>
-				<span className={labelClass}>Send anonymous usage data</span>
-			</label>
+				<label
+					htmlFor="telemetry-enabled"
+					className={`${labelClass} cursor-pointer`}
+				>
+					Send anonymous usage data
+				</label>
+			</div>
 
-			<label className="flex items-center gap-2 cursor-pointer">
-				<input
-					type="checkbox"
+			<div className="flex items-center gap-2">
+				<Checkbox
+					id="crash-reporting"
 					checked={draft.enableCrashReporting}
-					onChange={(e) =>
+					onCheckedChange={(checked) =>
 						updateDraft((d) => ({
 							...d,
-							enableCrashReporting: e.target.checked,
+							enableCrashReporting: checked === true,
 						}))
 					}
-					className="accent-primary"
 				/>
-				<span className={labelClass}>Send crash reports</span>
-			</label>
+				<label
+					htmlFor="crash-reporting"
+					className={`${labelClass} cursor-pointer`}
+				>
+					Send crash reports
+				</label>
+			</div>
 			<p className="text-[10px] text-muted-foreground -mt-2">
 				Help improve Releash by sending anonymous crash reports.
 			</p>

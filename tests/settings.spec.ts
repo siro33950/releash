@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { type Locator, type Page, expect, test } from "@playwright/test";
 import { buildMockConfig } from "./helpers/fixtures";
 import { setupTauriMock } from "./helpers/tauri-mock";
 import { waitForApp } from "./helpers/utils";
@@ -24,6 +24,16 @@ function settingsConfig(overrides: Record<string, unknown> = {}) {
 		get_git_status: [],
 		...overrides,
 	});
+}
+
+/** Radix UI Select のオプションを選択するヘルパー */
+async function selectRadixOption(
+	page: Page,
+	trigger: Locator,
+	optionText: string,
+) {
+	await trigger.click();
+	await page.getByRole("option", { name: optionText }).click();
 }
 
 test.describe("Settings", () => {
@@ -57,14 +67,14 @@ test.describe("Settings", () => {
 
 		// Theme セレクトで Light を選択
 		const themeSelect = page.locator("#theme-select");
-		await themeSelect.selectOption("light");
+		await selectRadixOption(page, themeSelect, "Light");
 
 		// 選択値が Light になっていることを確認
-		await expect(themeSelect).toHaveValue("light");
+		await expect(themeSelect).toHaveText("Light");
 
 		// Dark に戻す
-		await themeSelect.selectOption("dark");
-		await expect(themeSelect).toHaveValue("dark");
+		await selectRadixOption(page, themeSelect, "Dark");
+		await expect(themeSelect).toHaveText("Dark");
 	});
 
 	test("Diff Mode のオプションが選択可能", async ({ page }) => {
@@ -82,11 +92,11 @@ test.describe("Settings", () => {
 		await expect(diffModeSelect).toBeVisible();
 
 		// Gutter / Inline / Split のオプションが存在する
-		await diffModeSelect.selectOption("gutter");
-		await expect(diffModeSelect).toHaveValue("gutter");
+		await selectRadixOption(page, diffModeSelect, "Gutter");
+		await expect(diffModeSelect).toHaveText("Gutter");
 
-		await diffModeSelect.selectOption("split");
-		await expect(diffModeSelect).toHaveValue("split");
+		await selectRadixOption(page, diffModeSelect, "Split");
+		await expect(diffModeSelect).toHaveText("Split");
 	});
 
 	test("Save ボタンは変更がない場合 disabled", async ({ page }) => {
@@ -103,7 +113,7 @@ test.describe("Settings", () => {
 
 		// テーマを変更すると enabled になる
 		const themeSelect = page.locator("#theme-select");
-		await themeSelect.selectOption("light");
+		await selectRadixOption(page, themeSelect, "Light");
 		await expect(saveBtn).toBeEnabled();
 	});
 
