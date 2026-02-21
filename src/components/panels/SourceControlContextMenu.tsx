@@ -1,4 +1,12 @@
 import {
+	Clipboard,
+	ExternalLink,
+	FilePen,
+	Minus,
+	Plus,
+	Undo2,
+} from "lucide-react";
+import {
 	ContextMenu,
 	ContextMenuContent,
 	ContextMenuItem,
@@ -36,25 +44,40 @@ export function SourceControlContextMenu({
 				<div onContextMenu={(e) => e.stopPropagation()}>{children}</div>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="w-56">
-				<ContextMenuItem onClick={onOpenChanges}>変更を開く</ContextMenuItem>
+				<ContextMenuItem onClick={onOpenChanges}>
+					<FilePen />
+					変更を開く
+				</ContextMenuItem>
 				{variant === "unstaged" && onStage && (
-					<ContextMenuItem onClick={onStage}>ステージ</ContextMenuItem>
+					<ContextMenuItem onClick={onStage}>
+						<Plus />
+						ステージ
+					</ContextMenuItem>
 				)}
 				{variant === "staged" && onUnstage && (
-					<ContextMenuItem onClick={onUnstage}>アンステージ</ContextMenuItem>
+					<ContextMenuItem onClick={onUnstage}>
+						<Minus />
+						アンステージ
+					</ContextMenuItem>
 				)}
 				{variant === "unstaged" && onDiscard && (
 					<ContextMenuItem onClick={onDiscard} variant="destructive">
+						<Undo2 />
 						変更を破棄
 					</ContextMenuItem>
 				)}
 				<ContextMenuSeparator />
-				<ContextMenuItem onClick={onCopyPath}>パスをコピー</ContextMenuItem>
+				<ContextMenuItem onClick={onCopyPath}>
+					<Clipboard />
+					パスをコピー
+				</ContextMenuItem>
 				<ContextMenuItem onClick={onCopyRelativePath}>
+					<Clipboard />
 					相対パスをコピー
 				</ContextMenuItem>
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={onRevealInFinder}>
+					<ExternalLink />
 					Finder で表示
 				</ContextMenuItem>
 			</ContextMenuContent>
