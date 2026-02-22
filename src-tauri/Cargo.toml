@@ -50,7 +50,7 @@ log = "0.4"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio-rustls = { version = "0.26", features = ["ring"] }
 rustls-pemfile = "2"
-rcgen = "0.13"
+rcgen = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sentry = { version = "0.46", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "release-health"] }
 dirs = "6"
