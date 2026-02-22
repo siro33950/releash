@@ -546,13 +546,19 @@ fn collect_definition_tags(
 
         let kind = config.syntax_type_name(tag.syntax_type_id).to_string();
         let line_number = tag.span.start.row + 1;
-        let column = tag.span.start.column + 1;
 
         let line_content = content_str
             .lines()
             .nth(tag.span.start.row)
             .unwrap_or("")
             .to_string();
+
+        // Convert byte offset to character offset for Monaco compatibility
+        let column = line_content
+            .get(..tag.span.start.column)
+            .map(|prefix| prefix.chars().count())
+            .unwrap_or(tag.span.start.column)
+            + 1;
 
         results.push(DefinitionLocation {
             path: relative_path.to_string(),
@@ -794,10 +800,12 @@ fn find_definition_regex(
         for (line_idx, line) in content.lines().enumerate() {
             for (kind, re) in &regexes {
                 if let Some(m) = re.find(line) {
+                    // Convert byte offset to character offset for Monaco compatibility
+                    let column = line[..m.start()].chars().count() + 1;
                     results.push(DefinitionLocation {
                         path: relative.clone(),
                         line_number: line_idx + 1,
-                        column: m.start() + 1,
+                        column,
                         line_content: line.to_string(),
                         kind: kind.to_string(),
                     });
