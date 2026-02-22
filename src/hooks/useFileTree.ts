@@ -1,5 +1,5 @@
 import { readDir } from "@tauri-apps/plugin-fs";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { normalizePath } from "@/lib/normalizePath";
 import type { FileNode } from "@/types/file-tree";
@@ -19,6 +19,7 @@ interface UseFileTreeReturn {
 	addExpandedPath: (path: string) => void;
 	refresh: () => Promise<void>;
 	collapseAll: () => void;
+	revealPath: (filePath: string) => Promise<void>;
 }
 
 async function loadChildren(
@@ -80,6 +81,9 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+
+	const expandedPathsRef = useRef(expandedPaths);
+	expandedPathsRef.current = expandedPaths;
 
 	const handleFileChange = useCallback(
 		async (event: FileChangeEvent) => {
@@ -209,6 +213,38 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 		setExpandedPaths(new Set());
 	}, []);
 
+	const revealPath = useCallback(
+		async (filePath: string) => {
+			if (!rootPath) return;
+			const normalizedRoot = normalizePath(rootPath);
+			const normalizedFile = normalizePath(filePath);
+			if (!normalizedFile.startsWith(`${normalizedRoot}/`)) return;
+
+			const relative = normalizedFile.slice(normalizedRoot.length + 1);
+			const segments = relative.split("/");
+			if (segments.length <= 1) return;
+
+			const dirSegments = segments.slice(0, -1);
+			let currentPath = normalizedRoot;
+
+			for (const segment of dirSegments) {
+				currentPath = `${currentPath}/${segment}`;
+				if (expandedPathsRef.current.has(currentPath)) continue;
+
+				try {
+					const children = await loadChildren(currentPath, showHidden);
+					const pathToUpdate = currentPath;
+					setTree((prev) => updateNodeChildren(prev, pathToUpdate, children));
+					setExpandedPaths((prev) => new Set(prev).add(pathToUpdate));
+				} catch (e) {
+					console.error("Failed to expand directory:", e);
+					return;
+				}
+			}
+		},
+		[rootPath, showHidden],
+	);
+
 	return {
 		tree,
 		expandedPaths,
@@ -218,5 +254,6 @@ export function useFileTree(options: UseFileTreeOptions): UseFileTreeReturn {
 		addExpandedPath,
 		refresh,
 		collapseAll,
+		revealPath,
 	};
 }

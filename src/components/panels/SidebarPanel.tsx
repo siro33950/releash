@@ -24,6 +24,7 @@ export interface SidebarPanelProps {
 	onRename?: (oldPath: string, newPath: string) => void;
 	onDelete?: (path: string) => void;
 	requestNewFolderKey?: number;
+	activeTabPath?: string | null;
 }
 
 export function SidebarPanel({
@@ -33,6 +34,7 @@ export function SidebarPanel({
 	onRename,
 	onDelete,
 	requestNewFolderKey,
+	activeTabPath,
 }: SidebarPanelProps) {
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
@@ -41,6 +43,8 @@ export function SidebarPanel({
 		prevRootPathRef.current = rootPath;
 		if (selectedPath !== null) setSelectedPath(null);
 	}
+
+	const lastClickedPathRef = useRef<string | null>(null);
 
 	const {
 		tree,
@@ -51,6 +55,7 @@ export function SidebarPanel({
 		addExpandedPath,
 		refresh,
 		collapseAll,
+		revealPath,
 	} = useFileTree({
 		rootPath,
 		onFileChange: onFileChange
@@ -91,6 +96,7 @@ export function SidebarPanel({
 
 	const handleSelectFile = useCallback(
 		(path: string) => {
+			lastClickedPathRef.current = path;
 			setSelectedPath(path);
 			onSelectFile?.(path);
 		},
@@ -102,6 +108,26 @@ export function SidebarPanel({
 			handleToolbarNewFolder();
 		}
 	}, [requestNewFolderKey, handleToolbarNewFolder]);
+
+	useEffect(() => {
+		if (!activeTabPath) return;
+		if (lastClickedPathRef.current === activeTabPath) {
+			lastClickedPathRef.current = null;
+			return;
+		}
+		lastClickedPathRef.current = null;
+
+		setSelectedPath(activeTabPath);
+
+		revealPath(activeTabPath).then(() => {
+			requestAnimationFrame(() => {
+				const el = document.querySelector(
+					`[data-filepath="${CSS.escape(activeTabPath)}"]`,
+				);
+				el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+			});
+		});
+	}, [activeTabPath, revealPath]);
 
 	const treeWithStatus = useMemo(
 		() => applyStatusToTree(tree, statusMap),

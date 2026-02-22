@@ -235,4 +235,144 @@ describe("useFileTree", () => {
 		expect(result.current.expandedPaths.has("/test/project/src")).toBe(false);
 		expect(result.current.expandedPaths.has("/test/project/lib")).toBe(false);
 	});
+
+	describe("revealPath", () => {
+		it("should expand intermediate directories to reveal a nested file", async () => {
+			mockReadDir
+				.mockResolvedValueOnce([
+					{ name: "src", isDirectory: true, isFile: false, isSymlink: false },
+				])
+				.mockResolvedValueOnce([
+					{
+						name: "components",
+						isDirectory: true,
+						isFile: false,
+						isSymlink: false,
+					},
+				])
+				.mockResolvedValueOnce([
+					{
+						name: "App.tsx",
+						isDirectory: false,
+						isFile: true,
+						isSymlink: false,
+					},
+				]);
+
+			const { result } = renderHook(() =>
+				useFileTree({ rootPath: "/test/project" }),
+			);
+
+			await waitFor(() => {
+				expect(result.current.loading).toBe(false);
+			});
+
+			await act(async () => {
+				await result.current.revealPath("/test/project/src/components/App.tsx");
+			});
+
+			expect(result.current.expandedPaths.has("/test/project/src")).toBe(true);
+			expect(
+				result.current.expandedPaths.has("/test/project/src/components"),
+			).toBe(true);
+		});
+
+		it("should skip already expanded directories", async () => {
+			mockReadDir
+				.mockResolvedValueOnce([
+					{ name: "src", isDirectory: true, isFile: false, isSymlink: false },
+				])
+				.mockResolvedValueOnce([
+					{
+						name: "lib",
+						isDirectory: true,
+						isFile: false,
+						isSymlink: false,
+					},
+				])
+				.mockResolvedValueOnce([
+					{
+						name: "index.ts",
+						isDirectory: false,
+						isFile: true,
+						isSymlink: false,
+					},
+				]);
+
+			const { result } = renderHook(() =>
+				useFileTree({ rootPath: "/test/project" }),
+			);
+
+			await waitFor(() => {
+				expect(result.current.loading).toBe(false);
+			});
+
+			await act(async () => {
+				await result.current.toggleExpand("/test/project/src");
+			});
+
+			const callCountAfterExpand = mockReadDir.mock.calls.length;
+
+			await act(async () => {
+				await result.current.revealPath("/test/project/src/lib/index.ts");
+			});
+
+			expect(mockReadDir).toHaveBeenCalledTimes(callCountAfterExpand + 1);
+			expect(result.current.expandedPaths.has("/test/project/src")).toBe(true);
+			expect(result.current.expandedPaths.has("/test/project/src/lib")).toBe(
+				true,
+			);
+		});
+
+		it("should do nothing for a file directly under root", async () => {
+			mockReadDir.mockResolvedValueOnce([
+				{
+					name: "README.md",
+					isDirectory: false,
+					isFile: true,
+					isSymlink: false,
+				},
+			]);
+
+			const { result } = renderHook(() =>
+				useFileTree({ rootPath: "/test/project" }),
+			);
+
+			await waitFor(() => {
+				expect(result.current.loading).toBe(false);
+			});
+
+			const callCountBefore = mockReadDir.mock.calls.length;
+
+			await act(async () => {
+				await result.current.revealPath("/test/project/README.md");
+			});
+
+			expect(mockReadDir).toHaveBeenCalledTimes(callCountBefore);
+			expect(result.current.expandedPaths.size).toBe(0);
+		});
+
+		it("should do nothing for a file outside rootPath", async () => {
+			mockReadDir.mockResolvedValueOnce([
+				{ name: "src", isDirectory: true, isFile: false, isSymlink: false },
+			]);
+
+			const { result } = renderHook(() =>
+				useFileTree({ rootPath: "/test/project" }),
+			);
+
+			await waitFor(() => {
+				expect(result.current.loading).toBe(false);
+			});
+
+			const callCountBefore = mockReadDir.mock.calls.length;
+
+			await act(async () => {
+				await result.current.revealPath("/other/project/src/file.ts");
+			});
+
+			expect(mockReadDir).toHaveBeenCalledTimes(callCountBefore);
+			expect(result.current.expandedPaths.size).toBe(0);
+		});
+	});
 });
