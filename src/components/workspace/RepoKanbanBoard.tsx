@@ -76,6 +76,7 @@ export function RepoKanbanBoard({
 	const [deletingBranch, setDeletingBranch] = useState<BranchCard | null>(null);
 	const [openingBranch, setOpeningBranch] = useState<string | null>(null);
 	const [baseBranchLabel, setBaseBranchLabel] = useState<string>("");
+	const [baseBranchName, setBaseBranchName] = useState<string | undefined>();
 	const [collapsed, setCollapsed] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
 
@@ -110,14 +111,17 @@ export function RepoKanbanBoard({
 			});
 			if (base) {
 				setBaseBranchLabel(base);
+				setBaseBranchName(base);
 			} else {
 				const detected = await invoke<string>("get_default_branch", {
 					repoPath,
 				});
 				setBaseBranchLabel(`${detected} (auto)`);
+				setBaseBranchName(undefined);
 			}
 		} catch {
 			setBaseBranchLabel("");
+			setBaseBranchName(undefined);
 		}
 	}, [repoPath]);
 
@@ -443,6 +447,7 @@ export function RepoKanbanBoard({
 				open={showCreate}
 				repoPath={repoPath}
 				existingBranches={branches}
+				defaultBaseBranch={baseBranchName}
 				onCreated={handleCreated}
 				onCancel={() => setShowCreate(false)}
 			/>
