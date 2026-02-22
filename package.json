@@ -42,7 +42,7 @@
 		"flexlayout-react": "^0.8.18",
 		"highlight.js": "^11.11.1",
 		"html5-qrcode": "^2.3.8",
-		"lucide-react": "^0.563.0",
+		"lucide-react": "^0.575.0",
 		"monaco-editor": "^0.55.1",
 		"radix-ui": "^1.4.3",
 		"react": "^19.1.0",
