@@ -16,6 +16,8 @@ interface CommitFormState {
 	description: string;
 	error: string | null;
 	loading: boolean;
+	pushing: boolean;
+	successMessage: string | null;
 	discardTarget: { path: string; paths: string[] } | null;
 }
 
@@ -29,6 +31,7 @@ type CommitFormAction =
 	| { type: "PUSH_START" }
 	| { type: "PUSH_END" }
 	| { type: "PUSH_ERROR"; error: string }
+	| { type: "DISMISS_SUCCESS" }
 	| { type: "SET_DISCARD_TARGET"; target: CommitFormState["discardTarget"] }
 	| { type: "CLEAR_DISCARD" };
 
@@ -37,6 +40,8 @@ const initialCommitForm: CommitFormState = {
 	description: "",
 	error: null,
 	loading: false,
+	pushing: false,
+	successMessage: null,
 	discardTarget: null,
 };
 
@@ -52,17 +57,30 @@ export function commitFormReducer(
 		case "SET_ERROR":
 			return { ...state, error: action.error };
 		case "COMMIT_START":
-			return { ...state, loading: true, error: null };
+			return { ...state, loading: true, error: null, successMessage: null };
 		case "COMMIT_SUCCESS":
 			return { ...state, loading: false, summary: "", description: "" };
 		case "COMMIT_ERROR":
 			return { ...state, loading: false, error: action.error };
 		case "PUSH_START":
-			return { ...state, loading: true, error: null };
+			return {
+				...state,
+				loading: true,
+				pushing: true,
+				error: null,
+				successMessage: null,
+			};
 		case "PUSH_END":
-			return { ...state, loading: false };
+			return {
+				...state,
+				loading: false,
+				pushing: false,
+				successMessage: "Pushed successfully",
+			};
 		case "PUSH_ERROR":
-			return { ...state, loading: false, error: action.error };
+			return { ...state, loading: false, pushing: false, error: action.error };
+		case "DISMISS_SUCCESS":
+			return { ...state, successMessage: null };
 		case "SET_DISCARD_TARGET":
 			return { ...state, discardTarget: action.target };
 		case "CLEAR_DISCARD":
@@ -96,6 +114,8 @@ export function SourceControlPanel({
 		description: commitDescription,
 		error,
 		loading,
+		pushing,
+		successMessage,
 		discardTarget,
 	} = form;
 
@@ -167,6 +187,10 @@ export function SourceControlPanel({
 		refreshStatus,
 		onGitChanged,
 	]);
+
+	const handleDismissSuccess = useCallback(() => {
+		dispatch({ type: "DISMISS_SUCCESS" });
+	}, []);
 
 	const handlePush = useCallback(async () => {
 		if (!rootPath) return;
@@ -331,7 +355,9 @@ export function SourceControlPanel({
 				commitSummary={commitSummary}
 				commitDescription={commitDescription}
 				loading={loading}
+				pushing={pushing}
 				error={error}
+				successMessage={successMessage}
 				stagedFilesCount={stagedFiles.length}
 				onSummaryChange={(value) => dispatch({ type: "SET_SUMMARY", value })}
 				onDescriptionChange={(value) =>
@@ -340,6 +366,7 @@ export function SourceControlPanel({
 				onCommit={handleCommit}
 				onPush={handlePush}
 				onDismissError={() => dispatch({ type: "SET_ERROR", error: null })}
+				onDismissSuccess={handleDismissSuccess}
 			/>
 
 			{/* Discard Confirm Dialog */}
