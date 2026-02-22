@@ -404,10 +404,10 @@ describe("NotionPanel", () => {
 		render(<NotionPanel {...defaultProps} />);
 
 		await waitFor(() => {
-			expect(screen.getByText("Settings")).toBeInTheDocument();
+			expect(screen.getByTitle("Settings")).toBeInTheDocument();
 		});
 
-		await user.click(screen.getByText("Settings"));
+		await user.click(screen.getByTitle("Settings"));
 
 		await waitFor(() => {
 			expect(screen.getByText("API Token")).toBeInTheDocument();
