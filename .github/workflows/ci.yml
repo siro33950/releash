@@ -25,7 +25,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm test -- --coverage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ts-coverage
           path: coverage/coverage-final.json
@@ -53,7 +53,7 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - id: test
         run: pnpm test:integration
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: playwright-report
@@ -217,7 +217,7 @@ jobs:
         continue-on-error: true
         run: pnpm test:screenshots:update -- ${{ steps.check.outputs.test_files }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always() && steps.check.outputs.should_run == 'true'
         with:
           name: screenshot-diffs
@@ -392,7 +392,7 @@ jobs:
       - run: cargo clippy -- -D warnings
       - run: cargo deny check
       - run: cargo llvm-cov --codecov --output-path rust-codecov.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: rust-coverage
           path: src-tauri/rust-codecov.json
