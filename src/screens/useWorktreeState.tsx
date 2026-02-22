@@ -515,6 +515,7 @@ export function useWorktreeState({
 				onRename={handleRename}
 				onDelete={handleDelete}
 				requestNewFolderKey={newFolderKey}
+				activeTabPath={activeTabPath}
 			/>
 		);
 	}, [
@@ -531,6 +532,7 @@ export function useWorktreeState({
 		handleDelete,
 		newFolderKey,
 		branch,
+		activeTabPath,
 	]);
 
 	// --- Panel toggle ---

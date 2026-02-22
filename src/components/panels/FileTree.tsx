@@ -115,6 +115,7 @@ function FileTreeItem({
 	const itemButton = (
 		<button
 			type="button"
+			data-filepath={node.path}
 			draggable
 			onDragStart={(e) => {
 				e.dataTransfer.setData("application/x-releash-file-path", node.path);
