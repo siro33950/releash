@@ -481,6 +481,34 @@ fn language_extensions(language: &str) -> Vec<&'static str> {
     }
 }
 
+fn is_go_builtin_type(name: &str) -> bool {
+    matches!(
+        name,
+        "bool"
+            | "byte"
+            | "complex64"
+            | "complex128"
+            | "error"
+            | "float32"
+            | "float64"
+            | "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "rune"
+            | "string"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+            | "any"
+            | "comparable"
+    )
+}
+
 fn collect_definition_tags(
     ctx: &mut TagsContext,
     config: &TagsConfiguration,
@@ -538,11 +566,13 @@ fn collect_definition_tags(
     // Deduplicate tags at the same position (e.g., arrow function matches
     // both @definition.function and @definition.constant). Keep the first
     // match which is the more specific pattern.
-    let new_items = &mut results[before_len..];
+    // Only dedup within newly added items to avoid affecting prior results.
+    let mut new_items: Vec<DefinitionLocation> = results.drain(before_len..).collect();
     new_items.sort_by_key(|d| (d.line_number, d.column));
-    results.dedup_by(|a, b| {
+    new_items.dedup_by(|a, b| {
         a.path == b.path && a.line_number == b.line_number && a.column == b.column
     });
+    results.extend(new_items);
 }
 
 fn find_definition_inner(
@@ -861,6 +891,14 @@ fn find_references_inner(root_path: String, symbol: String) -> Result<Vec<Search
                 continue;
             }
 
+            // Skip Go builtin types in reference.type captures to reduce noise
+            if ext == "go" && !tag.is_definition {
+                let kind = config.syntax_type_name(tag.syntax_type_id);
+                if kind == "type" && is_go_builtin_type(name) {
+                    continue;
+                }
+            }
+
             let line_number = tag.span.start.row + 1;
             let line_content = content_str
                 .lines()
@@ -877,8 +915,13 @@ fn find_references_inner(root_path: String, symbol: String) -> Result<Vec<Search
                     .map(|p| p + 1)
                     .unwrap_or(0)
             };
-            let match_start = tag.name_range.start - line_start;
-            let match_end = tag.name_range.end - line_start;
+            // Convert byte offsets to character offsets for Monaco compatibility
+            let match_start = String::from_utf8_lossy(&content[line_start..tag.name_range.start])
+                .chars()
+                .count();
+            let match_end = String::from_utf8_lossy(&content[line_start..tag.name_range.end])
+                .chars()
+                .count();
 
             results.push(SearchMatch {
                 path: relative.clone(),
