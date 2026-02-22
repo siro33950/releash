@@ -181,17 +181,19 @@ function RepoIssueSection({
 							{issues.length}
 						</span>
 					)}
-					<button
-						type="button"
+					<Button
+						variant="ghost"
+						size="icon"
+						aria-label="Refresh"
 						title="Refresh"
-						className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+						className="h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
 						onClick={(e) => {
 							e.stopPropagation();
 							refresh();
 						}}
 					>
 						<RefreshCw className="size-3" />
-					</button>
+					</Button>
 				</>
 			}
 		>
