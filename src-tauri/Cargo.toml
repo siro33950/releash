@@ -31,14 +31,14 @@ portable-pty = "0.9.0"
 parking_lot = "0.12.5"
 notify-debouncer-mini = "0.7"
 base64 = "0.22"
-git2 = "0.19"
+git2 = "0.20"
 thiserror = "2"
 ignore = "0.4"
 regex = "1"
-toml = "0.8"
-rand = "0.8"
+toml = "1.0"
+rand = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.28"
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
@@ -50,8 +50,8 @@ log = "0.4"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio-rustls = { version = "0.26", features = ["ring"] }
 rustls-pemfile = "2"
-rcgen = "0.13"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rcgen = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 sentry = { version = "0.46", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "release-health"] }
 dirs = "6"
 tauri-plugin-aptabase = "1.0.0"

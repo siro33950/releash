@@ -20,7 +20,7 @@ jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Calculate new version
         run: |
@@ -42,7 +42,7 @@ jobs:
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
 
       - name: Create PR
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "release: v${{ env.VERSION }}"
           branch: release/v${{ env.VERSION }}

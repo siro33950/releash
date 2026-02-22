@@ -3,7 +3,6 @@ unmaintained = "workspace"
 unsound = "workspace"
 yanked = "deny"
 ignore = [
-    { id = "RUSTSEC-2026-0008", reason = "git2 0.19.0 - awaiting upstream fix" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile - migrate to rustls-pki-types later" },
 ]
 

@@ -17,7 +17,7 @@ jobs:
     outputs:
       release-id: ${{ steps.create.outputs.release-id }}
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v8
         id: create
         with:
           script: |
@@ -34,13 +34,13 @@ jobs:
     needs: create-release
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: pnpm/action-setup@v4
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: pnpm

@@ -9,6 +9,7 @@ export default defineConfig({
 		alias: {
 			"@": path.resolve(import.meta.dirname, "./src"),
 		},
+		dedupe: ["react", "react-dom"],
 	},
 	build: {
 		outDir: "src-tauri/resources/remote",

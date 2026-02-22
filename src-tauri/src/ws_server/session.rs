@@ -74,7 +74,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         challenge: challenge.clone(),
     });
     write
-        .send(Message::Text(
+        .send(Message::text(
             serialize_message(&challenge_msg).map_err(|e| e.to_string())?,
         ))
         .await
@@ -104,7 +104,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                 message: Some(e.clone()),
             });
             let _ = write
-                .send(Message::Text(
+                .send(Message::text(
                     serialize_message(&fail_msg).unwrap_or_default(),
                 ))
                 .await;
@@ -118,7 +118,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                 message: Some("認証タイムアウト".to_string()),
             });
             let _ = write
-                .send(Message::Text(
+                .send(Message::text(
                     serialize_message(&fail_msg).unwrap_or_default(),
                 ))
                 .await;
@@ -134,7 +134,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
             message: Some("認証失敗".to_string()),
         });
         let _ = write
-            .send(Message::Text(
+            .send(Message::text(
                 serialize_message(&fail_msg).unwrap_or_default(),
             ))
             .await;
@@ -151,7 +151,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         message: None,
     });
     write
-        .send(Message::Text(
+        .send(Message::text(
             serialize_message(&success_msg).map_err(|e| e.to_string())?,
         ))
         .await
@@ -173,7 +173,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         let worktrees = super::handlers::build_all_worktrees(state).await;
         let worktree_msg = WsMessage::WorktreeListResponse(WorktreeListResponse { worktrees });
         write
-            .send(Message::Text(
+            .send(Message::text(
                 serialize_message(&worktree_msg).map_err(|e| e.to_string())?,
             ))
             .await
@@ -195,7 +195,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
                     .collect()
             };
             for json in agent_msgs {
-                let _ = write.send(Message::Text(json)).await;
+                let _ = write.send(Message::text(json)).await;
             }
         }
     }
@@ -207,7 +207,7 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     let forward_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if let Ok(json) = serialize_message(&msg) {
-                if write.send(Message::Text(json)).await.is_err() {
+                if write.send(Message::text(json)).await.is_err() {
                     break;
                 }
             }

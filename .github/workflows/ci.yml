@@ -14,18 +14,18 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm test -- --coverage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ts-coverage
           path: coverage/coverage-final.json
@@ -41,11 +41,11 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           cache: pnpm
@@ -53,7 +53,7 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - id: test
         run: pnpm test:integration
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: playwright-report
@@ -61,7 +61,7 @@ jobs:
           retention-days: 7
       - name: Add PR comment with test results
         if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const prNumber = context.payload.pull_request?.number;
@@ -107,7 +107,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -201,7 +201,7 @@ jobs:
         if: steps.check.outputs.should_run == 'true'
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: steps.check.outputs.should_run == 'true'
         with:
           node-version: 20
@@ -217,7 +217,7 @@ jobs:
         continue-on-error: true
         run: pnpm test:screenshots:update -- ${{ steps.check.outputs.test_files }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always() && steps.check.outputs.should_run == 'true'
         with:
           name: screenshot-diffs
@@ -298,7 +298,7 @@ jobs:
 
       - name: Post PR comment with screenshot results
         if: always() && steps.check.outputs.should_run == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const prNumber = context.payload.pull_request?.number;
@@ -378,7 +378,7 @@ jobs:
       run:
         working-directory: src-tauri
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Tauri dependencies
         run: |
           sudo apt-get update
@@ -392,7 +392,7 @@ jobs:
       - run: cargo clippy -- -D warnings
       - run: cargo deny check
       - run: cargo llvm-cov --codecov --output-path rust-codecov.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: rust-coverage
           path: src-tauri/rust-codecov.json
@@ -408,7 +408,7 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable

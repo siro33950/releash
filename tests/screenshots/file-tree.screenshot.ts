@@ -97,7 +97,7 @@ test.describe("File Tree Panel", () => {
 		const file = page.getByText("README.md").first();
 		await file.click({ button: "right" });
 		await page.waitForTimeout(200);
-		const deleteItem = page.getByText("削除").first();
+		const deleteItem = page.getByText("Delete").first();
 		await deleteItem.click();
 		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
