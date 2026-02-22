@@ -238,13 +238,38 @@ export function useMonacoDiffEditor(
 			originalModelRef.current = originalModel;
 			modifiedModelRef.current = modifiedModel;
 
-			const diffEditor = monaco.editor.createDiffEditor(container, {
-				...defaultDiffEditorOptions,
-				renderSideBySide,
-				theme: themeName,
-				...(fontSizeRef.current != null && { fontSize: fontSizeRef.current }),
-				...(readOnly != null && { readOnly, originalEditable: false }),
-			});
+			const diffEditor = monaco.editor.createDiffEditor(
+				container,
+				{
+					...defaultDiffEditorOptions,
+					renderSideBySide,
+					theme: themeName,
+					...(fontSizeRef.current != null && {
+						fontSize: fontSizeRef.current,
+					}),
+					...(readOnly != null && { readOnly, originalEditable: false }),
+				},
+				{
+					// Override Monaco's internal ITextModelService (non-public DI) so that
+					// go-to-definition can resolve file:// URIs inside the Tauri webview.
+					// The default service cannot fetch file:// resources, so we redirect
+					// lookups to models already registered via ensureModelsForFiles.
+					textModelService: {
+						createModelReference(uri: Monaco.Uri) {
+							const m = monaco.editor.getModel(uri);
+							if (!m)
+								return Promise.reject(new Error(`Model not found: ${uri}`));
+							return Promise.resolve({
+								object: { textEditorModel: m },
+								dispose() {},
+							});
+						},
+						registerTextModelContentProvider() {
+							return { dispose() {} };
+						},
+					},
+				},
+			);
 
 			if (!isMounted) {
 				diffEditor.dispose();

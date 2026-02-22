@@ -69,10 +69,21 @@ export function registerDefinitionProviders(
 				position: Monaco.Position,
 			): Promise<Monaco.languages.Location[] | null> => {
 				const rootPath = callbacks.getRootPath();
-				if (!rootPath) return null;
+				if (!rootPath) {
+					console.warn("[Releash] find_definition: rootPath is null");
+					return null;
+				}
 
 				const word = model.getWordAtPosition(position);
-				if (!word) return null;
+				if (!word) {
+					console.debug("[Releash] find_definition: no word at position");
+					return null;
+				}
+
+				const modelLang = model.getLanguageId();
+				console.debug(
+					`[Releash] find_definition: symbol=${word.word}, lang=${searchLang}, modelLang=${modelLang}, root=${rootPath}`,
+				);
 
 				try {
 					const results = await invoke<DefinitionLocation[]>(
@@ -82,6 +93,10 @@ export function registerDefinitionProviders(
 							symbol: word.word,
 							language: searchLang,
 						},
+					);
+
+					console.debug(
+						`[Releash] find_definition: got ${results.length} results`,
 					);
 
 					if (results.length === 0) return null;
@@ -101,7 +116,8 @@ export function registerDefinitionProviders(
 							r.column,
 						),
 					}));
-				} catch {
+				} catch (err) {
+					console.warn("[Releash] find_definition failed:", err);
 					return null;
 				}
 			},
@@ -141,7 +157,8 @@ export function registerDefinitionProviders(
 							r.match_end + 1,
 						),
 					}));
-				} catch {
+				} catch (err) {
+					console.warn("[Releash] find_references failed:", err);
 					return null;
 				}
 			},
