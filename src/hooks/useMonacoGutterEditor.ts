@@ -161,14 +161,39 @@ export function useMonacoGutterEditor(
 				language,
 				modelUri,
 			);
-			const editor = monaco.editor.create(container, {
-				...defaultEditorOptions,
-				model,
-				theme: themeName,
-				glyphMargin: true,
-				...(fontSizeRef.current != null && { fontSize: fontSizeRef.current }),
-				...(readOnly != null && { readOnly }),
-			});
+			const editor = monaco.editor.create(
+				container,
+				{
+					...defaultEditorOptions,
+					model,
+					theme: themeName,
+					glyphMargin: true,
+					...(fontSizeRef.current != null && {
+						fontSize: fontSizeRef.current,
+					}),
+					...(readOnly != null && { readOnly }),
+				},
+				{
+					// Override Monaco's internal ITextModelService (non-public DI) so that
+					// go-to-definition can resolve file:// URIs inside the Tauri webview.
+					// The default service cannot fetch file:// resources, so we redirect
+					// lookups to models already registered via ensureModelsForFiles.
+					textModelService: {
+						createModelReference(uri: Monaco.Uri) {
+							const m = monaco.editor.getModel(uri);
+							if (!m)
+								return Promise.reject(new Error(`Model not found: ${uri}`));
+							return Promise.resolve({
+								object: { textEditorModel: m },
+								dispose() {},
+							});
+						},
+						registerTextModelContentProvider() {
+							return { dispose() {} };
+						},
+					},
+				},
+			);
 
 			if (!isMounted) {
 				editor.dispose();

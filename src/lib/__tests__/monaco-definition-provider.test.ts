@@ -152,6 +152,93 @@ describe("registerDefinitionProviders", () => {
 		expect(onOpenFileAtLine).toHaveBeenCalledWith("src/lib.ts", 5);
 	});
 
+	it("definition provider should console.warn on invoke error", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const invokeError = new Error("Tauri invoke failed");
+		vi.mocked(invoke).mockRejectedValueOnce(invokeError);
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const monaco = createMockMonaco();
+		const callbacks: NavigationCallbacks = {
+			onOpenFileAtLine: vi.fn(),
+			getRootPath: () => "/root",
+		};
+
+		registerDefinitionProviders(
+			monaco as unknown as Parameters<typeof registerDefinitionProviders>[0],
+			callbacks,
+		);
+
+		const defProviderCall =
+			monaco.languages.registerDefinitionProvider.mock.calls.find(
+				(c: unknown[]) => c[0] === "typescript",
+			);
+		const provider = defProviderCall?.[1] as {
+			provideDefinition: (
+				model: { getWordAtPosition: () => { word: string } | null },
+				position: unknown,
+			) => Promise<unknown>;
+		};
+
+		const mockModel = {
+			getWordAtPosition: () => ({ word: "myFunc" }),
+			getLanguageId: () => "typescript",
+		};
+
+		const result = await provider.provideDefinition(mockModel, {});
+		expect(result).toBeNull();
+		expect(warnSpy).toHaveBeenCalledWith(
+			"[Releash] find_definition failed:",
+			invokeError,
+		);
+
+		warnSpy.mockRestore();
+	});
+
+	it("reference provider should console.warn on invoke error", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		const invokeError = new Error("Tauri invoke failed");
+		vi.mocked(invoke).mockRejectedValueOnce(invokeError);
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const monaco = createMockMonaco();
+		const callbacks: NavigationCallbacks = {
+			onOpenFileAtLine: vi.fn(),
+			getRootPath: () => "/root",
+		};
+
+		registerDefinitionProviders(
+			monaco as unknown as Parameters<typeof registerDefinitionProviders>[0],
+			callbacks,
+		);
+
+		const refProviderCall =
+			monaco.languages.registerReferenceProvider.mock.calls.find(
+				(c: unknown[]) => c[0] === "typescript",
+			);
+		const provider = refProviderCall?.[1] as {
+			provideReferences: (
+				model: { getWordAtPosition: () => { word: string } | null },
+				position: unknown,
+			) => Promise<unknown>;
+		};
+
+		const mockModel = {
+			getWordAtPosition: () => ({ word: "myFunc" }),
+		};
+
+		const result = await provider.provideReferences(mockModel, {});
+		expect(result).toBeNull();
+		expect(warnSpy).toHaveBeenCalledWith(
+			"[Releash] find_references failed:",
+			invokeError,
+		);
+
+		warnSpy.mockRestore();
+	});
+
 	it("editor opener should return false when rootPath is null", () => {
 		const monaco = createMockMonaco();
 		const callbacks: NavigationCallbacks = {
