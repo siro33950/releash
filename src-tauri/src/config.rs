@@ -1,5 +1,5 @@
-use rand::distributions::Alphanumeric;
-use rand::Rng;
+use rand::distr::Alphanumeric;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -197,7 +197,7 @@ impl AppConfig {
 }
 
 pub fn generate_token() -> String {
-    rand::thread_rng()
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(TOKEN_LENGTH)
         .map(char::from)

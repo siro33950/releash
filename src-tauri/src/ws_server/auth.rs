@@ -6,9 +6,8 @@ type HmacSha256 = Hmac<Sha256>;
 pub(super) const CHALLENGE_LENGTH: usize = 32;
 
 pub(super) fn generate_challenge() -> String {
-    use rand::Rng;
     let bytes: Vec<u8> = (0..CHALLENGE_LENGTH)
-        .map(|_| rand::thread_rng().gen())
+        .map(|_| rand::random::<u8>())
         .collect();
     hex::encode(bytes)
 }
