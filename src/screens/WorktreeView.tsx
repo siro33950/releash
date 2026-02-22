@@ -63,7 +63,7 @@ export function WorktreeView({
 								collapsedSize="0%"
 								onResize={s.handleSidebarResize}
 							>
-								<div className="h-full overflow-hidden border-r border-border">
+								<div className="h-full overflow-clip border-r border-border">
 									{s.sidebarContent}
 								</div>
 							</Panel>
@@ -74,7 +74,7 @@ export function WorktreeView({
 										<div
 											ref={s.editorDropZoneRef}
 											role="application"
-											className="h-full relative overflow-hidden"
+											className="h-full relative overflow-clip"
 											onDragOver={s.handleEditorDragOver}
 											onDragLeave={s.handleEditorDragLeave}
 											onDrop={s.handleEditorDrop}
@@ -105,7 +105,7 @@ export function WorktreeView({
 										collapsedSize="0%"
 										onResize={s.handleReviewResize}
 									>
-										<div className="h-full overflow-hidden border-t border-border">
+										<div className="h-full overflow-clip border-t border-border">
 											<ReviewPanel
 												comments={s.comments}
 												onCommentClick={s.handleCommentClick}
@@ -133,7 +133,7 @@ export function WorktreeView({
 								collapsedSize="0%"
 								onResize={s.handleTerminalResize}
 							>
-								<div className="h-full overflow-hidden border-l border-border">
+								<div className="h-full overflow-clip border-l border-border">
 									<TerminalPanel
 										ref={s.terminalRef}
 										key={rootPath}

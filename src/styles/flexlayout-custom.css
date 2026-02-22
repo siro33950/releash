@@ -143,6 +143,6 @@
 /* Prevent overflow:auto on tab container from breaking height:100% chain in WebKit.
    All tab contents manage their own scrolling internally. */
 .flexlayout__tab_moveable {
-  overflow: hidden;
+  overflow: clip;
 }
 
