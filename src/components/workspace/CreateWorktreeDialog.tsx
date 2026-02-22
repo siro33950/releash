@@ -61,12 +61,15 @@ export function CreateWorktreeDialog({
 		invoke<BranchInfo[]>("list_branches", { repoPath })
 			.then((result) => {
 				setBranches(result);
-				if (defaultBaseBranch) {
+				const fallback = result.find(
+					(b) => !b.is_remote && (b.name === "main" || b.name === "master"),
+				);
+				const defaultInLocal =
+					defaultBaseBranch &&
+					result.some((b) => !b.is_remote && b.name === defaultBaseBranch);
+				if (defaultInLocal) {
 					setBaseBranch(defaultBaseBranch);
 				} else {
-					const fallback = result.find(
-						(b) => !b.is_remote && (b.name === "main" || b.name === "master"),
-					);
 					setBaseBranch(fallback?.name ?? "HEAD");
 				}
 			})
