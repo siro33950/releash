@@ -139,6 +139,7 @@ pub fn run() {
             // Git: ブランチ
             git::commands::list_branches,
             git::commands::get_current_branch,
+            git::commands::get_current_branch_ahead_behind,
             git::commands::get_default_branch,
             git::commands::git_create_branch,
             git::commands::delete_branch,

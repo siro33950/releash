@@ -5,6 +5,7 @@ import { FileStatusItem } from "@/components/panels/FileStatusItem";
 import { SourceControlContextMenu } from "@/components/panels/SourceControlContextMenu";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useAheadBehind } from "@/hooks/useAheadBehind";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitStatus } from "@/hooks/useGitStatus";
 import { formatGitError } from "@/lib/errorHandler";
@@ -89,6 +90,7 @@ export function SourceControlPanel({
 		refresh: refreshStatus,
 	} = useGitStatus(rootPath, gitRefreshKey);
 	const { stage, unstage, discard, commit, push } = useGitActions();
+	const aheadBehind = useAheadBehind(rootPath, gitRefreshKey);
 
 	const [form, dispatch] = useReducer(commitFormReducer, initialCommitForm);
 	const {
@@ -333,6 +335,9 @@ export function SourceControlPanel({
 				loading={loading}
 				error={error}
 				stagedFilesCount={stagedFiles.length}
+				ahead={aheadBehind?.ahead ?? 0}
+				behind={aheadBehind?.behind ?? 0}
+				hasUpstream={aheadBehind?.has_upstream ?? false}
 				onSummaryChange={(value) => dispatch({ type: "SET_SUMMARY", value })}
 				onDescriptionChange={(value) =>
 					dispatch({ type: "SET_DESCRIPTION", value })

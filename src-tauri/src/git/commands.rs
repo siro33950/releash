@@ -1,5 +1,5 @@
 use super::error::GitError;
-use super::types::{BranchCard, BranchInfo, WorktreeEntry};
+use super::types::{AheadBehind, BranchCard, BranchInfo, WorktreeEntry};
 
 async fn blocking<T, F>(f: F) -> Result<T, GitError>
 where
@@ -21,6 +21,11 @@ pub async fn list_branches(repo_path: String) -> Result<Vec<BranchInfo>, GitErro
 #[tauri::command]
 pub async fn get_current_branch(repo_path: String) -> Result<String, GitError> {
     blocking(move || super::branch::get_current_branch(repo_path)).await
+}
+
+#[tauri::command]
+pub async fn get_current_branch_ahead_behind(repo_path: String) -> Result<AheadBehind, GitError> {
+    blocking(move || super::branch::get_current_branch_ahead_behind(repo_path)).await
 }
 
 #[tauri::command]
