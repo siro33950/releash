@@ -403,7 +403,6 @@ jobs:
           files: src-tauri/rust-codecov.json
           flags: rust
           fail_ci_if_error: false
-          working-directory: src-tauri
       - run: cargo build
 
   quality:
@@ -412,6 +411,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: qltysh/qlty-action/install@v2
       - run: qlty install
       - run: qlty check --no-progress --all
