@@ -28,6 +28,7 @@ export default defineConfig(async () => ({
 		alias: {
 			"@": path.resolve(import.meta.dirname, "./src"),
 		},
+		dedupe: ["react", "react-dom"],
 	},
 	build: {
 		sourcemap: true,
