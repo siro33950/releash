@@ -118,15 +118,22 @@ export function SidebarPanel({
 		lastClickedPathRef.current = null;
 
 		setSelectedPath(activeTabPath);
+		let cancelled = false;
 
 		revealPath(activeTabPath).then(() => {
+			if (cancelled) return;
 			requestAnimationFrame(() => {
+				if (cancelled) return;
 				const el = document.querySelector(
 					`[data-filepath="${CSS.escape(activeTabPath)}"]`,
 				);
 				el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
 			});
 		});
+
+		return () => {
+			cancelled = true;
+		};
 	}, [activeTabPath, revealPath]);
 
 	const treeWithStatus = useMemo(
