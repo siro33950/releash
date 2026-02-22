@@ -92,7 +92,7 @@ export function ReviewPanel({
 			</div>
 			<div
 				className={cn(
-					"flex-1 overflow-hidden",
+					"flex-1 overflow-clip",
 					activeTab !== "terminal" && "hidden",
 				)}
 			>
@@ -104,7 +104,7 @@ export function ReviewPanel({
 			</div>
 			<div
 				className={cn(
-					"flex-1 overflow-hidden",
+					"flex-1 overflow-clip",
 					activeTab !== "comments" && "hidden",
 				)}
 			>
