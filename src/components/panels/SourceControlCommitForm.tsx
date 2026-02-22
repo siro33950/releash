@@ -1,4 +1,5 @@
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Loader2 } from "lucide-react";
+import { useEffect } from "react";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -17,7 +18,9 @@ interface CommitFormProps {
 	commitSummary: string;
 	commitDescription: string;
 	loading: boolean;
+	pushing: boolean;
 	error: string | null;
+	successMessage: string | null;
 	stagedFilesCount: number;
 	ahead: number;
 	behind: number;
@@ -27,13 +30,16 @@ interface CommitFormProps {
 	onCommit: () => void;
 	onPush: () => void;
 	onDismissError: () => void;
+	onDismissSuccess: () => void;
 }
 
 export function CommitForm({
 	commitSummary,
 	commitDescription,
 	loading,
+	pushing,
 	error,
+	successMessage,
 	stagedFilesCount,
 	ahead,
 	behind,
@@ -43,7 +49,13 @@ export function CommitForm({
 	onCommit,
 	onPush,
 	onDismissError,
+	onDismissSuccess,
 }: CommitFormProps) {
+	useEffect(() => {
+		if (!successMessage) return;
+		const timer = setTimeout(onDismissSuccess, 3000);
+		return () => clearTimeout(timer);
+	}, [successMessage, onDismissSuccess]);
 	return (
 		<div className="border-t border-border px-3 py-2 shrink-0 flex flex-col gap-1.5">
 			<div className="relative">
@@ -99,8 +111,17 @@ export function CommitForm({
 					disabled={loading}
 					onClick={onPush}
 				>
-					Push
-					<ArrowUp className="h-3 w-3" />
+					{pushing ? (
+						<>
+							<Loader2 className="h-3 w-3 animate-spin" />
+							Pushing...
+						</>
+					) : (
+						<>
+							<ArrowUp className="h-3 w-3" />
+							Push
+						</>
+					)}
 				</button>
 				{hasUpstream && (ahead > 0 || behind > 0) && (
 					<span className="shrink-0 text-[10px] text-muted-foreground">
@@ -110,6 +131,13 @@ export function CommitForm({
 					</span>
 				)}
 			</div>
+			{successMessage && (
+				<Message
+					message={successMessage}
+					severity="success"
+					onDismiss={onDismissSuccess}
+				/>
+			)}
 			{error && <Message message={error} onDismiss={onDismissError} />}
 		</div>
 	);

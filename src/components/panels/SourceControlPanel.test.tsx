@@ -251,6 +251,39 @@ describe("SourceControlPanel", () => {
 		});
 	});
 
+	it("should show 'Pushing...' while push is in progress", async () => {
+		let resolvePush: ((value: unknown) => void) | undefined;
+		mockGitActions.push.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolvePush = resolve;
+				}),
+		);
+		render(<SourceControlPanel rootPath="/test/repo" />);
+
+		fireEvent.click(screen.getByText("Push"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Pushing...")).toBeInTheDocument();
+		});
+
+		resolvePush?.("ok");
+
+		await waitFor(() => {
+			expect(screen.queryByText("Pushing...")).not.toBeInTheDocument();
+		});
+	});
+
+	it("should show success message after push completes", async () => {
+		render(<SourceControlPanel rootPath="/test/repo" />);
+
+		fireEvent.click(screen.getByText("Push"));
+
+		await waitFor(() => {
+			expect(screen.getByText("Pushed successfully")).toBeInTheDocument();
+		});
+	});
+
 	describe("context menu", () => {
 		it("should show context menu on right-click for unstaged file", async () => {
 			const user = userEvent.setup();

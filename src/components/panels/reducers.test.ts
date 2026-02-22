@@ -11,6 +11,8 @@ describe("commitFormReducer", () => {
 		description: "",
 		error: null as string | null,
 		loading: false,
+		pushing: false,
+		successMessage: null as string | null,
 		discardTarget: null as { path: string; paths: string[] } | null,
 	};
 
@@ -44,11 +46,16 @@ describe("commitFormReducer", () => {
 		expect(state.error).toBeNull();
 	});
 
-	it("COMMIT_START sets loading=true and clears error", () => {
-		const prev = { ...initial, error: "old error" };
+	it("COMMIT_START sets loading=true and clears error and successMessage", () => {
+		const prev = {
+			...initial,
+			error: "old error",
+			successMessage: "Pushed successfully",
+		};
 		const state = commitFormReducer(prev, { type: "COMMIT_START" });
 		expect(state.loading).toBe(true);
 		expect(state.error).toBeNull();
+		expect(state.successMessage).toBeNull();
 	});
 
 	it("COMMIT_SUCCESS resets loading, summary, and description", () => {
@@ -74,27 +81,42 @@ describe("commitFormReducer", () => {
 		expect(state.error).toBe("commit failed");
 	});
 
-	it("PUSH_START sets loading=true and clears error", () => {
-		const prev = { ...initial, error: "old" };
+	it("PUSH_START sets loading=true, pushing=true and clears error and successMessage", () => {
+		const prev = {
+			...initial,
+			error: "old",
+			successMessage: "Pushed successfully",
+		};
 		const state = commitFormReducer(prev, { type: "PUSH_START" });
 		expect(state.loading).toBe(true);
+		expect(state.pushing).toBe(true);
 		expect(state.error).toBeNull();
+		expect(state.successMessage).toBeNull();
 	});
 
-	it("PUSH_END clears loading", () => {
-		const prev = { ...initial, loading: true };
+	it("PUSH_END clears loading and pushing, sets successMessage", () => {
+		const prev = { ...initial, loading: true, pushing: true };
 		const state = commitFormReducer(prev, { type: "PUSH_END" });
 		expect(state.loading).toBe(false);
+		expect(state.pushing).toBe(false);
+		expect(state.successMessage).toBe("Pushed successfully");
 	});
 
-	it("PUSH_ERROR sets error and clears loading", () => {
-		const prev = { ...initial, loading: true };
+	it("PUSH_ERROR sets error and clears loading and pushing", () => {
+		const prev = { ...initial, loading: true, pushing: true };
 		const state = commitFormReducer(prev, {
 			type: "PUSH_ERROR",
 			error: "push rejected",
 		});
 		expect(state.loading).toBe(false);
+		expect(state.pushing).toBe(false);
 		expect(state.error).toBe("push rejected");
+	});
+
+	it("DISMISS_SUCCESS clears successMessage", () => {
+		const prev = { ...initial, successMessage: "Pushed successfully" };
+		const state = commitFormReducer(prev, { type: "DISMISS_SUCCESS" });
+		expect(state.successMessage).toBeNull();
 	});
 
 	it("SET_DISCARD_TARGET updates discardTarget", () => {
