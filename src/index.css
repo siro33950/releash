@@ -439,7 +439,7 @@
 	border: 1px solid var(--border);
 	border-radius: calc(var(--radius) - 2px);
 	outline: none;
-	resize: vertical;
+	resize: none;
 	box-sizing: border-box;
 }
 .comment-peek-textarea:focus {
