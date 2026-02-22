@@ -19,6 +19,9 @@ interface CommitFormProps {
 	loading: boolean;
 	error: string | null;
 	stagedFilesCount: number;
+	ahead: number;
+	behind: number;
+	hasUpstream: boolean;
 	onSummaryChange: (value: string) => void;
 	onDescriptionChange: (value: string) => void;
 	onCommit: () => void;
@@ -32,6 +35,9 @@ export function CommitForm({
 	loading,
 	error,
 	stagedFilesCount,
+	ahead,
+	behind,
+	hasUpstream,
 	onSummaryChange,
 	onDescriptionChange,
 	onCommit,
@@ -78,7 +84,7 @@ export function CommitForm({
 				onChange={(e) => onDescriptionChange(e.target.value)}
 				rows={2}
 			/>
-			<div className="flex gap-1.5">
+			<div className="flex items-center gap-1.5">
 				<button
 					type="button"
 					className="flex-1 flex items-center justify-center gap-1 bg-accent text-accent-foreground rounded px-2 py-1 text-xs font-medium hover:bg-accent/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -96,6 +102,13 @@ export function CommitForm({
 					Push
 					<ArrowUp className="h-3 w-3" />
 				</button>
+				{hasUpstream && (ahead > 0 || behind > 0) && (
+					<span className="shrink-0 text-[10px] text-muted-foreground">
+						{ahead > 0 && `↑${ahead}`}
+						{ahead > 0 && behind > 0 && " "}
+						{behind > 0 && `↓${behind}`}
+					</span>
+				)}
 			</div>
 			{error && <Message message={error} onDismiss={onDismissError} />}
 		</div>

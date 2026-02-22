@@ -65,4 +65,29 @@ pub(crate) mod test_helpers {
         repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
             .unwrap()
     }
+
+    pub fn setup_remote_repo() -> (TempDir, std::path::PathBuf, Repository) {
+        let parent = TempDir::new().unwrap();
+
+        let bare_dir = parent.path().join("bare.git");
+        let bare = Repository::init_bare(&bare_dir).unwrap();
+        {
+            let sig = Signature::now("Test", "test@example.com").unwrap();
+            let tree_id = bare.treebuilder(None).unwrap().write().unwrap();
+            let tree = bare.find_tree(tree_id).unwrap();
+            bare.commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+            bare.set_head("refs/heads/main").unwrap();
+        }
+
+        let clone_dir = parent.path().join("clone");
+        let repo = Repository::clone(bare_dir.to_str().unwrap(), &clone_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "Test").unwrap();
+            config.set_str("user.email", "test@example.com").unwrap();
+        }
+
+        (parent, clone_dir, repo)
+    }
 }

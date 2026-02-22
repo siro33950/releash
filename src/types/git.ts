@@ -111,6 +111,12 @@ export interface IssueInfo {
 	milestone: Milestone | null;
 }
 
+export interface AheadBehind {
+	ahead: number;
+	behind: number;
+	has_upstream: boolean;
+}
+
 export interface CommitInfo {
 	hash: string;
 	short_hash: string;

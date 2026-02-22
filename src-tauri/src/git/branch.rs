@@ -1,5 +1,5 @@
 use super::error::GitError;
-use super::types::BranchInfo;
+use super::types::{AheadBehind, BranchInfo};
 use super::worktree::{get_branch_name_for_repo, remove_worktree};
 use git2::{build::CheckoutBuilder, BranchType, Repository, WorktreePruneOptions};
 use std::path::Path;
@@ -65,6 +65,52 @@ pub fn get_current_branch(repo_path: String) -> Result<String, GitError> {
         let short = &oid.to_string()[..7];
         Ok(format!("({short})"))
     }
+}
+
+pub fn get_current_branch_ahead_behind(repo_path: String) -> Result<AheadBehind, GitError> {
+    let no_upstream = AheadBehind {
+        ahead: 0,
+        behind: 0,
+        has_upstream: false,
+    };
+
+    let repo = Repository::open(&repo_path)?;
+
+    let head = match repo.head() {
+        Ok(h) => h,
+        Err(e) if e.code() == git2::ErrorCode::UnbornBranch => return Ok(no_upstream),
+        Err(e) => return Err(e.into()),
+    };
+
+    if !head.is_branch() {
+        return Ok(no_upstream);
+    }
+
+    let branch_name = head
+        .shorthand()
+        .ok_or_else(|| GitError::Custom("HEAD has no shorthand".to_string()))?;
+    let branch = repo.find_branch(branch_name, BranchType::Local)?;
+
+    let upstream = match branch.upstream() {
+        Ok(u) => u,
+        Err(_) => return Ok(no_upstream),
+    };
+
+    let local_oid = head
+        .target()
+        .ok_or_else(|| GitError::Custom("HEAD has no target".to_string()))?;
+    let remote_oid = upstream
+        .get()
+        .target()
+        .ok_or_else(|| GitError::Custom("upstream has no target".to_string()))?;
+
+    let (ahead, behind) = repo.graph_ahead_behind(local_oid, remote_oid)?;
+
+    Ok(AheadBehind {
+        ahead,
+        behind,
+        has_upstream: true,
+    })
 }
 
 pub fn git_create_branch(repo_path: String, branch_name: String) -> Result<(), GitError> {
@@ -185,6 +231,53 @@ mod tests {
     use crate::git::test_helpers::*;
     use git2::WorktreeAddOptions;
     use std::path::{Path, PathBuf};
+
+    // ── ahead/behind tests ──
+
+    #[test]
+    fn test_ahead_behind_no_upstream() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let result =
+            get_current_branch_ahead_behind(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(!result.has_upstream);
+        assert_eq!(result.ahead, 0);
+        assert_eq!(result.behind, 0);
+    }
+
+    #[test]
+    fn test_ahead_behind_empty_repo() {
+        let (dir, _repo) = create_test_repo();
+
+        let result =
+            get_current_branch_ahead_behind(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(!result.has_upstream);
+    }
+
+    #[test]
+    fn test_ahead_behind_detached_head() {
+        let (dir, repo) = create_test_repo();
+        let oid = create_initial_commit(&repo);
+        repo.set_head_detached(oid).unwrap();
+
+        let result =
+            get_current_branch_ahead_behind(dir.path().to_str().unwrap().to_string()).unwrap();
+        assert!(!result.has_upstream);
+    }
+
+    #[test]
+    fn test_ahead_behind_with_upstream() {
+        let (_parent, clone_dir, repo) = setup_remote_repo();
+
+        add_and_commit(&repo, "local.txt", "local", "local commit");
+
+        let result =
+            get_current_branch_ahead_behind(clone_dir.to_str().unwrap().to_string()).unwrap();
+        assert!(result.has_upstream);
+        assert_eq!(result.ahead, 1);
+        assert_eq!(result.behind, 0);
+    }
 
     #[test]
     fn test_get_current_branch() {
