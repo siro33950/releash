@@ -339,7 +339,8 @@
 /* Comment peek widget */
 .comment-peek-widget {
 	z-index: 20;
-	width: 420px;
+	max-width: 420px;
+	width: 100%;
 	background: var(--popover);
 	color: var(--popover-foreground);
 	border: 1px solid var(--border);

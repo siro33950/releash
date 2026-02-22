@@ -54,8 +54,9 @@ export function openCommentViewZone(
 	const domNode = document.createElement("div");
 	domNode.className = "comment-peek-widget";
 
-	const contentLeft = editor.getLayoutInfo().contentLeft;
+	const { contentLeft, contentWidth } = editor.getLayoutInfo();
 	domNode.style.marginLeft = `${contentLeft}px`;
+	domNode.style.width = `${Math.min(420, contentWidth)}px`;
 
 	// Header
 	const header = document.createElement("div");
