@@ -1,11 +1,10 @@
 import type * as Monaco from "monaco-editor";
 import type { LineComment } from "@/types/comment";
 
-export interface MonacoContentWidget {
-	allowEditorOverflow?: boolean;
-	getId(): string;
-	getDomNode(): HTMLElement;
-	getPosition(): Monaco.editor.IContentWidgetPosition | null;
+export interface CommentViewZone {
+	domNode: HTMLElement;
+	zoneId: string;
+	dispose: () => void;
 }
 
 export interface CreateCommentPeekOptions {
@@ -17,10 +16,28 @@ export interface CreateCommentPeekOptions {
 	onCancel: () => void;
 }
 
-export function createCommentPeekWidget(
-	monaco: typeof Monaco,
+const HEADER_HEIGHT = 32;
+const EXISTING_MAX_HEIGHT = 112;
+const INPUT_AREA_HEIGHT = 88;
+const ACTIONS_HEIGHT = 40;
+const PADDING = 8;
+
+function computeZoneHeight(existingCount: number): number {
+	const existingHeight =
+		existingCount > 0 ? Math.min(existingCount * 28, EXISTING_MAX_HEIGHT) : 0;
+	return (
+		HEADER_HEIGHT +
+		existingHeight +
+		INPUT_AREA_HEIGHT +
+		ACTIONS_HEIGHT +
+		PADDING
+	);
+}
+
+export function openCommentViewZone(
+	editor: Monaco.editor.ICodeEditor,
 	options: CreateCommentPeekOptions,
-): MonacoContentWidget {
+): CommentViewZone {
 	const {
 		lineNumber,
 		endLine,
@@ -36,6 +53,9 @@ export function createCommentPeekWidget(
 
 	const domNode = document.createElement("div");
 	domNode.className = "comment-peek-widget";
+
+	const contentLeft = editor.getLayoutInfo().contentLeft;
+	domNode.style.marginLeft = `${contentLeft}px`;
 
 	// Header
 	const header = document.createElement("div");
@@ -155,13 +175,29 @@ export function createCommentPeekWidget(
 
 	setTimeout(() => textarea.focus(), 0);
 
+	// ViewZone
+	const afterLineNumber = endLine ?? lineNumber;
+	const heightInPx = computeZoneHeight(existingComments.length);
+
+	let zoneId = "";
+	editor.changeViewZones((accessor) => {
+		zoneId = accessor.addZone({
+			afterLineNumber,
+			heightInPx,
+			domNode,
+			suppressMouseDown: true,
+		});
+	});
+
+	const dispose = () => {
+		editor.changeViewZones((accessor) => {
+			accessor.removeZone(zoneId);
+		});
+	};
+
 	return {
-		allowEditorOverflow: true,
-		getId: () => "comment-input-widget",
-		getDomNode: () => domNode,
-		getPosition: () => ({
-			position: { lineNumber: (endLine ?? lineNumber) + 1, column: 1 },
-			preference: [monaco.editor.ContentWidgetPositionPreference.ABOVE],
-		}),
+		domNode,
+		zoneId,
+		dispose,
 	};
 }
