@@ -19,6 +19,7 @@ interface CreateWorktreeDialogProps {
 	open: boolean;
 	repoPath: string;
 	existingBranches: BranchCard[];
+	defaultBaseBranch?: string;
 	onCreated: (entry: WorktreeEntry) => void;
 	onCancel: () => void;
 }
@@ -27,6 +28,7 @@ export function CreateWorktreeDialog({
 	open,
 	repoPath,
 	existingBranches,
+	defaultBaseBranch,
 	onCreated,
 	onCancel,
 }: CreateWorktreeDialogProps) {
@@ -59,13 +61,17 @@ export function CreateWorktreeDialog({
 		invoke<BranchInfo[]>("list_branches", { repoPath })
 			.then((result) => {
 				setBranches(result);
-				const defaultBranch = result.find(
-					(b) => !b.is_remote && (b.name === "main" || b.name === "master"),
-				);
-				setBaseBranch(defaultBranch?.name ?? "HEAD");
+				if (defaultBaseBranch) {
+					setBaseBranch(defaultBaseBranch);
+				} else {
+					const fallback = result.find(
+						(b) => !b.is_remote && (b.name === "main" || b.name === "master"),
+					);
+					setBaseBranch(fallback?.name ?? "HEAD");
+				}
 			})
 			.catch(() => setBranches([]));
-	}, [open, repoPath]);
+	}, [open, repoPath, defaultBaseBranch]);
 
 	const filteredBranches = useMemo(() => {
 		const lower = filter.toLowerCase();
