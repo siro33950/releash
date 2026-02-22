@@ -9,7 +9,7 @@ import {
 	Trash2,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { Button } from "@/components/ui/button";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
@@ -85,6 +85,7 @@ function NotionRepoSection({
 	defaultExpanded,
 }: NotionRepoSectionProps) {
 	const [showConfig, setShowConfig] = useState(false);
+	const refreshRef = useRef<(() => void) | null>(null);
 	const {
 		config,
 		loading: configLoading,
@@ -117,9 +118,35 @@ function NotionRepoSection({
 			defaultOpen={defaultExpanded}
 			className="border-b border-border"
 			actions={
-				configLoading ? (
-					<Loader2 className="size-3 animate-spin ml-auto" />
-				) : undefined
+				<>
+					{configLoading && <Loader2 className="size-3 animate-spin ml-auto" />}
+					{isConfigured && !showConfig && (
+						<button
+							type="button"
+							title="Refresh"
+							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0 ml-auto"
+							onClick={(e) => {
+								e.stopPropagation();
+								refreshRef.current?.();
+							}}
+						>
+							<RefreshCw className="size-3" />
+						</button>
+					)}
+					{isConfigured && (
+						<button
+							type="button"
+							title="Settings"
+							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+							onClick={(e) => {
+								e.stopPropagation();
+								setShowConfig(true);
+							}}
+						>
+							<Settings className="size-3" />
+						</button>
+					)}
+				</>
 			}
 		>
 			<div className="pb-1">
@@ -163,7 +190,9 @@ function NotionRepoSection({
 						repoPath={repoPath}
 						repoName={repoName}
 						onSelectWorktree={onSelectWorktree}
-						onShowConfig={() => setShowConfig(true)}
+						onRefreshReady={(fn) => {
+							refreshRef.current = fn;
+						}}
 						branchPrefix={config?.property_mapping.branch_prefix ?? ""}
 						worktrees={worktrees}
 						onWorktreeCreated={fetchWorktrees}
@@ -492,7 +521,7 @@ interface NotionTaskListProps {
 		branchName?: string,
 		repoName?: string,
 	) => void;
-	onShowConfig: () => void;
+	onRefreshReady: (refresh: () => void) => void;
 	branchPrefix: string;
 	worktrees: WorktreeEntry[];
 	onWorktreeCreated: () => void;
@@ -539,7 +568,7 @@ function NotionTaskList({
 	repoPath,
 	repoName,
 	onSelectWorktree,
-	onShowConfig,
+	onRefreshReady,
 	branchPrefix,
 	worktrees,
 	onWorktreeCreated,
@@ -554,6 +583,10 @@ function NotionTaskList({
 	const [labelFilters, setLabelFilters] = useState<Record<string, string>>(
 		stored.labels,
 	);
+
+	useEffect(() => {
+		onRefreshReady(refresh);
+	}, [onRefreshReady, refresh]);
 
 	const hasActiveFilters =
 		titleFilter !== "" || Object.values(labelFilters).some((v) => v !== "");
@@ -682,28 +715,6 @@ function NotionTaskList({
 					>
 						{loading ? <Loader2 className="size-3 mr-1 animate-spin" /> : null}
 						Load more
-					</Button>
-				</div>
-			)}
-			{!loading && (
-				<div className="px-3 pt-1 flex items-center gap-1">
-					<Button
-						variant="ghost"
-						size="sm"
-						className="h-5 px-1.5 text-[10px] text-muted-foreground"
-						onClick={refresh}
-					>
-						<RefreshCw className="size-2.5 mr-1" />
-						Refresh
-					</Button>
-					<Button
-						variant="ghost"
-						size="sm"
-						className="h-5 px-1.5 text-[10px] text-muted-foreground ml-auto"
-						onClick={onShowConfig}
-					>
-						<Settings className="size-2.5 mr-1" />
-						Settings
 					</Button>
 				</div>
 			)}
