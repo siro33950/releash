@@ -66,7 +66,7 @@ export async function switchToView(
  * UI_REVIEW=1 の場合はマスクを無効化する。
  */
 export function monacoMask(page: Page): Locator[] {
-	if (process.env.UI_REVIEW) return [];
+	if (process.env.UI_REVIEW === "1") return [];
 	return [page.locator(".monaco-editor")];
 }
 
@@ -75,6 +75,6 @@ export function monacoMask(page: Page): Locator[] {
  * UI_REVIEW=1 の場合はマスクを無効化する。
  */
 export function xtermMask(page: Page): Locator[] {
-	if (process.env.UI_REVIEW) return [];
+	if (process.env.UI_REVIEW === "1") return [];
 	return [page.locator(".xterm")];
 }

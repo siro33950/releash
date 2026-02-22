@@ -27,7 +27,10 @@ UI_REVIEW=1 pnpm test:screenshots:update
 ```
 
 - `UI_REVIEW=1` により `xtermMask` / `monacoMask` が無効化され、ターミナルやエディタ領域もマスクなしで撮影される
-- **テスト失敗の場合**: エラー内容を報告して終了
+- **テスト失敗の場合**: エラー内容を報告し、以下を実行してスクリーンショットを復元してから終了
+  ```bash
+  git checkout -- tests/__screenshots__/
+  ```
 - **成功の場合**: Globツールで `tests/__screenshots__/chromium/*.png` を取得し、枚数を報告してStep 2に進む
 
 **重要**: 分析完了後（Step 5の後）に必ず以下を実行してマスク付きスクリーンショットを復元する:
