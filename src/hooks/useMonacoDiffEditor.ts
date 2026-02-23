@@ -2,8 +2,8 @@ import { loader } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import {
-	createCommentPeekWidget,
-	type MonacoContentWidget,
+	type CommentViewZone,
+	openCommentViewZone,
 } from "@/lib/commentPeekWidget";
 import type { ChangeGroup } from "@/lib/computeHunks";
 import {
@@ -176,7 +176,7 @@ export function useMonacoDiffEditor(
 	const onStageHunkRef = useRef(onStageHunk);
 	const onUnstageHunkRef = useRef(onUnstageHunk);
 	const hunkOverlayContainerRef = useRef<HTMLDivElement | null>(null);
-	const commentInputWidgetRef = useRef<MonacoContentWidget | null>(null);
+	const commentInputWidgetRef = useRef<CommentViewZone | null>(null);
 	const dragStartLineRef = useRef<number | null>(null);
 	const dragRangeDecorationsRef = useRef<string[]>([]);
 	const hoverLineRef = useRef<number | null>(null);
@@ -333,29 +333,28 @@ export function useMonacoDiffEditor(
 				endLine?: number,
 			) => {
 				if (commentInputWidgetRef.current) {
-					ed.removeContentWidget(commentInputWidgetRef.current);
+					commentInputWidgetRef.current.dispose();
 					commentInputWidgetRef.current = null;
 				}
 
 				const existing = getCommentsForLineRef.current?.(lineNum) ?? [];
-				const widget = createCommentPeekWidget(monaco, {
+				const zone = openCommentViewZone(ed, {
 					lineNumber: lineNum,
 					endLine,
 					existingComments: existing,
 					onSubmit: (content) => {
 						onAddCommentRef.current?.(lineNum, content, endLine);
-						ed.removeContentWidget(widget);
+						zone.dispose();
 						commentInputWidgetRef.current = null;
 						ed.focus();
 					},
 					onCancel: () => {
-						ed.removeContentWidget(widget);
+						zone.dispose();
 						commentInputWidgetRef.current = null;
 						ed.focus();
 					},
 				});
-				commentInputWidgetRef.current = widget;
-				ed.addContentWidget(widget);
+				commentInputWidgetRef.current = zone;
 			};
 
 			modifiedEditor.onMouseDown((e: Monaco.editor.IEditorMouseEvent) => {
@@ -501,6 +500,8 @@ export function useMonacoDiffEditor(
 
 		return () => {
 			isMounted = false;
+			commentInputWidgetRef.current?.dispose();
+			commentInputWidgetRef.current = null;
 			intersectionObserverRef.current?.disconnect();
 			contentChangeListenerRef.current?.dispose();
 			diffEditorRef.current?.dispose();

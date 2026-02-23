@@ -1,12 +1,45 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LineComment } from "@/types/comment";
-import { createCommentPeekWidget } from "./commentPeekWidget";
+import { openCommentViewZone } from "./commentPeekWidget";
 
-const mockMonaco = {
-	editor: {
-		ContentWidgetPositionPreference: { ABOVE: 1 },
-	},
-} as Parameters<typeof createCommentPeekWidget>[0];
+function createMockEditor() {
+	const zones: {
+		id: string;
+		afterLineNumber: number;
+		heightInPx: number;
+		suppressMouseDown: boolean;
+		domNode: HTMLElement;
+	}[] = [];
+	let nextId = 1;
+
+	const accessor = {
+		addZone: vi.fn(
+			(zone: {
+				afterLineNumber: number;
+				heightInPx: number;
+				domNode: HTMLElement;
+				suppressMouseDown: boolean;
+			}) => {
+				const id = String(nextId++);
+				zones.push({ id, ...zone });
+				return id;
+			},
+		),
+		removeZone: vi.fn(),
+	};
+
+	const layoutDisposable = { dispose: vi.fn() };
+
+	const editor = {
+		changeViewZones: vi.fn((cb: (a: typeof accessor) => void) => {
+			cb(accessor);
+		}),
+		getLayoutInfo: vi.fn(() => ({ contentLeft: 48, contentWidth: 800 })),
+		onDidLayoutChange: vi.fn(() => layoutDisposable),
+	} as unknown as Parameters<typeof openCommentViewZone>[0];
+
+	return { editor, accessor, zones, layoutDisposable };
+}
 
 function makeComment(overrides: Partial<LineComment> = {}): LineComment {
 	return {
@@ -20,16 +53,17 @@ function makeComment(overrides: Partial<LineComment> = {}): LineComment {
 	};
 }
 
-describe("createCommentPeekWidget", () => {
+describe("openCommentViewZone", () => {
 	it("DOM構造が正しく生成される", () => {
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit: vi.fn(),
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
+		const dom = zone.domNode;
 		expect(dom.className).toBe("comment-peek-widget");
 
 		const header = dom.querySelector(".comment-peek-header");
@@ -55,15 +89,15 @@ describe("createCommentPeekWidget", () => {
 	});
 
 	it("既存コメントがない場合、existing セクションが生成されない", () => {
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 5,
 			existingComments: [],
 			onSubmit: vi.fn(),
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
-		expect(dom.querySelector(".comment-peek-existing")).toBeNull();
+		expect(zone.domNode.querySelector(".comment-peek-existing")).toBeNull();
 	});
 
 	it("既存コメントがある場合、正しく表示される", () => {
@@ -72,14 +106,15 @@ describe("createCommentPeekWidget", () => {
 			makeComment({ id: "c2", content: "2番目", status: "unsent" }),
 		];
 
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: comments,
 			onSubmit: vi.fn(),
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
+		const dom = zone.domNode;
 		const existing = dom.querySelector(".comment-peek-existing");
 		expect(existing).not.toBeNull();
 
@@ -104,14 +139,15 @@ describe("createCommentPeekWidget", () => {
 
 	it("追加ボタンクリックで onSubmit が呼ばれる", () => {
 		const onSubmit = vi.fn();
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit,
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
+		const dom = zone.domNode;
 		const textarea = dom.querySelector(
 			".comment-peek-textarea",
 		) as HTMLTextAreaElement;
@@ -127,15 +163,15 @@ describe("createCommentPeekWidget", () => {
 
 	it("空入力で追加ボタンクリックすると onCancel が呼ばれる", () => {
 		const onCancel = vi.fn();
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit: vi.fn(),
 			onCancel,
 		});
 
-		const dom = widget.getDomNode();
-		const submitBtn = dom.querySelector(
+		const submitBtn = zone.domNode.querySelector(
 			".comment-peek-submit-btn",
 		) as HTMLButtonElement;
 		submitBtn.click();
@@ -145,15 +181,15 @@ describe("createCommentPeekWidget", () => {
 
 	it("キャンセルボタンクリックで onCancel が呼ばれる", () => {
 		const onCancel = vi.fn();
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit: vi.fn(),
 			onCancel,
 		});
 
-		const dom = widget.getDomNode();
-		const cancelBtn = dom.querySelector(
+		const cancelBtn = zone.domNode.querySelector(
 			".comment-peek-cancel-btn",
 		) as HTMLButtonElement;
 		cancelBtn.click();
@@ -163,15 +199,15 @@ describe("createCommentPeekWidget", () => {
 
 	it("閉じるボタンクリックで onCancel が呼ばれる", () => {
 		const onCancel = vi.fn();
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit: vi.fn(),
 			onCancel,
 		});
 
-		const dom = widget.getDomNode();
-		const closeBtn = dom.querySelector(
+		const closeBtn = zone.domNode.querySelector(
 			".comment-peek-close-btn",
 		) as HTMLButtonElement;
 		closeBtn.click();
@@ -181,14 +217,15 @@ describe("createCommentPeekWidget", () => {
 
 	it("Cmd+Enter で onSubmit が呼ばれる", () => {
 		const onSubmit = vi.fn();
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit,
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
+		const dom = zone.domNode;
 		const textarea = dom.querySelector(
 			".comment-peek-textarea",
 		) as HTMLTextAreaElement;
@@ -207,14 +244,15 @@ describe("createCommentPeekWidget", () => {
 
 	it("Ctrl+Enter で onSubmit が呼ばれる", () => {
 		const onSubmit = vi.fn();
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit,
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
+		const dom = zone.domNode;
 		const textarea = dom.querySelector(
 			".comment-peek-textarea",
 		) as HTMLTextAreaElement;
@@ -233,15 +271,15 @@ describe("createCommentPeekWidget", () => {
 
 	it("Escape で onCancel が呼ばれる", () => {
 		const onCancel = vi.fn();
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit: vi.fn(),
 			onCancel,
 		});
 
-		const dom = widget.getDomNode();
-		dom.dispatchEvent(
+		zone.domNode.dispatchEvent(
 			new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
 		);
 
@@ -251,15 +289,15 @@ describe("createCommentPeekWidget", () => {
 	it("plain Enter はコールバックを呼ばない（改行用）", () => {
 		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit,
 			onCancel,
 		});
 
-		const dom = widget.getDomNode();
-		dom.dispatchEvent(
+		zone.domNode.dispatchEvent(
 			new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
 		);
 
@@ -270,15 +308,15 @@ describe("createCommentPeekWidget", () => {
 	it("Cmd+Enter で空入力の場合 onCancel が呼ばれる", () => {
 		const onCancel = vi.fn();
 		const onSubmit = vi.fn();
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit,
 			onCancel,
 		});
 
-		const dom = widget.getDomNode();
-		dom.dispatchEvent(
+		zone.domNode.dispatchEvent(
 			new KeyboardEvent("keydown", {
 				key: "Enter",
 				metaKey: true,
@@ -290,19 +328,23 @@ describe("createCommentPeekWidget", () => {
 		expect(onCancel).toHaveBeenCalled();
 	});
 
-	it("getId が正しい値を返す", () => {
-		const widget = createCommentPeekWidget(mockMonaco, {
+	it("ViewZone が afterLineNumber = lineNumber で追加される", () => {
+		const { editor, zones } = createMockEditor();
+		openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit: vi.fn(),
 			onCancel: vi.fn(),
 		});
 
-		expect(widget.getId()).toBe("comment-input-widget");
+		expect(zones).toHaveLength(1);
+		expect(zones[0].afterLineNumber).toBe(10);
+		expect(zones[0].suppressMouseDown).toBe(true);
 	});
 
 	it("範囲コメントのタイトルが Line X-Y 形式になる", () => {
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 5,
 			endLine: 12,
 			existingComments: [],
@@ -310,13 +352,13 @@ describe("createCommentPeekWidget", () => {
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
-		const title = dom.querySelector(".comment-peek-header-title");
+		const title = zone.domNode.querySelector(".comment-peek-header-title");
 		expect(title?.textContent).toBe("Line 5-12 - コメント");
 	});
 
-	it("範囲コメントの getPosition が endLine + 1 を返す", () => {
-		const widget = createCommentPeekWidget(mockMonaco, {
+	it("範囲コメントの afterLineNumber が endLine になる", () => {
+		const { editor, zones } = createMockEditor();
+		openCommentViewZone(editor, {
 			lineNumber: 5,
 			endLine: 12,
 			existingComments: [],
@@ -324,37 +366,37 @@ describe("createCommentPeekWidget", () => {
 			onCancel: vi.fn(),
 		});
 
-		const pos = widget.getPosition();
-		expect(pos?.position?.lineNumber).toBe(13);
+		expect(zones[0].afterLineNumber).toBe(12);
 	});
 
 	it("ヘッダーにショートカットヒントが表示される", () => {
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit: vi.fn(),
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
-		const hint = dom.querySelector(".comment-peek-shortcut-hint");
+		const hint = zone.domNode.querySelector(".comment-peek-shortcut-hint");
 		expect(hint).not.toBeNull();
 		expect(hint?.textContent).toBe("⌘Enter で送信");
 	});
 
-	it("getPosition が lineNumber + 1 の ABOVE を返す", () => {
-		const widget = createCommentPeekWidget(mockMonaco, {
+	it("dispose が removeZone を呼ぶ", () => {
+		const { editor, accessor, zones, layoutDisposable } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
 			onSubmit: vi.fn(),
 			onCancel: vi.fn(),
 		});
 
-		const pos = widget.getPosition();
-		expect(pos).toEqual({
-			position: { lineNumber: 11, column: 1 },
-			preference: [1],
-		});
+		const zoneId = zones[0].id;
+		zone.dispose();
+
+		expect(accessor.removeZone).toHaveBeenCalledWith(zoneId);
+		expect(layoutDisposable.dispose).toHaveBeenCalled();
 	});
 
 	it("showSentComments=false で sent コメントが非表示になる", () => {
@@ -363,7 +405,8 @@ describe("createCommentPeekWidget", () => {
 			makeComment({ id: "c2", content: "unsent comment", status: "unsent" }),
 		];
 
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: comments,
 			showSentComments: false,
@@ -371,7 +414,7 @@ describe("createCommentPeekWidget", () => {
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
+		const dom = zone.domNode;
 		const existing = dom.querySelector(".comment-peek-existing");
 		expect(existing).not.toBeNull();
 
@@ -390,7 +433,8 @@ describe("createCommentPeekWidget", () => {
 			makeComment({ id: "c2", content: "unsent comment", status: "unsent" }),
 		];
 
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: comments,
 			showSentComments: true,
@@ -398,8 +442,7 @@ describe("createCommentPeekWidget", () => {
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
-		const items = dom.querySelectorAll(".comment-peek-existing-item");
+		const items = zone.domNode.querySelectorAll(".comment-peek-existing-item");
 		expect(items).toHaveLength(2);
 	});
 
@@ -409,15 +452,54 @@ describe("createCommentPeekWidget", () => {
 			makeComment({ id: "c2", content: "unsent", status: "unsent" }),
 		];
 
-		const widget = createCommentPeekWidget(mockMonaco, {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: comments,
 			onSubmit: vi.fn(),
 			onCancel: vi.fn(),
 		});
 
-		const dom = widget.getDomNode();
-		const items = dom.querySelectorAll(".comment-peek-existing-item");
+		const items = zone.domNode.querySelectorAll(".comment-peek-existing-item");
 		expect(items).toHaveLength(2);
+	});
+
+	it("domNode に contentLeft の marginLeft が設定される", () => {
+		const { editor } = createMockEditor();
+		const zone = openCommentViewZone(editor, {
+			lineNumber: 10,
+			existingComments: [],
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+		});
+
+		expect(zone.domNode.style.marginLeft).toBe("48px");
+	});
+
+	it("既存コメントの数に応じて heightInPx が変わる", () => {
+		const comments = [
+			makeComment({ id: "c1", content: "comment1" }),
+			makeComment({ id: "c2", content: "comment2" }),
+		];
+
+		const { editor, zones: zonesWithComments } = createMockEditor();
+		openCommentViewZone(editor, {
+			lineNumber: 10,
+			existingComments: comments,
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+		});
+
+		const { editor: editor2, zones: zonesWithout } = createMockEditor();
+		openCommentViewZone(editor2, {
+			lineNumber: 10,
+			existingComments: [],
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+		});
+
+		expect(zonesWithComments[0].heightInPx).toBeGreaterThan(
+			zonesWithout[0].heightInPx,
+		);
 	});
 });
