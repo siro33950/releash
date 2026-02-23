@@ -28,7 +28,7 @@ pub(super) async fn route_message(
             handle_pty_spawn_request(req, state, selected_worktree).await
         }
         WsMessage::PtyOutputRequest(req) => handle_pty_output_request(req, state),
-        WsMessage::PtyKillRequest(req) => handle_pty_kill_request(req, state),
+        WsMessage::PtyKillRequest(req) => handle_pty_kill_request(req, state).await,
         WsMessage::GitCommitRequest(req) => {
             handle_git_commit_request(req, state, selected_worktree).await
         }

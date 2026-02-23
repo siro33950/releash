@@ -44,7 +44,7 @@ export function TerminalTabContent({
 		return (
 			<>
 				<div className="flex items-center gap-1 px-2 py-1 border-b border-border bg-card shrink-0 overflow-x-auto">
-					{ptySessions.map((s, index) => (
+					{ptySessions.map((s) => (
 						<div
 							key={s.ptyId}
 							className={`group flex items-center gap-1 px-2 py-0.5 text-xs rounded transition-colors shrink-0 cursor-pointer ${
@@ -60,7 +60,7 @@ export function TerminalTabContent({
 								if (e.key === "Enter") setActivePtyId(s.ptyId);
 							}}
 						>
-							<span>{s.label ?? `Terminal ${index + 1}`}</span>
+							<span>{s.label ?? `Terminal ${s.ptyId}`}</span>
 							<button
 								type="button"
 								className={`ml-0.5 rounded-sm hover:bg-black/20 inline-flex items-center ${
@@ -72,7 +72,7 @@ export function TerminalTabContent({
 									e.stopPropagation();
 									killPty(s.ptyId);
 								}}
-								aria-label={`Close ${s.label ?? `Terminal ${index + 1}`}`}
+								aria-label={`Close ${s.label ?? `Terminal ${s.ptyId}`}`}
 							>
 								&#x2715;
 							</button>

@@ -20,6 +20,7 @@ use direct::DirectPtyBackend;
 use tmux::TmuxPtyBackend;
 
 const OUTPUT_BUFFER_CAPACITY: usize = 64 * 1024;
+const MAX_PENDING_BYTES: usize = 16 * 1024;
 
 static PTY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -69,6 +70,104 @@ pub struct PtySessionInfo {
     pub worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+}
+
+fn spawn_output_reader(
+    app: AppHandle,
+    pty_id: u64,
+    mut reader: Box<dyn Read + Send>,
+    output_buffer: Arc<Mutex<VecDeque<u8>>>,
+    exited: Arc<AtomicBool>,
+    exit_code_holder: Arc<Mutex<Option<i32>>>,
+) {
+    std::thread::spawn(move || {
+        let ws = app.try_state::<Arc<WsBroadcaster>>();
+        let mut buf = [0u8; 4096];
+        let mut pending = Vec::new();
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    pending.extend_from_slice(&buf[..n]);
+
+                    let valid_up_to = match std::str::from_utf8(&pending) {
+                        Ok(_) => pending.len(),
+                        Err(e) => e.valid_up_to(),
+                    };
+
+                    if valid_up_to == 0 {
+                        if pending.len() > MAX_PENDING_BYTES {
+                            log::warn!(
+                                "PTY {}: dropping {} bytes of invalid UTF-8",
+                                pty_id,
+                                pending.len()
+                            );
+                            pending.clear();
+                        }
+                        continue;
+                    }
+
+                    let raw = std::str::from_utf8(&pending[..valid_up_to])
+                        .unwrap()
+                        .to_string();
+                    pending = pending[valid_up_to..].to_vec();
+
+                    let result = shell_integration::strip_osc_cmd_done(&raw);
+
+                    if !result.filtered_output.is_empty() {
+                        {
+                            let mut ring = output_buffer.lock();
+                            let bytes = result.filtered_output.as_bytes();
+                            if bytes.len() >= OUTPUT_BUFFER_CAPACITY {
+                                ring.clear();
+                                ring.extend(&bytes[bytes.len() - OUTPUT_BUFFER_CAPACITY..]);
+                            } else {
+                                let overflow = (ring.len() + bytes.len())
+                                    .saturating_sub(OUTPUT_BUFFER_CAPACITY);
+                                if overflow > 0 {
+                                    ring.drain(..overflow);
+                                }
+                                ring.extend(bytes);
+                            }
+                        }
+
+                        let _ = app.emit(
+                            "pty-output",
+                            PtyOutput {
+                                pty_id,
+                                data: result.filtered_output.clone(),
+                            },
+                        );
+                        if let Some(ws) = &ws {
+                            ws.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+                                pty_id,
+                                data: result.filtered_output,
+                            }));
+                        }
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+
+        exited.store(true, Ordering::SeqCst);
+        *exit_code_holder.lock() = None;
+
+        let _ = app.emit(
+            "pty-exit",
+            PtyExit {
+                pty_id,
+                exit_code: None,
+            },
+        );
+        if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
+            ws.try_send(WsMessage::PtyExit(PtyExitMsg {
+                pty_id,
+                exit_code: None,
+            }));
+        }
+    });
 }
 
 impl PtyManager {
@@ -190,7 +289,7 @@ impl PtyManager {
         let writer = backend_session.writer;
         let killer = backend_session.killer;
         let resizer = backend_session.resizer;
-        let mut reader = backend_session.reader;
+        let reader = backend_session.reader;
 
         let session = PtySession {
             writer,
@@ -206,83 +305,14 @@ impl PtyManager {
 
         self.sessions.lock().insert(pty_id, session);
 
-        // Output reader thread
-        let app_clone = app.clone();
-        let output_buf_clone = Arc::clone(&output_buffer);
-        std::thread::spawn(move || {
-            let ws = app_clone.try_state::<Arc<WsBroadcaster>>();
-            let mut buf = [0u8; 4096];
-            let mut pending = Vec::new();
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        pending.extend_from_slice(&buf[..n]);
-
-                        let valid_up_to = match std::str::from_utf8(&pending) {
-                            Ok(_) => pending.len(),
-                            Err(e) => e.valid_up_to(),
-                        };
-
-                        if valid_up_to == 0 {
-                            continue;
-                        }
-
-                        let raw = std::str::from_utf8(&pending[..valid_up_to])
-                            .unwrap()
-                            .to_string();
-                        pending = pending[valid_up_to..].to_vec();
-
-                        let result = shell_integration::strip_osc_cmd_done(&raw);
-
-                        if !result.filtered_output.is_empty() {
-                            {
-                                let mut ring = output_buf_clone.lock();
-                                let bytes = result.filtered_output.as_bytes();
-                                if bytes.len() >= OUTPUT_BUFFER_CAPACITY {
-                                    ring.clear();
-                                    ring.extend(&bytes[bytes.len() - OUTPUT_BUFFER_CAPACITY..]);
-                                } else {
-                                    let overflow = (ring.len() + bytes.len())
-                                        .saturating_sub(OUTPUT_BUFFER_CAPACITY);
-                                    if overflow > 0 {
-                                        ring.drain(..overflow);
-                                    }
-                                    ring.extend(bytes);
-                                }
-                            }
-
-                            let _ = app_clone.emit(
-                                "pty-output",
-                                PtyOutput {
-                                    pty_id,
-                                    data: result.filtered_output.clone(),
-                                },
-                            );
-                            if let Some(ws) = &ws {
-                                ws.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-                                    pty_id,
-                                    data: result.filtered_output,
-                                }));
-                            }
-                        }
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
-                }
-            }
-
-            // Reader closed → mark as exited
-            exited.store(true, Ordering::SeqCst);
-            let exit_code = None; // Cannot determine exit code from reader close
-
-            *exit_code_holder.lock() = exit_code;
-
-            let _ = app_clone.emit("pty-exit", PtyExit { pty_id, exit_code });
-            if let Some(ws) = app_clone.try_state::<Arc<WsBroadcaster>>() {
-                ws.try_send(WsMessage::PtyExit(PtyExitMsg { pty_id, exit_code }));
-            }
-        });
+        spawn_output_reader(
+            app.clone(),
+            pty_id,
+            reader,
+            output_buffer,
+            exited,
+            exit_code_holder,
+        );
 
         Ok(pty_id)
     }
@@ -311,7 +341,7 @@ impl PtyManager {
                     let writer = backend_session.writer;
                     let killer = backend_session.killer;
                     let resizer = backend_session.resizer;
-                    let mut reader = backend_session.reader;
+                    let reader = backend_session.reader;
 
                     let worktree_path = existing_session.worktree_path.clone();
                     let label = existing_session.label.clone();
@@ -337,95 +367,14 @@ impl PtyManager {
                     };
                     restored.push((pty_id, info.clone()));
 
-                    // Output reader thread for restored session
-                    let app_clone = app.clone();
-                    let output_buf_clone = Arc::clone(&output_buffer);
-                    let exited_clone = Arc::clone(&exited);
-                    let exit_code_clone = Arc::clone(&exit_code_holder);
-                    std::thread::spawn(move || {
-                        let ws = app_clone.try_state::<Arc<WsBroadcaster>>();
-                        let mut buf = [0u8; 4096];
-                        let mut pending = Vec::new();
-                        loop {
-                            match reader.read(&mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    pending.extend_from_slice(&buf[..n]);
-
-                                    let valid_up_to = match std::str::from_utf8(&pending) {
-                                        Ok(_) => pending.len(),
-                                        Err(e) => e.valid_up_to(),
-                                    };
-
-                                    if valid_up_to == 0 {
-                                        continue;
-                                    }
-
-                                    let raw = std::str::from_utf8(&pending[..valid_up_to])
-                                        .unwrap()
-                                        .to_string();
-                                    pending = pending[valid_up_to..].to_vec();
-
-                                    let result = shell_integration::strip_osc_cmd_done(&raw);
-
-                                    if !result.filtered_output.is_empty() {
-                                        {
-                                            let mut ring = output_buf_clone.lock();
-                                            let bytes = result.filtered_output.as_bytes();
-                                            if bytes.len() >= OUTPUT_BUFFER_CAPACITY {
-                                                ring.clear();
-                                                ring.extend(
-                                                    &bytes[bytes.len() - OUTPUT_BUFFER_CAPACITY..],
-                                                );
-                                            } else {
-                                                let overflow = (ring.len() + bytes.len())
-                                                    .saturating_sub(OUTPUT_BUFFER_CAPACITY);
-                                                if overflow > 0 {
-                                                    ring.drain(..overflow);
-                                                }
-                                                ring.extend(bytes);
-                                            }
-                                        }
-
-                                        let _ = app_clone.emit(
-                                            "pty-output",
-                                            PtyOutput {
-                                                pty_id,
-                                                data: result.filtered_output.clone(),
-                                            },
-                                        );
-                                        if let Some(ws) = &ws {
-                                            ws.try_send(WsMessage::PtyOutput(PtyOutputMsg {
-                                                pty_id,
-                                                data: result.filtered_output,
-                                            }));
-                                        }
-                                    }
-                                }
-                                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                                    continue;
-                                }
-                                Err(_) => break,
-                            }
-                        }
-
-                        exited_clone.store(true, Ordering::SeqCst);
-                        *exit_code_clone.lock() = None;
-
-                        let _ = app_clone.emit(
-                            "pty-exit",
-                            PtyExit {
-                                pty_id,
-                                exit_code: None,
-                            },
-                        );
-                        if let Some(ws) = app_clone.try_state::<Arc<WsBroadcaster>>() {
-                            ws.try_send(WsMessage::PtyExit(PtyExitMsg {
-                                pty_id,
-                                exit_code: None,
-                            }));
-                        }
-                    });
+                    spawn_output_reader(
+                        app.clone(),
+                        pty_id,
+                        reader,
+                        output_buffer,
+                        exited,
+                        exit_code_holder,
+                    );
 
                     log::info!(
                         "Restored tmux session '{}' as pty_id={}",
