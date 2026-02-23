@@ -28,6 +28,7 @@ pub(super) async fn route_message(
             handle_pty_spawn_request(req, state, selected_worktree).await
         }
         WsMessage::PtyOutputRequest(req) => handle_pty_output_request(req, state),
+        WsMessage::PtyKillRequest(req) => handle_pty_kill_request(req, state),
         WsMessage::GitCommitRequest(req) => {
             handle_git_commit_request(req, state, selected_worktree).await
         }
@@ -161,7 +162,11 @@ mod tests {
     async fn test_route_pty_spawn_request_without_worktree() {
         let state = test_state();
         let wt = test_selected_worktree();
-        let msg = WsMessage::PtySpawnRequest(PtySpawnRequest { cols: 80, rows: 24 });
+        let msg = WsMessage::PtySpawnRequest(PtySpawnRequest {
+            cols: 80,
+            rows: 24,
+            label: None,
+        });
         let result = route_message(&msg, &state, &wt).await;
         match result {
             Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
@@ -173,7 +178,11 @@ mod tests {
     async fn test_route_pty_spawn_request_without_pty_manager() {
         let state = test_state(); // pty_manager = None
         let wt = Arc::new(Mutex::new(Some("/tmp/test".to_string())));
-        let msg = WsMessage::PtySpawnRequest(PtySpawnRequest { cols: 80, rows: 24 });
+        let msg = WsMessage::PtySpawnRequest(PtySpawnRequest {
+            cols: 80,
+            rows: 24,
+            label: None,
+        });
         let result = route_message(&msg, &state, &wt).await;
         match result {
             Some(WsMessage::PtySpawnResponse(r)) => {
@@ -302,6 +311,22 @@ mod tests {
         match result {
             Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_REPO"),
             _ => panic!("expected no repo error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_pty_kill_without_pty_manager() {
+        let state = test_state(); // pty_manager = None
+        let wt = test_selected_worktree();
+        let msg = WsMessage::PtyKillRequest(PtyKillRequest { pty_id: 1 });
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::PtyKillResponse(r)) => {
+                assert!(!r.success);
+                assert_eq!(r.pty_id, 1);
+                assert!(r.error.is_some());
+            }
+            _ => panic!("expected PtyKillResponse with error"),
         }
     }
 

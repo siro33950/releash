@@ -130,6 +130,7 @@ describe("useTerminal", () => {
 				cols: 80,
 				cwd: null,
 				worktreePath: "",
+				label: null,
 			});
 		});
 	});

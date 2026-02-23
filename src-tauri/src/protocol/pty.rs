@@ -30,6 +30,10 @@ pub struct PtyReady {
     pub pty_id: u64,
     pub cols: u16,
     pub rows: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +45,8 @@ pub struct PtyOutputRequest {
 pub struct PtySpawnRequest {
     pub cols: u16,
     pub rows: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +54,19 @@ pub struct PtySpawnResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pty_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyKillRequest {
+    pub pty_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyKillResponse {
+    pub success: bool,
+    pub pty_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
