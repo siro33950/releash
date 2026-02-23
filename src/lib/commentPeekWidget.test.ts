@@ -384,7 +384,7 @@ describe("openCommentViewZone", () => {
 	});
 
 	it("dispose が removeZone を呼ぶ", () => {
-		const { editor, accessor, zones } = createMockEditor();
+		const { editor, accessor, zones, layoutDisposable } = createMockEditor();
 		const zone = openCommentViewZone(editor, {
 			lineNumber: 10,
 			existingComments: [],
@@ -396,6 +396,7 @@ describe("openCommentViewZone", () => {
 		zone.dispose();
 
 		expect(accessor.removeZone).toHaveBeenCalledWith(zoneId);
+		expect(layoutDisposable.dispose).toHaveBeenCalled();
 	});
 
 	it("showSentComments=false で sent コメントが非表示になる", () => {
