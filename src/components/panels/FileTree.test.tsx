@@ -266,4 +266,29 @@ describe("FileTree", () => {
 
 		expect(screen.getByText("helper.ts")).toBeInTheDocument();
 	});
+
+	it("should add data-filepath attribute to file buttons", () => {
+		render(
+			<FileTree
+				{...defaultProps({
+					expandedPaths: new Set(["/project/src"]),
+				})}
+			/>,
+		);
+
+		const fileButton = screen.getByText("index.ts").closest("button");
+		expect(fileButton).toHaveAttribute(
+			"data-filepath",
+			"/project/src/index.ts",
+		);
+
+		const folderButton = screen.getByText("src").closest("button");
+		expect(folderButton).toHaveAttribute("data-filepath", "/project/src");
+
+		const rootFileButton = screen.getByText("package.json").closest("button");
+		expect(rootFileButton).toHaveAttribute(
+			"data-filepath",
+			"/project/package.json",
+		);
+	});
 });
