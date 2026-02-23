@@ -121,7 +121,7 @@ export function useRemoteServer() {
 				if (isRunning) {
 					setBoundIp(bound_ip);
 					setConnectionMode(connection_mode);
-					refreshQr();
+					void refreshQr();
 				} else {
 					setQrData(null);
 					setBoundIp(null);

@@ -596,7 +596,9 @@ pub async fn update_app_settings(
             .config
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        config.app = app;
+        config.app.close_to_tray = app.close_to_tray;
+        config.app.auto_launch = app.auto_launch;
+        config.app.start_minimized = app.start_minimized;
         write_config(&app_config.config_path, &config)?;
         Ok(())
     })
@@ -1160,6 +1162,7 @@ token = "existing_token_value_here_with_enough_length_!!"
         let app = AppSection::default();
         assert!(app.close_to_tray);
         assert!(!app.auto_launch);
+        assert!(!app.start_minimized);
         assert!(app.last_root_path.is_empty());
         assert!(app.last_bind_ip.is_empty());
     }

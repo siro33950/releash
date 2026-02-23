@@ -121,6 +121,10 @@ fn handle_start_server(app: tauri::AppHandle) {
             crate::ws_server::commands::start_server_core(&app, repo_paths, last_bind_ip).await
         {
             log::error!("Failed to start server from tray: {e}");
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }
     });
 }

@@ -16,7 +16,6 @@ const DEFAULT_CONFIG: BackgroundConfig = {
 
 interface AppSectionResponse {
 	close_to_tray: boolean;
-	auto_launch: boolean;
 	start_minimized: boolean;
 	last_root_path: string;
 	last_bind_ip: string;
@@ -65,16 +64,11 @@ export function useBackgroundConfig() {
 				}
 			}
 
-			// Read current to preserve last_root_path/last_bind_ip
-			const current = await invoke<AppSectionResponse>("get_app_settings");
-
 			await invoke("update_app_settings", {
 				app: {
 					close_to_tray: draft.close_to_tray,
 					auto_launch: draft.auto_launch,
 					start_minimized: draft.start_minimized,
-					last_root_path: current.last_root_path,
-					last_bind_ip: current.last_bind_ip,
 				},
 			});
 
