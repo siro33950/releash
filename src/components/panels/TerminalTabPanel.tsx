@@ -110,7 +110,11 @@ export const TerminalTabPanel = forwardRef<
 
 	return (
 		<div className="flex flex-col h-full">
-			<div className="flex items-center gap-0.5 px-1 py-0.5 border-b border-border bg-card shrink-0 overflow-x-auto">
+			<div
+				role="tablist"
+				aria-label="ターミナルタブ"
+				className="flex items-center gap-0.5 px-1 py-0.5 border-b border-border bg-card shrink-0 overflow-x-auto"
+			>
 				{tabs.map((tab) => (
 					<div
 						key={tab.id}
@@ -120,11 +124,23 @@ export const TerminalTabPanel = forwardRef<
 								: "bg-secondary text-muted-foreground hover:bg-secondary/80"
 						}`}
 						role="tab"
-						tabIndex={0}
+						tabIndex={activeTabId === tab.id ? 0 : -1}
 						aria-selected={activeTabId === tab.id}
 						onClick={() => setActiveTabId(tab.id)}
 						onKeyDown={(e) => {
 							if (e.key === "Enter") setActiveTabId(tab.id);
+							if (e.key === "ArrowRight") {
+								e.preventDefault();
+								const idx = tabs.findIndex((t) => t.id === tab.id);
+								const next = tabs[idx + 1];
+								if (next) setActiveTabId(next.id);
+							}
+							if (e.key === "ArrowLeft") {
+								e.preventDefault();
+								const idx = tabs.findIndex((t) => t.id === tab.id);
+								const prev = tabs[idx - 1];
+								if (prev) setActiveTabId(prev.id);
+							}
 						}}
 					>
 						<span>{tab.label}</span>

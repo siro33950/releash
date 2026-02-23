@@ -43,7 +43,11 @@ export function TerminalTabContent({
 	if (terminalMounted && status === "connected" && ptySessions.length > 0) {
 		return (
 			<>
-				<div className="flex items-center gap-1 px-2 py-1 border-b border-border bg-card shrink-0 overflow-x-auto">
+				<div
+					role="tablist"
+					aria-label="ターミナルタブ"
+					className="flex items-center gap-1 px-2 py-1 border-b border-border bg-card shrink-0 overflow-x-auto"
+				>
 					{ptySessions.map((s) => (
 						<div
 							key={s.ptyId}
@@ -53,11 +57,23 @@ export function TerminalTabContent({
 									: "bg-secondary text-muted-foreground hover:bg-secondary/80"
 							}`}
 							role="tab"
-							tabIndex={0}
+							tabIndex={activePtyId === s.ptyId ? 0 : -1}
 							aria-selected={activePtyId === s.ptyId}
 							onClick={() => setActivePtyId(s.ptyId)}
 							onKeyDown={(e) => {
 								if (e.key === "Enter") setActivePtyId(s.ptyId);
+								if (e.key === "ArrowRight") {
+									e.preventDefault();
+									const idx = ptySessions.findIndex((x) => x.ptyId === s.ptyId);
+									const next = ptySessions[idx + 1];
+									if (next) setActivePtyId(next.ptyId);
+								}
+								if (e.key === "ArrowLeft") {
+									e.preventDefault();
+									const idx = ptySessions.findIndex((x) => x.ptyId === s.ptyId);
+									const prev = ptySessions[idx - 1];
+									if (prev) setActivePtyId(prev.ptyId);
+								}
 							}}
 						>
 							<span>{s.label ?? `Terminal ${s.ptyId}`}</span>
