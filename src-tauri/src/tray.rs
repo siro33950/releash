@@ -146,11 +146,13 @@ pub fn update_tray_menu(app_handle: &tauri::AppHandle, server_running: bool) {
 
 pub fn listen_server_status(app_handle: &tauri::AppHandle) {
     let handle = app_handle.clone();
-    app_handle.listen("server-status-changed", move |event| {
-        if let Ok(payload) =
-            serde_json::from_str::<crate::ws_server::commands::ServerStatusPayload>(event.payload())
-        {
-            update_tray_menu(&handle, payload.running);
-        }
-    });
+    app_handle.listen(
+        "server-status-changed",
+        move |event| match serde_json::from_str::<crate::ws_server::commands::ServerStatusPayload>(
+            event.payload(),
+        ) {
+            Ok(payload) => update_tray_menu(&handle, payload.running),
+            Err(e) => log::warn!("Failed to deserialize server-status-changed payload: {e}"),
+        },
+    );
 }

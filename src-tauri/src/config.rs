@@ -1176,6 +1176,7 @@ token = "existing_token_value_here_with_enough_length_!!"
         config.server.token = generate_token();
         config.app.close_to_tray = false;
         config.app.auto_launch = true;
+        config.app.start_minimized = true;
         config.app.last_root_path = "/repo/path".to_string();
         config.app.last_bind_ip = "10.0.0.1".to_string();
         write_config(&path, &config).unwrap();
@@ -1184,6 +1185,7 @@ token = "existing_token_value_here_with_enough_length_!!"
         let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
         assert!(!reloaded.app.close_to_tray);
         assert!(reloaded.app.auto_launch);
+        assert!(reloaded.app.start_minimized);
         assert_eq!(reloaded.app.last_root_path, "/repo/path");
         assert_eq!(reloaded.app.last_bind_ip, "10.0.0.1");
     }
@@ -1204,6 +1206,7 @@ token = "existing_token_value_here_with_enough_length_!!"
         let config = load_or_create_config(&path).unwrap();
         assert!(config.app.close_to_tray);
         assert!(!config.app.auto_launch);
+        assert!(!config.app.start_minimized);
         assert!(config.app.last_root_path.is_empty());
         assert!(config.app.last_bind_ip.is_empty());
     }
