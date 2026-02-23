@@ -25,12 +25,12 @@ pub struct StartServerResult {
 }
 
 pub struct WsServerHandle {
-    running: parking_lot::Mutex<bool>,
-    shutdown_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    active_bind: parking_lot::Mutex<Option<String>>,
-    tls_enabled: parking_lot::Mutex<bool>,
-    connection_mode: parking_lot::Mutex<Option<String>>,
-    server_state: parking_lot::Mutex<Option<Arc<WsServerState>>>,
+    pub(crate) running: parking_lot::Mutex<bool>,
+    pub(crate) shutdown_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub(crate) active_bind: parking_lot::Mutex<Option<String>>,
+    pub(crate) tls_enabled: parking_lot::Mutex<bool>,
+    pub(crate) connection_mode: parking_lot::Mutex<Option<String>>,
+    pub(crate) server_state: parking_lot::Mutex<Option<Arc<WsServerState>>>,
 }
 
 impl Default for WsServerHandle {

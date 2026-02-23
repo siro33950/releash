@@ -26,6 +26,8 @@ pub struct ReleashConfig {
     pub notion: HashMap<String, NotionRepoConfig>,
     #[serde(default)]
     pub remote: RemoteSection,
+    #[serde(default)]
+    pub app: AppSection,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -34,6 +36,32 @@ pub struct RemoteSection {
     pub auto_start: bool,
     #[serde(default)]
     pub auto_start_on_lan: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSection {
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
+    #[serde(default)]
+    pub auto_launch: bool,
+    #[serde(default)]
+    pub start_minimized: bool,
+    #[serde(default)]
+    pub last_root_path: String,
+    #[serde(default)]
+    pub last_bind_ip: String,
+}
+
+impl Default for AppSection {
+    fn default() -> Self {
+        Self {
+            close_to_tray: true,
+            auto_launch: false,
+            start_minimized: false,
+            last_root_path: String::new(),
+            last_bind_ip: String::new(),
+        }
+    }
 }
 
 fn default_crash_reporting() -> bool {
@@ -62,6 +90,7 @@ impl Default for ReleashConfig {
             telemetry: TelemetrySection::default(),
             notion: HashMap::new(),
             remote: RemoteSection::default(),
+            app: AppSection::default(),
         }
     }
 }
@@ -540,6 +569,57 @@ pub async fn update_notify_config(
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
         config.server.notify = notify;
+        write_config(&app_config.config_path, &config)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub fn get_app_settings(state: tauri::State<'_, Arc<AppConfig>>) -> Result<AppSection, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("ロック取得失敗: {e}"))?;
+    Ok(config.app.clone())
+}
+
+#[tauri::command]
+pub async fn update_app_settings(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    app: AppSection,
+) -> Result<(), String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.app.close_to_tray = app.close_to_tray;
+        config.app.auto_launch = app.auto_launch;
+        config.app.start_minimized = app.start_minimized;
+        write_config(&app_config.config_path, &config)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn update_last_server_context(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    last_root_path: String,
+    last_bind_ip: String,
+) -> Result<(), String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.app.last_root_path = last_root_path;
+        config.app.last_bind_ip = last_bind_ip;
         write_config(&app_config.config_path, &config)?;
         Ok(())
     })
@@ -1075,6 +1155,60 @@ token = "existing_token_value_here_with_enough_length_!!"
         let config = load_or_create_config(&path).unwrap();
         assert!(!config.remote.auto_start);
         assert!(!config.remote.auto_start_on_lan);
+    }
+
+    #[test]
+    fn app_section_defaults() {
+        let app = AppSection::default();
+        assert!(app.close_to_tray);
+        assert!(!app.auto_launch);
+        assert!(!app.start_minimized);
+        assert!(app.last_root_path.is_empty());
+        assert!(app.last_bind_ip.is_empty());
+    }
+
+    #[test]
+    fn app_section_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.app.close_to_tray = false;
+        config.app.auto_launch = true;
+        config.app.start_minimized = true;
+        config.app.last_root_path = "/repo/path".to_string();
+        config.app.last_bind_ip = "10.0.0.1".to_string();
+        write_config(&path, &config).unwrap();
+
+        let reloaded = fs::read_to_string(&path).unwrap();
+        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
+        assert!(!reloaded.app.close_to_tray);
+        assert!(reloaded.app.auto_launch);
+        assert!(reloaded.app.start_minimized);
+        assert_eq!(reloaded.app.last_root_path, "/repo/path");
+        assert_eq!(reloaded.app.last_bind_ip, "10.0.0.1");
+    }
+
+    #[test]
+    fn existing_config_without_app_gets_defaults() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+bind = "127.0.0.1"
+port = 9700
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert!(config.app.close_to_tray);
+        assert!(!config.app.auto_launch);
+        assert!(!config.app.start_minimized);
+        assert!(config.app.last_root_path.is_empty());
+        assert!(config.app.last_bind_ip.is_empty());
     }
 
     #[test]

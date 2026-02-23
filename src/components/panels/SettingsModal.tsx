@@ -7,6 +7,7 @@ import {
 	Copy,
 	Globe,
 	Loader2,
+	Monitor,
 	Palette,
 	Shield,
 } from "lucide-react";
@@ -32,6 +33,7 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
 import { trackEvent } from "@/lib/telemetry";
@@ -126,6 +128,7 @@ type SettingsSection =
 	| "editor"
 	| "agent"
 	| "remote"
+	| "background"
 	| "notifications"
 	| "privacy";
 
@@ -138,6 +141,7 @@ const SETTINGS_SECTIONS: {
 	{ id: "editor", label: "Editor", icon: Code },
 	{ id: "agent", label: "Agent", icon: Bot },
 	{ id: "remote", label: "Remote", icon: Globe },
+	{ id: "background", label: "Background", icon: Monitor },
 	{ id: "notifications", label: "Notifications", icon: Bell },
 	{ id: "privacy", label: "Privacy & Updates", icon: Shield },
 ];
@@ -505,6 +509,93 @@ function RemoteSection({
 	);
 }
 
+function BackgroundSection({
+	background,
+}: {
+	background: ReturnType<typeof useBackgroundConfig>;
+}) {
+	return (
+		<div className="flex flex-col gap-2">
+			{background.loading ? (
+				<div className="flex items-center justify-center py-4">
+					<Loader2 className="size-4 animate-spin text-muted-foreground" />
+				</div>
+			) : (
+				<>
+					<div className="flex items-center gap-2">
+						<Checkbox
+							id="close-to-tray"
+							checked={background.draft.close_to_tray}
+							onCheckedChange={(checked) =>
+								background.setDraft((d) => ({
+									...d,
+									close_to_tray: checked === true,
+								}))
+							}
+						/>
+						<label
+							htmlFor="close-to-tray"
+							className={`${labelClass} cursor-pointer`}
+						>
+							Minimize to tray on close
+						</label>
+					</div>
+					<p className="text-[10px] text-muted-foreground ml-6 -mt-1">
+						{background.draft.close_to_tray
+							? "Window hides to tray; restore from tray icon."
+							: "Window minimizes to Dock/taskbar."}
+					</p>
+
+					<div className="flex items-center gap-2">
+						<Checkbox
+							id="auto-launch"
+							checked={background.draft.auto_launch}
+							onCheckedChange={(checked) =>
+								background.setDraft((d) => ({
+									...d,
+									auto_launch: checked === true,
+								}))
+							}
+						/>
+						<label
+							htmlFor="auto-launch"
+							className={`${labelClass} cursor-pointer`}
+						>
+							Launch at login
+						</label>
+					</div>
+
+					<div
+						className={`flex items-center gap-2 ml-4 ${background.draft.auto_launch ? "" : "cursor-not-allowed opacity-50"}`}
+					>
+						<Checkbox
+							id="start-minimized"
+							checked={background.draft.start_minimized}
+							disabled={!background.draft.auto_launch}
+							onCheckedChange={(checked) =>
+								background.setDraft((d) => ({
+									...d,
+									start_minimized: checked === true,
+								}))
+							}
+						/>
+						<label
+							htmlFor="start-minimized"
+							className={`${labelClass} ${background.draft.auto_launch ? "cursor-pointer" : ""}`}
+						>
+							Start minimized
+						</label>
+					</div>
+
+					{background.error && (
+						<p className="text-xs text-destructive">{background.error}</p>
+					)}
+				</>
+			)}
+		</div>
+	);
+}
+
 function NotificationsSection({
 	webhook,
 }: {
@@ -789,6 +880,7 @@ export function SettingsModal({
 	const { activeSection, draft, appDirty, saving } = state;
 	const webhook = useWebhookConfig();
 	const remote = useRemoteConfig();
+	const background = useBackgroundConfig();
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
@@ -854,6 +946,7 @@ export function SettingsModal({
 
 	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
 	const { isDirty: remoteIsDirty, save: remoteSave } = remote;
+	const { isDirty: backgroundIsDirty, save: backgroundSave } = background;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -865,6 +958,9 @@ export function SettingsModal({
 			if (remoteIsDirty) {
 				await remoteSave();
 			}
+			if (backgroundIsDirty) {
+				await backgroundSave();
+			}
 			if (draft.telemetryEnabled) {
 				trackEvent("settings_saved");
 			}
@@ -874,9 +970,19 @@ export function SettingsModal({
 		} finally {
 			dispatchSettings({ type: "SAVE_END" });
 		}
-	}, [draft, onSave, webhookIsDirty, webhookSave, remoteIsDirty, remoteSave]);
+	}, [
+		draft,
+		onSave,
+		webhookIsDirty,
+		webhookSave,
+		remoteIsDirty,
+		remoteSave,
+		backgroundIsDirty,
+		backgroundSave,
+	]);
 
-	const isDirty = appDirty || webhookIsDirty || remoteIsDirty;
+	const isDirty =
+		appDirty || webhookIsDirty || remoteIsDirty || backgroundIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
@@ -902,6 +1008,8 @@ export function SettingsModal({
 				);
 			case "remote":
 				return <RemoteSection remote={remote} />;
+			case "background":
+				return <BackgroundSection background={background} />;
 			case "notifications":
 				return <NotificationsSection webhook={webhook} />;
 			case "privacy":

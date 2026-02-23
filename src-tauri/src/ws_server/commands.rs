@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::config::AppConfig;
 use crate::ws_bridge::WsBroadcaster;
@@ -8,18 +8,24 @@ use crate::ws_bridge::WsBroadcaster;
 use super::http::start_ws_server;
 use super::{StartServerResult, WsServerHandle, WsServerState};
 
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn start_server(
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ServerStatusPayload {
+    pub running: bool,
+    pub bound_ip: Option<String>,
+    pub connection_mode: Option<String>,
+}
+
+pub async fn start_server_core(
+    app: &tauri::AppHandle,
     repo_paths: Vec<String>,
     bind_ip: String,
-    app: tauri::AppHandle,
-    handle: tauri::State<'_, WsServerHandle>,
-    config_state: tauri::State<'_, Arc<AppConfig>>,
-    broadcaster: tauri::State<'_, Arc<WsBroadcaster>>,
-    pty_manager: tauri::State<'_, Arc<crate::pty::PtyManager>>,
-    pr_cache: tauri::State<'_, Arc<crate::git_host::PrCache>>,
 ) -> Result<StartServerResult, String> {
+    let handle = app.state::<WsServerHandle>();
+    let config_state = app.state::<Arc<AppConfig>>();
+    let broadcaster = app.state::<Arc<WsBroadcaster>>();
+    let pty_manager = app.state::<Arc<crate::pty::PtyManager>>();
+    let pr_cache = app.state::<Arc<crate::git_host::PrCache>>();
+
     {
         let running = handle.running.lock();
         if *running {
@@ -73,7 +79,7 @@ pub async fn start_server(
         remote_dir,
         Arc::clone(&broadcaster),
         Some(Arc::clone(&pty_manager)),
-        repo_paths,
+        repo_paths.clone(),
         Arc::clone(config_state.inner()),
         Some(app.clone()),
         cfg.server.tls.enabled,
@@ -93,11 +99,29 @@ pub async fn start_server(
         *handle.server_state.lock() = Some(server_state);
     }
 
+    let _ = app.emit(
+        "server-status-changed",
+        ServerStatusPayload {
+            running: true,
+            bound_ip: Some(bind_ip.clone()),
+            connection_mode: Some(mode.clone()),
+        },
+    );
+
+    // Save last server context
+    let last_root = repo_paths.first().cloned().unwrap_or_default();
+    let _ = config_state.with_config_mut(|config| {
+        config.app.last_root_path = last_root;
+        config.app.last_bind_ip = bind_ip.clone();
+        Ok(())
+    });
+
     Ok(StartServerResult { ip: bind_ip, mode })
 }
 
-#[tauri::command]
-pub fn stop_server(handle: tauri::State<'_, WsServerHandle>) -> Result<(), String> {
+pub async fn stop_server_core(app: &tauri::AppHandle) -> Result<(), String> {
+    let handle = app.state::<WsServerHandle>();
+
     let tx = {
         let mut shutdown_tx = handle.shutdown_tx.lock();
         shutdown_tx.take()
@@ -111,10 +135,34 @@ pub fn stop_server(handle: tauri::State<'_, WsServerHandle>) -> Result<(), Strin
         *handle.tls_enabled.lock() = false;
         handle.connection_mode.lock().take();
         *handle.server_state.lock() = None;
+
+        let _ = app.emit(
+            "server-status-changed",
+            ServerStatusPayload {
+                running: false,
+                bound_ip: None,
+                connection_mode: None,
+            },
+        );
+
         Ok(())
     } else {
         Err("サーバーは起動していません".to_string())
     }
+}
+
+#[tauri::command]
+pub async fn start_server(
+    repo_paths: Vec<String>,
+    bind_ip: String,
+    app: tauri::AppHandle,
+) -> Result<StartServerResult, String> {
+    start_server_core(&app, repo_paths, bind_ip).await
+}
+
+#[tauri::command]
+pub async fn stop_server(app: tauri::AppHandle) -> Result<(), String> {
+    stop_server_core(&app).await
 }
 
 #[tauri::command]
