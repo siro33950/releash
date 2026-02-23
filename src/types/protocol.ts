@@ -42,6 +42,8 @@ export interface PtyReady {
 	pty_id: number;
 	cols: number;
 	rows: number;
+	label?: string;
+	worktree_path?: string;
 }
 
 export interface PtyOutputRequest {
@@ -51,11 +53,22 @@ export interface PtyOutputRequest {
 export interface PtySpawnRequest {
 	cols: number;
 	rows: number;
+	label?: string;
 }
 
 export interface PtySpawnResponse {
 	success: boolean;
 	pty_id?: number;
+	error?: string;
+}
+
+export interface PtyKillRequest {
+	pty_id: number;
+}
+
+export interface PtyKillResponse {
+	success: boolean;
+	pty_id: number;
 	error?: string;
 }
 
@@ -247,6 +260,8 @@ export type WsMessage =
 	| { type: "pty_output_request"; payload: PtyOutputRequest }
 	| { type: "pty_spawn_request"; payload: PtySpawnRequest }
 	| { type: "pty_spawn_response"; payload: PtySpawnResponse }
+	| { type: "pty_kill_request"; payload: PtyKillRequest }
+	| { type: "pty_kill_response"; payload: PtyKillResponse }
 	| { type: "git_status_sync"; payload: GitStatusSync }
 	| { type: "file_content_request"; payload: FileContentRequest }
 	| { type: "file_content_response"; payload: FileContentResponse }

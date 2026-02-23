@@ -19,7 +19,7 @@ import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
 import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
-import type { TerminalPanelHandle } from "@/components/panels/TerminalPanel";
+import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPanel";
 import type { EditorContextValue } from "@/contexts/EditorContext";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useEditorLayout } from "@/hooks/useEditorLayout";
@@ -99,7 +99,7 @@ export function useWorktreeState({
 	} = useLineComments();
 	const { stage, unstage, push, discard, stageHunk, createBranch } =
 		useGitActions();
-	const terminalRef = useRef<TerminalPanelHandle>(null);
+	const terminalRef = useRef<TerminalTabPanelHandle>(null);
 
 	const [git, dispatchGit] = useReducer(gitReducer, {
 		diffBase: settings.defaultDiffBase,

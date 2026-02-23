@@ -25,8 +25,8 @@ import { IssuePanel } from "@/components/panels/IssuePanel";
 import { NotionPanel } from "@/components/panels/NotionPanel";
 import { RemotePanel } from "@/components/panels/RemotePanel";
 import { SettingsModal } from "@/components/panels/SettingsModal";
-import type { TerminalPanelHandle } from "@/components/panels/TerminalPanel";
-import { TerminalPanel } from "@/components/panels/TerminalPanel";
+import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPanel";
+import { TerminalTabPanel } from "@/components/panels/TerminalTabPanel";
 import { Button } from "@/components/ui/button";
 import { RepoKanbanBoard } from "@/components/workspace/RepoKanbanBoard";
 import type { ProviderStatus } from "@/types/git";
@@ -160,7 +160,7 @@ export function WorkspaceManagerScreen({
 
 	const sidebarPanelRef = useRef<PanelImperativeHandle>(null);
 	const terminalPanelRef = useRef<PanelImperativeHandle>(null);
-	const terminalRef = useRef<TerminalPanelHandle>(null);
+	const terminalRef = useRef<TerminalTabPanelHandle>(null);
 
 	const handleSidebarResize = useCallback((size: PanelSize) => {
 		dispatch({ type: "SET_SIDEBAR_VISIBLE", visible: size.asPercentage > 0 });
@@ -326,7 +326,7 @@ export function WorkspaceManagerScreen({
 						onResize={handleTerminalResize}
 					>
 						<div className="h-full overflow-clip border-l border-border">
-							<TerminalPanel
+							<TerminalTabPanel
 								ref={terminalRef}
 								theme={settings.theme}
 								sessionKey="kanban"

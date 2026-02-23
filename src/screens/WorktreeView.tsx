@@ -6,7 +6,7 @@ import { StatusBar } from "@/components/layout/StatusBar";
 import { ViewToolbar } from "@/components/layout/ViewToolbar";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { SettingsModal } from "@/components/panels/SettingsModal";
-import { TerminalPanel } from "@/components/panels/TerminalPanel";
+import { TerminalTabPanel } from "@/components/panels/TerminalTabPanel";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
 import { EditorContext } from "@/contexts/EditorContext";
 import { useWorktreeState } from "@/screens/useWorktreeState";
@@ -134,7 +134,7 @@ export function WorktreeView({
 								onResize={s.handleTerminalResize}
 							>
 								<div className="h-full overflow-clip border-l border-border">
-									<TerminalPanel
+									<TerminalTabPanel
 										ref={s.terminalRef}
 										key={rootPath}
 										cwd={rootPath}

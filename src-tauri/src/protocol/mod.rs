@@ -95,6 +95,12 @@ pub enum WsMessage {
     #[serde(rename = "pty_spawn_response")]
     PtySpawnResponse(PtySpawnResponse),
 
+    // PTY Kill
+    #[serde(rename = "pty_kill_request")]
+    PtyKillRequest(PtyKillRequest),
+    #[serde(rename = "pty_kill_response")]
+    PtyKillResponse(PtyKillResponse),
+
     // Worktree
     #[serde(rename = "worktree_list_request")]
     WorktreeListRequest(WorktreeListRequest),
@@ -397,6 +403,8 @@ mod tests {
                 pty_id: 1,
                 cols: 80,
                 rows: 24,
+                label: None,
+                worktree_path: None,
             }),
             WsMessage::PtyOutputRequest(PtyOutputRequest { pty_id: 1 }),
             WsMessage::GitStatusSync(GitStatusSync { files: vec![] }),
@@ -471,10 +479,20 @@ mod tests {
                     created_at: 1234567890.0,
                 }],
             }),
-            WsMessage::PtySpawnRequest(PtySpawnRequest { cols: 80, rows: 24 }),
+            WsMessage::PtySpawnRequest(PtySpawnRequest {
+                cols: 80,
+                rows: 24,
+                label: None,
+            }),
             WsMessage::PtySpawnResponse(PtySpawnResponse {
                 success: true,
                 pty_id: Some(1),
+                error: None,
+            }),
+            WsMessage::PtyKillRequest(PtyKillRequest { pty_id: 1 }),
+            WsMessage::PtyKillResponse(PtyKillResponse {
+                success: true,
+                pty_id: 1,
                 error: None,
             }),
             WsMessage::WorktreeListRequest(WorktreeListRequest {}),
@@ -536,6 +554,105 @@ mod tests {
             let back = deserialize_message(&json).unwrap();
             let json2 = serialize_message(&back).unwrap();
             assert_eq!(json, json2, "roundtrip failed for: {json}");
+        }
+    }
+
+    #[test]
+    fn roundtrip_pty_spawn_request_with_label() {
+        let msg = WsMessage::PtySpawnRequest(PtySpawnRequest {
+            cols: 120,
+            rows: 40,
+            label: Some("dev-server".to_string()),
+        });
+        let json = serialize_message(&msg).unwrap();
+        assert!(json.contains("\"label\":\"dev-server\""));
+        let back = deserialize_message(&json).unwrap();
+        match back {
+            WsMessage::PtySpawnRequest(r) => {
+                assert_eq!(r.label.unwrap(), "dev-server");
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_pty_ready_with_label_and_worktree() {
+        let msg = WsMessage::PtyReady(PtyReady {
+            pty_id: 5,
+            cols: 80,
+            rows: 24,
+            label: Some("build".to_string()),
+            worktree_path: Some("/repo/wt".to_string()),
+        });
+        let json = serialize_message(&msg).unwrap();
+        assert!(json.contains("\"label\":\"build\""));
+        assert!(json.contains("\"worktree_path\":\"/repo/wt\""));
+        let back = deserialize_message(&json).unwrap();
+        match back {
+            WsMessage::PtyReady(r) => {
+                assert_eq!(r.label.unwrap(), "build");
+                assert_eq!(r.worktree_path.unwrap(), "/repo/wt");
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn backward_compat_pty_spawn_request_without_label() {
+        let json = r#"{"type":"pty_spawn_request","payload":{"cols":80,"rows":24}}"#;
+        let msg = deserialize_message(json).unwrap();
+        match msg {
+            WsMessage::PtySpawnRequest(r) => {
+                assert_eq!(r.cols, 80);
+                assert_eq!(r.rows, 24);
+                assert!(r.label.is_none());
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn backward_compat_pty_ready_without_label() {
+        let json = r#"{"type":"pty_ready","payload":{"pty_id":1,"cols":80,"rows":24}}"#;
+        let msg = deserialize_message(json).unwrap();
+        match msg {
+            WsMessage::PtyReady(r) => {
+                assert_eq!(r.pty_id, 1);
+                assert!(r.label.is_none());
+                assert!(r.worktree_path.is_none());
+            }
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_pty_kill_request() {
+        let msg = WsMessage::PtyKillRequest(PtyKillRequest { pty_id: 42 });
+        let json = serialize_message(&msg).unwrap();
+        let back = deserialize_message(&json).unwrap();
+        match back {
+            WsMessage::PtyKillRequest(r) => assert_eq!(r.pty_id, 42),
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_pty_kill_response() {
+        let msg = WsMessage::PtyKillResponse(PtyKillResponse {
+            success: true,
+            pty_id: 42,
+            error: None,
+        });
+        let json = serialize_message(&msg).unwrap();
+        assert!(!json.contains("\"error\""));
+        let back = deserialize_message(&json).unwrap();
+        match back {
+            WsMessage::PtyKillResponse(r) => {
+                assert!(r.success);
+                assert_eq!(r.pty_id, 42);
+                assert!(r.error.is_none());
+            }
+            _ => panic!("unexpected variant"),
         }
     }
 }

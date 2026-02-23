@@ -6,6 +6,7 @@ import { RemoteTerminalPanel } from "./RemoteTerminalPanel";
 interface PtySession {
 	ptyId: number;
 	cols: number;
+	label?: string;
 }
 
 interface TerminalTabContentProps {
@@ -20,7 +21,8 @@ interface TerminalTabContentProps {
 	send: (msg: WsMessage) => void;
 	subscribe: Subscribe;
 	setActivePtyId: (id: number) => void;
-	spawnPty: () => void;
+	spawnPty: (label?: string) => void;
+	killPty: (ptyId: number) => void;
 }
 
 export function TerminalTabContent({
@@ -36,28 +38,56 @@ export function TerminalTabContent({
 	subscribe,
 	setActivePtyId,
 	spawnPty,
+	killPty,
 }: TerminalTabContentProps) {
 	if (terminalMounted && status === "connected" && ptySessions.length > 0) {
 		return (
 			<>
-				{ptySessions.length > 1 && (
-					<div className="flex items-center gap-1 px-2 py-1 border-b border-border bg-card shrink-0 overflow-x-auto">
-						{ptySessions.map((s) => (
+				<div className="flex items-center gap-1 px-2 py-1 border-b border-border bg-card shrink-0 overflow-x-auto">
+					{ptySessions.map((s, index) => (
+						<div
+							key={s.ptyId}
+							className={`group flex items-center gap-1 px-2 py-0.5 text-xs rounded transition-colors shrink-0 cursor-pointer ${
+								activePtyId === s.ptyId
+									? "bg-primary text-primary-foreground"
+									: "bg-secondary text-muted-foreground hover:bg-secondary/80"
+							}`}
+							role="tab"
+							tabIndex={0}
+							aria-selected={activePtyId === s.ptyId}
+							onClick={() => setActivePtyId(s.ptyId)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter") setActivePtyId(s.ptyId);
+							}}
+						>
+							<span>{s.label ?? `Terminal ${index + 1}`}</span>
 							<button
-								key={s.ptyId}
 								type="button"
-								className={`px-2 py-0.5 text-xs rounded transition-colors shrink-0 ${
+								className={`ml-0.5 rounded-sm hover:bg-black/20 inline-flex items-center ${
 									activePtyId === s.ptyId
-										? "bg-primary text-primary-foreground"
-										: "bg-secondary text-muted-foreground hover:bg-secondary/80"
+										? "opacity-80"
+										: "opacity-0 group-hover:opacity-60"
 								}`}
-								onClick={() => setActivePtyId(s.ptyId)}
+								onClick={(e) => {
+									e.stopPropagation();
+									killPty(s.ptyId);
+								}}
+								aria-label={`Close ${s.label ?? `Terminal ${index + 1}`}`}
 							>
-								PTY {s.ptyId}
+								&#x2715;
 							</button>
-						))}
-					</div>
-				)}
+						</div>
+					))}
+					<button
+						type="button"
+						className="px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary rounded transition-colors shrink-0"
+						onClick={() => spawnPty()}
+						disabled={ptySpawning || !selectedWorktree}
+						aria-label="Add terminal"
+					>
+						+
+					</button>
+				</div>
 				{activePtyId != null && (
 					<div className="flex-1" style={{ minHeight: 0 }}>
 						<RemoteTerminalPanel
@@ -86,7 +116,7 @@ export function TerminalTabContent({
 				<p>ターミナルセッションがありません</p>
 				<button
 					type="button"
-					onClick={spawnPty}
+					onClick={() => spawnPty()}
 					disabled={ptySpawning || !selectedWorktree}
 					className="px-4 py-2 rounded bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed text-primary-foreground text-sm transition-colors"
 				>

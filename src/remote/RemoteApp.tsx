@@ -64,6 +64,7 @@ export function RemoteApp() {
 		setActivePtyId,
 		setTerminalMounted,
 		spawnPty,
+		killPty,
 		resetPty,
 	} = usePtyManagement({ subscribe, send });
 
@@ -265,6 +266,7 @@ export function RemoteApp() {
 								subscribe={subscribe}
 								setActivePtyId={setActivePtyId}
 								spawnPty={spawnPty}
+								killPty={killPty}
 							/>
 						</div>
 					</main>
