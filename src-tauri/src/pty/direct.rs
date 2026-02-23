@@ -130,3 +130,37 @@ impl PtyBackend for DirectPtyBackend {
         "direct"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backend_name() {
+        let backend = DirectPtyBackend::new();
+        assert_eq!(backend.backend_name(), "direct");
+    }
+
+    #[test]
+    fn test_attach_returns_error() {
+        let backend = DirectPtyBackend::new();
+        let result = backend.attach("any-session-id");
+        match result {
+            Err(e) => assert!(e.contains("does not support session attachment")),
+            Ok(_) => panic!("Expected error"),
+        }
+    }
+
+    #[test]
+    fn test_list_existing_returns_empty() {
+        let backend = DirectPtyBackend::new();
+        let result = backend.list_existing();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_new_creates_instance() {
+        let _backend = DirectPtyBackend::new();
+    }
+}
