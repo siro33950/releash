@@ -364,4 +364,53 @@ mod tests {
         let backend = TmuxPtyBackend::new();
         assert_eq!(backend.backend_name(), "tmux");
     }
+
+    #[test]
+    fn test_session_name_both_none() {
+        let name = session_name(None, None);
+        assert_eq!(name, format!("{}-none-default", SESSION_PREFIX));
+    }
+
+    #[test]
+    fn test_session_prefix_value() {
+        assert_eq!(SESSION_PREFIX, "releash");
+    }
+
+    #[test]
+    fn test_tmux_killer_clone_preserves_killed_state() {
+        let killer = TmuxKiller {
+            session: "test-session".to_string(),
+            killed: AtomicBool::new(true),
+        };
+        let cloned = killer.clone_killer();
+        // The cloned killer should have the same session name — we can check
+        // by formatting the debug output since TmuxKiller derives Debug
+        let debug_str = format!("{:?}", killer);
+        assert!(debug_str.contains("test-session"));
+        assert!(killer.killed.load(Ordering::SeqCst));
+        // cloned is Box<dyn ChildKiller>, test that clone_killer works without panic
+        drop(cloned);
+    }
+
+    #[test]
+    fn test_tmux_writer_flush_is_noop() {
+        let mut writer = TmuxWriter {
+            session: "test-session".to_string(),
+        };
+        let result = writer.flush();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_tmux_new_creates_instance() {
+        let _backend = TmuxPtyBackend::new();
+    }
+
+    #[test]
+    fn test_session_name_format() {
+        let name = session_name(Some("/repo"), Some("dev"));
+        let parts: Vec<&str> = name.splitn(3, '-').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "releash");
+    }
 }

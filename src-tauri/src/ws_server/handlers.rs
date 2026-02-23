@@ -610,3 +610,91 @@ pub(super) fn handle_update_comment(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_no_repo_error() {
+        let msg = no_repo_error();
+        match msg {
+            WsMessage::Error(e) => {
+                assert_eq!(e.code, "NO_REPO");
+                assert!(!e.message.is_empty());
+            }
+            _ => panic!("Expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn test_no_worktree_selected_error() {
+        let msg = no_worktree_selected_error();
+        match msg {
+            WsMessage::Error(e) => {
+                assert_eq!(e.code, "NO_WORKTREE_SELECTED");
+                assert!(!e.message.is_empty());
+            }
+            _ => panic!("Expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn test_git_status_to_msg_list_nonexistent_repo() {
+        let files = git_status_to_msg_list("/nonexistent/repo/path");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_handle_pty_input_no_manager() {
+        let config = crate::config::ReleashConfig::default();
+        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+        let state = WsServerState::new(
+            None,
+            std::sync::Arc::new(WsBroadcaster::default()),
+            None,
+            vec![],
+            app_config,
+            None,
+            false,
+            std::sync::Arc::new(crate::git_host::PrCache::new()),
+        );
+        let input = PtyInput {
+            pty_id: 1,
+            data: "hello".to_string(),
+        };
+        let result = handle_pty_input(&input, &state);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_handle_pty_output_request_no_manager() {
+        let config = crate::config::ReleashConfig::default();
+        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+        let state = WsServerState::new(
+            None,
+            std::sync::Arc::new(WsBroadcaster::default()),
+            None,
+            vec![],
+            app_config,
+            None,
+            false,
+            std::sync::Arc::new(crate::git_host::PrCache::new()),
+        );
+        let req = PtyOutputRequest { pty_id: 1 };
+        let result = handle_pty_output_request(&req, &state);
+        assert!(result.is_some());
+        match result.unwrap() {
+            WsMessage::Error(e) => {
+                assert_eq!(e.code, "NO_PTY");
+            }
+            _ => panic!("Expected Error variant"),
+        }
+    }
+}
