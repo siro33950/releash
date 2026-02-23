@@ -79,23 +79,22 @@ export const TerminalTabPanel = forwardRef<
 		});
 	}, []);
 
-	const closeTab = useCallback(
-		(tabId: string) => {
-			setTabs((prev) => {
-				if (prev.length <= 1) return prev;
-				const tab = prev.find((t) => t.id === tabId);
-				if (tab?.ptyId != null) {
-					invoke("kill_pty", { ptyId: tab.ptyId }).catch(() => {});
-				}
-				const next = prev.filter((t) => t.id !== tabId);
-				if (activeTabId === tabId) {
-					setActiveTabId(next[0].id);
-				}
-				return next;
-			});
-		},
-		[activeTabId],
-	);
+	const closeTab = useCallback((tabId: string) => {
+		setTabs((prev) => {
+			if (prev.length <= 1) return prev;
+			const tab = prev.find((t) => t.id === tabId);
+			if (tab?.ptyId != null) {
+				invoke("kill_pty", { ptyId: tab.ptyId }).catch((err) =>
+					console.warn("kill_pty failed:", err),
+				);
+			}
+			const next = prev.filter((t) => t.id !== tabId);
+			setActiveTabId((currentActive) =>
+				currentActive === tabId ? next[0].id : currentActive,
+			);
+			return next;
+		});
+	}, []);
 
 	const setTerminalRef = useCallback(
 		(tabId: string) => (handle: TerminalPanelHandle | null) => {
@@ -128,18 +127,29 @@ export const TerminalTabPanel = forwardRef<
 						aria-selected={activeTabId === tab.id}
 						onClick={() => setActiveTabId(tab.id)}
 						onKeyDown={(e) => {
-							if (e.key === "Enter") setActiveTabId(tab.id);
+							if (e.key === "Enter" || e.key === " ") {
+								e.preventDefault();
+								setActiveTabId(tab.id);
+							}
 							if (e.key === "ArrowRight") {
 								e.preventDefault();
 								const idx = tabs.findIndex((t) => t.id === tab.id);
 								const next = tabs[idx + 1];
-								if (next) setActiveTabId(next.id);
+								if (next) {
+									setActiveTabId(next.id);
+									(e.currentTarget.nextElementSibling as HTMLElement)?.focus();
+								}
 							}
 							if (e.key === "ArrowLeft") {
 								e.preventDefault();
 								const idx = tabs.findIndex((t) => t.id === tab.id);
 								const prev = tabs[idx - 1];
-								if (prev) setActiveTabId(prev.id);
+								if (prev) {
+									setActiveTabId(prev.id);
+									(
+										e.currentTarget.previousElementSibling as HTMLElement
+									)?.focus();
+								}
 							}
 						}}
 					>
