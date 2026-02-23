@@ -13,6 +13,7 @@ mod search;
 mod sentry_integration;
 mod shell_integration;
 mod tls;
+mod tray;
 mod vpn_detect;
 mod watcher;
 mod webhook;
@@ -20,6 +21,7 @@ mod ws_bridge;
 mod ws_server;
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use config::{load_or_create_config, AppConfig};
@@ -47,6 +49,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))
@@ -94,7 +100,7 @@ pub fn run() {
             }
 
             let hook_state = hook_listener::HookListenerState {
-                app_config,
+                app_config: app_config.clone(),
                 app_handle: app.handle().clone(),
                 broadcaster: app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone(),
                 agent_states,
@@ -107,9 +113,54 @@ pub fn run() {
             });
 
             menu::setup_menu(app)?;
+            tray::setup_tray(app)?;
+            tray::listen_server_status(app.handle());
 
             if let Some(window) = app.get_webview_window("main") {
                 native_drop::install(&window);
+            }
+
+            // --hidden flag: auto-launch scenario
+            let is_hidden = std::env::args().any(|a| a == "--hidden");
+            if is_hidden {
+                let start_minimized = app_config.get_config().is_ok_and(|c| c.app.start_minimized);
+                if start_minimized {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let close_to_tray =
+                            app_config.get_config().is_ok_and(|c| c.app.close_to_tray);
+                        if close_to_tray {
+                            let _ = window.hide();
+                        } else {
+                            let _ = window.minimize();
+                        }
+                    }
+                }
+            }
+
+            // Auto-start server if configured
+            let auto_start = app_config
+                .get_config()
+                .is_ok_and(|c| c.remote.auto_start && !c.app.last_root_path.is_empty());
+            if auto_start {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let (root_path, bind_ip) = {
+                        let cfg_state = handle.state::<Arc<AppConfig>>();
+                        match cfg_state.get_config() {
+                            Ok(c) => (c.app.last_root_path.clone(), c.app.last_bind_ip.clone()),
+                            Err(_) => return,
+                        }
+                    };
+                    if root_path.is_empty() || bind_ip.is_empty() {
+                        return;
+                    }
+                    if let Err(e) =
+                        ws_server::commands::start_server_core(&handle, vec![root_path], bind_ip)
+                            .await
+                    {
+                        log::error!("Auto-start server failed: {e}");
+                    }
+                });
             }
 
             if telemetry_enabled {
@@ -197,6 +248,9 @@ pub fn run() {
             config::update_notify_config,
             config::get_remote_config,
             config::update_remote_config,
+            config::get_app_settings,
+            config::update_app_settings,
+            config::update_last_server_context,
             config::get_crash_reporting_enabled,
             config::update_crash_reporting,
             config::update_webhook_url,
@@ -217,8 +271,42 @@ pub fn run() {
             // Menu
             menu::set_menu_items_enabled,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                label,
+                ..
+            } => {
+                api.prevent_close();
+                let close_to_tray = app_handle
+                    .try_state::<Arc<AppConfig>>()
+                    .and_then(|cfg| cfg.get_config().ok())
+                    .is_none_or(|c| c.app.close_to_tray);
+
+                if let Some(window) = app_handle.get_webview_window(&label) {
+                    if close_to_tray {
+                        let _ = window.hide();
+                    } else {
+                        let _ = window.minimize();
+                    }
+                }
+            }
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if !tray::QUIT_REQUESTED.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { formatRemoteServerError } from "@/lib/errorHandler";
 import { trackEvent } from "@/lib/telemetry";
@@ -29,6 +30,12 @@ interface ServerInfo {
 interface StartServerResult {
 	ip: string;
 	mode: "vpn" | "lan";
+}
+
+interface ServerStatusPayload {
+	running: boolean;
+	bound_ip: string | null;
+	connection_mode: "vpn" | "lan" | null;
 }
 
 export function useRemoteServer() {
@@ -104,6 +111,28 @@ export function useRemoteServer() {
 			refreshQr();
 		}
 	}, [running, qrData, refreshQr]);
+
+	useEffect(() => {
+		const unlisten = listen<ServerStatusPayload>(
+			"server-status-changed",
+			(event) => {
+				const { running: isRunning, bound_ip, connection_mode } = event.payload;
+				setRunning(isRunning);
+				if (isRunning) {
+					setBoundIp(bound_ip);
+					setConnectionMode(connection_mode);
+					refreshQr();
+				} else {
+					setQrData(null);
+					setBoundIp(null);
+					setConnectionMode(null);
+				}
+			},
+		);
+		return () => {
+			unlisten.then((fn) => fn());
+		};
+	}, [refreshQr]);
 
 	const doStartServer = useCallback(
 		async (repoPaths: string[], bindIp: string) => {
