@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { WsMessage } from "@/types/protocol";
 import type { Subscribe } from "../hooks/useMessageBus";
 import type { ConnectionStatus } from "../hooks/useWebSocket";
@@ -40,6 +41,15 @@ export function TerminalTabContent({
 	spawnPty,
 	killPty,
 }: TerminalTabContentProps) {
+	const tabRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+	const activateTab = (ptyId: number) => {
+		setActivePtyId(ptyId);
+		requestAnimationFrame(() => {
+			tabRefs.current.get(ptyId)?.focus();
+		});
+	};
+
 	if (terminalMounted && status === "connected" && ptySessions.length > 0) {
 		return (
 			<>
@@ -51,6 +61,11 @@ export function TerminalTabContent({
 					{ptySessions.map((s) => (
 						<div
 							key={s.ptyId}
+							ref={(el) => {
+								if (el) tabRefs.current.set(s.ptyId, el);
+								else tabRefs.current.delete(s.ptyId);
+							}}
+							id={`terminal-tab-${s.ptyId}`}
 							className={`group flex items-center gap-1 px-2 py-0.5 text-xs rounded transition-colors shrink-0 cursor-pointer ${
 								activePtyId === s.ptyId
 									? "bg-primary text-primary-foreground"
@@ -59,20 +74,24 @@ export function TerminalTabContent({
 							role="tab"
 							tabIndex={activePtyId === s.ptyId ? 0 : -1}
 							aria-selected={activePtyId === s.ptyId}
-							onClick={() => setActivePtyId(s.ptyId)}
+							aria-controls={`terminal-panel-${s.ptyId}`}
+							onClick={() => activateTab(s.ptyId)}
 							onKeyDown={(e) => {
-								if (e.key === "Enter") setActivePtyId(s.ptyId);
+								if (e.key === "Enter" || e.key === " ") {
+									e.preventDefault();
+									activateTab(s.ptyId);
+								}
 								if (e.key === "ArrowRight") {
 									e.preventDefault();
 									const idx = ptySessions.findIndex((x) => x.ptyId === s.ptyId);
 									const next = ptySessions[idx + 1];
-									if (next) setActivePtyId(next.ptyId);
+									if (next) activateTab(next.ptyId);
 								}
 								if (e.key === "ArrowLeft") {
 									e.preventDefault();
 									const idx = ptySessions.findIndex((x) => x.ptyId === s.ptyId);
 									const prev = ptySessions[idx - 1];
-									if (prev) setActivePtyId(prev.ptyId);
+									if (prev) activateTab(prev.ptyId);
 								}
 							}}
 						>
@@ -105,7 +124,13 @@ export function TerminalTabContent({
 					</button>
 				</div>
 				{activePtyId != null && (
-					<div className="flex-1" style={{ minHeight: 0 }}>
+					<div
+						id={`terminal-panel-${activePtyId}`}
+						role="tabpanel"
+						aria-labelledby={`terminal-tab-${activePtyId}`}
+						className="flex-1"
+						style={{ minHeight: 0 }}
+					>
 						<RemoteTerminalPanel
 							key={activePtyId}
 							ptyId={activePtyId}
