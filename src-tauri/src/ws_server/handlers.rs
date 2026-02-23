@@ -555,23 +555,25 @@ pub(super) async fn handle_worktree_select_request(
     None
 }
 
-pub(super) fn handle_pty_kill_request(
+pub(super) async fn handle_pty_kill_request(
     req: &PtyKillRequest,
     state: &WsServerState,
 ) -> Option<WsMessage> {
     let pty_id = req.pty_id;
     if let Some(pm) = &state.pty_manager {
-        match pm.kill(pty_id) {
-            Ok(()) => Some(WsMessage::PtyKillResponse(PtyKillResponse {
+        let pm = Arc::clone(pm);
+        match tokio::task::spawn_blocking(move || pm.kill(pty_id)).await {
+            Ok(Ok(())) => Some(WsMessage::PtyKillResponse(PtyKillResponse {
                 success: true,
                 pty_id,
                 error: None,
             })),
-            Err(e) => Some(WsMessage::PtyKillResponse(PtyKillResponse {
+            Ok(Err(e)) => Some(WsMessage::PtyKillResponse(PtyKillResponse {
                 success: false,
                 pty_id,
                 error: Some(e),
             })),
+            Err(e) => Some(join_error_msg(e)),
         }
     } else {
         Some(WsMessage::PtyKillResponse(PtyKillResponse {

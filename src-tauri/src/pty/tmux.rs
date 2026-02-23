@@ -188,10 +188,14 @@ impl TmuxPtyBackend {
 
         args.push(shell.clone());
 
-        Command::new("tmux")
+        let session_output = Command::new("tmux")
             .args(&args)
             .output()
             .map_err(|e| format!("Failed to create tmux session: {}", e))?;
+        if !session_output.status.success() {
+            let stderr = String::from_utf8_lossy(&session_output.stderr);
+            return Err(format!("tmux new-session failed: {}", stderr));
+        }
 
         // Set up environment in the tmux session
         #[cfg(not(target_os = "windows"))]

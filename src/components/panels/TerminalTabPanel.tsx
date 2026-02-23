@@ -62,20 +62,20 @@ export const TerminalTabPanel = forwardRef<
 		[activeTabId],
 	);
 
+	const tabCounter = useRef(1);
+
 	const addTab = useCallback(() => {
 		setTabs((prev) => {
 			if (prev.length >= MAX_TABS) return prev;
-			const num = prev.length + 1;
+			tabCounter.current += 1;
+			const num = tabCounter.current;
 			const tab: Tab = {
 				id: nextTabId(),
 				label: `Terminal ${num}`,
 				ptyId: null,
 			};
+			setActiveTabId(tab.id);
 			return [...prev, tab];
-		});
-		setTabs((prev) => {
-			setActiveTabId(prev[prev.length - 1].id);
-			return prev;
 		});
 	}, []);
 

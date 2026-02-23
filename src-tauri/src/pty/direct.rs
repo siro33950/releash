@@ -96,6 +96,7 @@ impl PtyBackend for DirectPtyBackend {
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
+        drop(pair.slave);
 
         let child_killer = child.clone_killer();
 
