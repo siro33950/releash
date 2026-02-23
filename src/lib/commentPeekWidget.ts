@@ -58,6 +58,11 @@ export function openCommentViewZone(
 	domNode.style.marginLeft = `${contentLeft}px`;
 	domNode.style.width = `${Math.min(420, contentWidth)}px`;
 
+	const layoutDisposable = editor.onDidLayoutChange((info) => {
+		domNode.style.marginLeft = `${info.contentLeft}px`;
+		domNode.style.width = `${Math.min(420, info.contentWidth)}px`;
+	});
+
 	// Header
 	const header = document.createElement("div");
 	header.className = "comment-peek-header";
@@ -191,6 +196,7 @@ export function openCommentViewZone(
 	});
 
 	const dispose = () => {
+		layoutDisposable.dispose();
 		editor.changeViewZones((accessor) => {
 			accessor.removeZone(zoneId);
 		});

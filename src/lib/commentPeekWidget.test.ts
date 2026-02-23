@@ -28,14 +28,17 @@ function createMockEditor() {
 		removeZone: vi.fn(),
 	};
 
+	const layoutDisposable = { dispose: vi.fn() };
+
 	const editor = {
 		changeViewZones: vi.fn((cb: (a: typeof accessor) => void) => {
 			cb(accessor);
 		}),
-		getLayoutInfo: vi.fn(() => ({ contentLeft: 48 })),
+		getLayoutInfo: vi.fn(() => ({ contentLeft: 48, contentWidth: 800 })),
+		onDidLayoutChange: vi.fn(() => layoutDisposable),
 	} as unknown as Parameters<typeof openCommentViewZone>[0];
 
-	return { editor, accessor, zones };
+	return { editor, accessor, zones, layoutDisposable };
 }
 
 function makeComment(overrides: Partial<LineComment> = {}): LineComment {
