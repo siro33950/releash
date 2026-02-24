@@ -279,9 +279,6 @@ export function useWorktreeState({
 	const { registerDropZone } = useNativeFileDrop({
 		onDropToEditor: useCallback((paths: string[]) => {
 			dispatchUI({ type: "SET_EDITOR_DRAG_OVER", value: false });
-			const layout = editorLayoutRef.current;
-			const activeTab = layout.tabs.find((t) => t.id === layout.activeTabId);
-			if (activeTab?.component === "agent") return;
 			for (const path of paths) {
 				handleOpenFileRef.current(path);
 			}

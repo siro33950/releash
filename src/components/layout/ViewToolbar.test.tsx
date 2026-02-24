@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PanelBottom, PanelLeft, PanelRight } from "lucide-react";
 import { describe, expect, it, vi } from "vitest";
+import { Tabs } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { type TogglePanel, ViewToolbar } from "./ViewToolbar";
 
@@ -35,14 +36,20 @@ function createPanels(overrides?: Partial<TogglePanel>[]): TogglePanel[] {
 	return defaults;
 }
 
+function renderToolbar(panels: TogglePanel[]) {
+	return render(
+		<TooltipProvider>
+			<Tabs value="editor">
+				<ViewToolbar panels={panels} />
+			</Tabs>
+		</TooltipProvider>,
+	);
+}
+
 describe("ViewToolbar", () => {
 	it("renders toggle buttons for all panels", () => {
 		const panels = createPanels();
-		render(
-			<TooltipProvider>
-				<ViewToolbar panels={panels} />
-			</TooltipProvider>,
-		);
+		renderToolbar(panels);
 
 		expect(screen.getByLabelText("Toggle Sidebar")).toBeInTheDocument();
 		expect(screen.getByLabelText("Toggle Review")).toBeInTheDocument();
@@ -52,11 +59,7 @@ describe("ViewToolbar", () => {
 	it("calls onToggle when a button is clicked", async () => {
 		const user = userEvent.setup();
 		const panels = createPanels();
-		render(
-			<TooltipProvider>
-				<ViewToolbar panels={panels} />
-			</TooltipProvider>,
-		);
+		renderToolbar(panels);
 
 		await user.click(screen.getByLabelText("Toggle Sidebar"));
 		expect(panels[0].onToggle).toHaveBeenCalledOnce();
@@ -67,23 +70,15 @@ describe("ViewToolbar", () => {
 
 	it("has data-tauri-drag-region attribute for window dragging", () => {
 		const panels = createPanels();
-		const { container } = render(
-			<TooltipProvider>
-				<ViewToolbar panels={panels} />
-			</TooltipProvider>,
-		);
+		const { container } = renderToolbar(panels);
 
-		const toolbar = container.firstElementChild;
-		expect(toolbar).toHaveAttribute("data-tauri-drag-region");
+		const toolbar = container.querySelector("[data-tauri-drag-region]");
+		expect(toolbar).toBeInTheDocument();
 	});
 
 	it("applies foreground color to visible panels and muted to hidden", () => {
 		const panels = createPanels();
-		render(
-			<TooltipProvider>
-				<ViewToolbar panels={panels} />
-			</TooltipProvider>,
-		);
+		renderToolbar(panels);
 
 		const sidebarBtn = screen.getByLabelText("Toggle Sidebar");
 		const terminalBtn = screen.getByLabelText("Toggle Terminal");

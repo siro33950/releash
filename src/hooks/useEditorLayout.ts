@@ -1,12 +1,9 @@
 import { useCallback, useReducer, useRef } from "react";
 
-const AGENT_TAB_ID = "agent-tab";
-
 export interface EditorTab {
 	id: string;
 	path: string | null;
 	name: string;
-	component: "agent" | "editor";
 	isDirty: boolean;
 	closable: boolean;
 	draggable: boolean;
@@ -34,18 +31,8 @@ export function pathFromTabId(tabId: string): string | null {
 
 function createInitialState(): EditorLayoutState {
 	return {
-		tabs: [
-			{
-				id: AGENT_TAB_ID,
-				path: null,
-				name: "Agent",
-				component: "agent",
-				isDirty: false,
-				closable: false,
-				draggable: false,
-			},
-		],
-		activeTabId: AGENT_TAB_ID,
+		tabs: [],
+		activeTabId: "",
 	};
 }
 
@@ -64,7 +51,6 @@ function reducer(
 				id: tabId,
 				path: action.path,
 				name: action.name,
-				component: "editor",
 				isDirty: action.isDirty,
 				closable: true,
 				draggable: true,
@@ -83,7 +69,7 @@ function reducer(
 			if (state.activeTabId === tabId) {
 				const prev = state.tabs[idx - 1];
 				const next = state.tabs[idx + 1];
-				nextActive = (next ?? prev)?.id ?? AGENT_TAB_ID;
+				nextActive = (next ?? prev)?.id ?? "";
 			}
 			return { tabs: nextTabs, activeTabId: nextActive };
 		}
@@ -188,5 +174,3 @@ export function useEditorLayout(
 		closeTab,
 	};
 }
-
-export { AGENT_TAB_ID };

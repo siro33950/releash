@@ -1,6 +1,6 @@
 import { FileIcon } from "@react-symbols/icons/utils";
-import { Bot, PanelLeft, PanelRight, X } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { PanelLeft, PanelRight, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	Group,
 	Panel,
@@ -58,12 +58,14 @@ function WorktreeContent({
 	onSettingsSave,
 	rightPanelRef,
 	onRightResize,
+	onSwitchToEditor,
 }: {
 	rootPath: string;
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
 	rightPanelRef: React.Ref<PanelImperativeHandle | null>;
 	onRightResize: (size: PanelSize) => void;
+	onSwitchToEditor: () => void;
 }) {
 	const s = useWorktreeState({
 		rootPath,
@@ -79,6 +81,13 @@ function WorktreeContent({
 		[s.editorLayout],
 	);
 
+	// ファイルタブが開かれたら自動でEditorビューに切り替え
+	useEffect(() => {
+		if (s.editorLayout.activeTabId !== "") {
+			onSwitchToEditor();
+		}
+	}, [s.editorLayout.activeTabId, onSwitchToEditor]);
+
 	return (
 		<EditorContext.Provider value={s.editorContextValue}>
 			{/* Center */}
@@ -91,94 +100,103 @@ function WorktreeContent({
 					onDragLeave={s.handleEditorDragLeave}
 					onDrop={s.handleEditorDrop}
 				>
-					<Tabs
-						value={s.editorLayout.activeTabId}
-						onValueChange={(val) => {
-							handleTabSelect(val);
-						}}
-						className="flex flex-col h-full gap-0"
+					{/* Editor view */}
+					<TabsContent
+						value="editor"
+						forceMount
+						className="h-full m-0 data-[state=inactive]:hidden"
 					>
-						<DraggableTabs
-							items={s.editorLayout.tabs}
-							onReorder={s.editorLayout.reorderTabs}
+						<Tabs
+							value={s.editorLayout.activeTabId}
+							onValueChange={(val) => {
+								handleTabSelect(val);
+							}}
+							className="flex flex-col h-full gap-0"
 						>
-							<TabsList variant="line">
-								{s.editorLayout.tabs.map((tab) => (
-									<SortableTabTrigger
-										key={tab.id}
-										id={tab.id}
-										value={tab.id}
-										disabled={!tab.draggable}
-										className="gap-2"
-									>
-										{tab.component === "agent" ? (
-											<Bot className="h-4 w-4" />
-										) : (
+							<DraggableTabs
+								items={s.editorLayout.tabs}
+								onReorder={s.editorLayout.reorderTabs}
+							>
+								<TabsList variant="line" className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+									{s.editorLayout.tabs.map((tab) => (
+										<SortableTabTrigger
+											key={tab.id}
+											id={tab.id}
+											value={tab.id}
+											disabled={!tab.draggable}
+											className="gap-2 flex-none"
+										>
 											<FileIcon fileName={tab.name} className="h-4 w-4" />
-										)}
-										<span>{tab.name}</span>
-										{tab.isDirty && (
-											<span className="w-2 h-2 rounded-full bg-foreground shrink-0" />
-										)}
-										{tab.closable && (
-											// biome-ignore lint/a11y/useSemanticElements: nested inside TabsTrigger <button>, cannot use <button>
-											<span
-												role="button"
-												tabIndex={0}
-												className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
-												aria-label={`Close ${tab.name}`}
-												onClick={(e) => {
-													e.stopPropagation();
-													if (tab.path) s.editorLayout.closeTab(tab.path);
-												}}
-												onKeyDown={(e) => {
-													if (e.key === "Enter" || e.key === " ") {
-														e.preventDefault();
+											<span>{tab.name}</span>
+											{tab.isDirty && (
+												<span className="w-2 h-2 rounded-full bg-foreground shrink-0" />
+											)}
+											{tab.closable && (
+												// biome-ignore lint/a11y/useSemanticElements: nested inside TabsTrigger <button>, cannot use <button>
+												<span
+													role="button"
+													tabIndex={0}
+													className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
+													aria-label={`Close ${tab.name}`}
+													onClick={(e) => {
 														e.stopPropagation();
 														if (tab.path) s.editorLayout.closeTab(tab.path);
-													}
-												}}
-											>
-												<X className="size-3.5" />
-											</span>
-										)}
-									</SortableTabTrigger>
-								))}
-							</TabsList>
-						</DraggableTabs>
-						<div className="flex-1 relative" style={{ minHeight: 0 }}>
-							{s.editorLayout.tabs.map((tab) => (
-								<TabsContent
-									key={tab.id}
-									value={tab.id}
-									forceMount
-									className="absolute inset-0 isolate m-0 data-[state=inactive]:hidden"
-								>
-									{tab.component === "agent" ? (
-										<AgentTab
-											ref={s.terminalRef}
-											rootPath={rootPath}
-											theme={settings.theme}
-											terminalStartupCommand={buildTerminalCommand(settings)}
-											agentType={settings.agent}
-										/>
-									) : tab.path ? (
-										<EditorTabContent
-											key={tab.path}
-											filePath={tab.path}
-											externalRevealLine={s.pendingReveal}
-											onExternalRevealConsumed={() =>
-												s.dispatchEditor({
-													type: "SET_PENDING_REVEAL",
-													reveal: null,
-												})
-											}
-										/>
-									) : null}
-								</TabsContent>
-							))}
-						</div>
-					</Tabs>
+													}}
+													onKeyDown={(e) => {
+														if (e.key === "Enter" || e.key === " ") {
+															e.preventDefault();
+															e.stopPropagation();
+															if (tab.path) s.editorLayout.closeTab(tab.path);
+														}
+													}}
+												>
+													<X className="size-3.5" />
+												</span>
+											)}
+										</SortableTabTrigger>
+									))}
+								</TabsList>
+							</DraggableTabs>
+							<div className="flex-1 relative" style={{ minHeight: 0 }}>
+								{s.editorLayout.tabs.map((tab) =>
+									tab.path ? (
+										<TabsContent
+											key={tab.id}
+											value={tab.id}
+											forceMount
+											className="absolute inset-0 isolate m-0 data-[state=inactive]:hidden"
+										>
+											<EditorTabContent
+												key={tab.path}
+												filePath={tab.path}
+												externalRevealLine={s.pendingReveal}
+												onExternalRevealConsumed={() =>
+													s.dispatchEditor({
+														type: "SET_PENDING_REVEAL",
+														reveal: null,
+													})
+												}
+											/>
+										</TabsContent>
+									) : null,
+								)}
+							</div>
+						</Tabs>
+					</TabsContent>
+					{/* Agent view */}
+					<TabsContent
+						value="agent"
+						forceMount
+						className="h-full m-0 data-[state=inactive]:hidden"
+					>
+						<AgentTab
+							ref={s.terminalRef}
+							rootPath={rootPath}
+							theme={settings.theme}
+							terminalStartupCommand={buildTerminalCommand(settings)}
+							agentType={settings.agent}
+						/>
+					</TabsContent>
 					{s.editorDragOver && (
 						<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none">
 							<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
@@ -335,6 +353,8 @@ export function MainLayout({
 
 	const [leftNavVisible, setLeftNavVisible] = useState(true);
 	const [rightVisible, setRightVisible] = useState(true);
+	const [centerTab, setCenterTab] = useState("agent");
+	const switchToEditor = useCallback(() => setCenterTab("editor"), []);
 
 	const handleLeftNavResize = useCallback((size: PanelSize) => {
 		const visible = size.asPercentage > 0;
@@ -421,7 +441,11 @@ export function MainLayout({
 				</Panel>
 				<Separator />
 				<Panel id="main-area" minSize="30%">
-					<div className="flex flex-col h-full">
+					<Tabs
+						value={centerTab}
+						onValueChange={setCenterTab}
+						className="h-full gap-0"
+					>
 						<ViewToolbar
 							panels={togglePanels}
 							leftPanels={leftNavVisible ? undefined : [leftToggle]}
@@ -436,6 +460,7 @@ export function MainLayout({
 										onSettingsSave={onSettingsSave}
 										rightPanelRef={rightPanelRef}
 										onRightResize={handleRightResize}
+										onSwitchToEditor={switchToEditor}
 									/>
 								) : (
 									<Panel id="center" minSize="30%">
@@ -447,7 +472,7 @@ export function MainLayout({
 								)}
 							</Group>
 						</div>
-					</div>
+					</Tabs>
 				</Panel>
 			</Group>
 		</div>

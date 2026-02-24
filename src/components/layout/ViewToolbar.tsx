@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
 	Tooltip,
 	TooltipContent,
@@ -25,7 +26,7 @@ export function ViewToolbar({ panels, leftPanels }: ViewToolbarProps) {
 		<div
 			data-tauri-drag-region
 			className={cn(
-				"flex items-center h-[34px] pl-1 pr-[12px] border-b border-border bg-sidebar shrink-0 gap-0.5",
+				"flex items-center h-[34px] pl-0 pr-[12px] border-b border-border bg-sidebar shrink-0 gap-0.5",
 				leftPanels && leftPanels.length > 0 && "pl-[80px]",
 			)}
 		>
@@ -48,6 +49,14 @@ export function ViewToolbar({ panels, leftPanels }: ViewToolbarProps) {
 					<TooltipContent side="bottom">{panel.label}</TooltipContent>
 				</Tooltip>
 			))}
+			<TabsList variant="line" className="h-7 px-0">
+				<TabsTrigger value="agent" className="text-xs px-[10px] py-1">
+					Agent
+				</TabsTrigger>
+				<TabsTrigger value="editor" className="text-xs px-[10px] py-1">
+					Editor
+				</TabsTrigger>
+			</TabsList>
 			<div className="flex-1" />
 			{panels.map((panel) => (
 				<Tooltip key={panel.id}>
