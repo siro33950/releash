@@ -45,21 +45,19 @@ export function RightSidebarTop({
 			<Tabs
 				value={activeTab}
 				onValueChange={(val) => onTabChange(val as RightTopTab)}
-				className="flex flex-col h-full gap-0"
+				className="flex flex-col h-full"
 			>
 				<TooltipProvider>
 					<TabsList variant="line" aria-label="Right sidebar tabs">
 						{tabs.map(({ key, icon: Icon, label }) => (
 							<Tooltip key={key}>
-								<TooltipTrigger asChild>
-									<TabsTrigger
-										value={key}
-										aria-label={label}
-										className="px-2.5"
-									>
-										<Icon className="size-3.5" />
-									</TabsTrigger>
-								</TooltipTrigger>
+								<TabsTrigger value={key} aria-label={label} className="px-2.5">
+									<TooltipTrigger asChild>
+										<span className="inline-flex items-center">
+											<Icon className="size-3.5" />
+										</span>
+									</TooltipTrigger>
+								</TabsTrigger>
 								<TooltipContent side="bottom">{label}</TooltipContent>
 							</Tooltip>
 						))}

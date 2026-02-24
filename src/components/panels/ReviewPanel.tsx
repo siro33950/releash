@@ -51,7 +51,7 @@ export function ReviewPanel({
 							"h-[28px] px-3 text-xs transition-colors",
 							activeTab === "terminal"
 								? "bg-background text-foreground"
-								: "bg-sidebar text-muted-foreground hover:bg-sidebar-accent",
+								: "bg-sidebar text-muted-foreground hover:bg-foreground/5",
 						)}
 					>
 						Terminal
@@ -65,7 +65,7 @@ export function ReviewPanel({
 							"h-[28px] px-3 text-xs transition-colors",
 							activeTab === "comments"
 								? "bg-background text-foreground"
-								: "bg-sidebar text-muted-foreground hover:bg-sidebar-accent",
+								: "bg-sidebar text-muted-foreground hover:bg-foreground/5",
 						)}
 					>
 						Comments

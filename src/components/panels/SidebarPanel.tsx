@@ -150,7 +150,7 @@ export function SidebarPanel({
 					<button
 						type="button"
 						onClick={handleToolbarNewFile}
-						className="p-1 hover:bg-sidebar-accent rounded transition-colors"
+						className="p-1 hover:bg-foreground/5 rounded transition-colors"
 						title="New File"
 						aria-label="New File"
 						disabled={!rootPath}
@@ -160,7 +160,7 @@ export function SidebarPanel({
 					<button
 						type="button"
 						onClick={handleToolbarNewFolder}
-						className="p-1 hover:bg-sidebar-accent rounded transition-colors"
+						className="p-1 hover:bg-foreground/5 rounded transition-colors"
 						title="New Folder"
 						aria-label="New Folder"
 						disabled={!rootPath}
@@ -170,7 +170,7 @@ export function SidebarPanel({
 					<button
 						type="button"
 						onClick={refresh}
-						className="p-1 hover:bg-sidebar-accent rounded transition-colors"
+						className="p-1 hover:bg-foreground/5 rounded transition-colors"
 						title="Refresh"
 						aria-label="Refresh"
 						disabled={!rootPath}
@@ -180,7 +180,7 @@ export function SidebarPanel({
 					<button
 						type="button"
 						onClick={collapseAll}
-						className="p-1 hover:bg-sidebar-accent rounded transition-colors"
+						className="p-1 hover:bg-foreground/5 rounded transition-colors"
 						title="Collapse All"
 						aria-label="Collapse All"
 						disabled={!rootPath}

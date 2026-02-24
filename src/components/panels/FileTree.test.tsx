@@ -160,7 +160,7 @@ describe("FileTree", () => {
 		);
 
 		const selectedButton = screen.getByText("index.ts").closest("button");
-		expect(selectedButton).toHaveClass("bg-sidebar-accent");
+		expect(selectedButton).toHaveClass("bg-foreground/10");
 	});
 
 	it("should show status indicator for modified files", () => {

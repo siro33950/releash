@@ -49,30 +49,34 @@ export function RightSidebarBottom({
 			<Tabs
 				value={activeTab}
 				onValueChange={(val) => setActiveTab(val as RightBottomTab)}
-				className="flex flex-col h-full gap-0"
+				className="flex flex-col h-full"
 			>
 				<div className="flex items-center gap-2 shrink-0 px-2 pt-1 bg-background">
 					<TooltipProvider>
 						<TabsList variant="line" aria-label="Bottom sidebar tabs">
 							<Tooltip>
-								<TooltipTrigger asChild>
-									<TabsTrigger value="comments" aria-label="Comments">
-										<MessageSquare className="size-3.5" />
-										{unsentComments.length > 0 && (
-											<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
-												{unsentComments.length}
-											</span>
-										)}
-									</TabsTrigger>
-								</TooltipTrigger>
+								<TabsTrigger value="comments" aria-label="Comments">
+									<TooltipTrigger asChild>
+										<span className="inline-flex items-center gap-1.5">
+											<MessageSquare className="size-3.5" />
+											{unsentComments.length > 0 && (
+												<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
+													{unsentComments.length}
+												</span>
+											)}
+										</span>
+									</TooltipTrigger>
+								</TabsTrigger>
 								<TooltipContent side="bottom">Comments</TooltipContent>
 							</Tooltip>
 							<Tooltip>
-								<TooltipTrigger asChild>
-									<TabsTrigger value="terminal" aria-label="Terminal">
-										<Terminal className="size-3.5" />
-									</TabsTrigger>
-								</TooltipTrigger>
+								<TabsTrigger value="terminal" aria-label="Terminal">
+									<TooltipTrigger asChild>
+										<span className="inline-flex items-center">
+											<Terminal className="size-3.5" />
+										</span>
+									</TooltipTrigger>
+								</TabsTrigger>
 								<TooltipContent side="bottom">Terminal</TooltipContent>
 							</Tooltip>
 						</TabsList>

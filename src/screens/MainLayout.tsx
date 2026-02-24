@@ -1,6 +1,6 @@
 import { FileIcon } from "@react-symbols/icons/utils";
 import { Bot, PanelLeft, PanelRight, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
 	Group,
 	Panel,
@@ -8,7 +8,6 @@ import {
 	type PanelSize,
 	Separator,
 } from "react-resizable-panels";
-import { StatusBar } from "@/components/layout/StatusBar";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { AgentTab } from "@/components/panels/AgentTab";
 import { EditorTabContent } from "@/components/panels/EditorTabContent";
@@ -36,17 +35,8 @@ import {
 	GitErrorDialog,
 	SavingConflictDialog,
 } from "@/screens/WorktreeViewDialogs";
-import type { AgentState } from "@/types/protocol";
 import type { AppSettings } from "@/types/settings";
 import { buildTerminalCommand } from "@/types/settings";
-
-interface StatusBarData {
-	branch?: string;
-	language?: string;
-	encoding?: string;
-	eol?: "LF" | "CRLF";
-	agentState?: AgentState;
-}
 
 interface MainLayoutProps {
 	selectedRootPath: string | null;
@@ -59,14 +49,12 @@ function WorktreeContent({
 	rootPath,
 	settings,
 	onSettingsSave,
-	onStatusChange,
 	rightPanelRef,
 	onRightResize,
 }: {
 	rootPath: string;
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
-	onStatusChange: (data: StatusBarData) => void;
 	rightPanelRef: React.Ref<PanelImperativeHandle | null>;
 	onRightResize: (size: PanelSize) => void;
 }) {
@@ -76,16 +64,6 @@ function WorktreeContent({
 		onSettingsSave,
 		isActive: true,
 	});
-
-	useEffect(() => {
-		onStatusChange({
-			branch: s.branch ?? undefined,
-			language: s.activeTab?.language,
-			encoding: s.activeTab ? "UTF-8" : undefined,
-			eol: s.activeTab?.eol,
-			agentState: s.agentState,
-		});
-	}, [s.branch, s.activeTab, s.agentState, onStatusChange]);
 
 	const handleTabSelect = useCallback(
 		(tabId: string) => {
@@ -345,12 +323,6 @@ export function MainLayout({
 	onSettingsSave,
 	leftNav,
 }: MainLayoutProps) {
-	const [statusBarData, setStatusBarData] = useState<StatusBarData>({});
-
-	const handleStatusChange = useCallback((data: StatusBarData) => {
-		setStatusBarData(data);
-	}, []);
-
 	const leftNavRef = useRef<PanelImperativeHandle>(null);
 	const rightPanelRef = useRef<PanelImperativeHandle>(null);
 
@@ -419,7 +391,6 @@ export function MainLayout({
 							rootPath={selectedRootPath}
 							settings={settings}
 							onSettingsSave={onSettingsSave}
-							onStatusChange={handleStatusChange}
 							rightPanelRef={rightPanelRef}
 							onRightResize={handleRightResize}
 						/>
@@ -433,14 +404,6 @@ export function MainLayout({
 					)}
 				</Group>
 			</div>
-			<StatusBar
-				className="shrink-0"
-				branch={selectedRootPath ? statusBarData.branch : undefined}
-				language={selectedRootPath ? statusBarData.language : undefined}
-				encoding={selectedRootPath ? statusBarData.encoding : undefined}
-				eol={selectedRootPath ? statusBarData.eol : undefined}
-				agentState={selectedRootPath ? statusBarData.agentState : undefined}
-			/>
 		</div>
 	);
 }

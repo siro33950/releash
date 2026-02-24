@@ -186,7 +186,7 @@ function RepoIssueSection({
 						size="icon"
 						aria-label="Refresh"
 						title="Refresh"
-						className="h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+						className="h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
 						onClick={(e) => {
 							e.stopPropagation();
 							refresh();
