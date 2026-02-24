@@ -59,6 +59,7 @@ function WorktreeContent({
 	rightPanelRef,
 	onRightResize,
 	onSwitchToEditor,
+	centerTab,
 }: {
 	rootPath: string;
 	settings: AppSettings;
@@ -66,12 +67,17 @@ function WorktreeContent({
 	rightPanelRef: React.Ref<PanelImperativeHandle | null>;
 	onRightResize: (size: PanelSize) => void;
 	onSwitchToEditor: () => void;
+	centerTab: string;
 }) {
+	const centerTabRef = useRef(centerTab);
+	centerTabRef.current = centerTab;
+
 	const s = useWorktreeState({
 		rootPath,
 		settings,
 		onSettingsSave,
 		isActive: true,
+		centerTabRef,
 	});
 
 	const handleTabSelect = useCallback(
@@ -117,7 +123,10 @@ function WorktreeContent({
 								items={s.editorLayout.tabs}
 								onReorder={s.editorLayout.reorderTabs}
 							>
-								<TabsList variant="line" className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+								<TabsList
+									variant="line"
+									className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
+								>
 									{s.editorLayout.tabs.map((tab) => (
 										<SortableTabTrigger
 											key={tab.id}
@@ -461,6 +470,7 @@ export function MainLayout({
 										rightPanelRef={rightPanelRef}
 										onRightResize={handleRightResize}
 										onSwitchToEditor={switchToEditor}
+										centerTab={centerTab}
 									/>
 								) : (
 									<Panel id="center" minSize="30%">

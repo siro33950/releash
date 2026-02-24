@@ -37,6 +37,7 @@ interface UseWorktreeStateParams {
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
 	isActive: boolean;
+	centerTabRef?: React.RefObject<string>;
 }
 
 export function useWorktreeState({
@@ -44,6 +45,7 @@ export function useWorktreeState({
 	settings,
 	onSettingsSave,
 	isActive,
+	centerTabRef,
 }: UseWorktreeStateParams) {
 	const {
 		files,
@@ -276,13 +278,18 @@ export function useWorktreeState({
 		dispatchUI({ type: "SET_EDITOR_DRAG_OVER", value: false });
 	}, []);
 
+	const centerTabRefInternal = centerTabRef;
 	const { registerDropZone } = useNativeFileDrop({
-		onDropToEditor: useCallback((paths: string[]) => {
-			dispatchUI({ type: "SET_EDITOR_DRAG_OVER", value: false });
-			for (const path of paths) {
-				handleOpenFileRef.current(path);
-			}
-		}, []),
+		onDropToEditor: useCallback(
+			(paths: string[]) => {
+				dispatchUI({ type: "SET_EDITOR_DRAG_OVER", value: false });
+				if (centerTabRefInternal?.current === "agent") return;
+				for (const path of paths) {
+					handleOpenFileRef.current(path);
+				}
+			},
+			[centerTabRefInternal],
+		),
 	});
 
 	const editorDropZoneRef = useCallback(
