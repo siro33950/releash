@@ -209,7 +209,7 @@ export function EditorTabContent({
 					/>
 				)}
 			</Breadcrumb>
-			<div className="flex-1 min-h-0 relative overflow-clip">
+			<div className="flex-1 min-h-0 relative overflow-hidden">
 				<DiffViewerSection
 					isImage={isImage}
 					isMarkdown={isMarkdown}

@@ -273,7 +273,7 @@ export function WorkspaceManagerScreen({
 						collapsedSize="0%"
 						onResize={handleSidebarResize}
 					>
-						<div className="h-full overflow-clip border-r border-border">
+						<div className="h-full overflow-hidden border-r border-border">
 							{sidebarContent}
 						</div>
 					</Panel>
@@ -325,7 +325,7 @@ export function WorkspaceManagerScreen({
 						collapsedSize="0%"
 						onResize={handleTerminalResize}
 					>
-						<div className="h-full overflow-clip border-l border-border">
+						<div className="h-full overflow-hidden border-l border-border">
 							<TerminalPanel
 								ref={terminalRef}
 								theme={settings.theme}
