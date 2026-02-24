@@ -208,8 +208,8 @@ function WorktreeContent({
 			<Panel
 				id="right"
 				panelRef={rightPanelRef}
-				defaultSize="20%"
-				minSize="10%"
+				defaultSize={280}
+				minSize={280}
 				collapsible
 				collapsedSize="0%"
 				onResize={onRightResize}

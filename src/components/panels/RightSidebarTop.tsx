@@ -1,5 +1,11 @@
 import { Files, GitBranch, GitPullRequest, Search } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 export type RightTopTab = "explorer" | "changes" | "search" | "pr";
 
@@ -41,13 +47,24 @@ export function RightSidebarTop({
 				onValueChange={(val) => onTabChange(val as RightTopTab)}
 				className="flex flex-col h-full gap-0"
 			>
-				<TabsList variant="line" aria-label="Right sidebar tabs">
-					{tabs.map(({ key, icon: Icon, label }) => (
-						<TabsTrigger key={key} value={key} aria-label={label}>
-							<Icon className="size-3.5" />
-						</TabsTrigger>
-					))}
-				</TabsList>
+				<TooltipProvider>
+					<TabsList variant="line" aria-label="Right sidebar tabs">
+						{tabs.map(({ key, icon: Icon, label }) => (
+							<Tooltip key={key}>
+								<TooltipTrigger asChild>
+									<TabsTrigger
+										value={key}
+										aria-label={label}
+										className="px-2.5"
+									>
+										<Icon className="size-3.5" />
+									</TabsTrigger>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">{label}</TooltipContent>
+							</Tooltip>
+						))}
+					</TabsList>
+				</TooltipProvider>
 				{tabs.map(({ key }) => (
 					<TabsContent key={key} value={key} className="flex-1 overflow-hidden">
 						{contentMap[key]}

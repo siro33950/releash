@@ -262,19 +262,26 @@ function EditorSection({
 	);
 }
 
-function RepoBaseBranchItem({ repoPath }: { repoPath: string }) {
+function RepoBaseBranchItem({
+	repoPath,
+	onDirtyChange,
+}: {
+	repoPath: string;
+	onDirtyChange: (
+		repoPath: string,
+		isDirty: boolean,
+		selectedBase: string,
+	) => void;
+}) {
 	const [branches, setBranches] = useState<BranchInfo[]>([]);
 	const [selectedBase, setSelectedBase] = useState("");
 	const [initialBase, setInitialBase] = useState("");
 	const [loading, setLoading] = useState(true);
-	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [success, setSuccess] = useState(false);
 
 	useEffect(() => {
 		setLoading(true);
 		setError(null);
-		setSuccess(false);
 
 		Promise.all([
 			invoke<BranchInfo[]>("list_branches", { repoPath }),
@@ -294,25 +301,15 @@ function RepoBaseBranchItem({ repoPath }: { repoPath: string }) {
 			});
 	}, [repoPath]);
 
-	const handleApply = useCallback(async () => {
-		setSaving(true);
-		setError(null);
-		setSuccess(false);
-		try {
-			await invoke("set_releash_base", {
-				repoPath,
-				base: selectedBase || null,
-			});
-			setInitialBase(selectedBase);
-			setSuccess(true);
-		} catch (e) {
-			setError(String(e));
-		} finally {
-			setSaving(false);
-		}
-	}, [repoPath, selectedBase]);
+	const handleChange = useCallback(
+		(v: string) => {
+			const value = v === "__auto__" ? "" : v;
+			setSelectedBase(value);
+			onDirtyChange(repoPath, value !== initialBase, value);
+		},
+		[repoPath, initialBase, onDirtyChange],
+	);
 
-	const isDirty = selectedBase !== initialBase;
 	const name = repoPath.split(/[\\/]/).pop() ?? repoPath;
 	const selectId = `base-branch-${name}`;
 
@@ -334,7 +331,7 @@ function RepoBaseBranchItem({ repoPath }: { repoPath: string }) {
 						</label>
 						<Select
 							value={selectedBase || "__auto__"}
-							onValueChange={(v) => setSelectedBase(v === "__auto__" ? "" : v)}
+							onValueChange={handleChange}
 						>
 							<SelectTrigger id={selectId} className="w-full font-mono">
 								<SelectValue placeholder="Auto (main/master)" />
@@ -350,23 +347,6 @@ function RepoBaseBranchItem({ repoPath }: { repoPath: string }) {
 						</Select>
 
 						{error && <p className="text-xs text-destructive">{error}</p>}
-						{success && (
-							<p className="text-xs text-success">Base branch saved.</p>
-						)}
-
-						<div className="flex justify-end mt-1">
-							<Button
-								size="sm"
-								onClick={handleApply}
-								disabled={!isDirty || saving}
-							>
-								{saving ? (
-									<Loader2 className="size-3.5 animate-spin" />
-								) : (
-									"Apply"
-								)}
-							</Button>
-						</div>
 					</div>
 				)}
 			</div>
@@ -374,7 +354,63 @@ function RepoBaseBranchItem({ repoPath }: { repoPath: string }) {
 	);
 }
 
-function RepositoriesSection({ repoPaths }: { repoPaths: string[] }) {
+interface RepoChanges {
+	pendingBases: Map<string, string>;
+	isDirty: boolean;
+	error: string | null;
+}
+
+function useRepoChanges() {
+	const [state, setState] = useState<RepoChanges>({
+		pendingBases: new Map(),
+		isDirty: false,
+		error: null,
+	});
+
+	const handleDirtyChange = useCallback(
+		(repoPath: string, isDirty: boolean, selectedBase: string) => {
+			setState((prev) => {
+				const next = new Map(prev.pendingBases);
+				if (isDirty) {
+					next.set(repoPath, selectedBase);
+				} else {
+					next.delete(repoPath);
+				}
+				return { ...prev, pendingBases: next, isDirty: next.size > 0 };
+			});
+		},
+		[],
+	);
+
+	const save = useCallback(async () => {
+		const entries = Array.from(state.pendingBases.entries());
+		try {
+			await Promise.all(
+				entries.map(([repoPath, base]) =>
+					invoke("set_releash_base", { repoPath, base: base || null }),
+				),
+			);
+			setState({ pendingBases: new Map(), isDirty: false, error: null });
+		} catch (e) {
+			setState((prev) => ({ ...prev, error: String(e) }));
+			throw e;
+		}
+	}, [state.pendingBases]);
+
+	return { ...state, handleDirtyChange, save };
+}
+
+function RepositoriesSection({
+	repoPaths,
+	onDirtyChange,
+}: {
+	repoPaths: string[];
+	onDirtyChange: (
+		repoPath: string,
+		isDirty: boolean,
+		selectedBase: string,
+	) => void;
+}) {
 	if (repoPaths.length === 0) {
 		return (
 			<p className="text-xs text-muted-foreground">
@@ -388,7 +424,10 @@ function RepositoriesSection({ repoPaths }: { repoPaths: string[] }) {
 			{repoPaths.map((repoPath, i) => (
 				<Fragment key={repoPath}>
 					{i > 0 && <Separator className="my-3" />}
-					<RepoBaseBranchItem repoPath={repoPath} />
+					<RepoBaseBranchItem
+						repoPath={repoPath}
+						onDirtyChange={onDirtyChange}
+					/>
 				</Fragment>
 			))}
 		</div>
@@ -1021,6 +1060,7 @@ export function SettingsModal({
 	const webhook = useWebhookConfig();
 	const remote = useRemoteConfig();
 	const background = useBackgroundConfig();
+	const repos = useRepoChanges();
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
@@ -1087,6 +1127,7 @@ export function SettingsModal({
 	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
 	const { isDirty: remoteIsDirty, save: remoteSave } = remote;
 	const { isDirty: backgroundIsDirty, save: backgroundSave } = background;
+	const { isDirty: reposIsDirty, save: reposSave } = repos;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -1100,6 +1141,9 @@ export function SettingsModal({
 			}
 			if (backgroundIsDirty) {
 				await backgroundSave();
+			}
+			if (reposIsDirty) {
+				await reposSave();
 			}
 			if (draft.telemetryEnabled) {
 				trackEvent("settings_saved");
@@ -1119,10 +1163,16 @@ export function SettingsModal({
 		remoteSave,
 		backgroundIsDirty,
 		backgroundSave,
+		reposIsDirty,
+		reposSave,
 	]);
 
 	const isDirty =
-		appDirty || webhookIsDirty || remoteIsDirty || backgroundIsDirty;
+		appDirty ||
+		webhookIsDirty ||
+		remoteIsDirty ||
+		backgroundIsDirty ||
+		reposIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
@@ -1131,7 +1181,12 @@ export function SettingsModal({
 			case "editor":
 				return <EditorSection draft={draft} updateDraft={updateDraft} />;
 			case "repositories":
-				return <RepositoriesSection repoPaths={repoPaths} />;
+				return (
+					<RepositoriesSection
+						repoPaths={repoPaths}
+						onDirtyChange={repos.handleDirtyChange}
+					/>
+				);
 			case "agent":
 				return (
 					<AgentSection

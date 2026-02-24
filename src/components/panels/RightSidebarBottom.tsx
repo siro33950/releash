@@ -3,6 +3,12 @@ import { useState } from "react";
 import { CommentList } from "@/components/panels/CommentList";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { LineComment } from "@/types/comment";
 import type { Theme } from "@/types/settings";
 
@@ -46,19 +52,31 @@ export function RightSidebarBottom({
 				className="flex flex-col h-full gap-0"
 			>
 				<div className="flex items-center gap-2 shrink-0 px-2 pt-1 bg-background">
-					<TabsList variant="line" aria-label="Bottom sidebar tabs">
-						<TabsTrigger value="comments" aria-label="Comments">
-							<MessageSquare className="size-3.5" />
-							{unsentComments.length > 0 && (
-								<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
-									{unsentComments.length}
-								</span>
-							)}
-						</TabsTrigger>
-						<TabsTrigger value="terminal" aria-label="Terminal">
-							<Terminal className="size-3.5" />
-						</TabsTrigger>
-					</TabsList>
+					<TooltipProvider>
+						<TabsList variant="line" aria-label="Bottom sidebar tabs">
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<TabsTrigger value="comments" aria-label="Comments">
+										<MessageSquare className="size-3.5" />
+										{unsentComments.length > 0 && (
+											<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
+												{unsentComments.length}
+											</span>
+										)}
+									</TabsTrigger>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">Comments</TooltipContent>
+							</Tooltip>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<TabsTrigger value="terminal" aria-label="Terminal">
+										<Terminal className="size-3.5" />
+									</TabsTrigger>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">Terminal</TooltipContent>
+							</Tooltip>
+						</TabsList>
+					</TooltipProvider>
 					{activeTab === "comments" &&
 						unsentComments.length > 0 &&
 						onSendToTerminal && (

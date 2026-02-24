@@ -32,6 +32,7 @@ interface TerminalTabPanelProps {
 	terminalStartupCommand?: string;
 	agentType?: string;
 	sessionKey?: string;
+	tabPrefix?: string;
 }
 
 let tabIdCounter = 0;
@@ -44,11 +45,18 @@ export const TerminalTabPanel = forwardRef<
 	TerminalTabPanelHandle,
 	TerminalTabPanelProps
 >(function TerminalTabPanel(
-	{ cwd, theme, terminalStartupCommand, agentType, sessionKey },
+	{
+		cwd,
+		theme,
+		terminalStartupCommand,
+		agentType,
+		sessionKey,
+		tabPrefix = "Terminal",
+	},
 	ref,
 ) {
 	const [tabs, setTabs] = useState<Tab[]>(() => [
-		{ id: nextTabId(), label: "Terminal 1", ptyId: null },
+		{ id: nextTabId(), label: `${tabPrefix} 1`, ptyId: null },
 	]);
 	const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
 	const terminalRefs = useRef<Map<string, TerminalPanelHandle>>(new Map());
@@ -71,12 +79,12 @@ export const TerminalTabPanel = forwardRef<
 		const num = tabCounter.current;
 		const newTab: Tab = {
 			id: nextTabId(),
-			label: `Terminal ${num}`,
+			label: `${tabPrefix} ${num}`,
 			ptyId: null,
 		};
 		setTabs((prev) => (prev.length >= MAX_TABS ? prev : [...prev, newTab]));
 		setActiveTabId(newTab.id);
-	}, []);
+	}, [tabPrefix]);
 
 	const closeTab = useCallback(
 		(tabId: string) => {
