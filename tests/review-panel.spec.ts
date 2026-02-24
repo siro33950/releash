@@ -45,8 +45,9 @@ test.describe("Review Panel", () => {
 		).toBeVisible({ timeout: 5000 });
 
 		// ReviewPanel の Terminal / Comments タブが表示される
-		const terminalTab = page.getByRole("tab", { name: "Terminal" });
-		const commentsTab = page.getByRole("tab", { name: /Comments/ });
+		const reviewPanel = page.getByTestId("review");
+		const terminalTab = reviewPanel.getByRole("tab", { name: "Terminal" });
+		const commentsTab = reviewPanel.getByRole("tab", { name: /Comments/ });
 
 		await expect(terminalTab).toBeVisible();
 		await expect(commentsTab).toBeVisible();
@@ -67,7 +68,8 @@ test.describe("Review Panel", () => {
 		).toBeVisible({ timeout: 5000 });
 
 		// Comments タブをクリック
-		await page.getByRole("tab", { name: /Comments/ }).click();
+		const reviewPanel = page.getByTestId("review");
+		await reviewPanel.getByRole("tab", { name: /Comments/ }).click();
 
 		// 空メッセージ "No comments" が表示される
 		await expect(page.getByText("No comments")).toBeVisible();
@@ -86,7 +88,8 @@ test.describe("Review Panel", () => {
 		).toBeVisible({ timeout: 5000 });
 
 		// Terminal タブが aria-selected="true" であることを確認
-		const terminalTab = page.getByRole("tab", { name: "Terminal" });
+		const reviewPanel = page.getByTestId("review");
+		const terminalTab = reviewPanel.getByRole("tab", { name: "Terminal" });
 		await expect(terminalTab).toHaveAttribute("aria-selected", "true");
 	});
 });

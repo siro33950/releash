@@ -1,6 +1,7 @@
-import { GitBranch, LayoutGrid, X } from "lucide-react";
+import { GitBranch, LayoutGrid } from "lucide-react";
 import { ScrollArea as ScrollAreaPrimitive } from "radix-ui";
 import { AgentStateBadge } from "@/components/ui/agent-state-badge";
+import { TabBarItem } from "@/components/ui/tab-bar";
 import { useTabDrag } from "@/hooks/useTabDrag";
 import { cn } from "@/lib/utils";
 import type { WorkspaceTab } from "@/types/workspace-tab";
@@ -32,86 +33,77 @@ export function WorkspaceTabBar({
 	);
 	const showRepoPrefix = distinctRepoNames.size > 1;
 
+	const kanbanTab = tabs.find((t) => t.type === "kanban");
+	const kanbanHandlers = kanbanTab
+		? dragHandlers({ tabId: kanbanTab.id, isDraggable: false })
+		: undefined;
+	const kanbanDropLeft =
+		kanbanTab &&
+		dropTarget?.tabId === kanbanTab.id &&
+		dropTarget.position === "left";
+	const kanbanDropRight =
+		kanbanTab &&
+		dropTarget?.tabId === kanbanTab.id &&
+		dropTarget.position === "right";
+
 	return (
 		<ScrollAreaPrimitive.Root className="h-[34px] bg-sidebar border-b border-border shrink-0">
 			<ScrollAreaPrimitive.Viewport className="h-full w-full">
 				<div
-					className="flex items-center h-[34px]"
 					role="tablist"
 					aria-orientation="horizontal"
+					className="flex items-center h-[34px]"
 				>
-					{tabs.map((tab) => {
+					{kanbanTab && (
+						<TabBarItem
+							isActive={activeTabId === kanbanTab.id}
+							onClick={() => onTabClick(kanbanTab.id)}
+							ariaLabel="Kanban"
+							className={cn(
+								kanbanDropLeft && "border-l-2 border-l-primary",
+								kanbanDropRight && "border-r-2 border-r-primary",
+							)}
+							onDragOver={kanbanHandlers?.onDragOver}
+							onDragLeave={kanbanHandlers?.onDragLeave}
+							onDrop={kanbanHandlers?.onDrop}
+						>
+							<LayoutGrid className="size-4 shrink-0" />
+						</TabBarItem>
+					)}
+
+					{worktreeTabs.map((tab) => {
 						const isActive = tab.id === activeTabId;
 						const isDragging = draggingId === tab.id;
 						const isDropLeft =
 							dropTarget?.tabId === tab.id && dropTarget.position === "left";
 						const isDropRight =
 							dropTarget?.tabId === tab.id && dropTarget.position === "right";
-						const isDraggable = tab.type !== "kanban";
 						const handlers = dragHandlers({
 							tabId: tab.id,
-							isDraggable,
+							isDraggable: true,
 						});
 
-						if (tab.type === "kanban") {
-							return (
-								<div
-									key={tab.id}
-									className={cn(
-										"flex items-center gap-2 h-full px-3 text-sm border-r border-border cursor-pointer transition-colors shrink-0",
-										isActive
-											? "bg-background text-foreground"
-											: "bg-sidebar text-muted-foreground hover:bg-sidebar-accent",
-										isDropLeft && "border-l-2 border-l-primary",
-										isDropRight && "border-r-2 border-r-primary",
-									)}
-									onClick={() => onTabClick(tab.id)}
-									onKeyDown={(e) => {
-										if (e.key === "Enter" || e.key === " ") {
-											e.preventDefault();
-											onTabClick(tab.id);
-										}
-									}}
-									onDragOver={handlers.onDragOver}
-									onDragLeave={handlers.onDragLeave}
-									onDrop={handlers.onDrop}
-									role="tab"
-									tabIndex={0}
-									aria-selected={isActive}
-									aria-label="Kanban"
-								>
-									<LayoutGrid className="size-4 shrink-0" />
-								</div>
-							);
-						}
 						return (
-							<div
+							<TabBarItem
 								key={tab.id}
+								isActive={isActive}
+								onClick={() => onTabClick(tab.id)}
+								onClose={(e) => {
+									e.stopPropagation();
+									onTabClose(tab.id);
+								}}
+								closeLabel={`Close ${showRepoPrefix && tab.repoName ? `${tab.repoName} / ${tab.branchName}` : tab.branchName}`}
 								className={cn(
-									"group flex items-center gap-2 h-full px-3 text-sm border-r border-border cursor-pointer transition-colors shrink-0",
-									isActive
-										? "bg-background text-foreground"
-										: "bg-sidebar text-muted-foreground hover:bg-sidebar-accent",
 									isDragging && "opacity-50",
 									isDropLeft && "border-l-2 border-l-primary",
 									isDropRight && "border-r-2 border-r-primary",
 								)}
-								onClick={() => onTabClick(tab.id)}
-								onKeyDown={(e) => {
-									if (e.key === "Enter" || e.key === " ") {
-										e.preventDefault();
-										onTabClick(tab.id);
-									}
-								}}
 								draggable={handlers.draggable}
 								onDragStart={handlers.onDragStart}
 								onDragEnd={handlers.onDragEnd}
 								onDragOver={handlers.onDragOver}
 								onDragLeave={handlers.onDragLeave}
 								onDrop={handlers.onDrop}
-								role="tab"
-								tabIndex={0}
-								aria-selected={isActive}
 							>
 								<GitBranch className="size-4 shrink-0" />
 								<span className="truncate max-w-40">
@@ -122,23 +114,7 @@ export function WorkspaceTabBar({
 								{tab.agentState && (
 									<AgentStateBadge state={tab.agentState} variant="dot" />
 								)}
-								<button
-									type="button"
-									onClick={(e) => {
-										e.stopPropagation();
-										onTabClose(tab.id);
-									}}
-									className={cn(
-										"p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0",
-										isActive
-											? "opacity-100"
-											: "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-									)}
-									aria-label={`Close ${showRepoPrefix && tab.repoName ? `${tab.repoName} / ${tab.branchName}` : tab.branchName}`}
-								>
-									<X className="size-3.5" />
-								</button>
-							</div>
+							</TabBarItem>
 						);
 					})}
 				</div>

@@ -37,6 +37,7 @@ describe("TerminalPanel", () => {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
 		);
 	});
 });

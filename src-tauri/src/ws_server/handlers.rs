@@ -290,7 +290,10 @@ pub(super) async fn handle_pty_spawn_request(
 
     let rows = req.rows;
     let cols = req.cols;
+    let label = req.label.clone();
     let broadcaster = state.broadcaster.clone();
+    let wt_path_for_ready = worktree_path.clone();
+    let label_for_ready = label.clone();
     match tokio::task::spawn_blocking(move || {
         pm.spawn(
             &app,
@@ -298,12 +301,19 @@ pub(super) async fn handle_pty_spawn_request(
             cols,
             Some(worktree_path.clone()),
             Some(worktree_path),
+            label,
         )
     })
     .await
     {
         Ok(Ok(pty_id)) => {
-            broadcaster.try_send(WsMessage::PtyReady(PtyReady { pty_id, cols, rows }));
+            broadcaster.try_send(WsMessage::PtyReady(PtyReady {
+                pty_id,
+                cols,
+                rows,
+                label: label_for_ready,
+                worktree_path: Some(wt_path_for_ready),
+            }));
             let startup_cmd = state.get_terminal_startup_command();
             let trimmed_cmd = startup_cmd.trim();
             if !trimmed_cmd.is_empty() {
@@ -535,12 +545,43 @@ pub(super) async fn handle_worktree_select_request(
                     pty_id: session.pty_id,
                     cols,
                     rows,
+                    label: session.label.clone(),
+                    worktree_path: session.worktree_path.clone(),
                 }));
             }
         }
     }
 
     None
+}
+
+pub(super) async fn handle_pty_kill_request(
+    req: &PtyKillRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    let pty_id = req.pty_id;
+    if let Some(pm) = &state.pty_manager {
+        let pm = Arc::clone(pm);
+        match tokio::task::spawn_blocking(move || pm.kill(pty_id)).await {
+            Ok(Ok(())) => Some(WsMessage::PtyKillResponse(PtyKillResponse {
+                success: true,
+                pty_id,
+                error: None,
+            })),
+            Ok(Err(e)) => Some(WsMessage::PtyKillResponse(PtyKillResponse {
+                success: false,
+                pty_id,
+                error: Some(e),
+            })),
+            Err(e) => Some(join_error_msg(e)),
+        }
+    } else {
+        Some(WsMessage::PtyKillResponse(PtyKillResponse {
+            success: false,
+            pty_id,
+            error: Some("PTY manager が利用できません".to_string()),
+        }))
+    }
 }
 
 pub(super) fn handle_add_comment(comment: &AddComment, state: &WsServerState) -> Option<WsMessage> {
@@ -568,4 +609,92 @@ pub(super) fn handle_update_comment(
         let _ = app.emit("remote-comment-updated", req);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_no_repo_error() {
+        let msg = no_repo_error();
+        match msg {
+            WsMessage::Error(e) => {
+                assert_eq!(e.code, "NO_REPO");
+                assert!(!e.message.is_empty());
+            }
+            _ => panic!("Expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn test_no_worktree_selected_error() {
+        let msg = no_worktree_selected_error();
+        match msg {
+            WsMessage::Error(e) => {
+                assert_eq!(e.code, "NO_WORKTREE_SELECTED");
+                assert!(!e.message.is_empty());
+            }
+            _ => panic!("Expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn test_git_status_to_msg_list_nonexistent_repo() {
+        let files = git_status_to_msg_list("/nonexistent/repo/path");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_handle_pty_input_no_manager() {
+        let config = crate::config::ReleashConfig::default();
+        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+        let state = WsServerState::new(
+            None,
+            std::sync::Arc::new(WsBroadcaster::default()),
+            None,
+            vec![],
+            app_config,
+            None,
+            false,
+            std::sync::Arc::new(crate::git_host::PrCache::new()),
+        );
+        let input = PtyInput {
+            pty_id: 1,
+            data: "hello".to_string(),
+        };
+        let result = handle_pty_input(&input, &state);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_handle_pty_output_request_no_manager() {
+        let config = crate::config::ReleashConfig::default();
+        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+        let state = WsServerState::new(
+            None,
+            std::sync::Arc::new(WsBroadcaster::default()),
+            None,
+            vec![],
+            app_config,
+            None,
+            false,
+            std::sync::Arc::new(crate::git_host::PrCache::new()),
+        );
+        let req = PtyOutputRequest { pty_id: 1 };
+        let result = handle_pty_output_request(&req, &state);
+        assert!(result.is_some());
+        match result.unwrap() {
+            WsMessage::Error(e) => {
+                assert_eq!(e.code, "NO_PTY");
+            }
+            _ => panic!("Expected Error variant"),
+        }
+    }
 }

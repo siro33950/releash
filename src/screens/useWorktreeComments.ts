@@ -6,7 +6,7 @@ import {
 	useCallback,
 	useEffect,
 } from "react";
-import type { TerminalPanelHandle } from "@/components/panels/TerminalPanel";
+import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPanel";
 import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { trackEvent } from "@/lib/telemetry";
@@ -26,7 +26,7 @@ interface UseWorktreeCommentsParams {
 	markAsSent: (ids: string[]) => void;
 	activeTabPath: string | null;
 	handleOpenFile: (path: string) => Promise<void>;
-	terminalRef: RefObject<TerminalPanelHandle | null>;
+	terminalRef: RefObject<TerminalTabPanelHandle | null>;
 	rootPath: string;
 	dispatchEditor: React.Dispatch<EditorAction>;
 	commentsRef: MutableRefObject<LineComment[]>;

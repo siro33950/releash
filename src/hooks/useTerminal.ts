@@ -95,6 +95,7 @@ export function useTerminal(
 	terminalStartupCommand?: string,
 	sessionKey?: string,
 	agentType?: string,
+	label?: string,
 ) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
@@ -160,6 +161,7 @@ export function useTerminal(
 				cols,
 				cwd: worktreePath,
 				worktreePath: effectiveKey,
+				label: label ?? null,
 			});
 
 			if (!isMounted) return;
@@ -255,7 +257,7 @@ export function useTerminal(
 			unlistenExit?.();
 			terminal.dispose();
 		};
-	}, [containerRef, cwd, sessionKey]);
+	}, [containerRef, cwd, sessionKey, label]);
 
 	useEffect(() => {
 		const terminal = terminalRef.current;

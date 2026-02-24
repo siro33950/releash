@@ -130,6 +130,7 @@ describe("useTerminal", () => {
 				cols: 80,
 				cwd: null,
 				worktreePath: "",
+				label: null,
 			});
 		});
 	});
@@ -190,6 +191,35 @@ describe("useTerminal", () => {
 
 		expect(mockTerminalInstance).toBe(previousInstance);
 		expect(mockInvoke).not.toHaveBeenCalled();
+	});
+
+	it("既存セッション（is_new: false）のとき起動コマンドが送信されない", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") {
+				return Promise.resolve({
+					pty_id: 1,
+					buffered_output: "",
+					is_new: false,
+					is_exited: false,
+					exit_code: null,
+				});
+			}
+			return Promise.resolve();
+		});
+
+		renderHook(() => useTerminal(containerRef, null, undefined, "startup-cmd"));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"write_pty",
+			expect.objectContaining({ data: "startup-cmd\n" }),
+		);
 	});
 
 	describe("ResizeObserver ゼロサイズガード", () => {
