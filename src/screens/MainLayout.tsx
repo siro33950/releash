@@ -22,12 +22,19 @@ import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
+import { Button } from "@/components/ui/button";
 import {
 	DraggableTabs,
 	SortableTabTrigger,
 } from "@/components/ui/draggable-tabs";
 import { Tabs, TabsContent, TabsList } from "@/components/ui/tabs";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { EditorContext } from "@/contexts/EditorContext";
+import { cn } from "@/lib/utils";
 import { useWorktreeState } from "@/screens/useWorktreeState";
 import {
 	CreateBranchDialog,
@@ -338,19 +345,23 @@ export function MainLayout({
 		setRightVisible((prev) => (prev === visible ? prev : visible));
 	}, []);
 
+	const leftToggle = useMemo<TogglePanel>(
+		() => ({
+			id: "left-nav",
+			icon: PanelLeft,
+			label: "Sidebar",
+			visible: leftNavVisible,
+			onToggle: () => {
+				const panel = leftNavRef.current;
+				if (!panel) return;
+				panel.isCollapsed() ? panel.expand() : panel.collapse();
+			},
+		}),
+		[leftNavVisible],
+	);
+
 	const togglePanels = useMemo<TogglePanel[]>(
 		() => [
-			{
-				id: "left-nav",
-				icon: PanelLeft,
-				label: "Sidebar",
-				visible: leftNavVisible,
-				onToggle: () => {
-					const panel = leftNavRef.current;
-					if (!panel) return;
-					panel.isCollapsed() ? panel.expand() : panel.collapse();
-				},
-			},
 			{
 				id: "right",
 				icon: PanelRight,
@@ -363,47 +374,82 @@ export function MainLayout({
 				},
 			},
 		],
-		[leftNavVisible, rightVisible],
+		[rightVisible],
 	);
 
 	return (
-		<div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
-			<ViewToolbar panels={togglePanels} />
-			<div className="flex-1 overflow-hidden">
-				<Group orientation="horizontal" className="h-full">
-					<Panel
-						id="left-nav"
-						panelRef={leftNavRef}
-						defaultSize={230}
-						minSize={230}
-						collapsible
-						collapsedSize="0%"
-						onResize={handleLeftNavResize}
-					>
-						<div className="h-full overflow-hidden border-r border-border">
-							{leftNav}
+		<div className="h-screen w-screen overflow-hidden bg-background text-foreground">
+			<Group orientation="horizontal" className="h-full">
+				<Panel
+					id="left-nav"
+					panelRef={leftNavRef}
+					defaultSize={230}
+					minSize={230}
+					collapsible
+					collapsedSize="0%"
+					onResize={handleLeftNavResize}
+				>
+					<div className="flex flex-col h-full overflow-hidden border-r border-border">
+						<div
+							data-tauri-drag-region
+							className="flex items-center justify-end h-[34px] px-1 shrink-0"
+						>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										variant="ghost"
+										size="icon"
+										className={cn(
+											"h-6 w-6",
+											leftToggle.visible
+												? "text-foreground"
+												: "text-muted-foreground",
+										)}
+										onClick={leftToggle.onToggle}
+										aria-label={`Toggle ${leftToggle.label}`}
+									>
+										<leftToggle.icon className="size-4" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">
+									{leftToggle.label}
+								</TooltipContent>
+							</Tooltip>
 						</div>
-					</Panel>
-					<Separator />
-					{selectedRootPath ? (
-						<WorktreeContent
-							key={selectedRootPath}
-							rootPath={selectedRootPath}
-							settings={settings}
-							onSettingsSave={onSettingsSave}
-							rightPanelRef={rightPanelRef}
-							onRightResize={handleRightResize}
+						<div className="flex-1 overflow-hidden">{leftNav}</div>
+					</div>
+				</Panel>
+				<Separator />
+				<Panel id="main-area" minSize="30%">
+					<div className="flex flex-col h-full">
+						<ViewToolbar
+							panels={togglePanels}
+							leftPanels={leftNavVisible ? undefined : [leftToggle]}
 						/>
-					) : (
-						<Panel id="center" minSize="30%">
-							<EmptyState
-								title="No worktree selected"
-								description="Select a worktree from the sidebar to start working"
-							/>
-						</Panel>
-					)}
-				</Group>
-			</div>
+						<div className="flex-1 overflow-hidden">
+							<Group orientation="horizontal" className="h-full">
+								{selectedRootPath ? (
+									<WorktreeContent
+										key={selectedRootPath}
+										rootPath={selectedRootPath}
+										settings={settings}
+										onSettingsSave={onSettingsSave}
+										rightPanelRef={rightPanelRef}
+										onRightResize={handleRightResize}
+									/>
+								) : (
+									<Panel id="center" minSize="30%">
+										<EmptyState
+											title="No worktree selected"
+											description="Select a worktree from the sidebar to start working"
+										/>
+									</Panel>
+								)}
+							</Group>
+						</div>
+					</div>
+				</Panel>
+			</Group>
 		</div>
 	);
 }

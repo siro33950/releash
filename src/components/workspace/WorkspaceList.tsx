@@ -367,8 +367,8 @@ export function WorkspaceList({
 	return (
 		<div className="flex flex-col h-full">
 			{/* Header */}
-			<div className="flex items-center justify-between h-9 px-2 border-b border-border shrink-0">
-				<span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+			<div className="flex items-center justify-between h-9 px-2 shrink-0">
+				<span className="text-xs font-semibold tracking-wide text-muted-foreground">
 					Workspaces
 				</span>
 				<div className="flex items-center gap-0.5">

@@ -15,7 +15,10 @@
         "title": "Releash",
         "width": 1440,
         "height": 900,
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 10, "y": 19 }
       }
     ],
     "security": {

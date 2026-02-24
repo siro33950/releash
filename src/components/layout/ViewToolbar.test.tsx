@@ -65,6 +65,18 @@ describe("ViewToolbar", () => {
 		expect(panels[2].onToggle).toHaveBeenCalledOnce();
 	});
 
+	it("has data-tauri-drag-region attribute for window dragging", () => {
+		const panels = createPanels();
+		const { container } = render(
+			<TooltipProvider>
+				<ViewToolbar panels={panels} />
+			</TooltipProvider>,
+		);
+
+		const toolbar = container.firstElementChild;
+		expect(toolbar).toHaveAttribute("data-tauri-drag-region");
+	});
+
 	it("applies foreground color to visible panels and muted to hidden", () => {
 		const panels = createPanels();
 		render(

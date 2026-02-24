@@ -17,11 +17,38 @@ export interface TogglePanel {
 
 interface ViewToolbarProps {
 	panels: TogglePanel[];
+	leftPanels?: TogglePanel[];
 }
 
-export function ViewToolbar({ panels }: ViewToolbarProps) {
+export function ViewToolbar({ panels, leftPanels }: ViewToolbarProps) {
 	return (
-		<div className="flex items-center justify-end h-[30px] px-1 border-b border-border bg-sidebar shrink-0 gap-0.5">
+		<div
+			data-tauri-drag-region
+			className={cn(
+				"flex items-center h-[34px] pl-1 pr-[12px] border-b border-border bg-sidebar shrink-0 gap-0.5",
+				leftPanels && leftPanels.length > 0 && "pl-[80px]",
+			)}
+		>
+			{leftPanels?.map((panel) => (
+				<Tooltip key={panel.id}>
+					<TooltipTrigger asChild>
+						<Button
+							variant="ghost"
+							size="icon"
+							className={cn(
+								"h-6 w-6",
+								panel.visible ? "text-foreground" : "text-muted-foreground",
+							)}
+							onClick={panel.onToggle}
+							aria-label={`Toggle ${panel.label}`}
+						>
+							<panel.icon className="size-4" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{panel.label}</TooltipContent>
+				</Tooltip>
+			))}
+			<div className="flex-1" />
 			{panels.map((panel) => (
 				<Tooltip key={panel.id}>
 					<TooltipTrigger asChild>
