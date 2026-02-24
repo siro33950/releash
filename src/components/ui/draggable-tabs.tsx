@@ -17,7 +17,7 @@ import { TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
 interface DraggableTabsProps {
-	items: { id: string }[];
+	items: { id: string; draggable?: boolean }[];
 	onReorder: (fromIndex: number, toIndex: number) => void;
 	children: ReactNode;
 }
@@ -30,6 +30,10 @@ export function DraggableTabs({
 	const sensors = useSensors(
 		useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
 	);
+
+	const sortableIds = items
+		.filter((i) => i.draggable !== false)
+		.map((i) => i.id);
 
 	const handleDragEnd = (event: DragEndEvent) => {
 		const { active, over } = event;
@@ -48,7 +52,7 @@ export function DraggableTabs({
 			onDragEnd={handleDragEnd}
 		>
 			<SortableContext
-				items={items.map((i) => i.id)}
+				items={sortableIds}
 				strategy={horizontalListSortingStrategy}
 			>
 				{children}
@@ -77,7 +81,10 @@ export function SortableTabTrigger({
 		transform,
 		transition,
 		isDragging,
-	} = useSortable({ id, disabled });
+	} = useSortable({
+		id,
+		disabled: disabled ? { draggable: true, droppable: true } : false,
+	});
 
 	const dragStyle = {
 		transform: CSS.Transform.toString(transform),
