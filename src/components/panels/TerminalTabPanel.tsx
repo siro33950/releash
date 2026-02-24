@@ -80,22 +80,25 @@ export const TerminalTabPanel = forwardRef<
 		});
 	}, []);
 
-	const closeTab = useCallback((tabId: string) => {
-		setTabs((prev) => {
-			if (prev.length <= 1) return prev;
-			const tab = prev.find((t) => t.id === tabId);
+	const closeTab = useCallback(
+		(tabId: string) => {
+			const tab = tabs.find((t) => t.id === tabId);
 			if (tab?.ptyId != null) {
 				invoke("kill_pty", { ptyId: tab.ptyId }).catch((err) =>
 					console.warn("kill_pty failed:", err),
 				);
 			}
-			const next = prev.filter((t) => t.id !== tabId);
-			setActiveTabId((currentActive) =>
-				currentActive === tabId ? next[0].id : currentActive,
-			);
-			return next;
-		});
-	}, []);
+			setTabs((prev) => {
+				if (prev.length <= 1) return prev;
+				const next = prev.filter((t) => t.id !== tabId);
+				setActiveTabId((currentActive) =>
+					currentActive === tabId ? next[0].id : currentActive,
+				);
+				return next;
+			});
+		},
+		[tabs],
+	);
 
 	const setTerminalRef = useCallback(
 		(tabId: string) => (handle: TerminalPanelHandle | null) => {

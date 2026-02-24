@@ -2,7 +2,6 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use portable_pty::ChildKiller;
 
 pub struct SpawnConfig {
     pub rows: u16,
@@ -15,7 +14,7 @@ pub struct SpawnConfig {
 pub struct BackendSession {
     pub reader: Box<dyn Read + Send>,
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    pub killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
+    pub child: Box<dyn portable_pty::Child + Send + Sync>,
     pub resizer: Arc<Mutex<Box<dyn PtyResizer + Send>>>,
 }
 

@@ -98,8 +98,6 @@ impl PtyBackend for DirectPtyBackend {
             .map_err(|e| format!("Failed to spawn shell: {}", e))?;
         drop(pair.slave);
 
-        let child_killer = child.clone_killer();
-
         let master = pair.master;
         let reader = master
             .try_clone_reader()
@@ -113,7 +111,7 @@ impl PtyBackend for DirectPtyBackend {
         Ok(BackendSession {
             reader,
             writer: Arc::new(Mutex::new(writer)),
-            killer: Arc::new(Mutex::new(child_killer)),
+            child,
             resizer: Arc::new(Mutex::new(Box::new(resizer))),
         })
     }

@@ -126,6 +126,7 @@ fn spawn_output_reader(
     app: AppHandle,
     pty_id: u64,
     mut reader: Box<dyn Read + Send>,
+    mut child: Box<dyn portable_pty::Child + Send + Sync>,
     output_buffer: Arc<Mutex<VecDeque<u8>>>,
     exited: Arc<AtomicBool>,
     exit_code_holder: Arc<Mutex<Option<i32>>>,
@@ -161,21 +162,17 @@ fn spawn_output_reader(
             }
         }
 
-        exited.store(true, Ordering::SeqCst);
-        *exit_code_holder.lock() = None;
+        let exit_code = child
+            .wait()
+            .ok()
+            .map(|status| if status.success() { 0 } else { 1 });
 
-        let _ = app.emit(
-            "pty-exit",
-            PtyExit {
-                pty_id,
-                exit_code: None,
-            },
-        );
+        exited.store(true, Ordering::SeqCst);
+        *exit_code_holder.lock() = exit_code;
+
+        let _ = app.emit("pty-exit", PtyExit { pty_id, exit_code });
         if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
-            ws.try_send(WsMessage::PtyExit(PtyExitMsg {
-                pty_id,
-                exit_code: None,
-            }));
+            ws.try_send(WsMessage::PtyExit(PtyExitMsg { pty_id, exit_code }));
         }
     });
 }
@@ -343,13 +340,14 @@ impl PtyManager {
         let exit_code_holder = Arc::new(Mutex::new(None::<i32>));
 
         let writer = backend_session.writer;
-        let killer = backend_session.killer;
         let resizer = backend_session.resizer;
         let reader = backend_session.reader;
+        let child = backend_session.child;
+        let killer = child.clone_killer();
 
         let session = PtySession {
             writer,
-            killer: Arc::new(Mutex::new(killer.lock().clone_killer())),
+            killer: Arc::new(Mutex::new(killer)),
             resizer,
             worktree_path,
             label,
@@ -364,6 +362,7 @@ impl PtyManager {
             app.clone(),
             pty_id,
             reader,
+            child,
             output_buffer,
             exited,
             exit_code_holder,
