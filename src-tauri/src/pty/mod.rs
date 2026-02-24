@@ -233,15 +233,17 @@ impl PtyManager {
         let session = sessions
             .get(&pty_id)
             .ok_or_else(|| format!("PTY {} not found", pty_id))?;
-        if !session.exited.load(Ordering::SeqCst) {
+        let kill_result = if !session.exited.load(Ordering::SeqCst) {
             session
                 .killer
                 .lock()
                 .kill()
-                .map_err(|e| format!("Failed to kill PTY {}: {}", pty_id, e))?;
-        }
+                .map_err(|e| format!("Failed to kill PTY {}: {}", pty_id, e))
+        } else {
+            Ok(())
+        };
         sessions.remove(&pty_id);
-        Ok(())
+        kill_result
     }
 
     pub fn find_session(
