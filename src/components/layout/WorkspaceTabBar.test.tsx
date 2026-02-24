@@ -12,7 +12,7 @@ const worktreeTab: WorkspaceTab = {
 };
 
 describe("WorkspaceTabBar", () => {
-	it("should render kanban tab without close button", () => {
+	it("should render kanban as a fixed button without close button", () => {
 		render(
 			<WorkspaceTabBar
 				tabs={[kanbanTab]}
@@ -21,7 +21,7 @@ describe("WorkspaceTabBar", () => {
 				onTabClose={vi.fn()}
 			/>,
 		);
-		screen.getByRole("tab", { name: /Kanban/i });
+		screen.getByRole("button", { name: /Kanban/i });
 		expect(screen.queryByLabelText(/Close/)).not.toBeInTheDocument();
 	});
 
@@ -83,10 +83,16 @@ describe("WorkspaceTabBar", () => {
 	});
 
 	it("should mark active tab with aria-selected", () => {
+		const secondWorktree: WorkspaceTab = {
+			type: "worktree",
+			id: "/path/b",
+			rootPath: "/path/b",
+			branchName: "fix/bug",
+		};
 		render(
 			<WorkspaceTabBar
-				tabs={[kanbanTab, worktreeTab]}
-				activeTabId="/path/a"
+				tabs={[kanbanTab, worktreeTab, secondWorktree]}
+				activeTabId="/path/b"
 				onTabClick={vi.fn()}
 				onTabClose={vi.fn()}
 			/>,

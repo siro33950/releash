@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalTabPanel } from "./TerminalTabPanel";
 
@@ -72,6 +73,28 @@ describe("TerminalTabPanel", () => {
 	it("最後のタブは閉じられない", () => {
 		render(<TerminalTabPanel />);
 		expect(screen.queryByLabelText("Close Terminal 1")).not.toBeInTheDocument();
+	});
+
+	it("StrictMode: 削除後の追加で連番が崩れない", async () => {
+		const user = userEvent.setup();
+		render(
+			<StrictMode>
+				<TerminalTabPanel />
+			</StrictMode>,
+		);
+
+		const addButton = screen.getByLabelText("Add terminal tab");
+		await user.click(addButton);
+		expect(screen.getByText("Terminal 1")).toBeInTheDocument();
+		expect(screen.getByText("Terminal 2")).toBeInTheDocument();
+
+		await user.click(screen.getByLabelText("Close Terminal 1"));
+
+		await user.click(addButton);
+		const tabLabels = screen
+			.getAllByRole("tab")
+			.map((el) => el.textContent?.replace(/×$/, "").trim());
+		expect(tabLabels).toEqual(["Terminal 2", "Terminal 3"]);
 	});
 
 	it("最大8タブまで追加可能", async () => {

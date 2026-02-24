@@ -10,6 +10,7 @@ import {
 	TerminalPanel,
 	type TerminalPanelHandle,
 } from "@/components/panels/TerminalPanel";
+import { TabBarContainer, TabBarItem } from "@/components/ui/tab-bar";
 import type { Theme } from "@/types/settings";
 
 const MAX_TABS = 8;
@@ -65,10 +66,10 @@ export const TerminalTabPanel = forwardRef<
 	const tabCounter = useRef(1);
 
 	const addTab = useCallback(() => {
+		tabCounter.current += 1;
+		const num = tabCounter.current;
 		setTabs((prev) => {
 			if (prev.length >= MAX_TABS) return prev;
-			tabCounter.current += 1;
-			const num = tabCounter.current;
 			const tab: Tab = {
 				id: nextTabId(),
 				label: `Terminal ${num}`,
@@ -109,34 +110,20 @@ export const TerminalTabPanel = forwardRef<
 
 	return (
 		<div className="flex flex-col h-full">
-			<div
-				role="tablist"
-				aria-label="ターミナルタブ"
-				className="flex items-center gap-0.5 px-1 py-0.5 border-b border-border bg-card shrink-0 overflow-x-auto"
-			>
-				{tabs.map((tab) => (
-					<div
+			<TabBarContainer ariaLabel="ターミナルタブ">
+				{tabs.map((tab, index) => (
+					<TabBarItem
 						key={tab.id}
 						id={`terminal-tab-${tab.id}`}
-						className={`group flex items-center gap-1 px-2 py-0.5 text-xs rounded transition-colors shrink-0 cursor-pointer ${
-							activeTabId === tab.id
-								? "bg-primary text-primary-foreground"
-								: "bg-secondary text-muted-foreground hover:bg-secondary/80"
-						}`}
-						role="tab"
-						aria-controls={`terminal-panel-${tab.id}`}
-						tabIndex={activeTabId === tab.id ? 0 : -1}
-						aria-selected={activeTabId === tab.id}
+						isActive={activeTabId === tab.id}
 						onClick={() => setActiveTabId(tab.id)}
+						onClose={tabs.length > 1 ? () => closeTab(tab.id) : undefined}
+						closeLabel={`Close ${tab.label}`}
+						ariaControls={`terminal-panel-${tab.id}`}
 						onKeyDown={(e) => {
-							if (e.key === "Enter" || e.key === " ") {
-								e.preventDefault();
-								setActiveTabId(tab.id);
-							}
 							if (e.key === "ArrowRight") {
 								e.preventDefault();
-								const idx = tabs.findIndex((t) => t.id === tab.id);
-								const next = tabs[idx + 1];
+								const next = tabs[index + 1];
 								if (next) {
 									setActiveTabId(next.id);
 									(e.currentTarget.nextElementSibling as HTMLElement)?.focus();
@@ -144,8 +131,7 @@ export const TerminalTabPanel = forwardRef<
 							}
 							if (e.key === "ArrowLeft") {
 								e.preventDefault();
-								const idx = tabs.findIndex((t) => t.id === tab.id);
-								const prev = tabs[idx - 1];
+								const prev = tabs[index - 1];
 								if (prev) {
 									setActiveTabId(prev.id);
 									(
@@ -156,36 +142,19 @@ export const TerminalTabPanel = forwardRef<
 						}}
 					>
 						<span>{tab.label}</span>
-						{tabs.length > 1 && (
-							<button
-								type="button"
-								className={`ml-0.5 rounded-sm hover:bg-black/20 inline-flex items-center ${
-									activeTabId === tab.id
-										? "opacity-80"
-										: "opacity-0 group-hover:opacity-60"
-								}`}
-								onClick={(e) => {
-									e.stopPropagation();
-									closeTab(tab.id);
-								}}
-								aria-label={`Close ${tab.label}`}
-							>
-								&#x2715;
-							</button>
-						)}
-					</div>
+					</TabBarItem>
 				))}
 				{tabs.length < MAX_TABS && (
 					<button
 						type="button"
-						className="px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary rounded transition-colors shrink-0"
 						onClick={addTab}
 						aria-label="Add terminal tab"
+						className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
 					>
 						+
 					</button>
 				)}
-			</div>
+			</TabBarContainer>
 			<div className="flex-1 relative" style={{ minHeight: 0 }}>
 				{tabs.map((tab) => (
 					<div
