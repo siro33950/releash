@@ -27,7 +27,7 @@ import {
 	DraggableTabs,
 	SortableTabTrigger,
 } from "@/components/ui/draggable-tabs";
-import { Tabs, TabsList } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList } from "@/components/ui/tabs";
 import { EditorContext } from "@/contexts/EditorContext";
 import { useWorktreeState } from "@/screens/useWorktreeState";
 import {
@@ -117,17 +117,14 @@ function WorktreeContent({
 							items={s.editorLayout.tabs}
 							onReorder={s.editorLayout.reorderTabs}
 						>
-							<TabsList
-								variant="line"
-								className="w-full justify-start gap-0 overflow-x-auto overflow-y-hidden rounded-none border-b border-border bg-sidebar p-0 shrink-0"
-							>
+							<TabsList variant="line">
 								{s.editorLayout.tabs.map((tab) => (
 									<SortableTabTrigger
 										key={tab.id}
 										id={tab.id}
 										value={tab.id}
 										disabled={!tab.draggable}
-										className="flex-initial rounded-none border-0 border-r border-border px-3 gap-2 text-[13px] shrink-0 bg-sidebar text-muted-foreground group-data-[orientation=horizontal]/tabs:after:bottom-0 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-none dark:bg-sidebar dark:text-muted-foreground dark:data-[state=active]:bg-background dark:data-[state=active]:text-foreground dark:data-[state=active]:border-0 dark:data-[state=active]:border-r dark:data-[state=active]:border-border"
+										className="gap-2"
 									>
 										{tab.component === "agent" ? (
 											<Bot className="h-4 w-4" />
@@ -164,43 +161,37 @@ function WorktreeContent({
 								))}
 							</TabsList>
 						</DraggableTabs>
-						{/* visibility pattern - all tabs absolute, z-index+visibility で切替 */}
 						<div className="flex-1 relative" style={{ minHeight: 0 }}>
-							{s.editorLayout.tabs.map((tab) => {
-								const isActive = tab.id === s.editorLayout.activeTabId;
-								return (
-									<div
-										key={tab.id}
-										className="absolute inset-0 isolate"
-										style={{
-											visibility: isActive ? "visible" : "hidden",
-											zIndex: isActive ? 1 : 0,
-										}}
-									>
-										{tab.component === "agent" ? (
-											<AgentTab
-												ref={s.terminalRef}
-												rootPath={rootPath}
-												theme={settings.theme}
-												terminalStartupCommand={buildTerminalCommand(settings)}
-												agentType={settings.agent}
-											/>
-										) : tab.path ? (
-											<EditorTabContent
-												key={tab.path}
-												filePath={tab.path}
-												externalRevealLine={s.pendingReveal}
-												onExternalRevealConsumed={() =>
-													s.dispatchEditor({
-														type: "SET_PENDING_REVEAL",
-														reveal: null,
-													})
-												}
-											/>
-										) : null}
-									</div>
-								);
-							})}
+							{s.editorLayout.tabs.map((tab) => (
+								<TabsContent
+									key={tab.id}
+									value={tab.id}
+									forceMount
+									className="absolute inset-0 isolate m-0 data-[state=inactive]:hidden"
+								>
+									{tab.component === "agent" ? (
+										<AgentTab
+											ref={s.terminalRef}
+											rootPath={rootPath}
+											theme={settings.theme}
+											terminalStartupCommand={buildTerminalCommand(settings)}
+											agentType={settings.agent}
+										/>
+									) : tab.path ? (
+										<EditorTabContent
+											key={tab.path}
+											filePath={tab.path}
+											externalRevealLine={s.pendingReveal}
+											onExternalRevealConsumed={() =>
+												s.dispatchEditor({
+													type: "SET_PENDING_REVEAL",
+													reveal: null,
+												})
+											}
+										/>
+									) : null}
+								</TabsContent>
+							))}
 						</div>
 					</Tabs>
 					{s.editorDragOver && (

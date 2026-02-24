@@ -11,7 +11,7 @@ import {
 	TerminalPanel,
 	type TerminalPanelHandle,
 } from "@/components/panels/TerminalPanel";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { Theme } from "@/types/settings";
 
 const MAX_TABS = 8;
@@ -69,16 +69,13 @@ export const TerminalTabPanel = forwardRef<
 	const addTab = useCallback(() => {
 		tabCounter.current += 1;
 		const num = tabCounter.current;
-		setTabs((prev) => {
-			if (prev.length >= MAX_TABS) return prev;
-			const tab: Tab = {
-				id: nextTabId(),
-				label: `Terminal ${num}`,
-				ptyId: null,
-			};
-			setActiveTabId(tab.id);
-			return [...prev, tab];
-		});
+		const newTab: Tab = {
+			id: nextTabId(),
+			label: `Terminal ${num}`,
+			ptyId: null,
+		};
+		setTabs((prev) => (prev.length >= MAX_TABS ? prev : [...prev, newTab]));
+		setActiveTabId(newTab.id);
 	}, []);
 
 	const closeTab = useCallback(
@@ -91,11 +88,13 @@ export const TerminalTabPanel = forwardRef<
 			}
 			setTabs((prev) => {
 				if (prev.length <= 1) return prev;
-				const next = prev.filter((t) => t.id !== tabId);
-				setActiveTabId((currentActive) =>
-					currentActive === tabId ? next[0].id : currentActive,
-				);
-				return next;
+				return prev.filter((t) => t.id !== tabId);
+			});
+			setActiveTabId((currentActive) => {
+				if (currentActive !== tabId) return currentActive;
+				const idx = tabs.findIndex((t) => t.id === tabId);
+				const fallback = tabs[idx - 1] ?? tabs[idx + 1];
+				return fallback?.id ?? currentActive;
 			});
 		},
 		[tabs],
@@ -119,17 +118,10 @@ export const TerminalTabPanel = forwardRef<
 				onValueChange={setActiveTabId}
 				className="flex flex-col h-full gap-0"
 			>
-				<div className="flex items-center h-9 bg-sidebar border-b border-border shrink-0">
-					<TabsList
-						aria-label="ターミナルタブ"
-						className="rounded-none bg-transparent"
-					>
+				<div className="flex items-center gap-2 shrink-0 px-2 pt-1 bg-background">
+					<TabsList aria-label="ターミナルタブ">
 						{tabs.map((tab) => (
-							<TabsTrigger
-								key={tab.id}
-								value={tab.id}
-								className="rounded-none border-r border-border px-3 gap-2 text-sm shrink-0"
-							>
+							<TabsTrigger key={tab.id} value={tab.id} className="gap-2">
 								<span>{tab.label}</span>
 								{tabs.length > 1 && (
 									// biome-ignore lint/a11y/useSemanticElements: nested inside TabsTrigger <button>, cannot use <button>
@@ -169,16 +161,11 @@ export const TerminalTabPanel = forwardRef<
 				</div>
 				<div className="flex-1 relative" style={{ minHeight: 0 }}>
 					{tabs.map((tab) => (
-						<div
+						<TabsContent
 							key={tab.id}
-							id={`terminal-panel-${tab.id}`}
-							role="tabpanel"
-							aria-labelledby={`terminal-tab-${tab.id}`}
-							className="absolute inset-0"
-							style={{
-								visibility: activeTabId === tab.id ? "visible" : "hidden",
-								zIndex: activeTabId === tab.id ? 1 : 0,
-							}}
+							value={tab.id}
+							forceMount
+							className="absolute inset-0 m-0 data-[state=inactive]:hidden"
 						>
 							<TerminalPanel
 								ref={setTerminalRef(tab.id)}
@@ -191,7 +178,7 @@ export const TerminalTabPanel = forwardRef<
 									sessionKey ? `${sessionKey}::${tab.label}` : undefined
 								}
 							/>
-						</div>
+						</TabsContent>
 					))}
 				</div>
 			</Tabs>

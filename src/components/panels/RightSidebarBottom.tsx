@@ -2,8 +2,7 @@ import { Send } from "lucide-react";
 import { useState } from "react";
 import { CommentList } from "@/components/panels/CommentList";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { LineComment } from "@/types/comment";
 import type { Theme } from "@/types/settings";
 
@@ -46,13 +45,9 @@ export function RightSidebarBottom({
 				onValueChange={(val) => setActiveTab(val as RightBottomTab)}
 				className="flex flex-col h-full gap-0"
 			>
-				<div className="flex items-center h-9 bg-sidebar border-b border-border shrink-0">
-					<TabsList
-						variant="line"
-						aria-label="Bottom sidebar tabs"
-						className="rounded-none bg-transparent"
-					>
-						<TabsTrigger value="comments" className="rounded-none px-3">
+				<div className="flex items-center gap-2 shrink-0 px-2 pt-1 bg-background">
+					<TabsList variant="line" aria-label="Bottom sidebar tabs">
+						<TabsTrigger value="comments">
 							<span className="text-xs">
 								Comments
 								{unsentComments.length > 0 && (
@@ -62,7 +57,7 @@ export function RightSidebarBottom({
 								)}
 							</span>
 						</TabsTrigger>
-						<TabsTrigger value="terminal" className="rounded-none px-3">
+						<TabsTrigger value="terminal">
 							<span className="text-xs">Terminal</span>
 						</TabsTrigger>
 					</TabsList>
@@ -80,24 +75,18 @@ export function RightSidebarBottom({
 							</button>
 						)}
 				</div>
-				<div
-					className={cn(
-						"flex-1 overflow-hidden",
-						activeTab !== "terminal" && "hidden",
-					)}
+				<TabsContent
+					value="terminal"
+					forceMount
+					className="flex-1 overflow-hidden data-[state=inactive]:hidden"
 				>
 					<TerminalPanel
 						cwd={rootPath}
 						theme={theme}
 						sessionKey={`${rootPath}::user`}
 					/>
-				</div>
-				<div
-					className={cn(
-						"flex-1 overflow-hidden",
-						activeTab !== "comments" && "hidden",
-					)}
-				>
+				</TabsContent>
+				<TabsContent value="comments" className="flex-1 overflow-hidden">
 					<CommentList
 						comments={comments}
 						onCommentClick={onCommentClick}
@@ -108,7 +97,7 @@ export function RightSidebarBottom({
 						showSentComments={showSentComments}
 						onToggleShowSent={onToggleShowSent}
 					/>
-				</div>
+				</TabsContent>
 			</Tabs>
 		</div>
 	);
