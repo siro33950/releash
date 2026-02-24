@@ -51,7 +51,7 @@ export function RightSidebarBottom({
 				onValueChange={(val) => setActiveTab(val as RightBottomTab)}
 				className="flex flex-col h-full"
 			>
-				<div className="flex items-center gap-2 shrink-0 px-2 pt-1 bg-background">
+				<div className="flex items-center gap-2 shrink-0 px-0 pt-0 bg-background">
 					<TooltipProvider>
 						<TabsList variant="line" aria-label="Bottom sidebar tabs">
 							<Tooltip>

@@ -126,7 +126,7 @@ export const TerminalTabPanel = forwardRef<
 				onValueChange={setActiveTabId}
 				className="flex flex-col h-full gap-0"
 			>
-				<div className="flex items-center gap-2 shrink-0 px-2 pt-1 bg-background">
+				<div className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background">
 					<TabsList aria-label="ターミナルタブ">
 						{tabs.map((tab) => (
 							<TabsTrigger key={tab.id} value={tab.id} className="gap-2">

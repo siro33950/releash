@@ -49,7 +49,7 @@ export function ViewToolbar({ panels, leftPanels }: ViewToolbarProps) {
 					<TooltipContent side="bottom">{panel.label}</TooltipContent>
 				</Tooltip>
 			))}
-			<TabsList variant="line" className="h-7 px-0">
+			<TabsList variant="line" className="h-[30px] px-0">
 				<TabsTrigger value="agent" className="text-xs px-[10px] py-1">
 					Agent
 				</TabsTrigger>
