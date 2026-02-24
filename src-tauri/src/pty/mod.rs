@@ -1,7 +1,5 @@
 pub mod backend;
 mod direct;
-mod lifecycle;
-mod tmux;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -17,7 +15,6 @@ use crate::ws_bridge::WsBroadcaster;
 
 use backend::{PtyBackend, PtyResizer, SpawnConfig};
 use direct::DirectPtyBackend;
-use tmux::TmuxPtyBackend;
 
 const OUTPUT_BUFFER_CAPACITY: usize = 64 * 1024;
 const MAX_PENDING_BYTES: usize = 16 * 1024;
@@ -37,7 +34,6 @@ struct PtySession {
     output_buffer: Arc<Mutex<VecDeque<u8>>>,
     exited: Arc<AtomicBool>,
     exit_code: Arc<Mutex<Option<i32>>>,
-    is_restored: bool,
 }
 
 pub struct FoundSession {
@@ -46,29 +42,18 @@ pub struct FoundSession {
     pub is_exited: bool,
     pub exit_code: Option<i32>,
     pub label: Option<String>,
-    pub is_restored: bool,
 }
 
 pub struct PtyManager {
     sessions: Mutex<HashMap<u64, PtySession>>,
     backend: Box<dyn PtyBackend>,
-    _lifecycle: Mutex<lifecycle::SessionLifecycle>,
 }
 
 impl Default for PtyManager {
     fn default() -> Self {
-        let backend: Box<dyn PtyBackend> = if TmuxPtyBackend::is_available() {
-            log::info!("Using tmux PTY backend");
-            Box::new(TmuxPtyBackend::new())
-        } else {
-            log::info!("Using direct PTY backend (tmux not available)");
-            Box::new(DirectPtyBackend::new())
-        };
-
         Self {
             sessions: Mutex::new(HashMap::new()),
-            backend,
-            _lifecycle: Mutex::new(lifecycle::SessionLifecycle::new()),
+            backend: Box::new(DirectPtyBackend::new()),
         }
     }
 }
@@ -201,7 +186,6 @@ impl PtyManager {
         Self {
             sessions: Mutex::new(HashMap::new()),
             backend,
-            _lifecycle: Mutex::new(lifecycle::SessionLifecycle::new()),
         }
     }
 
@@ -289,7 +273,6 @@ impl PtyManager {
                     is_exited,
                     exit_code,
                     label: session.label.clone(),
-                    is_restored: session.is_restored,
                 });
             }
         }
@@ -348,8 +331,6 @@ impl PtyManager {
             rows,
             cols,
             cwd,
-            worktree_path: worktree_path.clone(),
-            label: label.clone(),
             shell,
             integration_dir,
         };
@@ -375,7 +356,6 @@ impl PtyManager {
             output_buffer: Arc::clone(&output_buffer),
             exited: Arc::clone(&exited),
             exit_code: Arc::clone(&exit_code_holder),
-            is_restored: false,
         };
 
         self.sessions.lock().insert(pty_id, session);
@@ -390,84 +370,6 @@ impl PtyManager {
         );
 
         Ok(pty_id)
-    }
-
-    #[allow(dead_code)]
-    pub fn restore_sessions(&self, app: &AppHandle) -> Vec<(u64, PtySessionInfo)> {
-        let existing = match self.backend.list_existing() {
-            Ok(sessions) => sessions,
-            Err(e) => {
-                log::warn!("Failed to list existing sessions: {}", e);
-                return vec![];
-            }
-        };
-
-        let mut restored = vec![];
-
-        for existing_session in existing {
-            match self.backend.attach(&existing_session.session_id) {
-                Ok(backend_session) => {
-                    let pty_id = generate_pty_id();
-                    let output_buffer =
-                        Arc::new(Mutex::new(VecDeque::with_capacity(OUTPUT_BUFFER_CAPACITY)));
-                    let exited = Arc::new(AtomicBool::new(false));
-                    let exit_code_holder = Arc::new(Mutex::new(None::<i32>));
-
-                    let writer = backend_session.writer;
-                    let killer = backend_session.killer;
-                    let resizer = backend_session.resizer;
-                    let reader = backend_session.reader;
-
-                    let worktree_path = existing_session.worktree_path.clone();
-                    let label = existing_session.label.clone();
-
-                    let session = PtySession {
-                        writer,
-                        killer: Arc::new(Mutex::new(killer.lock().clone_killer())),
-                        resizer,
-                        worktree_path: worktree_path.clone(),
-                        label: label.clone(),
-                        output_buffer: Arc::clone(&output_buffer),
-                        exited: Arc::clone(&exited),
-                        exit_code: Arc::clone(&exit_code_holder),
-                        is_restored: true,
-                    };
-
-                    self.sessions.lock().insert(pty_id, session);
-
-                    let info = PtySessionInfo {
-                        pty_id,
-                        worktree_path,
-                        label,
-                    };
-                    restored.push((pty_id, info.clone()));
-
-                    spawn_output_reader(
-                        app.clone(),
-                        pty_id,
-                        reader,
-                        output_buffer,
-                        exited,
-                        exit_code_holder,
-                    );
-
-                    log::info!(
-                        "Restored tmux session '{}' as pty_id={}",
-                        existing_session.session_id,
-                        pty_id
-                    );
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed to attach to session '{}': {}",
-                        existing_session.session_id,
-                        e
-                    );
-                }
-            }
-        }
-
-        restored
     }
 }
 
@@ -543,7 +445,6 @@ pub struct GetOrSpawnPtyResult {
     exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     label: Option<String>,
-    is_restored: bool,
 }
 
 #[tauri::command]
@@ -564,7 +465,6 @@ pub fn get_or_spawn_pty(
             is_exited: found.is_exited,
             exit_code: found.exit_code,
             label: found.label,
-            is_restored: found.is_restored,
         });
     }
 
@@ -577,7 +477,6 @@ pub fn get_or_spawn_pty(
         is_exited: false,
         exit_code: None,
         label,
-        is_restored: false,
     })
 }
 
@@ -707,8 +606,7 @@ mod tests {
     #[test]
     fn test_backend_name() {
         let pm = PtyManager::default();
-        let name = pm.backend_name();
-        assert!(name == "direct" || name == "tmux");
+        assert_eq!(pm.backend_name(), "direct");
     }
 
     #[test]
@@ -726,27 +624,9 @@ mod tests {
             is_exited: false,
             exit_code: None,
             label: None,
-            is_restored: false,
         };
         let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"is_restored\":false"));
         assert!(!json.contains("\"label\""));
-    }
-
-    #[test]
-    fn test_get_or_spawn_result_serialization_restored() {
-        let result = GetOrSpawnPtyResult {
-            pty_id: 1,
-            buffered_output: "hello".to_string(),
-            is_new: false,
-            is_exited: false,
-            exit_code: None,
-            label: Some("dev".to_string()),
-            is_restored: true,
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"is_restored\":true"));
-        assert!(json.contains("\"label\":\"dev\""));
     }
 
     // ---- process_pty_output tests ----
@@ -885,7 +765,6 @@ mod tests {
         pty_id: u64,
         worktree_path: Option<&str>,
         label: Option<&str>,
-        is_restored: bool,
     ) {
         let written = Arc::new(Mutex::new(Vec::<u8>::new()));
         let session = PtySession {
@@ -899,7 +778,6 @@ mod tests {
             output_buffer: Arc::new(Mutex::new(VecDeque::new())),
             exited: Arc::new(AtomicBool::new(false)),
             exit_code: Arc::new(Mutex::new(None)),
-            is_restored,
         };
         pm.sessions.lock().insert(pty_id, session);
     }
@@ -907,7 +785,7 @@ mod tests {
     #[test]
     fn test_write_success() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), None);
         let result = pm.write(1, "hello");
         assert!(result.is_ok());
     }
@@ -915,7 +793,7 @@ mod tests {
     #[test]
     fn test_kill_success() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), None);
         let result = pm.kill(1);
         assert!(result.is_ok());
         assert!(pm.sessions.lock().get(&1).is_none());
@@ -924,7 +802,7 @@ mod tests {
     #[test]
     fn test_kill_already_exited() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), None);
         pm.sessions
             .lock()
             .get(&1)
@@ -939,7 +817,7 @@ mod tests {
     #[test]
     fn test_resize_success() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), None);
         let result = pm.resize(1, 30, 100);
         assert!(result.is_ok());
     }
@@ -947,7 +825,7 @@ mod tests {
     #[test]
     fn test_get_pty_size_success() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), None);
         let result = pm.get_pty_size(1);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), (80, 24));
@@ -956,8 +834,8 @@ mod tests {
     #[test]
     fn test_list_pty_sessions_nonempty() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 10, Some("/repo"), Some("dev"), false);
-        insert_test_session(&pm, 20, Some("/repo2"), None, true);
+        insert_test_session(&pm, 10, Some("/repo"), Some("dev"));
+        insert_test_session(&pm, 20, Some("/repo2"), None);
         let sessions = pm.list_pty_sessions();
         assert_eq!(sessions.len(), 2);
     }
@@ -967,20 +845,19 @@ mod tests {
     #[test]
     fn test_find_session_match() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), Some("dev"), true);
+        insert_test_session(&pm, 1, Some("/repo"), Some("dev"));
         let found = pm.find_session("/repo", &Some("dev".to_string()));
         assert!(found.is_some());
         let found = found.unwrap();
         assert_eq!(found.pty_id, 1);
         assert!(!found.is_exited);
-        assert!(found.is_restored);
         assert_eq!(found.label, Some("dev".to_string()));
     }
 
     #[test]
     fn test_find_session_no_match() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), Some("dev"), false);
+        insert_test_session(&pm, 1, Some("/repo"), Some("dev"));
         let found = pm.find_session("/other", &Some("dev".to_string()));
         assert!(found.is_none());
     }
@@ -988,7 +865,7 @@ mod tests {
     #[test]
     fn test_find_session_label_none_match() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), None);
         let found = pm.find_session("/repo", &None);
         assert!(found.is_some());
     }
@@ -996,7 +873,7 @@ mod tests {
     #[test]
     fn test_find_session_label_mismatch() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), Some("dev"), false);
+        insert_test_session(&pm, 1, Some("/repo"), Some("dev"));
         let found = pm.find_session("/repo", &None);
         assert!(found.is_none());
     }
@@ -1004,7 +881,7 @@ mod tests {
     #[test]
     fn test_find_session_buffered_output() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), None);
         // Insert some data into the output buffer
         {
             let sessions = pm.sessions.lock();
@@ -1020,9 +897,9 @@ mod tests {
     #[test]
     fn test_kill_by_worktree_removes_matching() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), Some("dev"), false);
-        insert_test_session(&pm, 2, Some("/repo"), Some("test"), false);
-        insert_test_session(&pm, 3, Some("/other"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), Some("dev"));
+        insert_test_session(&pm, 2, Some("/repo"), Some("test"));
+        insert_test_session(&pm, 3, Some("/other"), None);
         let result = pm.kill_by_worktree("/repo");
         assert!(result.is_ok());
         let sessions = pm.sessions.lock();
@@ -1033,7 +910,7 @@ mod tests {
     #[test]
     fn test_kill_by_worktree_no_match() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), None);
         let result = pm.kill_by_worktree("/nonexistent");
         assert!(result.is_ok());
         assert_eq!(pm.sessions.lock().len(), 1);
@@ -1049,7 +926,7 @@ mod tests {
     #[test]
     fn test_kill_by_worktree_already_exited() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        insert_test_session(&pm, 1, Some("/repo"), None, false);
+        insert_test_session(&pm, 1, Some("/repo"), None);
         pm.sessions
             .lock()
             .get(&1)

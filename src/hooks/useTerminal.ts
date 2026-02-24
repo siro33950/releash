@@ -22,7 +22,6 @@ interface GetOrSpawnPtyResult {
 	is_new: boolean;
 	is_exited: boolean;
 	exit_code: number | null;
-	is_restored: boolean;
 }
 
 const terminalDarkTheme: ITheme = {
@@ -183,8 +182,8 @@ export function useTerminal(
 			// 5. Set ptyId (from here, real-time output starts flowing)
 			ptyIdRef.current = result.pty_id;
 
-			// 6. Send startup command for newly created PTY (skip for restored sessions)
-			if (result.is_new && !result.is_restored && startupCommandRef.current) {
+			// 6. Send startup command for newly created PTY
+			if (result.is_new && startupCommandRef.current) {
 				const cmd = startupCommandRef.current.trim();
 				if (cmd) {
 					trackEvent("agent_started", {
