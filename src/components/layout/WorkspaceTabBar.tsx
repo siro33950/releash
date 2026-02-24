@@ -49,80 +49,74 @@ export function WorkspaceTabBar({
 	return (
 		<ScrollAreaPrimitive.Root className="h-[34px] bg-sidebar border-b border-border shrink-0">
 			<ScrollAreaPrimitive.Viewport className="h-full w-full">
-				<div className="flex items-center h-[34px]">
+				<div
+					role="tablist"
+					aria-orientation="horizontal"
+					className="flex items-center h-[34px]"
+				>
 					{kanbanTab && (
-						<button
-							type="button"
+						<TabBarItem
+							isActive={activeTabId === kanbanTab.id}
+							onClick={() => onTabClick(kanbanTab.id)}
+							ariaLabel="Kanban"
 							className={cn(
-								"flex items-center gap-2 h-full px-3 text-sm border-r border-border cursor-pointer transition-colors shrink-0",
-								activeTabId === kanbanTab.id
-									? "bg-background text-foreground"
-									: "bg-sidebar text-muted-foreground hover:bg-sidebar-accent",
 								kanbanDropLeft && "border-l-2 border-l-primary",
 								kanbanDropRight && "border-r-2 border-r-primary",
 							)}
-							onClick={() => onTabClick(kanbanTab.id)}
-							aria-label="Kanban"
 							onDragOver={kanbanHandlers?.onDragOver}
 							onDragLeave={kanbanHandlers?.onDragLeave}
 							onDrop={kanbanHandlers?.onDrop}
 						>
 							<LayoutGrid className="size-4 shrink-0" />
-						</button>
+						</TabBarItem>
 					)}
 
-					<div
-						role="tablist"
-						aria-orientation="horizontal"
-						className="flex items-center h-full"
-					>
-						{worktreeTabs.map((tab) => {
-							const isActive = tab.id === activeTabId;
-							const isDragging = draggingId === tab.id;
-							const isDropLeft =
-								dropTarget?.tabId === tab.id && dropTarget.position === "left";
-							const isDropRight =
-								dropTarget?.tabId === tab.id && dropTarget.position === "right";
-							const handlers = dragHandlers({
-								tabId: tab.id,
-								isDraggable: true,
-							});
+					{worktreeTabs.map((tab) => {
+						const isActive = tab.id === activeTabId;
+						const isDragging = draggingId === tab.id;
+						const isDropLeft =
+							dropTarget?.tabId === tab.id && dropTarget.position === "left";
+						const isDropRight =
+							dropTarget?.tabId === tab.id && dropTarget.position === "right";
+						const handlers = dragHandlers({
+							tabId: tab.id,
+							isDraggable: true,
+						});
 
-							return (
-								<TabBarItem
-									key={tab.id}
-									isActive={isActive}
-									onClick={() => onTabClick(tab.id)}
-									onClose={(e) => {
-										e.stopPropagation();
-										onTabClose(tab.id);
-									}}
-									closeLabel={`Close ${showRepoPrefix && tab.repoName ? `${tab.repoName} / ${tab.branchName}` : tab.branchName}`}
-									className={cn(
-										isDragging && "opacity-50",
-										isDropLeft && "border-l-2 border-l-primary",
-										isDropRight && "border-r-2 border-r-primary",
-									)}
-									draggable={handlers.draggable}
-									onDragStart={handlers.onDragStart}
-									onDragEnd={handlers.onDragEnd}
-									onDragOver={handlers.onDragOver}
-									onDragLeave={handlers.onDragLeave}
-									onDrop={handlers.onDrop}
-								>
-									<GitBranch className="size-4 shrink-0" />
-									<span className="truncate max-w-40">
-										{showRepoPrefix && tab.repoName
-											? `${tab.repoName} / ${tab.branchName}`
-											: tab.branchName}
-									</span>
-									{tab.agentState && (
-										<AgentStateBadge state={tab.agentState} variant="dot" />
-									)}
-								</TabBarItem>
-							);
-						})}
-					</div>
+						return (
+							<TabBarItem
+								key={tab.id}
+								isActive={isActive}
+								onClick={() => onTabClick(tab.id)}
+								onClose={(e) => {
+									e.stopPropagation();
+									onTabClose(tab.id);
+								}}
+								closeLabel={`Close ${showRepoPrefix && tab.repoName ? `${tab.repoName} / ${tab.branchName}` : tab.branchName}`}
+								className={cn(
+									isDragging && "opacity-50",
+									isDropLeft && "border-l-2 border-l-primary",
+									isDropRight && "border-r-2 border-r-primary",
+								)}
+								draggable={handlers.draggable}
+								onDragStart={handlers.onDragStart}
+								onDragEnd={handlers.onDragEnd}
+								onDragOver={handlers.onDragOver}
+								onDragLeave={handlers.onDragLeave}
+								onDrop={handlers.onDrop}
+							>
+								<GitBranch className="size-4 shrink-0" />
+								<span className="truncate max-w-40">
+									{showRepoPrefix && tab.repoName
+										? `${tab.repoName} / ${tab.branchName}`
+										: tab.branchName}
+								</span>
+								{tab.agentState && (
+									<AgentStateBadge state={tab.agentState} variant="dot" />
+								)}
+							</TabBarItem>
+						);
+					})}
 				</div>
 			</ScrollAreaPrimitive.Viewport>
 			<ScrollAreaPrimitive.Scrollbar

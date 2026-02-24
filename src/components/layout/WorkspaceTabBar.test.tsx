@@ -12,7 +12,7 @@ const worktreeTab: WorkspaceTab = {
 };
 
 describe("WorkspaceTabBar", () => {
-	it("should render kanban as a fixed button without close button", () => {
+	it("should render kanban as a tab without close button", () => {
 		render(
 			<WorkspaceTabBar
 				tabs={[kanbanTab]}
@@ -21,7 +21,7 @@ describe("WorkspaceTabBar", () => {
 				onTabClose={vi.fn()}
 			/>,
 		);
-		screen.getByRole("button", { name: /Kanban/i });
+		screen.getByRole("tab", { name: /Kanban/i });
 		expect(screen.queryByLabelText(/Close/)).not.toBeInTheDocument();
 	});
 
@@ -98,7 +98,8 @@ describe("WorkspaceTabBar", () => {
 			/>,
 		);
 		const tabs = screen.getAllByRole("tab");
-		expect(tabs[0]).toHaveAttribute("aria-selected", "false");
-		expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+		expect(tabs[0]).toHaveAttribute("aria-selected", "false"); // kanban
+		expect(tabs[1]).toHaveAttribute("aria-selected", "false"); // feat/login
+		expect(tabs[2]).toHaveAttribute("aria-selected", "true"); // fix/bug (active)
 	});
 });

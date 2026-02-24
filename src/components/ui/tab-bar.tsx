@@ -1,9 +1,14 @@
 import { X } from "lucide-react";
-import type { ComponentPropsWithoutRef } from "react";
+import type {
+	ComponentPropsWithoutRef,
+	KeyboardEvent,
+	MouseEvent,
+	ReactNode,
+} from "react";
 import { cn } from "@/lib/utils";
 
 interface TabBarContainerProps {
-	children: React.ReactNode;
+	children: ReactNode;
 	className?: string;
 	ariaLabel?: string;
 }
@@ -31,14 +36,14 @@ export function TabBarContainer({
 type TabBarItemBaseProps = {
 	isActive: boolean;
 	onClick: () => void;
-	onClose?: (e: React.MouseEvent) => void;
+	onClose?: (e: MouseEvent) => void;
 	closeLabel?: string;
-	children: React.ReactNode;
+	children: ReactNode;
 	className?: string;
 	id?: string;
 	ariaControls?: string;
 	ariaLabel?: string;
-	onKeyDown?: (e: React.KeyboardEvent) => void;
+	onKeyDown?: (e: KeyboardEvent) => void;
 };
 
 type TabBarItemProps = TabBarItemBaseProps &
@@ -57,7 +62,7 @@ export function TabBarItem({
 	onKeyDown,
 	...rest
 }: TabBarItemProps) {
-	const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+	const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
 		if (e.key === "Enter" || e.key === " ") {
 			e.preventDefault();
 			onClick();

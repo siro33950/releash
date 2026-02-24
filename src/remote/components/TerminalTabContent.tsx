@@ -103,6 +103,8 @@ export function TerminalTabContent({
 										? "opacity-80"
 										: "opacity-0 group-hover:opacity-60"
 								}`}
+								tabIndex={activePtyId === s.ptyId ? 0 : -1}
+								aria-hidden={activePtyId !== s.ptyId}
 								onClick={(e) => {
 									e.stopPropagation();
 									killPty(s.ptyId);

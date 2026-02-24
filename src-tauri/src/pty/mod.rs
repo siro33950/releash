@@ -162,10 +162,7 @@ fn spawn_output_reader(
             }
         }
 
-        let exit_code = child
-            .wait()
-            .ok()
-            .map(|status| if status.success() { 0 } else { 1 });
+        let exit_code = child.wait().ok().map(|status| status.exit_code() as i32);
 
         exited.store(true, Ordering::SeqCst);
         *exit_code_holder.lock() = exit_code;
@@ -209,6 +206,7 @@ impl PtyManager {
         Ok(())
     }
 
+    /// Returns `(cols, rows)` — note the order differs from `resize(rows, cols)`.
     pub fn get_pty_size(&self, pty_id: u64) -> Result<(u16, u16), String> {
         let sessions = self.sessions.lock();
         let session = sessions
