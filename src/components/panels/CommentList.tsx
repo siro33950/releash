@@ -138,8 +138,12 @@ export function CommentList({
 							{fileComments
 								.sort((a, b) => a.lineNumber - b.lineNumber)
 								.map((comment) => (
-									<div
+									<button
+										type="button"
 										key={comment.id}
+										onClick={() =>
+											onCommentClick?.(comment.filePath, comment.lineNumber)
+										}
 										className={cn(
 											"group flex items-start gap-1.5 w-full px-1 py-1 text-[11px] rounded transition-colors",
 											"hover:bg-muted text-left",
@@ -206,18 +210,9 @@ export function CommentList({
 													</div>
 												</form>
 											) : (
-												<button
-													type="button"
-													className="block truncate text-foreground"
-													onClick={() =>
-														onCommentClick?.(
-															comment.filePath,
-															comment.lineNumber,
-														)
-													}
-												>
+												<span className="block truncate text-foreground">
 													{comment.content}
-												</button>
+												</span>
 											)}
 										</div>
 										{editingId !== comment.id && (
@@ -270,7 +265,7 @@ export function CommentList({
 												)}
 											</div>
 										)}
-									</div>
+									</button>
 								))}
 						</div>
 					);

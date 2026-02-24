@@ -42,6 +42,7 @@ import {
 	GitErrorDialog,
 	SavingConflictDialog,
 } from "@/screens/WorktreeViewDialogs";
+import type { LineComment } from "@/types/comment";
 import type { AppSettings } from "@/types/settings";
 import { buildTerminalCommand } from "@/types/settings";
 
@@ -60,6 +61,7 @@ function WorktreeContent({
 	onRightResize,
 	onSwitchToEditor,
 	centerTab,
+	setCenterTab,
 }: {
 	rootPath: string;
 	settings: AppSettings;
@@ -68,6 +70,7 @@ function WorktreeContent({
 	onRightResize: (size: PanelSize) => void;
 	onSwitchToEditor: () => void;
 	centerTab: string;
+	setCenterTab: (tab: string) => void;
 }) {
 	const centerTabRef = useRef(centerTab);
 	centerTabRef.current = centerTab;
@@ -79,6 +82,39 @@ function WorktreeContent({
 		isActive: true,
 		centerTabRef,
 	});
+
+	const {
+		handleCommentClick: baseCommentClick,
+		handleSendToTerminal: baseSendToTerminal,
+		handleSendComment: baseSendComment,
+	} = s;
+
+	// コメントクリック → Editorに切り替え + 既存の行ジャンプ
+	const handleCommentClick = useCallback(
+		(filePath: string, lineNumber: number) => {
+			setCenterTab("editor");
+			baseCommentClick(filePath, lineNumber);
+		},
+		[setCenterTab, baseCommentClick],
+	);
+
+	// コメント一括送信 → 既存処理 + Agentに切り替え
+	const handleCommentSent = useCallback(
+		(unsent: LineComment[]) => {
+			baseSendToTerminal(unsent);
+			setCenterTab("agent");
+		},
+		[setCenterTab, baseSendToTerminal],
+	);
+
+	// コメント単体送信 → 既存処理 + Agentに切り替え
+	const handleSingleCommentSent = useCallback(
+		(comment: LineComment) => {
+			baseSendComment(comment);
+			setCenterTab("agent");
+		},
+		[setCenterTab, baseSendComment],
+	);
 
 	const handleTabSelect = useCallback(
 		(tabId: string) => {
@@ -279,11 +315,11 @@ function WorktreeContent({
 								rootPath={rootPath}
 								theme={settings.theme}
 								comments={s.comments}
-								onCommentClick={s.handleCommentClick}
+								onCommentClick={handleCommentClick}
 								onDeleteComment={s.removeComment}
 								onUpdateComment={s.updateComment}
-								onSendToTerminal={s.handleSendToTerminal}
-								onSendComment={s.handleSendComment}
+								onSendToTerminal={handleCommentSent}
+								onSendComment={handleSingleCommentSent}
 								onCopyComment={s.handleCopyComment}
 								showSentComments={s.showSentComments}
 								onToggleShowSent={s.toggleShowSentComments}
@@ -471,6 +507,7 @@ export function MainLayout({
 										onRightResize={handleRightResize}
 										onSwitchToEditor={switchToEditor}
 										centerTab={centerTab}
+										setCenterTab={setCenterTab}
 									/>
 								) : (
 									<Panel id="center" minSize="30%">
