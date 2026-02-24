@@ -122,6 +122,23 @@ pub async fn set_releash_base(repo_path: String, base: Option<String>) -> Result
     blocking(move || super::config::set_releash_base(repo_path, base)).await
 }
 
+#[tauri::command]
+pub async fn get_branch_base(
+    repo_path: String,
+    branch_name: String,
+) -> Result<Option<String>, GitError> {
+    blocking(move || super::config::get_branch_base(repo_path, branch_name)).await
+}
+
+#[tauri::command]
+pub async fn set_branch_base(
+    repo_path: String,
+    branch_name: String,
+    base: Option<String>,
+) -> Result<(), GitError> {
+    blocking(move || super::config::set_branch_base(repo_path, branch_name, base)).await
+}
+
 // ── status ──
 
 #[tauri::command]

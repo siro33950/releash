@@ -267,13 +267,11 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch
 
     let config = repo.config().ok();
 
-    let releash_base_name = config
+    // is_merged 判定用: releash.base → detect_default_branch
+    let base_target_oid = config
         .as_ref()
-        .and_then(|cfg| cfg.get_string("releash.base").ok());
-
-    let base_target_oid = releash_base_name
-        .as_ref()
-        .and_then(|base_name| repo.find_branch(base_name, BranchType::Local).ok())
+        .and_then(|cfg| cfg.get_string("releash.base").ok())
+        .and_then(|base_name| repo.find_branch(&base_name, BranchType::Local).ok())
         .and_then(|b| b.get().target())
         .or(default_oid);
 
@@ -311,23 +309,21 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch
             })
             .unwrap_or((0, 0));
 
-        // base_ahead: branch.<name>.releash-base → releash.base → detect_default_branch
-        let base_ahead = branch.get().target().and_then(|branch_oid| {
-            let base_oid = config
-                .as_ref()
-                .and_then(|cfg| cfg.get_string(&format!("branch.{name}.releash-base")).ok())
-                .and_then(|base_name| {
-                    repo.find_branch(&base_name, BranchType::Local)
-                        .ok()?
-                        .get()
-                        .target()
-                })
-                .or(base_target_oid);
-            let base_oid = base_oid?;
-            repo.graph_ahead_behind(branch_oid, base_oid)
-                .ok()
-                .map(|(a, _)| a)
-        }).unwrap_or(0);
+        let base_ahead = branch
+            .get()
+            .target()
+            .and_then(|branch_oid| {
+                let base_name = super::config::resolve_branch_base(&repo, config.as_ref(), &name)?;
+                let base_oid = repo
+                    .find_branch(&base_name, BranchType::Local)
+                    .ok()?
+                    .get()
+                    .target()?;
+                repo.graph_ahead_behind(branch_oid, base_oid)
+                    .ok()
+                    .map(|(a, _)| a)
+            })
+            .unwrap_or(0);
 
         cards.push(WorktreeBranch {
             name,

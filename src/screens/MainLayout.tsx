@@ -8,6 +8,7 @@ import {
 	type PanelSize,
 	Separator,
 } from "react-resizable-panels";
+import { BranchSelector } from "@/components/layout/BranchSelector";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { AgentTab } from "@/components/panels/AgentTab";
 import { EditorTabContent } from "@/components/panels/EditorTabContent";
@@ -34,6 +35,8 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { EditorContext } from "@/contexts/EditorContext";
+import { useBaseBranch } from "@/hooks/useBaseBranch";
+import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { cn } from "@/lib/utils";
 import { useWorktreeState } from "@/screens/useWorktreeState";
 import {
@@ -398,8 +401,27 @@ export function MainLayout({
 
 	const [leftNavVisible, setLeftNavVisible] = useState(true);
 	const [rightVisible, setRightVisible] = useState(true);
+	const [rightWidth, setRightWidth] = useState(0);
 	const [centerTab, setCenterTab] = useState("agent");
 	const switchToEditor = useCallback(() => setCenterTab("editor"), []);
+
+	const { branch } = useCurrentBranch(selectedRootPath);
+	const { baseBranch, setBaseBranch, localBranches } = useBaseBranch(
+		selectedRootPath,
+		branch,
+	);
+
+	const branchSelector = useMemo(
+		() => (
+			<BranchSelector
+				branchName={branch}
+				baseBranch={baseBranch}
+				localBranches={localBranches}
+				onBaseChange={setBaseBranch}
+			/>
+		),
+		[branch, baseBranch, localBranches, setBaseBranch],
+	);
 
 	const handleLeftNavResize = useCallback((size: PanelSize) => {
 		const visible = size.asPercentage > 0;
@@ -408,6 +430,7 @@ export function MainLayout({
 	const handleRightResize = useCallback((size: PanelSize) => {
 		const visible = size.asPercentage > 0;
 		setRightVisible((prev) => (prev === visible ? prev : visible));
+		setRightWidth(size.inPixels);
 	}, []);
 
 	const leftToggle = useMemo<TogglePanel>(
@@ -494,6 +517,8 @@ export function MainLayout({
 						<ViewToolbar
 							panels={togglePanels}
 							leftPanels={leftNavVisible ? undefined : [leftToggle]}
+							rightSlot={branchSelector}
+							rightOffset={rightWidth}
 						/>
 						<div className="flex-1 overflow-hidden">
 							<Group orientation="horizontal" className="h-full">
