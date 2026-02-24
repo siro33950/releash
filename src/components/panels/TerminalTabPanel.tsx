@@ -117,12 +117,14 @@ export const TerminalTabPanel = forwardRef<
 				{tabs.map((tab) => (
 					<div
 						key={tab.id}
+						id={`terminal-tab-${tab.id}`}
 						className={`group flex items-center gap-1 px-2 py-0.5 text-xs rounded transition-colors shrink-0 cursor-pointer ${
 							activeTabId === tab.id
 								? "bg-primary text-primary-foreground"
 								: "bg-secondary text-muted-foreground hover:bg-secondary/80"
 						}`}
 						role="tab"
+						aria-controls={`terminal-panel-${tab.id}`}
 						tabIndex={activeTabId === tab.id ? 0 : -1}
 						aria-selected={activeTabId === tab.id}
 						onClick={() => setActiveTabId(tab.id)}
@@ -188,6 +190,9 @@ export const TerminalTabPanel = forwardRef<
 				{tabs.map((tab) => (
 					<div
 						key={tab.id}
+						id={`terminal-panel-${tab.id}`}
+						role="tabpanel"
+						aria-labelledby={`terminal-tab-${tab.id}`}
 						className="absolute inset-0"
 						style={{
 							visibility: activeTabId === tab.id ? "visible" : "hidden",
