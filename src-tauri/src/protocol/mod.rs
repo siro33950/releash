@@ -531,9 +531,8 @@ mod tests {
                     pr_url: Some("https://github.com/owner/repo/pull/42".to_string()),
                     ahead: 3,
                     behind: 1,
-                    is_remote_only: false,
                     has_upstream: true,
-                    remote_name: None,
+                    base_ahead: 0,
                 }],
             }),
             WsMessage::AgentStateSync(AgentStateSync {

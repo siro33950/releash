@@ -50,7 +50,7 @@ test.describe("StatusBar", () => {
 		await page.getByRole("button", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		await expect(
-			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
+			page.getByRole("tab", { name: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
 		// StatusBar に言語 "Markdown"、エンコーディング "UTF-8" が表示される

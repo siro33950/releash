@@ -1,5 +1,5 @@
 use super::error::GitError;
-use super::types::{AheadBehind, BranchCard, BranchInfo, WorktreeEntry};
+use super::types::{AheadBehind, BranchInfo, WorktreeBranch, WorktreeEntry};
 
 async fn blocking<T, F>(f: F) -> Result<T, GitError>
 where
@@ -65,7 +65,7 @@ pub async fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, Git
 }
 
 #[tauri::command]
-pub async fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, GitError> {
+pub async fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch>, GitError> {
     blocking(move || super::worktree::list_branches_with_status(repo_path)).await
 }
 

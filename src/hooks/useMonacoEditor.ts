@@ -82,7 +82,9 @@ export function useMonacoEditor(
 		return () => {
 			isMounted = false;
 			intersectionObserverRef.current?.disconnect();
+			intersectionObserverRef.current = null;
 			editorRef.current?.dispose();
+			editorRef.current = null;
 		};
 	}, [containerRef, defaultValue, language]);
 

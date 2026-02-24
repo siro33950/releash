@@ -19,7 +19,7 @@ export interface BranchInfo {
 	is_remote: boolean;
 }
 
-export interface BranchCard {
+export interface WorktreeBranch {
 	name: string;
 	is_default: boolean;
 	worktree_path: string | null;
@@ -30,9 +30,8 @@ export interface BranchCard {
 	pr_url: string | null;
 	ahead: number;
 	behind: number;
-	is_remote_only: boolean;
 	has_upstream: boolean;
-	remote_name: string | null;
+	base_ahead: number;
 	agent_state?: "running" | "done" | "error" | "waiting";
 	agent_state_timestamp?: number;
 }

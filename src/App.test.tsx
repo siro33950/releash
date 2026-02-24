@@ -1,32 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import App from "./App";
-
-vi.mock("flexlayout-react", () => {
-	const Model = {
-		fromJson: () => ({
-			getNodeById: () => null,
-			doAction: vi.fn(),
-		}),
-	};
-	const Actions = {
-		DELETE_TAB: "FlexLayout_DeleteTab",
-		addNode: vi.fn(),
-		deleteTab: vi.fn(),
-		selectTab: vi.fn(),
-		updateNodeAttributes: vi.fn(),
-	};
-	const DockLocation = { CENTER: "center" };
-	const Layout = ({
-		factory: _factory,
-	}: {
-		factory: (node: unknown) => unknown;
-	}) => {
-		return <div data-testid="flexlayout" />;
-	};
-	return { Model, Actions, DockLocation, Layout };
-});
 
 vi.mock("react-resizable-panels", () => {
 	const Panel = ({ children }: { children?: React.ReactNode }) => (
@@ -46,10 +22,14 @@ beforeEach(() => {
 });
 
 describe("App", () => {
-	it("renders manager screen by default", async () => {
-		render(<App />);
+	it("renders 3-column layout with empty state", async () => {
+		render(
+			<TooltipProvider>
+				<App />
+			</TooltipProvider>,
+		);
 		await waitFor(() => {
-			expect(screen.getByText("Open Folder")).toBeInTheDocument();
+			expect(screen.getByText("No worktree selected")).toBeInTheDocument();
 		});
 	});
 });

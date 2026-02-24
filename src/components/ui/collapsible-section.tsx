@@ -36,7 +36,7 @@ export function CollapsibleSection({
 		>
 			<div
 				className={cn(
-					"flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium hover:bg-accent/50 transition-colors",
+					"flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium hover:bg-secondary transition-colors",
 					headerClassName,
 				)}
 			>

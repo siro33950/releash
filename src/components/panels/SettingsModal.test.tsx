@@ -59,6 +59,7 @@ describe("SettingsModal", () => {
 		onOpenChange: vi.fn(),
 		settings: defaultSettings,
 		onSave: vi.fn(),
+		repoPaths: ["/repos/my-app"],
 	};
 
 	it("should render Settings header", () => {
@@ -277,14 +278,105 @@ describe("SettingsModal", () => {
 		const getClasses = (el: Element | null) => el?.className.split(" ") ?? [];
 
 		const appearanceBtn = within(nav).getByText("Appearance").closest("button");
-		expect(getClasses(appearanceBtn)).toContain("bg-accent");
+		expect(getClasses(appearanceBtn)).toContain("bg-muted");
 
 		fireEvent.click(within(nav).getByText("Agent"));
 		const agentBtn = within(nav).getByText("Agent").closest("button");
-		expect(getClasses(agentBtn)).toContain("bg-accent");
+		expect(getClasses(agentBtn)).toContain("bg-muted");
 		const appearanceBtnAfter = within(nav)
 			.getByText("Appearance")
 			.closest("button");
-		expect(getClasses(appearanceBtnAfter)).not.toContain("bg-accent");
+		expect(getClasses(appearanceBtnAfter)).not.toContain("bg-muted");
+	});
+
+	it("should display Repositories section in nav and switch to it", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "list_branches":
+					return Promise.resolve([
+						{ name: "main", is_remote: false },
+						{ name: "develop", is_remote: false },
+					]);
+				case "get_releash_base":
+					return Promise.resolve(null);
+				case "get_notify_config":
+					return Promise.resolve({
+						webhook_url: "",
+						on_running: false,
+						on_done: true,
+						on_error: true,
+						on_waiting: true,
+						desktop_mode: "always",
+						inactive_timeout_minutes: 2,
+					});
+				case "get_remote_config":
+					return Promise.resolve({
+						auto_start: false,
+						auto_start_on_lan: false,
+					});
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		render(<SettingsModal {...defaultProps} />);
+		expect(screen.getByText("Repositories")).toBeInTheDocument();
+		fireEvent.click(screen.getByText("Repositories"));
+		expect(await screen.findByText("Base branch")).toBeInTheDocument();
+	});
+
+	it("should save base branch via Apply button", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "list_branches":
+					return Promise.resolve([
+						{ name: "main", is_remote: false },
+						{ name: "develop", is_remote: false },
+					]);
+				case "get_releash_base":
+					return Promise.resolve(null);
+				case "set_releash_base":
+					return Promise.resolve(null);
+				case "get_notify_config":
+					return Promise.resolve({
+						webhook_url: "",
+						on_running: false,
+						on_done: true,
+						on_error: true,
+						on_waiting: true,
+						desktop_mode: "always",
+						inactive_timeout_minutes: 2,
+					});
+				case "get_remote_config":
+					return Promise.resolve({
+						auto_start: false,
+						auto_start_on_lan: false,
+					});
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Repositories"));
+
+		const trigger = await screen.findByRole("combobox", {
+			name: "Base branch",
+		});
+		await user.click(trigger);
+		const option = screen.getByRole("option", { name: "develop" });
+		await user.click(option);
+
+		const applyBtn = screen.getByRole("button", { name: "Apply" });
+		expect(applyBtn).toBeEnabled();
+		await user.click(applyBtn);
+
+		expect(vi.mocked(invoke)).toHaveBeenCalledWith("set_releash_base", {
+			repoPath: "/repos/my-app",
+			base: "develop",
+		});
 	});
 });

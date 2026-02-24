@@ -218,9 +218,8 @@ interface BranchCardMsg {
 	pr_url?: string;
 	ahead: number;
 	behind: number;
-	is_remote_only: boolean;
 	has_upstream: boolean;
-	remote_name?: string;
+	base_ahead: number;
 }
 
 export interface BranchListSync {

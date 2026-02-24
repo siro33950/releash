@@ -1,45 +1,42 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { WorkspaceTabBar } from "@/components/layout/WorkspaceTabBar";
+import { RemotePanel } from "@/components/panels/RemotePanel";
+import { SettingsModal } from "@/components/panels/SettingsModal";
 import { UpdateDialog } from "@/components/UpdateDialog";
+import {
+	Dialog,
+	DialogContent,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { WorkspaceList } from "@/components/workspace/WorkspaceList";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
 import { useRemoteAutoStart } from "@/hooks/useRemoteAutoStart";
 import { useRepoList } from "@/hooks/useRepoList";
 import { useSettings } from "@/hooks/useSettings";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
-import { useWorkspaceTabs } from "@/hooks/useWorkspaceTabs";
+import { useWorkspaceNavigation } from "@/hooks/useWorkspaceNavigation";
 import { setTelemetryEnabled } from "@/lib/telemetry";
-import { cn } from "@/lib/utils";
-import { WorkspaceManagerScreen } from "@/screens/WorkspaceManagerScreen";
-import { WorktreeView } from "@/screens/WorktreeView";
+import { MainLayout } from "@/screens/MainLayout";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
+import { buildTerminalCommand } from "@/types/settings";
 
 function App() {
 	const { settings, updateSettings, updateTheme } = useSettings();
 	const updateChecker = useUpdateChecker(settings.autoUpdate);
-	const {
-		tabs,
-		activeTabId,
-		openWorktreeTab,
-		closeWorktreeTab,
-		setActiveTab,
-		switchToKanban,
-		reorderTabs,
-	} = useWorkspaceTabs();
-	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
+	const { worktrees, selectedWorktreeId, openWorktreeTab } =
+		useWorkspaceNavigation();
+	const { repoPaths, addRepo, initFromCwd } = useRepoList();
 
 	const [initializing, setInitializing] = useState(true);
 	useRemoteAutoStart(repoPaths, !initializing);
-	const [providerStatuses, setProviderStatuses] = useState<
+	const [, setProviderStatuses] = useState<
 		Record<string, ProviderStatus | null>
 	>({});
-	const [kanbanRequestedView, setKanbanRequestedView] = useState<string | null>(
-		null,
-	);
-	const handleKanbanRequestedViewHandled = useCallback(() => {
-		setKanbanRequestedView(null);
-	}, []);
+	const [showRemote, setShowRemote] = useState(false);
+	const [showAppSettings, setShowAppSettings] = useState(false);
 
 	useEffect(() => {
 		setTelemetryEnabled(settings.telemetryEnabled);
@@ -69,7 +66,7 @@ function App() {
 					return;
 				}
 			} catch {
-				// git リポジトリ外 → manager のまま
+				// git リポジトリ外
 			}
 			setInitializing(false);
 		})();
@@ -114,20 +111,18 @@ function App() {
 			});
 			addRepo(mainPath);
 		} catch {
-			// not a git repo — open as worktree directly
 			openWorktreeTab(selected as string);
 		}
 	}, [addRepo, openWorktreeTab]);
 
-	const handleRemoveRepo = useCallback(
-		(repoPath: string) => {
-			removeRepo(repoPath);
+	const handleSelectWorktree = useCallback(
+		(rootPath: string, branchName?: string, repoName?: string) => {
+			openWorktreeTab(rootPath, branchName, repoName);
 		},
-		[removeRepo],
+		[openWorktreeTab],
 	);
 
-	// Sync menu item enabled state based on active tab
-	const isWorktreeActive = activeTabId !== "kanban";
+	const isWorktreeActive = selectedWorktreeId != null;
 	useEffect(() => {
 		invoke("set_menu_items_enabled", { enabled: isWorktreeActive }).catch(
 			() => {},
@@ -136,19 +131,12 @@ function App() {
 
 	const menuHandlers: MenuHandlers = useMemo(
 		() => ({
-			settings: () => {
-				if (activeTabId === "kanban") {
-					setKanbanRequestedView("settings");
-				}
-			},
+			settings: () => setShowAppSettings(true),
 			"open-folder": handleAddRepo,
 			"theme-dark": () => updateTheme("dark"),
 			"theme-light": () => updateTheme("light"),
-			"back-to-kanban": switchToKanban,
-			"remote-start-server": () => {
-				switchToKanban();
-				setKanbanRequestedView("remote");
-			},
+			"back-to-kanban": () => {},
+			"remote-start-server": () => setShowRemote(true),
 			"remote-stop-server": async () => {
 				try {
 					await invoke("stop_server");
@@ -156,70 +144,65 @@ function App() {
 					console.error("Failed to stop server:", e);
 				}
 			},
-			"remote-show-qr": () => {
-				switchToKanban();
-				setKanbanRequestedView("remote");
-			},
+			"remote-show-qr": () => setShowRemote(true),
 		}),
-		[activeTabId, handleAddRepo, updateTheme, switchToKanban],
+		[handleAddRepo, updateTheme],
 	);
 
 	useMenuEvents(menuHandlers);
 
-	const worktreeTabs = useMemo(
-		() => tabs.filter((t) => t.type === "worktree"),
-		[tabs],
+	const selectedRootPath = useMemo(() => {
+		if (!selectedWorktreeId) return null;
+		const tab = worktrees.find((t) => t.id === selectedWorktreeId);
+		return tab?.rootPath ?? null;
+	}, [worktrees, selectedWorktreeId]);
+
+	const leftNav = useMemo(
+		() => (
+			<WorkspaceList
+				repoPaths={repoPaths}
+				selectedRootPath={selectedRootPath}
+				onSelectWorktree={handleSelectWorktree}
+				onAddRepo={handleAddRepo}
+				onShowRemote={() => setShowRemote(true)}
+				onShowSettings={() => setShowAppSettings(true)}
+			/>
+		),
+		[repoPaths, selectedRootPath, handleSelectWorktree, handleAddRepo],
 	);
 
 	return (
-		<div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-foreground">
+		<TooltipProvider>
 			<UpdateDialog update={updateChecker} />
-			<WorkspaceTabBar
-				tabs={tabs}
-				activeTabId={activeTabId}
-				onTabClick={setActiveTab}
-				onTabClose={closeWorktreeTab}
-				onReorderTabs={reorderTabs}
+			<MainLayout
+				selectedRootPath={selectedRootPath}
+				settings={settings}
+				onSettingsSave={updateSettings}
+				leftNav={leftNav}
 			/>
-			<div className="flex-1 overflow-hidden relative">
-				<div
-					className={cn(
-						"h-full",
-						activeTabId === "kanban" ? "contents" : "hidden",
-					)}
-				>
-					<WorkspaceManagerScreen
-						repoPaths={repoPaths}
-						settings={settings}
-						providerStatuses={providerStatuses}
-						initializing={initializing}
-						isActive={activeTabId === "kanban"}
-						requestedView={kanbanRequestedView}
-						onRequestedViewHandled={handleKanbanRequestedViewHandled}
-						onSettingsSave={updateSettings}
-						onSelectWorktree={openWorktreeTab}
-						onAddRepo={handleAddRepo}
-						onRemoveRepo={handleRemoveRepo}
+
+			{/* Remote Dialog */}
+			<Dialog open={showRemote} onOpenChange={setShowRemote}>
+				<DialogContent className="max-w-lg">
+					<DialogHeader>
+						<DialogTitle>Remote Access</DialogTitle>
+					</DialogHeader>
+					<RemotePanel
+						rootPaths={repoPaths}
+						terminalStartupCommand={buildTerminalCommand(settings)}
 					/>
-				</div>
-				{worktreeTabs.map((tab) => (
-					<div
-						key={tab.id}
-						className={cn(
-							"h-full",
-							activeTabId === tab.id ? "contents" : "hidden",
-						)}
-					>
-						<WorktreeView
-							rootPath={tab.rootPath}
-							settings={settings}
-							onSettingsSave={updateSettings}
-							isActive={activeTabId === tab.id}
-						/>
-					</div>
-				))}
-			</div>
-		</div>
+				</DialogContent>
+			</Dialog>
+
+			{/* App Settings */}
+			<SettingsModal
+				open={showAppSettings}
+				onOpenChange={setShowAppSettings}
+				settings={settings}
+				onSave={updateSettings}
+				repoPaths={repoPaths}
+			/>
+		</TooltipProvider>
 	);
 }
 

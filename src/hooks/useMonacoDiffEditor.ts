@@ -478,9 +478,9 @@ export function useMonacoDiffEditor(
 				},
 			});
 
-			// flexlayout-react hides inactive tabs with display:none.
+			// Inactive editor tabs use visibility:hidden.
 			// automaticLayout handles normal resizes, but ResizeObserver
-			// may not fire on display:none → visible transitions.
+			// may not fire on visibility transitions.
 			// Use IntersectionObserver with rAF to ensure layout after
 			// CSS has fully resolved.
 			const intersectionObserver = new IntersectionObserver((entries) => {
@@ -503,10 +503,15 @@ export function useMonacoDiffEditor(
 			commentInputWidgetRef.current?.dispose();
 			commentInputWidgetRef.current = null;
 			intersectionObserverRef.current?.disconnect();
+			intersectionObserverRef.current = null;
 			contentChangeListenerRef.current?.dispose();
+			contentChangeListenerRef.current = null;
 			diffEditorRef.current?.dispose();
+			diffEditorRef.current = null;
 			originalModelRef.current?.dispose();
+			originalModelRef.current = null;
 			modifiedModelRef.current?.dispose();
+			modifiedModelRef.current = null;
 		};
 	}, [containerRef, language, renderSideBySide, filePath, readOnly]);
 

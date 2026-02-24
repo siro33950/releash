@@ -1,3 +1,5 @@
+import { Input } from "@/components/ui/input";
+
 interface ServerSettingsProps {
 	portInput: string;
 	running: boolean;
@@ -24,7 +26,7 @@ export function ServerSettings({
 				>
 					Port
 				</label>
-				<input
+				<Input
 					id="remote-port"
 					type="number"
 					min={1024}
@@ -33,7 +35,9 @@ export function ServerSettings({
 					onChange={(e) => onPortInputChange(e.target.value)}
 					onBlur={onPortBlur}
 					disabled={running}
-					className="w-full bg-muted border border-border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+					variant="panel"
+					size="xs"
+					className="font-mono"
 				/>
 			</div>
 		</div>

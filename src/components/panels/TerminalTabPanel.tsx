@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { X } from "lucide-react";
 import {
 	forwardRef,
 	useCallback,
@@ -10,7 +11,7 @@ import {
 	TerminalPanel,
 	type TerminalPanelHandle,
 } from "@/components/panels/TerminalPanel";
-import { TabBarContainer, TabBarItem } from "@/components/ui/tab-bar";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { Theme } from "@/types/settings";
 
 const MAX_TABS = 8;
@@ -113,78 +114,87 @@ export const TerminalTabPanel = forwardRef<
 
 	return (
 		<div className="flex flex-col h-full">
-			<TabBarContainer ariaLabel="ターミナルタブ">
-				{tabs.map((tab, index) => (
-					<TabBarItem
-						key={tab.id}
-						id={`terminal-tab-${tab.id}`}
-						isActive={activeTabId === tab.id}
-						onClick={() => setActiveTabId(tab.id)}
-						onClose={tabs.length > 1 ? () => closeTab(tab.id) : undefined}
-						closeLabel={`Close ${tab.label}`}
-						ariaControls={`terminal-panel-${tab.id}`}
-						onKeyDown={(e) => {
-							if (e.key === "ArrowRight") {
-								e.preventDefault();
-								const next = tabs[index + 1];
-								if (next) {
-									setActiveTabId(next.id);
-									(e.currentTarget.nextElementSibling as HTMLElement)?.focus();
+			<Tabs
+				value={activeTabId}
+				onValueChange={setActiveTabId}
+				className="flex flex-col h-full gap-0"
+			>
+				<div className="flex items-center h-9 bg-sidebar border-b border-border shrink-0">
+					<TabsList
+						aria-label="ターミナルタブ"
+						className="rounded-none bg-transparent"
+					>
+						{tabs.map((tab) => (
+							<TabsTrigger
+								key={tab.id}
+								value={tab.id}
+								className="rounded-none border-r border-border px-3 gap-2 text-sm shrink-0"
+							>
+								<span>{tab.label}</span>
+								{tabs.length > 1 && (
+									// biome-ignore lint/a11y/useSemanticElements: nested inside TabsTrigger <button>, cannot use <button>
+									<span
+										role="button"
+										tabIndex={0}
+										onClick={(e) => {
+											e.stopPropagation();
+											closeTab(tab.id);
+										}}
+										onKeyDown={(e) => {
+											if (e.key === "Enter" || e.key === " ") {
+												e.preventDefault();
+												e.stopPropagation();
+												closeTab(tab.id);
+											}
+										}}
+										className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
+										aria-label={`Close ${tab.label}`}
+									>
+										<X className="size-3.5" />
+									</span>
+								)}
+							</TabsTrigger>
+						))}
+					</TabsList>
+					{tabs.length < MAX_TABS && (
+						<button
+							type="button"
+							onClick={addTab}
+							aria-label="Add terminal tab"
+							className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
+						>
+							+
+						</button>
+					)}
+				</div>
+				<div className="flex-1 relative" style={{ minHeight: 0 }}>
+					{tabs.map((tab) => (
+						<div
+							key={tab.id}
+							id={`terminal-panel-${tab.id}`}
+							role="tabpanel"
+							aria-labelledby={`terminal-tab-${tab.id}`}
+							className="absolute inset-0"
+							style={{
+								visibility: activeTabId === tab.id ? "visible" : "hidden",
+								zIndex: activeTabId === tab.id ? 1 : 0,
+							}}
+						>
+							<TerminalPanel
+								ref={setTerminalRef(tab.id)}
+								cwd={cwd}
+								theme={theme}
+								terminalStartupCommand={terminalStartupCommand}
+								agentType={agentType}
+								label={tab.label}
+								sessionKey={
+									sessionKey ? `${sessionKey}::${tab.label}` : undefined
 								}
-							}
-							if (e.key === "ArrowLeft") {
-								e.preventDefault();
-								const prev = tabs[index - 1];
-								if (prev) {
-									setActiveTabId(prev.id);
-									(
-										e.currentTarget.previousElementSibling as HTMLElement
-									)?.focus();
-								}
-							}
-						}}
-					>
-						<span>{tab.label}</span>
-					</TabBarItem>
-				))}
-				{tabs.length < MAX_TABS && (
-					<button
-						type="button"
-						onClick={addTab}
-						aria-label="Add terminal tab"
-						className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
-					>
-						+
-					</button>
-				)}
-			</TabBarContainer>
-			<div className="flex-1 relative" style={{ minHeight: 0 }}>
-				{tabs.map((tab) => (
-					<div
-						key={tab.id}
-						id={`terminal-panel-${tab.id}`}
-						role="tabpanel"
-						aria-labelledby={`terminal-tab-${tab.id}`}
-						className="absolute inset-0"
-						style={{
-							visibility: activeTabId === tab.id ? "visible" : "hidden",
-							zIndex: activeTabId === tab.id ? 1 : 0,
-						}}
-					>
-						<TerminalPanel
-							ref={setTerminalRef(tab.id)}
-							cwd={cwd}
-							theme={theme}
-							terminalStartupCommand={terminalStartupCommand}
-							agentType={agentType}
-							label={tab.label}
-							sessionKey={
-								sessionKey ? `${sessionKey}::${tab.label}` : undefined
-							}
-						/>
-					</div>
-				))}
-			</div>
+							/>
+						</div>
+					))}
+				</div>
+			</Tabs>
 		</div>
 	);
 });

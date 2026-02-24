@@ -98,7 +98,7 @@ export interface EditorState {
 }
 
 export const initialEditorState: EditorState = {
-	activeView: "git",
+	activeView: "explorer",
 	searchFocusKey: 0,
 	searchInitialQuery: "",
 	pendingReveal: null,

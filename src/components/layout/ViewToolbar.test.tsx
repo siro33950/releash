@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PanelBottom, PanelLeft, PanelRight } from "lucide-react";
 import { describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { type TogglePanel, ViewToolbar } from "./ViewToolbar";
 
 function createPanels(overrides?: Partial<TogglePanel>[]): TogglePanel[] {
@@ -37,7 +38,11 @@ function createPanels(overrides?: Partial<TogglePanel>[]): TogglePanel[] {
 describe("ViewToolbar", () => {
 	it("renders toggle buttons for all panels", () => {
 		const panels = createPanels();
-		render(<ViewToolbar panels={panels} />);
+		render(
+			<TooltipProvider>
+				<ViewToolbar panels={panels} />
+			</TooltipProvider>,
+		);
 
 		expect(screen.getByLabelText("Toggle Sidebar")).toBeInTheDocument();
 		expect(screen.getByLabelText("Toggle Review")).toBeInTheDocument();
@@ -47,7 +52,11 @@ describe("ViewToolbar", () => {
 	it("calls onToggle when a button is clicked", async () => {
 		const user = userEvent.setup();
 		const panels = createPanels();
-		render(<ViewToolbar panels={panels} />);
+		render(
+			<TooltipProvider>
+				<ViewToolbar panels={panels} />
+			</TooltipProvider>,
+		);
 
 		await user.click(screen.getByLabelText("Toggle Sidebar"));
 		expect(panels[0].onToggle).toHaveBeenCalledOnce();
@@ -58,7 +67,11 @@ describe("ViewToolbar", () => {
 
 	it("applies foreground color to visible panels and muted to hidden", () => {
 		const panels = createPanels();
-		render(<ViewToolbar panels={panels} />);
+		render(
+			<TooltipProvider>
+				<ViewToolbar panels={panels} />
+			</TooltipProvider>,
+		);
 
 		const sidebarBtn = screen.getByLabelText("Toggle Sidebar");
 		const terminalBtn = screen.getByLabelText("Toggle Terminal");

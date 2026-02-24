@@ -1,10 +1,10 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { BranchCard } from "@/types/git";
+import type { WorktreeBranch } from "@/types/git";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 
-const baseBranch: BranchCard = {
+const baseBranch: WorktreeBranch = {
 	name: "feature/test",
 	is_default: false,
 	worktree_path: "/tmp/worktree/feature-test",
@@ -15,12 +15,11 @@ const baseBranch: BranchCard = {
 	pr_url: null,
 	ahead: 0,
 	behind: 0,
-	is_remote_only: false,
 	has_upstream: true,
-	remote_name: null,
+	base_ahead: 0,
 };
 
-const dirtyBranch: BranchCard = {
+const dirtyBranch: WorktreeBranch = {
 	...baseBranch,
 	dirty_count: 3,
 };
@@ -133,7 +132,7 @@ describe("DeleteWorktreeDialog", () => {
 		expect(screen.queryByText("Deleting...")).not.toBeInTheDocument();
 
 		// Simulate opening dialog for a different branch
-		const anotherBranch: BranchCard = {
+		const anotherBranch: WorktreeBranch = {
 			...baseBranch,
 			name: "feature/other",
 		};

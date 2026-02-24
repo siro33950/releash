@@ -1,6 +1,6 @@
 use super::branch::detect_default_branch;
 use super::error::GitError;
-use super::types::{BranchCard, WorktreeEntry};
+use super::types::{WorktreeBranch, WorktreeEntry};
 use git2::{
     BranchType, ErrorCode, Oid, Repository, StatusOptions, WorktreeAddOptions, WorktreePruneOptions,
 };
@@ -210,7 +210,7 @@ fn compute_is_merged(repo: &Repository, branch_oid: Oid, base_target_oid: Option
         .unwrap_or(false)
 }
 
-pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, GitError> {
+pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch>, GitError> {
     let repo = Repository::open(&repo_path)?;
     let default_branch = detect_default_branch(&repo);
 
@@ -265,11 +265,15 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
 
     let local_branches = repo.branches(Some(BranchType::Local))?;
 
-    let base_target_oid = repo
-        .config()
-        .ok()
-        .and_then(|cfg| cfg.get_string("releash.base").ok())
-        .and_then(|base_name| repo.find_branch(&base_name, BranchType::Local).ok())
+    let config = repo.config().ok();
+
+    let releash_base_name = config
+        .as_ref()
+        .and_then(|cfg| cfg.get_string("releash.base").ok());
+
+    let base_target_oid = releash_base_name
+        .as_ref()
+        .and_then(|base_name| repo.find_branch(base_name, BranchType::Local).ok())
         .and_then(|b| b.get().target())
         .or(default_oid);
 
@@ -307,7 +311,25 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
             })
             .unwrap_or((0, 0));
 
-        cards.push(BranchCard {
+        // base_ahead: branch.<name>.releash-base → releash.base → detect_default_branch
+        let base_ahead = branch.get().target().and_then(|branch_oid| {
+            let base_oid = config
+                .as_ref()
+                .and_then(|cfg| cfg.get_string(&format!("branch.{name}.releash-base")).ok())
+                .and_then(|base_name| {
+                    repo.find_branch(&base_name, BranchType::Local)
+                        .ok()?
+                        .get()
+                        .target()
+                })
+                .or(base_target_oid);
+            let base_oid = base_oid?;
+            repo.graph_ahead_behind(branch_oid, base_oid)
+                .ok()
+                .map(|(a, _)| a)
+        }).unwrap_or(0);
+
+        cards.push(WorktreeBranch {
             name,
             is_default,
             worktree_path,
@@ -318,86 +340,36 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<BranchCard>, G
             pr_url: None,
             ahead,
             behind,
-            is_remote_only: false,
             has_upstream,
-            remote_name: None,
+            base_ahead,
         });
     }
 
-    let mut local_names: std::collections::HashSet<String> =
+    let local_names: std::collections::HashSet<String> =
         cards.iter().map(|c| c.name.clone()).collect();
 
-    let remote_names: Vec<String> = repo
-        .remotes()
-        .map(|remotes| {
-            let mut names: Vec<String> =
-                remotes.iter().filter_map(|r| r.map(String::from)).collect();
-            names.sort_by_key(|b| std::cmp::Reverse(b.len()));
-            names
-        })
-        .unwrap_or_default();
-
-    if let Ok(remote_branches) = repo.branches(Some(BranchType::Remote)) {
-        for branch in remote_branches {
-            let (branch, _) = match branch {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            let full_name = match branch.name() {
-                Ok(Some(n)) => n.to_string(),
-                _ => continue,
-            };
-
-            if full_name.ends_with("/HEAD") {
-                continue;
+    // GC: 存在しないブランチの branch.*.releash-base エントリを削除
+    if let Ok(mut gc_cfg) = repo.config() {
+        if let Ok(snap) = gc_cfg.snapshot() {
+            let mut to_remove = Vec::new();
+            if let Ok(mut entries) = snap.entries(Some("branch.*.releash-base")) {
+                while let Some(Ok(entry)) = entries.next() {
+                    if let Some(entry_name) = entry.name() {
+                        if let Some(branch_name) = entry_name
+                            .strip_prefix("branch.")
+                            .and_then(|s| s.strip_suffix(".releash-base"))
+                        {
+                            if !local_names.contains(branch_name) {
+                                to_remove.push(entry_name.to_string());
+                            }
+                        }
+                    }
+                }
             }
-
-            let (matched_remote, short_name) = remote_names
-                .iter()
-                .find_map(|remote| {
-                    full_name
-                        .strip_prefix(remote.as_str())
-                        .and_then(|rest| rest.strip_prefix('/'))
-                        .map(|branch_name| (remote.clone(), branch_name.to_string()))
-                })
-                .unwrap_or_else(|| {
-                    let short = full_name
-                        .find('/')
-                        .map(|i| &full_name[i + 1..])
-                        .unwrap_or(&full_name)
-                        .to_string();
-                    let remote = full_name
-                        .find('/')
-                        .map(|i| full_name[..i].to_string())
-                        .unwrap_or_default();
-                    (remote, short)
-                });
-
-            if !local_names.insert(short_name.clone()) {
-                continue;
+            drop(snap);
+            for key in &to_remove {
+                let _ = gc_cfg.remove(key);
             }
-
-            let is_merged = branch
-                .get()
-                .target()
-                .map(|oid| compute_is_merged(&repo, oid, base_target_oid))
-                .unwrap_or(false);
-
-            cards.push(BranchCard {
-                name: short_name,
-                is_default: false,
-                worktree_path: None,
-                dirty_count: 0,
-                is_merged,
-                has_pr: false,
-                pr_number: None,
-                pr_url: None,
-                ahead: 0,
-                behind: 0,
-                is_remote_only: true,
-                has_upstream: false,
-                remote_name: Some(matched_remote),
-            });
         }
     }
 
@@ -512,6 +484,11 @@ pub fn remove_worktree(
     let wt_name = found_name.ok_or_else(|| GitError::Custom("worktree not found".to_string()))?;
     let wt = repo.find_worktree(&wt_name)?;
 
+    // worktree削除前にブランチ名を取得
+    let wt_branch = Repository::open(wt.path())
+        .ok()
+        .map(|wt_repo| get_branch_name_for_repo(&wt_repo));
+
     let is_locked =
         matches!(wt.is_locked(), Ok(s) if !matches!(s, git2::WorktreeLockStatus::Unlocked));
 
@@ -537,6 +514,16 @@ pub fn remove_worktree(
     if target_path.exists() {
         std::fs::remove_dir_all(&target_path)
             .map_err(|e| GitError::Custom(format!("failed to remove worktree directory: {e}")))?;
+    }
+
+    // worktree削除成功後、対応ブランチの releash-base を config から削除
+    if let Some(branch_name) = wt_branch {
+        if let Ok(mut config) = repo.config() {
+            let key = format!("branch.{branch_name}.releash-base");
+            match config.remove(&key) {
+                Ok(()) | Err(_) => {}
+            }
+        }
     }
 
     Ok(())
@@ -1148,7 +1135,6 @@ mod tests {
         let card = cards.iter().find(|c| c.name == "main").unwrap();
         assert_eq!(card.ahead, 1);
         assert_eq!(card.behind, 0);
-        assert!(!card.is_remote_only);
     }
 
     #[test]
@@ -1163,48 +1149,5 @@ mod tests {
         let card = cards.iter().find(|c| c.name == "no-upstream").unwrap();
         assert_eq!(card.ahead, 0);
         assert_eq!(card.behind, 0);
-        assert!(!card.is_remote_only);
-    }
-
-    #[test]
-    fn test_list_branches_with_status_remote_only() {
-        let (_parent, clone_dir, repo) = setup_remote_repo();
-
-        let bare_dir = _parent.path().join("bare.git");
-        let bare = Repository::open(&bare_dir).unwrap();
-        {
-            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-            let head = bare
-                .find_reference("refs/heads/main")
-                .unwrap()
-                .peel_to_commit()
-                .unwrap();
-            let tree = head.tree().unwrap();
-            bare.commit(
-                Some("refs/heads/remote-feat"),
-                &sig,
-                &sig,
-                "remote feature",
-                &tree,
-                &[&head],
-            )
-            .unwrap();
-        }
-
-        // fetch to update remote refs
-        repo.find_remote("origin")
-            .unwrap()
-            .fetch(&["refs/heads/*:refs/remotes/origin/*"], None, None)
-            .unwrap();
-
-        let cards = list_branches_with_status(clone_dir.to_str().unwrap().to_string()).unwrap();
-
-        let remote_card = cards.iter().find(|c| c.name == "remote-feat").unwrap();
-        assert!(remote_card.is_remote_only);
-        assert_eq!(remote_card.worktree_path, None);
-        assert_eq!(remote_card.dirty_count, 0);
-
-        let main_card = cards.iter().find(|c| c.name == "main").unwrap();
-        assert!(!main_card.is_remote_only);
     }
 }
