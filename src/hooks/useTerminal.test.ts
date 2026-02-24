@@ -102,7 +102,6 @@ describe("useTerminal", () => {
 					is_new: true,
 					is_exited: false,
 					exit_code: null,
-					is_restored: false,
 				});
 			}
 			return Promise.resolve();
@@ -194,16 +193,15 @@ describe("useTerminal", () => {
 		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
-	it("is_restored が true のとき起動コマンドが送信されない", async () => {
+	it("既存セッション（is_new: false）のとき起動コマンドが送信されない", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_or_spawn_pty") {
 				return Promise.resolve({
 					pty_id: 1,
 					buffered_output: "",
-					is_new: true,
+					is_new: false,
 					is_exited: false,
 					exit_code: null,
-					is_restored: true,
 				});
 			}
 			return Promise.resolve();
