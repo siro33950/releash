@@ -407,6 +407,7 @@ function useRepoChanges() {
 function RepositoriesSection({
 	repoPaths,
 	onDirtyChange,
+	error,
 }: {
 	repoPaths: string[];
 	onDirtyChange: (
@@ -414,6 +415,7 @@ function RepositoriesSection({
 		isDirty: boolean,
 		selectedBase: string,
 	) => void;
+	error: string | null;
 }) {
 	if (repoPaths.length === 0) {
 		return (
@@ -425,6 +427,7 @@ function RepositoriesSection({
 
 	return (
 		<div className="flex flex-col">
+			{error && <p className="text-xs text-destructive">{error}</p>}
 			{repoPaths.map((repoPath, i) => (
 				<Fragment key={repoPath}>
 					{i > 0 && <Separator className="my-3" />}
@@ -1189,6 +1192,7 @@ export function SettingsModal({
 					<RepositoriesSection
 						repoPaths={repoPaths}
 						onDirtyChange={repos.handleDirtyChange}
+						error={repos.error}
 					/>
 				);
 			case "agent":
