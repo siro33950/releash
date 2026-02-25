@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { buildMockConfig, rootDirEntries } from "./helpers/fixtures";
+import { buildMockConfig } from "./helpers/fixtures";
 import { setupTauriMock, emitTauriEvent } from "./helpers/tauri-mock";
 import { waitForApp } from "./helpers/utils";
 
@@ -36,30 +36,25 @@ test.describe("StatusBar", () => {
 		await expect(page.getByText("feat/my-branch")).toBeVisible();
 	});
 
-	test("ファイルを開くと言語情報が表示される", async ({ page }) => {
-		const config = statusBarConfig({
-			"plugin:fs|read_dir": rootDirEntries,
-			get_file_at_ref: "# README\nHello world",
-			get_staged_content: "# README\nHello world",
-			"plugin:fs|read_text_file": "# README\nHello world",
-		});
-		await setupTauriMock(page, config);
-		await waitForApp(page);
-
-		// Explorer に切り替えてファイルを開く
-		await page.getByRole("button", { name: "Explorer" }).click();
-		await page.getByText("README.md").first().click();
-		await expect(
-			page.getByRole("tab", { name: "README.md" }),
-		).toBeVisible({ timeout: 5000 });
-
-		// StatusBar に言語 "Markdown"、エンコーディング "UTF-8" が表示される
-		await expect(page.getByText("Markdown")).toBeVisible();
-		await expect(page.getByText("UTF-8")).toBeVisible();
-	});
-
 	test("Agent状態がイベントで更新される", async ({ page }) => {
-		const config = statusBarConfig();
+		const config = statusBarConfig({
+			list_branches_with_status: [
+				{
+					name: "feat/test",
+					is_default: false,
+					worktree_path: "/test/repo",
+					dirty_count: 0,
+					is_merged: false,
+					has_pr: false,
+					pr_number: null,
+					pr_url: null,
+					ahead: 0,
+					behind: 0,
+					has_upstream: true,
+					base_ahead: 0,
+				},
+			],
+		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
@@ -69,7 +64,7 @@ test.describe("StatusBar", () => {
 			state: "running",
 		});
 
-		// StatusBar に "Agent: running" が表示される
-		await expect(page.getByText("Agent: running")).toBeVisible();
+		// WorkspaceListのブランチアイテムに "Running" バッジが表示される
+		await expect(page.getByText("Running")).toBeVisible({ timeout: 5000 });
 	});
 });

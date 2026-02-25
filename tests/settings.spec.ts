@@ -52,7 +52,7 @@ test.describe("Settings", () => {
 		await expect(page.locator("#theme-select")).toBeVisible();
 
 		// Editor セクションに切り替えると Default Base セレクトが表示される
-		await page.getByText("Editor").click();
+		await page.getByRole("button", { name: "Editor" }).click();
 		await expect(page.locator("#diff-base-select")).toBeVisible();
 	});
 
@@ -86,7 +86,7 @@ test.describe("Settings", () => {
 		await settingsBtn.click();
 
 		// Editor セクションに切り替え
-		await page.getByText("Editor").click();
+		await page.getByRole("button", { name: "Editor" }).click();
 
 		const diffModeSelect = page.locator("#diff-mode-select");
 		await expect(diffModeSelect).toBeVisible();
