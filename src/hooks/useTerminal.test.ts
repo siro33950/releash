@@ -37,6 +37,7 @@ vi.mock("@xterm/xterm", () => {
 					mockOnDataCallback = callback;
 					return { dispose: vi.fn() };
 				});
+			attachCustomKeyEventHandler = vi.fn();
 			dispose = vi.fn();
 			refresh = vi.fn();
 			options: Record<string, unknown> = {};

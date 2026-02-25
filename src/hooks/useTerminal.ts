@@ -134,6 +134,17 @@ export function useTerminal(
 			}
 		});
 
+		// ペイン操作に使うキーをxtermに処理させない
+		terminal.attachCustomKeyEventHandler((event) => {
+			const mod = event.metaKey || event.ctrlKey;
+			// Cmd+D (垂直分割) / Cmd+Shift+D (水平分割)
+			if (mod && event.key === "d") return false;
+			if (mod && event.key === "D") return false;
+			// Cmd+Option+矢印 (フォーカス移動)
+			if (mod && event.altKey && event.key.startsWith("Arrow")) return false;
+			return true;
+		});
+
 		terminalRef.current = terminal;
 		fitAddonRef.current = fitAddon;
 

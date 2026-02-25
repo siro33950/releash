@@ -2,6 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { _resetIdCounters } from "@/hooks/useTerminalPanes";
+import { _resetContainerIdCounter } from "@/lib/paneTree";
 import { TerminalTabPanel } from "./TerminalTabPanel";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -12,9 +14,21 @@ vi.mock("@/components/panels/TerminalPanel", () => ({
 	TerminalPanel: vi.fn(() => <div data-testid="terminal-panel" />),
 }));
 
+vi.mock("react-resizable-panels", () => ({
+	Group: ({ children }: { children: React.ReactNode }) => (
+		<div data-testid="resizable-group">{children}</div>
+	),
+	Panel: ({ children }: { children: React.ReactNode }) => (
+		<div data-testid="resizable-panel">{children}</div>
+	),
+	Separator: () => <div data-testid="resizable-separator" />,
+}));
+
 describe("TerminalTabPanel", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		_resetIdCounters();
+		_resetContainerIdCounter();
 	});
 
 	it("初回レンダリングで Terminal 1 タブが表示される", () => {
