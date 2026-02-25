@@ -5,13 +5,14 @@ import {
 	Check,
 	Code,
 	Copy,
+	GitBranch,
 	Globe,
 	Loader2,
 	Monitor,
 	Palette,
 	Shield,
 } from "lucide-react";
-import { useCallback, useEffect, useReducer } from "react";
+import { Fragment, useCallback, useEffect, useReducer, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -32,12 +33,14 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { useBackgroundConfig } from "@/hooks/useAppSettings";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
+import type { BranchInfo } from "@/types/git";
 import {
 	AGENT_CONFIGS,
 	type AgentType,
@@ -126,6 +129,7 @@ export function hooksReducer(
 type SettingsSection =
 	| "appearance"
 	| "editor"
+	| "repositories"
 	| "agent"
 	| "remote"
 	| "background"
@@ -139,6 +143,7 @@ const SETTINGS_SECTIONS: {
 }[] = [
 	{ id: "appearance", label: "Appearance", icon: Palette },
 	{ id: "editor", label: "Editor", icon: Code },
+	{ id: "repositories", label: "Repositories", icon: GitBranch },
 	{ id: "agent", label: "Agent", icon: Bot },
 	{ id: "remote", label: "Remote", icon: Globe },
 	{ id: "background", label: "Background", icon: Monitor },
@@ -253,6 +258,200 @@ function EditorSection({
 					</SelectContent>
 				</Select>
 			</div>
+		</div>
+	);
+}
+
+function RepoBaseBranchItem({
+	repoPath,
+	onDirtyChange,
+}: {
+	repoPath: string;
+	onDirtyChange: (
+		repoPath: string,
+		isDirty: boolean,
+		selectedBase: string,
+	) => void;
+}) {
+	const [branches, setBranches] = useState<BranchInfo[]>([]);
+	const [selectedBase, setSelectedBase] = useState("");
+	const [initialBase, setInitialBase] = useState("");
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		setLoading(true);
+		setError(null);
+
+		Promise.all([
+			invoke<BranchInfo[]>("list_branches", { repoPath }),
+			invoke<string | null>("get_releash_base", { repoPath }),
+		])
+			.then(([branchList, currentBase]) => {
+				setBranches(branchList.filter((b) => !b.is_remote));
+				const base = currentBase ?? "";
+				setSelectedBase(base);
+				setInitialBase(base);
+			})
+			.catch((e) => {
+				setError(String(e));
+			})
+			.finally(() => {
+				setLoading(false);
+			});
+	}, [repoPath]);
+
+	const handleChange = useCallback(
+		(v: string) => {
+			const value = v === "__auto__" ? "" : v;
+			setSelectedBase(value);
+			onDirtyChange(repoPath, value !== initialBase, value);
+		},
+		[repoPath, initialBase, onDirtyChange],
+	);
+
+	const name = repoPath.split(/[\\/]/).pop() ?? repoPath;
+	const selectId = `base-branch-${repoPath.replace(/\//g, "_")}`;
+
+	return (
+		<div>
+			<div className="flex items-center gap-2 px-3 py-2 text-sm font-medium">
+				<GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
+				<span className="font-mono truncate">{name}</span>
+			</div>
+			<div className="ml-5 pl-3">
+				{loading ? (
+					<div className="flex items-center justify-center py-3">
+						<Loader2 className="size-4 animate-spin text-muted-foreground" />
+					</div>
+				) : (
+					<div className="flex flex-col gap-1.5">
+						<label htmlFor={selectId} className={labelClass}>
+							Base branch
+						</label>
+						<Select
+							value={selectedBase || "__auto__"}
+							onValueChange={handleChange}
+						>
+							<SelectTrigger id={selectId} className="w-full font-mono">
+								<SelectValue placeholder="Auto (main/master)" />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="__auto__">Auto (main/master)</SelectItem>
+								{branches.map((b) => (
+									<SelectItem key={b.name} value={b.name}>
+										{b.name}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+
+						{error && <p className="text-xs text-destructive">{error}</p>}
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
+
+interface RepoChanges {
+	pendingBases: Map<string, string>;
+	isDirty: boolean;
+	error: string | null;
+	revision: number;
+}
+
+function useRepoChanges() {
+	const [state, setState] = useState<RepoChanges>({
+		pendingBases: new Map(),
+		isDirty: false,
+		error: null,
+		revision: 0,
+	});
+
+	const handleDirtyChange = useCallback(
+		(repoPath: string, isDirty: boolean, selectedBase: string) => {
+			setState((prev) => {
+				const next = new Map(prev.pendingBases);
+				if (isDirty) {
+					next.set(repoPath, selectedBase);
+				} else {
+					next.delete(repoPath);
+				}
+				return { ...prev, pendingBases: next, isDirty: next.size > 0 };
+			});
+		},
+		[],
+	);
+
+	const save = useCallback(async () => {
+		const entries = Array.from(state.pendingBases.entries());
+		setState((prev) => ({ ...prev, error: null }));
+		try {
+			await Promise.all(
+				entries.map(([repoPath, base]) =>
+					invoke("set_releash_base", { repoPath, base: base || null }),
+				),
+			);
+			setState((prev) => ({
+				pendingBases: new Map(),
+				isDirty: false,
+				error: null,
+				revision: prev.revision + 1,
+			}));
+		} catch (e) {
+			setState((prev) => ({ ...prev, error: String(e) }));
+			throw e;
+		}
+	}, [state.pendingBases]);
+
+	const reset = useCallback(() => {
+		setState((prev) => ({
+			pendingBases: new Map(),
+			isDirty: false,
+			error: null,
+			revision: prev.revision + 1,
+		}));
+	}, []);
+
+	return { ...state, handleDirtyChange, save, reset };
+}
+
+function RepositoriesSection({
+	repoPaths,
+	onDirtyChange,
+	error,
+	revision,
+}: {
+	repoPaths: string[];
+	onDirtyChange: (
+		repoPath: string,
+		isDirty: boolean,
+		selectedBase: string,
+	) => void;
+	error: string | null;
+	revision: number;
+}) {
+	if (repoPaths.length === 0) {
+		return (
+			<p className="text-xs text-muted-foreground">
+				No repositories registered.
+			</p>
+		);
+	}
+
+	return (
+		<div className="flex flex-col">
+			{error && <p className="text-xs text-destructive">{error}</p>}
+			{repoPaths.map((repoPath, i) => (
+				<Fragment key={`${repoPath}-${revision}`}>
+					{i > 0 && <Separator className="my-3" />}
+					<RepoBaseBranchItem
+						repoPath={repoPath}
+						onDirtyChange={onDirtyChange}
+					/>
+				</Fragment>
+			))}
 		</div>
 	);
 }
@@ -862,6 +1061,7 @@ export interface SettingsModalProps {
 	onOpenChange: (open: boolean) => void;
 	settings: AppSettings;
 	onSave: (settings: AppSettings) => void;
+	repoPaths?: string[];
 }
 
 export function SettingsModal({
@@ -869,6 +1069,7 @@ export function SettingsModal({
 	onOpenChange,
 	settings,
 	onSave,
+	repoPaths = [],
 }: SettingsModalProps) {
 	const [state, dispatchSettings] = useReducer(settingsReducer, {
 		activeSection: "appearance" as SettingsSection,
@@ -881,6 +1082,7 @@ export function SettingsModal({
 	const webhook = useWebhookConfig();
 	const remote = useRemoteConfig();
 	const background = useBackgroundConfig();
+	const repos = useRepoChanges();
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
@@ -888,8 +1090,11 @@ export function SettingsModal({
 	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
 		dispatchSettings({ type: "SYNC_OPEN", open, settings });
-		if (open && settings.agent === "claude") {
-			dispatchHooks({ type: "LOAD_START" });
+		if (open) {
+			repos.reset();
+			if (settings.agent === "claude") {
+				dispatchHooks({ type: "LOAD_START" });
+			}
 		}
 	}
 
@@ -947,6 +1152,7 @@ export function SettingsModal({
 	const { isDirty: webhookIsDirty, save: webhookSave } = webhook;
 	const { isDirty: remoteIsDirty, save: remoteSave } = remote;
 	const { isDirty: backgroundIsDirty, save: backgroundSave } = background;
+	const { isDirty: reposIsDirty, save: reposSave } = repos;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -960,6 +1166,9 @@ export function SettingsModal({
 			}
 			if (backgroundIsDirty) {
 				await backgroundSave();
+			}
+			if (reposIsDirty) {
+				await reposSave();
 			}
 			if (draft.telemetryEnabled) {
 				trackEvent("settings_saved");
@@ -979,10 +1188,16 @@ export function SettingsModal({
 		remoteSave,
 		backgroundIsDirty,
 		backgroundSave,
+		reposIsDirty,
+		reposSave,
 	]);
 
 	const isDirty =
-		appDirty || webhookIsDirty || remoteIsDirty || backgroundIsDirty;
+		appDirty ||
+		webhookIsDirty ||
+		remoteIsDirty ||
+		backgroundIsDirty ||
+		reposIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
@@ -990,6 +1205,15 @@ export function SettingsModal({
 				return <AppearanceSection draft={draft} updateDraft={updateDraft} />;
 			case "editor":
 				return <EditorSection draft={draft} updateDraft={updateDraft} />;
+			case "repositories":
+				return (
+					<RepositoriesSection
+						repoPaths={repoPaths}
+						onDirtyChange={repos.handleDirtyChange}
+						error={repos.error}
+						revision={repos.revision}
+					/>
+				);
 			case "agent":
 				return (
 					<AgentSection
@@ -1044,8 +1268,8 @@ export function SettingsModal({
 									className={cn(
 										"flex items-center gap-2 w-full px-4 py-1.5 text-sm text-left transition-colors",
 										activeSection === section.id
-											? "bg-accent text-accent-foreground font-medium"
-											: "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
+											? "bg-muted text-foreground font-medium"
+											: "text-muted-foreground hover:bg-secondary hover:text-foreground",
 									)}
 								>
 									<Icon className="size-4" />

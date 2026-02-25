@@ -123,8 +123,8 @@ function FileTreeItem({
 			}}
 			onClick={handleClick}
 			className={cn(
-				"flex w-full items-center gap-1 px-2 py-1 text-sm hover:bg-sidebar-accent transition-colors",
-				isSelected && "bg-sidebar-accent",
+				"flex w-full items-center gap-1 px-2 py-1 text-sm hover:bg-foreground/5 transition-colors",
+				isSelected && "bg-foreground/10",
 				getStatusColor(node.status ?? null),
 				node.status === "ignored" && "opacity-50",
 			)}

@@ -69,7 +69,7 @@ export function FileStatusItem({
 			tabIndex={0}
 			className={cn(
 				"group flex w-full items-center gap-1.5 px-4 py-1 text-sm transition-colors",
-				selected ? "bg-sidebar-accent" : "hover:bg-sidebar-accent",
+				selected ? "bg-foreground/10" : "hover:bg-foreground/5",
 			)}
 			onClick={() => onSelect?.(entry)}
 			onKeyDown={(e) => {
@@ -87,7 +87,7 @@ export function FileStatusItem({
 			<button
 				type="button"
 				className={cn(
-					"items-center justify-center h-5 w-5 rounded hover:bg-sidebar-accent-foreground/10 shrink-0",
+					"items-center justify-center h-5 w-5 rounded hover:bg-foreground/10 shrink-0",
 					alwaysShowAction ? "inline-flex" : "hidden group-hover:inline-flex",
 				)}
 				onClick={(e) => {

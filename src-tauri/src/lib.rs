@@ -218,6 +218,8 @@ pub fn run() {
             git::commands::get_repo_git_dir,
             git::commands::get_releash_base,
             git::commands::set_releash_base,
+            git::commands::get_branch_base,
+            git::commands::set_branch_base,
             // Git Host
             git_host::check_pr_provider_status,
             git_host::fetch_pr_status,

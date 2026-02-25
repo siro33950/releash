@@ -1,69 +1,90 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { PanelBottom, PanelLeft, PanelRight } from "lucide-react";
+import { PanelLeft } from "lucide-react";
 import { describe, expect, it, vi } from "vitest";
+import { Tabs } from "@/components/ui/tabs";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { type TogglePanel, ViewToolbar } from "./ViewToolbar";
 
-function createPanels(overrides?: Partial<TogglePanel>[]): TogglePanel[] {
-	const defaults: TogglePanel[] = [
-		{
-			id: "sidebar",
-			icon: PanelLeft,
-			label: "Sidebar",
-			visible: true,
-			onToggle: vi.fn(),
-		},
-		{
-			id: "review",
-			icon: PanelBottom,
-			label: "Review",
-			visible: true,
-			onToggle: vi.fn(),
-		},
-		{
-			id: "terminal",
-			icon: PanelRight,
-			label: "Terminal",
-			visible: false,
-			onToggle: vi.fn(),
-		},
-	];
-	if (overrides) {
-		return defaults.map((d, i) => ({ ...d, ...overrides[i] }));
-	}
-	return defaults;
+function renderToolbar(props: {
+	leftPanels?: TogglePanel[];
+	rightSlot?: React.ReactNode;
+}) {
+	return render(
+		<TooltipProvider>
+			<Tabs value="editor">
+				<ViewToolbar {...props} />
+			</Tabs>
+		</TooltipProvider>,
+	);
 }
 
 describe("ViewToolbar", () => {
-	it("renders toggle buttons for all panels", () => {
-		const panels = createPanels();
-		render(<ViewToolbar panels={panels} />);
+	it("renders TabsList with Agent and Editor triggers", () => {
+		renderToolbar({});
 
-		expect(screen.getByLabelText("Toggle Sidebar")).toBeInTheDocument();
-		expect(screen.getByLabelText("Toggle Review")).toBeInTheDocument();
-		expect(screen.getByLabelText("Toggle Terminal")).toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Agent" })).toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Editor" })).toBeInTheDocument();
 	});
 
-	it("calls onToggle when a button is clicked", async () => {
+	it("has data-tauri-drag-region attribute for window dragging", () => {
+		const { container } = renderToolbar({});
+
+		const toolbar = container.querySelector("[data-tauri-drag-region]");
+		expect(toolbar).toBeInTheDocument();
+	});
+
+	it("renders leftPanels toggle buttons when hidden", async () => {
 		const user = userEvent.setup();
-		const panels = createPanels();
-		render(<ViewToolbar panels={panels} />);
+		const onToggle = vi.fn();
+		const leftPanels: TogglePanel[] = [
+			{
+				id: "left-nav",
+				icon: PanelLeft,
+				label: "Sidebar",
+				visible: false,
+				onToggle,
+			},
+		];
 
-		await user.click(screen.getByLabelText("Toggle Sidebar"));
-		expect(panels[0].onToggle).toHaveBeenCalledOnce();
+		renderToolbar({ leftPanels });
 
-		await user.click(screen.getByLabelText("Toggle Terminal"));
-		expect(panels[2].onToggle).toHaveBeenCalledOnce();
+		const btn = screen.getByLabelText("Toggle Sidebar");
+		expect(btn).toBeInTheDocument();
+		expect(btn).toHaveClass("text-muted-foreground");
+
+		await user.click(btn);
+		expect(onToggle).toHaveBeenCalledOnce();
 	});
 
-	it("applies foreground color to visible panels and muted to hidden", () => {
-		const panels = createPanels();
-		render(<ViewToolbar panels={panels} />);
+	it("renders leftPanels toggle button with foreground when visible", async () => {
+		const user = userEvent.setup();
+		const onToggle = vi.fn();
+		const leftPanels: TogglePanel[] = [
+			{
+				id: "left-nav",
+				icon: PanelLeft,
+				label: "Sidebar",
+				visible: true,
+				onToggle,
+			},
+		];
 
-		const sidebarBtn = screen.getByLabelText("Toggle Sidebar");
-		const terminalBtn = screen.getByLabelText("Toggle Terminal");
+		renderToolbar({ leftPanels });
 
-		expect(sidebarBtn.className).toContain("text-foreground");
-		expect(terminalBtn.className).toContain("text-muted-foreground");
+		const btn = screen.getByLabelText("Toggle Sidebar");
+		expect(btn).toHaveClass("text-foreground");
+		expect(btn).not.toHaveClass("text-muted-foreground");
+
+		await user.click(btn);
+		expect(onToggle).toHaveBeenCalledOnce();
+	});
+
+	it("renders rightSlot content", () => {
+		renderToolbar({
+			rightSlot: <span data-testid="branch">main</span>,
+		});
+
+		expect(screen.getByTestId("branch")).toBeInTheDocument();
 	});
 });

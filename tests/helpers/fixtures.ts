@@ -4,7 +4,7 @@ import type { MockConfig } from "./tauri-mock";
 // 型定義（src/types/ と同じ構造。import は避けて自己完結させる）
 // -------------------------------------------------------
 
-interface BranchCard {
+interface WorktreeBranch {
 	name: string;
 	is_default: boolean;
 	worktree_path: string | null;
@@ -15,9 +15,8 @@ interface BranchCard {
 	pr_url: string | null;
 	ahead: number;
 	behind: number;
-	is_remote_only: boolean;
 	has_upstream: boolean;
-	remote_name: string | null;
+	base_ahead: number;
 	agent_state?: "running" | "done" | "error" | "waiting";
 	agent_state_timestamp?: number;
 }
@@ -146,7 +145,7 @@ const baseIpcHandler: Record<string, unknown> = {
 // Kanban表示用ブランチリスト
 // -------------------------------------------------------
 
-export const kanbanBranches: BranchCard[] = [
+export const kanbanBranches: WorktreeBranch[] = [
 	{
 		name: "feat/todo",
 		is_default: false,
@@ -158,9 +157,8 @@ export const kanbanBranches: BranchCard[] = [
 		pr_url: null,
 		ahead: 0,
 		behind: 0,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
+		base_ahead: 0,
 	},
 	{
 		name: "feat/wip",
@@ -173,9 +171,8 @@ export const kanbanBranches: BranchCard[] = [
 		pr_url: null,
 		ahead: 0,
 		behind: 0,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
+		base_ahead: 0,
 	},
 	{
 		name: "feat/review",
@@ -188,9 +185,8 @@ export const kanbanBranches: BranchCard[] = [
 		pr_url: "https://github.com/test/repo/pull/42",
 		ahead: 0,
 		behind: 0,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
+		base_ahead: 0,
 	},
 	{
 		name: "feat/done",
@@ -203,9 +199,8 @@ export const kanbanBranches: BranchCard[] = [
 		pr_url: null,
 		ahead: 0,
 		behind: 0,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
+		base_ahead: 0,
 	},
 ];
 
@@ -552,7 +547,7 @@ export const notionLabelOptions: NotionLabelOption[] = [
 // Kanban フルバリエーション（7件、全カード状態を網羅）
 // -------------------------------------------------------
 
-export const kanbanBranchesFull: BranchCard[] = [
+export const kanbanBranchesFull: WorktreeBranch[] = [
 	// Todo: ローカルブランチ（worktreeなし）
 	{
 		name: "feat/todo-item",
@@ -565,25 +560,8 @@ export const kanbanBranchesFull: BranchCard[] = [
 		pr_url: null,
 		ahead: 0,
 		behind: 0,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
-	},
-	// Todo: リモートオンリーブランチ
-	{
-		name: "feat/remote-only",
-		is_default: false,
-		worktree_path: null,
-		dirty_count: 0,
-		is_merged: false,
-		has_pr: false,
-		pr_number: null,
-		pr_url: null,
-		ahead: 0,
-		behind: 0,
-		is_remote_only: true,
-		has_upstream: false,
-		remote_name: "origin",
+		base_ahead: 0,
 	},
 	// In Progress: dirty + ahead/behind
 	{
@@ -597,9 +575,8 @@ export const kanbanBranchesFull: BranchCard[] = [
 		pr_url: null,
 		ahead: 3,
 		behind: 1,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
+		base_ahead: 0,
 	},
 	// In Progress: agent running
 	{
@@ -613,9 +590,8 @@ export const kanbanBranchesFull: BranchCard[] = [
 		pr_url: null,
 		ahead: 1,
 		behind: 0,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
+		base_ahead: 0,
 		agent_state: "running",
 		agent_state_timestamp: 9999999999,
 	},
@@ -631,9 +607,8 @@ export const kanbanBranchesFull: BranchCard[] = [
 		pr_url: null,
 		ahead: 2,
 		behind: 0,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
+		base_ahead: 0,
 		agent_state: "done",
 		agent_state_timestamp: 9999999999,
 	},
@@ -649,9 +624,8 @@ export const kanbanBranchesFull: BranchCard[] = [
 		pr_url: "https://github.com/test/repo/pull/88",
 		ahead: 0,
 		behind: 0,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
+		base_ahead: 0,
 	},
 	// Done: merged
 	{
@@ -665,9 +639,8 @@ export const kanbanBranchesFull: BranchCard[] = [
 		pr_url: "https://github.com/test/repo/pull/80",
 		ahead: 0,
 		behind: 0,
-		is_remote_only: false,
 		has_upstream: true,
-		remote_name: null,
+		base_ahead: 0,
 	},
 ];
 

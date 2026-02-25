@@ -1,7 +1,5 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "flexlayout-react/style/dark.css";
-@import "./styles/flexlayout-custom.css";
 @import "./styles/resizable-panels.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -44,6 +42,8 @@
 	--sidebar-foreground: oklch(0.85 0 0);
 	--sidebar-primary: oklch(0.6116 0.0714 197.91);
 	--sidebar-primary-foreground: oklch(0.98 0 0);
+	--sidebar-secondary: oklch(0.26 0.01 260);
+	--sidebar-secondary-foreground: oklch(0.9 0 0);
 	--sidebar-accent: oklch(0.26 0.01 260);
 	--sidebar-accent-foreground: oklch(0.9 0 0);
 	--sidebar-border: oklch(0.28 0.005 260);
@@ -105,6 +105,8 @@
 	--sidebar-foreground: oklch(0.2 0 0);
 	--sidebar-primary: oklch(0.6116 0.0714 197.91);
 	--sidebar-primary-foreground: oklch(0.98 0 0);
+	--sidebar-secondary: oklch(0.9 0.01 260);
+	--sidebar-secondary-foreground: oklch(0.15 0 0);
 	--sidebar-accent: oklch(0.9 0.01 260);
 	--sidebar-accent-foreground: oklch(0.15 0 0);
 	--sidebar-border: oklch(0.85 0.005 260);
@@ -169,6 +171,8 @@
 	--color-sidebar-foreground: var(--sidebar-foreground);
 	--color-sidebar-primary: var(--sidebar-primary);
 	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-secondary: var(--sidebar-secondary);
+	--color-sidebar-secondary-foreground: var(--sidebar-secondary-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 	--color-sidebar-border: var(--sidebar-border);
@@ -235,16 +239,6 @@
 		margin: 0;
 		padding: 0;
 	}
-}
-
-/*
- * Isolate each flexlayout tab into its own stacking context.
- * Without this, Monaco Editor's high z-index elements paint on top of
- * adjacent panels (e.g. Sidebar) in production builds.
- * Must be outside @layer to avoid being overridden by Monaco's runtime CSS.
- */
-.flexlayout__tab {
-	isolation: isolate;
 }
 
 /* Monaco Editor Gutter Decorations */

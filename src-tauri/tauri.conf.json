@@ -13,9 +13,12 @@
     "windows": [
       {
         "title": "Releash",
-        "width": 800,
-        "height": 600,
-        "dragDropEnabled": false
+        "width": 1440,
+        "height": 900,
+        "dragDropEnabled": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 10, "y": 19 }
       }
     ],
     "security": {

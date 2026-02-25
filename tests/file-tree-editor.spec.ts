@@ -42,7 +42,7 @@ test.describe("File Tree & Editor", () => {
 		await waitForApp(page);
 
 		// Explorer ビューに切り替え（ActivityBar の Explorer ボタン）
-		const explorerBtn = page.getByRole("button", { name: "Explorer" });
+		const explorerBtn = page.getByRole("tab", { name: "Explorer" });
 		await explorerBtn.click();
 
 		// ルートディレクトリのエントリが表示される
@@ -57,7 +57,7 @@ test.describe("File Tree & Editor", () => {
 		await waitForApp(page);
 
 		// Explorer ビューに切り替え
-		const explorerBtn = page.getByRole("button", { name: "Explorer" });
+		const explorerBtn = page.getByRole("tab", { name: "Explorer" });
 		await explorerBtn.click();
 
 		// src フォルダをクリックして展開
@@ -85,17 +85,15 @@ test.describe("File Tree & Editor", () => {
 		await waitForApp(page);
 
 		// Explorer ビューに切り替え
-		const explorerBtn = page.getByRole("button", { name: "Explorer" });
+		const explorerBtn = page.getByRole("tab", { name: "Explorer" });
 		await explorerBtn.click();
 
 		// README.md をクリック（ファイル）
 		await page.getByText("README.md").first().click();
 
 		// エディタタブに README.md が追加されることを確認
-		// flexlayout-react のタブボタンで表示される
-		await expect(
-			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
-		).toBeVisible({ timeout: 5000 });
+		const editorTab = page.locator('[data-slot="tabs-trigger"]').filter({ hasText: "README.md" });
+		await expect(editorTab).toBeVisible({ timeout: 5000 });
 	});
 
 	test("エディタタブの閉じるボタンでタブが閉じる", async ({ page }) => {
@@ -108,22 +106,18 @@ test.describe("File Tree & Editor", () => {
 		await waitForApp(page);
 
 		// Explorer → ファイルクリック → タブ追加
-		await page.getByRole("button", { name: "Explorer" }).click();
+		await page.getByRole("tab", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
-		await expect(
-			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
-		).toBeVisible({ timeout: 5000 });
+		const editorTab = page.locator('[data-slot="tabs-trigger"]').filter({ hasText: "README.md" });
+		await expect(editorTab).toBeVisible({ timeout: 5000 });
 
-		// タブの Close ボタンをクリック（flexlayout-react の trailing ボタン）
-		await page
-			.locator(".flexlayout__tab_button", { hasText: "README.md" })
-			.locator(".flexlayout__tab_button_trailing")
+		// タブの Close ボタンをクリック
+		await editorTab
+			.getByRole("button", { name: /Close README\.md/ })
 			.click({ force: true });
 
 		// タブが消えることを確認
-		await expect(
-			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
-		).not.toBeVisible();
+		await expect(editorTab).not.toBeVisible();
 	});
 
 	test("Diff モード切替ボタンが動作する", async ({ page }) => {
@@ -136,11 +130,10 @@ test.describe("File Tree & Editor", () => {
 		await waitForApp(page);
 
 		// Explorer → ファイルクリック
-		await page.getByRole("button", { name: "Explorer" }).click();
+		await page.getByRole("tab", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
-		await expect(
-			page.locator(".flexlayout__tab_button", { hasText: "README.md" }),
-		).toBeVisible({ timeout: 5000 });
+		const editorTab = page.locator('[data-slot="tabs-trigger"]').filter({ hasText: "README.md" });
+		await expect(editorTab).toBeVisible({ timeout: 5000 });
 
 		// Diff モードボタンが存在することを確認
 		// EditorPanel のフッターに Gutter / Inline / Split ボタンがある

@@ -423,8 +423,11 @@ export function useMonacoGutterEditor(
 			commentInputWidgetRef.current?.dispose();
 			commentInputWidgetRef.current = null;
 			intersectionObserverRef.current?.disconnect();
+			intersectionObserverRef.current = null;
 			editorRef.current?.dispose();
+			editorRef.current = null;
 			modelRef.current?.dispose();
+			modelRef.current = null;
 		};
 	}, [containerRef, language, filePath, readOnly]);
 

@@ -222,14 +222,14 @@ export function SearchPanel({
 				<ScrollArea className="flex-1 min-h-0 [&>[data-slot=scroll-area-viewport]>div]:block!">
 					{grouped.map((group) => (
 						<div key={group.path}>
-							<div className="px-3 py-1 text-[11px] font-semibold text-muted-foreground truncate bg-sidebar-accent/50">
+							<div className="px-3 py-1 text-[11px] font-semibold text-muted-foreground truncate bg-sidebar-secondary/50">
 								{group.path}
 							</div>
 							{group.matches.map((m, _i) => (
 								<button
 									type="button"
 									key={`${m.line_number}-${m.match_start}-${m.match_end}`}
-									className="flex w-full items-center gap-2 px-4 py-0.5 text-xs hover:bg-sidebar-accent transition-colors text-left"
+									className="flex w-full items-center gap-2 px-4 py-0.5 text-xs hover:bg-foreground/5 transition-colors text-left"
 									onClick={() => onSelectFileAtLine?.(m.path, m.line_number)}
 								>
 									<span className="text-muted-foreground font-mono w-8 text-right shrink-0">

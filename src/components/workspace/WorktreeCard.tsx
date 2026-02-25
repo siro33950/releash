@@ -2,7 +2,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
 	ExternalLink,
 	GitBranch,
-	Globe,
 	Loader2,
 	Monitor,
 	Trash2,
@@ -14,13 +13,13 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { BranchCard as BranchCardType } from "@/types/git";
+import type { WorktreeBranch } from "@/types/git";
 
 interface BranchCardProps {
-	branch: BranchCardType;
+	branch: WorktreeBranch;
 	opening?: boolean;
 	onOpen: () => void;
-	onDelete: (branch: BranchCardType) => void;
+	onDelete: (branch: WorktreeBranch) => void;
 }
 
 export function BranchCard({
@@ -31,17 +30,12 @@ export function BranchCard({
 }: BranchCardProps) {
 	const hasWorktree = branch.worktree_path != null;
 	const hasAheadBehind = branch.ahead > 0 || branch.behind > 0;
-	const isLocalOnly = !branch.is_remote_only && !branch.has_upstream;
 	const hasStatusBadges =
 		branch.is_default ||
 		branch.agent_state ||
 		(hasWorktree && branch.dirty_count > 0);
 
-	const BranchIcon = branch.is_remote_only
-		? Globe
-		: isLocalOnly
-			? Monitor
-			: GitBranch;
+	const BranchIcon = branch.has_upstream ? GitBranch : Monitor;
 
 	const hasSecondRow =
 		hasAheadBehind ||

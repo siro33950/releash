@@ -5,6 +5,13 @@ import {
 	Minus,
 	SplitSquareHorizontal,
 } from "lucide-react";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { DiffBase, DiffMode } from "@/types/settings";
 
@@ -39,14 +46,18 @@ export function DiffToolbar({
 		<div className="flex items-center justify-between px-3 py-1.5 border-t border-border bg-card">
 			<div className="flex items-center gap-2">
 				<span className="text-xs text-muted-foreground">Base:</span>
-				<select
+				<Select
 					value={diffBase}
-					onChange={(e) => onDiffBaseChange(e.target.value as DiffBase)}
-					className="bg-muted border border-border rounded px-2 py-0.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+					onValueChange={(v) => onDiffBaseChange(v as DiffBase)}
 				>
-					<option value="HEAD">HEAD</option>
-					<option value="staged">Staged</option>
-				</select>
+					<SelectTrigger size="sm" className="h-7 text-xs font-mono">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="HEAD">HEAD</SelectItem>
+						<SelectItem value="staged">Staged</SelectItem>
+					</SelectContent>
+				</Select>
 				{total > 0 && (
 					<div className="flex items-center gap-1 ml-2">
 						{showStageButtons && (

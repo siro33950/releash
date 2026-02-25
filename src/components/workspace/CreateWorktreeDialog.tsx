@@ -11,14 +11,21 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { trackEvent } from "@/lib/telemetry";
 import { branchToDir, computeWorktreeDir } from "@/lib/worktreePath";
-import type { BranchCard, BranchInfo, WorktreeEntry } from "@/types/git";
+import type { BranchInfo, WorktreeBranch, WorktreeEntry } from "@/types/git";
 
 interface CreateWorktreeDialogProps {
 	open: boolean;
 	repoPath: string;
-	existingBranches: BranchCard[];
+	existingBranches: WorktreeBranch[];
 	defaultBaseBranch?: string;
 	onCreated: (entry: WorktreeEntry) => void;
 	onCancel: () => void;
@@ -211,17 +218,18 @@ export function CreateWorktreeDialog({
 									<span className="text-muted-foreground w-16 shrink-0">
 										Base:
 									</span>
-									<select
-										value={baseBranch}
-										onChange={(e) => setBaseBranch(e.target.value)}
-										className="flex-1 h-8 rounded-md border border-input bg-background px-2 text-sm"
-									>
-										{localBranchNames.map((name) => (
-											<option key={name} value={name}>
-												{name}
-											</option>
-										))}
-									</select>
+									<Select value={baseBranch} onValueChange={setBaseBranch}>
+										<SelectTrigger size="sm" className="flex-1">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											{localBranchNames.map((name) => (
+												<SelectItem key={name} value={name}>
+													{name}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
 								</div>
 							)}
 							{error && <p className="text-sm text-destructive">{error}</p>}
@@ -282,7 +290,7 @@ export function CreateWorktreeDialog({
 												<button
 													type="button"
 													data-active={selectedIndex === idx}
-													className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent data-[active=true]:bg-accent"
+													className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-secondary data-[active=true]:bg-muted"
 													onClick={() => selectBranch(filter, true)}
 												>
 													<span className="text-primary">+</span>
@@ -293,7 +301,7 @@ export function CreateWorktreeDialog({
 													type="button"
 													data-active={selectedIndex === idx}
 													disabled={isExisting}
-													className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-accent data-[active=true]:bg-accent disabled:opacity-40 disabled:cursor-not-allowed"
+													className="flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-secondary data-[active=true]:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
 													onClick={() => selectBranch(item.branch.name, false)}
 												>
 													<span className="truncate">{item.branch.name}</span>

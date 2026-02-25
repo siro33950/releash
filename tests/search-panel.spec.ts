@@ -35,7 +35,7 @@ test.describe("Search Panel", () => {
 		await waitForApp(page);
 
 		// ActivityBar の Search ボタンをクリック
-		await page.getByRole("button", { name: "Search" }).click();
+		await page.getByRole("tab", { name: "Search" }).click();
 
 		// 検索入力欄が表示される
 		await expect(
@@ -51,7 +51,7 @@ test.describe("Search Panel", () => {
 		await waitForApp(page);
 
 		// Search ビューに切り替え
-		await page.getByRole("button", { name: "Search" }).click();
+		await page.getByRole("tab", { name: "Search" }).click();
 
 		// 検索クエリを入力
 		const searchInput = page.getByPlaceholder("Search files...");
@@ -72,7 +72,7 @@ test.describe("Search Panel", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		await page.getByRole("button", { name: "Search" }).click();
+		await page.getByRole("tab", { name: "Search" }).click();
 
 		// Match Case ボタン（data-testid="toggle-case"）
 		const caseBtn = page.locator('[data-testid="toggle-case"]');
@@ -90,7 +90,7 @@ test.describe("Search Panel", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		await page.getByRole("button", { name: "Search" }).click();
+		await page.getByRole("tab", { name: "Search" }).click();
 
 		// Regex ボタン（data-testid="toggle-regex"）
 		const regexBtn = page.locator('[data-testid="toggle-regex"]');
@@ -110,7 +110,7 @@ test.describe("Search Panel", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		await page.getByRole("button", { name: "Search" }).click();
+		await page.getByRole("tab", { name: "Search" }).click();
 
 		// 検索入力
 		const searchInput = page.getByPlaceholder("Search files...");

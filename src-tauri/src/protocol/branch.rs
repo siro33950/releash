@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::git::types::BranchCard;
+use crate::git::types::WorktreeBranch;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchCardMsg {
@@ -20,15 +20,13 @@ pub struct BranchCardMsg {
     #[serde(default)]
     pub behind: usize,
     #[serde(default)]
-    pub is_remote_only: bool,
-    #[serde(default)]
     pub has_upstream: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remote_name: Option<String>,
+    #[serde(default)]
+    pub base_ahead: usize,
 }
 
-impl From<BranchCard> for BranchCardMsg {
-    fn from(b: BranchCard) -> Self {
+impl From<WorktreeBranch> for BranchCardMsg {
+    fn from(b: WorktreeBranch) -> Self {
         Self {
             name: b.name,
             is_default: b.is_default,
@@ -40,9 +38,8 @@ impl From<BranchCard> for BranchCardMsg {
             pr_url: b.pr_url,
             ahead: b.ahead,
             behind: b.behind,
-            is_remote_only: b.is_remote_only,
             has_upstream: b.has_upstream,
-            remote_name: b.remote_name,
+            base_ahead: b.base_ahead,
         }
     }
 }

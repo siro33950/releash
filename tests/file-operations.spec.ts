@@ -41,7 +41,7 @@ test.describe("File Operations", () => {
 		await waitForApp(page);
 
 		// Explorer ビューに切り替え
-		await page.getByRole("button", { name: "Explorer" }).click();
+		await page.getByRole("tab", { name: "Explorer" }).click();
 
 		// ファイルツリーが表示されるまで待機
 		await expect(page.getByText("src").first()).toBeVisible();
@@ -63,7 +63,7 @@ test.describe("File Operations", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		await page.getByRole("button", { name: "Explorer" }).click();
+		await page.getByRole("tab", { name: "Explorer" }).click();
 		await expect(page.getByText("src").first()).toBeVisible();
 
 		// New Folder ボタン（aria-label="New Folder"）をクリック
@@ -84,7 +84,7 @@ test.describe("File Operations", () => {
 		await trackInvocations(page);
 		await waitForApp(page);
 
-		await page.getByRole("button", { name: "Explorer" }).click();
+		await page.getByRole("tab", { name: "Explorer" }).click();
 		await expect(page.getByText("src").first()).toBeVisible();
 
 		// New File ボタンをクリック
@@ -115,7 +115,7 @@ test.describe("File Operations", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		await page.getByRole("button", { name: "Explorer" }).click();
+		await page.getByRole("tab", { name: "Explorer" }).click();
 		await expect(page.getByText("src").first()).toBeVisible();
 
 		// Collapse All ボタンが表示される
@@ -131,11 +131,13 @@ test.describe("File Operations", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		await page.getByRole("button", { name: "Explorer" }).click();
+		await page.getByRole("tab", { name: "Explorer" }).click();
 		await expect(page.getByText("src").first()).toBeVisible();
 
-		// Refresh ボタンが表示される
-		const refreshBtn = page.getByRole("button", { name: "Refresh" });
+		// Refresh ボタンが表示される（右サイドバー内のRefreshボタン）
+		const refreshBtn = page
+			.getByTestId("right-top")
+			.getByRole("button", { name: "Refresh" });
 		await expect(refreshBtn).toBeVisible();
 
 		// クリックしてもエラーにならない

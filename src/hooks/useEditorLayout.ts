@@ -1,55 +1,25 @@
-import type { Action } from "flexlayout-react";
-import {
-	Actions,
-	DockLocation,
-	type IJsonModel,
-	type ITabRenderValues,
-	Model,
-	type TabNode,
-	TabSetNode,
-} from "flexlayout-react";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useReducer, useRef } from "react";
 
-const EDITOR_TABSET_ID = "editor-tabs";
-
-function createInitialJson(): IJsonModel {
-	return {
-		global: {
-			tabEnableClose: true,
-			tabEnableDrag: true,
-			tabEnableRename: false,
-			tabSetEnableMaximize: false,
-			tabSetEnableDeleteWhenEmpty: true,
-			enableEdgeDock: false,
-			splitterSize: 1,
-			splitterExtra: 4,
-		},
-		layout: {
-			type: "row",
-			weight: 100,
-			children: [
-				{
-					type: "tabset",
-					id: EDITOR_TABSET_ID,
-					weight: 100,
-					enableDeleteWhenEmpty: false,
-					enableTabScrollbar: true,
-					children: [],
-				},
-			],
-		},
-	};
+export interface EditorTab {
+	id: string;
+	path: string | null;
+	name: string;
+	isDirty: boolean;
+	closable: boolean;
+	draggable: boolean;
 }
 
-export interface UseEditorLayoutReturn {
-	model: Model;
-	addTab: (path: string, name: string, isDirty: boolean) => void;
-	removeTab: (path: string) => void;
-	selectTab: (path: string) => void;
-	getActiveTabPath: () => string | null;
-	updateTabDirty: (path: string, isDirty: boolean) => void;
-	onAction: (action: Action) => Action | undefined;
+export interface EditorLayoutState {
+	tabs: EditorTab[];
+	activeTabId: string;
 }
+
+type EditorLayoutAction =
+	| { type: "ADD_TAB"; path: string; name: string; isDirty: boolean }
+	| { type: "REMOVE_TAB"; path: string }
+	| { type: "SELECT_TAB"; tabId: string }
+	| { type: "UPDATE_DIRTY"; path: string; isDirty: boolean }
+	| { type: "REORDER"; fromIndex: number; toIndex: number };
 
 function tabIdFromPath(path: string): string {
 	return `editor:${path}`;
@@ -59,105 +29,149 @@ export function pathFromTabId(tabId: string): string | null {
 	return tabId.startsWith("editor:") ? tabId.slice("editor:".length) : null;
 }
 
+function createInitialState(): EditorLayoutState {
+	return {
+		tabs: [],
+		activeTabId: "",
+	};
+}
+
+function reducer(
+	state: EditorLayoutState,
+	action: EditorLayoutAction,
+): EditorLayoutState {
+	switch (action.type) {
+		case "ADD_TAB": {
+			const tabId = tabIdFromPath(action.path);
+			const existing = state.tabs.find((t) => t.id === tabId);
+			if (existing) {
+				return { ...state, activeTabId: tabId };
+			}
+			const newTab: EditorTab = {
+				id: tabId,
+				path: action.path,
+				name: action.name,
+				isDirty: action.isDirty,
+				closable: true,
+				draggable: true,
+			};
+			return {
+				tabs: [...state.tabs, newTab],
+				activeTabId: tabId,
+			};
+		}
+		case "REMOVE_TAB": {
+			const tabId = tabIdFromPath(action.path);
+			const idx = state.tabs.findIndex((t) => t.id === tabId);
+			if (idx === -1) return state;
+			const nextTabs = state.tabs.filter((t) => t.id !== tabId);
+			let nextActive = state.activeTabId;
+			if (state.activeTabId === tabId) {
+				const prev = state.tabs[idx - 1];
+				const next = state.tabs[idx + 1];
+				nextActive = (next ?? prev)?.id ?? "";
+			}
+			return { tabs: nextTabs, activeTabId: nextActive };
+		}
+		case "SELECT_TAB": {
+			if (state.activeTabId === action.tabId) return state;
+			if (!state.tabs.some((t) => t.id === action.tabId)) return state;
+			return { ...state, activeTabId: action.tabId };
+		}
+		case "UPDATE_DIRTY": {
+			const tabId = tabIdFromPath(action.path);
+			const tabs = state.tabs.map((t) =>
+				t.id === tabId ? { ...t, isDirty: action.isDirty } : t,
+			);
+			return { ...state, tabs };
+		}
+		case "REORDER": {
+			const { fromIndex, toIndex } = action;
+			if (
+				fromIndex === toIndex ||
+				fromIndex < 0 ||
+				toIndex < 0 ||
+				fromIndex >= state.tabs.length ||
+				toIndex >= state.tabs.length
+			)
+				return state;
+			const tabs = [...state.tabs];
+			const [moved] = tabs.splice(fromIndex, 1);
+			tabs.splice(toIndex, 0, moved);
+			return { ...state, tabs };
+		}
+	}
+}
+
+export interface UseEditorLayoutReturn {
+	tabs: EditorTab[];
+	activeTabId: string;
+	addTab: (path: string, name: string, isDirty: boolean) => void;
+	removeTab: (path: string) => void;
+	selectTab: (path: string) => void;
+	selectTabById: (tabId: string) => void;
+	getActiveTabPath: () => string | null;
+	updateTabDirty: (path: string, isDirty: boolean) => void;
+	reorderTabs: (fromIndex: number, toIndex: number) => void;
+	closeTab: (path: string) => void;
+}
+
 export function useEditorLayout(
 	onTabClose?: (path: string) => boolean,
 ): UseEditorLayoutReturn {
-	const model = useMemo(() => Model.fromJson(createInitialJson()), []);
-	const modelRef = useRef(model);
-	modelRef.current = model;
+	const [state, dispatch] = useReducer(reducer, undefined, createInitialState);
+	const stateRef = useRef(state);
+	stateRef.current = state;
 
 	const addTab = useCallback((path: string, name: string, isDirty: boolean) => {
-		const tabId = tabIdFromPath(path);
-		const existing = modelRef.current.getNodeById(tabId);
-		if (existing) {
-			modelRef.current.doAction(Actions.selectTab(tabId));
-			return;
-		}
-		modelRef.current.doAction(
-			Actions.addNode(
-				{
-					type: "tab",
-					id: tabId,
-					name,
-					component: "editor",
-					config: { filePath: path, isDirty },
-				},
-				EDITOR_TABSET_ID,
-				DockLocation.CENTER,
-				-1,
-				true,
-			),
-		);
+		dispatch({ type: "ADD_TAB", path, name, isDirty });
 	}, []);
 
 	const removeTab = useCallback((path: string) => {
-		const tabId = tabIdFromPath(path);
-		const existing = modelRef.current.getNodeById(tabId);
-		if (existing) {
-			modelRef.current.doAction(Actions.deleteTab(tabId));
-		}
+		dispatch({ type: "REMOVE_TAB", path });
 	}, []);
 
 	const selectTab = useCallback((path: string) => {
 		const tabId = tabIdFromPath(path);
-		const existing = modelRef.current.getNodeById(tabId);
-		if (existing) {
-			modelRef.current.doAction(Actions.selectTab(tabId));
-		}
+		dispatch({ type: "SELECT_TAB", tabId });
+	}, []);
+
+	const selectTabById = useCallback((tabId: string) => {
+		dispatch({ type: "SELECT_TAB", tabId });
 	}, []);
 
 	const getActiveTabPath = useCallback((): string | null => {
-		const tabset = modelRef.current.getNodeById(EDITOR_TABSET_ID);
-		if (!tabset) return null;
-		if (!(tabset instanceof TabSetNode)) return null;
-		const children = tabset.getChildren() as TabNode[];
-		const selected = tabset.getSelected();
-		if (selected == null || selected < 0 || selected >= children.length)
-			return null;
-		const activeTab = children[selected];
-		return pathFromTabId(activeTab.getId());
+		return pathFromTabId(stateRef.current.activeTabId);
 	}, []);
 
 	const updateTabDirty = useCallback((path: string, isDirty: boolean) => {
-		const tabId = tabIdFromPath(path);
-		const existing = modelRef.current.getNodeById(tabId);
-		if (existing) {
-			modelRef.current.doAction(
-				Actions.updateNodeAttributes(tabId, {
-					config: { filePath: path, isDirty },
-				}),
-			);
-		}
+		dispatch({ type: "UPDATE_DIRTY", path, isDirty });
 	}, []);
 
-	const onAction = useCallback(
-		(action: Action): Action | undefined => {
-			if (action.type === Actions.DELETE_TAB) {
-				const tabId = action.data.node as string | undefined;
-				if (tabId) {
-					const path = pathFromTabId(tabId);
-					if (path) {
-						const shouldBlock = onTabClose?.(path) ?? false;
-						return shouldBlock ? undefined : action;
-					}
-				}
+	const reorderTabs = useCallback((fromIndex: number, toIndex: number) => {
+		dispatch({ type: "REORDER", fromIndex, toIndex });
+	}, []);
+
+	const closeTab = useCallback(
+		(path: string) => {
+			const shouldBlock = onTabClose?.(path) ?? false;
+			if (!shouldBlock) {
+				dispatch({ type: "REMOVE_TAB", path });
 			}
-			return action;
 		},
 		[onTabClose],
 	);
 
 	return {
-		model,
+		tabs: state.tabs,
+		activeTabId: state.activeTabId,
 		addTab,
 		removeTab,
 		selectTab,
+		selectTabById,
 		getActiveTabPath,
 		updateTabDirty,
-		onAction,
+		reorderTabs,
+		closeTab,
 	};
 }
-
-export { EDITOR_TABSET_ID };
-
-export type { ITabRenderValues, TabNode };

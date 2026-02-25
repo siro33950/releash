@@ -124,7 +124,7 @@ function NotionRepoSection({
 						<button
 							type="button"
 							title="Refresh"
-							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0 ml-auto"
+							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0 ml-auto"
 							onClick={(e) => {
 								e.stopPropagation();
 								refreshRef.current?.();
@@ -137,7 +137,7 @@ function NotionRepoSection({
 						<button
 							type="button"
 							title="Settings"
-							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
 							onClick={(e) => {
 								e.stopPropagation();
 								setShowConfig(true);

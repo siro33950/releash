@@ -138,7 +138,7 @@ export function PullRequestPanel({ rootPath, branch }: PullRequestPanelProps) {
 				{prUrl && (
 					<button
 						type="button"
-						className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+						className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
 						onClick={() => openUrl(prUrl)}
 						title="Open in browser"
 					>
@@ -147,7 +147,7 @@ export function PullRequestPanel({ rootPath, branch }: PullRequestPanelProps) {
 				)}
 				<button
 					type="button"
-					className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+					className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
 					onClick={refresh}
 					title="Refresh"
 				>

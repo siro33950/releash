@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
 	Tooltip,
 	TooltipContent,
@@ -16,13 +17,20 @@ export interface TogglePanel {
 }
 
 interface ViewToolbarProps {
-	panels: TogglePanel[];
+	leftPanels?: TogglePanel[];
+	rightSlot?: React.ReactNode;
 }
 
-export function ViewToolbar({ panels }: ViewToolbarProps) {
+export function ViewToolbar({ leftPanels, rightSlot }: ViewToolbarProps) {
 	return (
-		<div className="flex items-center justify-end h-[30px] px-1 border-b border-border bg-sidebar shrink-0 gap-0.5">
-			{panels.map((panel) => (
+		<div
+			data-tauri-drag-region
+			className={cn(
+				"flex items-center h-[34px] pl-0 pr-[12px] border-b border-border bg-sidebar shrink-0 gap-0.5",
+				leftPanels && leftPanels.length > 0 && "pl-[80px]",
+			)}
+		>
+			{leftPanels?.map((panel) => (
 				<Tooltip key={panel.id}>
 					<TooltipTrigger asChild>
 						<Button
@@ -41,6 +49,16 @@ export function ViewToolbar({ panels }: ViewToolbarProps) {
 					<TooltipContent side="bottom">{panel.label}</TooltipContent>
 				</Tooltip>
 			))}
+			<TabsList variant="line" className="h-[30px] px-0">
+				<TabsTrigger value="agent" className="text-xs px-[10px] py-1">
+					Agent
+				</TabsTrigger>
+				<TabsTrigger value="editor" className="text-xs px-[10px] py-1">
+					Editor
+				</TabsTrigger>
+			</TabsList>
+			<div data-tauri-drag-region className="flex-1" />
+			{rightSlot}
 		</div>
 	);
 }

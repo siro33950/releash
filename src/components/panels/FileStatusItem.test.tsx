@@ -76,8 +76,8 @@ describe("FileStatusItem", () => {
 			/>,
 		);
 		const row = container.querySelector("[role='button']");
-		expect(row?.className).toContain("bg-sidebar-accent");
-		expect(row?.className).not.toContain("hover:bg-sidebar-accent");
+		expect(row?.className).toContain("bg-foreground/10");
+		expect(row?.className).not.toContain("hover:bg-foreground/5");
 	});
 
 	it("should show action button always when alwaysShowAction is true", () => {

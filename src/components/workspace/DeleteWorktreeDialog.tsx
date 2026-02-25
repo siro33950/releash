@@ -10,12 +10,12 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { BranchCard } from "@/types/git";
+import type { WorktreeBranch } from "@/types/git";
 
 interface DeleteWorktreeDialogProps {
 	open: boolean;
-	branch: BranchCard | null;
-	onConfirm: (branch: BranchCard, force: boolean) => Promise<void>;
+	branch: WorktreeBranch | null;
+	onConfirm: (branch: WorktreeBranch, force: boolean) => Promise<void>;
 	onCancel: () => void;
 }
 

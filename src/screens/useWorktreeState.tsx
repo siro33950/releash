@@ -1,9 +1,5 @@
-import { FileIcon } from "@react-symbols/icons/utils";
 import { listen } from "@tauri-apps/api/event";
-import type { ITabRenderValues, TabNode } from "flexlayout-react";
-import { PanelBottom, PanelLeft, PanelRight } from "lucide-react";
 import {
-	type ReactNode,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -11,14 +7,7 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { PanelImperativeHandle, PanelSize } from "react-resizable-panels";
-import type { TogglePanel } from "@/components/layout/ViewToolbar";
-import { EditorTabContent } from "@/components/panels/EditorTabContent";
-import { EmptyState } from "@/components/panels/EmptyState";
-import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
-import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
-import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
 import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPanel";
 import type { EditorContextValue } from "@/contexts/EditorContext";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
@@ -48,6 +37,7 @@ interface UseWorktreeStateParams {
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
 	isActive: boolean;
+	centerTabRef?: React.RefObject<string>;
 }
 
 export function useWorktreeState({
@@ -55,6 +45,7 @@ export function useWorktreeState({
 	settings,
 	onSettingsSave,
 	isActive,
+	centerTabRef,
 }: UseWorktreeStateParams) {
 	const {
 		files,
@@ -144,7 +135,6 @@ export function useWorktreeState({
 	);
 
 	const editorLayout = useEditorLayout(handleTabClose);
-	const [, forceRender] = useReducer((x: number) => x + 1, 0);
 	const activeTabPath = editorLayout.getActiveTabPath();
 	const activeTab = activeTabPath ? getFileContent(activeTabPath) : null;
 
@@ -212,6 +202,9 @@ export function useWorktreeState({
 	);
 	const handleOpenFileRef = useRef(handleOpenFile);
 	handleOpenFileRef.current = handleOpenFile;
+
+	const editorLayoutRef = useRef(editorLayout);
+	editorLayoutRef.current = editorLayout;
 
 	// --- Extracted hooks ---
 	const gitActions = useWorktreeGitActions({
@@ -285,13 +278,18 @@ export function useWorktreeState({
 		dispatchUI({ type: "SET_EDITOR_DRAG_OVER", value: false });
 	}, []);
 
+	const centerTabRefInternal = centerTabRef;
 	const { registerDropZone } = useNativeFileDrop({
-		onDropToEditor: useCallback((paths: string[]) => {
-			dispatchUI({ type: "SET_EDITOR_DRAG_OVER", value: false });
-			for (const path of paths) {
-				handleOpenFileRef.current(path);
-			}
-		}, []),
+		onDropToEditor: useCallback(
+			(paths: string[]) => {
+				dispatchUI({ type: "SET_EDITOR_DRAG_OVER", value: false });
+				if (centerTabRefInternal?.current === "agent") return;
+				for (const path of paths) {
+					handleOpenFileRef.current(path);
+				}
+			},
+			[centerTabRefInternal],
+		),
 	});
 
 	const editorDropZoneRef = useCallback(
@@ -452,62 +450,9 @@ export function useWorktreeState({
 		],
 	);
 
-	// --- Factory ---
-	const factory = useCallback(
-		(node: TabNode): ReactNode => {
-			const component = node.getComponent();
-			if (component === "editor") {
-				const config = node.getConfig();
-				const filePath = config?.filePath;
-				if (!filePath)
-					return (
-						<EmptyState
-							title="No file selected"
-							description="Select a file from the explorer to view its contents"
-						/>
-					);
-				return (
-					<EditorTabContent
-						key={filePath}
-						filePath={filePath}
-						externalRevealLine={pendingReveal}
-						onExternalRevealConsumed={() =>
-							dispatchEditor({ type: "SET_PENDING_REVEAL", reveal: null })
-						}
-					/>
-				);
-			}
-			return null;
-		},
-		[pendingReveal],
-	);
-
 	// --- Sidebar content ---
-	const sidebarContent = useMemo(() => {
-		if (activeView === "git") {
-			return (
-				<SourceControlPanel
-					rootPath={rootPath}
-					onSelectFile={handleOpenFile}
-					onGitChanged={refreshGit}
-					gitRefreshKey={gitRefreshKey}
-				/>
-			);
-		}
-		if (activeView === "search") {
-			return (
-				<SearchPanel
-					rootPath={rootPath}
-					onSelectFileAtLine={handleSearchResultClick}
-					focusKey={searchFocusKey}
-					initialQuery={searchInitialQuery}
-				/>
-			);
-		}
-		if (activeView === "pr") {
-			return <PullRequestPanel rootPath={rootPath} branch={branch} />;
-		}
-		return (
+	const sidebarContent = useMemo(
+		() => (
 			<SidebarPanel
 				rootPath={rootPath}
 				onSelectFile={handleOpenFile}
@@ -517,115 +462,16 @@ export function useWorktreeState({
 				requestNewFolderKey={newFolderKey}
 				activeTabPath={activeTabPath}
 			/>
-		);
-	}, [
-		activeView,
-		rootPath,
-		handleOpenFile,
-		refreshGit,
-		gitRefreshKey,
-		handleSearchResultClick,
-		searchFocusKey,
-		searchInitialQuery,
-		reloadFileIfClean,
-		handleRename,
-		handleDelete,
-		newFolderKey,
-		branch,
-		activeTabPath,
-	]);
-
-	// --- Panel toggle ---
-	const sidebarPanelRef = useRef<PanelImperativeHandle>(null);
-	const reviewPanelRef = useRef<PanelImperativeHandle>(null);
-	const terminalPanelRef = useRef<PanelImperativeHandle>(null);
-
-	const [sidebarVisible, setSidebarVisible] = useState(true);
-	const [reviewVisible, setReviewVisible] = useState(true);
-	const [terminalVisible, setTerminalVisible] = useState(true);
-
-	const handleSidebarResize = useCallback((size: PanelSize) => {
-		const visible = size.asPercentage > 0;
-		setSidebarVisible((prev) => (prev === visible ? prev : visible));
-	}, []);
-	const handleReviewResize = useCallback((size: PanelSize) => {
-		const visible = size.asPercentage > 0;
-		setReviewVisible((prev) => (prev === visible ? prev : visible));
-	}, []);
-	const handleTerminalResize = useCallback((size: PanelSize) => {
-		const visible = size.asPercentage > 0;
-		setTerminalVisible((prev) => (prev === visible ? prev : visible));
-	}, []);
-
-	const toggleSidebar = useCallback(() => {
-		const panel = sidebarPanelRef.current;
-		if (!panel) return;
-		panel.isCollapsed() ? panel.expand() : panel.collapse();
-	}, []);
-	const toggleReview = useCallback(() => {
-		const panel = reviewPanelRef.current;
-		if (!panel) return;
-		panel.isCollapsed() ? panel.expand() : panel.collapse();
-	}, []);
-	const toggleTerminal = useCallback(() => {
-		const panel = terminalPanelRef.current;
-		if (!panel) return;
-		panel.isCollapsed() ? panel.expand() : panel.collapse();
-	}, []);
-
-	const togglePanels = useMemo<TogglePanel[]>(
-		() => [
-			{
-				id: "sidebar",
-				icon: PanelLeft,
-				label: "Sidebar",
-				visible: sidebarVisible,
-				onToggle: toggleSidebar,
-			},
-			{
-				id: "review",
-				icon: PanelBottom,
-				label: "Review",
-				visible: reviewVisible,
-				onToggle: toggleReview,
-			},
-			{
-				id: "terminal",
-				icon: PanelRight,
-				label: "Terminal",
-				visible: terminalVisible,
-				onToggle: toggleTerminal,
-			},
-		],
+		),
 		[
-			sidebarVisible,
-			reviewVisible,
-			terminalVisible,
-			toggleSidebar,
-			toggleReview,
-			toggleTerminal,
+			rootPath,
+			handleOpenFile,
+			reloadFileIfClean,
+			handleRename,
+			handleDelete,
+			newFolderKey,
+			activeTabPath,
 		],
-	);
-
-	// --- Tab rendering ---
-	const onRenderTab = useCallback(
-		(node: TabNode, renderValues: ITabRenderValues) => {
-			if (node.getComponent() === "editor") {
-				const config = node.getConfig();
-				renderValues.leading = (
-					<FileIcon fileName={node.getName()} className="h-4 w-4" />
-				);
-				if (config?.isDirty) {
-					renderValues.buttons.push(
-						<span
-							key="dirty"
-							className="w-2 h-2 rounded-full bg-foreground shrink-0"
-						/>,
-					);
-				}
-			}
-		},
-		[],
 	);
 
 	return {
@@ -649,11 +495,7 @@ export function useWorktreeState({
 		activeTab,
 		agentState,
 		editorLayout,
-		forceRender,
 		terminalRef,
-		sidebarPanelRef,
-		reviewPanelRef,
-		terminalPanelRef,
 		dispatchEditor,
 		dispatchUI,
 		dispatchGit,
@@ -671,14 +513,15 @@ export function useWorktreeState({
 		handleUnsavedSave,
 		handleUnsavedDiscard,
 		handleUnsavedCancel,
-		handleSidebarResize,
-		handleReviewResize,
-		handleTerminalResize,
-		togglePanels,
 		editorContextValue,
 		sidebarContent,
-		factory,
-		onRenderTab,
+		refreshGit,
+		gitRefreshKey,
+		handleOpenFile,
+		handleSearchResultClick,
+		searchFocusKey,
+		searchInitialQuery,
+		pendingReveal,
 		onSettingsSave,
 		settings,
 		rootPath,

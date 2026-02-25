@@ -222,6 +222,14 @@ pub fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Res
     let mut branch = repo.find_branch(&branch_name, BranchType::Local)?;
     branch.delete()?;
 
+    // ブランチ削除成功後、releash-base を config から削除
+    if let Ok(mut config) = repo.config() {
+        let key = format!("branch.{branch_name}.releash-base");
+        match config.remove(&key) {
+            Ok(()) | Err(_) => {}
+        }
+    }
+
     Ok(())
 }
 

@@ -1,10 +1,5 @@
 import type { AgentState } from "./protocol";
 
-export interface KanbanTab {
-	type: "kanban";
-	id: "kanban";
-}
-
 export interface WorktreeTab {
 	type: "worktree";
 	id: string;
@@ -13,5 +8,3 @@ export interface WorktreeTab {
 	repoName?: string;
 	agentState?: AgentState;
 }
-
-export type WorkspaceTab = KanbanTab | WorktreeTab;

@@ -155,7 +155,9 @@ export function RemoteCommentList({
 											{editingId === comment.id ? (
 												<div className="mt-1">
 													<textarea
-														ref={(el) => el?.focus()}
+														ref={(el) => {
+															el?.focus();
+														}}
 														value={editContent}
 														onChange={(e) => setEditContent(e.target.value)}
 														onKeyDown={(e) => {

@@ -224,7 +224,7 @@ export function SourceControlPanel({
 				</span>
 				<button
 					type="button"
-					className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+					className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
 					onClick={refreshStatus}
 					title="Refresh"
 				>
@@ -242,7 +242,7 @@ export function SourceControlPanel({
 					actions={
 						<button
 							type="button"
-							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
 							onClick={() => handleStage([])}
 							title="Stage All Changes"
 						>
@@ -301,7 +301,7 @@ export function SourceControlPanel({
 					actions={
 						<button
 							type="button"
-							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-accent-foreground/10 transition-colors shrink-0"
+							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
 							onClick={() => handleUnstage([])}
 							title="Unstage All Changes"
 						>

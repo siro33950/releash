@@ -42,7 +42,7 @@ pub struct WorktreeEntry {
 }
 
 #[derive(Serialize)]
-pub struct BranchCard {
+pub struct WorktreeBranch {
     pub name: String,
     pub is_default: bool,
     pub worktree_path: Option<String>,
@@ -53,7 +53,6 @@ pub struct BranchCard {
     pub pr_url: Option<String>,
     pub ahead: usize,
     pub behind: usize,
-    pub is_remote_only: bool,
     pub has_upstream: bool,
-    pub remote_name: Option<String>,
+    pub base_ahead: usize,
 }
