@@ -86,8 +86,13 @@ fn build_notion_filter(
         }));
     }
 
-    for (prop_name, value) in &query.label_filters {
-        if value.is_empty() {
+    for (prop_name, values) in &query.label_filters {
+        let values: Vec<&str> = values
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if values.is_empty() {
             continue;
         }
 
@@ -98,30 +103,94 @@ fn build_notion_filter(
             .map(|lp| lp.property_type.as_str())
             .unwrap_or("select");
 
-        let filter = match prop_type {
-            "multi_select" => serde_json::json!({
-                "property": prop_name,
-                "multi_select": { "contains": value }
-            }),
-            "status" => serde_json::json!({
-                "property": prop_name,
-                "status": { "equals": value }
-            }),
-            "rich_text" => serde_json::json!({
-                "property": prop_name,
-                "rich_text": { "contains": value }
-            }),
-            "people" => serde_json::json!({
-                "property": prop_name,
-                "people": { "contains": value }
-            }),
-            // select and fallback
-            _ => serde_json::json!({
-                "property": prop_name,
-                "select": { "equals": value }
-            }),
-        };
-        conditions.push(filter);
+        if values.len() == 1 {
+            let value = values[0];
+            let filter = match prop_type {
+                "multi_select" => serde_json::json!({
+                    "property": prop_name,
+                    "multi_select": { "contains": value }
+                }),
+                "status" => serde_json::json!({
+                    "property": prop_name,
+                    "status": { "equals": value }
+                }),
+                "rich_text" => serde_json::json!({
+                    "property": prop_name,
+                    "rich_text": { "contains": value }
+                }),
+                "people" => serde_json::json!({
+                    "property": prop_name,
+                    "people": { "contains": value }
+                }),
+                _ => serde_json::json!({
+                    "property": prop_name,
+                    "select": { "equals": value }
+                }),
+            };
+            conditions.push(filter);
+        } else {
+            match prop_type {
+                "multi_select" => {
+                    // AND: all tags must be present
+                    for value in &values {
+                        conditions.push(serde_json::json!({
+                            "property": prop_name,
+                            "multi_select": { "contains": value }
+                        }));
+                    }
+                }
+                "select" | "status" => {
+                    // OR: any of the selected values
+                    let or_conditions: Vec<serde_json::Value> = values
+                        .iter()
+                        .map(|v| {
+                            serde_json::json!({
+                                "property": prop_name,
+                                prop_type: { "equals": v }
+                            })
+                        })
+                        .collect();
+                    conditions.push(serde_json::json!({ "or": or_conditions }));
+                }
+                "people" => {
+                    // OR: any of the selected people
+                    let or_conditions: Vec<serde_json::Value> = values
+                        .iter()
+                        .map(|v| {
+                            serde_json::json!({
+                                "property": prop_name,
+                                "people": { "contains": v }
+                            })
+                        })
+                        .collect();
+                    conditions.push(serde_json::json!({ "or": or_conditions }));
+                }
+                "rich_text" => {
+                    let or_conditions: Vec<serde_json::Value> = values
+                        .iter()
+                        .map(|v| {
+                            serde_json::json!({
+                                "property": prop_name,
+                                "rich_text": { "contains": v }
+                            })
+                        })
+                        .collect();
+                    conditions.push(serde_json::json!({ "or": or_conditions }));
+                }
+                _ => {
+                    let or_conditions: Vec<serde_json::Value> = values
+                        .iter()
+                        .map(|v| {
+                            serde_json::json!({
+                                "property": prop_name,
+                                "select": { "equals": v }
+                            })
+                        })
+                        .collect();
+                    conditions.push(serde_json::json!({ "or": or_conditions }));
+                }
+            }
+        }
     }
 
     match conditions.len() {
@@ -1110,7 +1179,7 @@ mod tests {
     #[test]
     fn build_notion_filter_label_only() {
         let mut label_filters = std::collections::HashMap::new();
-        label_filters.insert("Status".to_string(), "Todo".to_string());
+        label_filters.insert("Status".to_string(), vec!["Todo".to_string()]);
 
         let query = NotionTaskQuery {
             title_filter: String::new(),
@@ -1136,7 +1205,7 @@ mod tests {
     #[test]
     fn build_notion_filter_multi_select() {
         let mut label_filters = std::collections::HashMap::new();
-        label_filters.insert("Tags".to_string(), "frontend".to_string());
+        label_filters.insert("Tags".to_string(), vec!["frontend".to_string()]);
 
         let query = NotionTaskQuery {
             title_filter: String::new(),
@@ -1162,7 +1231,7 @@ mod tests {
     #[test]
     fn build_notion_filter_multiple_conditions_and() {
         let mut label_filters = std::collections::HashMap::new();
-        label_filters.insert("Status".to_string(), "Todo".to_string());
+        label_filters.insert("Status".to_string(), vec!["Todo".to_string()]);
 
         let query = NotionTaskQuery {
             title_filter: "検索".to_string(),
@@ -1188,7 +1257,7 @@ mod tests {
     #[test]
     fn build_notion_filter_skips_empty_label_value() {
         let mut label_filters = std::collections::HashMap::new();
-        label_filters.insert("Status".to_string(), String::new());
+        label_filters.insert("Status".to_string(), vec![String::new()]);
 
         let query = NotionTaskQuery {
             title_filter: String::new(),
@@ -1198,6 +1267,115 @@ mod tests {
         };
         let mapping = PropertyMapping::default();
         assert!(build_notion_filter(&query, &mapping).is_none());
+    }
+
+    #[test]
+    fn build_notion_filter_skips_empty_vec() {
+        let mut label_filters = std::collections::HashMap::new();
+        label_filters.insert("Status".to_string(), vec![]);
+
+        let query = NotionTaskQuery {
+            title_filter: String::new(),
+            label_filters,
+            cursor: None,
+            page_size: None,
+        };
+        let mapping = PropertyMapping::default();
+        assert!(build_notion_filter(&query, &mapping).is_none());
+    }
+
+    #[test]
+    fn build_notion_filter_multi_values_select_or() {
+        let mut label_filters = std::collections::HashMap::new();
+        label_filters.insert(
+            "Status".to_string(),
+            vec!["Todo".to_string(), "In Progress".to_string()],
+        );
+
+        let query = NotionTaskQuery {
+            title_filter: String::new(),
+            label_filters,
+            cursor: None,
+            page_size: None,
+        };
+        let mapping = PropertyMapping {
+            title: "Name".to_string(),
+            labels: vec![LabelProperty {
+                name: "Status".to_string(),
+                property_type: "status".to_string(),
+            }],
+            branch_name: String::new(),
+            branch_prefix: String::new(),
+        };
+
+        let filter = build_notion_filter(&query, &mapping).unwrap();
+        let or_conditions = filter["or"].as_array().unwrap();
+        assert_eq!(or_conditions.len(), 2);
+        assert_eq!(or_conditions[0]["property"], "Status");
+        assert_eq!(or_conditions[1]["property"], "Status");
+    }
+
+    #[test]
+    fn build_notion_filter_multi_values_multi_select_and() {
+        let mut label_filters = std::collections::HashMap::new();
+        label_filters.insert(
+            "Tags".to_string(),
+            vec!["frontend".to_string(), "bug".to_string()],
+        );
+
+        let query = NotionTaskQuery {
+            title_filter: String::new(),
+            label_filters,
+            cursor: None,
+            page_size: None,
+        };
+        let mapping = PropertyMapping {
+            title: "Name".to_string(),
+            labels: vec![LabelProperty {
+                name: "Tags".to_string(),
+                property_type: "multi_select".to_string(),
+            }],
+            branch_name: String::new(),
+            branch_prefix: String::new(),
+        };
+
+        let filter = build_notion_filter(&query, &mapping).unwrap();
+        // multi_select with multiple values: AND (each value becomes a separate condition)
+        let and_conditions = filter["and"].as_array().unwrap();
+        assert_eq!(and_conditions.len(), 2);
+        assert_eq!(and_conditions[0]["multi_select"]["contains"], "frontend");
+        assert_eq!(and_conditions[1]["multi_select"]["contains"], "bug");
+    }
+
+    #[test]
+    fn build_notion_filter_multi_values_people_or() {
+        let mut label_filters = std::collections::HashMap::new();
+        label_filters.insert(
+            "Assignee".to_string(),
+            vec!["uuid-1".to_string(), "uuid-2".to_string()],
+        );
+
+        let query = NotionTaskQuery {
+            title_filter: String::new(),
+            label_filters,
+            cursor: None,
+            page_size: None,
+        };
+        let mapping = PropertyMapping {
+            title: "Name".to_string(),
+            labels: vec![LabelProperty {
+                name: "Assignee".to_string(),
+                property_type: "people".to_string(),
+            }],
+            branch_name: String::new(),
+            branch_prefix: String::new(),
+        };
+
+        let filter = build_notion_filter(&query, &mapping).unwrap();
+        let or_conditions = filter["or"].as_array().unwrap();
+        assert_eq!(or_conditions.len(), 2);
+        assert_eq!(or_conditions[0]["people"]["contains"], "uuid-1");
+        assert_eq!(or_conditions[1]["people"]["contains"], "uuid-2");
     }
 
     #[test]
@@ -1247,7 +1425,7 @@ mod tests {
     #[test]
     fn build_notion_filter_people() {
         let mut label_filters = std::collections::HashMap::new();
-        label_filters.insert("Assignee".to_string(), "user-uuid-123".to_string());
+        label_filters.insert("Assignee".to_string(), vec!["user-uuid-123".to_string()]);
 
         let query = NotionTaskQuery {
             title_filter: String::new(),

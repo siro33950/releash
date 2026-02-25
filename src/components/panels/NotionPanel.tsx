@@ -529,18 +529,25 @@ interface NotionTaskListProps {
 
 function loadStoredFilters(repoPath: string): {
 	title: string;
-	labels: Record<string, string>;
+	labels: Record<string, string[]>;
 } {
 	try {
 		const raw = localStorage.getItem(`notion-filters:${repoPath}`);
 		if (raw) {
 			const parsed = JSON.parse(raw);
+			const rawLabels =
+				parsed.labels && typeof parsed.labels === "object" ? parsed.labels : {};
+			const labels: Record<string, string[]> = {};
+			for (const [key, val] of Object.entries(rawLabels)) {
+				if (Array.isArray(val)) {
+					labels[key] = val;
+				} else if (typeof val === "string" && val !== "") {
+					labels[key] = [val];
+				}
+			}
 			return {
 				title: typeof parsed.title === "string" ? parsed.title : "",
-				labels:
-					parsed.labels && typeof parsed.labels === "object"
-						? parsed.labels
-						: {},
+				labels,
 			};
 		}
 	} catch {
@@ -552,7 +559,7 @@ function loadStoredFilters(repoPath: string): {
 function saveStoredFilters(
 	repoPath: string,
 	title: string,
-	labels: Record<string, string>,
+	labels: Record<string, string[]>,
 ) {
 	try {
 		localStorage.setItem(
@@ -580,7 +587,7 @@ function NotionTaskList({
 	);
 	const { labelOptions } = useNotionLabelOptions(repoPath);
 	const [titleFilter, setTitleFilter] = useState(stored.title);
-	const [labelFilters, setLabelFilters] = useState<Record<string, string>>(
+	const [labelFilters, setLabelFilters] = useState<Record<string, string[]>>(
 		stored.labels,
 	);
 
@@ -589,11 +596,11 @@ function NotionTaskList({
 	}, [onRefreshReady, refresh]);
 
 	const hasActiveFilters =
-		titleFilter !== "" || Object.values(labelFilters).some((v) => v !== "");
+		titleFilter !== "" || Object.values(labelFilters).some((v) => v.length > 0);
 
 	const clearFilters = useCallback(() => {
 		setTitleFilter("");
-		const emptyLabels: Record<string, string> = {};
+		const emptyLabels: Record<string, string[]> = {};
 		setLabelFilters(emptyLabels);
 		saveStoredFilters(repoPath, "", emptyLabels);
 		search("", emptyLabels);
@@ -610,7 +617,10 @@ function NotionTaskList({
 
 	const handleLabelChange = useCallback(
 		(propertyName: string, value: string) => {
-			const newFilters = { ...labelFilters, [propertyName]: value };
+			const newFilters = {
+				...labelFilters,
+				[propertyName]: value ? [value] : [],
+			};
 			setLabelFilters(newFilters);
 			saveStoredFilters(repoPath, titleFilter, newFilters);
 			search(titleFilter, newFilters);
@@ -646,7 +656,7 @@ function NotionTaskList({
 					{labelOptions.map((opt) => (
 						<select
 							key={opt.property_name}
-							value={labelFilters[opt.property_name] ?? ""}
+							value={(labelFilters[opt.property_name] ?? [])[0] ?? ""}
 							onChange={(e) =>
 								handleLabelChange(opt.property_name, e.target.value)
 							}

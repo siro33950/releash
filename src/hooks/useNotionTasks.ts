@@ -6,7 +6,7 @@ export const DEBOUNCE_MS = 300;
 
 export interface NotionTaskFilters {
 	title: string;
-	labels: Record<string, string>;
+	labels: Record<string, string[]>;
 }
 
 export function useNotionTasks(
@@ -27,7 +27,7 @@ export function useNotionTasks(
 	const fetchTasks = useCallback(
 		async (
 			title: string,
-			labels: Record<string, string>,
+			labels: Record<string, string[]>,
 			startCursor: string | null,
 			append: boolean,
 		) => {
@@ -75,7 +75,7 @@ export function useNotionTasks(
 	}, []);
 
 	const search = useCallback(
-		(title: string, labels: Record<string, string>) => {
+		(title: string, labels: Record<string, string[]>) => {
 			filtersRef.current = { title, labels };
 			if (debounceRef.current) {
 				clearTimeout(debounceRef.current);
