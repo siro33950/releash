@@ -614,6 +614,46 @@ pub(super) fn handle_update_comment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::test_helpers::{add_and_commit, create_initial_commit, create_test_repo};
+    use tempfile::TempDir;
+
+    fn make_state(repo_paths: Vec<String>) -> WsServerState {
+        let config = crate::config::ReleashConfig::default();
+        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+        WsServerState::new(
+            None,
+            std::sync::Arc::new(WsBroadcaster::default()),
+            None,
+            repo_paths,
+            app_config,
+            None,
+            false,
+            std::sync::Arc::new(crate::git_host::PrCache::new()),
+        )
+    }
+
+    fn make_selected(path: Option<String>) -> Arc<Mutex<Option<String>>> {
+        Arc::new(Mutex::new(path))
+    }
+
+    fn setup_repo_with_file(name: &str, content: &str) -> (TempDir, String) {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, name, content, &format!("add {name}"));
+        let repo_path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        (dir, repo_path)
+    }
+
+    // --- A. ユーティリティ ---
 
     #[test]
     fn test_no_repo_error() {
@@ -640,28 +680,401 @@ mod tests {
     }
 
     #[test]
+    fn test_join_error_msg() {
+        let handle = tokio::runtime::Runtime::new().unwrap();
+        let err = handle.block_on(async {
+            let h = tokio::task::spawn_blocking(|| {
+                panic!("test panic");
+            });
+            h.await.unwrap_err()
+        });
+        let msg = join_error_msg(err);
+        match msg {
+            WsMessage::Error(e) => {
+                assert_eq!(e.code, "INTERNAL_ERROR");
+                assert!(e.message.contains("Task join error"));
+            }
+            _ => panic!("Expected Error variant"),
+        }
+    }
+
+    #[test]
     fn test_git_status_to_msg_list_nonexistent_repo() {
         let files = git_status_to_msg_list("/nonexistent/repo/path");
         assert!(files.is_empty());
     }
 
+    // --- B. with_worktree_blocking ---
+
+    #[tokio::test]
+    async fn test_with_worktree_blocking_none() {
+        let selected = make_selected(None);
+        let result = with_worktree_blocking(&selected, |_| {
+            WsMessage::Error(ErrorMsg {
+                code: "SHOULD_NOT_REACH".to_string(),
+                message: String::new(),
+            })
+        })
+        .await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("Expected NO_WORKTREE_SELECTED error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_with_worktree_blocking_some() {
+        let selected = make_selected(Some("/test/repo".to_string()));
+        let result = with_worktree_blocking(&selected, |path| {
+            WsMessage::BranchInfoResponse(BranchInfoResponse { branch: path })
+        })
+        .await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::BranchInfoResponse(r) => assert_eq!(r.branch, "/test/repo"),
+            _ => panic!("Expected BranchInfoResponse"),
+        }
+    }
+
+    // --- C. git_status_to_msg_list / broadcast_git_status_sync ---
+
+    #[test]
+    fn test_git_status_to_msg_list_with_real_repo() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("untracked.txt"), "hello").unwrap();
+
+        let files = git_status_to_msg_list(repo_path);
+        assert!(!files.is_empty());
+        let untracked = files.iter().find(|f| f.path == "untracked.txt");
+        assert!(untracked.is_some());
+    }
+
+    #[test]
+    fn test_broadcast_git_status_sync() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("new.txt"), "data").unwrap();
+
+        let broadcaster = std::sync::Arc::new(WsBroadcaster::default());
+        let (tx, mut rx) = WsBroadcaster::create_channel();
+        broadcaster.set_sender(Some(tx));
+
+        let files = broadcast_git_status_sync(&broadcaster, repo_path);
+        assert!(!files.is_empty());
+
+        let received = rx.try_recv();
+        assert!(received.is_ok());
+        match received.unwrap() {
+            WsMessage::GitStatusSync(sync) => {
+                assert!(!sync.files.is_empty());
+            }
+            _ => panic!("Expected GitStatusSync"),
+        }
+    }
+
+    // --- D. handle_git_status_request ---
+
+    #[tokio::test]
+    async fn test_handle_git_status_request_no_worktree() {
+        let selected = make_selected(None);
+        let result = handle_git_status_request(&selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("Expected NO_WORKTREE_SELECTED"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_git_status_request_with_repo() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        std::fs::write(dir.path().join("file.txt"), "content").unwrap();
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        let selected = make_selected(Some(repo_path));
+
+        let result = handle_git_status_request(&selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::GitStatusSync(sync) => {
+                assert!(sync.files.iter().any(|f| f.path == "file.txt"));
+            }
+            _ => panic!("Expected GitStatusSync"),
+        }
+    }
+
+    // --- E. handle_file_content_request ---
+
+    #[test]
+    fn test_handle_file_content_request_head_base() {
+        let (_dir, repo_path) = setup_repo_with_file("hello.txt", "original content");
+        std::fs::write(
+            std::path::Path::new(&repo_path).join("hello.txt"),
+            "modified content",
+        )
+        .unwrap();
+
+        let req = FileContentRequest {
+            path: "hello.txt".to_string(),
+            diff_base: "HEAD".to_string(),
+        };
+        let msg = handle_file_content_request(&req, &repo_path);
+        match msg {
+            WsMessage::FileContentResponse(r) => {
+                assert_eq!(r.path, "hello.txt");
+                assert_eq!(r.original, "original content");
+                assert_eq!(r.modified, "modified content");
+                assert!(r.staged.is_some());
+            }
+            _ => panic!("Expected FileContentResponse"),
+        }
+    }
+
+    #[test]
+    fn test_handle_file_content_request_staged_base() {
+        let (_dir, repo_path) = setup_repo_with_file("hello.txt", "committed");
+        let full_path = std::path::Path::new(&repo_path).join("hello.txt");
+        std::fs::write(&full_path, "staged content").unwrap();
+        {
+            let repo = git2::Repository::open(&repo_path).unwrap();
+            let mut index = repo.index().unwrap();
+            index.add_path(std::path::Path::new("hello.txt")).unwrap();
+            index.write().unwrap();
+        }
+        std::fs::write(&full_path, "working content").unwrap();
+
+        let req = FileContentRequest {
+            path: "hello.txt".to_string(),
+            diff_base: "staged".to_string(),
+        };
+        let msg = handle_file_content_request(&req, &repo_path);
+        match msg {
+            WsMessage::FileContentResponse(r) => {
+                assert_eq!(r.original, "staged content");
+                assert_eq!(r.modified, "working content");
+                assert!(r.staged.is_none());
+            }
+            _ => panic!("Expected FileContentResponse"),
+        }
+    }
+
+    #[test]
+    fn test_handle_file_content_request_invalid_path() {
+        let (_dir, repo_path) = setup_repo_with_file("hello.txt", "content");
+        let req = FileContentRequest {
+            path: "/etc/passwd".to_string(),
+            diff_base: "HEAD".to_string(),
+        };
+        let msg = handle_file_content_request(&req, &repo_path);
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "INVALID_PATH"),
+            _ => panic!("Expected INVALID_PATH error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_file_content_req_no_worktree() {
+        let selected = make_selected(None);
+        let req = FileContentRequest {
+            path: "file.txt".to_string(),
+            diff_base: "HEAD".to_string(),
+        };
+        let result = handle_file_content_req(&req, &selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("Expected NO_WORKTREE_SELECTED"),
+        }
+    }
+
+    // --- F. handle_git_stage_unstage ---
+
+    #[test]
+    fn test_handle_git_stage_unstage_stage_success() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("new.txt"), "data").unwrap();
+
+        let broadcaster = std::sync::Arc::new(WsBroadcaster::default());
+        let msg = handle_git_stage_unstage(repo_path, &["new.txt".to_string()], true, &broadcaster);
+        match msg {
+            WsMessage::GitStageResult(r) => {
+                assert!(r.success);
+                assert!(r.error.is_none());
+            }
+            _ => panic!("Expected GitStageResult"),
+        }
+    }
+
+    #[test]
+    fn test_handle_git_stage_unstage_unstage_success() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("staged.txt"), "data").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(std::path::Path::new("staged.txt")).unwrap();
+            index.write().unwrap();
+        }
+
+        let broadcaster = std::sync::Arc::new(WsBroadcaster::default());
+        let msg =
+            handle_git_stage_unstage(repo_path, &["staged.txt".to_string()], false, &broadcaster);
+        match msg {
+            WsMessage::GitStageResult(r) => {
+                assert!(r.success);
+                assert!(r.error.is_none());
+            }
+            _ => panic!("Expected GitStageResult"),
+        }
+    }
+
+    #[test]
+    fn test_handle_git_stage_unstage_invalid_path() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let broadcaster = std::sync::Arc::new(WsBroadcaster::default());
+        let msg = handle_git_stage_unstage(
+            &repo_path,
+            &["../../../etc/passwd".to_string()],
+            true,
+            &broadcaster,
+        );
+        match msg {
+            WsMessage::GitStageResult(r) => {
+                assert!(!r.success);
+                assert!(r.error.is_some());
+            }
+            _ => panic!("Expected GitStageResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_git_stage_request_no_worktree() {
+        let state = make_state(vec![]);
+        let selected = make_selected(None);
+        let req = GitStage {
+            paths: vec!["file.txt".to_string()],
+        };
+        let result = handle_git_stage_request(&req, &state, &selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("Expected NO_WORKTREE_SELECTED"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_git_unstage_request_no_worktree() {
+        let state = make_state(vec![]);
+        let selected = make_selected(None);
+        let req = GitUnstage {
+            paths: vec!["file.txt".to_string()],
+        };
+        let result = handle_git_unstage_request(&req, &state, &selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("Expected NO_WORKTREE_SELECTED"),
+        }
+    }
+
+    // --- G. handle_git_commit_request ---
+
+    #[tokio::test]
+    async fn test_handle_git_commit_request_success() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        std::fs::write(dir.path().join("commit_me.txt"), "data").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index
+                .add_path(std::path::Path::new("commit_me.txt"))
+                .unwrap();
+            index.write().unwrap();
+        }
+
+        let state = make_state(vec![repo_path.clone()]);
+        let selected = make_selected(Some(repo_path));
+        let req = GitCommitRequest {
+            message: "test commit".to_string(),
+        };
+        let result = handle_git_commit_request(&req, &state, &selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::GitCommitResult(r) => {
+                assert!(r.success);
+                assert!(r.hash.is_some());
+                assert!(r.error.is_none());
+            }
+            _ => panic!("Expected GitCommitResult"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_git_commit_request_no_worktree() {
+        let state = make_state(vec![]);
+        let selected = make_selected(None);
+        let req = GitCommitRequest {
+            message: "test".to_string(),
+        };
+        let result = handle_git_commit_request(&req, &state, &selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("Expected NO_WORKTREE_SELECTED"),
+        }
+    }
+
+    // --- H. handle_git_push_request / handle_branch_info_request ---
+
+    #[tokio::test]
+    async fn test_handle_git_push_request_no_worktree() {
+        let selected = make_selected(None);
+        let result = handle_git_push_request(&selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("Expected NO_WORKTREE_SELECTED"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_branch_info_request_no_worktree() {
+        let selected = make_selected(None);
+        let result = handle_branch_info_request(&selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("Expected NO_WORKTREE_SELECTED"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_branch_info_request_with_repo() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let selected = make_selected(Some(repo_path));
+        let result = handle_branch_info_request(&selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::BranchInfoResponse(r) => {
+                assert!(!r.branch.is_empty());
+            }
+            _ => panic!("Expected BranchInfoResponse"),
+        }
+    }
+
+    // --- I. PTYハンドラ ---
+
     #[test]
     fn test_handle_pty_input_no_manager() {
-        let config = crate::config::ReleashConfig::default();
-        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
-            config,
-            std::path::PathBuf::from("/tmp/test-releash.toml"),
-        ));
-        let state = WsServerState::new(
-            None,
-            std::sync::Arc::new(WsBroadcaster::default()),
-            None,
-            vec![],
-            app_config,
-            None,
-            false,
-            std::sync::Arc::new(crate::git_host::PrCache::new()),
-        );
+        let state = make_state(vec![]);
         let input = PtyInput {
             pty_id: 1,
             data: "hello".to_string(),
@@ -672,21 +1085,7 @@ mod tests {
 
     #[test]
     fn test_handle_pty_output_request_no_manager() {
-        let config = crate::config::ReleashConfig::default();
-        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
-            config,
-            std::path::PathBuf::from("/tmp/test-releash.toml"),
-        ));
-        let state = WsServerState::new(
-            None,
-            std::sync::Arc::new(WsBroadcaster::default()),
-            None,
-            vec![],
-            app_config,
-            None,
-            false,
-            std::sync::Arc::new(crate::git_host::PrCache::new()),
-        );
+        let state = make_state(vec![]);
         let req = PtyOutputRequest { pty_id: 1 };
         let result = handle_pty_output_request(&req, &state);
         assert!(result.is_some());
@@ -696,5 +1095,149 @@ mod tests {
             }
             _ => panic!("Expected Error variant"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_handle_pty_spawn_request_no_worktree() {
+        let state = make_state(vec![]);
+        let selected = make_selected(None);
+        let req = PtySpawnRequest {
+            cols: 80,
+            rows: 24,
+            label: None,
+        };
+        let result = handle_pty_spawn_request(&req, &state, &selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::Error(e) => assert_eq!(e.code, "NO_WORKTREE_SELECTED"),
+            _ => panic!("Expected NO_WORKTREE_SELECTED"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_pty_spawn_request_no_manager() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let state = make_state(vec![repo_path.clone()]);
+        let selected = make_selected(Some(repo_path));
+        let req = PtySpawnRequest {
+            cols: 80,
+            rows: 24,
+            label: None,
+        };
+        let result = handle_pty_spawn_request(&req, &state, &selected).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::PtySpawnResponse(r) => {
+                assert!(!r.success);
+                assert!(r.error.is_some());
+            }
+            _ => panic!("Expected PtySpawnResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_pty_kill_request_no_manager() {
+        let state = make_state(vec![]);
+        let req = PtyKillRequest { pty_id: 1 };
+        let result = handle_pty_kill_request(&req, &state).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::PtyKillResponse(r) => {
+                assert!(!r.success);
+                assert!(r.error.is_some());
+            }
+            _ => panic!("Expected PtyKillResponse"),
+        }
+    }
+
+    // --- J. Worktreeハンドラ ---
+
+    #[tokio::test]
+    async fn test_handle_worktree_list_request_with_repo() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let state = make_state(vec![repo_path]);
+        let result = handle_worktree_list_request(&state).await;
+        let msg = result.unwrap();
+        match msg {
+            WsMessage::WorktreeListResponse(r) => {
+                assert!(!r.worktrees.is_empty());
+            }
+            _ => panic!("Expected WorktreeListResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_worktree_select_request_invalid_path() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let state = make_state(vec![repo_path]);
+        let selected = make_selected(None);
+        let req = WorktreeSelectRequest {
+            path: "/nonexistent/worktree/path".to_string(),
+        };
+        let result = handle_worktree_select_request(&req, &state, &selected).await;
+        match result {
+            Some(WsMessage::WorktreeSelectResponse(r)) => {
+                assert!(!r.success);
+                assert!(r.error.is_some());
+            }
+            _ => panic!("Expected WorktreeSelectResponse with success=false"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_worktree_select_request_valid_path() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let state = make_state(vec![repo_path.clone()]);
+        let selected = make_selected(None);
+        let req = WorktreeSelectRequest {
+            path: repo_path.clone(),
+        };
+        let _result = handle_worktree_select_request(&req, &state, &selected).await;
+        let wt = selected.lock().await;
+        assert_eq!(wt.as_ref().unwrap(), &repo_path);
+    }
+
+    #[tokio::test]
+    async fn test_build_all_worktrees() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let state = make_state(vec![repo_path]);
+        let worktrees = build_all_worktrees(&state).await;
+        assert!(!worktrees.is_empty());
+    }
+
+    // --- K. コメントハンドラ ---
+
+    #[test]
+    fn test_handle_add_comment_no_app_handle() {
+        let state = make_state(vec![]);
+        let comment = AddComment {
+            file_path: "test.rs".to_string(),
+            line_number: 1,
+            end_line: None,
+            content: "test comment".to_string(),
+        };
+        let result = handle_add_comment(&comment, &state);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_handle_delete_comment_no_app_handle() {
+        let state = make_state(vec![]);
+        let req = DeleteComment {
+            id: "comment-1".to_string(),
+        };
+        let result = handle_delete_comment(&req, &state);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_handle_update_comment_no_app_handle() {
+        let state = make_state(vec![]);
+        let req = UpdateComment {
+            id: "comment-1".to_string(),
+            content: "updated".to_string(),
+        };
+        let result = handle_update_comment(&req, &state);
+        assert!(result.is_none());
     }
 }
