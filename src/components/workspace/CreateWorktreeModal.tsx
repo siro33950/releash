@@ -94,6 +94,9 @@ export function CreateWorktreeModal({
 	useEffect(() => {
 		if (!open || !selectedRepoPath) return;
 		let alive = true;
+		setLocalBranches([]);
+		setAllBranches([]);
+		setBaseBranch("HEAD");
 		invoke<BranchInfo[]>("list_branches", { repoPath: selectedRepoPath })
 			.then((result) => {
 				if (!alive) return;
@@ -121,6 +124,14 @@ export function CreateWorktreeModal({
 			alive = false;
 		};
 	}, [open, selectedRepoPath]);
+
+	const worktreeBranchNames = useMemo(
+		() =>
+			new Set(
+				allBranches.filter((b) => b.worktree_path != null).map((b) => b.name),
+			),
+		[allBranches],
+	);
 
 	const nonWorktreeBranches = useMemo(
 		() => allBranches.filter((b) => b.worktree_path == null),
@@ -268,6 +279,7 @@ export function CreateWorktreeModal({
 								setBranchName(generateIssueBranchName(issue.number))
 							}
 							selectedBranch={branchName}
+							worktreeBranchNames={worktreeBranchNames}
 						/>
 					)}
 					{mode === "notion" && selectedRepoPath && (
@@ -279,6 +291,7 @@ export function CreateWorktreeModal({
 								);
 							}}
 							selectedBranch={branchName}
+							worktreeBranchNames={worktreeBranchNames}
 						/>
 					)}
 				</div>
@@ -410,10 +423,12 @@ function IssueMode({
 	repoPath,
 	onSelect,
 	selectedBranch,
+	worktreeBranchNames,
 }: {
 	repoPath: string;
 	onSelect: (issue: IssueInfo) => void;
 	selectedBranch: string;
+	worktreeBranchNames: Set<string>;
 }) {
 	const { issues, loading, refresh } = useIssues(repoPath);
 	const [filter, setFilter] = useState("");
@@ -444,7 +459,9 @@ function IssueMode({
 	}, [issues]);
 
 	const filtered = useMemo(() => {
-		let result = [...issues];
+		let result = issues.filter(
+			(i) => !worktreeBranchNames.has(generateIssueBranchName(i.number)),
+		);
 		if (filter) {
 			const lower = filter.toLowerCase();
 			result = result.filter(
@@ -467,7 +484,7 @@ function IssueMode({
 		}
 		result.sort((a, b) => b.number - a.number);
 		return result;
-	}, [issues, filter, labelFilter, milestoneFilter]);
+	}, [issues, filter, labelFilter, milestoneFilter, worktreeBranchNames]);
 
 	return (
 		<div className="space-y-2">
@@ -606,13 +623,26 @@ function NotionMode({
 	repoPath,
 	onSelect,
 	selectedBranch,
+	worktreeBranchNames,
 }: {
 	repoPath: string;
 	onSelect: (task: NotionTask) => void;
 	selectedBranch: string;
+	worktreeBranchNames: Set<string>;
 }) {
 	const { tasks, loading, loadMore, hasMore, search } =
 		useNotionTasks(repoPath);
+
+	const filteredTasks = useMemo(
+		() =>
+			tasks.filter(
+				(t) =>
+					!worktreeBranchNames.has(
+						t.branch_name || notionTaskToBranchName(t.title),
+					),
+			),
+		[tasks, worktreeBranchNames],
+	);
 	const { labelOptions } = useNotionLabelOptions(repoPath);
 	const [titleFilter, setTitleFilter] = useState("");
 	const [labelFilters, setLabelFilters] = useState<Record<string, string>>({});
@@ -670,7 +700,7 @@ function NotionMode({
 					</div>
 				) : (
 					<div className="space-y-0.5">
-						{tasks.map((task) => {
+						{filteredTasks.map((task) => {
 							const isSelected =
 								selectedBranch ===
 								(task.branch_name || notionTaskToBranchName(task.title));
@@ -706,7 +736,7 @@ function NotionMode({
 								</button>
 							);
 						})}
-						{tasks.length === 0 && (
+						{filteredTasks.length === 0 && (
 							<div className="text-xs text-muted-foreground text-center py-4">
 								No tasks found
 							</div>
