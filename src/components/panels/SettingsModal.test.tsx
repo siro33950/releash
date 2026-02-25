@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings } from "@/types/settings";
@@ -32,6 +38,10 @@ describe("SettingsModal", () => {
 						auto_start: false,
 						auto_start_on_lan: false,
 					});
+				case "generate_hooks_config":
+					return Promise.resolve('{"hooks":{}}');
+				case "get_hooks_status":
+					return Promise.resolve("not_configured");
 				case "update_remote_config":
 				case "update_notify_config":
 					return Promise.resolve(null);
@@ -324,6 +334,58 @@ describe("SettingsModal", () => {
 		expect(screen.getByText("Repositories")).toBeInTheDocument();
 		fireEvent.click(screen.getByText("Repositories"));
 		expect(await screen.findByText("Base branch")).toBeInTheDocument();
+	});
+
+	it("should resolve hooks loading spinner when agent is claude", async () => {
+		const claudeSettings = { ...defaultSettings, agent: "claude" as const };
+		render(<SettingsModal {...defaultProps} settings={claudeSettings} />);
+		const nav = screen.getByRole("navigation");
+		fireEvent.click(within(nav).getByText("Agent"));
+		await waitFor(() => {
+			expect(screen.getByText("Not configured")).toBeInTheDocument();
+		});
+	});
+
+	it("should not show permanent spinner when dialog is re-opened with claude agent", async () => {
+		const claudeSettings = { ...defaultSettings, agent: "claude" as const };
+		const onOpenChange = vi.fn();
+
+		const { rerender } = render(
+			<SettingsModal
+				{...defaultProps}
+				settings={claudeSettings}
+				onOpenChange={onOpenChange}
+			/>,
+		);
+		const nav = screen.getByRole("navigation");
+		fireEvent.click(within(nav).getByText("Agent"));
+		await waitFor(() => {
+			expect(screen.getByText("Not configured")).toBeInTheDocument();
+		});
+
+		// Close dialog
+		rerender(
+			<SettingsModal
+				{...defaultProps}
+				open={false}
+				settings={claudeSettings}
+				onOpenChange={onOpenChange}
+			/>,
+		);
+
+		// Re-open dialog
+		rerender(
+			<SettingsModal
+				{...defaultProps}
+				open={true}
+				settings={claudeSettings}
+				onOpenChange={onOpenChange}
+			/>,
+		);
+		fireEvent.click(within(nav).getByText("Agent"));
+		await waitFor(() => {
+			expect(screen.getByText("Not configured")).toBeInTheDocument();
+		});
 	});
 
 	it("should save base branch via Apply button", async () => {
