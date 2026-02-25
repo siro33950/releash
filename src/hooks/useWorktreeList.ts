@@ -19,6 +19,7 @@ export function useWorktreeList(repoPath: string) {
 	const [branches, setBranches] = useState<WorktreeBranch[]>([]);
 	const [loading, setLoading] = useState(true);
 	const refreshSeqRef = useRef(0);
+	const prevBranchesRef = useRef("");
 
 	const enrichWithPrStatus = useCallback(
 		async (cards: WorktreeBranch[]): Promise<WorktreeBranch[]> => {
@@ -49,47 +50,53 @@ export function useWorktreeList(repoPath: string) {
 		[repoPath],
 	);
 
-	const refresh = useCallback(async () => {
-		const seq = ++refreshSeqRef.current;
-		setLoading(true);
-		try {
-			const cards = await invoke<WorktreeBranch[]>(
-				"list_branches_with_status",
-				{
-					repoPath,
-				},
-			);
-			const enriched = await enrichWithPrStatus(cards);
-			const agentStates = await invoke<Record<string, AgentStateSync>>(
-				"get_agent_states",
-			).catch((): Record<string, AgentStateSync> => ({}));
+	const refresh = useCallback(
+		async (options?: { silent?: boolean }) => {
+			const seq = ++refreshSeqRef.current;
+			if (!options?.silent) setLoading(true);
+			try {
+				const cards = await invoke<WorktreeBranch[]>(
+					"list_branches_with_status",
+					{
+						repoPath,
+					},
+				);
+				const enriched = await enrichWithPrStatus(cards);
+				const agentStates = await invoke<Record<string, AgentStateSync>>(
+					"get_agent_states",
+				).catch((): Record<string, AgentStateSync> => ({}));
 
-			const withAgentState = enriched.map((b) => {
-				const agent = b.worktree_path
-					? agentStates[b.worktree_path]
-					: undefined;
-				return agent
-					? {
-							...b,
-							agent_state: agent.state,
-							agent_state_timestamp: agent.timestamp,
-						}
-					: b;
-			});
-			const filtered = withAgentState.filter(
-				(b) => b.worktree_path != null && !b.is_default,
-			);
-			if (seq === refreshSeqRef.current) {
-				setBranches(filtered);
+				const withAgentState = enriched.map((b) => {
+					const agent = b.worktree_path
+						? agentStates[b.worktree_path]
+						: undefined;
+					return agent
+						? {
+								...b,
+								agent_state: agent.state,
+								agent_state_timestamp: agent.timestamp,
+							}
+						: b;
+				});
+				const filtered = withAgentState.filter(
+					(b) => b.worktree_path != null && !b.is_default,
+				);
+				const serialized = JSON.stringify(filtered);
+				if (serialized === prevBranchesRef.current) return;
+				prevBranchesRef.current = serialized;
+				if (seq === refreshSeqRef.current) {
+					setBranches(filtered);
+				}
+			} catch (e) {
+				console.error("Failed to list worktrees:", e);
+			} finally {
+				if (seq === refreshSeqRef.current) {
+					setLoading(false);
+				}
 			}
-		} catch (e) {
-			console.error("Failed to list worktrees:", e);
-		} finally {
-			if (seq === refreshSeqRef.current) {
-				setLoading(false);
-			}
-		}
-	}, [repoPath, enrichWithPrStatus]);
+		},
+		[repoPath, enrichWithPrStatus],
+	);
 
 	useEffect(() => {
 		refresh();
@@ -127,7 +134,7 @@ export function useWorktreeList(repoPath: string) {
 
 	useEffect(() => {
 		const unlisten = listen("branch-list-sync", () => {
-			refresh();
+			refresh({ silent: true });
 		});
 		return () => {
 			unlisten.then((fn) => fn());
@@ -153,7 +160,7 @@ export function useWorktreeList(repoPath: string) {
 	useEffect(() => {
 		const id = setInterval(() => {
 			if (document.visibilityState === "visible") {
-				refresh();
+				refresh({ silent: true });
 			}
 		}, POLL_INTERVAL);
 		return () => clearInterval(id);

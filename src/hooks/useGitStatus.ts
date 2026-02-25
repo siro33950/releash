@@ -27,18 +27,25 @@ export function useGitStatus(
 	const [stagedFiles, setStagedFiles] = useState<GitFileStatus[]>([]);
 	const [changedFiles, setChangedFiles] = useState<GitFileStatus[]>([]);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const prevEntriesRef = useRef<string>("");
 
 	const fetchStatus = useCallback(async () => {
 		if (!rootPath) {
 			setStatusMap(new Map());
 			setStagedFiles([]);
 			setChangedFiles([]);
+			prevEntriesRef.current = "";
 			return;
 		}
 		try {
 			const entries = await invoke<GitFileStatus[]>("get_git_status", {
 				repoPath: rootPath,
 			});
+
+			const serialized = JSON.stringify(entries);
+			if (serialized === prevEntriesRef.current) return;
+			prevEntriesRef.current = serialized;
+
 			const map = new Map<string, FileStatus>();
 			const staged: GitFileStatus[] = [];
 			const changed: GitFileStatus[] = [];
@@ -61,6 +68,7 @@ export function useGitStatus(
 			setStatusMap(new Map());
 			setStagedFiles([]);
 			setChangedFiles([]);
+			prevEntriesRef.current = "";
 		}
 	}, [rootPath]);
 

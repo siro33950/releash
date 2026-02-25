@@ -9,8 +9,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useGitStatusContext } from "@/contexts/GitStatusContext";
 import { useFileTree } from "@/hooks/useFileTree";
-import { useGitStatus } from "@/hooks/useGitStatus";
 import { applyStatusToTree } from "@/lib/applyStatusToTree";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { FileTree } from "./FileTree";
@@ -63,7 +63,7 @@ export function SidebarPanel({
 			: undefined,
 	});
 
-	const { statusMap } = useGitStatus(rootPath);
+	const { statusMap } = useGitStatusContext();
 
 	const {
 		creatingNode,

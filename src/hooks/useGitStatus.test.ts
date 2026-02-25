@@ -321,4 +321,78 @@ describe("useGitStatus", () => {
 			expect(mockInvoke).toHaveBeenCalledTimes(2);
 		});
 	});
+
+	it("should skip state update when entries are identical to previous fetch", async () => {
+		const mockEntries: GitFileStatus[] = [
+			{
+				path: "src/main.ts",
+				index_status: "none",
+				worktree_status: "modified",
+			},
+		];
+		mockInvoke.mockResolvedValue(mockEntries);
+
+		const { result } = renderHook(() => useGitStatus("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.statusMap.size).toBe(1);
+		});
+
+		const firstStatusMap = result.current.statusMap;
+		const firstChangedFiles = result.current.changedFiles;
+
+		act(() => {
+			result.current.refresh();
+		});
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(2);
+		});
+
+		expect(result.current.statusMap).toBe(firstStatusMap);
+		expect(result.current.changedFiles).toBe(firstChangedFiles);
+	});
+
+	it("should update state when entries change between fetches", async () => {
+		const initialEntries: GitFileStatus[] = [
+			{
+				path: "src/main.ts",
+				index_status: "none",
+				worktree_status: "modified",
+			},
+		];
+		mockInvoke.mockResolvedValue(initialEntries);
+
+		const { result } = renderHook(() => useGitStatus("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.statusMap.size).toBe(1);
+		});
+
+		const firstStatusMap = result.current.statusMap;
+
+		const updatedEntries: GitFileStatus[] = [
+			{
+				path: "src/main.ts",
+				index_status: "none",
+				worktree_status: "modified",
+			},
+			{
+				path: "src/new.ts",
+				index_status: "none",
+				worktree_status: "new",
+			},
+		];
+		mockInvoke.mockResolvedValue(updatedEntries);
+
+		act(() => {
+			result.current.refresh();
+		});
+
+		await waitFor(() => {
+			expect(result.current.statusMap.size).toBe(2);
+		});
+
+		expect(result.current.statusMap).not.toBe(firstStatusMap);
+	});
 });

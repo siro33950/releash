@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorktreeBranch } from "@/types/git";
 import { useWorktreeList } from "./useWorktreeList";
 
 const mockInvoke = vi.fn();
@@ -13,19 +14,41 @@ vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
 }));
 
+const makeBranch = (
+	overrides: Partial<WorktreeBranch> = {},
+): WorktreeBranch => ({
+	name: "feat/test",
+	worktree_path: "/tmp/wt",
+	is_default: false,
+	is_merged: false,
+	has_upstream: false,
+	has_pr: false,
+	pr_number: null,
+	pr_url: null,
+	ahead: 0,
+	behind: 0,
+	base_ahead: 0,
+	dirty_count: 0,
+	...overrides,
+});
+
+function setupMockInvoke(branches: WorktreeBranch[]) {
+	mockInvoke.mockImplementation((cmd: string) => {
+		if (cmd === "start_git_dir_watching") return Promise.resolve(42);
+		if (cmd === "stop_watching") return Promise.resolve();
+		if (cmd === "list_branches_with_status") return Promise.resolve(branches);
+		if (cmd === "get_agent_states") return Promise.resolve({});
+		if (cmd === "get_cached_pr_status")
+			return Promise.resolve({ open_prs: {}, merged_branches: [] });
+		return Promise.resolve([]);
+	});
+}
+
 describe("useWorktreeList", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockListen.mockResolvedValue(vi.fn());
-		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "start_git_dir_watching") return Promise.resolve(42);
-			if (cmd === "stop_watching") return Promise.resolve();
-			if (cmd === "list_branches_with_status") return Promise.resolve([]);
-			if (cmd === "get_cached_pr_status")
-				return Promise.resolve({ open_prs: {}, merged_branches: [] });
-			if (cmd === "get_agent_states") return Promise.resolve({});
-			return Promise.resolve();
-		});
+		setupMockInvoke([]);
 	});
 
 	it("should start git dir watcher on mount", async () => {
@@ -184,5 +207,170 @@ describe("useWorktreeList", () => {
 				watcherId: 77,
 			});
 		});
+	});
+
+	it("should set loading to true on initial load then false after fetch", async () => {
+		const branch = makeBranch();
+		setupMockInvoke([branch]);
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		expect(result.current.loading).toBe(true);
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+
+		expect(result.current.branches).toHaveLength(1);
+		expect(result.current.branches[0].name).toBe("feat/test");
+	});
+
+	it("should not set loading to true when refresh is called with silent: true", async () => {
+		const branch = makeBranch();
+		setupMockInvoke([branch]);
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+
+		// Change data so refresh triggers a state update
+		const updatedBranch = makeBranch({ dirty_count: 5 });
+		setupMockInvoke([updatedBranch]);
+
+		await act(async () => {
+			await result.current.refresh({ silent: true });
+		});
+
+		// loading should never have become true during silent refresh
+		expect(result.current.loading).toBe(false);
+		expect(result.current.branches[0].dirty_count).toBe(5);
+	});
+
+	it("should set loading to true when refresh is called without silent", async () => {
+		const branch = makeBranch();
+		setupMockInvoke([branch]);
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+
+		// Change data
+		const updatedBranch = makeBranch({ dirty_count: 3 });
+		setupMockInvoke([updatedBranch]);
+
+		await act(async () => {
+			await result.current.refresh();
+		});
+
+		// After completion, loading is false
+		expect(result.current.loading).toBe(false);
+		expect(result.current.branches[0].dirty_count).toBe(3);
+	});
+
+	it("should skip setBranches when data has not changed", async () => {
+		const branch = makeBranch();
+		setupMockInvoke([branch]);
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.branches).toHaveLength(1);
+		});
+
+		const firstBranches = result.current.branches;
+
+		await act(async () => {
+			await result.current.refresh({ silent: true });
+		});
+
+		// Same reference because data didn't change
+		expect(result.current.branches).toBe(firstBranches);
+	});
+
+	it("should update branches when data changes", async () => {
+		const branch = makeBranch();
+		setupMockInvoke([branch]);
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.branches).toHaveLength(1);
+		});
+
+		const firstBranches = result.current.branches;
+
+		// Return different data
+		const newBranch = makeBranch({
+			name: "feat/new",
+			worktree_path: "/tmp/wt2",
+		});
+		setupMockInvoke([branch, newBranch]);
+
+		await act(async () => {
+			await result.current.refresh({ silent: true });
+		});
+
+		expect(result.current.branches).not.toBe(firstBranches);
+		expect(result.current.branches).toHaveLength(2);
+	});
+
+	it("should filter out default branches and those without worktree_path", async () => {
+		const branches = [
+			makeBranch({ name: "main", is_default: true }),
+			makeBranch({
+				name: "feat/a",
+				worktree_path: null as unknown as string,
+			}),
+			makeBranch({ name: "feat/b", worktree_path: "/tmp/b" }),
+		];
+		setupMockInvoke(branches);
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.branches).toHaveLength(1);
+		});
+
+		expect(result.current.branches[0].name).toBe("feat/b");
+	});
+
+	it("should call refresh with silent: true from branch-list-sync event", async () => {
+		setupMockInvoke([makeBranch()]);
+
+		type ListenCallback = () => void;
+		let branchListSyncCallback: ListenCallback | null = null;
+		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
+			if (event === "branch-list-sync") {
+				branchListSyncCallback = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+
+		// Change data so we can verify the event triggers refresh
+		const updatedBranch = makeBranch({ dirty_count: 7 });
+		setupMockInvoke([updatedBranch]);
+
+		expect(branchListSyncCallback).not.toBeNull();
+
+		await act(async () => {
+			branchListSyncCallback?.();
+		});
+
+		await waitFor(() => {
+			expect(result.current.branches[0].dirty_count).toBe(7);
+		});
+
+		// loading should remain false (silent refresh)
+		expect(result.current.loading).toBe(false);
 	});
 });

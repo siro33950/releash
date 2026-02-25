@@ -21,8 +21,12 @@ const mockGitActions = {
 	switchBranch: vi.fn().mockResolvedValue(undefined),
 };
 
-vi.mock("@/hooks/useGitStatus", () => ({
-	useGitStatus: () => mockGitStatus,
+vi.mock("@/contexts/GitStatusContext", () => ({
+	useGitStatusContext: () => mockGitStatus,
+}));
+
+vi.mock("@/contexts/EditorContext", () => ({
+	useEditorContext: () => ({ gitRefreshKey: 0 }),
 }));
 
 vi.mock("@/hooks/useGitActions", () => ({
