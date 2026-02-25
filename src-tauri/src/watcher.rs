@@ -13,6 +13,29 @@ use crate::protocol::{
 };
 use crate::ws_bridge::WsBroadcaster;
 
+struct GitWatchPaths {
+    main_repo: String,
+    refs_heads: PathBuf,
+    head_file: PathBuf,
+    worktrees_dir: PathBuf,
+}
+
+fn resolve_git_watch_paths(repo_path: &str) -> Result<GitWatchPaths, String> {
+    let main_repo = crate::git::get_main_repo_path(repo_path.to_string())
+        .map_err(|e| format!("Failed to resolve main repo: {e}"))?;
+    let git_dir = git2::Repository::open(&main_repo)
+        .map_err(|e| format!("Failed to open repo: {e}"))?
+        .path()
+        .to_path_buf();
+
+    Ok(GitWatchPaths {
+        main_repo,
+        refs_heads: git_dir.join("refs").join("heads"),
+        head_file: git_dir.join("HEAD"),
+        worktrees_dir: git_dir.join("worktrees"),
+    })
+}
+
 static WATCHER_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn generate_watcher_id() -> u64 {
@@ -135,23 +158,17 @@ pub fn start_git_dir_watching(
     repo_path: String,
 ) -> Result<u64, String> {
     let watcher_id = generate_watcher_id();
+    let paths = resolve_git_watch_paths(&repo_path)?;
 
-    let main_repo = crate::git::get_main_repo_path(repo_path)
-        .map_err(|e| format!("Failed to resolve main repo: {e}"))?;
-    let git_dir = git2::Repository::open(&main_repo)
-        .map_err(|e| format!("Failed to open repo: {e}"))?
-        .path()
-        .to_path_buf();
-
-    let refs_heads = git_dir.join("refs").join("heads");
-    let head_file = git_dir.join("HEAD");
-
-    if !refs_heads.exists() {
-        return Err(format!("refs/heads not found: {}", refs_heads.display()));
+    if !paths.refs_heads.exists() {
+        return Err(format!(
+            "refs/heads not found: {}",
+            paths.refs_heads.display()
+        ));
     }
 
     let app_clone = app.clone();
-    let main_repo_clone = main_repo.clone();
+    let main_repo_clone = paths.main_repo.clone();
 
     let debouncer = new_debouncer(
         Duration::from_millis(500),
@@ -168,7 +185,7 @@ pub fn start_git_dir_watching(
             };
             let dominated_by_git = events.iter().any(|e| {
                 let p = e.path.to_string_lossy();
-                p.contains("refs/heads") || p.ends_with("HEAD")
+                p.contains("refs/heads") || p.ends_with("HEAD") || p.contains("worktrees/")
             });
             if dominated_by_git {
                 if let Some(sync_msg) = build_branch_list_sync(&main_repo_clone) {
@@ -185,13 +202,19 @@ pub fn start_git_dir_watching(
     let mut debouncer = debouncer;
     debouncer
         .watcher()
-        .watch(&refs_heads, RecursiveMode::Recursive)
+        .watch(&paths.refs_heads, RecursiveMode::Recursive)
         .map_err(|e| format!("Failed to watch refs/heads: {e}"))?;
-    if head_file.exists() {
+    if paths.head_file.exists() {
         debouncer
             .watcher()
-            .watch(&head_file, RecursiveMode::NonRecursive)
+            .watch(&paths.head_file, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to watch HEAD: {e}"))?;
+    }
+    if paths.worktrees_dir.exists() {
+        debouncer
+            .watcher()
+            .watch(&paths.worktrees_dir, RecursiveMode::Recursive)
+            .map_err(|e| format!("Failed to watch worktrees: {e}"))?;
     }
 
     let session = WatcherSession {
@@ -209,4 +232,80 @@ pub fn stop_watching(state: State<'_, FileWatcherManager>, watcher_id: u64) -> R
         .remove(&watcher_id)
         .ok_or_else(|| format!("Watcher {} not found", watcher_id))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::test_helpers::*;
+
+    #[test]
+    fn test_resolve_git_watch_paths_main_repo() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let repo_path = dir.path().to_str().unwrap();
+        let paths = resolve_git_watch_paths(repo_path).unwrap();
+
+        assert_eq!(
+            PathBuf::from(&paths.main_repo).canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
+        assert!(paths.refs_heads.ends_with("refs/heads"));
+        assert!(paths.head_file.ends_with("HEAD"));
+        assert!(paths.worktrees_dir.ends_with("worktrees"));
+        assert!(paths.refs_heads.exists());
+        assert!(paths.head_file.exists());
+    }
+
+    fn create_worktree(repo: &git2::Repository) -> (String, PathBuf, tempfile::TempDir) {
+        static WT_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let id = WT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let wt_name = format!("wt-test-{}", id);
+        let wt_dir = tempfile::TempDir::new().unwrap();
+        let wt_path = wt_dir.path().join(&wt_name);
+        repo.worktree(&wt_name, &wt_path, None).unwrap();
+        (wt_name, wt_path, wt_dir)
+    }
+
+    #[test]
+    fn test_resolve_git_watch_paths_with_worktree() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "file.txt", "content", "add file");
+
+        let (wt_name, _wt_path, _wt_dir) = create_worktree(&repo);
+
+        let repo_path = dir.path().to_str().unwrap();
+        let paths = resolve_git_watch_paths(repo_path).unwrap();
+
+        assert!(paths.worktrees_dir.exists());
+        assert!(paths.worktrees_dir.join(&wt_name).exists());
+    }
+
+    #[test]
+    fn test_resolve_git_watch_paths_from_worktree() {
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "file.txt", "content", "add file");
+
+        let (_wt_name, wt_path, _wt_dir) = create_worktree(&repo);
+
+        let main_repo_path = dir.path().to_str().unwrap();
+        let paths_from_wt = resolve_git_watch_paths(wt_path.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            PathBuf::from(&paths_from_wt.main_repo)
+                .canonicalize()
+                .unwrap(),
+            PathBuf::from(main_repo_path).canonicalize().unwrap()
+        );
+        assert!(paths_from_wt.refs_heads.exists());
+    }
+
+    #[test]
+    fn test_resolve_git_watch_paths_invalid() {
+        let result = resolve_git_watch_paths("/nonexistent/path");
+        assert!(result.is_err());
+    }
 }
