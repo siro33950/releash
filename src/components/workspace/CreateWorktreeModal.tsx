@@ -276,7 +276,9 @@ export function CreateWorktreeModal({
 						<NotionMode
 							repoPath={selectedRepoPath}
 							onSelect={(task) => {
-								setBranchName(notionTaskToBranchName(task.title));
+								setBranchName(
+									task.branch_name || notionTaskToBranchName(task.title),
+								);
 							}}
 							selectedBranch={branchName}
 						/>
@@ -499,7 +501,7 @@ function IssueMode({
 					</SelectContent>
 				</Select>
 			)}
-			{allMilestones.titles.length > 0 && (
+			{(allMilestones.titles.length > 0 || allMilestones.hasNone) && (
 				<Select
 					value={milestoneFilter}
 					onValueChange={(v) => setMilestoneFilter(v === "__all__" ? "" : v)}
@@ -510,7 +512,7 @@ function IssueMode({
 					<SelectContent>
 						<SelectItem value="__all__">All milestones</SelectItem>
 						{allMilestones.hasNone && (
-							<SelectItem value="__none__">未設定</SelectItem>
+							<SelectItem value="__none__">No milestone</SelectItem>
 						)}
 						{allMilestones.titles.map((title) => (
 							<SelectItem key={title} value={title}>
@@ -663,7 +665,8 @@ function NotionMode({
 					<div className="space-y-0.5">
 						{tasks.map((task) => {
 							const isSelected =
-								selectedBranch === notionTaskToBranchName(task.title);
+								selectedBranch ===
+								(task.branch_name || notionTaskToBranchName(task.title));
 							return (
 								<button
 									key={task.id}

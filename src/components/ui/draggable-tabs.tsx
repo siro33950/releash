@@ -87,9 +87,9 @@ export function SortableTabTrigger({
 	});
 
 	const dragStyle = {
+		...style,
 		transform: CSS.Transform.toString(transform),
 		transition,
-		...style,
 	};
 
 	return (

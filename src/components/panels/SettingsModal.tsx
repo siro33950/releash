@@ -311,7 +311,7 @@ function RepoBaseBranchItem({
 	);
 
 	const name = repoPath.split(/[\\/]/).pop() ?? repoPath;
-	const selectId = `base-branch-${name}`;
+	const selectId = `base-branch-${repoPath.replaceAll("/", "_")}`;
 
 	return (
 		<div>
@@ -358,6 +358,7 @@ interface RepoChanges {
 	pendingBases: Map<string, string>;
 	isDirty: boolean;
 	error: string | null;
+	revision: number;
 }
 
 function useRepoChanges() {
@@ -365,6 +366,7 @@ function useRepoChanges() {
 		pendingBases: new Map(),
 		isDirty: false,
 		error: null,
+		revision: 0,
 	});
 
 	const handleDirtyChange = useCallback(
@@ -390,7 +392,12 @@ function useRepoChanges() {
 					invoke("set_releash_base", { repoPath, base: base || null }),
 				),
 			);
-			setState({ pendingBases: new Map(), isDirty: false, error: null });
+			setState((prev) => ({
+				pendingBases: new Map(),
+				isDirty: false,
+				error: null,
+				revision: prev.revision + 1,
+			}));
 		} catch (e) {
 			setState((prev) => ({ ...prev, error: String(e) }));
 			throw e;
@@ -398,7 +405,12 @@ function useRepoChanges() {
 	}, [state.pendingBases]);
 
 	const reset = useCallback(() => {
-		setState({ pendingBases: new Map(), isDirty: false, error: null });
+		setState((prev) => ({
+			pendingBases: new Map(),
+			isDirty: false,
+			error: null,
+			revision: prev.revision + 1,
+		}));
 	}, []);
 
 	return { ...state, handleDirtyChange, save, reset };
@@ -408,6 +420,7 @@ function RepositoriesSection({
 	repoPaths,
 	onDirtyChange,
 	error,
+	revision,
 }: {
 	repoPaths: string[];
 	onDirtyChange: (
@@ -416,6 +429,7 @@ function RepositoriesSection({
 		selectedBase: string,
 	) => void;
 	error: string | null;
+	revision: number;
 }) {
 	if (repoPaths.length === 0) {
 		return (
@@ -429,7 +443,7 @@ function RepositoriesSection({
 		<div className="flex flex-col">
 			{error && <p className="text-xs text-destructive">{error}</p>}
 			{repoPaths.map((repoPath, i) => (
-				<Fragment key={repoPath}>
+				<Fragment key={`${repoPath}-${revision}`}>
 					{i > 0 && <Separator className="my-3" />}
 					<RepoBaseBranchItem
 						repoPath={repoPath}
@@ -1193,6 +1207,7 @@ export function SettingsModal({
 						repoPaths={repoPaths}
 						onDirtyChange={repos.handleDirtyChange}
 						error={repos.error}
+						revision={repos.revision}
 					/>
 				);
 			case "agent":

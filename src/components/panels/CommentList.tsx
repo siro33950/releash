@@ -198,7 +198,9 @@ export function CommentList({
 														}}
 													>
 														<textarea
-															ref={(el) => el?.focus()}
+															ref={(el) => {
+																el?.focus();
+															}}
 															value={editContent}
 															onChange={(e) => setEditContent(e.target.value)}
 															onKeyDown={(e) => {

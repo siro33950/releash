@@ -69,10 +69,11 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
+		let disposed = false;
 
 		const setupListener = async () => {
 			try {
-				unlisten = await listen<AgentStateSync>(
+				const off = await listen<AgentStateSync>(
 					"agent-state-changed",
 					(event) => {
 						const worktreePath = normalizePath(event.payload.worktree_path);
@@ -84,6 +85,11 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 						);
 					},
 				);
+				if (disposed) {
+					off();
+					return;
+				}
+				unlisten = off;
 			} catch (err) {
 				console.warn("agent-state-changed listener setup failed:", err);
 			}
@@ -92,6 +98,7 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 		setupListener();
 
 		return () => {
+			disposed = true;
 			unlisten?.();
 		};
 	}, []);

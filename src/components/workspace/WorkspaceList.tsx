@@ -124,25 +124,28 @@ function RepoWorktreeSectionView({
 
 	const handleDeleteConfirm = useCallback(
 		async (branch: WorktreeBranch, force: boolean) => {
-			if (branch.worktree_path) {
-				await invoke("kill_ptys_by_worktree", {
-					worktreePath: branch.worktree_path,
-				}).catch(() => {});
-				await invoke("remove_worktree", {
-					repoPath,
-					worktreePath: branch.worktree_path,
-					force,
-				});
-				trackEvent("worktree_removed");
-			} else if (branch.is_merged) {
-				await invoke("delete_branch", {
-					repoPath,
-					branchName: branch.name,
-					force,
-				});
+			try {
+				if (branch.worktree_path) {
+					await invoke("kill_ptys_by_worktree", {
+						worktreePath: branch.worktree_path,
+					}).catch(() => {});
+					await invoke("remove_worktree", {
+						repoPath,
+						worktreePath: branch.worktree_path,
+						force,
+					});
+					trackEvent("worktree_removed");
+				} else if (branch.is_merged) {
+					await invoke("delete_branch", {
+						repoPath,
+						branchName: branch.name,
+						force,
+					});
+				}
+				await refresh();
+			} finally {
+				setDeletingBranch(null);
 			}
-			await refresh();
-			setDeletingBranch(null);
 		},
 		[repoPath, refresh],
 	);
@@ -323,6 +326,8 @@ function RepoWorktreeSectionView({
 					className="size-5 ml-0.5"
 					onClick={handleRefresh}
 					disabled={refreshing}
+					aria-label={`Refresh ${repoName}`}
+					title={`Refresh ${repoName}`}
 				>
 					<RefreshCw className={`size-3 ${refreshing ? "animate-spin" : ""}`} />
 				</Button>
