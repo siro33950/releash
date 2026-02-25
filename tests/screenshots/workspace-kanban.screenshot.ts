@@ -210,4 +210,48 @@ test.describe("Workspace Kanban Board", () => {
 			{ mask: xtermMask(page) },
 		);
 	});
+
+	test("delete branch dialog (merged)", async ({ page }) => {
+		await setupWorkspaceManager(page, {
+			list_branches_with_status: [kanbanBranchesFull[5]], // feat/completed (merged)
+			get_cached_pr_status: {
+				open_prs: {},
+				merged_branches: ["feat/completed"],
+			},
+		});
+		await page.waitForTimeout(300);
+		// カードのホバーで削除ボタンを表示
+		const card = page.getByText("feat/completed").first();
+		await card.hover();
+		await page.waitForTimeout(200);
+		const deleteBtn = page
+			.getByRole("button", { name: /Delete|Remove/i })
+			.first();
+		await deleteBtn.click();
+		await page.waitForTimeout(300);
+		await expect(page).toHaveScreenshot(
+			"workspace-kanban-delete-merged.png",
+			{ mask: xtermMask(page) },
+		);
+	});
+
+	test("delete branch dialog (dirty worktree)", async ({ page }) => {
+		await setupWorkspaceManager(page, {
+			list_branches_with_status: [kanbanBranchesFull[1]], // feat/active-work (dirty:5)
+			remove_worktree: null,
+		});
+		await page.waitForTimeout(300);
+		const card = page.getByText("feat/active-work").first();
+		await card.hover();
+		await page.waitForTimeout(200);
+		const deleteBtn = page
+			.getByRole("button", { name: /Delete|Remove/i })
+			.first();
+		await deleteBtn.click();
+		await page.waitForTimeout(300);
+		await expect(page).toHaveScreenshot(
+			"workspace-kanban-delete-dirty.png",
+			{ mask: xtermMask(page) },
+		);
+	});
 });

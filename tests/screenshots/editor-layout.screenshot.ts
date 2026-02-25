@@ -153,4 +153,34 @@ test.describe("Editor Layout", () => {
 			{ mask: [...xtermMask(page), ...monacoMask(page)] },
 		);
 	});
+
+	test("agent tab view", async ({ page }) => {
+		await setupWorktreeView(page);
+		// 中央パネルの Agent タブに切り替え
+		const agentTab = page.getByRole("tab", { name: /Agent/i });
+		await agentTab.click();
+		await page.waitForTimeout(500);
+		await expect(page).toHaveScreenshot(
+			"worktree-editor-agent-tab.png",
+			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+		);
+	});
+
+	test("editor with diff toolbar", async ({ page }) => {
+		await setupWorktreeView(page, {
+			"plugin:fs|read_dir": rootDirEntries,
+			get_git_status: mixedChanges,
+			get_file_at_ref: "original content\nline 2\nline 3",
+			get_staged_content: "",
+		});
+		await switchToView(page, "Explorer");
+		await page.waitForTimeout(300);
+		const file = page.getByText("README.md").first();
+		await file.click();
+		await page.waitForTimeout(500);
+		await expect(page).toHaveScreenshot(
+			"worktree-editor-diff-toolbar.png",
+			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+		);
+	});
 });

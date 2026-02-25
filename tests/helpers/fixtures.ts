@@ -90,6 +90,18 @@ const baseIpcHandler: Record<string, unknown> = {
 	get_crash_reporting_enabled: true,
 	update_crash_reporting: null,
 
+	// Background / Autostart
+	get_app_settings: {
+		close_to_tray: false,
+		start_minimized: false,
+		last_root_path: "/test/repo",
+		last_bind_ip: "0.0.0.0",
+	},
+	update_app_settings: null,
+	"plugin:autostart|is_enabled": false,
+	"plugin:autostart|enable": null,
+	"plugin:autostart|disable": null,
+
 	// Terminal (PTY) — モック上は何もしない
 	get_or_spawn_pty: { pty_id: 1, output: "" },
 	write_pty: null,

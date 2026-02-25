@@ -4,6 +4,7 @@ import {
 	mixedChanges,
 } from "../helpers/fixtures";
 import {
+	collapsePanels,
 	setupWorktreeView,
 	xtermMask,
 	monacoMask,
@@ -16,6 +17,7 @@ test.describe("Worktree Dialogs", () => {
 			list_branches: branchList,
 			get_git_status: [],
 		});
+		await collapsePanels(page);
 		// ブランチ作成ダイアログを開く（StatusBar or Sourceのボタンから）
 		const branchBtn = page.getByText("feat/test").first();
 		await branchBtn.click();
@@ -31,6 +33,7 @@ test.describe("Worktree Dialogs", () => {
 			get_git_status: mixedChanges,
 			git_discard: null,
 		});
+		await collapsePanels(page);
 		// Discard All はTauriメニューイベント経由
 		await emitTauriEvent(page, "menu-event", "git-discard-all");
 		await page.waitForTimeout(300);
@@ -48,6 +51,7 @@ test.describe("Worktree Dialogs", () => {
 					"error: pathspec 'nonexistent' did not match any files",
 			},
 		});
+		await collapsePanels(page);
 		const summaryInput = page.getByPlaceholder("Commit summary");
 		await summaryInput.fill("test commit");
 		const commitBtn = page.getByRole("button", { name: "Commit" });
@@ -72,6 +76,7 @@ test.describe("Worktree Dialogs", () => {
 			get_file_at_ref: "original content",
 			get_staged_content: "",
 		});
+		await collapsePanels(page);
 		// Explorer からファイルを開く
 		const explorerBtn = page.getByRole("button", {
 			name: "Explorer",
@@ -96,6 +101,7 @@ test.describe("Worktree Dialogs", () => {
 					"error: failed to push some refs to 'origin'",
 			},
 		});
+		await collapsePanels(page);
 		const pushBtn = page.getByRole("button", { name: "Push" });
 		await pushBtn.click();
 		await page.waitForTimeout(500);

@@ -78,3 +78,20 @@ export function xtermMask(page: Page): Locator[] {
 	if (process.env.UI_REVIEW === "1") return [];
 	return [page.locator(".xterm")];
 }
+
+/**
+ * サイドバーとターミナルを折りたたむ。
+ * モーダル/ダイアログ系テストで背景の映り込みを防ぐ。
+ */
+export async function collapsePanels(page: Page): Promise<void> {
+	const toggleSidebar = page.getByTitle("Toggle Sidebar").first();
+	if (await toggleSidebar.isVisible()) {
+		await toggleSidebar.click();
+		await page.waitForTimeout(200);
+	}
+	const toggleTerminal = page.getByTitle("Toggle Terminal").first();
+	if (await toggleTerminal.isVisible()) {
+		await toggleTerminal.click();
+		await page.waitForTimeout(200);
+	}
+}
