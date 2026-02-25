@@ -46,7 +46,6 @@ test.describe("Workspace Manager", () => {
 	}) => {
 		const config = buildMockConfig({
 			list_branches_with_status: kanbanBranches,
-			get_current_branch: "feat/wip",
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -54,8 +53,8 @@ test.describe("Workspace Manager", () => {
 		// feat/wip（worktree_path あり）をクリック
 		await page.getByTestId("worktree-item-feat/wip").click();
 
-		// BranchSelector にブランチ名が表示される（WorktreeView が開いた証拠）
-		await expect(page.getByText("feat/wip")).toBeVisible({
+		// WorktreeView 固有の review パネルが表示される
+		await expect(page.getByTestId("review")).toBeVisible({
 			timeout: 5000,
 		});
 	});
