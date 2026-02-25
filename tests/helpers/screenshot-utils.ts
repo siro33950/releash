@@ -55,8 +55,17 @@ export async function switchToView(
 	page: Page,
 	viewName: string,
 ): Promise<void> {
-	const btn = page.getByRole("button", { name: viewName, exact: true });
-	await btn.click();
+	const button = page
+		.getByRole("button", { name: viewName, exact: true })
+		.first();
+	if (await button.isVisible()) {
+		await button.click();
+	} else {
+		const tab = page
+			.getByRole("tab", { name: viewName, exact: true })
+			.first();
+		await tab.click();
+	}
 	await page.waitForTimeout(300);
 }
 
