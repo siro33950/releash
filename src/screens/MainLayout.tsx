@@ -9,6 +9,7 @@ import {
 	Separator,
 } from "react-resizable-panels";
 import { BranchSelector } from "@/components/layout/BranchSelector";
+import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { AgentTab } from "@/components/panels/AgentTab";
 import { EditorTabContent } from "@/components/panels/EditorTabContent";
@@ -65,6 +66,9 @@ function WorktreeContent({
 	onSwitchToEditor,
 	centerTab,
 	setCenterTab,
+	leftPanels,
+	branchSelector,
+	togglePanels,
 }: {
 	rootPath: string;
 	settings: AppSettings;
@@ -74,6 +78,9 @@ function WorktreeContent({
 	onSwitchToEditor: () => void;
 	centerTab: string;
 	setCenterTab: (tab: string) => void;
+	leftPanels?: TogglePanel[];
+	branchSelector: React.ReactNode;
+	togglePanels: TogglePanel[];
 }) {
 	const centerTabRef = useRef(centerTab);
 	centerTabRef.current = centerTab;
@@ -154,6 +161,7 @@ function WorktreeContent({
 					onDragLeave={s.handleEditorDragLeave}
 					onDrop={s.handleEditorDrop}
 				>
+					<ViewToolbar leftPanels={leftPanels} rightSlot={branchSelector} />
 					{/* Editor view */}
 					<TabsContent
 						value="editor"
@@ -274,81 +282,88 @@ function WorktreeContent({
 				collapsedSize="0%"
 				onResize={onRightResize}
 			>
-				<Group orientation="vertical">
-					<Panel id="right-top" defaultSize="50%" minSize="20%">
-						<div className="h-full overflow-hidden border-l border-border">
-							<RightSidebarTop
-								activeTab={
-									s.activeView === "git"
-										? "changes"
-										: s.activeView === "search"
-											? "search"
-											: s.activeView === "pr"
-												? "pr"
-												: "explorer"
-								}
-								onTabChange={(tab: RightTopTab) => {
-									const view = tab === "changes" ? "git" : tab;
-									s.dispatchEditor({
-										type: "SET_ACTIVE_VIEW",
-										view,
-									});
-								}}
-								explorerContent={s.sidebarContent}
-								changesContent={
-									<SourceControlPanel
-										rootPath={rootPath}
-										onSelectFile={s.handleOpenFile}
-										onGitChanged={s.refreshGit}
-										gitRefreshKey={s.gitRefreshKey}
+				<div className="flex flex-col h-full border-l border-border">
+					<RightPanelHeader panels={togglePanels} />
+					<div className="flex-1 overflow-hidden">
+						<Group orientation="vertical">
+							<Panel id="right-top" defaultSize="50%" minSize="20%">
+								<div className="h-full overflow-hidden">
+									<RightSidebarTop
+										activeTab={
+											s.activeView === "git"
+												? "changes"
+												: s.activeView === "search"
+													? "search"
+													: s.activeView === "pr"
+														? "pr"
+														: "explorer"
+										}
+										onTabChange={(tab: RightTopTab) => {
+											const view = tab === "changes" ? "git" : tab;
+											s.dispatchEditor({
+												type: "SET_ACTIVE_VIEW",
+												view,
+											});
+										}}
+										explorerContent={s.sidebarContent}
+										changesContent={
+											<SourceControlPanel
+												rootPath={rootPath}
+												onSelectFile={s.handleOpenFile}
+												onGitChanged={s.refreshGit}
+												gitRefreshKey={s.gitRefreshKey}
+											/>
+										}
+										searchContent={
+											<SearchPanel
+												rootPath={rootPath}
+												onSelectFileAtLine={s.handleSearchResultClick}
+												focusKey={s.searchFocusKey}
+												initialQuery={s.searchInitialQuery}
+											/>
+										}
+										prContent={
+											<PullRequestPanel rootPath={rootPath} branch={s.branch} />
+										}
 									/>
+								</div>
+							</Panel>
+							<Separator />
+							<Panel
+								id="right-bottom"
+								panelRef={rightBottomRef}
+								defaultSize="50%"
+								minSize="20%"
+								collapsible
+								collapsedSize={31}
+								onResize={(size) =>
+									setRightBottomCollapsed(size.inPixels <= 31)
 								}
-								searchContent={
-									<SearchPanel
+							>
+								<div
+									data-testid="review"
+									className="h-full overflow-hidden border-t border-border"
+								>
+									<RightSidebarBottom
 										rootPath={rootPath}
-										onSelectFileAtLine={s.handleSearchResultClick}
-										focusKey={s.searchFocusKey}
-										initialQuery={s.searchInitialQuery}
+										theme={settings.theme}
+										comments={s.comments}
+										onCommentClick={handleCommentClick}
+										onDeleteComment={s.removeComment}
+										onUpdateComment={s.updateComment}
+										onSendToTerminal={handleCommentSent}
+										onSendComment={handleSingleCommentSent}
+										onCopyComment={s.handleCopyComment}
+										showSentComments={s.showSentComments}
+										onToggleShowSent={s.toggleShowSentComments}
+										onToggleCollapse={handleToggleRightBottom}
+										collapsed={rightBottomCollapsed}
 									/>
-								}
-								prContent={
-									<PullRequestPanel rootPath={rootPath} branch={s.branch} />
-								}
-							/>
-						</div>
-					</Panel>
-					<Separator />
-					<Panel
-						id="right-bottom"
-						panelRef={rightBottomRef}
-						defaultSize="50%"
-						minSize="20%"
-						collapsible
-						collapsedSize={31}
-						onResize={(size) => setRightBottomCollapsed(size.inPixels <= 31)}
-					>
-						<div
-							data-testid="review"
-							className="h-full overflow-hidden border-l border-t border-border"
-						>
-							<RightSidebarBottom
-								rootPath={rootPath}
-								theme={settings.theme}
-								comments={s.comments}
-								onCommentClick={handleCommentClick}
-								onDeleteComment={s.removeComment}
-								onUpdateComment={s.updateComment}
-								onSendToTerminal={handleCommentSent}
-								onSendComment={handleSingleCommentSent}
-								onCopyComment={s.handleCopyComment}
-								showSentComments={s.showSentComments}
-								onToggleShowSent={s.toggleShowSentComments}
-								onToggleCollapse={handleToggleRightBottom}
-								collapsed={rightBottomCollapsed}
-							/>
-						</div>
-					</Panel>
-				</Group>
+								</div>
+							</Panel>
+						</Group>
+					</div>
+				</div>
 			</Panel>
 
 			{/* Dialogs */}
@@ -420,7 +435,6 @@ export function MainLayout({
 
 	const [leftNavVisible, setLeftNavVisible] = useState(true);
 	const [rightVisible, setRightVisible] = useState(true);
-	const [rightWidth, setRightWidth] = useState(0);
 	const [centerTab, setCenterTab] = useState("agent");
 	const switchToEditor = useCallback(() => setCenterTab("editor"), []);
 
@@ -449,7 +463,6 @@ export function MainLayout({
 	const handleRightResize = useCallback((size: PanelSize) => {
 		const visible = size.asPercentage > 0;
 		setRightVisible((prev) => (prev === visible ? prev : visible));
-		setRightWidth(size.inPixels);
 	}, []);
 
 	const leftToggle = useMemo<TogglePanel>(
@@ -482,6 +495,35 @@ export function MainLayout({
 			},
 		],
 		[rightVisible],
+	);
+
+	const rightSlotContent = useMemo(
+		() => (
+			<>
+				{branchSelector}
+				{!rightVisible &&
+					togglePanels.map((p) => (
+						<Tooltip key={p.id}>
+							<TooltipTrigger asChild>
+								<Button
+									variant="ghost"
+									size="icon"
+									className={cn(
+										"h-6 w-6",
+										p.visible ? "text-foreground" : "text-muted-foreground",
+									)}
+									onClick={p.onToggle}
+									aria-label={`Toggle ${p.label}`}
+								>
+									<p.icon className="size-4" />
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent side="bottom">{p.label}</TooltipContent>
+						</Tooltip>
+					))}
+			</>
+		),
+		[branchSelector, rightVisible, togglePanels],
 	);
 
 	return (
@@ -533,36 +575,37 @@ export function MainLayout({
 						onValueChange={setCenterTab}
 						className="h-full gap-0"
 					>
-						<ViewToolbar
-							panels={togglePanels}
-							leftPanels={leftNavVisible ? undefined : [leftToggle]}
-							rightSlot={branchSelector}
-							rightOffset={rightWidth}
-						/>
-						<div className="flex-1 overflow-hidden">
-							<Group orientation="horizontal" className="h-full">
-								{selectedRootPath ? (
-									<WorktreeContent
-										key={selectedRootPath}
-										rootPath={selectedRootPath}
-										settings={settings}
-										onSettingsSave={onSettingsSave}
-										rightPanelRef={rightPanelRef}
-										onRightResize={handleRightResize}
-										onSwitchToEditor={switchToEditor}
-										centerTab={centerTab}
-										setCenterTab={setCenterTab}
-									/>
-								) : (
-									<Panel id="center" minSize="30%">
+						<Group orientation="horizontal" className="h-full">
+							{selectedRootPath ? (
+								<WorktreeContent
+									key={selectedRootPath}
+									rootPath={selectedRootPath}
+									settings={settings}
+									onSettingsSave={onSettingsSave}
+									rightPanelRef={rightPanelRef}
+									onRightResize={handleRightResize}
+									onSwitchToEditor={switchToEditor}
+									centerTab={centerTab}
+									setCenterTab={setCenterTab}
+									leftPanels={leftNavVisible ? undefined : [leftToggle]}
+									branchSelector={rightSlotContent}
+									togglePanels={togglePanels}
+								/>
+							) : (
+								<Panel id="center" minSize="30%">
+									<div className="flex flex-col h-full">
+										<ViewToolbar
+											leftPanels={leftNavVisible ? undefined : [leftToggle]}
+											rightSlot={rightSlotContent}
+										/>
 										<EmptyState
 											title="No worktree selected"
 											description="Select a worktree from the sidebar to start working"
 										/>
-									</Panel>
-								)}
-							</Group>
-						</div>
+									</div>
+								</Panel>
+							)}
+						</Group>
 					</Tabs>
 				</Panel>
 			</Group>
