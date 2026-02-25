@@ -94,6 +94,9 @@ export function CreateWorktreeModal({
 	useEffect(() => {
 		if (!open || !selectedRepoPath) return;
 		let alive = true;
+		setLocalBranches([]);
+		setAllBranches([]);
+		setBaseBranch("HEAD");
 		invoke<BranchInfo[]>("list_branches", { repoPath: selectedRepoPath })
 			.then((result) => {
 				if (!alive) return;
