@@ -300,6 +300,10 @@ export function useTerminal(
 			resizeObserver.disconnect();
 			unlistenOutput?.();
 			unlistenExit?.();
+			if (ptyIdRef.current !== null) {
+				invoke("kill_pty", { ptyId: ptyIdRef.current }).catch(() => {});
+				ptyIdRef.current = null;
+			}
 			terminal.dispose();
 		};
 	}, [containerRef, cwd, sessionKey, label]);

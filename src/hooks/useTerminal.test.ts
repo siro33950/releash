@@ -165,7 +165,7 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("アンマウント時にクリーンアップが実行される（kill_pty は呼ばれない）", async () => {
+	it("アンマウント時に kill_pty が呼ばれてクリーンアップが実行される", async () => {
 		const { unmount } = renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
@@ -179,8 +179,31 @@ describe("useTerminal", () => {
 
 		expect(mockUnlistenOutput).toHaveBeenCalled();
 		expect(mockUnlistenExit).toHaveBeenCalled();
-		expect(mockInvoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
+		expect(mockInvoke).toHaveBeenCalledWith("kill_pty", { ptyId: 1 });
 		expect(mockTerminalInstance.dispose).toHaveBeenCalled();
+	});
+
+	it("pty-exit 後のアンマウントでは kill_pty が呼ばれない", async () => {
+		const { unmount } = renderHook(() => useTerminal(containerRef));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+
+		// pty-exit イベントをシミュレート（ptyIdRef.current が null になる）
+		const exitListener = mockListen.mock.calls.find(
+			(call: unknown[]) => call[0] === "pty-exit",
+		)?.[1] as (event: {
+			payload: { pty_id: number; exit_code: number | null };
+		}) => void;
+		exitListener({ payload: { pty_id: 1, exit_code: 0 } });
+
+		unmount();
+
+		expect(mockInvoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
 	});
 
 	it("containerRef が null の場合は初期化されない", () => {

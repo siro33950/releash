@@ -563,11 +563,14 @@ pub(super) async fn handle_pty_kill_request(
     if let Some(pm) = &state.pty_manager {
         let pm = Arc::clone(pm);
         match tokio::task::spawn_blocking(move || pm.kill(pty_id)).await {
-            Ok(Ok(())) => Some(WsMessage::PtyKillResponse(PtyKillResponse {
-                success: true,
-                pty_id,
-                error: None,
-            })),
+            Ok(Ok(())) => {
+                state.broadcaster.remove_pty_output_buffer(pty_id);
+                Some(WsMessage::PtyKillResponse(PtyKillResponse {
+                    success: true,
+                    pty_id,
+                    error: None,
+                }))
+            }
             Ok(Err(e)) => Some(WsMessage::PtyKillResponse(PtyKillResponse {
                 success: false,
                 pty_id,
