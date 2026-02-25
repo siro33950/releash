@@ -297,4 +297,161 @@ describe("useTerminal", () => {
 			);
 		});
 	});
+
+	describe("リサイズデバウンス", () => {
+		it("連続リサイズ時に resize_pty がデバウンスされ1回だけ呼ばれる", async () => {
+			renderHook(() => useTerminal(containerRef));
+
+			await waitFor(() => {
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"get_or_spawn_pty",
+					expect.any(Object),
+				);
+			});
+
+			Object.defineProperty(containerRef.current, "clientWidth", {
+				value: 800,
+				configurable: true,
+			});
+			Object.defineProperty(containerRef.current, "clientHeight", {
+				value: 600,
+				configurable: true,
+			});
+
+			mockInvoke.mockClear();
+
+			resizeObserverCallback();
+			resizeObserverCallback();
+			resizeObserverCallback();
+
+			// デバウンス中なので即座には呼ばれない
+			expect(mockInvoke).not.toHaveBeenCalledWith(
+				"resize_pty",
+				expect.any(Object),
+			);
+
+			// デバウンス後に1回だけ呼ばれることを検証
+			await waitFor(() => {
+				expect(mockInvoke).toHaveBeenCalledWith("resize_pty", {
+					ptyId: 1,
+					rows: 24,
+					cols: 80,
+				});
+			});
+
+			const resizeCalls = mockInvoke.mock.calls.filter(
+				(call) => call[0] === "resize_pty",
+			);
+			expect(resizeCalls).toHaveLength(1);
+		});
+
+		it("非表示復帰時はデバウンスなしで即座に resize_pty が呼ばれる", async () => {
+			renderHook(() => useTerminal(containerRef));
+
+			await waitFor(() => {
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"get_or_spawn_pty",
+					expect.any(Object),
+				);
+			});
+
+			Object.defineProperty(containerRef.current, "clientWidth", {
+				value: 0,
+				configurable: true,
+			});
+			Object.defineProperty(containerRef.current, "clientHeight", {
+				value: 0,
+				configurable: true,
+			});
+			resizeObserverCallback();
+
+			mockInvoke.mockClear();
+
+			Object.defineProperty(containerRef.current, "clientWidth", {
+				value: 800,
+				configurable: true,
+			});
+			Object.defineProperty(containerRef.current, "clientHeight", {
+				value: 600,
+				configurable: true,
+			});
+			resizeObserverCallback();
+
+			// 非表示復帰は即座にリサイズ（デバウンスなし）
+			expect(mockInvoke).toHaveBeenCalledWith("resize_pty", {
+				ptyId: 1,
+				rows: 24,
+				cols: 80,
+			});
+		});
+
+		it("デバウンス保留中にアンマウントしてもエラーが発生しない", async () => {
+			const { unmount } = renderHook(() => useTerminal(containerRef));
+
+			await waitFor(() => {
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"get_or_spawn_pty",
+					expect.any(Object),
+				);
+			});
+
+			Object.defineProperty(containerRef.current, "clientWidth", {
+				value: 800,
+				configurable: true,
+			});
+			Object.defineProperty(containerRef.current, "clientHeight", {
+				value: 600,
+				configurable: true,
+			});
+
+			resizeObserverCallback();
+			mockInvoke.mockClear();
+			unmount();
+
+			// デバウンスタイムアウト(100ms)より長く待つ
+			await new Promise((resolve) => setTimeout(resolve, 200));
+
+			expect(mockInvoke).not.toHaveBeenCalledWith(
+				"resize_pty",
+				expect.any(Object),
+			);
+		});
+	});
+
+	describe("初回fit()の再実行", () => {
+		it("マウント時に fitAddon.fit() が同期呼び出し後にRAFで再実行される", async () => {
+			renderHook(() => useTerminal(containerRef));
+
+			// 同期的な初回fit()は即座に呼ばれる
+			expect(mockFitAddonInstance.fit).toHaveBeenCalledTimes(1);
+
+			// RAFでの再実行 + PTYスポーン後のRAFで追加呼び出しが発生する
+			await vi.waitFor(() => {
+				expect(
+					mockFitAddonInstance.fit.mock.calls.length,
+				).toBeGreaterThanOrEqual(2);
+			});
+		});
+	});
+
+	describe("PTYスポーン後のリサイズ再同期", () => {
+		it("get_or_spawn_pty の後に resize_pty が requestAnimationFrame で呼ばれる", async () => {
+			renderHook(() => useTerminal(containerRef));
+
+			await waitFor(() => {
+				expect(mockInvoke).toHaveBeenCalledWith(
+					"get_or_spawn_pty",
+					expect.any(Object),
+				);
+			});
+
+			await waitFor(() => {
+				expect(mockInvoke).toHaveBeenCalledWith("resize_pty", {
+					ptyId: 1,
+					rows: 24,
+					cols: 80,
+				});
+			});
+		});
+	});
 });
