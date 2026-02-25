@@ -29,7 +29,7 @@ export function BranchSelector({
 			{localBranches.length > 0 && (
 				<>
 					<ArrowRight className="size-3 shrink-0" />
-					<Select value={baseBranch} onValueChange={onBaseChange}>
+					<Select value={baseBranch ?? undefined} onValueChange={onBaseChange}>
 						<SelectTrigger
 							size="sm"
 							className="h-5 min-w-0 max-w-[120px] border-none bg-transparent shadow-none px-1 text-xs font-mono"
