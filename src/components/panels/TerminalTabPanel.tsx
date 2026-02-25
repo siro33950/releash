@@ -82,31 +82,32 @@ export const TerminalTabPanel = forwardRef<
 			label: `${tabPrefix} ${num}`,
 			ptyId: null,
 		};
-		setTabs((prev) => (prev.length >= MAX_TABS ? prev : [...prev, newTab]));
-		setActiveTabId(newTab.id);
+		setTabs((prev) => {
+			if (prev.length >= MAX_TABS) return prev;
+			setActiveTabId(newTab.id);
+			return [...prev, newTab];
+		});
 	}, [tabPrefix]);
 
-	const closeTab = useCallback(
-		(tabId: string) => {
-			const tab = tabs.find((t) => t.id === tabId);
+	const closeTab = useCallback((tabId: string) => {
+		setTabs((prev) => {
+			if (prev.length <= 1) return prev;
+			const tab = prev.find((t) => t.id === tabId);
 			if (tab?.ptyId != null) {
 				invoke("kill_pty", { ptyId: tab.ptyId }).catch((err) =>
 					console.warn("kill_pty failed:", err),
 				);
 			}
-			setTabs((prev) => {
-				if (prev.length <= 1) return prev;
-				return prev.filter((t) => t.id !== tabId);
-			});
+			const next = prev.filter((t) => t.id !== tabId);
 			setActiveTabId((currentActive) => {
 				if (currentActive !== tabId) return currentActive;
-				const idx = tabs.findIndex((t) => t.id === tabId);
-				const fallback = tabs[idx - 1] ?? tabs[idx + 1];
+				const idx = prev.findIndex((t) => t.id === tabId);
+				const fallback = prev[idx - 1] ?? prev[idx + 1];
 				return fallback?.id ?? currentActive;
 			});
-		},
-		[tabs],
-	);
+			return next;
+		});
+	}, []);
 
 	const setTerminalRef = useCallback(
 		(tabId: string) => (handle: TerminalPanelHandle | null) => {

@@ -370,9 +370,9 @@ describe("SettingsModal", () => {
 		const option = screen.getByRole("option", { name: "develop" });
 		await user.click(option);
 
-		const applyBtn = screen.getByRole("button", { name: "Apply" });
-		expect(applyBtn).toBeEnabled();
-		await user.click(applyBtn);
+		const saveBtn = screen.getByRole("button", { name: "Save" });
+		expect(saveBtn).toBeEnabled();
+		await user.click(saveBtn);
 
 		expect(vi.mocked(invoke)).toHaveBeenCalledWith("set_releash_base", {
 			repoPath: "/repos/my-app",

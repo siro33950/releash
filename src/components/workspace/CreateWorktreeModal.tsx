@@ -41,6 +41,15 @@ import type {
 } from "@/types/git";
 import type { NotionTask } from "@/types/notion";
 
+function notionTaskToBranchName(title: string): string {
+	const slug = title
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-|-$/g, "")
+		.slice(0, 40);
+	return `feat/${slug}`;
+}
+
 type CreateMode = "plain" | "branch" | "issue" | "notion";
 
 interface CreateWorktreeModalProps {
@@ -254,12 +263,7 @@ export function CreateWorktreeModal({
 						<NotionMode
 							repoPath={selectedRepoPath}
 							onSelect={(task) => {
-								const slug = task.title
-									.toLowerCase()
-									.replace(/[^a-z0-9]+/g, "-")
-									.replace(/^-|-$/g, "")
-									.slice(0, 40);
-								setBranchName(`feat/${slug}`);
+								setBranchName(notionTaskToBranchName(task.title));
 							}}
 							selectedBranch={branchName}
 						/>
@@ -646,12 +650,8 @@ function NotionMode({
 				) : (
 					<div className="space-y-0.5">
 						{tasks.map((task) => {
-							const slug = task.title
-								.toLowerCase()
-								.replace(/[^a-z0-9]+/g, "-")
-								.replace(/^-|-$/g, "")
-								.slice(0, 40);
-							const isSelected = selectedBranch === `feat/${slug}`;
+							const isSelected =
+								selectedBranch === notionTaskToBranchName(task.title);
 							return (
 								<button
 									key={task.id}
