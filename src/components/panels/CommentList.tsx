@@ -155,7 +155,8 @@ export function CommentList({
 											onKeyDown={(e) => {
 												if (
 													(e.key === "Enter" || e.key === " ") &&
-													editingId !== comment.id
+													editingId !== comment.id &&
+													e.target === e.currentTarget
 												) {
 													e.preventDefault();
 													onCommentClick?.(

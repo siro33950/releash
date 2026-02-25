@@ -83,6 +83,7 @@ export function CreateWorktreeModal({
 
 	useEffect(() => {
 		if (!open) return;
+		setMode("plain");
 		setBranchName("");
 		setBaseBranch("");
 		setFilter("");
