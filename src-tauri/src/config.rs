@@ -49,6 +49,8 @@ pub struct AppSection {
     #[serde(default)]
     pub last_root_path: String,
     #[serde(default)]
+    pub last_repo_paths: Vec<String>,
+    #[serde(default)]
     pub last_bind_ip: String,
 }
 
@@ -59,6 +61,7 @@ impl Default for AppSection {
             auto_launch: false,
             start_minimized: false,
             last_root_path: String::new(),
+            last_repo_paths: Vec::new(),
             last_bind_ip: String::new(),
         }
     }
@@ -618,6 +621,9 @@ pub async fn update_last_server_context(
             .config
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        if !last_root_path.is_empty() && !config.app.last_repo_paths.contains(&last_root_path) {
+            config.app.last_repo_paths = vec![last_root_path.clone()];
+        }
         config.app.last_root_path = last_root_path;
         config.app.last_bind_ip = last_bind_ip;
         write_config(&app_config.config_path, &config)?;
@@ -1164,6 +1170,7 @@ token = "existing_token_value_here_with_enough_length_!!"
         assert!(!app.auto_launch);
         assert!(!app.start_minimized);
         assert!(app.last_root_path.is_empty());
+        assert!(app.last_repo_paths.is_empty());
         assert!(app.last_bind_ip.is_empty());
     }
 
@@ -1178,6 +1185,7 @@ token = "existing_token_value_here_with_enough_length_!!"
         config.app.auto_launch = true;
         config.app.start_minimized = true;
         config.app.last_root_path = "/repo/path".to_string();
+        config.app.last_repo_paths = vec!["/repo/path".to_string(), "/repo/path2".to_string()];
         config.app.last_bind_ip = "10.0.0.1".to_string();
         write_config(&path, &config).unwrap();
 
@@ -1187,6 +1195,10 @@ token = "existing_token_value_here_with_enough_length_!!"
         assert!(reloaded.app.auto_launch);
         assert!(reloaded.app.start_minimized);
         assert_eq!(reloaded.app.last_root_path, "/repo/path");
+        assert_eq!(
+            reloaded.app.last_repo_paths,
+            vec!["/repo/path", "/repo/path2"]
+        );
         assert_eq!(reloaded.app.last_bind_ip, "10.0.0.1");
     }
 
@@ -1208,7 +1220,54 @@ token = "existing_token_value_here_with_enough_length_!!"
         assert!(!config.app.auto_launch);
         assert!(!config.app.start_minimized);
         assert!(config.app.last_root_path.is_empty());
+        assert!(config.app.last_repo_paths.is_empty());
         assert!(config.app.last_bind_ip.is_empty());
+    }
+
+    #[test]
+    fn old_config_without_last_repo_paths_gets_empty_default() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+bind = "127.0.0.1"
+port = 9700
+token = "existing_token_value_here_with_enough_length_!!"
+
+[app]
+last_root_path = "/old/single/repo"
+last_bind_ip = "192.168.1.1"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert_eq!(config.app.last_root_path, "/old/single/repo");
+        assert!(config.app.last_repo_paths.is_empty());
+        assert_eq!(config.app.last_bind_ip, "192.168.1.1");
+    }
+
+    #[test]
+    fn last_repo_paths_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.app.last_repo_paths = vec![
+            "/repo/a".to_string(),
+            "/repo/b".to_string(),
+            "/repo/c".to_string(),
+        ];
+        config.app.last_root_path = "/repo/a".to_string();
+        write_config(&path, &config).unwrap();
+
+        let reloaded = load_or_create_config(&path).unwrap();
+        assert_eq!(
+            reloaded.app.last_repo_paths,
+            vec!["/repo/a", "/repo/b", "/repo/c"]
+        );
+        assert_eq!(reloaded.app.last_root_path, "/repo/a");
     }
 
     #[test]

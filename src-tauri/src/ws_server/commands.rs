@@ -110,7 +110,9 @@ pub async fn start_server_core(
 
     // Save last server context
     let last_root = repo_paths.first().cloned().unwrap_or_default();
+    let saved_repo_paths = repo_paths.clone();
     let _ = config_state.with_config_mut(|config| {
+        config.app.last_repo_paths = saved_repo_paths;
         config.app.last_root_path = last_root;
         config.app.last_bind_ip = bind_ip.clone();
         Ok(())
