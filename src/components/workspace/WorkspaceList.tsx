@@ -13,7 +13,7 @@ import {
 	Settings,
 	Trash2,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentStateBadge } from "@/components/ui/agent-state-badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,6 +43,14 @@ import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 
 type GroupMode = "repository" | "status";
 
+interface WorktreeData {
+	branches: WorktreeBranch[];
+	loading: boolean;
+	refresh: () => Promise<void>;
+}
+
+const noopRefresh = async () => {};
+
 interface WorkspaceListProps {
 	repoPaths: string[];
 	selectedRootPath: string | null;
@@ -69,8 +77,11 @@ const STATUS_LABELS: Record<WorktreeStatus, string> = {
 	done: "Done",
 };
 
-function RepoWorktreeSection({
+function RepoWorktreeSectionView({
 	repoPath,
+	branches,
+	loading,
+	refresh,
 	selectedRootPath,
 	onSelectWorktree,
 	groupMode,
@@ -78,6 +89,9 @@ function RepoWorktreeSection({
 	statusFilter,
 }: {
 	repoPath: string;
+	branches: WorktreeBranch[];
+	loading: boolean;
+	refresh: () => Promise<void>;
 	selectedRootPath: string | null;
 	onSelectWorktree: (
 		rootPath: string,
@@ -88,7 +102,6 @@ function RepoWorktreeSection({
 	filterStatus?: WorktreeStatus;
 	statusFilter?: string;
 }) {
-	const { branches, loading, refresh } = useWorktreeList(repoPath);
 	const [collapsed, setCollapsed] = useState(false);
 	const [deletingBranch, setDeletingBranch] = useState<WorktreeBranch | null>(
 		null,
@@ -334,6 +347,59 @@ function RepoWorktreeSection({
 	);
 }
 
+function RepoWorktreeSection({
+	repoPath,
+	selectedRootPath,
+	onSelectWorktree,
+	groupMode,
+	filterStatus,
+	statusFilter,
+}: {
+	repoPath: string;
+	selectedRootPath: string | null;
+	onSelectWorktree: (
+		rootPath: string,
+		branchName?: string,
+		repoName?: string,
+	) => void;
+	groupMode: GroupMode;
+	filterStatus?: WorktreeStatus;
+	statusFilter?: string;
+}) {
+	const { branches, loading, refresh } = useWorktreeList(repoPath);
+	return (
+		<RepoWorktreeSectionView
+			repoPath={repoPath}
+			branches={branches}
+			loading={loading}
+			refresh={refresh}
+			selectedRootPath={selectedRootPath}
+			onSelectWorktree={onSelectWorktree}
+			groupMode={groupMode}
+			filterStatus={filterStatus}
+			statusFilter={statusFilter}
+		/>
+	);
+}
+
+function RepoWorktreeFetcher({
+	repoPath,
+	onData,
+}: {
+	repoPath: string;
+	onData: (repoPath: string, data: WorktreeData) => void;
+}) {
+	const { branches, loading, refresh } = useWorktreeList(repoPath);
+	const onDataRef = useRef(onData);
+	onDataRef.current = onData;
+
+	useEffect(() => {
+		onDataRef.current(repoPath, { branches, loading, refresh });
+	}, [repoPath, branches, loading, refresh]);
+
+	return null;
+}
+
 export function WorkspaceList({
 	repoPaths,
 	selectedRootPath,
@@ -534,11 +600,13 @@ export function WorkspaceList({
 function StatusGroupSection({
 	status,
 	repoPaths,
+	worktreeDataMap,
 	selectedRootPath,
 	onSelectWorktree,
 }: {
 	status: WorktreeStatus;
 	repoPaths: string[];
+	worktreeDataMap: Map<string, WorktreeData>;
 	selectedRootPath: string | null;
 	onSelectWorktree: (
 		rootPath: string,
@@ -564,16 +632,22 @@ function StatusGroupSection({
 			</button>
 			{!collapsed && (
 				<div className="pl-2">
-					{repoPaths.map((repoPath) => (
-						<RepoWorktreeSection
-							key={repoPath}
-							repoPath={repoPath}
-							selectedRootPath={selectedRootPath}
-							onSelectWorktree={onSelectWorktree}
-							groupMode="status"
-							filterStatus={status}
-						/>
-					))}
+					{repoPaths.map((repoPath) => {
+						const data = worktreeDataMap.get(repoPath);
+						return (
+							<RepoWorktreeSectionView
+								key={repoPath}
+								repoPath={repoPath}
+								branches={data?.branches ?? []}
+								loading={data?.loading ?? true}
+								refresh={data?.refresh ?? noopRefresh}
+								selectedRootPath={selectedRootPath}
+								onSelectWorktree={onSelectWorktree}
+								groupMode="status"
+								filterStatus={status}
+							/>
+						);
+					})}
 				</div>
 			)}
 		</div>
@@ -593,13 +667,33 @@ function StatusGroupedView({
 		repoName?: string,
 	) => void;
 }) {
+	const [worktreeDataMap, setWorktreeDataMap] = useState<
+		Map<string, WorktreeData>
+	>(() => new Map());
+
+	const handleData = useCallback((repoPath: string, data: WorktreeData) => {
+		setWorktreeDataMap((prev) => {
+			const next = new Map(prev);
+			next.set(repoPath, data);
+			return next;
+		});
+	}, []);
+
 	return (
 		<>
+			{repoPaths.map((repoPath) => (
+				<RepoWorktreeFetcher
+					key={repoPath}
+					repoPath={repoPath}
+					onData={handleData}
+				/>
+			))}
 			{STATUS_ORDER.map((status) => (
 				<StatusGroupSection
 					key={status}
 					status={status}
 					repoPaths={repoPaths}
+					worktreeDataMap={worktreeDataMap}
 					selectedRootPath={selectedRootPath}
 					onSelectWorktree={onSelectWorktree}
 				/>
