@@ -203,6 +203,12 @@ function WorktreeContent({
 													tabIndex={0}
 													className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
 													aria-label={`Close ${tab.name}`}
+													onPointerDown={(e) => {
+														e.stopPropagation();
+													}}
+													onMouseDown={(e) => {
+														e.stopPropagation();
+													}}
 													onClick={(e) => {
 														e.stopPropagation();
 														if (tab.path) s.editorLayout.closeTab(tab.path);
@@ -419,6 +425,7 @@ function WorktreeContent({
 				}
 				settings={settings}
 				onSave={onSettingsSave}
+				repoPaths={[rootPath]}
 			/>
 		</EditorContext.Provider>
 	);

@@ -4,8 +4,8 @@ import { setupTauriMock, emitTauriEvent } from "./helpers/tauri-mock";
 import { waitForApp } from "./helpers/utils";
 
 /**
- * WorktreeView の StatusBar テスト。
- * worktree が1つ→自動でWorktreeView が開き、下部に StatusBar が表示される。
+ * WorkspaceList のブランチ名表示および Agent 状態バッジのテスト。
+ * worktree が1つ存在する状態で各表示・イベント連動を検証する。
  */
 function statusBarConfig(overrides: Record<string, unknown> = {}) {
 	return buildMockConfig({

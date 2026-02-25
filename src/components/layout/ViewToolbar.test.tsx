@@ -34,7 +34,7 @@ describe("ViewToolbar", () => {
 		expect(toolbar).toBeInTheDocument();
 	});
 
-	it("renders leftPanels toggle buttons", async () => {
+	it("renders leftPanels toggle buttons when hidden", async () => {
 		const user = userEvent.setup();
 		const onToggle = vi.fn();
 		const leftPanels: TogglePanel[] = [
@@ -51,7 +51,30 @@ describe("ViewToolbar", () => {
 
 		const btn = screen.getByLabelText("Toggle Sidebar");
 		expect(btn).toBeInTheDocument();
-		expect(btn.className).toContain("text-muted-foreground");
+		expect(btn).toHaveClass("text-muted-foreground");
+
+		await user.click(btn);
+		expect(onToggle).toHaveBeenCalledOnce();
+	});
+
+	it("renders leftPanels toggle button with foreground when visible", async () => {
+		const user = userEvent.setup();
+		const onToggle = vi.fn();
+		const leftPanels: TogglePanel[] = [
+			{
+				id: "left-nav",
+				icon: PanelLeft,
+				label: "Sidebar",
+				visible: true,
+				onToggle,
+			},
+		];
+
+		renderToolbar({ leftPanels });
+
+		const btn = screen.getByLabelText("Toggle Sidebar");
+		expect(btn).toHaveClass("text-foreground");
+		expect(btn).not.toHaveClass("text-muted-foreground");
 
 		await user.click(btn);
 		expect(onToggle).toHaveBeenCalledOnce();

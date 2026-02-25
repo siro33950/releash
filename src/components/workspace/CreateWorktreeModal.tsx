@@ -295,7 +295,10 @@ export function CreateWorktreeModal({
 					<Button variant="outline" onClick={onClose} disabled={creating}>
 						Cancel
 					</Button>
-					<Button onClick={handleCreate} disabled={!branchName || creating}>
+					<Button
+						onClick={handleCreate}
+						disabled={!branchName || !selectedRepoPath || creating}
+					>
 						{creating && <Loader2 className="size-3.5 mr-1 animate-spin" />}
 						{creating ? "Creating..." : "Create"}
 					</Button>
@@ -475,8 +478,8 @@ function IssueMode({
 					variant="ghost"
 					className="size-8 shrink-0"
 					onClick={refresh}
-					aria-label="Issue一覧を再取得"
-					title="Issue一覧を再取得"
+					aria-label="Refresh issues"
+					title="Refresh issues"
 				>
 					<RefreshCw className="size-3.5" />
 				</Button>

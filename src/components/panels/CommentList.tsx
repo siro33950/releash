@@ -241,7 +241,7 @@ export function CommentList({
 												)}
 											</div>
 											{editingId !== comment.id && (
-												<div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+												<div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
 													{onSendComment && comment.status === "unsent" && (
 														<button
 															type="button"

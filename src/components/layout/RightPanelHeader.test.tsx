@@ -49,7 +49,8 @@ describe("RightPanelHeader", () => {
 		const { unmount } = renderHeader(visiblePanels);
 
 		const visibleBtn = screen.getByLabelText("Toggle Right Sidebar");
-		expect(visibleBtn.className).toContain("text-foreground");
+		expect(visibleBtn).toHaveClass("text-foreground");
+		expect(visibleBtn).not.toHaveClass("text-muted-foreground");
 
 		unmount();
 
@@ -57,7 +58,8 @@ describe("RightPanelHeader", () => {
 		renderHeader(hiddenPanels);
 
 		const hiddenBtn = screen.getByLabelText("Toggle Right Sidebar");
-		expect(hiddenBtn.className).toContain("text-muted-foreground");
+		expect(hiddenBtn).toHaveClass("text-muted-foreground");
+		expect(hiddenBtn).not.toHaveClass("text-foreground");
 	});
 
 	it("has data-tauri-drag-region attribute for window dragging", () => {

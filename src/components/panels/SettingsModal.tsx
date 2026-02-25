@@ -1089,8 +1089,11 @@ export function SettingsModal({
 	// Reset draft when dialog opens
 	if (open !== state.prevOpen) {
 		dispatchSettings({ type: "SYNC_OPEN", open, settings });
-		if (open && settings.agent === "claude") {
-			dispatchHooks({ type: "LOAD_START" });
+		if (open) {
+			repos.reset();
+			if (settings.agent === "claude") {
+				dispatchHooks({ type: "LOAD_START" });
+			}
 		}
 	}
 
