@@ -311,7 +311,7 @@ function RepoBaseBranchItem({
 	);
 
 	const name = repoPath.split(/[\\/]/).pop() ?? repoPath;
-	const selectId = `base-branch-${repoPath.replaceAll("/", "_")}`;
+	const selectId = `base-branch-${repoPath.replace(/\//g, "_")}`;
 
 	return (
 		<div>

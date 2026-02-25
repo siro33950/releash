@@ -130,30 +130,23 @@ export const TerminalTabPanel = forwardRef<
 				<div className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background">
 					<TabsList aria-label="ターミナルタブ">
 						{tabs.map((tab) => (
-							<TabsTrigger key={tab.id} value={tab.id} className="gap-2">
-								<span>{tab.label}</span>
-								{tabs.length > 1 && (
-									// biome-ignore lint/a11y/useSemanticElements: nested inside TabsTrigger <button>, cannot use <button>
-									<span
-										role="button"
-										tabIndex={0}
-										onClick={(e) => {
-											e.stopPropagation();
-											closeTab(tab.id);
-										}}
-										onKeyDown={(e) => {
-											if (e.key === "Enter" || e.key === " ") {
-												e.preventDefault();
+							<TabsTrigger key={tab.id} value={tab.id} asChild>
+								<div className="gap-2">
+									<span>{tab.label}</span>
+									{tabs.length > 1 && (
+										<button
+											type="button"
+											onClick={(e) => {
 												e.stopPropagation();
 												closeTab(tab.id);
-											}
-										}}
-										className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
-										aria-label={`Close ${tab.label}`}
-									>
-										<X className="size-3.5" />
-									</span>
-								)}
+											}}
+											className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
+											aria-label={`Close ${tab.label}`}
+										>
+											<X className="size-3.5" />
+										</button>
+									)}
+								</div>
 							</TabsTrigger>
 						))}
 					</TabsList>

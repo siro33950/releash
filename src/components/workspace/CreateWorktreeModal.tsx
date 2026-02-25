@@ -27,6 +27,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useIssues } from "@/hooks/useIssues";
 import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
@@ -220,28 +221,24 @@ export function CreateWorktreeModal({
 				)}
 
 				{/* Mode tabs */}
-				<div className="flex border-b border-border">
-					{tabs.map((tab) => (
-						<button
-							key={tab.mode}
-							type="button"
-							onClick={() => {
-								setMode(tab.mode);
-								setBranchName("");
-								setFilter("");
-								setError(null);
-							}}
-							className={`flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors border-b-2 ${
-								mode === tab.mode
-									? "border-primary text-foreground"
-									: "border-transparent text-muted-foreground hover:text-foreground"
-							}`}
-						>
-							{tab.icon}
-							{tab.label}
-						</button>
-					))}
-				</div>
+				<Tabs
+					value={mode}
+					onValueChange={(v) => {
+						setMode(v as CreateMode);
+						setBranchName("");
+						setFilter("");
+						setError(null);
+					}}
+				>
+					<TabsList variant="line">
+						{tabs.map((tab) => (
+							<TabsTrigger key={tab.mode} value={tab.mode}>
+								{tab.icon}
+								{tab.label}
+							</TabsTrigger>
+						))}
+					</TabsList>
+				</Tabs>
 
 				{/* Mode content */}
 				<div className="min-h-[200px]">
