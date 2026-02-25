@@ -85,11 +85,12 @@ export function ViewToolbar({
 					Editor
 				</TabsTrigger>
 			</TabsList>
-			<div className="flex-1" />
+			<div data-tauri-drag-region className="flex-1" />
 			{rightSlot}
 			{rightOffset > 0 ? (
 				<div
-					className="flex items-center justify-end gap-0.5 shrink-0 pr-[12px]"
+					data-tauri-drag-region
+					className="flex items-center justify-end gap-0.5 shrink-0 pr-[12px] border-l border-border self-stretch"
 					style={{ width: rightOffset }}
 				>
 					{panelButtons}

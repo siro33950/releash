@@ -78,6 +78,15 @@ function WorktreeContent({
 	const centerTabRef = useRef(centerTab);
 	centerTabRef.current = centerTab;
 
+	const rightBottomRef = useRef<PanelImperativeHandle>(null);
+	const [rightBottomCollapsed, setRightBottomCollapsed] = useState(false);
+
+	const handleToggleRightBottom = useCallback(() => {
+		const panel = rightBottomRef.current;
+		if (!panel) return;
+		panel.isCollapsed() ? panel.expand() : panel.collapse();
+	}, []);
+
 	const s = useWorktreeState({
 		rootPath,
 		settings,
@@ -309,7 +318,15 @@ function WorktreeContent({
 						</div>
 					</Panel>
 					<Separator />
-					<Panel id="right-bottom" defaultSize="50%" minSize="20%">
+					<Panel
+						id="right-bottom"
+						panelRef={rightBottomRef}
+						defaultSize="50%"
+						minSize="20%"
+						collapsible
+						collapsedSize={31}
+						onResize={(size) => setRightBottomCollapsed(size.inPixels <= 31)}
+					>
 						<div
 							data-testid="review"
 							className="h-full overflow-hidden border-l border-t border-border"
@@ -326,6 +343,8 @@ function WorktreeContent({
 								onCopyComment={s.handleCopyComment}
 								showSentComments={s.showSentComments}
 								onToggleShowSent={s.toggleShowSentComments}
+								onToggleCollapse={handleToggleRightBottom}
+								collapsed={rightBottomCollapsed}
 							/>
 						</div>
 					</Panel>
