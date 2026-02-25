@@ -221,3 +221,13 @@ pub async fn get_binary_file_at_ref(
 pub async fn get_binary_staged_content(file_path: String) -> Result<String, GitError> {
     blocking(move || super::diff::get_binary_staged_content(file_path)).await
 }
+
+#[tauri::command]
+pub async fn get_file_at_branch_base(file_path: String) -> Result<String, GitError> {
+    blocking(move || super::diff::get_file_at_branch_base(file_path)).await
+}
+
+#[tauri::command]
+pub async fn get_binary_file_at_branch_base(file_path: String) -> Result<String, GitError> {
+    blocking(move || super::diff::get_binary_file_at_branch_base(file_path)).await
+}

@@ -12,7 +12,7 @@ export function useRemoteNavigation({ subscribe }: UseRemoteNavigationOptions) {
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 	const [selectedWorktree, setSelectedWorktree] = useState<string | null>(null);
 	const [activeTab, setActiveTab] = useState<Tab>("terminal");
-	const [diffBase, setDiffBase] = useState<DiffBase>("HEAD");
+	const [diffBase, setDiffBase] = useState<DiffBase>("branch-base");
 	const [worktreeLoading, setWorktreeLoading] = useState(false);
 
 	const selectWorktreeOptimistic = useCallback((path: string) => {

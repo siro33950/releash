@@ -86,13 +86,13 @@ export function RemoteDiffPanel({
 	);
 
 	const stagedHunks = useMemo(() => {
-		if (!path || staged == null || diffBase !== "HEAD") return [];
+		if (!path || staged == null || diffBase !== "branch-base") return [];
 		return computeHunks(original, staged, path);
 	}, [original, staged, diffBase, path]);
 
 	const changeGroups = useMemo(() => {
 		const groups = computeChangeGroups(hunks);
-		if (diffBase !== "HEAD" || stagedHunks.length === 0) return groups;
+		if (diffBase !== "branch-base" || stagedHunks.length === 0) return groups;
 		const sGroups = computeChangeGroups(stagedHunks);
 		return markStagedGroups(groups, sGroups, hunks, stagedHunks);
 	}, [hunks, stagedHunks, diffBase]);
@@ -108,7 +108,7 @@ export function RemoteDiffPanel({
 			let patchHunk = hunk;
 			let patchGroup = group;
 
-			if (diffBase === "HEAD" && staged != null) {
+			if (diffBase === "branch-base" && staged != null) {
 				const targetLines = hunk.lines.slice(
 					group.lineOffsetStart,
 					group.lineOffsetEnd + 1,
@@ -239,7 +239,9 @@ export function RemoteDiffPanel({
 					changeGroups={changeGroups}
 					onStageGroup={onStageHunk ? handleStageGroup : undefined}
 					onUnstageGroup={
-						onStageHunk && diffBase === "HEAD" ? handleUnstageGroup : undefined
+						onStageHunk && diffBase === "branch-base"
+							? handleUnstageGroup
+							: undefined
 					}
 				/>
 			</div>

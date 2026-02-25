@@ -189,7 +189,7 @@ export function useRemoteAppActions({
 	const handleStageAll = useCallback(() => {
 		if (!selectedPath || !content) return;
 		const base =
-			diffBase === "HEAD" && content.staged != null
+			diffBase === "branch-base" && content.staged != null
 				? content.staged
 				: content.original;
 		const allHunks = computeHunks(base, content.modified, selectedPath);

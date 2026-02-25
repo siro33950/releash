@@ -189,6 +189,8 @@ pub fn run() {
             git::commands::get_staged_content,
             git::commands::get_binary_file_at_ref,
             git::commands::get_binary_staged_content,
+            git::commands::get_file_at_branch_base,
+            git::commands::get_binary_file_at_branch_base,
             // Git: ブランチ
             git::commands::list_branches,
             git::commands::get_current_branch,

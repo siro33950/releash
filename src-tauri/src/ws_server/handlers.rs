@@ -88,10 +88,10 @@ fn handle_file_content_request(req: &FileContentRequest, repo_path: &str) -> WsM
     let original = if req.diff_base == "staged" {
         crate::git::get_staged_content(absolute_path.clone()).unwrap_or_default()
     } else {
-        crate::git::get_file_at_ref(absolute_path.clone(), "HEAD".to_string()).unwrap_or_default()
+        crate::git::get_file_at_branch_base(absolute_path.clone()).unwrap_or_default()
     };
     let modified = std::fs::read_to_string(&validated_path).unwrap_or_default();
-    let staged = if req.diff_base == "HEAD" {
+    let staged = if req.diff_base != "staged" {
         Some(crate::git::get_staged_content(absolute_path).unwrap_or_default())
     } else {
         None

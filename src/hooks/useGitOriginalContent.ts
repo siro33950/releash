@@ -92,9 +92,8 @@ export function useGitOriginalContent(
 						filePath,
 					});
 				} else {
-					content = await invoke<string>("get_file_at_ref", {
+					content = await invoke<string>("get_file_at_branch_base", {
 						filePath,
-						gitRef: diffBase,
 					});
 				}
 				if (!cancelled) {

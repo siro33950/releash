@@ -93,9 +93,9 @@ describe("gitReducer", () => {
 	it("SET_DIFF_BASE updates diffBase", () => {
 		const state = gitReducer(initialGitState, {
 			type: "SET_DIFF_BASE",
-			value: "HEAD",
+			value: "branch-base",
 		});
-		expect(state.diffBase).toBe("HEAD");
+		expect(state.diffBase).toBe("branch-base");
 	});
 
 	it("SET_DIFF_MODE updates diffMode", () => {

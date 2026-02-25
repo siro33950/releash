@@ -145,12 +145,12 @@ describe("SettingsModal", () => {
 		fireEvent.click(screen.getByText("Editor"));
 		const trigger = screen.getByRole("combobox", { name: "Default Base" });
 		await user.click(trigger);
-		const option = screen.getByRole("option", { name: "HEAD" });
+		const option = screen.getByRole("option", { name: "Branch Base" });
 		await user.click(option);
 		await user.click(screen.getByRole("button", { name: "Save" }));
 		expect(onSave).toHaveBeenCalledWith({
 			...defaultSettings,
-			defaultDiffBase: "HEAD",
+			defaultDiffBase: "branch-base",
 		});
 	});
 

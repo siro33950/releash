@@ -65,7 +65,7 @@ export function EditorTabContent({
 	);
 
 	const stagedContent = useGitOriginalContent(
-		!isImage && diffBase === "HEAD" ? filePath : null,
+		!isImage && diffBase === "branch-base" ? filePath : null,
 		"staged",
 		"",
 		gitRefreshKey,
@@ -87,7 +87,7 @@ export function EditorTabContent({
 	} = useHunks(originalContent, modifiedContent, filePath);
 
 	const changeGroups = useMemo(() => {
-		if (diffBase !== "HEAD") return rawChangeGroups;
+		if (diffBase !== "branch-base") return rawChangeGroups;
 		const hunks = computeHunks(originalContent, modifiedContent, filePath);
 		const stagedHunks = computeHunks(originalContent, stagedContent, filePath);
 		const stagedGroups = computeChangeGroups(stagedHunks);
@@ -225,7 +225,9 @@ export function EditorTabContent({
 					commentRanges={commentRanges}
 					onContentChange={handleContentChange}
 					onStageHunk={handleStageGroup}
-					onUnstageHunk={diffBase === "HEAD" ? handleUnstageGroup : undefined}
+					onUnstageHunk={
+						diffBase === "branch-base" ? handleUnstageGroup : undefined
+					}
 					onAddComment={handleAddComment}
 					getCommentsForLine={getCommentsForLine}
 					revealLine={revealLine}

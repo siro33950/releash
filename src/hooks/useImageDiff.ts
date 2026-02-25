@@ -60,9 +60,8 @@ export function useImageDiff(
 						filePath,
 					});
 				} else {
-					base64 = await invoke<string>("get_binary_file_at_ref", {
+					base64 = await invoke<string>("get_binary_file_at_branch_base", {
 						filePath,
-						gitRef: diffBase,
 					});
 				}
 				if (!cancelled) {

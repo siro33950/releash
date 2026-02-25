@@ -9,7 +9,7 @@ interface FileContent {
 	staged: string | null;
 }
 
-export type DiffBase = "HEAD" | "staged";
+export type DiffBase = "branch-base" | "staged";
 
 interface UseRemoteFileContentOptions {
 	subscribe: Subscribe;
@@ -23,7 +23,7 @@ export function useRemoteFileContent({
 	const [content, setContent] = useState<FileContent | null>(null);
 	const [loading, setLoading] = useState(false);
 	const currentPathRef = useRef<string | null>(null);
-	const currentDiffBaseRef = useRef<DiffBase>("HEAD");
+	const currentDiffBaseRef = useRef<DiffBase>("branch-base");
 
 	const requestContent = useCallback(
 		(path: string, diffBase?: DiffBase) => {
@@ -78,7 +78,7 @@ export function useRemoteFileContent({
 
 	const clear = useCallback(() => {
 		currentPathRef.current = null;
-		currentDiffBaseRef.current = "HEAD";
+		currentDiffBaseRef.current = "branch-base";
 		setContent(null);
 		setLoading(false);
 	}, []);
