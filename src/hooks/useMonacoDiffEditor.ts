@@ -500,6 +500,7 @@ export function useMonacoDiffEditor(
 
 		return () => {
 			isMounted = false;
+			setEditorReady(false);
 			commentInputWidgetRef.current?.dispose();
 			commentInputWidgetRef.current = null;
 			intersectionObserverRef.current?.disconnect();

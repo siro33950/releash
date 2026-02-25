@@ -397,7 +397,11 @@ function useRepoChanges() {
 		}
 	}, [state.pendingBases]);
 
-	return { ...state, handleDirtyChange, save };
+	const reset = useCallback(() => {
+		setState({ pendingBases: new Map(), isDirty: false, error: null });
+	}, []);
+
+	return { ...state, handleDirtyChange, save, reset };
 }
 
 function RepositoriesSection({

@@ -374,7 +374,12 @@ export function WorkspaceList({
 				<div className="flex items-center gap-0.5">
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild>
-							<Button size="icon-xs" variant="ghost" className="size-5">
+							<Button
+								size="icon-xs"
+								variant="ghost"
+								className="size-5"
+								aria-label="フィルター"
+							>
 								<Filter className="size-3" />
 							</Button>
 						</DropdownMenuTrigger>
@@ -443,6 +448,7 @@ export function WorkspaceList({
 						className="size-5"
 						onClick={() => setShowCreate(true)}
 						title="Add worktree"
+						aria-label="ワークツリーを追加"
 					>
 						<Plus className="size-3" />
 					</Button>

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrStatus, WorktreeBranch } from "@/types/git";
 import type { AgentStateSync } from "@/types/protocol";
 
@@ -18,6 +18,7 @@ export function computeStatus(branch: WorktreeBranch): WorktreeStatus {
 export function useWorktreeList(repoPath: string) {
 	const [branches, setBranches] = useState<WorktreeBranch[]>([]);
 	const [loading, setLoading] = useState(true);
+	const refreshSeqRef = useRef(0);
 
 	const enrichWithPrStatus = useCallback(
 		async (cards: WorktreeBranch[]): Promise<WorktreeBranch[]> => {
@@ -49,6 +50,8 @@ export function useWorktreeList(repoPath: string) {
 	);
 
 	const refresh = useCallback(async () => {
+		const seq = ++refreshSeqRef.current;
+		setLoading(true);
 		try {
 			const cards = await invoke<WorktreeBranch[]>(
 				"list_branches_with_status",
@@ -76,16 +79,19 @@ export function useWorktreeList(repoPath: string) {
 			const filtered = withAgentState.filter(
 				(b) => b.worktree_path != null && !b.is_default,
 			);
-			setBranches(filtered);
+			if (seq === refreshSeqRef.current) {
+				setBranches(filtered);
+			}
 		} catch (e) {
 			console.error("Failed to list worktrees:", e);
 		} finally {
-			setLoading(false);
+			if (seq === refreshSeqRef.current) {
+				setLoading(false);
+			}
 		}
 	}, [repoPath, enrichWithPrStatus]);
 
 	useEffect(() => {
-		setLoading(true);
 		refresh();
 	}, [refresh]);
 

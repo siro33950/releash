@@ -75,6 +75,7 @@ function reducer(
 		}
 		case "SELECT_TAB": {
 			if (state.activeTabId === action.tabId) return state;
+			if (!state.tabs.some((t) => t.id === action.tabId)) return state;
 			return { ...state, activeTabId: action.tabId };
 		}
 		case "UPDATE_DIRTY": {

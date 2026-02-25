@@ -44,13 +44,14 @@ export function useBaseBranch(
 	}, [fetch]);
 
 	const setBaseBranch = useCallback(
-		(base: string) => {
+		(base: string | null) => {
 			if (!rootPath || !branchName) return;
-			setBaseBranchState(base);
+			const normalizedBase = base && base.length > 0 ? base : null;
+			setBaseBranchState(normalizedBase);
 			invoke("set_branch_base", {
 				repoPath: rootPath,
 				branchName,
-				base,
+				base: normalizedBase,
 			}).catch(() => {
 				fetch();
 			});

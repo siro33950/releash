@@ -87,7 +87,7 @@ export function FileStatusItem({
 			<button
 				type="button"
 				className={cn(
-					"items-center justify-center h-5 w-5 rounded hover:bg-foreground/5-foreground/10 shrink-0",
+					"items-center justify-center h-5 w-5 rounded hover:bg-foreground/10 shrink-0",
 					alwaysShowAction ? "inline-flex" : "hidden group-hover:inline-flex",
 				)}
 				onClick={(e) => {

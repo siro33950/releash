@@ -26,7 +26,7 @@ export function BranchSelector({
 		<div className="flex items-center gap-1.5 text-xs text-muted-foreground">
 			<GitBranch className="size-3.5 shrink-0" />
 			<span className="font-mono whitespace-nowrap">{branchName}</span>
-			{baseBranch && (
+			{localBranches.length > 0 && (
 				<>
 					<ArrowRight className="size-3 shrink-0" />
 					<Select value={baseBranch} onValueChange={onBaseChange}>

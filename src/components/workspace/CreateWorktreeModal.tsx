@@ -91,20 +91,33 @@ export function CreateWorktreeModal({
 
 	useEffect(() => {
 		if (!open || !selectedRepoPath) return;
+		let alive = true;
 		invoke<BranchInfo[]>("list_branches", { repoPath: selectedRepoPath })
 			.then((result) => {
+				if (!alive) return;
 				setLocalBranches(result.filter((b) => !b.is_remote));
 				const fallback = result.find(
 					(b) => !b.is_remote && (b.name === "main" || b.name === "master"),
 				);
 				setBaseBranch(fallback?.name ?? "HEAD");
 			})
-			.catch(() => setLocalBranches([]));
+			.catch(() => {
+				if (!alive) return;
+				setLocalBranches([]);
+				setBaseBranch("HEAD");
+			});
 		invoke<WorktreeBranch[]>("list_branches_with_status", {
 			repoPath: selectedRepoPath,
 		})
-			.then(setAllBranches)
-			.catch(() => setAllBranches([]));
+			.then((result) => {
+				if (alive) setAllBranches(result);
+			})
+			.catch(() => {
+				if (alive) setAllBranches([]);
+			});
+		return () => {
+			alive = false;
+		};
 	}, [open, selectedRepoPath]);
 
 	const nonWorktreeBranches = useMemo(
@@ -462,6 +475,8 @@ function IssueMode({
 					variant="ghost"
 					className="size-8 shrink-0"
 					onClick={refresh}
+					aria-label="Issue一覧を再取得"
+					title="Issue一覧を再取得"
 				>
 					<RefreshCw className="size-3.5" />
 				</Button>
@@ -632,10 +647,7 @@ function NotionMode({
 					<SelectContent>
 						<SelectItem value="__all__">{opt.property_name}: All</SelectItem>
 						{opt.options.map((v, i) => (
-							<SelectItem
-								key={v}
-								value={opt.option_ids.length > 0 ? opt.option_ids[i] : v}
-							>
+							<SelectItem key={v} value={opt.option_ids[i] ?? v}>
 								{v}
 							</SelectItem>
 						))}

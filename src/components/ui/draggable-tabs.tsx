@@ -94,6 +94,7 @@ export function SortableTabTrigger({
 
 	return (
 		<TabsTrigger
+			disabled={disabled}
 			ref={setNodeRef}
 			className={cn(isDragging && "opacity-50", className)}
 			style={dragStyle}

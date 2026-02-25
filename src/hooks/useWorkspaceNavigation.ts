@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { normalizePath } from "@/lib/normalizePath";
 import type { AgentStateSync } from "@/types/protocol";
@@ -68,17 +68,31 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 	}, []);
 
 	useEffect(() => {
-		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
-			const worktreePath = normalizePath(event.payload.worktree_path);
-			const { state } = event.payload;
-			setWorktrees((prev) =>
-				prev.map((t) =>
-					t.rootPath === worktreePath ? { ...t, agentState: state } : t,
-				),
-			);
-		});
+		let unlisten: UnlistenFn | null = null;
+
+		const setupListener = async () => {
+			try {
+				unlisten = await listen<AgentStateSync>(
+					"agent-state-changed",
+					(event) => {
+						const worktreePath = normalizePath(event.payload.worktree_path);
+						const { state } = event.payload;
+						setWorktrees((prev) =>
+							prev.map((t) =>
+								t.rootPath === worktreePath ? { ...t, agentState: state } : t,
+							),
+						);
+					},
+				);
+			} catch (err) {
+				console.warn("agent-state-changed listener setup failed:", err);
+			}
+		};
+
+		setupListener();
+
 		return () => {
-			unlisten.then((f) => f());
+			unlisten?.();
 		};
 	}, []);
 
