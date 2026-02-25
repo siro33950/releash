@@ -136,6 +136,8 @@ export const TerminalTabPanel = forwardRef<
 									{tabs.length > 1 && (
 										<button
 											type="button"
+											onPointerDown={(e) => e.stopPropagation()}
+											onMouseDown={(e) => e.stopPropagation()}
 											onClick={(e) => {
 												e.stopPropagation();
 												closeTab(tab.id);
