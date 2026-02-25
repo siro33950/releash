@@ -386,6 +386,7 @@ function useRepoChanges() {
 
 	const save = useCallback(async () => {
 		const entries = Array.from(state.pendingBases.entries());
+		setState((prev) => ({ ...prev, error: null }));
 		try {
 			await Promise.all(
 				entries.map(([repoPath, base]) =>

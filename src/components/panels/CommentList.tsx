@@ -219,6 +219,7 @@ export function CommentList({
 														<div className="flex gap-1 mt-0.5">
 															<button
 																type="submit"
+																aria-label="Save"
 																className="p-0.5 rounded hover:bg-status-added/20 text-status-added"
 																title="Save"
 															>
@@ -226,6 +227,7 @@ export function CommentList({
 															</button>
 															<button
 																type="button"
+																aria-label="Cancel"
 																onClick={cancelEditing}
 																className="p-0.5 rounded hover:bg-muted text-muted-foreground"
 																title="Cancel"
@@ -245,6 +247,7 @@ export function CommentList({
 													{onSendComment && comment.status === "unsent" && (
 														<button
 															type="button"
+															aria-label="Send"
 															onClick={(e) => {
 																e.stopPropagation();
 																onSendComment(comment);
@@ -258,6 +261,7 @@ export function CommentList({
 													{onCopyComment && (
 														<button
 															type="button"
+															aria-label="Copy"
 															onClick={(e) => {
 																e.stopPropagation();
 																onCopyComment(comment);
@@ -271,6 +275,7 @@ export function CommentList({
 													{onUpdateComment && (
 														<button
 															type="button"
+															aria-label="Edit"
 															onClick={(e) => startEditing(e, comment)}
 															className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
 															title="Edit"
@@ -281,6 +286,7 @@ export function CommentList({
 													{onDeleteComment && (
 														<button
 															type="button"
+															aria-label="Delete"
 															onClick={(e) => handleDelete(e, comment.id)}
 															className="p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
 															title="Delete"

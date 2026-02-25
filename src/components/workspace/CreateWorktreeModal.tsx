@@ -324,8 +324,14 @@ function PlainMode({
 	return (
 		<div className="space-y-3">
 			<div>
-				<span className="text-xs text-muted-foreground">Branch name</span>
+				<label
+					htmlFor="branch-name-input"
+					className="text-xs text-muted-foreground"
+				>
+					Branch name
+				</label>
 				<Input
+					id="branch-name-input"
 					value={branchName}
 					onChange={(e) => onBranchNameChange(e.target.value)}
 					placeholder="feat/my-feature"
@@ -335,7 +341,7 @@ function PlainMode({
 			<div>
 				<span className="text-xs text-muted-foreground">Base branch</span>
 				<Select value={baseBranch} onValueChange={onBaseBranchChange}>
-					<SelectTrigger size="sm" className="w-full">
+					<SelectTrigger size="sm" className="w-full" aria-label="Base branch">
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>

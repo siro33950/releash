@@ -106,9 +106,7 @@ test.describe("CreateWorktreeModal", () => {
 
 		// feat/done のみ表示
 		await expect(dialog.getByText("feat/done")).toBeVisible();
-		await expect(
-			dialog.locator("button").filter({ hasText: "feat/todo" }),
-		).not.toBeVisible();
+		await expect(dialog.getByText("feat/todo")).not.toBeVisible();
 	});
 
 	test("Cancel ボタンでモーダルが閉じる", async ({ page }) => {
