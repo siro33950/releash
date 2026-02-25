@@ -81,11 +81,12 @@ export function useWorktreeList(repoPath: string) {
 				const filtered = withAgentState.filter(
 					(b) => b.worktree_path != null && !b.is_default,
 				);
-				const serialized = JSON.stringify(filtered);
-				if (serialized === prevBranchesRef.current) return;
-				prevBranchesRef.current = serialized;
 				if (seq === refreshSeqRef.current) {
-					setBranches(filtered);
+					const serialized = JSON.stringify(filtered);
+					if (serialized !== prevBranchesRef.current) {
+						prevBranchesRef.current = serialized;
+						setBranches(filtered);
+					}
 				}
 			} catch (e) {
 				console.error("Failed to list worktrees:", e);
