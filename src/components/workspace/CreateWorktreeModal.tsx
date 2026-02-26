@@ -241,7 +241,12 @@ export function CreateWorktreeModal({
 						<span className="text-muted-foreground shrink-0">Repository:</span>
 						<Select
 							value={selectedRepoPath}
-							onValueChange={setSelectedRepoPath}
+							onValueChange={(nextRepoPath) => {
+								setSelectedRepoPath(nextRepoPath);
+								setSelectedBranches([]);
+								setFilter("");
+								setError(null);
+							}}
 						>
 							<SelectTrigger size="sm" className="flex-1">
 								<SelectValue />
@@ -433,11 +438,19 @@ function BranchMode({
 					{branches.map((b) => {
 						const isSelected = selectedBranches.includes(b.name);
 						return (
-							<button
+							// biome-ignore lint/a11y/useSemanticElements: Checkbox renders as <button> internally, so outer cannot be <button>
+							<div
 								key={b.name}
-								type="button"
+								role="button"
+								tabIndex={0}
 								onClick={() => onToggle(b.name)}
-								className={`flex w-full items-center gap-2 px-2 py-1.5 text-sm rounded transition-colors ${
+								onKeyDown={(e) => {
+									if (e.key === "Enter" || e.key === " ") {
+										e.preventDefault();
+										onToggle(b.name);
+									}
+								}}
+								className={`flex w-full items-center gap-2 px-2 py-1.5 text-sm rounded transition-colors cursor-pointer ${
 									isSelected ? "bg-muted text-foreground" : "hover:bg-secondary"
 								}`}
 							>
@@ -449,7 +462,7 @@ function BranchMode({
 								/>
 								<GitBranch className="size-3.5 text-muted-foreground shrink-0" />
 								<span className="truncate">{b.name}</span>
-							</button>
+							</div>
 						);
 					})}
 					{branches.length === 0 && (
@@ -683,11 +696,19 @@ function IssueMode({
 								generateIssueBranchName(issue.number),
 							);
 							return (
-								<button
+								// biome-ignore lint/a11y/useSemanticElements: Checkbox renders as <button> internally, so outer cannot be <button>
+								<div
 									key={issue.number}
-									type="button"
+									role="button"
+									tabIndex={0}
 									onClick={() => onToggle(issue)}
-									className={`flex w-full items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors text-left ${
+									onKeyDown={(e) => {
+										if (e.key === "Enter" || e.key === " ") {
+											e.preventDefault();
+											onToggle(issue);
+										}
+									}}
+									className={`flex w-full items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors text-left cursor-pointer ${
 										isSelected
 											? "bg-muted text-foreground"
 											: "hover:bg-secondary"
@@ -735,7 +756,7 @@ function IssueMode({
 											</div>
 										)}
 									</div>
-								</button>
+								</div>
 							);
 						})}
 						{filtered.length === 0 && (
@@ -919,11 +940,19 @@ function NotionMode({
 								task.branch_name || notionTaskToBranchName(task.title);
 							const isSelected = selectedBranches.includes(branchName);
 							return (
-								<button
+								// biome-ignore lint/a11y/useSemanticElements: Checkbox renders as <button> internally, so outer cannot be <button>
+								<div
 									key={task.id}
-									type="button"
+									role="button"
+									tabIndex={0}
 									onClick={() => onToggle(task)}
-									className={`flex w-full items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors text-left ${
+									onKeyDown={(e) => {
+										if (e.key === "Enter" || e.key === " ") {
+											e.preventDefault();
+											onToggle(task);
+										}
+									}}
+									className={`flex w-full items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors text-left cursor-pointer ${
 										isSelected
 											? "bg-muted text-foreground"
 											: "hover:bg-secondary"
@@ -952,7 +981,7 @@ function NotionMode({
 											</div>
 										)}
 									</div>
-								</button>
+								</div>
 							);
 						})}
 						{filteredTasks.length === 0 && (
