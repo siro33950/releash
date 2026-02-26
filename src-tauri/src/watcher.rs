@@ -184,8 +184,8 @@ pub fn start_git_dir_watching(
                 }
             };
             let dominated_by_git = events.iter().any(|e| {
-                let p = e.path.to_string_lossy();
-                p.contains("refs/heads") || p.ends_with("HEAD") || p.contains("worktrees/")
+                let p = e.path.to_string_lossy().replace('\\', "/");
+                p.contains("/refs/heads/") || p.ends_with("/HEAD") || p.contains("/worktrees/")
             });
             if dominated_by_git {
                 if let Some(sync_msg) = build_branch_list_sync(&main_repo_clone) {

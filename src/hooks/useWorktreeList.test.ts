@@ -155,4 +155,34 @@ describe("useWorktreeList", () => {
 
 		vi.useRealTimers();
 	});
+
+	it("should stop watcher if unmounted before watcher start resolves", async () => {
+		let resolveStart: (id: number) => void = () => {};
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "start_git_dir_watching") {
+				return new Promise<number>((resolve) => {
+					resolveStart = resolve;
+				});
+			}
+			if (cmd === "stop_watching") return Promise.resolve();
+			if (cmd === "list_branches_with_status") return Promise.resolve([]);
+			if (cmd === "get_cached_pr_status")
+				return Promise.resolve({ open_prs: {}, merged_branches: [] });
+			if (cmd === "get_agent_states") return Promise.resolve({});
+			return Promise.resolve();
+		});
+
+		const { unmount } = renderHook(() => useWorktreeList("/test/repo"));
+		unmount();
+
+		await act(async () => {
+			resolveStart(77);
+		});
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("stop_watching", {
+				watcherId: 77,
+			});
+		});
+	});
 });
