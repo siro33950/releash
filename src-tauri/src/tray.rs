@@ -105,13 +105,16 @@ fn handle_start_server(app: tauri::AppHandle) {
             }
         };
 
-        let repo_paths = if !config.app.last_repo_paths.is_empty() {
+        let repo_paths: Vec<String> = if !config.app.last_repo_paths.is_empty() {
             config.app.last_repo_paths.clone()
         } else if !config.app.last_root_path.is_empty() {
             vec![config.app.last_root_path.clone()]
         } else {
             Vec::new()
-        };
+        }
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .collect();
         let last_bind_ip = config.app.last_bind_ip.clone();
 
         if repo_paths.is_empty() || last_bind_ip.is_empty() {

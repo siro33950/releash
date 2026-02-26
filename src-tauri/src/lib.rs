@@ -144,11 +144,14 @@ pub fn run() {
             });
             if let Some(cfg) = auto_start_config {
                 let handle = app.handle().clone();
-                let repo_paths = if !cfg.app.last_repo_paths.is_empty() {
+                let repo_paths: Vec<String> = if !cfg.app.last_repo_paths.is_empty() {
                     cfg.app.last_repo_paths.clone()
                 } else {
                     vec![cfg.app.last_root_path.clone()]
-                };
+                }
+                .into_iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect();
                 let bind_ip = cfg.app.last_bind_ip.clone();
                 if !repo_paths.is_empty() && !bind_ip.is_empty() {
                     tauri::async_runtime::spawn(async move {
