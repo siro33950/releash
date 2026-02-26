@@ -64,7 +64,7 @@ export interface UseTerminalPanesReturn {
 
 export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 	const tabCounter = useRef(1);
-	const paneNameCounterRef = useRef(0);
+	const paneNameCounterRef = useRef(1);
 	const tabsLengthRef = useRef(1);
 
 	const createLeaf = useCallback((): PaneLeaf => {
@@ -78,11 +78,10 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 	}, [tabPrefix]);
 
 	const [tabs, setTabs] = useState<TerminalTab[]>(() => {
-		paneNameCounterRef.current += 1;
 		const pane: PaneLeaf = {
 			type: "leaf",
 			id: nextPaneId(),
-			label: `${tabPrefix} ${paneNameCounterRef.current}`,
+			label: `${tabPrefix} 1`,
 			ptyId: null,
 		};
 		return [
@@ -143,10 +142,10 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 
 	const splitFocusedPane = useCallback(
 		(direction: SplitDirection) => {
+			const newLeaf = createLeaf();
 			updateActiveTab((tab) => {
 				if (countLeaves(tab.paneTree) >= MAX_PANES_PER_TAB) return tab;
 
-				const newLeaf = createLeaf();
 				const newTree = splitPane(
 					tab.paneTree,
 					tab.focusedPaneId,
@@ -274,6 +273,10 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 
 	const movePaneToTab = useCallback(
 		(paneId: string) => {
+			tabCounter.current += 1;
+			const newTabId = nextTabId();
+			const newTabLabel = `${tabPrefix} ${tabCounter.current}`;
+
 			setTabs((prev) => {
 				if (prev.length >= MAX_TABS) return prev;
 
@@ -288,10 +291,6 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 
 				const newTree = closePane(tab.paneTree, paneId);
 				if (!newTree) return prev;
-
-				tabCounter.current += 1;
-				const newTabId = nextTabId();
-				const newTabLabel = `${tabPrefix} ${tabCounter.current}`;
 
 				const remainingLeaves = getAllLeaves(newTree);
 				const newFocused =
