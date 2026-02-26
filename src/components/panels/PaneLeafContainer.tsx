@@ -1,4 +1,4 @@
-import { type DragEvent, useCallback } from "react";
+import { type DragEvent, useCallback, useRef } from "react";
 import { PANE_DRAG_TYPE, PaneDropZone } from "@/components/panels/PaneDropZone";
 import {
 	TerminalPanel,
@@ -55,11 +55,14 @@ export function PaneLeafContainer({
 	onBreakToTab,
 	canBreakToTab,
 }: PaneLeafContainerProps) {
+	const localTerminalRef = useRef<TerminalPanelHandle | null>(null);
+
 	const handleFocus = useCallback(() => {
 		onFocus(pane.id);
 	}, [onFocus, pane.id]);
 
 	const handleClose = useCallback(() => {
+		localTerminalRef.current?.requestKill();
 		onClose(pane.id);
 	}, [onClose, pane.id]);
 
@@ -93,6 +96,14 @@ export function PaneLeafContainer({
 	const handleBreakToTab = useCallback(() => {
 		onBreakToTab?.(pane.id);
 	}, [onBreakToTab, pane.id]);
+
+	const localSetTerminalRef = useCallback(
+		(handle: TerminalPanelHandle | null) => {
+			localTerminalRef.current = handle;
+			setTerminalRef(pane.id)(handle);
+		},
+		[setTerminalRef, pane.id],
+	);
 
 	const handleDragStart = useCallback(
 		(e: DragEvent) => {
@@ -166,13 +177,13 @@ export function PaneLeafContainer({
 			{paneHeader}
 			<div className="flex-1 min-h-0">
 				<TerminalPanel
-					ref={setTerminalRef(pane.id)}
+					ref={localSetTerminalRef}
 					cwd={cwd}
 					theme={theme}
 					terminalStartupCommand={terminalStartupCommand}
 					agentType={agentType}
 					label={pane.label}
-					sessionKey={sessionKey ? `${sessionKey}::${pane.id}` : undefined}
+					sessionKey={sessionKey ? `${sessionKey}::${pane.label}` : undefined}
 					onSplitVertical={handleSplitVertical}
 					onSplitHorizontal={handleSplitHorizontal}
 					onBreakToTab={handleBreakToTab}

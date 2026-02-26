@@ -101,6 +101,7 @@ export function useTerminal(
 	const fitAddonRef = useRef<FitAddon | null>(null);
 	const ptyIdRef = useRef<number | null>(null);
 	const resizeObserverRef = useRef<ResizeObserver | null>(null);
+	const killOnUnmountRef = useRef(false);
 	const themeRef = useRef(theme);
 	themeRef.current = theme;
 	const startupCommandRef = useRef(terminalStartupCommand);
@@ -183,7 +184,6 @@ export function useTerminal(
 			});
 
 			if (!isMounted) {
-				invoke("kill_pty", { ptyId: result.pty_id }).catch(() => {});
 				return;
 			}
 
@@ -314,10 +314,10 @@ export function useTerminal(
 			resizeObserver.disconnect();
 			unlistenOutput?.();
 			unlistenExit?.();
-			if (ptyIdRef.current !== null) {
+			if (killOnUnmountRef.current && ptyIdRef.current !== null) {
 				invoke("kill_pty", { ptyId: ptyIdRef.current }).catch(() => {});
-				ptyIdRef.current = null;
 			}
+			ptyIdRef.current = null;
 			terminal.dispose();
 		};
 	}, [containerRef, cwd, sessionKey, label]);
@@ -337,5 +337,9 @@ export function useTerminal(
 		}
 	}, []);
 
-	return { terminalRef, ptyIdRef, writeToTerminal };
+	const requestKill = useCallback(() => {
+		killOnUnmountRef.current = true;
+	}, []);
+
+	return { terminalRef, ptyIdRef, writeToTerminal, requestKill };
 }

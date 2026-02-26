@@ -167,7 +167,7 @@ describe("useTerminal", () => {
 		});
 	});
 
-	it("アンマウント時に kill_pty が呼ばれてクリーンアップが実行される", async () => {
+	it("アンマウント時にデフォルトでは kill_pty が呼ばれない（PTY保持）", async () => {
 		const { unmount } = renderHook(() => useTerminal(containerRef));
 
 		await waitFor(() => {
@@ -181,6 +181,23 @@ describe("useTerminal", () => {
 
 		expect(mockUnlistenOutput).toHaveBeenCalled();
 		expect(mockUnlistenExit).toHaveBeenCalled();
+		expect(mockInvoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
+		expect(mockTerminalInstance.dispose).toHaveBeenCalled();
+	});
+
+	it("requestKill() 後のアンマウントで kill_pty が呼ばれる", async () => {
+		const { result, unmount } = renderHook(() => useTerminal(containerRef));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"get_or_spawn_pty",
+				expect.any(Object),
+			);
+		});
+
+		result.current.requestKill();
+		unmount();
+
 		expect(mockInvoke).toHaveBeenCalledWith("kill_pty", { ptyId: 1 });
 		expect(mockTerminalInstance.dispose).toHaveBeenCalled();
 	});

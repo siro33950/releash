@@ -1,4 +1,9 @@
-import { FileDiff, FolderTree, GitPullRequestArrow, Search } from "lucide-react";
+import {
+	FileDiff,
+	FolderTree,
+	GitPullRequestArrow,
+	Search,
+} from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export type RightTopTab = "explorer" | "changes" | "search" | "pr";

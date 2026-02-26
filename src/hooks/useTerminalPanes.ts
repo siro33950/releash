@@ -28,26 +28,10 @@ function nextPaneId() {
 	return `pane-${paneIdCounter}`;
 }
 
-let paneNameCounter = 0;
-function nextPaneName() {
-	paneNameCounter += 1;
-	return `Terminal ${paneNameCounter}`;
-}
-
 /** テスト用: カウンタリセット */
 export function _resetIdCounters(): void {
 	tabIdCounter = 0;
 	paneIdCounter = 0;
-	paneNameCounter = 0;
-}
-
-function createLeaf(): PaneLeaf {
-	return {
-		type: "leaf",
-		id: nextPaneId(),
-		label: nextPaneName(),
-		ptyId: null,
-	};
 }
 
 type NavigationDirection = "left" | "right" | "up" | "down";
@@ -80,10 +64,27 @@ export interface UseTerminalPanesReturn {
 
 export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 	const tabCounter = useRef(1);
+	const paneNameCounterRef = useRef(0);
 	const tabsLengthRef = useRef(1);
 
+	const createLeaf = useCallback((): PaneLeaf => {
+		paneNameCounterRef.current += 1;
+		return {
+			type: "leaf",
+			id: nextPaneId(),
+			label: `${tabPrefix} ${paneNameCounterRef.current}`,
+			ptyId: null,
+		};
+	}, [tabPrefix]);
+
 	const [tabs, setTabs] = useState<TerminalTab[]>(() => {
-		const pane = createLeaf();
+		paneNameCounterRef.current += 1;
+		const pane: PaneLeaf = {
+			type: "leaf",
+			id: nextPaneId(),
+			label: `${tabPrefix} ${paneNameCounterRef.current}`,
+			ptyId: null,
+		};
 		return [
 			{
 				id: nextTabId(),
@@ -115,7 +116,7 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 			setActiveTabId(newTab.id);
 			return [...prev, newTab];
 		});
-	}, [tabPrefix]);
+	}, [tabPrefix, createLeaf]);
 
 	const closeTab = useCallback((tabId: string) => {
 		setTabs((prev) => {
@@ -159,7 +160,7 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 				};
 			});
 		},
-		[updateActiveTab],
+		[updateActiveTab, createLeaf],
 	);
 
 	const closeSpecificPane = useCallback((paneId: string) => {

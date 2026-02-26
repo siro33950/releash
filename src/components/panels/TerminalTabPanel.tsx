@@ -12,7 +12,7 @@ import { PaneTreeRenderer } from "@/components/panels/PaneTreeRenderer";
 import type { TerminalPanelHandle } from "@/components/panels/TerminalPanel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useTerminalPanes } from "@/hooks/useTerminalPanes";
-import { countLeaves } from "@/lib/paneTree";
+import { countLeaves, getAllLeaves } from "@/lib/paneTree";
 import type { Theme } from "@/types/settings";
 import type { SplitDirection } from "@/types/terminal-pane";
 
@@ -94,6 +94,20 @@ export const TerminalTabPanel = forwardRef<
 			splitFocusedPane(direction);
 		},
 		[setFocusedPane, splitFocusedPane],
+	);
+
+	const handleCloseTab = useCallback(
+		(tabId: string) => {
+			const tab = tabs.find((t) => t.id === tabId);
+			if (tab) {
+				const leaves = getAllLeaves(tab.paneTree);
+				for (const leaf of leaves) {
+					terminalRefs.current.get(leaf.id)?.requestKill();
+				}
+			}
+			closeTab(tabId);
+		},
+		[tabs, closeTab],
 	);
 
 	const isDraggingTabRef = useRef(false);
@@ -255,7 +269,7 @@ export const TerminalTabPanel = forwardRef<
 											onMouseDown={(e) => e.stopPropagation()}
 											onClick={(e) => {
 												e.stopPropagation();
-												closeTab(tab.id);
+												handleCloseTab(tab.id);
 											}}
 											className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
 											aria-label={`Close ${tab.label}`}
