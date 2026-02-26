@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useRef, useState } from "react";
 import {
 	closePane,
@@ -10,7 +9,6 @@ import {
 } from "@/lib/paneTree";
 import type {
 	PaneLeaf,
-	PaneNode,
 	SplitDirection,
 	TerminalTab,
 } from "@/types/terminal-pane";
@@ -116,35 +114,19 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 		});
 	}, [tabPrefix]);
 
-	const killPanesInTree = useCallback((tree: PaneNode) => {
-		const leaves = getAllLeaves(tree);
-		for (const leaf of leaves) {
-			if (leaf.ptyId != null) {
-				invoke("kill_pty", { ptyId: leaf.ptyId }).catch((err) =>
-					console.warn("kill_pty failed:", err),
-				);
-			}
-		}
-	}, []);
-
-	const closeTab = useCallback(
-		(tabId: string) => {
-			setTabs((prev) => {
-				if (prev.length <= 1) return prev;
-				const tab = prev.find((t) => t.id === tabId);
-				if (tab) killPanesInTree(tab.paneTree);
-				const next = prev.filter((t) => t.id !== tabId);
-				setActiveTabId((currentActive) => {
-					if (currentActive !== tabId) return currentActive;
-					const idx = prev.findIndex((t) => t.id === tabId);
-					const fallback = prev[idx - 1] ?? prev[idx + 1];
-					return fallback?.id ?? currentActive;
-				});
-				return next;
+	const closeTab = useCallback((tabId: string) => {
+		setTabs((prev) => {
+			if (prev.length <= 1) return prev;
+			const next = prev.filter((t) => t.id !== tabId);
+			setActiveTabId((currentActive) => {
+				if (currentActive !== tabId) return currentActive;
+				const idx = prev.findIndex((t) => t.id === tabId);
+				const fallback = prev[idx - 1] ?? prev[idx + 1];
+				return fallback?.id ?? currentActive;
 			});
-		},
-		[killPanesInTree],
-	);
+			return next;
+		});
+	}, []);
 
 	const updateActiveTab = useCallback(
 		(updater: (tab: TerminalTab) => TerminalTab) => {
@@ -183,12 +165,6 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 			if (tabIndex === -1) return prev;
 
 			const tab = prev[tabIndex];
-			const leaf = findNode(tab.paneTree, paneId);
-			if (leaf?.type === "leaf" && leaf.ptyId != null) {
-				invoke("kill_pty", { ptyId: leaf.ptyId }).catch((err) =>
-					console.warn("kill_pty failed:", err),
-				);
-			}
 
 			const newTree = closePane(tab.paneTree, paneId);
 
