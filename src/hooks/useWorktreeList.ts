@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrStatus, WorktreeBranch } from "@/types/git";
 import type { AgentStateSync } from "@/types/protocol";
 
-const POLL_INTERVAL = 30_000;
+const POLL_INTERVAL = 120_000;
 
 export type WorktreeStatus = "backlog" | "in_progress" | "review" | "done";
 
@@ -94,6 +94,36 @@ export function useWorktreeList(repoPath: string) {
 	useEffect(() => {
 		refresh();
 	}, [refresh]);
+
+	const watcherIdRef = useRef<number | null>(null);
+
+	useEffect(() => {
+		let isMounted = true;
+		const start = async () => {
+			try {
+				const id = await invoke<number>("start_git_dir_watching", {
+					repoPath,
+				});
+				if (!isMounted) {
+					invoke("stop_watching", { watcherId: id }).catch(() => {});
+					return;
+				}
+				watcherIdRef.current = id;
+			} catch (e) {
+				console.error("Failed to start git dir watcher:", e);
+			}
+		};
+		start();
+		return () => {
+			isMounted = false;
+			if (watcherIdRef.current !== null) {
+				invoke("stop_watching", { watcherId: watcherIdRef.current }).catch(
+					() => {},
+				);
+				watcherIdRef.current = null;
+			}
+		};
+	}, [repoPath]);
 
 	useEffect(() => {
 		const unlisten = listen("branch-list-sync", () => {
