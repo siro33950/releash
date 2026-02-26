@@ -276,23 +276,37 @@ impl PtyManager {
         None
     }
 
-    pub fn kill_by_worktree(&self, worktree_path: &str) -> Result<(), String> {
+    pub fn kill_by_worktree(&self, worktree_path: &str) -> Vec<u64> {
         let mut sessions = self.sessions.lock();
-        let ids_to_remove: Vec<u64> = sessions
+        let ids_to_kill: Vec<u64> = sessions
             .iter()
             .filter(|(_, s)| s.worktree_path.as_deref() == Some(worktree_path))
             .map(|(&id, _)| id)
             .collect();
 
-        for id in ids_to_remove {
-            if let Some(session) = sessions.get(&id) {
-                if !session.exited.load(Ordering::SeqCst) {
-                    let _ = session.killer.lock().kill();
+        let mut killed_ids = Vec::with_capacity(ids_to_kill.len());
+        for id in ids_to_kill {
+            let should_remove = if let Some(session) = sessions.get(&id) {
+                if session.exited.load(Ordering::SeqCst) {
+                    true
+                } else {
+                    match session.killer.lock().kill() {
+                        Ok(()) => true,
+                        Err(e) => {
+                            log::error!("Failed to kill PTY {}: {}", id, e);
+                            false
+                        }
+                    }
                 }
+            } else {
+                false
+            };
+            if should_remove {
+                sessions.remove(&id);
+                killed_ids.push(id);
             }
-            sessions.remove(&id);
         }
-        Ok(())
+        killed_ids
     }
 
     pub fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), String> {
@@ -431,8 +445,16 @@ pub fn list_pty_sessions(state: State<'_, Arc<PtyManager>>) -> Vec<PtySessionInf
 }
 
 #[tauri::command]
-pub fn kill_pty(state: State<'_, Arc<PtyManager>>, pty_id: u64) -> Result<(), String> {
-    state.kill(pty_id)
+pub fn kill_pty(
+    app: AppHandle,
+    state: State<'_, Arc<PtyManager>>,
+    pty_id: u64,
+) -> Result<(), String> {
+    state.kill(pty_id)?;
+    if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
+        ws.remove_pty_output_buffer(pty_id);
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -481,10 +503,17 @@ pub fn get_or_spawn_pty(
 
 #[tauri::command]
 pub fn kill_ptys_by_worktree(
+    app: AppHandle,
     state: State<'_, Arc<PtyManager>>,
     worktree_path: String,
 ) -> Result<(), String> {
-    state.kill_by_worktree(&worktree_path)
+    let killed_ids = state.kill_by_worktree(&worktree_path);
+    if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
+        for pty_id in killed_ids {
+            ws.remove_pty_output_buffer(pty_id);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -899,8 +928,10 @@ mod tests {
         insert_test_session(&pm, 1, Some("/repo"), Some("dev"));
         insert_test_session(&pm, 2, Some("/repo"), Some("test"));
         insert_test_session(&pm, 3, Some("/other"), None);
-        let result = pm.kill_by_worktree("/repo");
-        assert!(result.is_ok());
+        let killed = pm.kill_by_worktree("/repo");
+        assert_eq!(killed.len(), 2);
+        assert!(killed.contains(&1));
+        assert!(killed.contains(&2));
         let sessions = pm.sessions.lock();
         assert_eq!(sessions.len(), 1);
         assert!(sessions.contains_key(&3));
@@ -910,16 +941,16 @@ mod tests {
     fn test_kill_by_worktree_no_match() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
         insert_test_session(&pm, 1, Some("/repo"), None);
-        let result = pm.kill_by_worktree("/nonexistent");
-        assert!(result.is_ok());
+        let killed = pm.kill_by_worktree("/nonexistent");
+        assert!(killed.is_empty());
         assert_eq!(pm.sessions.lock().len(), 1);
     }
 
     #[test]
     fn test_kill_by_worktree_empty_sessions() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
-        let result = pm.kill_by_worktree("/repo");
-        assert!(result.is_ok());
+        let killed = pm.kill_by_worktree("/repo");
+        assert!(killed.is_empty());
     }
 
     #[test]
@@ -932,8 +963,8 @@ mod tests {
             .unwrap()
             .exited
             .store(true, Ordering::SeqCst);
-        let result = pm.kill_by_worktree("/repo");
-        assert!(result.is_ok());
+        let killed = pm.kill_by_worktree("/repo");
+        assert_eq!(killed, vec![1]);
         assert!(pm.sessions.lock().is_empty());
     }
 }

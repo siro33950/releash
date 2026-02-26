@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { X } from "lucide-react";
 import {
 	forwardRef,
@@ -19,7 +18,6 @@ const MAX_TABS = 8;
 interface Tab {
 	id: string;
 	label: string;
-	ptyId: number | null;
 }
 
 export interface TerminalTabPanelHandle {
@@ -56,7 +54,7 @@ export const TerminalTabPanel = forwardRef<
 	ref,
 ) {
 	const [tabs, setTabs] = useState<Tab[]>(() => [
-		{ id: nextTabId(), label: `${tabPrefix} 1`, ptyId: null },
+		{ id: nextTabId(), label: `${tabPrefix} 1` },
 	]);
 	const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
 	const terminalRefs = useRef<Map<string, TerminalPanelHandle>>(new Map());
@@ -80,7 +78,6 @@ export const TerminalTabPanel = forwardRef<
 		const newTab: Tab = {
 			id: nextTabId(),
 			label: `${tabPrefix} ${num}`,
-			ptyId: null,
 		};
 		setTabs((prev) => {
 			if (prev.length >= MAX_TABS) return prev;
@@ -92,12 +89,6 @@ export const TerminalTabPanel = forwardRef<
 	const closeTab = useCallback((tabId: string) => {
 		setTabs((prev) => {
 			if (prev.length <= 1) return prev;
-			const tab = prev.find((t) => t.id === tabId);
-			if (tab?.ptyId != null) {
-				invoke("kill_pty", { ptyId: tab.ptyId }).catch((err) =>
-					console.warn("kill_pty failed:", err),
-				);
-			}
 			const next = prev.filter((t) => t.id !== tabId);
 			setActiveTabId((currentActive) => {
 				if (currentActive !== tabId) return currentActive;

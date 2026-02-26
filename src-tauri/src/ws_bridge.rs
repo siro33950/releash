@@ -70,6 +70,14 @@ impl WsBroadcaster {
         *guard = sender;
     }
 
+    pub fn remove_pty_output_buffer(&self, pty_id: u64) {
+        let mut buffers = self
+            .pty_output_buffers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        buffers.remove(&pty_id);
+    }
+
     pub fn create_channel() -> (WsSender, WsReceiver) {
         mpsc::unbounded_channel()
     }
@@ -140,6 +148,41 @@ mod tests {
             data: "bbb".to_string(),
         }));
         assert_eq!(broadcaster.get_pty_output_buffer(1), "aaa");
+        assert_eq!(broadcaster.get_pty_output_buffer(2), "bbb");
+    }
+
+    #[test]
+    fn remove_pty_output_buffer_clears_entry() {
+        let broadcaster = WsBroadcaster::default();
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 1,
+            data: "hello".to_string(),
+        }));
+        assert_eq!(broadcaster.get_pty_output_buffer(1), "hello");
+        broadcaster.remove_pty_output_buffer(1);
+        assert_eq!(broadcaster.get_pty_output_buffer(1), "");
+    }
+
+    #[test]
+    fn remove_pty_output_buffer_nonexistent_is_noop() {
+        let broadcaster = WsBroadcaster::default();
+        broadcaster.remove_pty_output_buffer(999);
+        assert_eq!(broadcaster.get_pty_output_buffer(999), "");
+    }
+
+    #[test]
+    fn remove_pty_output_buffer_does_not_affect_other_ptys() {
+        let broadcaster = WsBroadcaster::default();
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 1,
+            data: "aaa".to_string(),
+        }));
+        broadcaster.try_send(WsMessage::PtyOutput(PtyOutputMsg {
+            pty_id: 2,
+            data: "bbb".to_string(),
+        }));
+        broadcaster.remove_pty_output_buffer(1);
+        assert_eq!(broadcaster.get_pty_output_buffer(1), "");
         assert_eq!(broadcaster.get_pty_output_buffer(2), "bbb");
     }
 

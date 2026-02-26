@@ -171,7 +171,10 @@ export function useTerminal(
 				label: label ?? null,
 			});
 
-			if (!isMounted) return;
+			if (!isMounted) {
+				invoke("kill_pty", { ptyId: result.pty_id }).catch(() => {});
+				return;
+			}
 
 			// 3. Replay buffered output
 			if (result.buffered_output) {
@@ -300,6 +303,10 @@ export function useTerminal(
 			resizeObserver.disconnect();
 			unlistenOutput?.();
 			unlistenExit?.();
+			if (ptyIdRef.current !== null) {
+				invoke("kill_pty", { ptyId: ptyIdRef.current }).catch(() => {});
+				ptyIdRef.current = null;
+			}
 			terminal.dispose();
 		};
 	}, [containerRef, cwd, sessionKey, label]);
