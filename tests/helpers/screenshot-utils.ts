@@ -55,8 +55,10 @@ export async function switchToView(
 	page: Page,
 	viewName: string,
 ): Promise<void> {
-	const btn = page.getByRole("button", { name: viewName, exact: true });
-	await btn.click();
+	const target = page
+		.getByRole("button", { name: viewName, exact: true })
+		.or(page.getByRole("tab", { name: viewName, exact: true }));
+	await target.first().click();
 	await page.waitForTimeout(300);
 }
 
@@ -77,4 +79,21 @@ export function monacoMask(page: Page): Locator[] {
 export function xtermMask(page: Page): Locator[] {
 	if (process.env.UI_REVIEW === "1") return [];
 	return [page.locator(".xterm")];
+}
+
+/**
+ * サイドバーとターミナルを折りたたむ。
+ * モーダル/ダイアログ系テストで背景の映り込みを防ぐ。
+ */
+export async function collapsePanels(page: Page): Promise<void> {
+	const toggleSidebar = page.getByTitle("Toggle Sidebar").first();
+	if (await toggleSidebar.isVisible()) {
+		await toggleSidebar.click();
+		await page.waitForTimeout(200);
+	}
+	const toggleTerminal = page.getByTitle("Toggle Terminal").first();
+	if (await toggleTerminal.isVisible()) {
+		await toggleTerminal.click();
+		await page.waitForTimeout(200);
+	}
 }

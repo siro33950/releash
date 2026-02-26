@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { branchList } from "../helpers/fixtures";
 import {
+	collapsePanels,
 	setupWorktreeView,
 	switchToView,
 	xtermMask,
@@ -11,6 +13,7 @@ test.describe("Settings Modal", () => {
 		overrides: Record<string, unknown> = {},
 	) {
 		await setupWorktreeView(page, overrides);
+		await collapsePanels(page);
 		await switchToView(page, "Settings");
 		await page.waitForTimeout(300);
 	}
@@ -116,6 +119,52 @@ test.describe("Settings Modal", () => {
 		}
 		await expect(page).toHaveScreenshot(
 			"worktree-settings-save-enabled.png",
+			{ mask: xtermMask(page) },
+		);
+	});
+
+	// --- Background Section ---
+	test("background section (default)", async ({ page }) => {
+		await openSettings(page);
+		await switchSettingsTab(page, "Background");
+		await expect(page).toHaveScreenshot(
+			"worktree-settings-background.png",
+			{ mask: xtermMask(page) },
+		);
+	});
+
+	test("background section with auto-launch enabled", async ({ page }) => {
+		await openSettings(page, {
+			"plugin:autostart|is_enabled": true,
+		});
+		await switchSettingsTab(page, "Background");
+		await expect(page).toHaveScreenshot(
+			"worktree-settings-background-autolaunch.png",
+			{ mask: xtermMask(page) },
+		);
+	});
+
+	// --- Repositories Section ---
+	test("repositories section (default)", async ({ page }) => {
+		await openSettings(page, {
+			list_branches: branchList,
+			get_releash_base: "main",
+		});
+		await switchSettingsTab(page, "Repositories");
+		await page.waitForTimeout(500);
+		await expect(page).toHaveScreenshot(
+			"worktree-settings-repositories.png",
+			{ mask: xtermMask(page) },
+		);
+	});
+
+	test("repositories section (empty)", async ({ page }) => {
+		await openSettings(page, {
+			list_worktrees: [],
+		});
+		await switchSettingsTab(page, "Repositories");
+		await expect(page).toHaveScreenshot(
+			"worktree-settings-repositories-empty.png",
 			{ mask: xtermMask(page) },
 		);
 	});
