@@ -1092,9 +1092,6 @@ export function SettingsModal({
 		dispatchSettings({ type: "SYNC_OPEN", open, settings });
 		if (open) {
 			repos.reset();
-			if (settings.agent === "claude") {
-				dispatchHooks({ type: "LOAD_START" });
-			}
 		}
 	}
 
@@ -1105,9 +1102,10 @@ export function SettingsModal({
 		[],
 	);
 
-	// Load hooks config when agent is claude
+	// Load hooks config when agent is claude and dialog is open
 	useEffect(() => {
-		if (draft.agent !== "claude") return;
+		if (!open || draft.agent !== "claude") return;
+		let cancelled = false;
 		dispatchHooks({ type: "LOAD_START" });
 
 		Promise.all([
@@ -1115,16 +1113,23 @@ export function SettingsModal({
 			invoke<string>("get_hooks_status"),
 		])
 			.then(([json, status]) => {
-				dispatchHooks({
-					type: "LOAD_SUCCESS",
-					config: json,
-					status: status as HooksState["status"],
-				});
+				if (!cancelled) {
+					dispatchHooks({
+						type: "LOAD_SUCCESS",
+						config: json,
+						status: status as HooksState["status"],
+					});
+				}
 			})
 			.catch((e) => {
-				dispatchHooks({ type: "LOAD_ERROR", error: String(e) });
+				if (!cancelled) {
+					dispatchHooks({ type: "LOAD_ERROR", error: String(e) });
+				}
 			});
-	}, [draft.agent]);
+		return () => {
+			cancelled = true;
+		};
+	}, [open, draft.agent]);
 
 	const handleApplyHooks = useCallback(async () => {
 		dispatchHooks({ type: "APPLY_START" });
