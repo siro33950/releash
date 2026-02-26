@@ -1,34 +1,37 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
-	Filter,
+	Check,
 	GitBranch,
 	Loader2,
 	Plus,
 	RefreshCw,
 	StickyNote,
 	TicketCheck,
-	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+	Command,
+	CommandEmpty,
+	CommandGroup,
+	CommandInput,
+	CommandItem,
+	CommandList,
+} from "@/components/ui/command";
+import {
 	Dialog,
 	DialogContent,
-	DialogDescription,
 	DialogFooter,
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
-import {
-	DropdownMenu,
-	DropdownMenuCheckboxItem,
-	DropdownMenuContent,
-	DropdownMenuLabel,
-	DropdownMenuSeparator,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	Select,
@@ -43,6 +46,7 @@ import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
 import { generateIssueBranchName } from "@/lib/issueBranch";
 import { trackEvent } from "@/lib/telemetry";
+import { cn } from "@/lib/utils";
 import { branchToDir, computeWorktreeDir } from "@/lib/worktreePath";
 import type {
 	BranchInfo,
@@ -227,18 +231,14 @@ export function CreateWorktreeModal({
 
 	return (
 		<Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-			<DialogContent className="max-h-[85vh] flex flex-col overflow-hidden">
-				<DialogHeader>
+			<DialogContent
+				showCloseButton={false}
+				className="h-[70vh] sm:max-w-2xl flex flex-col overflow-hidden"
+			>
+				{/* Header — title + repo selector side by side */}
+				<DialogHeader className="flex-row items-center justify-between gap-4">
 					<DialogTitle>New Worktree</DialogTitle>
-					<DialogDescription>
-						Create a new worktree from a branch, issue, or Notion task.
-					</DialogDescription>
-				</DialogHeader>
-
-				{/* Repo selector */}
-				{repoPaths.length > 1 && (
-					<div className="flex items-center gap-2 text-sm">
-						<span className="text-muted-foreground shrink-0">Repository:</span>
+					{repoPaths.length > 1 && (
 						<Select
 							value={selectedRepoPath}
 							onValueChange={(nextRepoPath) => {
@@ -248,7 +248,7 @@ export function CreateWorktreeModal({
 								setError(null);
 							}}
 						>
-							<SelectTrigger size="sm" className="flex-1">
+							<SelectTrigger size="sm" className="w-[180px]">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
@@ -259,11 +259,12 @@ export function CreateWorktreeModal({
 								))}
 							</SelectContent>
 						</Select>
-					</div>
-				)}
+					)}
+				</DialogHeader>
 
-				{/* Mode tabs */}
+				{/* Body — left: vertical tabs, right: mode content */}
 				<Tabs
+					orientation="vertical"
 					value={mode}
 					onValueChange={(v) => {
 						setMode(v as CreateMode);
@@ -271,8 +272,9 @@ export function CreateWorktreeModal({
 						setFilter("");
 						setError(null);
 					}}
+					className="flex-1 min-h-0"
 				>
-					<TabsList variant="line">
+					<TabsList variant="line" className="w-[120px] shrink-0 border-r pr-2">
 						{tabs.map((tab) => (
 							<TabsTrigger key={tab.mode} value={tab.mode}>
 								{tab.icon}
@@ -280,83 +282,82 @@ export function CreateWorktreeModal({
 							</TabsTrigger>
 						))}
 					</TabsList>
+					<div className="flex-1 min-h-0 flex flex-col pl-3">
+						{mode === "plain" && (
+							<PlainMode
+								branchName={selectedBranches[0] ?? ""}
+								onBranchNameChange={(name) =>
+									setSelectedBranches(name ? [name] : [])
+								}
+								baseBranch={baseBranch}
+								onBaseBranchChange={setBaseBranch}
+								localBranches={localBranches}
+							/>
+						)}
+						{mode === "branch" && (
+							<BranchMode
+								branches={filteredNonWorktreeBranches}
+								filter={filter}
+								onFilterChange={setFilter}
+								onToggle={toggleBranch}
+								selectedBranches={selectedBranches}
+							/>
+						)}
+						{mode === "issue" && selectedRepoPath && (
+							<IssueMode
+								repoPath={selectedRepoPath}
+								onToggle={(issue) =>
+									toggleBranch(generateIssueBranchName(issue.number))
+								}
+								selectedBranches={selectedBranches}
+								worktreeBranchNames={worktreeBranchNames}
+							/>
+						)}
+						{mode === "notion" && selectedRepoPath && (
+							<NotionMode
+								repoPath={selectedRepoPath}
+								onToggle={(task) =>
+									toggleBranch(
+										task.branch_name || notionTaskToBranchName(task.title),
+									)
+								}
+								selectedBranches={selectedBranches}
+								worktreeBranchNames={worktreeBranchNames}
+							/>
+						)}
+					</div>
 				</Tabs>
 
-				{/* Mode content */}
-				<div className="flex-1 min-h-0 flex flex-col">
-					{mode === "plain" && (
-						<PlainMode
-							branchName={selectedBranches[0] ?? ""}
-							onBranchNameChange={(name) =>
-								setSelectedBranches(name ? [name] : [])
-							}
-							baseBranch={baseBranch}
-							onBaseBranchChange={setBaseBranch}
-							localBranches={localBranches}
-						/>
-					)}
-					{mode === "branch" && (
-						<BranchMode
-							branches={filteredNonWorktreeBranches}
-							filter={filter}
-							onFilterChange={setFilter}
-							onToggle={toggleBranch}
-							selectedBranches={selectedBranches}
-						/>
-					)}
-					{mode === "issue" && selectedRepoPath && (
-						<IssueMode
-							repoPath={selectedRepoPath}
-							onToggle={(issue) =>
-								toggleBranch(generateIssueBranchName(issue.number))
-							}
-							selectedBranches={selectedBranches}
-							worktreeBranchNames={worktreeBranchNames}
-						/>
-					)}
-					{mode === "notion" && selectedRepoPath && (
-						<NotionMode
-							repoPath={selectedRepoPath}
-							onToggle={(task) =>
-								toggleBranch(
-									task.branch_name || notionTaskToBranchName(task.title),
-								)
-							}
-							selectedBranches={selectedBranches}
-							worktreeBranchNames={worktreeBranchNames}
-						/>
-					)}
-				</div>
-
-				{error && <p className="text-sm text-destructive">{error}</p>}
-
-				{selectedBranches.length > 0 && (
-					<div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
-						{selectedBranches.map((b) => (
-							<code key={b} className="font-mono bg-muted px-1 rounded">
-								{b}
-							</code>
-						))}
+				{/* Footer — error + selected branches left, buttons right */}
+				<DialogFooter className="flex-row items-center justify-between gap-2">
+					<div className="flex flex-col gap-1 min-w-0">
+						{error && <p className="text-xs text-destructive">{error}</p>}
+						<div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
+							{selectedBranches.map((b) => (
+								<code key={b} className="font-mono bg-muted px-1 rounded">
+									{b}
+								</code>
+							))}
+						</div>
 					</div>
-				)}
-
-				<DialogFooter>
-					<Button variant="outline" onClick={onClose} disabled={creating}>
-						Cancel
-					</Button>
-					<Button
-						onClick={handleCreate}
-						disabled={
-							selectedBranches.length === 0 || !selectedRepoPath || creating
-						}
-					>
-						{creating && <Loader2 className="size-3.5 mr-1 animate-spin" />}
-						{creating
-							? "Creating..."
-							: selectedBranches.length > 1
-								? `Create ${selectedBranches.length}`
-								: "Create"}
-					</Button>
+					<div className="flex gap-2 shrink-0">
+						<Button variant="outline" onClick={onClose} disabled={creating}>
+							Cancel
+						</Button>
+						<Button
+							onClick={handleCreate}
+							disabled={
+								selectedBranches.length === 0 || !selectedRepoPath || creating
+							}
+						>
+							{creating && <Loader2 className="size-3.5 mr-1 animate-spin" />}
+							{creating
+								? "Creating..."
+								: selectedBranches.length > 1
+									? `Create ${selectedBranches.length}`
+									: "Create"}
+						</Button>
+					</div>
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>
@@ -515,8 +516,6 @@ function IssueMode({
 		return { titles: Array.from(set).sort(), hasNone };
 	}, [issues]);
 
-	const activeFilterCount = labelFilters.length + milestoneFilters.length;
-
 	const filtered = useMemo(() => {
 		let result = issues.filter(
 			(i) => !worktreeBranchNames.has(generateIssueBranchName(i.number)),
@@ -550,13 +549,19 @@ function IssueMode({
 		return result;
 	}, [issues, filter, labelFilters, milestoneFilters, worktreeBranchNames]);
 
-	const hasFilters =
-		allLabels.length > 0 ||
-		allMilestones.titles.length > 0 ||
-		allMilestones.hasNone;
+	const milestoneOptions = useMemo(() => {
+		const items: { value: string; label: string }[] = [];
+		if (allMilestones.hasNone) {
+			items.push({ value: "__none__", label: "No milestone" });
+		}
+		for (const title of allMilestones.titles) {
+			items.push({ value: title, label: title });
+		}
+		return items;
+	}, [allMilestones]);
 
 	return (
-		<div className="flex-1 min-h-0 flex flex-col gap-2">
+		<div className="flex-1 min-h-0 flex flex-col gap-1.5">
 			<div className="flex gap-1">
 				<Input
 					value={filter}
@@ -565,84 +570,6 @@ function IssueMode({
 					autoFocus
 					className="flex-1"
 				/>
-				{hasFilters && (
-					<DropdownMenu>
-						<DropdownMenuTrigger asChild>
-							<Button size="sm" variant="outline" className="shrink-0 gap-1">
-								<Filter className="size-3.5" />
-								Filters
-								{activeFilterCount > 0 && (
-									<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
-										{activeFilterCount}
-									</span>
-								)}
-							</Button>
-						</DropdownMenuTrigger>
-						<DropdownMenuContent align="end" className="w-56">
-							{allLabels.length > 0 && (
-								<>
-									<DropdownMenuLabel>Labels</DropdownMenuLabel>
-									{allLabels.map((label) => (
-										<DropdownMenuCheckboxItem
-											key={label}
-											checked={labelFilters.includes(label)}
-											onCheckedChange={() =>
-												setLabelFilters((prev) =>
-													prev.includes(label)
-														? prev.filter((l) => l !== label)
-														: [...prev, label],
-												)
-											}
-											onSelect={(e) => e.preventDefault()}
-										>
-											{label}
-										</DropdownMenuCheckboxItem>
-									))}
-								</>
-							)}
-							{allLabels.length > 0 &&
-								(allMilestones.titles.length > 0 || allMilestones.hasNone) && (
-									<DropdownMenuSeparator />
-								)}
-							{(allMilestones.titles.length > 0 || allMilestones.hasNone) && (
-								<>
-									<DropdownMenuLabel>Milestones</DropdownMenuLabel>
-									{allMilestones.hasNone && (
-										<DropdownMenuCheckboxItem
-											checked={milestoneFilters.includes("__none__")}
-											onCheckedChange={() =>
-												setMilestoneFilters((prev) =>
-													prev.includes("__none__")
-														? prev.filter((m) => m !== "__none__")
-														: [...prev, "__none__"],
-												)
-											}
-											onSelect={(e) => e.preventDefault()}
-										>
-											No milestone
-										</DropdownMenuCheckboxItem>
-									)}
-									{allMilestones.titles.map((title) => (
-										<DropdownMenuCheckboxItem
-											key={title}
-											checked={milestoneFilters.includes(title)}
-											onCheckedChange={() =>
-												setMilestoneFilters((prev) =>
-													prev.includes(title)
-														? prev.filter((m) => m !== title)
-														: [...prev, title],
-												)
-											}
-											onSelect={(e) => e.preventDefault()}
-										>
-											{title}
-										</DropdownMenuCheckboxItem>
-									))}
-								</>
-							)}
-						</DropdownMenuContent>
-					</DropdownMenu>
-				)}
 				<Button
 					size="icon"
 					variant="ghost"
@@ -654,34 +581,110 @@ function IssueMode({
 					<RefreshCw className="size-3.5" />
 				</Button>
 			</div>
-			{activeFilterCount > 0 && (
+			{(allLabels.length > 0 || milestoneOptions.length > 0) && (
 				<div className="flex flex-wrap gap-1">
-					{labelFilters.map((label) => (
-						<button
-							key={`label:${label}`}
-							type="button"
-							onClick={() =>
-								setLabelFilters((prev) => prev.filter((l) => l !== label))
-							}
-							className="inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground hover:bg-muted/80 transition-colors"
-						>
-							{label}
-							<X className="size-2.5" />
-						</button>
-					))}
-					{milestoneFilters.map((ms) => (
-						<button
-							key={`ms:${ms}`}
-							type="button"
-							onClick={() =>
-								setMilestoneFilters((prev) => prev.filter((m) => m !== ms))
-							}
-							className="inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground hover:bg-muted/80 transition-colors"
-						>
-							{ms === "__none__" ? "No milestone" : ms}
-							<X className="size-2.5" />
-						</button>
-					))}
+					{allLabels.length > 0 && (
+						<Popover>
+							<PopoverTrigger asChild>
+								<Button size="sm" variant="outline" className="shrink-0 gap-1">
+									Labels
+									{labelFilters.length > 0 && (
+										<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
+											{labelFilters.length}
+										</span>
+									)}
+								</Button>
+							</PopoverTrigger>
+							<PopoverContent
+								className="w-[200px] p-0"
+								align="start"
+								onWheel={(e) => e.stopPropagation()}
+							>
+								<Command>
+									<CommandInput placeholder="Search labels..." />
+									<CommandList>
+										<CommandEmpty>No labels found.</CommandEmpty>
+										<CommandGroup>
+											{allLabels.map((label) => {
+												const selected = labelFilters.includes(label);
+												return (
+													<CommandItem
+														key={label}
+														onSelect={() =>
+															setLabelFilters((prev) =>
+																prev.includes(label)
+																	? prev.filter((l) => l !== label)
+																	: [...prev, label],
+															)
+														}
+													>
+														<Check
+															className={cn(
+																"size-3.5",
+																selected ? "opacity-100" : "opacity-0",
+															)}
+														/>
+														{label}
+													</CommandItem>
+												);
+											})}
+										</CommandGroup>
+									</CommandList>
+								</Command>
+							</PopoverContent>
+						</Popover>
+					)}
+					{milestoneOptions.length > 0 && (
+						<Popover>
+							<PopoverTrigger asChild>
+								<Button size="sm" variant="outline" className="shrink-0 gap-1">
+									Milestones
+									{milestoneFilters.length > 0 && (
+										<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
+											{milestoneFilters.length}
+										</span>
+									)}
+								</Button>
+							</PopoverTrigger>
+							<PopoverContent
+								className="w-[200px] p-0"
+								align="start"
+								onWheel={(e) => e.stopPropagation()}
+							>
+								<Command>
+									<CommandInput placeholder="Search milestones..." />
+									<CommandList>
+										<CommandEmpty>No milestones found.</CommandEmpty>
+										<CommandGroup>
+											{milestoneOptions.map((ms) => {
+												const selected = milestoneFilters.includes(ms.value);
+												return (
+													<CommandItem
+														key={ms.value}
+														onSelect={() =>
+															setMilestoneFilters((prev) =>
+																prev.includes(ms.value)
+																	? prev.filter((m) => m !== ms.value)
+																	: [...prev, ms.value],
+															)
+														}
+													>
+														<Check
+															className={cn(
+																"size-3.5",
+																selected ? "opacity-100" : "opacity-0",
+															)}
+														/>
+														{ms.label}
+													</CommandItem>
+												);
+											})}
+										</CommandGroup>
+									</CommandList>
+								</Command>
+							</PopoverContent>
+						</Popover>
+					)}
 				</div>
 			)}
 			<ScrollArea className="flex-1 min-h-[120px]">
@@ -801,11 +804,6 @@ function NotionMode({
 		{},
 	);
 
-	const activeFilterCount = useMemo(
-		() => Object.values(labelFilters).reduce((sum, arr) => sum + arr.length, 0),
-		[labelFilters],
-	);
-
 	const handleTitleChange = useCallback(
 		(value: string) => {
 			setTitleFilter(value);
@@ -829,103 +827,76 @@ function NotionMode({
 		[titleFilter, search],
 	);
 
-	const removeLabelFilter = useCallback(
-		(propertyName: string, value: string) => {
-			setLabelFilters((prev) => {
-				const current = prev[propertyName] ?? [];
-				const newFilters = {
-					...prev,
-					[propertyName]: current.filter((v) => v !== value),
-				};
-				search(titleFilter, newFilters);
-				return newFilters;
-			});
-		},
-		[titleFilter, search],
-	);
-
-	const allFilterBadges = useMemo(() => {
-		const badges: { propertyName: string; value: string; label: string }[] = [];
-		for (const opt of labelOptions) {
-			const selected = labelFilters[opt.property_name] ?? [];
-			for (const val of selected) {
-				const idx = opt.option_ids.indexOf(val);
-				const label = idx >= 0 ? opt.options[idx] : val;
-				badges.push({
-					propertyName: opt.property_name,
-					value: val,
-					label: label ?? val,
-				});
-			}
-		}
-		return badges;
-	}, [labelOptions, labelFilters]);
-
 	return (
-		<div className="flex-1 min-h-0 flex flex-col gap-2">
-			<div className="flex gap-1">
-				<Input
-					value={titleFilter}
-					onChange={(e) => handleTitleChange(e.target.value)}
-					placeholder="Filter Notion tasks..."
-					autoFocus
-					className="flex-1"
-				/>
-				{labelOptions.length > 0 && (
-					<DropdownMenu>
-						<DropdownMenuTrigger asChild>
-							<Button size="sm" variant="outline" className="shrink-0 gap-1">
-								<Filter className="size-3.5" />
-								Filters
-								{activeFilterCount > 0 && (
-									<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
-										{activeFilterCount}
-									</span>
-								)}
-							</Button>
-						</DropdownMenuTrigger>
-						<DropdownMenuContent align="end" className="w-56">
-							{labelOptions.map((opt, optIdx) => (
-								<div key={opt.property_name}>
-									{optIdx > 0 && <DropdownMenuSeparator />}
-									<DropdownMenuLabel>{opt.property_name}</DropdownMenuLabel>
-									{opt.options.map((v, i) => {
-										const filterValue = opt.option_ids[i] ?? v;
-										const selected = (
-											labelFilters[opt.property_name] ?? []
-										).includes(filterValue);
-										return (
-											<DropdownMenuCheckboxItem
-												key={v}
-												checked={selected}
-												onCheckedChange={() =>
-													toggleLabelFilter(opt.property_name, filterValue)
-												}
-												onSelect={(e) => e.preventDefault()}
-											>
-												{v}
-											</DropdownMenuCheckboxItem>
-										);
-									})}
-								</div>
-							))}
-						</DropdownMenuContent>
-					</DropdownMenu>
-				)}
-			</div>
-			{allFilterBadges.length > 0 && (
+		<div className="flex-1 min-h-0 flex flex-col gap-1.5">
+			<Input
+				value={titleFilter}
+				onChange={(e) => handleTitleChange(e.target.value)}
+				placeholder="Filter Notion tasks..."
+				autoFocus
+			/>
+			{labelOptions.length > 0 && (
 				<div className="flex flex-wrap gap-1">
-					{allFilterBadges.map((badge) => (
-						<button
-							key={`${badge.propertyName}:${badge.value}`}
-							type="button"
-							onClick={() => removeLabelFilter(badge.propertyName, badge.value)}
-							className="inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[10px] font-medium bg-muted text-muted-foreground hover:bg-muted/80 transition-colors"
-						>
-							{badge.label}
-							<X className="size-2.5" />
-						</button>
-					))}
+					{labelOptions.map((opt) => {
+						const selected = labelFilters[opt.property_name] ?? [];
+						return (
+							<Popover key={opt.property_name}>
+								<PopoverTrigger asChild>
+									<Button
+										size="sm"
+										variant="outline"
+										className="shrink-0 gap-1"
+									>
+										{opt.property_name}
+										{selected.length > 0 && (
+											<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
+												{selected.length}
+											</span>
+										)}
+									</Button>
+								</PopoverTrigger>
+								<PopoverContent
+									className="w-[200px] p-0"
+									align="start"
+									onWheel={(e) => e.stopPropagation()}
+								>
+									<Command>
+										<CommandInput
+											placeholder={`Search ${opt.property_name.toLowerCase()}...`}
+										/>
+										<CommandList>
+											<CommandEmpty>No options found.</CommandEmpty>
+											<CommandGroup>
+												{opt.options.map((v, i) => {
+													const filterValue = opt.option_ids[i] ?? v;
+													const isSelected = selected.includes(filterValue);
+													return (
+														<CommandItem
+															key={v}
+															onSelect={() =>
+																toggleLabelFilter(
+																	opt.property_name,
+																	filterValue,
+																)
+															}
+														>
+															<Check
+																className={cn(
+																	"size-3.5",
+																	isSelected ? "opacity-100" : "opacity-0",
+																)}
+															/>
+															{v}
+														</CommandItem>
+													);
+												})}
+											</CommandGroup>
+										</CommandList>
+									</Command>
+								</PopoverContent>
+							</Popover>
+						);
+					})}
 				</div>
 			)}
 			<ScrollArea className="flex-1 min-h-[120px]">
