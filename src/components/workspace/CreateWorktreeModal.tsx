@@ -175,12 +175,12 @@ export function CreateWorktreeModal({
 		const worktreeDir = computeWorktreeDir(selectedRepoPath);
 		const existingNames = allBranches.map((b) => b.name);
 
-		let lastEntry: WorktreeEntry | null = null;
-		for (const branch of selectedBranches) {
-			const dirName = branchToDir(branch);
-			const worktreePath = `${worktreeDir}/${dirName}`;
-			const isNewBranch = !existingNames.includes(branch);
-			try {
+		try {
+			let lastEntry: WorktreeEntry | null = null;
+			for (const branch of selectedBranches) {
+				const dirName = branchToDir(branch);
+				const worktreePath = `${worktreeDir}/${dirName}`;
+				const isNewBranch = !existingNames.includes(branch);
 				lastEntry = await invoke<WorktreeEntry>("create_worktree", {
 					repoPath: selectedRepoPath,
 					worktreePath,
@@ -188,19 +188,18 @@ export function CreateWorktreeModal({
 					createBranch: isNewBranch,
 					baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
 				});
-			} catch (e) {
-				setError(String(e));
-				setCreating(false);
-				return;
 			}
+			trackEvent("worktree_created", {
+				count: String(selectedBranches.length),
+			});
+			if (lastEntry) {
+				onCreated(lastEntry.path, lastEntry.branch, repoName);
+			}
+		} catch (e) {
+			setError(String(e));
+		} finally {
+			setCreating(false);
 		}
-		trackEvent("worktree_created", {
-			count: String(selectedBranches.length),
-		});
-		if (lastEntry) {
-			onCreated(lastEntry.path, lastEntry.branch, repoName);
-		}
-		setCreating(false);
 	}, [
 		selectedBranches,
 		selectedRepoPath,
@@ -305,6 +304,7 @@ export function CreateWorktreeModal({
 						)}
 						{mode === "issue" && selectedRepoPath && (
 							<IssueMode
+								key={`issue-${selectedRepoPath}`}
 								repoPath={selectedRepoPath}
 								onToggle={(issue) =>
 									toggleBranch(generateIssueBranchName(issue.number))
@@ -315,6 +315,7 @@ export function CreateWorktreeModal({
 						)}
 						{mode === "notion" && selectedRepoPath && (
 							<NotionMode
+								key={`notion-${selectedRepoPath}`}
 								repoPath={selectedRepoPath}
 								onToggle={(task) =>
 									toggleBranch(
