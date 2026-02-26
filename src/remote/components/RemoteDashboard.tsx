@@ -6,7 +6,7 @@ import {
 	RefreshCw,
 } from "lucide-react";
 import { useMemo } from "react";
-import { AgentStateBadge } from "@/components/ui/agent-state-badge";
+import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import type { AgentStateSync, WorktreeEntryMsg } from "@/types/protocol";
 
 interface RemoteDashboardProps {
@@ -52,9 +52,7 @@ function WorktreeCard({
 						main
 					</span>
 				)}
-				{agent && (
-					<AgentStateBadge state={agent.state} timestamp={agent.timestamp} />
-				)}
+				{agent && <AgentStateIcon state={agent.state} />}
 			</div>
 			<div className="text-xs">
 				{wt.dirty_count > 0 ? (

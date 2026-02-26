@@ -5,18 +5,16 @@ import {
 	ChevronDown,
 	ChevronRight,
 	Filter,
-	GitBranch,
 	Globe,
 	LayoutList,
 	Loader2,
-	Monitor,
 	Plus,
 	RefreshCw,
 	Settings,
 	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AgentStateBadge } from "@/components/ui/agent-state-badge";
+import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -188,7 +186,6 @@ function RepoWorktreeSectionView({
 	const renderItem = (branch: WorktreeBranch) => {
 		const isSelected = branch.worktree_path === selectedRootPath;
 		const hasWorktree = branch.worktree_path != null;
-		const BranchIcon = branch.has_upstream ? GitBranch : Monitor;
 		const canDelete = !branch.is_default && (hasWorktree || branch.is_merged);
 		const status = computeStatus(branch);
 
@@ -229,7 +226,7 @@ function RepoWorktreeSectionView({
 				<div className="flex flex-col gap-1 min-w-0 flex-1">
 					{/* Row 1: icon + name + diff stats */}
 					<div className="flex items-center gap-1.5 min-w-0">
-						<BranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+						<AgentStateIcon state={branch.agent_state} />
 						<span className="text-xs font-medium truncate flex-1">
 							{branch.name}
 						</span>
@@ -245,7 +242,7 @@ function RepoWorktreeSectionView({
 						)}
 					</div>
 					{/* Row 2: secondary info */}
-					<div className="flex items-center gap-1.5 pl-[22px] min-w-0 text-[11px] text-muted-foreground">
+					<div className="flex items-center gap-1.5 pl-[20px] min-w-0 text-[11px] text-muted-foreground">
 						{infoParts.length > 0 && (
 							<span className="truncate">{infoParts.join(" · ")}</span>
 						)}
@@ -263,35 +260,20 @@ function RepoWorktreeSectionView({
 						)}
 					</div>
 				</div>
-				<span className="absolute top-0.5 right-0.5 size-4 flex items-center justify-center">
-					{canDelete ? (
-						<>
-							<span className="group-hover:hidden transition-opacity">
-								{branch.agent_state ? (
-									<AgentStateBadge state={branch.agent_state} variant="dot" />
-								) : (
-									<span className="block w-2 h-2 rounded-full bg-muted-foreground/20" />
-								)}
-							</span>
-							<Button
-								size="icon-xs"
-								variant="ghost"
-								className="hidden group-hover:flex size-4"
-								onClick={(e) => {
-									e.stopPropagation();
-									setDeletingBranch(branch);
-								}}
-								aria-label={`Delete ${branch.name}`}
-							>
-								<Trash2 className="size-2.5 text-muted-foreground" />
-							</Button>
-						</>
-					) : branch.agent_state ? (
-						<AgentStateBadge state={branch.agent_state} variant="dot" />
-					) : (
-						<span className="block w-2 h-2 rounded-full bg-muted-foreground/20" />
-					)}
-				</span>
+				{canDelete && (
+					<Button
+						size="icon-xs"
+						variant="ghost"
+						className="absolute top-0.5 right-0.5 hidden group-hover:flex group-focus-within:flex size-4"
+						onClick={(e) => {
+							e.stopPropagation();
+							setDeletingBranch(branch);
+						}}
+						aria-label={`Delete ${branch.name}`}
+					>
+						<Trash2 className="size-2.5 text-muted-foreground" />
+					</Button>
+				)}
 			</div>
 		);
 	};
