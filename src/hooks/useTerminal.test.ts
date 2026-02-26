@@ -10,6 +10,7 @@ let mockTerminalInstance: {
 	open: ReturnType<typeof vi.fn>;
 	write: ReturnType<typeof vi.fn>;
 	onData: ReturnType<typeof vi.fn>;
+	attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
 	dispose: ReturnType<typeof vi.fn>;
 	refresh: ReturnType<typeof vi.fn>;
 	options: Record<string, unknown>;
@@ -37,6 +38,7 @@ vi.mock("@xterm/xterm", () => {
 					mockOnDataCallback = callback;
 					return { dispose: vi.fn() };
 				});
+			attachCustomKeyEventHandler = vi.fn();
 			dispose = vi.fn();
 			refresh = vi.fn();
 			options: Record<string, unknown> = {};
@@ -243,6 +245,70 @@ describe("useTerminal", () => {
 			"write_pty",
 			expect.objectContaining({ data: "startup-cmd\n" }),
 		);
+	});
+
+	describe("attachCustomKeyEventHandler", () => {
+		it("ペイン操作キーを抑止する", () => {
+			renderHook(() => useTerminal(containerRef));
+
+			expect(
+				mockTerminalInstance.attachCustomKeyEventHandler,
+			).toHaveBeenCalledTimes(1);
+			const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock
+				.calls[0][0] as (event: Partial<KeyboardEvent>) => boolean;
+
+			// Cmd+D → false (垂直分割)
+			expect(
+				handler({ metaKey: true, ctrlKey: false, altKey: false, key: "d" }),
+			).toBe(false);
+			// Cmd+Shift+D → false (水平分割)
+			expect(
+				handler({ metaKey: true, ctrlKey: false, altKey: false, key: "D" }),
+			).toBe(false);
+			// Cmd+Option+ArrowRight → false (フォーカス移動)
+			expect(
+				handler({
+					metaKey: true,
+					ctrlKey: false,
+					altKey: true,
+					key: "ArrowRight",
+				}),
+			).toBe(false);
+			// Cmd+Option+ArrowLeft → false
+			expect(
+				handler({
+					metaKey: true,
+					ctrlKey: false,
+					altKey: true,
+					key: "ArrowLeft",
+				}),
+			).toBe(false);
+		});
+
+		it("通常キーは抑止しない", () => {
+			renderHook(() => useTerminal(containerRef));
+
+			const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock
+				.calls[0][0] as (event: Partial<KeyboardEvent>) => boolean;
+
+			// 通常の文字入力 → true
+			expect(
+				handler({ metaKey: false, ctrlKey: false, altKey: false, key: "a" }),
+			).toBe(true);
+			// Cmd+C (コピー) → true
+			expect(
+				handler({ metaKey: true, ctrlKey: false, altKey: false, key: "c" }),
+			).toBe(true);
+			// 矢印キー（修飾なし） → true
+			expect(
+				handler({
+					metaKey: false,
+					ctrlKey: false,
+					altKey: false,
+					key: "ArrowRight",
+				}),
+			).toBe(true);
+		});
 	});
 
 	describe("ResizeObserver ゼロサイズガード", () => {

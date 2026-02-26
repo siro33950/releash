@@ -1,24 +1,24 @@
 import { X } from "lucide-react";
 import {
+	type DragEvent,
 	forwardRef,
 	useCallback,
+	useEffect,
 	useImperativeHandle,
 	useRef,
-	useState,
 } from "react";
-import {
-	TerminalPanel,
-	type TerminalPanelHandle,
-} from "@/components/panels/TerminalPanel";
+import { PANE_DRAG_TYPE } from "@/components/panels/PaneDropZone";
+import { PaneTreeRenderer } from "@/components/panels/PaneTreeRenderer";
+import type { TerminalPanelHandle } from "@/components/panels/TerminalPanel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useTerminalPanes } from "@/hooks/useTerminalPanes";
+import { countLeaves } from "@/lib/paneTree";
 import type { Theme } from "@/types/settings";
+import type { SplitDirection } from "@/types/terminal-pane";
+
+const TAB_DRAG_TYPE = "application/x-terminal-tab";
 
 const MAX_TABS = 8;
-
-interface Tab {
-	id: string;
-	label: string;
-}
 
 export interface TerminalTabPanelHandle {
 	writeToTerminal: (data: string) => void;
@@ -31,12 +31,6 @@ interface TerminalTabPanelProps {
 	agentType?: string;
 	sessionKey?: string;
 	tabPrefix?: string;
-}
-
-let tabIdCounter = 0;
-function nextTabId() {
-	tabIdCounter += 1;
-	return `tab-${tabIdCounter}`;
 }
 
 export const TerminalTabPanel = forwardRef<
@@ -53,76 +47,206 @@ export const TerminalTabPanel = forwardRef<
 	},
 	ref,
 ) {
-	const [tabs, setTabs] = useState<Tab[]>(() => [
-		{ id: nextTabId(), label: `${tabPrefix} 1` },
-	]);
-	const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
+	const {
+		tabs,
+		activeTabId,
+		setActiveTabId,
+		addTab,
+		closeTab,
+		splitFocusedPane,
+		closeSpecificPane,
+		moveFocus,
+		setFocusedPane,
+		moveTabToPane,
+		movePaneToTab,
+		movePaneInTab,
+		activeTab,
+	} = useTerminalPanes(tabPrefix);
+
 	const terminalRefs = useRef<Map<string, TerminalPanelHandle>>(new Map());
 
 	useImperativeHandle(
 		ref,
 		() => ({
 			writeToTerminal: (data: string) => {
-				const handle = terminalRefs.current.get(activeTabId);
+				if (!activeTab) return;
+				const handle = terminalRefs.current.get(activeTab.focusedPaneId);
 				handle?.writeToTerminal(data);
 			},
 		}),
-		[activeTabId],
+		[activeTab],
 	);
 
-	const tabCounter = useRef(1);
-
-	const addTab = useCallback(() => {
-		tabCounter.current += 1;
-		const num = tabCounter.current;
-		const newTab: Tab = {
-			id: nextTabId(),
-			label: `${tabPrefix} ${num}`,
-		};
-		setTabs((prev) => {
-			if (prev.length >= MAX_TABS) return prev;
-			setActiveTabId(newTab.id);
-			return [...prev, newTab];
-		});
-	}, [tabPrefix]);
-
-	const closeTab = useCallback((tabId: string) => {
-		setTabs((prev) => {
-			if (prev.length <= 1) return prev;
-			const next = prev.filter((t) => t.id !== tabId);
-			setActiveTabId((currentActive) => {
-				if (currentActive !== tabId) return currentActive;
-				const idx = prev.findIndex((t) => t.id === tabId);
-				const fallback = prev[idx - 1] ?? prev[idx + 1];
-				return fallback?.id ?? currentActive;
-			});
-			return next;
-		});
-	}, []);
-
 	const setTerminalRef = useCallback(
-		(tabId: string) => (handle: TerminalPanelHandle | null) => {
+		(paneId: string) => (handle: TerminalPanelHandle | null) => {
 			if (handle) {
-				terminalRefs.current.set(tabId, handle);
+				terminalRefs.current.set(paneId, handle);
 			} else {
-				terminalRefs.current.delete(tabId);
+				terminalRefs.current.delete(paneId);
 			}
 		},
 		[],
 	);
 
+	const handleSplit = useCallback(
+		(paneId: string, direction: SplitDirection) => {
+			setFocusedPane(paneId);
+			splitFocusedPane(direction);
+		},
+		[setFocusedPane, splitFocusedPane],
+	);
+
+	const isDraggingTabRef = useRef(false);
+
+	const handleTabDragStart = useCallback((e: DragEvent, tabId: string) => {
+		isDraggingTabRef.current = true;
+		e.dataTransfer.setData(TAB_DRAG_TYPE, tabId);
+		e.dataTransfer.effectAllowed = "move";
+	}, []);
+
+	const handleTabDragEnd = useCallback(() => {
+		isDraggingTabRef.current = false;
+	}, []);
+
+	const handleTabValueChange = useCallback(
+		(value: string) => {
+			if (isDraggingTabRef.current) return;
+			setActiveTabId(value);
+		},
+		[setActiveTabId],
+	);
+
+	const handleDropTab = useCallback(
+		(tabId: string, targetPaneId: string, direction: SplitDirection) => {
+			moveTabToPane(tabId, targetPaneId, direction);
+		},
+		[moveTabToPane],
+	);
+
+	const handleDropPane = useCallback(
+		(
+			sourcePaneId: string,
+			targetPaneId: string,
+			direction: SplitDirection,
+			insertBefore: boolean,
+		) => {
+			movePaneInTab(sourcePaneId, targetPaneId, direction, insertBefore);
+		},
+		[movePaneInTab],
+	);
+
+	const handleBreakToTab = useCallback(
+		(paneId: string) => {
+			movePaneToTab(paneId);
+		},
+		[movePaneToTab],
+	);
+
+	// タブバーへのペインドロップ
+	const handlePaneDragOverTabBar = useCallback((e: DragEvent) => {
+		if (!e.dataTransfer.types.includes(PANE_DRAG_TYPE)) return;
+		e.preventDefault();
+		e.dataTransfer.dropEffect = "move";
+	}, []);
+
+	const handlePaneDropOnTabBar = useCallback(
+		(e: DragEvent) => {
+			const paneId = e.dataTransfer.getData(PANE_DRAG_TYPE);
+			if (!paneId) return;
+			e.preventDefault();
+			movePaneToTab(paneId);
+		},
+		[movePaneToTab],
+	);
+
+	// キーボードショートカット
+	useEffect(() => {
+		const handleKeyDown = (e: KeyboardEvent) => {
+			const mod = e.metaKey || e.ctrlKey;
+			const key = e.key.toLowerCase();
+
+			// Cmd+D: 垂直分割
+			if (mod && !e.shiftKey && !e.altKey && key === "d") {
+				e.preventDefault();
+				splitFocusedPane("vertical");
+				return;
+			}
+
+			// Cmd+Shift+D: 水平分割
+			if (mod && e.shiftKey && !e.altKey && key === "d") {
+				e.preventDefault();
+				splitFocusedPane("horizontal");
+				return;
+			}
+
+			// Cmd+Shift+T: フォーカスペインをタブに分離
+			if (mod && e.shiftKey && !e.altKey && e.key === "T") {
+				e.preventDefault();
+				const tab = tabs.find((t) => t.id === activeTabId);
+				if (tab && countLeaves(tab.paneTree) > 1 && tabs.length < MAX_TABS) {
+					movePaneToTab(tab.focusedPaneId);
+				}
+				return;
+			}
+
+			// Cmd+Option+矢印: フォーカス移動
+			if (mod && e.altKey) {
+				switch (e.key) {
+					case "ArrowLeft":
+						e.preventDefault();
+						moveFocus("left");
+						return;
+					case "ArrowRight":
+						e.preventDefault();
+						moveFocus("right");
+						return;
+					case "ArrowUp":
+						e.preventDefault();
+						moveFocus("up");
+						return;
+					case "ArrowDown":
+						e.preventDefault();
+						moveFocus("down");
+						return;
+				}
+			}
+		};
+
+		window.addEventListener("keydown", handleKeyDown);
+		return () => window.removeEventListener("keydown", handleKeyDown);
+	}, [splitFocusedPane, moveFocus, movePaneToTab, tabs, activeTabId]);
+
 	return (
 		<div className="flex flex-col h-full">
 			<Tabs
 				value={activeTabId}
-				onValueChange={setActiveTabId}
+				onValueChange={handleTabValueChange}
 				className="flex flex-col h-full gap-0"
 			>
-				<div className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background">
+				{/* biome-ignore lint/a11y/noStaticElementInteractions: タブバーへのペインドロップ */}
+				<div
+					className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background"
+					onDragOver={handlePaneDragOverTabBar}
+					onDrop={handlePaneDropOnTabBar}
+				>
 					<TabsList aria-label="ターミナルタブ">
 						{tabs.map((tab) => (
 							<TabsTrigger key={tab.id} value={tab.id} asChild>
-								<div className="gap-2">
+								{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}
+								{/* biome-ignore lint/a11y/useKeyWithClickEvents: TabsTrigger がキーボード操作を処理 */}
+								<div
+									className="gap-2"
+									draggable={tabs.length > 1}
+									onPointerDown={() => {
+										if (tabs.length > 1) isDraggingTabRef.current = true;
+									}}
+									onClick={() => {
+										isDraggingTabRef.current = false;
+										setActiveTabId(tab.id);
+									}}
+									onDragStart={(e) => handleTabDragStart(e, tab.id)}
+									onDragEnd={handleTabDragEnd}
+								>
 									<span>{tab.label}</span>
 									{tabs.length > 1 && (
 										<button
@@ -162,15 +286,24 @@ export const TerminalTabPanel = forwardRef<
 							forceMount
 							className="absolute inset-0 m-0 data-[state=inactive]:hidden"
 						>
-							<TerminalPanel
-								ref={setTerminalRef(tab.id)}
+							<PaneTreeRenderer
+								node={tab.paneTree}
+								focusedPaneId={tab.focusedPaneId}
+								isOnlyPane={countLeaves(tab.paneTree) === 1}
 								cwd={cwd}
 								theme={theme}
 								terminalStartupCommand={terminalStartupCommand}
 								agentType={agentType}
-								label={tab.label}
-								sessionKey={
-									sessionKey ? `${sessionKey}::${tab.label}` : undefined
+								sessionKey={sessionKey}
+								onFocus={setFocusedPane}
+								onClose={closeSpecificPane}
+								onSplit={handleSplit}
+								setTerminalRef={setTerminalRef}
+								onDropTab={handleDropTab}
+								onDropPane={handleDropPane}
+								onBreakToTab={handleBreakToTab}
+								canBreakToTab={
+									tabs.length < MAX_TABS && countLeaves(tab.paneTree) > 1
 								}
 							/>
 						</TabsContent>

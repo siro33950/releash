@@ -12,6 +12,7 @@ import {
 	ContextMenuContent,
 	ContextMenuItem,
 	ContextMenuSeparator,
+	ContextMenuShortcut,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import type { NativeFileDropPayload } from "@/hooks/useNativeFileDrop";
@@ -31,13 +32,32 @@ export interface TerminalPanelProps {
 	sessionKey?: string;
 	agentType?: string;
 	label?: string;
+	onSplitVertical?: () => void;
+	onSplitHorizontal?: () => void;
+	onBreakToTab?: () => void;
+	onClosePane?: () => void;
+	canBreakToTab?: boolean;
+	isOnlyPane?: boolean;
 }
 
 export const TerminalPanel = forwardRef<
 	TerminalPanelHandle,
 	TerminalPanelProps
 >(function TerminalPanel(
-	{ cwd, theme, terminalStartupCommand, sessionKey, agentType, label },
+	{
+		cwd,
+		theme,
+		terminalStartupCommand,
+		sessionKey,
+		agentType,
+		label,
+		onSplitVertical,
+		onSplitHorizontal,
+		onBreakToTab,
+		onClosePane,
+		canBreakToTab,
+		isOnlyPane,
+	},
 	ref,
 ) {
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -165,6 +185,36 @@ export const TerminalPanel = forwardRef<
 				<ContextMenuSeparator />
 				<ContextMenuItem onClick={handleSelectAll}>全選択</ContextMenuItem>
 				<ContextMenuItem onClick={handleClear}>クリア</ContextMenuItem>
+				<ContextMenuSeparator />
+				{onSplitVertical && (
+					<ContextMenuItem onClick={onSplitVertical}>
+						垂直分割
+						<ContextMenuShortcut>⌘D</ContextMenuShortcut>
+					</ContextMenuItem>
+				)}
+				{onSplitHorizontal && (
+					<ContextMenuItem onClick={onSplitHorizontal}>
+						水平分割
+						<ContextMenuShortcut>⇧⌘D</ContextMenuShortcut>
+					</ContextMenuItem>
+				)}
+				{canBreakToTab && onBreakToTab && (
+					<>
+						<ContextMenuSeparator />
+						<ContextMenuItem onClick={onBreakToTab}>
+							タブに分離
+							<ContextMenuShortcut>⇧⌘T</ContextMenuShortcut>
+						</ContextMenuItem>
+					</>
+				)}
+				{!isOnlyPane && onClosePane && (
+					<>
+						<ContextMenuSeparator />
+						<ContextMenuItem variant="destructive" onClick={onClosePane}>
+							閉じる
+						</ContextMenuItem>
+					</>
+				)}
 			</ContextMenuContent>
 		</ContextMenu>
 	);
