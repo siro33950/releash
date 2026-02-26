@@ -15,6 +15,7 @@ import { useEditorLayout } from "@/hooks/useEditorLayout";
 import { useFileContents } from "@/hooks/useFileContents";
 import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
+import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
 import { useLineComments } from "@/hooks/useLineComments";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
@@ -154,6 +155,9 @@ export function useWorktreeState({
 			[reloadFileIfClean, getFileContent, markExternalChange],
 		),
 	});
+
+	// --- Git dir watcher (index / refs / HEAD) ---
+	useGitDirWatcher(rootPath);
 
 	// --- Lifecycle effects ---
 	useEffect(() => {

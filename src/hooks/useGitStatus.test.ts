@@ -395,4 +395,76 @@ describe("useGitStatus", () => {
 
 		expect(result.current.statusMap).not.toBe(firstStatusMap);
 	});
+
+	it("should debounce refresh on git-status-changed events", async () => {
+		vi.useFakeTimers();
+		mockInvoke.mockResolvedValue([]);
+
+		type GitStatusCallback = (event: {
+			payload: { repo_path: string };
+		}) => void;
+		let gitStatusCallback: GitStatusCallback | null = null;
+		mockListen.mockImplementation((event: string, cb: GitStatusCallback) => {
+			if (event === "git-status-changed") {
+				gitStatusCallback = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
+
+		renderHook(() => useGitStatus("/test/repo"));
+
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		});
+
+		expect(gitStatusCallback).not.toBeNull();
+
+		act(() => {
+			gitStatusCallback?.({ payload: { repo_path: "/test/repo" } });
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+		await act(async () => {
+			vi.advanceTimersByTime(300);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(2);
+
+		vi.useRealTimers();
+	});
+
+	it("should ignore git-status-changed events from different repo_path", async () => {
+		vi.useFakeTimers();
+		mockInvoke.mockResolvedValue([]);
+
+		type GitStatusCallback = (event: {
+			payload: { repo_path: string };
+		}) => void;
+		let gitStatusCallback: GitStatusCallback | null = null;
+		mockListen.mockImplementation((event: string, cb: GitStatusCallback) => {
+			if (event === "git-status-changed") {
+				gitStatusCallback = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
+
+		renderHook(() => useGitStatus("/test/repo-a"));
+
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledTimes(1);
+		});
+
+		act(() => {
+			gitStatusCallback?.({ payload: { repo_path: "/test/repo-b" } });
+		});
+
+		await act(async () => {
+			vi.advanceTimersByTime(300);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+		vi.useRealTimers();
+	});
 });
