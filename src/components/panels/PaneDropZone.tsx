@@ -1,7 +1,8 @@
 import { type DragEvent, useCallback, useState } from "react";
 import type { SplitDirection } from "@/types/terminal-pane";
 
-const DRAG_TYPE = "application/x-terminal-tab";
+const TAB_DRAG_TYPE = "application/x-terminal-tab";
+export const PANE_DRAG_TYPE = "application/x-terminal-pane";
 
 type DropZonePosition = "left" | "right" | "top" | "bottom" | "center";
 
@@ -12,6 +13,12 @@ interface PaneDropZoneProps {
 		tabId: string,
 		targetPaneId: string,
 		direction: SplitDirection,
+	) => void;
+	onDropPane?: (
+		sourcePaneId: string,
+		targetPaneId: string,
+		direction: SplitDirection,
+		insertBefore: boolean,
 	) => void;
 }
 
@@ -27,16 +34,18 @@ function getDropPosition(e: DragEvent, rect: DOMRect): DropZonePosition {
 	return "center";
 }
 
-function positionToDirection(
+function positionToDirectionAndInsertBefore(
 	position: DropZonePosition,
-): SplitDirection | null {
+): { direction: SplitDirection; insertBefore: boolean } | null {
 	switch (position) {
 		case "left":
+			return { direction: "vertical", insertBefore: true };
 		case "right":
-			return "vertical";
+			return { direction: "vertical", insertBefore: false };
 		case "top":
+			return { direction: "horizontal", insertBefore: true };
 		case "bottom":
-			return "horizontal";
+			return { direction: "horizontal", insertBefore: false };
 		default:
 			return null;
 	}
@@ -46,13 +55,16 @@ export function PaneDropZone({
 	paneId,
 	children,
 	onDropTab,
+	onDropPane,
 }: PaneDropZoneProps) {
 	const [dropPosition, setDropPosition] = useState<DropZonePosition | null>(
 		null,
 	);
 
 	const handleDragOver = useCallback((e: DragEvent) => {
-		if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
+		const hasTab = e.dataTransfer.types.includes(TAB_DRAG_TYPE);
+		const hasPane = e.dataTransfer.types.includes(PANE_DRAG_TYPE);
+		if (!hasTab && !hasPane) return;
 		e.preventDefault();
 		e.dataTransfer.dropEffect = "move";
 		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -68,18 +80,38 @@ export function PaneDropZone({
 	const handleDrop = useCallback(
 		(e: DragEvent) => {
 			e.preventDefault();
-			const tabId = e.dataTransfer.getData(DRAG_TYPE);
-			if (!tabId || !dropPosition) {
+			if (!dropPosition) {
 				setDropPosition(null);
 				return;
 			}
-			const direction = positionToDirection(dropPosition);
-			if (direction) {
-				onDropTab(tabId, paneId, direction);
+
+			// ペインドラッグ優先
+			const sourcePaneId = e.dataTransfer.getData(PANE_DRAG_TYPE);
+			if (sourcePaneId && onDropPane) {
+				const result = positionToDirectionAndInsertBefore(dropPosition);
+				if (result) {
+					onDropPane(
+						sourcePaneId,
+						paneId,
+						result.direction,
+						result.insertBefore,
+					);
+				}
+				setDropPosition(null);
+				return;
+			}
+
+			// タブドラッグにフォールバック
+			const tabId = e.dataTransfer.getData(TAB_DRAG_TYPE);
+			if (tabId) {
+				const result = positionToDirectionAndInsertBefore(dropPosition);
+				if (result) {
+					onDropTab(tabId, paneId, result.direction);
+				}
 			}
 			setDropPosition(null);
 		},
-		[dropPosition, paneId, onDropTab],
+		[dropPosition, paneId, onDropTab, onDropPane],
 	);
 
 	return (

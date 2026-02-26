@@ -24,6 +24,14 @@ interface PaneTreeRendererProps {
 		targetPaneId: string,
 		direction: SplitDirection,
 	) => void;
+	onDropPane?: (
+		sourcePaneId: string,
+		targetPaneId: string,
+		direction: SplitDirection,
+		insertBefore: boolean,
+	) => void;
+	onBreakToTab?: (paneId: string) => void;
+	canBreakToTab?: boolean;
 }
 
 export function PaneTreeRenderer({
@@ -40,6 +48,9 @@ export function PaneTreeRenderer({
 	onSplit,
 	setTerminalRef,
 	onDropTab,
+	onDropPane,
+	onBreakToTab,
+	canBreakToTab,
 }: PaneTreeRendererProps) {
 	if (node.type === "leaf") {
 		return (
@@ -57,6 +68,9 @@ export function PaneTreeRenderer({
 				onSplit={onSplit}
 				setTerminalRef={setTerminalRef}
 				onDropTab={onDropTab}
+				onDropPane={onDropPane}
+				onBreakToTab={onBreakToTab}
+				canBreakToTab={canBreakToTab}
 			/>
 		);
 	}
@@ -87,6 +101,9 @@ export function PaneTreeRenderer({
 					onSplit={onSplit}
 					setTerminalRef={setTerminalRef}
 					onDropTab={onDropTab}
+					onDropPane={onDropPane}
+					onBreakToTab={onBreakToTab}
+					canBreakToTab={canBreakToTab}
 				/>
 			))}
 		</Group>
@@ -115,6 +132,14 @@ interface PaneTreePanelProps {
 		targetPaneId: string,
 		direction: SplitDirection,
 	) => void;
+	onDropPane?: (
+		sourcePaneId: string,
+		targetPaneId: string,
+		direction: SplitDirection,
+		insertBefore: boolean,
+	) => void;
+	onBreakToTab?: (paneId: string) => void;
+	canBreakToTab?: boolean;
 }
 
 function PaneTreePanel({
@@ -133,6 +158,9 @@ function PaneTreePanel({
 	onSplit,
 	setTerminalRef,
 	onDropTab,
+	onDropPane,
+	onBreakToTab,
+	canBreakToTab,
 }: PaneTreePanelProps) {
 	return (
 		<>
@@ -151,6 +179,9 @@ function PaneTreePanel({
 					onSplit={onSplit}
 					setTerminalRef={setTerminalRef}
 					onDropTab={onDropTab}
+					onDropPane={onDropPane}
+					onBreakToTab={onBreakToTab}
+					canBreakToTab={canBreakToTab}
 				/>
 			</Panel>
 			{!isLast && <Separator />}

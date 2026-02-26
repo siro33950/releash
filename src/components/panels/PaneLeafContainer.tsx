@@ -1,5 +1,5 @@
-import { useCallback } from "react";
-import { PaneDropZone } from "@/components/panels/PaneDropZone";
+import { type DragEvent, useCallback } from "react";
+import { PANE_DRAG_TYPE, PaneDropZone } from "@/components/panels/PaneDropZone";
 import {
 	TerminalPanel,
 	type TerminalPanelHandle,
@@ -27,6 +27,14 @@ interface PaneLeafContainerProps {
 		targetPaneId: string,
 		direction: SplitDirection,
 	) => void;
+	onDropPane?: (
+		sourcePaneId: string,
+		targetPaneId: string,
+		direction: SplitDirection,
+		insertBefore: boolean,
+	) => void;
+	onBreakToTab?: (paneId: string) => void;
+	canBreakToTab?: boolean;
 }
 
 export function PaneLeafContainer({
@@ -43,6 +51,9 @@ export function PaneLeafContainer({
 	onSplit,
 	setTerminalRef,
 	onDropTab,
+	onDropPane,
+	onBreakToTab,
+	canBreakToTab,
 }: PaneLeafContainerProps) {
 	const handleFocus = useCallback(() => {
 		onFocus(pane.id);
@@ -67,48 +78,92 @@ export function PaneLeafContainer({
 		[onDropTab],
 	);
 
+	const handleDropPane = useCallback(
+		(
+			sourcePaneId: string,
+			targetPaneId: string,
+			direction: SplitDirection,
+			insertBefore: boolean,
+		) => {
+			onDropPane?.(sourcePaneId, targetPaneId, direction, insertBefore);
+		},
+		[onDropPane],
+	);
+
+	const handleBreakToTab = useCallback(() => {
+		onBreakToTab?.(pane.id);
+	}, [onBreakToTab, pane.id]);
+
+	const handleDragStart = useCallback(
+		(e: DragEvent) => {
+			e.dataTransfer.setData(PANE_DRAG_TYPE, pane.id);
+			e.dataTransfer.effectAllowed = "move";
+		},
+		[pane.id],
+	);
+
+	const paneHeader = !isOnlyPane && (
+		<div className="flex items-center justify-between px-2 py-0.5 bg-muted/30 text-xs text-muted-foreground shrink-0 border-b border-border/50">
+			{/* biome-ignore lint/a11y/noStaticElementInteractions: ドラッグハンドル */}
+			<span
+				className="truncate cursor-grab active:cursor-grabbing"
+				draggable
+				onDragStart={handleDragStart}
+			>
+				{pane.label}
+			</span>
+			<div className="flex items-center gap-1">
+				{canBreakToTab && (
+					<button
+						type="button"
+						onClick={handleBreakToTab}
+						className="px-1 hover:text-foreground transition-colors"
+						aria-label={`${pane.label} をタブに分離`}
+						title="タブに分離"
+					>
+						&#x2934;
+					</button>
+				)}
+				<button
+					type="button"
+					onClick={handleSplitVertical}
+					className="px-1 hover:text-foreground transition-colors"
+					aria-label={`${pane.label} を垂直分割`}
+					title="垂直分割 (⌘D)"
+				>
+					┃
+				</button>
+				<button
+					type="button"
+					onClick={handleSplitHorizontal}
+					className="px-1 hover:text-foreground transition-colors"
+					aria-label={`${pane.label} を水平分割`}
+					title="水平分割 (⇧⌘D)"
+				>
+					━
+				</button>
+				<button
+					type="button"
+					onClick={handleClose}
+					className="px-1 hover:text-foreground transition-colors"
+					aria-label={`${pane.label} を閉じる`}
+					title="閉じる"
+				>
+					✕
+				</button>
+			</div>
+		</div>
+	);
+
 	const content = (
 		// biome-ignore lint/a11y/noStaticElementInteractions: ペインフォーカスにマウスイベントが必要
 		<div
 			className={`h-full w-full flex flex-col ${
-				isFocused ? "ring-1 ring-primary/50" : ""
-			}`}
+				!isOnlyPane ? "border border-border/50" : ""
+			} ${isFocused && !isOnlyPane ? "border-primary/60" : ""}`}
 			onMouseDown={handleFocus}
 		>
-			{!isOnlyPane && (
-				<div className="flex items-center justify-between px-2 py-0.5 bg-muted/30 text-xs text-muted-foreground shrink-0">
-					<span className="truncate">{pane.label}</span>
-					<div className="flex items-center gap-1">
-						<button
-							type="button"
-							onClick={handleSplitVertical}
-							className="px-1 hover:text-foreground transition-colors"
-							aria-label={`${pane.label} を垂直分割`}
-							title="垂直分割 (⌘D)"
-						>
-							┃
-						</button>
-						<button
-							type="button"
-							onClick={handleSplitHorizontal}
-							className="px-1 hover:text-foreground transition-colors"
-							aria-label={`${pane.label} を水平分割`}
-							title="水平分割 (⇧⌘D)"
-						>
-							━
-						</button>
-						<button
-							type="button"
-							onClick={handleClose}
-							className="px-1 hover:text-foreground transition-colors"
-							aria-label={`${pane.label} を閉じる`}
-							title="閉じる"
-						>
-							✕
-						</button>
-					</div>
-				</div>
-			)}
+			{paneHeader}
 			<div className="flex-1 min-h-0">
 				<TerminalPanel
 					ref={setTerminalRef(pane.id)}
@@ -118,6 +173,12 @@ export function PaneLeafContainer({
 					agentType={agentType}
 					label={pane.label}
 					sessionKey={sessionKey ? `${sessionKey}::${pane.id}` : undefined}
+					onSplitVertical={handleSplitVertical}
+					onSplitHorizontal={handleSplitHorizontal}
+					onBreakToTab={handleBreakToTab}
+					onClosePane={handleClose}
+					canBreakToTab={canBreakToTab}
+					isOnlyPane={isOnlyPane}
 				/>
 			</div>
 		</div>
@@ -125,7 +186,11 @@ export function PaneLeafContainer({
 
 	if (onDropTab) {
 		return (
-			<PaneDropZone paneId={pane.id} onDropTab={handleDropTab}>
+			<PaneDropZone
+				paneId={pane.id}
+				onDropTab={handleDropTab}
+				onDropPane={onDropPane ? handleDropPane : undefined}
+			>
 				{content}
 			</PaneDropZone>
 		);

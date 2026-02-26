@@ -7,11 +7,12 @@ import {
 	useImperativeHandle,
 	useRef,
 } from "react";
+import { PANE_DRAG_TYPE } from "@/components/panels/PaneDropZone";
 import { PaneTreeRenderer } from "@/components/panels/PaneTreeRenderer";
 import type { TerminalPanelHandle } from "@/components/panels/TerminalPanel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useTerminalPanes } from "@/hooks/useTerminalPanes";
-import { countLeaves, getAllLeaves } from "@/lib/paneTree";
+import { countLeaves } from "@/lib/paneTree";
 import type { Theme } from "@/types/settings";
 import type { SplitDirection } from "@/types/terminal-pane";
 
@@ -56,6 +57,9 @@ export const TerminalTabPanel = forwardRef<
 		closeSpecificPane,
 		moveFocus,
 		setFocusedPane,
+		moveTabToPane,
+		movePaneToTab,
+		movePaneInTab,
 		activeTab,
 	} = useTerminalPanes(tabPrefix);
 
@@ -92,28 +96,67 @@ export const TerminalTabPanel = forwardRef<
 		[setFocusedPane, splitFocusedPane],
 	);
 
+	const isDraggingTabRef = useRef(false);
+
 	const handleTabDragStart = useCallback((e: DragEvent, tabId: string) => {
+		isDraggingTabRef.current = true;
 		e.dataTransfer.setData(TAB_DRAG_TYPE, tabId);
 		e.dataTransfer.effectAllowed = "move";
 	}, []);
 
+	const handleTabDragEnd = useCallback(() => {
+		isDraggingTabRef.current = false;
+	}, []);
+
+	const handleTabValueChange = useCallback(
+		(value: string) => {
+			if (isDraggingTabRef.current) return;
+			setActiveTabId(value);
+		},
+		[setActiveTabId],
+	);
+
 	const handleDropTab = useCallback(
 		(tabId: string, targetPaneId: string, direction: SplitDirection) => {
-			const tab = tabs.find((t) => t.id === tabId);
-			if (!tab) return;
-
-			// タブのルートがリーフの場合のみ対応
-			const leaves = getAllLeaves(tab.paneTree);
-			if (leaves.length !== 1) return;
-
-			// ドロップ先ペインを分割して元タブのリーフを挿入
-			setFocusedPane(targetPaneId);
-			splitFocusedPane(direction);
-
-			// 元タブを閉じる
-			closeTab(tabId);
+			moveTabToPane(tabId, targetPaneId, direction);
 		},
-		[tabs, setFocusedPane, splitFocusedPane, closeTab],
+		[moveTabToPane],
+	);
+
+	const handleDropPane = useCallback(
+		(
+			sourcePaneId: string,
+			targetPaneId: string,
+			direction: SplitDirection,
+			insertBefore: boolean,
+		) => {
+			movePaneInTab(sourcePaneId, targetPaneId, direction, insertBefore);
+		},
+		[movePaneInTab],
+	);
+
+	const handleBreakToTab = useCallback(
+		(paneId: string) => {
+			movePaneToTab(paneId);
+		},
+		[movePaneToTab],
+	);
+
+	// タブバーへのペインドロップ
+	const handlePaneDragOverTabBar = useCallback((e: DragEvent) => {
+		if (!e.dataTransfer.types.includes(PANE_DRAG_TYPE)) return;
+		e.preventDefault();
+		e.dataTransfer.dropEffect = "move";
+	}, []);
+
+	const handlePaneDropOnTabBar = useCallback(
+		(e: DragEvent) => {
+			const paneId = e.dataTransfer.getData(PANE_DRAG_TYPE);
+			if (!paneId) return;
+			e.preventDefault();
+			movePaneToTab(paneId);
+		},
+		[movePaneToTab],
 	);
 
 	// キーボードショートカット
@@ -132,6 +175,16 @@ export const TerminalTabPanel = forwardRef<
 			if (mod && e.shiftKey && !e.altKey && e.key === "D") {
 				e.preventDefault();
 				splitFocusedPane("horizontal");
+				return;
+			}
+
+			// Cmd+Shift+T: フォーカスペインをタブに分離
+			if (mod && e.shiftKey && !e.altKey && e.key === "T") {
+				e.preventDefault();
+				const tab = tabs.find((t) => t.id === activeTabId);
+				if (tab && countLeaves(tab.paneTree) > 1 && tabs.length < MAX_TABS) {
+					movePaneToTab(tab.focusedPaneId);
+				}
 				return;
 			}
 
@@ -160,24 +213,38 @@ export const TerminalTabPanel = forwardRef<
 
 		window.addEventListener("keydown", handleKeyDown);
 		return () => window.removeEventListener("keydown", handleKeyDown);
-	}, [splitFocusedPane, moveFocus]);
+	}, [splitFocusedPane, moveFocus, movePaneToTab, tabs, activeTabId]);
 
 	return (
 		<div className="flex flex-col h-full">
 			<Tabs
 				value={activeTabId}
-				onValueChange={setActiveTabId}
+				onValueChange={handleTabValueChange}
 				className="flex flex-col h-full gap-0"
 			>
-				<div className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background">
+				{/* biome-ignore lint/a11y/noStaticElementInteractions: タブバーへのペインドロップ */}
+				<div
+					className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background"
+					onDragOver={handlePaneDragOverTabBar}
+					onDrop={handlePaneDropOnTabBar}
+				>
 					<TabsList aria-label="ターミナルタブ">
 						{tabs.map((tab) => (
 							<TabsTrigger key={tab.id} value={tab.id} asChild>
 								{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}
+								{/* biome-ignore lint/a11y/useKeyWithClickEvents: TabsTrigger がキーボード操作を処理 */}
 								<div
 									className="gap-2"
 									draggable={tabs.length > 1}
+									onPointerDown={() => {
+										if (tabs.length > 1) isDraggingTabRef.current = true;
+									}}
+									onClick={() => {
+										isDraggingTabRef.current = false;
+										setActiveTabId(tab.id);
+									}}
 									onDragStart={(e) => handleTabDragStart(e, tab.id)}
+									onDragEnd={handleTabDragEnd}
 								>
 									<span>{tab.label}</span>
 									{tabs.length > 1 && (
@@ -232,6 +299,11 @@ export const TerminalTabPanel = forwardRef<
 								onSplit={handleSplit}
 								setTerminalRef={setTerminalRef}
 								onDropTab={handleDropTab}
+								onDropPane={handleDropPane}
+								onBreakToTab={handleBreakToTab}
+								canBreakToTab={
+									tabs.length < MAX_TABS && countLeaves(tab.paneTree) > 1
+								}
 							/>
 						</TabsContent>
 					))}

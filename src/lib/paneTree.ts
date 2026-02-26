@@ -170,6 +170,7 @@ export function splitPane(
 	paneId: string,
 	direction: SplitDirection,
 	newPane: PaneLeaf,
+	insertBefore = false,
 ): PaneNode {
 	const parentResult = findParent(tree, paneId);
 
@@ -177,14 +178,15 @@ export function splitPane(
 		// 親が同方向 → 親の children に新リーフを追加
 		const { parent, index } = parentResult;
 		const newChildren = [...parent.children];
-		newChildren.splice(index + 1, 0, newPane);
+		const insertIndex = insertBefore ? index : index + 1;
+		newChildren.splice(insertIndex, 0, newPane);
 		// insertRebalance は末尾に追加するので、適切な位置に挿入し直す
 		const baseRatios = parent.ratios.map(
 			(r) => r * (1 - 1 / (parent.children.length + 1)),
 		);
 		const insertedRatio = 1 / (parent.children.length + 1);
 		const adjustedRatios = [...baseRatios];
-		adjustedRatios.splice(index + 1, 0, insertedRatio);
+		adjustedRatios.splice(insertIndex, 0, insertedRatio);
 
 		const updatedParent: PaneContainer = {
 			...parent,
@@ -198,11 +200,13 @@ export function splitPane(
 	}
 
 	// 親が異方向 or ルートリーフ → 新コンテナに変換
+	const target = findNode(tree, paneId) as PaneNode;
+	const children = insertBefore ? [newPane, target] : [target, newPane];
 	const newContainer: PaneContainer = {
 		type: "container",
 		id: nextContainerId(),
 		direction,
-		children: [findNode(tree, paneId) as PaneNode, newPane],
+		children,
 		ratios: [0.5, 0.5],
 	};
 

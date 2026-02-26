@@ -1,5 +1,7 @@
+import { invoke } from "@tauri-apps/api/core";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { countLeaves, getAllLeaves } from "@/lib/paneTree";
 import { _resetIdCounters, useTerminalPanes } from "./useTerminalPanes";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -122,5 +124,353 @@ describe("useTerminalPanes", () => {
 		const firstPaneId = tree.children[0].id;
 		act(() => result.current.setFocusedPane(firstPaneId));
 		expect(result.current.activeTab?.focusedPaneId).toBe(firstPaneId);
+	});
+
+	describe("moveTabToPane", () => {
+		it("タブを別タブのペインに移動（タブ減少・ペイン追加・フォーカス・activeTab変更）", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.addTab());
+			expect(result.current.tabs).toHaveLength(2);
+
+			const sourceTab = result.current.tabs[0];
+			const targetTab = result.current.tabs[1];
+			const targetPaneId = targetTab.focusedPaneId;
+			const sourceLeaf = getAllLeaves(sourceTab.paneTree)[0];
+
+			act(() =>
+				result.current.moveTabToPane(sourceTab.id, targetPaneId, "vertical"),
+			);
+
+			expect(result.current.tabs).toHaveLength(1);
+			expect(countLeaves(result.current.tabs[0].paneTree)).toBe(2);
+			expect(result.current.tabs[0].focusedPaneId).toBe(sourceLeaf.id);
+			expect(result.current.activeTabId).toBe(targetTab.id);
+		});
+
+		it("同一タブへのドロップは no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+
+			const tab = result.current.tabs[0];
+			const paneId = tab.focusedPaneId;
+
+			act(() => result.current.moveTabToPane(tab.id, paneId, "vertical"));
+
+			expect(result.current.tabs).toHaveLength(1);
+			expect(result.current.tabs[0].paneTree.type).toBe("leaf");
+		});
+
+		it("複数ペインを持つタブの移動は no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+			act(() => result.current.addTab());
+
+			const sourceTab = result.current.tabs[0];
+			const targetTab = result.current.tabs[1];
+
+			act(() =>
+				result.current.moveTabToPane(
+					sourceTab.id,
+					targetTab.focusedPaneId,
+					"vertical",
+				),
+			);
+
+			expect(result.current.tabs).toHaveLength(2);
+		});
+
+		it("存在しないソースタブは no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.addTab());
+
+			const targetPaneId = result.current.tabs[1].focusedPaneId;
+
+			act(() =>
+				result.current.moveTabToPane(
+					"nonexistent-tab",
+					targetPaneId,
+					"vertical",
+				),
+			);
+
+			expect(result.current.tabs).toHaveLength(2);
+		});
+
+		it("存在しないターゲットペインは no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.addTab());
+
+			const sourceTabId = result.current.tabs[0].id;
+
+			act(() =>
+				result.current.moveTabToPane(
+					sourceTabId,
+					"nonexistent-pane",
+					"vertical",
+				),
+			);
+
+			expect(result.current.tabs).toHaveLength(2);
+		});
+
+		it("kill_pty が呼ばれないこと（PTY維持）", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.addTab());
+
+			const sourceTab = result.current.tabs[0];
+			const targetPaneId = result.current.tabs[1].focusedPaneId;
+
+			act(() =>
+				result.current.moveTabToPane(sourceTab.id, targetPaneId, "vertical"),
+			);
+
+			expect(invoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
+		});
+
+		it("水平方向への移動", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.addTab());
+
+			const sourceTab = result.current.tabs[0];
+			const targetPaneId = result.current.tabs[1].focusedPaneId;
+
+			act(() =>
+				result.current.moveTabToPane(sourceTab.id, targetPaneId, "horizontal"),
+			);
+
+			expect(result.current.tabs).toHaveLength(1);
+			const tree = result.current.tabs[0].paneTree;
+			expect(tree.type).toBe("container");
+			if (tree.type === "container") {
+				expect(tree.direction).toBe("horizontal");
+			}
+		});
+
+		it("ターゲットタブがペイン上限の場合は no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			// ターゲットタブを4ペインにする
+			act(() => result.current.splitFocusedPane("vertical"));
+			act(() => result.current.splitFocusedPane("vertical"));
+			act(() => result.current.splitFocusedPane("vertical"));
+			expect(countLeaves(result.current.tabs[0].paneTree)).toBe(4);
+
+			act(() => result.current.addTab());
+			const sourceTab = result.current.tabs[1];
+			const targetPaneId = result.current.tabs[0].focusedPaneId;
+
+			act(() =>
+				result.current.moveTabToPane(sourceTab.id, targetPaneId, "vertical"),
+			);
+
+			expect(result.current.tabs).toHaveLength(2);
+			expect(countLeaves(result.current.tabs[0].paneTree)).toBe(4);
+		});
+	});
+
+	describe("movePaneToTab", () => {
+		it("ペインをタブに分離（新タブ作成・ソースタブのペイン数減少）", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			const tab = result.current.tabs[0];
+			const tree = tab.paneTree;
+			if (tree.type !== "container") throw new Error("should be container");
+			const paneToBreak = tree.children[1];
+
+			act(() => result.current.movePaneToTab(paneToBreak.id));
+
+			expect(result.current.tabs).toHaveLength(2);
+			// ソースタブは1ペインに
+			expect(countLeaves(result.current.tabs[0].paneTree)).toBe(1);
+			// 新タブは分離されたペインの1ペイン
+			expect(countLeaves(result.current.tabs[1].paneTree)).toBe(1);
+			expect(result.current.tabs[1].paneTree.id).toBe(paneToBreak.id);
+			// アクティブタブは新タブ
+			expect(result.current.activeTabId).toBe(result.current.tabs[1].id);
+		});
+
+		it("ソースタブの直後に新タブが挿入される", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.addTab());
+			// Tab 0 を分割
+			act(() => result.current.setActiveTabId(result.current.tabs[0].id));
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			const tab0 = result.current.tabs[0];
+			const tree = tab0.paneTree;
+			if (tree.type !== "container") throw new Error("should be container");
+			const paneToBreak = tree.children[1];
+
+			act(() => result.current.movePaneToTab(paneToBreak.id));
+
+			// Tab 0, 新タブ, Tab 1 の順
+			expect(result.current.tabs).toHaveLength(3);
+			expect(result.current.tabs[1].paneTree.id).toBe(paneToBreak.id);
+		});
+
+		it("単一ペインのタブでは no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			const paneId = result.current.tabs[0].focusedPaneId;
+
+			act(() => result.current.movePaneToTab(paneId));
+
+			expect(result.current.tabs).toHaveLength(1);
+		});
+
+		it("タブ上限(8)の場合は no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			// 8タブまで追加
+			for (let i = 0; i < 7; i++) {
+				act(() => result.current.addTab());
+			}
+			expect(result.current.tabs).toHaveLength(8);
+
+			// Tab 0 を分割
+			act(() => result.current.setActiveTabId(result.current.tabs[0].id));
+			act(() => result.current.splitFocusedPane("vertical"));
+			const tab0 = result.current.tabs[0];
+			const tree = tab0.paneTree;
+			if (tree.type !== "container") throw new Error("should be container");
+
+			act(() => result.current.movePaneToTab(tree.children[1].id));
+
+			expect(result.current.tabs).toHaveLength(8);
+		});
+
+		it("PTY が kill されないこと（セッション維持）", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			const tab = result.current.tabs[0];
+			const tree = tab.paneTree;
+			if (tree.type !== "container") throw new Error("should be container");
+
+			act(() => result.current.movePaneToTab(tree.children[1].id));
+
+			expect(invoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
+		});
+
+		it("存在しないペインIDは no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			act(() => result.current.movePaneToTab("nonexistent-pane"));
+
+			expect(result.current.tabs).toHaveLength(1);
+		});
+
+		it("フォーカスペインを分離した場合、ソースタブのフォーカスが移動する", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			const tab = result.current.tabs[0];
+			const focusedPaneId = tab.focusedPaneId;
+			const tree = tab.paneTree;
+			if (tree.type !== "container") throw new Error("should be container");
+			const otherPaneId = tree.children.find((c) => c.id !== focusedPaneId)?.id;
+
+			act(() => result.current.movePaneToTab(focusedPaneId));
+
+			// ソースタブのフォーカスは残ったペインに移動
+			expect(result.current.tabs[0].focusedPaneId).toBe(otherPaneId);
+		});
+	});
+
+	describe("movePaneInTab", () => {
+		it("ペインをグリッド内で移動（ペイン数不変）", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			const tab = result.current.tabs[0];
+			const tree = tab.paneTree;
+			if (tree.type !== "container") throw new Error("should be container");
+
+			const paneA = tree.children[0].id;
+			const paneC = tree.children[2].id;
+
+			act(() =>
+				result.current.movePaneInTab(paneA, paneC, "horizontal", false),
+			);
+
+			expect(countLeaves(result.current.tabs[0].paneTree)).toBe(3);
+			expect(result.current.tabs[0].focusedPaneId).toBe(paneA);
+		});
+
+		it("同じペインへの移動は no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			const tab = result.current.tabs[0];
+			const tree = tab.paneTree;
+			if (tree.type !== "container") throw new Error("should be container");
+			const paneId = tree.children[0].id;
+
+			act(() => result.current.movePaneInTab(paneId, paneId, "vertical"));
+
+			// ツリー構造に変化なし
+			expect(countLeaves(result.current.tabs[0].paneTree)).toBe(2);
+		});
+
+		it("insertBefore=true で左/上に挿入", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			const tab = result.current.tabs[0];
+			const tree = tab.paneTree;
+			if (tree.type !== "container") throw new Error("should be container");
+			const paneA = tree.children[0].id;
+			const paneB = tree.children[1].id;
+
+			// paneA を paneB の前（horizontal）に移動
+			act(() => result.current.movePaneInTab(paneA, paneB, "horizontal", true));
+
+			const newTree = result.current.tabs[0].paneTree;
+			expect(countLeaves(newTree)).toBe(2);
+			// paneA が paneB の上に配置（horizontal container の最初の子）
+			if (newTree.type === "container") {
+				const firstLeaf = getAllLeaves(newTree)[0];
+				expect(firstLeaf.id).toBe(paneA);
+			}
+		});
+
+		it("異なるタブ間のペインは no-op", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+			act(() => result.current.addTab());
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			const tab0Tree = result.current.tabs[0].paneTree;
+			const tab1Tree = result.current.tabs[1].paneTree;
+			if (tab0Tree.type !== "container" || tab1Tree.type !== "container")
+				throw new Error("should be containers");
+
+			const tab0Pane = tab0Tree.children[0].id;
+			const tab1Pane = tab1Tree.children[0].id;
+
+			act(() => result.current.movePaneInTab(tab0Pane, tab1Pane, "vertical"));
+
+			// 変化なし
+			expect(countLeaves(result.current.tabs[0].paneTree)).toBe(2);
+			expect(countLeaves(result.current.tabs[1].paneTree)).toBe(2);
+		});
+
+		it("PTY が kill されないこと", () => {
+			const { result } = renderHook(() => useTerminalPanes("Terminal"));
+			act(() => result.current.splitFocusedPane("vertical"));
+
+			const tab = result.current.tabs[0];
+			const tree = tab.paneTree;
+			if (tree.type !== "container") throw new Error("should be container");
+
+			act(() =>
+				result.current.movePaneInTab(
+					tree.children[0].id,
+					tree.children[1].id,
+					"horizontal",
+				),
+			);
+
+			expect(invoke).not.toHaveBeenCalledWith("kill_pty", expect.anything());
+		});
 	});
 });
