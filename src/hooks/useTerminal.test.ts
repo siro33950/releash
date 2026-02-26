@@ -10,6 +10,7 @@ let mockTerminalInstance: {
 	open: ReturnType<typeof vi.fn>;
 	write: ReturnType<typeof vi.fn>;
 	onData: ReturnType<typeof vi.fn>;
+	attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
 	dispose: ReturnType<typeof vi.fn>;
 	refresh: ReturnType<typeof vi.fn>;
 	options: Record<string, unknown>;
