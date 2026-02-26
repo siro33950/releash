@@ -257,6 +257,76 @@ describe("NotionSettingsSection", () => {
 		expect(updateDraft).toHaveBeenCalledWith("/repo/a", expect.any(Function));
 	});
 
+	it("should call updateDraft when selecting a Title property", async () => {
+		const user = userEvent.setup();
+		const updateDraft = vi.fn();
+		const drafts = new Map([
+			[
+				"/repo/a",
+				makeDraft({
+					apiToken: "token",
+					databaseId: "db-id",
+					validationStatus: "success",
+					properties: [
+						{ name: "Name", property_type: "title", options: [] },
+						{ name: "Summary", property_type: "rich_text", options: [] },
+					],
+				}),
+			],
+		]);
+
+		render(
+			<NotionSettingsSection
+				repoPaths={["/repo/a"]}
+				drafts={drafts}
+				updateDraft={updateDraft}
+				validate={vi.fn()}
+				markForDelete={vi.fn()}
+			/>,
+		);
+
+		const triggers = screen.getAllByRole("combobox");
+		await user.click(triggers[0]);
+		await user.click(
+			screen.getByRole("option", { name: "Summary (rich_text)" }),
+		);
+		expect(updateDraft).toHaveBeenCalledWith("/repo/a", expect.any(Function));
+	});
+
+	it("should call updateDraft when selecting a Branch Name property", async () => {
+		const user = userEvent.setup();
+		const updateDraft = vi.fn();
+		const drafts = new Map([
+			[
+				"/repo/a",
+				makeDraft({
+					apiToken: "token",
+					databaseId: "db-id",
+					validationStatus: "success",
+					properties: [
+						{ name: "Name", property_type: "title", options: [] },
+						{ name: "ID", property_type: "number", options: [] },
+					],
+				}),
+			],
+		]);
+
+		render(
+			<NotionSettingsSection
+				repoPaths={["/repo/a"]}
+				drafts={drafts}
+				updateDraft={updateDraft}
+				validate={vi.fn()}
+				markForDelete={vi.fn()}
+			/>,
+		);
+
+		const triggers = screen.getAllByRole("combobox");
+		await user.click(triggers[1]);
+		await user.click(screen.getByRole("option", { name: "ID (number)" }));
+		expect(updateDraft).toHaveBeenCalledWith("/repo/a", expect.any(Function));
+	});
+
 	it("should call updateDraft when typing a prefix", async () => {
 		const user = userEvent.setup();
 		const updateDraft = vi.fn();
