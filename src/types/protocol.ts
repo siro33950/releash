@@ -80,7 +80,7 @@ export interface GitStatusSync {
 
 export interface FileContentRequest {
 	path: string;
-	diff_base?: "HEAD" | "staged";
+	diff_base?: "branch-base" | "staged";
 }
 
 interface FileContentResponse {

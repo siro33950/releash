@@ -1,5 +1,5 @@
 export type Theme = "dark" | "light";
-export type DiffBase = "HEAD" | "staged";
+export type DiffBase = "branch-base" | "staged";
 export type DiffMode = "gutter" | "inline" | "split";
 
 export type AgentType =

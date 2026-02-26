@@ -49,7 +49,7 @@ export function DiffTabContent({
 							onChange={(e) => onDiffBaseChange(e.target.value as DiffBase)}
 							className="text-xs bg-input text-secondary-foreground border border-border rounded px-1.5 py-0.5"
 						>
-							<option value="HEAD">HEAD</option>
+							<option value="branch-base">Branch Base</option>
 							<option value="staged">Staged</option>
 						</select>
 						{hasDiffChanges && (
@@ -61,7 +61,7 @@ export function DiffTabContent({
 								Stage All
 							</button>
 						)}
-						{diffBase === "HEAD" &&
+						{diffBase === "branch-base" &&
 							stagedFiles.some((f) => f.path === selectedPath) && (
 								<button
 									type="button"

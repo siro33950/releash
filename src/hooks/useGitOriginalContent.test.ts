@@ -23,15 +23,16 @@ describe("useGitOriginalContent", () => {
 		mockListen.mockResolvedValue(vi.fn());
 	});
 
-	it("should return content from get_file_at_ref on success", async () => {
+	it("should return content from get_file_at_branch_base on success", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_repo_git_dir") return Promise.resolve("/repo/.git");
-			if (cmd === "get_file_at_ref") return Promise.resolve("original content");
+			if (cmd === "get_file_at_branch_base")
+				return Promise.resolve("original content");
 			return Promise.resolve("");
 		});
 
 		const { result } = renderHook(() =>
-			useGitOriginalContent("/repo/file.ts", "HEAD", "fallback"),
+			useGitOriginalContent("/repo/file.ts", "branch-base", "fallback"),
 		);
 
 		await waitFor(() => {
@@ -63,7 +64,11 @@ describe("useGitOriginalContent", () => {
 		});
 
 		const { result } = renderHook(() =>
-			useGitOriginalContent("/repo/untracked.ts", "HEAD", "current content"),
+			useGitOriginalContent(
+				"/repo/untracked.ts",
+				"branch-base",
+				"current content",
+			),
 		);
 
 		await waitFor(() => {
@@ -75,7 +80,7 @@ describe("useGitOriginalContent", () => {
 		mockInvoke.mockResolvedValue("");
 
 		const { result } = renderHook(() =>
-			useGitOriginalContent(null, "HEAD", "fallback"),
+			useGitOriginalContent(null, "branch-base", "fallback"),
 		);
 
 		expect(result.current).toBe("fallback");

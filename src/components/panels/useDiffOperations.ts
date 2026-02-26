@@ -90,7 +90,7 @@ export function useDiffOperations({
 			let patchHunk = hunk;
 			let patchGroup = group;
 
-			if (diffBase === "HEAD") {
+			if (diffBase === "branch-base") {
 				const targetLines = hunk.lines.slice(
 					group.lineOffsetStart,
 					group.lineOffsetEnd + 1,
@@ -181,7 +181,7 @@ export function useDiffOperations({
 	const handleStageAll = useCallback(async () => {
 		const relativePath = getRelativePath(rootPath, filePath);
 		if (!relativePath || !rootPath) return;
-		const base = diffBase === "HEAD" ? stagedContent : originalContent;
+		const base = diffBase === "branch-base" ? stagedContent : originalContent;
 		const allHunks = computeHunks(base, modifiedContent, relativePath);
 		const allIndices = allHunks.map((h) => h.index);
 		const patch = generatePatch(relativePath, allHunks, allIndices);

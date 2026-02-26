@@ -54,7 +54,7 @@ export function DiffToolbar({
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="HEAD">HEAD</SelectItem>
+						<SelectItem value="branch-base">Branch Base</SelectItem>
 						<SelectItem value="staged">Staged</SelectItem>
 					</SelectContent>
 				</Select>
@@ -69,7 +69,7 @@ export function DiffToolbar({
 								>
 									Stage All
 								</button>
-								{diffBase === "HEAD" && (
+								{diffBase === "branch-base" && (
 									<button
 										type="button"
 										onClick={onUnstageAll}

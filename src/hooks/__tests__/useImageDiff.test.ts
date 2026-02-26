@@ -21,19 +21,19 @@ describe("useImageDiff", () => {
 	});
 
 	it("returns null URLs when filePath is null", () => {
-		const { result } = renderHook(() => useImageDiff(null, "HEAD"));
+		const { result } = renderHook(() => useImageDiff(null, "branch-base"));
 		expect(result.current.originalUrl).toBeNull();
 		expect(result.current.modifiedUrl).toBeNull();
 		expect(result.current.loading).toBe(false);
 	});
 
-	it("fetches modified from readFile and original from get_binary_file_at_ref", async () => {
+	it("fetches modified from readFile and original from get_binary_file_at_branch_base", async () => {
 		const pngBytes = new Uint8Array([137, 80, 78, 71]);
 		mockReadFile.mockResolvedValue(pngBytes);
 		mockInvoke.mockResolvedValue("iVBORw0KGgo=");
 
 		const { result } = renderHook(() =>
-			useImageDiff("/repo/image.png", "HEAD"),
+			useImageDiff("/repo/image.png", "branch-base"),
 		);
 
 		await waitFor(() => {
@@ -41,9 +41,8 @@ describe("useImageDiff", () => {
 		});
 
 		expect(mockReadFile).toHaveBeenCalledWith("/repo/image.png");
-		expect(mockInvoke).toHaveBeenCalledWith("get_binary_file_at_ref", {
+		expect(mockInvoke).toHaveBeenCalledWith("get_binary_file_at_branch_base", {
 			filePath: "/repo/image.png",
-			gitRef: "HEAD",
 		});
 
 		expect(result.current.modifiedUrl).toMatch(/^data:image\/png;base64,/);
@@ -76,7 +75,7 @@ describe("useImageDiff", () => {
 		mockInvoke.mockRejectedValue(new Error("not found"));
 
 		const { result } = renderHook(() =>
-			useImageDiff("/repo/new-image.png", "HEAD"),
+			useImageDiff("/repo/new-image.png", "branch-base"),
 		);
 
 		await waitFor(() => {
@@ -92,7 +91,7 @@ describe("useImageDiff", () => {
 		mockInvoke.mockResolvedValue("AQID");
 
 		const { result } = renderHook(() =>
-			useImageDiff("/repo/deleted.png", "HEAD"),
+			useImageDiff("/repo/deleted.png", "branch-base"),
 		);
 
 		await waitFor(() => {
