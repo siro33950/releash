@@ -278,21 +278,35 @@ impl PtyManager {
 
     pub fn kill_by_worktree(&self, worktree_path: &str) -> Vec<u64> {
         let mut sessions = self.sessions.lock();
-        let ids_to_remove: Vec<u64> = sessions
+        let ids_to_kill: Vec<u64> = sessions
             .iter()
             .filter(|(_, s)| s.worktree_path.as_deref() == Some(worktree_path))
             .map(|(&id, _)| id)
             .collect();
 
-        for id in &ids_to_remove {
-            if let Some(session) = sessions.get(id) {
-                if !session.exited.load(Ordering::SeqCst) {
-                    let _ = session.killer.lock().kill();
+        let mut killed_ids = Vec::with_capacity(ids_to_kill.len());
+        for id in ids_to_kill {
+            let should_remove = if let Some(session) = sessions.get(&id) {
+                if session.exited.load(Ordering::SeqCst) {
+                    true
+                } else {
+                    match session.killer.lock().kill() {
+                        Ok(()) => true,
+                        Err(e) => {
+                            log::error!("Failed to kill PTY {}: {}", id, e);
+                            false
+                        }
+                    }
                 }
+            } else {
+                false
+            };
+            if should_remove {
+                sessions.remove(&id);
+                killed_ids.push(id);
             }
-            sessions.remove(id);
         }
-        ids_to_remove
+        killed_ids
     }
 
     pub fn resize(&self, pty_id: u64, rows: u16, cols: u16) -> Result<(), String> {

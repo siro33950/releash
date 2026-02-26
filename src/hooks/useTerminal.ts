@@ -171,7 +171,10 @@ export function useTerminal(
 				label: label ?? null,
 			});
 
-			if (!isMounted) return;
+			if (!isMounted) {
+				invoke("kill_pty", { ptyId: result.pty_id }).catch(() => {});
+				return;
+			}
 
 			// 3. Replay buffered output
 			if (result.buffered_output) {
