@@ -152,17 +152,16 @@ pub fn start_watching(
 
 fn classify_git_dir_events(events: &[notify_debouncer_mini::DebouncedEvent]) -> (bool, bool) {
     let has_branch_change = events.iter().any(|e| {
-        let p = e.path.to_string_lossy();
-        p.contains("refs/heads") || p.ends_with("HEAD")
+        let p = e.path.to_string_lossy().replace('\\', "/");
+        p.contains("/refs/heads/") || e.path.file_name().is_some_and(|n| n == "HEAD")
     });
     let has_index_change = events.iter().any(|e| {
-        let p = e.path.to_string_lossy();
         let file_name = e
             .path
             .file_name()
             .map(|n| n.to_string_lossy())
             .unwrap_or_default();
-        file_name == "index" || file_name == "index.lock" || p.ends_with("/COMMIT_EDITMSG")
+        file_name == "index" || file_name == "index.lock" || file_name == "COMMIT_EDITMSG"
     });
     (has_branch_change, has_index_change)
 }
@@ -255,11 +254,11 @@ pub fn start_git_dir_watching(
             .watch(&paths.head_file, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to watch HEAD: {e}"))?;
     }
-    if paths.index_file.exists() {
+    if let Some(git_dir) = paths.index_file.parent() {
         debouncer
             .watcher()
-            .watch(&paths.index_file, RecursiveMode::NonRecursive)
-            .map_err(|e| format!("Failed to watch index: {e}"))?;
+            .watch(git_dir, RecursiveMode::NonRecursive)
+            .map_err(|e| format!("Failed to watch .git dir: {e}"))?;
     }
     if paths.worktrees_dir.exists() {
         debouncer

@@ -122,20 +122,25 @@ export function useGitStatus(
 
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
-		let mounted = true;
+		let disposed = false;
 		const setup = async () => {
-			unlisten = await listen<{ repo_path: string }>(
+			const off = await listen<{ repo_path: string }>(
 				"git-status-changed",
 				(event) => {
-					if (mounted && rootPath && event.payload.repo_path === rootPath) {
+					if (!disposed && rootPath && event.payload.repo_path === rootPath) {
 						debouncedRefresh();
 					}
 				},
 			);
+			if (disposed) {
+				off();
+				return;
+			}
+			unlisten = off;
 		};
 		setup();
 		return () => {
-			mounted = false;
+			disposed = true;
 			unlisten?.();
 		};
 	}, [debouncedRefresh, rootPath]);
