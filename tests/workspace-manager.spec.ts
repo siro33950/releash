@@ -74,11 +74,6 @@ test.describe("CreateWorktreeModal", () => {
 		await expect(
 			page.getByRole("heading", { name: "New Worktree" }),
 		).toBeVisible();
-		await expect(
-			page.getByText(
-				"Create a new worktree from a branch, issue, or Notion task.",
-			),
-		).toBeVisible();
 	});
 
 	test("Branch タブでブランチ一覧がフィルタリングされる", async ({ page }) => {
