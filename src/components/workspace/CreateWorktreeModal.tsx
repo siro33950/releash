@@ -603,7 +603,7 @@ function IssueMode({
 								<Button size="sm" variant="outline" className="shrink-0 gap-1">
 									Labels
 									{labelFilters.length > 0 && (
-										<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
+										<span className="ml-0.5 text-xs bg-foreground/10 text-foreground rounded-full px-1.5 leading-tight">
 											{labelFilters.length}
 										</span>
 									)}
@@ -654,7 +654,7 @@ function IssueMode({
 								<Button size="sm" variant="outline" className="shrink-0 gap-1">
 									Milestones
 									{milestoneFilters.length > 0 && (
-										<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
+										<span className="ml-0.5 text-xs bg-foreground/10 text-foreground rounded-full px-1.5 leading-tight">
 											{milestoneFilters.length}
 										</span>
 									)}
@@ -865,7 +865,7 @@ function NotionMode({
 									>
 										{opt.property_name}
 										{selected.length > 0 && (
-											<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
+											<span className="ml-0.5 text-xs bg-foreground/10 text-foreground rounded-full px-1.5 leading-tight">
 												{selected.length}
 											</span>
 										)}
