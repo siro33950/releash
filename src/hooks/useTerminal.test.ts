@@ -246,6 +246,70 @@ describe("useTerminal", () => {
 		);
 	});
 
+	describe("attachCustomKeyEventHandler", () => {
+		it("ペイン操作キーを抑止する", () => {
+			renderHook(() => useTerminal(containerRef));
+
+			expect(
+				mockTerminalInstance.attachCustomKeyEventHandler,
+			).toHaveBeenCalledTimes(1);
+			const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock
+				.calls[0][0] as (event: Partial<KeyboardEvent>) => boolean;
+
+			// Cmd+D → false (垂直分割)
+			expect(
+				handler({ metaKey: true, ctrlKey: false, altKey: false, key: "d" }),
+			).toBe(false);
+			// Cmd+Shift+D → false (水平分割)
+			expect(
+				handler({ metaKey: true, ctrlKey: false, altKey: false, key: "D" }),
+			).toBe(false);
+			// Cmd+Option+ArrowRight → false (フォーカス移動)
+			expect(
+				handler({
+					metaKey: true,
+					ctrlKey: false,
+					altKey: true,
+					key: "ArrowRight",
+				}),
+			).toBe(false);
+			// Cmd+Option+ArrowLeft → false
+			expect(
+				handler({
+					metaKey: true,
+					ctrlKey: false,
+					altKey: true,
+					key: "ArrowLeft",
+				}),
+			).toBe(false);
+		});
+
+		it("通常キーは抑止しない", () => {
+			renderHook(() => useTerminal(containerRef));
+
+			const handler = mockTerminalInstance.attachCustomKeyEventHandler.mock
+				.calls[0][0] as (event: Partial<KeyboardEvent>) => boolean;
+
+			// 通常の文字入力 → true
+			expect(
+				handler({ metaKey: false, ctrlKey: false, altKey: false, key: "a" }),
+			).toBe(true);
+			// Cmd+C (コピー) → true
+			expect(
+				handler({ metaKey: true, ctrlKey: false, altKey: false, key: "c" }),
+			).toBe(true);
+			// 矢印キー（修飾なし） → true
+			expect(
+				handler({
+					metaKey: false,
+					ctrlKey: false,
+					altKey: false,
+					key: "ArrowRight",
+				}),
+			).toBe(true);
+		});
+	});
+
 	describe("ResizeObserver ゼロサイズガード", () => {
 		it("コンテナが 0 次元のとき fitAddon.fit() が呼ばれない", () => {
 			renderHook(() => useTerminal(containerRef));

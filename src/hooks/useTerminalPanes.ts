@@ -80,6 +80,7 @@ export interface UseTerminalPanesReturn {
 
 export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 	const tabCounter = useRef(1);
+	const tabsLengthRef = useRef(1);
 
 	const [tabs, setTabs] = useState<TerminalTab[]>(() => {
 		const pane = createLeaf();
@@ -93,10 +94,12 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 		];
 	});
 	const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
+	tabsLengthRef.current = tabs.length;
 
 	const activeTab = tabs.find((t) => t.id === activeTabId);
 
 	const addTab = useCallback(() => {
+		if (tabsLengthRef.current >= MAX_TABS) return;
 		tabCounter.current += 1;
 		const num = tabCounter.current;
 		const label = `${tabPrefix} ${num}`;
@@ -220,6 +223,7 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 		(paneId: string) => {
 			updateActiveTab((tab) => {
 				if (tab.focusedPaneId === paneId) return tab;
+				if (!findNode(tab.paneTree, paneId)) return tab;
 				return { ...tab, focusedPaneId: paneId };
 			});
 		},

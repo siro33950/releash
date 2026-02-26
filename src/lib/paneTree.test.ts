@@ -201,6 +201,29 @@ describe("paneTree", () => {
 	});
 
 	describe("splitPane", () => {
+		it("存在しない paneId の場合はツリーを変更しない", () => {
+			const tree = leaf("a");
+			const result = splitPane(tree, "missing", "vertical", leaf("b"));
+			expect(result).toBe(tree);
+		});
+
+		it("insertBefore=true のとき対象ペインの前に挿入される", () => {
+			const tree = container(
+				"root",
+				"vertical",
+				[leaf("a"), leaf("b")],
+				[0.5, 0.5],
+			);
+			const result = splitPane(
+				tree,
+				"b",
+				"vertical",
+				leaf("c"),
+				true,
+			) as PaneContainer;
+			expect(result.children.map((ch) => ch.id)).toEqual(["a", "c", "b"]);
+		});
+
 		it("リーフを垂直分割 → 2ペインのコンテナ", () => {
 			const tree = leaf("a");
 			const newLeaf = leaf("b");

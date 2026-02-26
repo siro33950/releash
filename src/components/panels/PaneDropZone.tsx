@@ -61,15 +61,19 @@ export function PaneDropZone({
 		null,
 	);
 
-	const handleDragOver = useCallback((e: DragEvent) => {
-		const hasTab = e.dataTransfer.types.includes(TAB_DRAG_TYPE);
-		const hasPane = e.dataTransfer.types.includes(PANE_DRAG_TYPE);
-		if (!hasTab && !hasPane) return;
-		e.preventDefault();
-		e.dataTransfer.dropEffect = "move";
-		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-		setDropPosition(getDropPosition(e, rect));
-	}, []);
+	const handleDragOver = useCallback(
+		(e: DragEvent) => {
+			const hasTab = e.dataTransfer.types.includes(TAB_DRAG_TYPE);
+			const hasPane =
+				Boolean(onDropPane) && e.dataTransfer.types.includes(PANE_DRAG_TYPE);
+			if (!hasTab && !hasPane) return;
+			e.preventDefault();
+			e.dataTransfer.dropEffect = "move";
+			const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+			setDropPosition(getDropPosition(e, rect));
+		},
+		[onDropPane],
+	);
 
 	const handleDragLeave = useCallback((e: DragEvent) => {
 		if (!e.currentTarget.contains(e.relatedTarget as Node)) {

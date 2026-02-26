@@ -200,7 +200,8 @@ export function splitPane(
 	}
 
 	// 親が異方向 or ルートリーフ → 新コンテナに変換
-	const target = findNode(tree, paneId) as PaneNode;
+	const target = findNode(tree, paneId);
+	if (!target) return tree;
 	const children = insertBefore ? [newPane, target] : [target, newPane];
 	const newContainer: PaneContainer = {
 		type: "container",

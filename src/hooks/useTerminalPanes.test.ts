@@ -28,6 +28,22 @@ describe("useTerminalPanes", () => {
 		expect(result.current.tabs[1].label).toBe("Terminal 2");
 	});
 
+	it("タブ上限(MAX_TABS)を超えて追加できない", () => {
+		const { result } = renderHook(() => useTerminalPanes("Terminal"));
+		// 初期1タブ + 7タブ追加 = 8タブ (MAX_TABS)
+		for (let i = 0; i < 7; i++) {
+			act(() => result.current.addTab());
+		}
+		expect(result.current.tabs).toHaveLength(8);
+		const lastLabel = result.current.tabs[7].label;
+
+		// 上限到達後の追加は no-op
+		act(() => result.current.addTab());
+		expect(result.current.tabs).toHaveLength(8);
+		// ラベル番号が飛ばないことも確認
+		expect(result.current.tabs[7].label).toBe(lastLabel);
+	});
+
 	it("タブ閉じる", () => {
 		const { result } = renderHook(() => useTerminalPanes("Terminal"));
 		act(() => result.current.addTab());

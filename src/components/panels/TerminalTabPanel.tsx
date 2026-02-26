@@ -163,16 +163,17 @@ export const TerminalTabPanel = forwardRef<
 	useEffect(() => {
 		const handleKeyDown = (e: KeyboardEvent) => {
 			const mod = e.metaKey || e.ctrlKey;
+			const key = e.key.toLowerCase();
 
 			// Cmd+D: 垂直分割
-			if (mod && !e.shiftKey && !e.altKey && e.key === "d") {
+			if (mod && !e.shiftKey && !e.altKey && key === "d") {
 				e.preventDefault();
 				splitFocusedPane("vertical");
 				return;
 			}
 
 			// Cmd+Shift+D: 水平分割
-			if (mod && e.shiftKey && !e.altKey && e.key === "D") {
+			if (mod && e.shiftKey && !e.altKey && key === "d") {
 				e.preventDefault();
 				splitFocusedPane("horizontal");
 				return;
