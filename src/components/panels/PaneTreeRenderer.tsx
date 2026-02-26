@@ -19,6 +19,7 @@ interface PaneTreeRendererProps {
 	setTerminalRef: (
 		paneId: string,
 	) => (handle: TerminalPanelHandle | null) => void;
+	onPtyReady?: (paneId: string, ptyId: number) => void;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -47,6 +48,7 @@ export function PaneTreeRenderer({
 	onClose,
 	onSplit,
 	setTerminalRef,
+	onPtyReady,
 	onDropTab,
 	onDropPane,
 	onBreakToTab,
@@ -67,6 +69,7 @@ export function PaneTreeRenderer({
 				onClose={onClose}
 				onSplit={onSplit}
 				setTerminalRef={setTerminalRef}
+				onPtyReady={onPtyReady}
 				onDropTab={onDropTab}
 				onDropPane={onDropPane}
 				onBreakToTab={onBreakToTab}
@@ -100,6 +103,7 @@ export function PaneTreeRenderer({
 					onClose={onClose}
 					onSplit={onSplit}
 					setTerminalRef={setTerminalRef}
+					onPtyReady={onPtyReady}
 					onDropTab={onDropTab}
 					onDropPane={onDropPane}
 					onBreakToTab={onBreakToTab}
@@ -127,6 +131,7 @@ interface PaneTreePanelProps {
 	setTerminalRef: (
 		paneId: string,
 	) => (handle: TerminalPanelHandle | null) => void;
+	onPtyReady?: (paneId: string, ptyId: number) => void;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -157,6 +162,7 @@ function PaneTreePanel({
 	onClose,
 	onSplit,
 	setTerminalRef,
+	onPtyReady,
 	onDropTab,
 	onDropPane,
 	onBreakToTab,
@@ -178,6 +184,7 @@ function PaneTreePanel({
 					onClose={onClose}
 					onSplit={onSplit}
 					setTerminalRef={setTerminalRef}
+					onPtyReady={onPtyReady}
 					onDropTab={onDropTab}
 					onDropPane={onDropPane}
 					onBreakToTab={onBreakToTab}

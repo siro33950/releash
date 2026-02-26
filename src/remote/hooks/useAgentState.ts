@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentStateSync } from "@/types/protocol";
+import { agentStateKey, aggregateAgentState } from "@/lib/agentStateUtils";
+import type { AgentState, AgentStateSync } from "@/types/protocol";
 import type { Subscribe } from "./useMessageBus";
 
 interface UseAgentStateOptions {
@@ -14,8 +15,8 @@ export function useAgentState({ subscribe }: UseAgentStateOptions) {
 	statesRef.current = agentStates;
 
 	const getAgentState = useCallback(
-		(worktreePath: string): AgentStateSync | undefined => {
-			return statesRef.current.get(worktreePath);
+		(worktreePath: string): AgentState | undefined => {
+			return aggregateAgentState(statesRef.current, worktreePath);
 		},
 		[],
 	);
@@ -24,8 +25,12 @@ export function useAgentState({ subscribe }: UseAgentStateOptions) {
 		return subscribe((msg) => {
 			if (msg.type === "agent_state_sync") {
 				setAgentStates((prev) => {
+					const key = agentStateKey(
+						msg.payload.worktree_path,
+						msg.payload.pty_id,
+					);
 					const next = new Map(prev);
-					next.set(msg.payload.worktree_path, msg.payload);
+					next.set(key, msg.payload);
 					return next;
 				});
 			}

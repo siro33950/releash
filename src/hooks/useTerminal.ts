@@ -96,6 +96,7 @@ export function useTerminal(
 	sessionKey?: string,
 	agentType?: string,
 	label?: string,
+	onPtyReady?: (ptyId: number) => void,
 ) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
@@ -108,6 +109,8 @@ export function useTerminal(
 	startupCommandRef.current = terminalStartupCommand;
 	const agentTypeRef = useRef(agentType);
 	agentTypeRef.current = agentType;
+	const onPtyReadyRef = useRef(onPtyReady);
+	onPtyReadyRef.current = onPtyReady;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -205,6 +208,7 @@ export function useTerminal(
 
 			// 5. Set ptyId (from here, real-time output starts flowing)
 			ptyIdRef.current = result.pty_id;
+			onPtyReadyRef.current?.(result.pty_id);
 
 			// 初回fit()が不正確だった場合のセーフティネット:
 			// PTYスポーン後に最新のサイズで再同期する

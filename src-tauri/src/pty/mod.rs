@@ -330,6 +330,8 @@ impl PtyManager {
         worktree_path: Option<String>,
         label: Option<String>,
     ) -> Result<u64, String> {
+        let pty_id = generate_pty_id();
+
         let integration_dir = app
             .path()
             .app_data_dir()
@@ -344,11 +346,10 @@ impl PtyManager {
             cwd,
             shell,
             integration_dir,
+            pty_id,
         };
 
         let backend_session = self.backend.spawn(config)?;
-
-        let pty_id = generate_pty_id();
         let output_buffer = Arc::new(Mutex::new(VecDeque::with_capacity(OUTPUT_BUFFER_CAPACITY)));
         let exited = Arc::new(AtomicBool::new(false));
         let exit_code_holder = Arc::new(Mutex::new(None::<i32>));

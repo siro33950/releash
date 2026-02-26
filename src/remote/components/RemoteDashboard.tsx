@@ -7,7 +7,12 @@ import {
 } from "lucide-react";
 import { useMemo } from "react";
 import { AgentStateIcon } from "@/components/ui/agent-state-icon";
-import type { AgentStateSync, WorktreeEntryMsg } from "@/types/protocol";
+import { aggregateAgentState } from "@/lib/agentStateUtils";
+import type {
+	AgentState,
+	AgentStateSync,
+	WorktreeEntryMsg,
+} from "@/types/protocol";
 
 interface RemoteDashboardProps {
 	worktrees: WorktreeEntryMsg[];
@@ -23,11 +28,11 @@ function repoDisplayName(repoPath: string): string {
 
 function WorktreeCard({
 	wt,
-	agent,
+	agentState,
 	onSelect,
 }: {
 	wt: WorktreeEntryMsg;
-	agent?: AgentStateSync;
+	agentState?: AgentState;
 	onSelect?: (path: string) => void;
 }) {
 	return (
@@ -52,7 +57,7 @@ function WorktreeCard({
 						main
 					</span>
 				)}
-				{agent && <AgentStateIcon state={agent.state} />}
+				{agentState && <AgentStateIcon state={agentState} />}
 			</div>
 			<div className="text-xs">
 				{wt.dirty_count > 0 ? (
@@ -132,7 +137,11 @@ export function RemoteDashboard({
 									<WorktreeCard
 										key={wt.path}
 										wt={wt}
-										agent={agentStates?.get(wt.path)}
+										agentState={
+											agentStates
+												? aggregateAgentState(agentStates, wt.path)
+												: undefined
+										}
 										onSelect={onSelect}
 									/>
 								))}

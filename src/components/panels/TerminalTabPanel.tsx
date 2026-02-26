@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { X } from "lucide-react";
 import {
 	type DragEvent,
@@ -6,13 +7,18 @@ import {
 	useEffect,
 	useImperativeHandle,
 	useRef,
+	useState,
 } from "react";
 import { PANE_DRAG_TYPE } from "@/components/panels/PaneDropZone";
 import { PaneTreeRenderer } from "@/components/panels/PaneTreeRenderer";
 import type { TerminalPanelHandle } from "@/components/panels/TerminalPanel";
+import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useTerminalPanes } from "@/hooks/useTerminalPanes";
+import { highestPriorityState } from "@/lib/agentStateUtils";
+import { normalizePath } from "@/lib/normalizePath";
 import { countLeaves, getAllLeaves } from "@/lib/paneTree";
+import type { AgentState, AgentStateSync } from "@/types/protocol";
 import type { Theme } from "@/types/settings";
 import type { SplitDirection } from "@/types/terminal-pane";
 
@@ -64,6 +70,34 @@ export const TerminalTabPanel = forwardRef<
 	} = useTerminalPanes(tabPrefix);
 
 	const terminalRefs = useRef<Map<string, TerminalPanelHandle>>(new Map());
+
+	// paneId → numeric ptyId マッピング
+	const paneIdToPtyIdRef = useRef<Map<string, number>>(new Map());
+	// pty_id (string) → AgentState マッピング
+	const [agentStateByPtyId, setAgentStateByPtyId] = useState<
+		Map<string, AgentState>
+	>(new Map());
+
+	const handlePtyReady = useCallback((paneId: string, ptyId: number) => {
+		paneIdToPtyIdRef.current.set(paneId, ptyId);
+	}, []);
+
+	// agent-state-changed イベントリスナー
+	useEffect(() => {
+		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
+			const { worktree_path, state, pty_id } = event.payload;
+			if (!cwd || normalizePath(worktree_path) !== normalizePath(cwd)) return;
+			if (!pty_id) return;
+			setAgentStateByPtyId((prev) => {
+				const next = new Map(prev);
+				next.set(pty_id, state);
+				return next;
+			});
+		});
+		return () => {
+			unlisten.then((fn) => fn());
+		};
+	}, [cwd]);
 
 	useImperativeHandle(
 		ref,
@@ -262,6 +296,11 @@ export const TerminalTabPanel = forwardRef<
 									onDragEnd={handleTabDragEnd}
 								>
 									<span>{tab.label}</span>
+									<TabAgentBadge
+										tab={tab}
+										paneIdToPtyIdRef={paneIdToPtyIdRef}
+										agentStateByPtyId={agentStateByPtyId}
+									/>
 									{tabs.length > 1 && (
 										<button
 											type="button"
@@ -313,6 +352,7 @@ export const TerminalTabPanel = forwardRef<
 								onClose={closeSpecificPane}
 								onSplit={handleSplit}
 								setTerminalRef={setTerminalRef}
+								onPtyReady={handlePtyReady}
 								onDropTab={handleDropTab}
 								onDropPane={handleDropPane}
 								onBreakToTab={handleBreakToTab}
@@ -327,3 +367,26 @@ export const TerminalTabPanel = forwardRef<
 		</div>
 	);
 });
+
+function TabAgentBadge({
+	tab,
+	paneIdToPtyIdRef,
+	agentStateByPtyId,
+}: {
+	tab: { paneTree: import("@/types/terminal-pane").PaneNode };
+	paneIdToPtyIdRef: React.RefObject<Map<string, number>>;
+	agentStateByPtyId: Map<string, AgentState>;
+}) {
+	const leaves = getAllLeaves(tab.paneTree);
+	const states: AgentState[] = [];
+	for (const leaf of leaves) {
+		const ptyId = paneIdToPtyIdRef.current.get(leaf.id);
+		if (ptyId != null) {
+			const state = agentStateByPtyId.get(String(ptyId));
+			if (state) states.push(state);
+		}
+	}
+	const best = highestPriorityState(states);
+	if (!best) return null;
+	return <AgentStateIcon state={best} />;
+}

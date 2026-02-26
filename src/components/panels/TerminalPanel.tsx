@@ -33,6 +33,7 @@ export interface TerminalPanelProps {
 	sessionKey?: string;
 	agentType?: string;
 	label?: string;
+	onPtyReady?: (ptyId: number) => void;
 	onSplitVertical?: () => void;
 	onSplitHorizontal?: () => void;
 	onBreakToTab?: () => void;
@@ -52,6 +53,7 @@ export const TerminalPanel = forwardRef<
 		sessionKey,
 		agentType,
 		label,
+		onPtyReady,
 		onSplitVertical,
 		onSplitHorizontal,
 		onBreakToTab,
@@ -70,6 +72,7 @@ export const TerminalPanel = forwardRef<
 		sessionKey,
 		agentType,
 		label,
+		onPtyReady,
 	);
 	const [isDragOver, setIsDragOver] = useState(false);
 	const isDragOverRef = useRef(false);

@@ -236,6 +236,7 @@ export interface AgentStateSync {
 	exit_code: number | null;
 	timestamp: number;
 	session_id: string | null;
+	pty_id?: string | null;
 }
 
 // --- 制御 ---
