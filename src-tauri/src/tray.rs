@@ -105,18 +105,25 @@ fn handle_start_server(app: tauri::AppHandle) {
             }
         };
 
-        let last_root_path = config.app.last_root_path.clone();
+        let repo_paths: Vec<String> = if !config.app.last_repo_paths.is_empty() {
+            config.app.last_repo_paths.clone()
+        } else if !config.app.last_root_path.is_empty() {
+            vec![config.app.last_root_path.clone()]
+        } else {
+            Vec::new()
+        }
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .collect();
         let last_bind_ip = config.app.last_bind_ip.clone();
 
-        if last_root_path.is_empty() || last_bind_ip.is_empty() {
+        if repo_paths.is_empty() || last_bind_ip.is_empty() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
             return;
         }
-
-        let repo_paths = vec![last_root_path];
         if let Err(e) =
             crate::ws_server::commands::start_server_core(&app, repo_paths, last_bind_ip).await
         {

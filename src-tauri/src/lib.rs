@@ -138,29 +138,31 @@ pub fn run() {
             }
 
             // Auto-start server if configured
-            let auto_start = app_config
-                .get_config()
-                .is_ok_and(|c| c.remote.auto_start && !c.app.last_root_path.is_empty());
-            if auto_start {
+            let auto_start_config = app_config.get_config().ok().filter(|c| {
+                c.remote.auto_start
+                    && (!c.app.last_repo_paths.is_empty() || !c.app.last_root_path.is_empty())
+            });
+            if let Some(cfg) = auto_start_config {
                 let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let (root_path, bind_ip) = {
-                        let cfg_state = handle.state::<Arc<AppConfig>>();
-                        match cfg_state.get_config() {
-                            Ok(c) => (c.app.last_root_path.clone(), c.app.last_bind_ip.clone()),
-                            Err(_) => return,
+                let repo_paths: Vec<String> = if !cfg.app.last_repo_paths.is_empty() {
+                    cfg.app.last_repo_paths.clone()
+                } else {
+                    vec![cfg.app.last_root_path.clone()]
+                }
+                .into_iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect();
+                let bind_ip = cfg.app.last_bind_ip.clone();
+                if !repo_paths.is_empty() && !bind_ip.is_empty() {
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(e) =
+                            ws_server::commands::start_server_core(&handle, repo_paths, bind_ip)
+                                .await
+                        {
+                            log::error!("Auto-start server failed: {e}");
                         }
-                    };
-                    if root_path.is_empty() || bind_ip.is_empty() {
-                        return;
-                    }
-                    if let Err(e) =
-                        ws_server::commands::start_server_core(&handle, vec![root_path], bind_ip)
-                            .await
-                    {
-                        log::error!("Auto-start server failed: {e}");
-                    }
-                });
+                    });
+                }
             }
 
             if telemetry_enabled {
