@@ -51,7 +51,7 @@ export function RightSidebarBottom({
 	onToggleCollapse,
 	collapsed,
 }: RightSidebarBottomProps) {
-	const [activeTab, setActiveTab] = useState<RightBottomTab>("comments");
+	const [activeTab, setActiveTab] = useState<RightBottomTab>("terminal");
 	const unsentComments = comments.filter((c) => c.status === "unsent");
 
 	return (
@@ -86,6 +86,16 @@ export function RightSidebarBottom({
 						)}
 						<TabsList variant="line" aria-label="Bottom sidebar tabs">
 							<Tooltip>
+								<TabsTrigger value="terminal" aria-label="Terminal">
+									<TooltipTrigger asChild>
+										<span className="inline-flex items-center">
+											<Terminal className="size-3.5" />
+										</span>
+									</TooltipTrigger>
+								</TabsTrigger>
+								<TooltipContent side="bottom">Terminal</TooltipContent>
+							</Tooltip>
+							<Tooltip>
 								<TabsTrigger value="comments" aria-label="Comments">
 									<TooltipTrigger asChild>
 										<span className="inline-flex items-center gap-1.5">
@@ -99,16 +109,6 @@ export function RightSidebarBottom({
 									</TooltipTrigger>
 								</TabsTrigger>
 								<TooltipContent side="bottom">Comments</TooltipContent>
-							</Tooltip>
-							<Tooltip>
-								<TabsTrigger value="terminal" aria-label="Terminal">
-									<TooltipTrigger asChild>
-										<span className="inline-flex items-center">
-											<Terminal className="size-3.5" />
-										</span>
-									</TooltipTrigger>
-								</TabsTrigger>
-								<TooltipContent side="bottom">Terminal</TooltipContent>
 							</Tooltip>
 						</TabsList>
 					</TooltipProvider>

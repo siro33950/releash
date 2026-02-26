@@ -5,17 +5,16 @@ import {
 	ChevronDown,
 	ChevronRight,
 	Filter,
-	GitBranch,
 	Globe,
+	LayoutList,
 	Loader2,
-	Monitor,
 	Plus,
 	RefreshCw,
 	Settings,
 	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AgentStateBadge } from "@/components/ui/agent-state-badge";
+import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -28,7 +27,6 @@ import {
 	SelectContent,
 	SelectGroup,
 	SelectItem,
-	SelectLabel,
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
@@ -161,8 +159,15 @@ function RepoWorktreeSectionView({
 	);
 
 	const filteredBranches = useMemo(() => {
-		if (!statusFilter || statusFilter === "all") return branches;
-		return branches.filter((b) => computeStatus(b) === statusFilter);
+		const filtered =
+			!statusFilter || statusFilter === "all"
+				? branches
+				: branches.filter((b) => computeStatus(b) === statusFilter);
+		return [...filtered].sort(
+			(a, b) =>
+				STATUS_ORDER.indexOf(computeStatus(a)) -
+				STATUS_ORDER.indexOf(computeStatus(b)),
+		);
 	}, [branches, statusFilter]);
 
 	const groupedByStatus = useMemo(() => {
@@ -181,7 +186,6 @@ function RepoWorktreeSectionView({
 	const renderItem = (branch: WorktreeBranch) => {
 		const isSelected = branch.worktree_path === selectedRootPath;
 		const hasWorktree = branch.worktree_path != null;
-		const BranchIcon = branch.has_upstream ? GitBranch : Monitor;
 		const canDelete = !branch.is_default && (hasWorktree || branch.is_merged);
 		const status = computeStatus(branch);
 
@@ -195,11 +199,6 @@ function RepoWorktreeSectionView({
 		if (branch.is_merged) infoParts.push("merged");
 		if (hasWorktree && branch.dirty_count > 0)
 			infoParts.push(`${branch.dirty_count} changed`);
-
-		const hasSecondRow =
-			infoParts.length > 0 ||
-			branch.agent_state ||
-			(branch.has_pr && branch.pr_number != null);
 
 		return (
 			// biome-ignore lint/a11y/useSemanticElements: <button> cannot nest <button> (PR link, delete btn)
@@ -216,7 +215,7 @@ function RepoWorktreeSectionView({
 						handleOpenBranch(branch);
 					}
 				}}
-				className={`group flex flex-col gap-0.5 w-full px-2 py-2 text-left rounded cursor-pointer transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+				className={`group relative flex items-start gap-1.5 w-full px-1.5 py-1.5 text-left rounded cursor-pointer transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring ${
 					isSelected
 						? "bg-foreground/10 text-foreground"
 						: hasWorktree
@@ -224,48 +223,28 @@ function RepoWorktreeSectionView({
 							: "text-muted-foreground hover:bg-foreground/5"
 				}`}
 			>
-				{/* Row 1: icon + name + diff stats */}
-				<div className="flex items-center gap-1.5 min-w-0">
-					<BranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-					<span className="text-xs font-medium truncate flex-1">
-						{branch.name}
-					</span>
-					{branch.ahead > 0 && (
-						<span className="shrink-0 text-[11px] font-mono text-success/70">
-							+{branch.ahead}
+				<div className="flex flex-col gap-1 min-w-0 flex-1">
+					{/* Row 1: icon + name + diff stats */}
+					<div className="flex items-center gap-1.5 min-w-0">
+						<AgentStateIcon state={branch.agent_state} />
+						<span className="text-xs font-medium truncate flex-1">
+							{branch.name}
 						</span>
-					)}
-					{branch.behind > 0 && (
-						<span className="shrink-0 text-[11px] font-mono text-destructive/70">
-							-{branch.behind}
-						</span>
-					)}
-					{canDelete && (
-						<Button
-							size="icon-xs"
-							variant="ghost"
-							className="size-4 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-							onClick={(e) => {
-								e.stopPropagation();
-								setDeletingBranch(branch);
-							}}
-							aria-label={`Delete ${branch.name}`}
-						>
-							<Trash2 className="size-2.5 text-muted-foreground" />
-						</Button>
-					)}
-				</div>
-				{/* Row 2: secondary info (all muted) */}
-				{hasSecondRow && (
-					<div className="flex items-center gap-1.5 pl-[22px] min-w-0 text-[11px] text-muted-foreground">
+						{branch.ahead > 0 && (
+							<span className="shrink-0 text-[11px] font-mono text-success/70">
+								+{branch.ahead}
+							</span>
+						)}
+						{branch.behind > 0 && (
+							<span className="shrink-0 text-[11px] font-mono text-destructive/70">
+								-{branch.behind}
+							</span>
+						)}
+					</div>
+					{/* Row 2: secondary info */}
+					<div className="flex items-center gap-1.5 pl-[20px] min-w-0 text-[11px] text-muted-foreground">
 						{infoParts.length > 0 && (
 							<span className="truncate">{infoParts.join(" · ")}</span>
-						)}
-						{branch.agent_state && (
-							<AgentStateBadge
-								state={branch.agent_state}
-								timestamp={branch.agent_state_timestamp}
-							/>
 						)}
 						{branch.has_pr && branch.pr_url && branch.pr_number != null && (
 							<button
@@ -280,6 +259,20 @@ function RepoWorktreeSectionView({
 							</button>
 						)}
 					</div>
+				</div>
+				{canDelete && (
+					<Button
+						size="icon-xs"
+						variant="ghost"
+						className="absolute top-0.5 right-0.5 hidden group-hover:flex group-focus-within:flex size-4"
+						onClick={(e) => {
+							e.stopPropagation();
+							setDeletingBranch(branch);
+						}}
+						aria-label={`Delete ${branch.name}`}
+					>
+						<Trash2 className="size-2.5 text-muted-foreground" />
+					</Button>
 				)}
 			</div>
 		);
@@ -450,68 +443,78 @@ export function WorkspaceList({
 								size="icon-xs"
 								variant="ghost"
 								className="size-5"
+								aria-label="グループ"
+								title="Group by"
+							>
+								<LayoutList className="size-3" />
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="end" className="p-2">
+							<DropdownMenuLabel className="p-0 pb-1 text-xs font-normal text-muted-foreground">
+								Group by
+							</DropdownMenuLabel>
+							<Select
+								value={groupMode}
+								onValueChange={(v) => setGroupMode(v as GroupMode)}
+							>
+								<SelectTrigger className="h-6">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectGroup>
+										<SelectItem value="repository">Repo</SelectItem>
+										<SelectItem value="status">Status</SelectItem>
+									</SelectGroup>
+								</SelectContent>
+							</Select>
+						</DropdownMenuContent>
+					</DropdownMenu>
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<Button
+								size="icon-xs"
+								variant="ghost"
+								className="size-5"
 								aria-label="フィルター"
+								title="Filter"
 							>
 								<Filter className="size-3" />
 							</Button>
 						</DropdownMenuTrigger>
-						<DropdownMenuContent align="end" className="p-2 space-y-2">
-							<div className="flex items-center gap-2">
-								<DropdownMenuLabel className="p-0 text-xs font-normal text-muted-foreground">
-									Group by
-								</DropdownMenuLabel>
-								<Select
-									value={groupMode}
-									onValueChange={(v) => setGroupMode(v as GroupMode)}
-								>
-									<SelectTrigger className="h-6 flex-1">
-										<SelectValue />
-									</SelectTrigger>
-									<SelectContent>
-										<SelectGroup>
-											<SelectLabel>Group by</SelectLabel>
-											<SelectItem value="repository">Repo</SelectItem>
-											<SelectItem value="status">Status</SelectItem>
-										</SelectGroup>
-									</SelectContent>
-								</Select>
-							</div>
-							<div className="flex items-center gap-2">
-								<DropdownMenuLabel className="p-0 text-xs font-normal text-muted-foreground">
-									Filter
-								</DropdownMenuLabel>
-								<Select
-									value={groupMode === "repository" ? statusFilter : repoFilter}
-									onValueChange={(v) => {
-										if (groupMode === "repository") {
-											setStatusFilter(v);
-										} else {
-											setRepoFilter(v);
-										}
-									}}
-								>
-									<SelectTrigger className="h-6 flex-1">
-										<SelectValue />
-									</SelectTrigger>
-									<SelectContent>
-										<SelectGroup>
-											<SelectLabel>Filter</SelectLabel>
-											<SelectItem value="all">All</SelectItem>
-											{groupMode === "repository"
-												? STATUS_ORDER.map((s) => (
-														<SelectItem key={s} value={s}>
-															{STATUS_LABELS[s]}
-														</SelectItem>
-													))
-												: repoNames.map((r) => (
-														<SelectItem key={r.path} value={r.path}>
-															{r.name}
-														</SelectItem>
-													))}
-										</SelectGroup>
-									</SelectContent>
-								</Select>
-							</div>
+						<DropdownMenuContent align="end" className="p-2">
+							<DropdownMenuLabel className="p-0 pb-1 text-xs font-normal text-muted-foreground">
+								Filter
+							</DropdownMenuLabel>
+							<Select
+								value={groupMode === "repository" ? statusFilter : repoFilter}
+								onValueChange={(v) => {
+									if (groupMode === "repository") {
+										setStatusFilter(v);
+									} else {
+										setRepoFilter(v);
+									}
+								}}
+							>
+								<SelectTrigger className="h-6">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectGroup>
+										<SelectItem value="all">All</SelectItem>
+										{groupMode === "repository"
+											? STATUS_ORDER.map((s) => (
+													<SelectItem key={s} value={s}>
+														{STATUS_LABELS[s]}
+													</SelectItem>
+												))
+											: repoNames.map((r) => (
+													<SelectItem key={r.path} value={r.path}>
+														{r.name}
+													</SelectItem>
+												))}
+									</SelectGroup>
+								</SelectContent>
+							</Select>
 						</DropdownMenuContent>
 					</DropdownMenu>
 					<Button
@@ -528,7 +531,7 @@ export function WorkspaceList({
 			</div>
 
 			{/* Worktree List */}
-			<div className="flex-1 overflow-y-auto p-1 space-y-1">
+			<div className="flex-1 overflow-y-auto px-0.5 py-0.5 space-y-0.5">
 				{groupMode === "status" ? (
 					<StatusGroupedView
 						repoPaths={filteredRepoPaths}
