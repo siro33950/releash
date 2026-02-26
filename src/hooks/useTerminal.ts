@@ -127,6 +127,13 @@ export function useTerminal(
 		terminal.open(container);
 		fitAddon.fit();
 
+		// レンダラー初期化後に再度fitして正確なサイズを確定
+		requestAnimationFrame(() => {
+			if (isMounted) {
+				fitAddon.fit();
+			}
+		});
+
 		terminalRef.current = terminal;
 		fitAddonRef.current = fitAddon;
 
@@ -182,6 +189,23 @@ export function useTerminal(
 			// 5. Set ptyId (from here, real-time output starts flowing)
 			ptyIdRef.current = result.pty_id;
 
+			// 初回fit()が不正確だった場合のセーフティネット:
+			// PTYスポーン後に最新のサイズで再同期する
+			requestAnimationFrame(() => {
+				if (!isMounted || !fitAddonRef.current || !terminalRef.current) return;
+				fitAddonRef.current.fit();
+				const { rows, cols } = terminalRef.current;
+				if (rows > 0 && cols > 0) {
+					invoke("resize_pty", {
+						ptyId: result.pty_id,
+						rows,
+						cols,
+					}).catch((error) => {
+						console.error("Failed to resize PTY:", error);
+					});
+				}
+			});
+
 			// 6. Send startup command for newly created PTY
 			if (result.is_new && startupCommandRef.current) {
 				const cmd = startupCommandRef.current.trim();
@@ -213,28 +237,18 @@ export function useTerminal(
 			}
 		});
 
+		const RESIZE_DEBOUNCE_MS = 100;
+		let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 		let wasHidden = false;
 
-		const resizeObserver = new ResizeObserver(() => {
+		const performResize = () => {
 			const el = containerRef.current;
-			if (!el || !fitAddonRef.current) return;
-
-			const isHidden = el.clientWidth === 0 || el.clientHeight === 0;
-			if (isHidden) {
-				wasHidden = true;
-				return;
-			}
+			if (!el || !fitAddonRef.current || !terminalRef.current) return;
+			if (el.clientWidth === 0 || el.clientHeight === 0) return;
 
 			fitAddonRef.current.fit();
 
-			if (wasHidden && terminalRef.current) {
-				wasHidden = false;
-				requestAnimationFrame(() => {
-					terminalRef.current?.refresh(0, (terminalRef.current?.rows ?? 1) - 1);
-				});
-			}
-
-			if (ptyIdRef.current !== null && terminalRef.current) {
+			if (ptyIdRef.current !== null) {
 				const { rows, cols } = terminalRef.current;
 				if (rows > 0 && cols > 0) {
 					invoke("resize_pty", {
@@ -246,12 +260,43 @@ export function useTerminal(
 					});
 				}
 			}
+		};
+
+		const resizeObserver = new ResizeObserver(() => {
+			const el = containerRef.current;
+			if (!el || !fitAddonRef.current) return;
+
+			const isHidden = el.clientWidth === 0 || el.clientHeight === 0;
+			if (isHidden) {
+				wasHidden = true;
+				return;
+			}
+
+			if (wasHidden) {
+				wasHidden = false;
+				performResize();
+				requestAnimationFrame(() => {
+					terminalRef.current?.refresh(0, (terminalRef.current?.rows ?? 1) - 1);
+				});
+				return;
+			}
+
+			if (resizeTimer !== null) {
+				clearTimeout(resizeTimer);
+			}
+			resizeTimer = setTimeout(() => {
+				resizeTimer = null;
+				performResize();
+			}, RESIZE_DEBOUNCE_MS);
 		});
 		resizeObserver.observe(container);
 		resizeObserverRef.current = resizeObserver;
 
 		return () => {
 			isMounted = false;
+			if (resizeTimer !== null) {
+				clearTimeout(resizeTimer);
+			}
 			resizeObserver.disconnect();
 			unlistenOutput?.();
 			unlistenExit?.();
