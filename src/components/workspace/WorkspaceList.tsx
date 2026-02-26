@@ -46,10 +46,10 @@ type GroupMode = "repository" | "status";
 interface WorktreeData {
 	branches: WorktreeBranch[];
 	loading: boolean;
-	refresh: () => Promise<void>;
+	refresh: (options?: { silent?: boolean }) => Promise<void>;
 }
 
-const noopRefresh = async () => {};
+const noopRefresh = async (_options?: { silent?: boolean }) => {};
 
 interface WorkspaceListProps {
 	repoPaths: string[];
@@ -91,7 +91,7 @@ function RepoWorktreeSectionView({
 	repoPath: string;
 	branches: WorktreeBranch[];
 	loading: boolean;
-	refresh: () => Promise<void>;
+	refresh: (options?: { silent?: boolean }) => Promise<void>;
 	selectedRootPath: string | null;
 	onSelectWorktree: (
 		rootPath: string,

@@ -5,9 +5,10 @@ import { FileStatusItem } from "@/components/panels/FileStatusItem";
 import { SourceControlContextMenu } from "@/components/panels/SourceControlContextMenu";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useEditorContext } from "@/contexts/EditorContext";
+import { useGitStatusContext } from "@/contexts/GitStatusContext";
 import { useAheadBehind } from "@/hooks/useAheadBehind";
 import { useGitActions } from "@/hooks/useGitActions";
-import { useGitStatus } from "@/hooks/useGitStatus";
 import { formatGitError } from "@/lib/errorHandler";
 import { EmptyState } from "./EmptyState";
 import { CommitForm, DiscardConfirmDialog } from "./SourceControlCommitForm";
@@ -93,21 +94,20 @@ export interface SourceControlPanelProps {
 	rootPath: string | null;
 	onSelectFile?: (path: string) => void;
 	onGitChanged?: () => void;
-	gitRefreshKey?: number;
 }
 
 export function SourceControlPanel({
 	rootPath,
 	onSelectFile,
 	onGitChanged,
-	gitRefreshKey,
 }: SourceControlPanelProps) {
 	const {
 		stagedFiles,
 		changedFiles,
 		refresh: refreshStatus,
-	} = useGitStatus(rootPath, gitRefreshKey);
+	} = useGitStatusContext();
 	const { stage, unstage, discard, commit, push } = useGitActions();
+	const { gitRefreshKey } = useEditorContext();
 	const aheadBehind = useAheadBehind(rootPath, gitRefreshKey);
 
 	const [form, dispatch] = useReducer(commitFormReducer, initialCommitForm);
