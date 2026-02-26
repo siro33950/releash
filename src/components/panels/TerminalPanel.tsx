@@ -23,6 +23,7 @@ import "@xterm/xterm/css/xterm.css";
 
 export interface TerminalPanelHandle {
 	writeToTerminal: (data: string) => void;
+	requestKill: () => void;
 }
 
 export interface TerminalPanelProps {
@@ -61,7 +62,7 @@ export const TerminalPanel = forwardRef<
 	ref,
 ) {
 	const containerRef = useRef<HTMLDivElement>(null);
-	const { terminalRef, writeToTerminal } = useTerminal(
+	const { terminalRef, writeToTerminal, requestKill } = useTerminal(
 		containerRef,
 		cwd,
 		theme,
@@ -77,8 +78,9 @@ export const TerminalPanel = forwardRef<
 		ref,
 		() => ({
 			writeToTerminal,
+			requestKill,
 		}),
-		[writeToTerminal],
+		[writeToTerminal, requestKill],
 	);
 
 	// ネイティブドロップ時はHTML5のdropイベントが発火しないため、

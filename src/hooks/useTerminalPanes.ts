@@ -28,26 +28,10 @@ function nextPaneId() {
 	return `pane-${paneIdCounter}`;
 }
 
-let paneNameCounter = 0;
-function nextPaneName() {
-	paneNameCounter += 1;
-	return `Terminal ${paneNameCounter}`;
-}
-
 /** テスト用: カウンタリセット */
 export function _resetIdCounters(): void {
 	tabIdCounter = 0;
 	paneIdCounter = 0;
-	paneNameCounter = 0;
-}
-
-function createLeaf(): PaneLeaf {
-	return {
-		type: "leaf",
-		id: nextPaneId(),
-		label: nextPaneName(),
-		ptyId: null,
-	};
 }
 
 type NavigationDirection = "left" | "right" | "up" | "down";
@@ -80,10 +64,26 @@ export interface UseTerminalPanesReturn {
 
 export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 	const tabCounter = useRef(1);
+	const paneNameCounterRef = useRef(1);
 	const tabsLengthRef = useRef(1);
 
+	const createLeaf = useCallback((): PaneLeaf => {
+		paneNameCounterRef.current += 1;
+		return {
+			type: "leaf",
+			id: nextPaneId(),
+			label: `${tabPrefix} ${paneNameCounterRef.current}`,
+			ptyId: null,
+		};
+	}, [tabPrefix]);
+
 	const [tabs, setTabs] = useState<TerminalTab[]>(() => {
-		const pane = createLeaf();
+		const pane: PaneLeaf = {
+			type: "leaf",
+			id: nextPaneId(),
+			label: `${tabPrefix} 1`,
+			ptyId: null,
+		};
 		return [
 			{
 				id: nextTabId(),
@@ -115,7 +115,7 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 			setActiveTabId(newTab.id);
 			return [...prev, newTab];
 		});
-	}, [tabPrefix]);
+	}, [tabPrefix, createLeaf]);
 
 	const closeTab = useCallback((tabId: string) => {
 		setTabs((prev) => {
@@ -142,10 +142,10 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 
 	const splitFocusedPane = useCallback(
 		(direction: SplitDirection) => {
+			const newLeaf = createLeaf();
 			updateActiveTab((tab) => {
 				if (countLeaves(tab.paneTree) >= MAX_PANES_PER_TAB) return tab;
 
-				const newLeaf = createLeaf();
 				const newTree = splitPane(
 					tab.paneTree,
 					tab.focusedPaneId,
@@ -159,7 +159,7 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 				};
 			});
 		},
-		[updateActiveTab],
+		[updateActiveTab, createLeaf],
 	);
 
 	const closeSpecificPane = useCallback((paneId: string) => {
@@ -273,6 +273,10 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 
 	const movePaneToTab = useCallback(
 		(paneId: string) => {
+			tabCounter.current += 1;
+			const newTabId = nextTabId();
+			const newTabLabel = `${tabPrefix} ${tabCounter.current}`;
+
 			setTabs((prev) => {
 				if (prev.length >= MAX_TABS) return prev;
 
@@ -287,10 +291,6 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 
 				const newTree = closePane(tab.paneTree, paneId);
 				if (!newTree) return prev;
-
-				tabCounter.current += 1;
-				const newTabId = nextTabId();
-				const newTabLabel = `${tabPrefix} ${tabCounter.current}`;
 
 				const remainingLeaves = getAllLeaves(newTree);
 				const newFocused =

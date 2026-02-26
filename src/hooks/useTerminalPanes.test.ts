@@ -58,6 +58,25 @@ describe("useTerminalPanes", () => {
 		expect(result.current.tabs).toHaveLength(1);
 	});
 
+	it("再マウント時にペインラベルが同じ値を生成する", () => {
+		const { result, unmount } = renderHook(() => useTerminalPanes("Terminal"));
+		const firstLabel = result.current.tabs[0].paneTree;
+		expect(firstLabel.type).toBe("leaf");
+		if (firstLabel.type === "leaf") {
+			expect(firstLabel.label).toBe("Terminal 1");
+		}
+		unmount();
+
+		// 再マウント: ローカルカウンターがリセットされ同じラベルが生成される
+		_resetIdCounters();
+		const { result: result2 } = renderHook(() => useTerminalPanes("Terminal"));
+		const secondLabel = result2.current.tabs[0].paneTree;
+		expect(secondLabel.type).toBe("leaf");
+		if (secondLabel.type === "leaf") {
+			expect(secondLabel.label).toBe("Terminal 1");
+		}
+	});
+
 	it("フォーカスペインを垂直分割", () => {
 		const { result } = renderHook(() => useTerminalPanes("Terminal"));
 		act(() => result.current.splitFocusedPane("vertical"));
