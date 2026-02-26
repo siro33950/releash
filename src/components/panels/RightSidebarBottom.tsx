@@ -9,12 +9,6 @@ import { useState } from "react";
 import { CommentList } from "@/components/panels/CommentList";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipProvider,
-	TooltipTrigger,
-} from "@/components/ui/tooltip";
 import type { LineComment } from "@/types/comment";
 import type { Theme } from "@/types/settings";
 
@@ -62,56 +56,37 @@ export function RightSidebarBottom({
 				className="flex flex-col h-full"
 			>
 				<div className="flex items-center gap-2 shrink-0 px-0 pt-0 bg-background">
-					<TooltipProvider>
-						{onToggleCollapse && (
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<button
-										type="button"
-										onClick={onToggleCollapse}
-										className="shrink-0 p-1 ml-2 text-muted-foreground hover:text-foreground transition-colors"
-										aria-label={collapsed ? "Expand panel" : "Collapse panel"}
-									>
-										{collapsed ? (
-											<ChevronUp className="size-3.5" />
-										) : (
-											<ChevronDown className="size-3.5" />
-										)}
-									</button>
-								</TooltipTrigger>
-								<TooltipContent side="bottom">
-									{collapsed ? "Expand" : "Collapse"}
-								</TooltipContent>
-							</Tooltip>
-						)}
-						<TabsList variant="line" aria-label="Bottom sidebar tabs">
-							<Tooltip>
-								<TabsTrigger value="terminal" aria-label="Terminal">
-									<TooltipTrigger asChild>
-										<span className="inline-flex items-center">
-											<Terminal className="size-3.5" />
-										</span>
-									</TooltipTrigger>
-								</TabsTrigger>
-								<TooltipContent side="bottom">Terminal</TooltipContent>
-							</Tooltip>
-							<Tooltip>
-								<TabsTrigger value="comments" aria-label="Comments">
-									<TooltipTrigger asChild>
-										<span className="inline-flex items-center gap-1.5">
-											<MessageSquare className="size-3.5" />
-											{unsentComments.length > 0 && (
-												<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
-													{unsentComments.length}
-												</span>
-											)}
-										</span>
-									</TooltipTrigger>
-								</TabsTrigger>
-								<TooltipContent side="bottom">Comments</TooltipContent>
-							</Tooltip>
-						</TabsList>
-					</TooltipProvider>
+					{onToggleCollapse && (
+						<button
+							type="button"
+							onClick={onToggleCollapse}
+							className="shrink-0 p-1 ml-2 text-muted-foreground hover:text-foreground transition-colors"
+							aria-label={collapsed ? "Expand panel" : "Collapse panel"}
+						>
+							{collapsed ? (
+								<ChevronUp className="size-3.5" />
+							) : (
+								<ChevronDown className="size-3.5" />
+							)}
+						</button>
+					)}
+					<TabsList variant="line" aria-label="Bottom sidebar tabs">
+						<TabsTrigger value="terminal" aria-label="Terminal">
+							<span className="inline-flex items-center">
+								<Terminal className="size-3.5" />
+							</span>
+						</TabsTrigger>
+						<TabsTrigger value="comments" aria-label="Comments">
+							<span className="inline-flex items-center gap-1.5">
+								<MessageSquare className="size-3.5" />
+								{unsentComments.length > 0 && (
+									<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
+										{unsentComments.length}
+									</span>
+								)}
+							</span>
+						</TabsTrigger>
+					</TabsList>
 					{activeTab === "comments" &&
 						unsentComments.length > 0 &&
 						onSendToTerminal && (
