@@ -230,8 +230,11 @@ export function useNotionSettings(
 			}
 		}
 
-		await Promise.all(promises);
-		await load(repoPathsRef.current);
+		try {
+			await Promise.all(promises);
+		} finally {
+			await load(repoPathsRef.current);
+		}
 	}, [load]);
 
 	const reset = useCallback(() => {
