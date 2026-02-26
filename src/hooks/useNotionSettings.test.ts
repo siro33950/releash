@@ -245,4 +245,154 @@ describe("useNotionSettings", () => {
 		expect(result.current.drafts.size).toBe(0);
 		expect(result.current.isDirty).toBe(false);
 	});
+
+	it("should set validationStatus for invalid_token", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation(async (cmd) => {
+			if (cmd === "get_notion_config") return null;
+			if (cmd === "validate_notion_config") {
+				return { status: "invalid_token", properties: [] };
+			}
+			return null;
+		});
+
+		const { result } = renderHook(() => useNotionSettings(["/repo/a"]));
+		await waitFor(() => expect(result.current.loading).toBe(false));
+
+		act(() => {
+			result.current.updateDraft("/repo/a", (d) => ({
+				...d,
+				apiToken: "bad-token",
+				databaseId: "db",
+			}));
+		});
+
+		await act(async () => {
+			await result.current.validate("/repo/a");
+		});
+
+		expect(result.current.drafts.get("/repo/a")?.validationStatus).toBe(
+			"Invalid API token",
+		);
+		expect(result.current.drafts.get("/repo/a")?.validating).toBe(false);
+	});
+
+	it("should set validationStatus for invalid_database", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation(async (cmd) => {
+			if (cmd === "get_notion_config") return null;
+			if (cmd === "validate_notion_config") {
+				return { status: "invalid_database", properties: [] };
+			}
+			return null;
+		});
+
+		const { result } = renderHook(() => useNotionSettings(["/repo/a"]));
+		await waitFor(() => expect(result.current.loading).toBe(false));
+
+		act(() => {
+			result.current.updateDraft("/repo/a", (d) => ({
+				...d,
+				apiToken: "token",
+				databaseId: "bad-db",
+			}));
+		});
+
+		await act(async () => {
+			await result.current.validate("/repo/a");
+		});
+
+		expect(result.current.drafts.get("/repo/a")?.validationStatus).toBe(
+			"Invalid database ID",
+		);
+	});
+
+	it("should set validationStatus for network_error", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation(async (cmd) => {
+			if (cmd === "get_notion_config") return null;
+			if (cmd === "validate_notion_config") {
+				return { status: "network_error", properties: [] };
+			}
+			return null;
+		});
+
+		const { result } = renderHook(() => useNotionSettings(["/repo/a"]));
+		await waitFor(() => expect(result.current.loading).toBe(false));
+
+		act(() => {
+			result.current.updateDraft("/repo/a", (d) => ({
+				...d,
+				apiToken: "token",
+				databaseId: "db",
+			}));
+		});
+
+		await act(async () => {
+			await result.current.validate("/repo/a");
+		});
+
+		expect(result.current.drafts.get("/repo/a")?.validationStatus).toBe(
+			"Network error: Check your connection",
+		);
+	});
+
+	it("should handle validate exception without leaving validating stuck", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation(async (cmd) => {
+			if (cmd === "get_notion_config") return null;
+			if (cmd === "validate_notion_config") {
+				throw new Error("Connection refused");
+			}
+			return null;
+		});
+
+		const { result } = renderHook(() => useNotionSettings(["/repo/a"]));
+		await waitFor(() => expect(result.current.loading).toBe(false));
+
+		act(() => {
+			result.current.updateDraft("/repo/a", (d) => ({
+				...d,
+				apiToken: "token",
+				databaseId: "db",
+			}));
+		});
+
+		await act(async () => {
+			await result.current.validate("/repo/a");
+		});
+
+		const draft = result.current.drafts.get("/repo/a");
+		expect(draft?.validating).toBe(false);
+		expect(draft?.validationStatus).toContain("Connection refused");
+	});
+
+	it("should not call save_notion_config when apiToken is empty", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockResolvedValue(null);
+
+		const { result } = renderHook(() => useNotionSettings(["/repo/a"]));
+		await waitFor(() => expect(result.current.loading).toBe(false));
+
+		act(() => {
+			result.current.updateDraft("/repo/a", (d) => ({
+				...d,
+				databaseId: "db-id",
+			}));
+		});
+
+		expect(result.current.isDirty).toBe(true);
+
+		vi.mocked(invoke).mockClear();
+		vi.mocked(invoke).mockResolvedValue(null);
+
+		await act(async () => {
+			await result.current.save();
+		});
+
+		const saveCalls = vi
+			.mocked(invoke)
+			.mock.calls.filter(([cmd]) => cmd === "save_notion_config");
+		expect(saveCalls).toHaveLength(0);
+	});
 });

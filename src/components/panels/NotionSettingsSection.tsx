@@ -4,6 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Message } from "@/components/ui/message";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import type { NotionRepoDraft } from "@/hooks/useNotionSettings";
 import type { LabelProperty, NotionPropertyInfo } from "@/types/notion";
@@ -97,11 +104,16 @@ function NotionRepoConfigItem({
 						size="sm"
 						className="ml-auto h-6 px-2"
 						onClick={handleMarkForDelete}
+						aria-label={
+							draft.markedForDelete
+								? "Undo delete Notion configuration"
+								: "Delete Notion configuration"
+						}
 					>
 						{draft.markedForDelete ? (
 							<span className="text-[10px]">Undo</span>
 						) : (
-							<Trash2 className="size-3 text-destructive" />
+							<Trash2 className="size-3 text-destructive" aria-hidden="true" />
 						)}
 					</Button>
 				)}
@@ -228,32 +240,30 @@ function PropertyMappingSection({
 			<span className={labelClass}>Property Mapping</span>
 
 			<div className="flex flex-col gap-1.5">
-				<label
-					htmlFor={`notion-title-${repoPath}`}
-					className="text-[10px] text-muted-foreground"
-				>
-					Title
-				</label>
-				<select
-					id={`notion-title-${repoPath}`}
+				<span className="text-[10px] text-muted-foreground">Title</span>
+				<Select
 					value={mapping.title}
-					onChange={(e) =>
+					onValueChange={(value) =>
 						updateDraft(repoPath, (d) => ({
 							...d,
 							propertyMapping: {
 								...d.propertyMapping,
-								title: e.target.value,
+								title: value,
 							},
 						}))
 					}
-					className="w-full bg-muted border border-border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
 				>
-					{properties.map((prop) => (
-						<option key={prop.name} value={prop.name}>
-							{prop.name} ({prop.property_type})
-						</option>
-					))}
-				</select>
+					<SelectTrigger size="sm" className="w-full text-xs">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						{properties.map((prop) => (
+							<SelectItem key={prop.name} value={prop.name}>
+								{prop.name} ({prop.property_type})
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
 			</div>
 
 			<div className="flex flex-col gap-1">
@@ -278,33 +288,30 @@ function PropertyMappingSection({
 			</div>
 
 			<div className="flex flex-col gap-1.5">
-				<label
-					htmlFor={`notion-branch-${repoPath}`}
-					className="text-[10px] text-muted-foreground"
-				>
-					Branch Name
-				</label>
-				<select
-					id={`notion-branch-${repoPath}`}
+				<span className="text-[10px] text-muted-foreground">Branch Name</span>
+				<Select
 					value={mapping.branch_name}
-					onChange={(e) =>
+					onValueChange={(value) =>
 						updateDraft(repoPath, (d) => ({
 							...d,
 							propertyMapping: {
 								...d.propertyMapping,
-								branch_name: e.target.value,
+								branch_name: value,
 							},
 						}))
 					}
-					className="w-full bg-muted border border-border rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
 				>
-					<option value="">(Not set)</option>
-					{properties.map((prop) => (
-						<option key={prop.name} value={prop.name}>
-							{prop.name} ({prop.property_type})
-						</option>
-					))}
-				</select>
+					<SelectTrigger size="sm" className="w-full text-xs">
+						<SelectValue placeholder="(Not set)" />
+					</SelectTrigger>
+					<SelectContent>
+						{properties.map((prop) => (
+							<SelectItem key={prop.name} value={prop.name}>
+								{prop.name} ({prop.property_type})
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
 			</div>
 
 			<div className="flex flex-col gap-1.5">

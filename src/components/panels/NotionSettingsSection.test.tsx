@@ -215,11 +215,75 @@ describe("NotionSettingsSection", () => {
 			/>,
 		);
 
-		const buttons = screen.getAllByRole("button");
-		const trashButton = buttons.find(
-			(btn) => !btn.textContent?.includes("Test Connection"),
-		) as HTMLElement;
+		const trashButton = screen.getByRole("button", {
+			name: "Delete Notion configuration",
+		});
 		await user.click(trashButton);
 		expect(markForDelete).toHaveBeenCalledWith("/repo/a");
+	});
+
+	it("should call updateDraft when toggling a label checkbox", async () => {
+		const user = userEvent.setup();
+		const updateDraft = vi.fn();
+		const drafts = new Map([
+			[
+				"/repo/a",
+				makeDraft({
+					apiToken: "token",
+					databaseId: "db-id",
+					validationStatus: "success",
+					properties: [
+						{ name: "Name", property_type: "title", options: [] },
+						{ name: "Status", property_type: "select", options: [] },
+					],
+				}),
+			],
+		]);
+
+		render(
+			<NotionSettingsSection
+				repoPaths={["/repo/a"]}
+				drafts={drafts}
+				updateDraft={updateDraft}
+				validate={vi.fn()}
+				markForDelete={vi.fn()}
+			/>,
+		);
+
+		const checkbox = screen.getByRole("checkbox", {
+			name: "Status (select)",
+		});
+		await user.click(checkbox);
+		expect(updateDraft).toHaveBeenCalledWith("/repo/a", expect.any(Function));
+	});
+
+	it("should call updateDraft when typing a prefix", async () => {
+		const user = userEvent.setup();
+		const updateDraft = vi.fn();
+		const drafts = new Map([
+			[
+				"/repo/a",
+				makeDraft({
+					apiToken: "token",
+					databaseId: "db-id",
+					validationStatus: "success",
+					properties: [{ name: "Name", property_type: "title", options: [] }],
+				}),
+			],
+		]);
+
+		render(
+			<NotionSettingsSection
+				repoPaths={["/repo/a"]}
+				drafts={drafts}
+				updateDraft={updateDraft}
+				validate={vi.fn()}
+				markForDelete={vi.fn()}
+			/>,
+		);
+
+		const prefixInput = screen.getByLabelText("Prefix");
+		await user.type(prefixInput, "f");
+		expect(updateDraft).toHaveBeenCalledWith("/repo/a", expect.any(Function));
 	});
 });

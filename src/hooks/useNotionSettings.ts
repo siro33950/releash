@@ -64,8 +64,10 @@ export function useNotionSettings(
 	draftsRef.current = drafts;
 	const configsRef = useRef(configs);
 	configsRef.current = configs;
+	const loadSeqRef = useRef(0);
 
 	const load = useCallback(async (paths: string[]) => {
+		const seq = ++loadSeqRef.current;
 		setLoading(true);
 		try {
 			const entries = await Promise.all(
@@ -81,14 +83,18 @@ export function useNotionSettings(
 					}
 				}),
 			);
-			const configMap = new Map(entries);
-			const draftMap = new Map(
-				entries.map(([path, config]) => [path, configToDraft(config)]),
-			);
-			setConfigs(configMap);
-			setDrafts(draftMap);
+			if (seq === loadSeqRef.current) {
+				const configMap = new Map(entries);
+				const draftMap = new Map(
+					entries.map(([path, config]) => [path, configToDraft(config)]),
+				);
+				setConfigs(configMap);
+				setDrafts(draftMap);
+			}
 		} finally {
-			setLoading(false);
+			if (seq === loadSeqRef.current) {
+				setLoading(false);
+			}
 		}
 	}, []);
 
