@@ -621,7 +621,7 @@ pub async fn update_last_server_context(
             .config
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
-        if !last_root_path.is_empty() && !config.app.last_repo_paths.contains(&last_root_path) {
+        if !last_root_path.is_empty() && config.app.last_repo_paths.is_empty() {
             config.app.last_repo_paths = vec![last_root_path.clone()];
         }
         config.app.last_root_path = last_root_path;
