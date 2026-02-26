@@ -176,27 +176,38 @@ export function CreateWorktreeModal({
 		const existingNames = allBranches.map((b) => b.name);
 
 		try {
-			let lastEntry: WorktreeEntry | null = null;
+			const createdEntries: WorktreeEntry[] = [];
+			const failedBranches: string[] = [];
+
 			for (const branch of selectedBranches) {
 				const dirName = branchToDir(branch);
 				const worktreePath = `${worktreeDir}/${dirName}`;
 				const isNewBranch = !existingNames.includes(branch);
-				lastEntry = await invoke<WorktreeEntry>("create_worktree", {
-					repoPath: selectedRepoPath,
-					worktreePath,
-					branch,
-					createBranch: isNewBranch,
-					baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
-				});
+				try {
+					const entry = await invoke<WorktreeEntry>("create_worktree", {
+						repoPath: selectedRepoPath,
+						worktreePath,
+						branch,
+						createBranch: isNewBranch,
+						baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
+					});
+					createdEntries.push(entry);
+				} catch {
+					failedBranches.push(branch);
+				}
 			}
-			trackEvent("worktree_created", {
-				count: String(selectedBranches.length),
-			});
-			if (lastEntry) {
+
+			if (createdEntries.length > 0) {
+				const lastEntry = createdEntries[createdEntries.length - 1];
+				trackEvent("worktree_created", {
+					count: String(createdEntries.length),
+				});
 				onCreated(lastEntry.path, lastEntry.branch, repoName);
 			}
-		} catch (e) {
-			setError(String(e));
+
+			if (failedBranches.length > 0) {
+				setError(`Failed to create: ${failedBranches.join(", ")}`);
+			}
 		} finally {
 			setCreating(false);
 		}
@@ -447,6 +458,7 @@ function BranchMode({
 								tabIndex={0}
 								onClick={() => onToggle(b.name)}
 								onKeyDown={(e) => {
+									if (e.target !== e.currentTarget) return;
 									if (e.key === "Enter" || e.key === " ") {
 										e.preventDefault();
 										onToggle(b.name);
@@ -460,6 +472,7 @@ function BranchMode({
 									checked={isSelected}
 									onCheckedChange={() => onToggle(b.name)}
 									onClick={(e) => e.stopPropagation()}
+									onKeyDown={(e) => e.stopPropagation()}
 									className="shrink-0"
 								/>
 								<GitBranch className="size-3.5 text-muted-foreground shrink-0" />
@@ -707,6 +720,7 @@ function IssueMode({
 									tabIndex={0}
 									onClick={() => onToggle(issue)}
 									onKeyDown={(e) => {
+										if (e.target !== e.currentTarget) return;
 										if (e.key === "Enter" || e.key === " ") {
 											e.preventDefault();
 											onToggle(issue);
@@ -722,6 +736,7 @@ function IssueMode({
 										checked={isSelected}
 										onCheckedChange={() => onToggle(issue)}
 										onClick={(e) => e.stopPropagation()}
+										onKeyDown={(e) => e.stopPropagation()}
 										className="shrink-0 mt-0.5"
 									/>
 									<div className="min-w-0 flex-1">
@@ -919,6 +934,7 @@ function NotionMode({
 									tabIndex={0}
 									onClick={() => onToggle(task)}
 									onKeyDown={(e) => {
+										if (e.target !== e.currentTarget) return;
 										if (e.key === "Enter" || e.key === " ") {
 											e.preventDefault();
 											onToggle(task);
@@ -934,6 +950,7 @@ function NotionMode({
 										checked={isSelected}
 										onCheckedChange={() => onToggle(task)}
 										onClick={(e) => e.stopPropagation()}
+										onKeyDown={(e) => e.stopPropagation()}
 										className="shrink-0 mt-0.5"
 									/>
 									<div className="min-w-0 flex-1">
