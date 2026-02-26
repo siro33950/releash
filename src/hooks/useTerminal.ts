@@ -184,6 +184,9 @@ export function useTerminal(
 			});
 
 			if (!isMounted) {
+				if (killOnUnmountRef.current && !result.is_exited) {
+					invoke("kill_pty", { ptyId: result.pty_id }).catch(() => {});
+				}
 				return;
 			}
 
