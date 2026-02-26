@@ -75,7 +75,7 @@ test.describe("Review Panel", () => {
 		await expect(page.getByText("No comments")).toBeVisible();
 	});
 
-	test("Comments タブがデフォルトで選択されている", async ({ page }) => {
+	test("Terminal タブがデフォルトで選択されている", async ({ page }) => {
 		const config = reviewConfig();
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -87,9 +87,9 @@ test.describe("Review Panel", () => {
 			page.locator('[data-slot="tabs-trigger"]').filter({ hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
-		// Comments タブが aria-selected="true" であることを確認
+		// Terminal タブが aria-selected="true" であることを確認
 		const reviewPanel = page.getByTestId("review");
-		const commentsTab = reviewPanel.getByRole("tab", { name: /Comments/ });
-		await expect(commentsTab).toHaveAttribute("aria-selected", "true");
+		const terminalTab = reviewPanel.getByRole("tab", { name: "Terminal" });
+		await expect(terminalTab).toHaveAttribute("aria-selected", "true");
 	});
 });

@@ -64,7 +64,7 @@ test.describe("StatusBar", () => {
 			state: "running",
 		});
 
-		// WorkspaceListのブランチアイテムに "Running" バッジが表示される
-		await expect(page.getByText("Running")).toBeVisible({ timeout: 5000 });
+		// WorkspaceListのブランチアイテムに running 状態のアイコンが表示される
+		await expect(page.getByTitle("running")).toBeVisible({ timeout: 5000 });
 	});
 });
