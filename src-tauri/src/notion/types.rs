@@ -86,7 +86,7 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotionTaskQuery {
     pub title_filter: String,
-    pub label_filters: HashMap<String, String>,
+    pub label_filters: HashMap<String, Vec<String>>,
     pub cursor: Option<String>,
     pub page_size: Option<u32>,
 }
@@ -350,7 +350,7 @@ property_type = "multi_select"
     #[test]
     fn notion_task_query_roundtrip() {
         let mut label_filters = HashMap::new();
-        label_filters.insert("Status".to_string(), "Todo".to_string());
+        label_filters.insert("Status".to_string(), vec!["Todo".to_string()]);
 
         let query = NotionTaskQuery {
             title_filter: "test".to_string(),
@@ -363,7 +363,10 @@ property_type = "multi_select"
         let deserialized: NotionTaskQuery = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deserialized.title_filter, "test");
-        assert_eq!(deserialized.label_filters.get("Status").unwrap(), "Todo");
+        assert_eq!(
+            deserialized.label_filters.get("Status").unwrap(),
+            &vec!["Todo".to_string()]
+        );
         assert_eq!(deserialized.cursor.unwrap(), "cursor-abc");
         assert_eq!(deserialized.page_size.unwrap(), 20);
     }

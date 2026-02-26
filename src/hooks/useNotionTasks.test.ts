@@ -169,7 +169,7 @@ describe("useNotionTasks", () => {
 
 		const initialFilters: NotionTaskFilters = {
 			title: "saved query",
-			labels: { Status: "In Progress" },
+			labels: { Status: ["In Progress"] },
 		};
 
 		const { result } = renderHook(() =>
@@ -184,7 +184,7 @@ describe("useNotionTasks", () => {
 			repoPath: "/test/repo",
 			query: {
 				title_filter: "saved query",
-				label_filters: { Status: "In Progress" },
+				label_filters: { Status: ["In Progress"] },
 				cursor: null,
 			},
 		});
@@ -214,7 +214,7 @@ describe("useNotionTasks", () => {
 			});
 
 			act(() => {
-				result.current.search("query", { Status: "Todo" });
+				result.current.search("query", { Status: ["Todo"] });
 			});
 
 			expect(invoke).not.toHaveBeenCalled();
@@ -227,7 +227,7 @@ describe("useNotionTasks", () => {
 				repoPath: "/test/repo",
 				query: {
 					title_filter: "query",
-					label_filters: { Status: "Todo" },
+					label_filters: { Status: ["Todo"] },
 					cursor: null,
 				},
 			});

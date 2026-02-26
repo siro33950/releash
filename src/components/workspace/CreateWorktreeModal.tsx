@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+	Check,
 	GitBranch,
 	Loader2,
-	NotebookPen,
 	Plus,
 	RefreshCw,
 	StickyNote,
@@ -10,15 +10,28 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+	Command,
+	CommandEmpty,
+	CommandGroup,
+	CommandInput,
+	CommandItem,
+	CommandList,
+} from "@/components/ui/command";
 import {
 	Dialog,
 	DialogContent,
-	DialogDescription,
 	DialogFooter,
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	Select,
@@ -33,6 +46,7 @@ import { useNotionLabelOptions } from "@/hooks/useNotionLabelOptions";
 import { useNotionTasks } from "@/hooks/useNotionTasks";
 import { generateIssueBranchName } from "@/lib/issueBranch";
 import { trackEvent } from "@/lib/telemetry";
+import { cn } from "@/lib/utils";
 import { branchToDir, computeWorktreeDir } from "@/lib/worktreePath";
 import type {
 	BranchInfo,
@@ -68,7 +82,7 @@ export function CreateWorktreeModal({
 }: CreateWorktreeModalProps) {
 	const [mode, setMode] = useState<CreateMode>("plain");
 	const [selectedRepoPath, setSelectedRepoPath] = useState(repoPaths[0] ?? "");
-	const [branchName, setBranchName] = useState("");
+	const [selectedBranches, setSelectedBranches] = useState<string[]>([]);
 	const [baseBranch, setBaseBranch] = useState("");
 	const [localBranches, setLocalBranches] = useState<BranchInfo[]>([]);
 	const [allBranches, setAllBranches] = useState<WorktreeBranch[]>([]);
@@ -81,10 +95,18 @@ export function CreateWorktreeModal({
 		[selectedRepoPath],
 	);
 
+	const toggleBranch = useCallback((branch: string) => {
+		setSelectedBranches((prev) =>
+			prev.includes(branch)
+				? prev.filter((b) => b !== branch)
+				: [...prev, branch],
+		);
+	}, []);
+
 	useEffect(() => {
 		if (!open) return;
 		setMode("plain");
-		setBranchName("");
+		setSelectedBranches([]);
 		setBaseBranch("");
 		setFilter("");
 		setError(null);
@@ -147,33 +169,50 @@ export function CreateWorktreeModal({
 	}, [nonWorktreeBranches, filter]);
 
 	const handleCreate = useCallback(async () => {
-		if (!branchName || !selectedRepoPath) return;
+		if (selectedBranches.length === 0 || !selectedRepoPath) return;
 		setCreating(true);
 		setError(null);
 		const worktreeDir = computeWorktreeDir(selectedRepoPath);
-		const dirName = branchToDir(branchName);
-		const worktreePath = `${worktreeDir}/${dirName}`;
 		const existingNames = allBranches.map((b) => b.name);
-		const isNewBranch = !existingNames.includes(branchName);
+
 		try {
-			const entry = await invoke<WorktreeEntry>("create_worktree", {
-				repoPath: selectedRepoPath,
-				worktreePath,
-				branch: branchName,
-				createBranch: isNewBranch,
-				baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
-			});
-			trackEvent("worktree_created", {
-				is_new_branch: isNewBranch ? "true" : "false",
-			});
-			onCreated(entry.path, entry.branch, repoName);
-		} catch (e) {
-			setError(String(e));
+			const createdEntries: WorktreeEntry[] = [];
+			const failedBranches: string[] = [];
+
+			for (const branch of selectedBranches) {
+				const dirName = branchToDir(branch);
+				const worktreePath = `${worktreeDir}/${dirName}`;
+				const isNewBranch = !existingNames.includes(branch);
+				try {
+					const entry = await invoke<WorktreeEntry>("create_worktree", {
+						repoPath: selectedRepoPath,
+						worktreePath,
+						branch,
+						createBranch: isNewBranch,
+						baseBranch: isNewBranch ? baseBranch || "HEAD" : null,
+					});
+					createdEntries.push(entry);
+				} catch {
+					failedBranches.push(branch);
+				}
+			}
+
+			if (createdEntries.length > 0) {
+				const lastEntry = createdEntries[createdEntries.length - 1];
+				trackEvent("worktree_created", {
+					count: String(createdEntries.length),
+				});
+				onCreated(lastEntry.path, lastEntry.branch, repoName);
+			}
+
+			if (failedBranches.length > 0) {
+				setError(`Failed to create: ${failedBranches.join(", ")}`);
+			}
 		} finally {
 			setCreating(false);
 		}
 	}, [
-		branchName,
+		selectedBranches,
 		selectedRepoPath,
 		allBranches,
 		baseBranch,
@@ -202,23 +241,24 @@ export function CreateWorktreeModal({
 
 	return (
 		<Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-			<DialogContent className="max-h-[85vh] overflow-y-auto">
-				<DialogHeader>
+			<DialogContent
+				showCloseButton={false}
+				className="h-[70vh] sm:max-w-2xl flex flex-col overflow-hidden"
+			>
+				{/* Header — title + repo selector side by side */}
+				<DialogHeader className="flex-row items-center justify-between gap-4">
 					<DialogTitle>New Worktree</DialogTitle>
-					<DialogDescription>
-						Create a new worktree from a branch, issue, or Notion task.
-					</DialogDescription>
-				</DialogHeader>
-
-				{/* Repo selector */}
-				{repoPaths.length > 1 && (
-					<div className="flex items-center gap-2 text-sm">
-						<span className="text-muted-foreground shrink-0">Repository:</span>
+					{repoPaths.length > 1 && (
 						<Select
 							value={selectedRepoPath}
-							onValueChange={setSelectedRepoPath}
+							onValueChange={(nextRepoPath) => {
+								setSelectedRepoPath(nextRepoPath);
+								setSelectedBranches([]);
+								setFilter("");
+								setError(null);
+							}}
 						>
-							<SelectTrigger size="sm" className="flex-1">
+							<SelectTrigger size="sm" className="w-[180px]">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
@@ -229,20 +269,22 @@ export function CreateWorktreeModal({
 								))}
 							</SelectContent>
 						</Select>
-					</div>
-				)}
+					)}
+				</DialogHeader>
 
-				{/* Mode tabs */}
+				{/* Body — left: vertical tabs, right: mode content */}
 				<Tabs
+					orientation="vertical"
 					value={mode}
 					onValueChange={(v) => {
 						setMode(v as CreateMode);
-						setBranchName("");
+						setSelectedBranches([]);
 						setFilter("");
 						setError(null);
 					}}
+					className="flex-1 min-h-0"
 				>
-					<TabsList variant="line">
+					<TabsList variant="line" className="w-[120px] shrink-0 border-r pr-2">
 						{tabs.map((tab) => (
 							<TabsTrigger key={tab.mode} value={tab.mode}>
 								{tab.icon}
@@ -250,71 +292,84 @@ export function CreateWorktreeModal({
 							</TabsTrigger>
 						))}
 					</TabsList>
+					<div className="flex-1 min-h-0 flex flex-col pl-3">
+						{mode === "plain" && (
+							<PlainMode
+								branchName={selectedBranches[0] ?? ""}
+								onBranchNameChange={(name) =>
+									setSelectedBranches(name ? [name] : [])
+								}
+								baseBranch={baseBranch}
+								onBaseBranchChange={setBaseBranch}
+								localBranches={localBranches}
+							/>
+						)}
+						{mode === "branch" && (
+							<BranchMode
+								branches={filteredNonWorktreeBranches}
+								filter={filter}
+								onFilterChange={setFilter}
+								onToggle={toggleBranch}
+								selectedBranches={selectedBranches}
+							/>
+						)}
+						{mode === "issue" && selectedRepoPath && (
+							<IssueMode
+								key={`issue-${selectedRepoPath}`}
+								repoPath={selectedRepoPath}
+								onToggle={(issue) =>
+									toggleBranch(generateIssueBranchName(issue.number))
+								}
+								selectedBranches={selectedBranches}
+								worktreeBranchNames={worktreeBranchNames}
+							/>
+						)}
+						{mode === "notion" && selectedRepoPath && (
+							<NotionMode
+								key={`notion-${selectedRepoPath}`}
+								repoPath={selectedRepoPath}
+								onToggle={(task) =>
+									toggleBranch(
+										task.branch_name || notionTaskToBranchName(task.title),
+									)
+								}
+								selectedBranches={selectedBranches}
+								worktreeBranchNames={worktreeBranchNames}
+							/>
+						)}
+					</div>
 				</Tabs>
 
-				{/* Mode content */}
-				<div className="min-h-[200px]">
-					{mode === "plain" && (
-						<PlainMode
-							branchName={branchName}
-							onBranchNameChange={setBranchName}
-							baseBranch={baseBranch}
-							onBaseBranchChange={setBaseBranch}
-							localBranches={localBranches}
-						/>
-					)}
-					{mode === "branch" && (
-						<BranchMode
-							branches={filteredNonWorktreeBranches}
-							filter={filter}
-							onFilterChange={setFilter}
-							onSelect={(name) => setBranchName(name)}
-							selectedBranch={branchName}
-						/>
-					)}
-					{mode === "issue" && selectedRepoPath && (
-						<IssueMode
-							repoPath={selectedRepoPath}
-							onSelect={(issue) =>
-								setBranchName(generateIssueBranchName(issue.number))
-							}
-							selectedBranch={branchName}
-							worktreeBranchNames={worktreeBranchNames}
-						/>
-					)}
-					{mode === "notion" && selectedRepoPath && (
-						<NotionMode
-							repoPath={selectedRepoPath}
-							onSelect={(task) => {
-								setBranchName(
-									task.branch_name || notionTaskToBranchName(task.title),
-								);
-							}}
-							selectedBranch={branchName}
-							worktreeBranchNames={worktreeBranchNames}
-						/>
-					)}
-				</div>
-
-				{error && <p className="text-sm text-destructive">{error}</p>}
-
-				{branchName && (
-					<div className="text-xs text-muted-foreground">
-						Branch: <code className="font-mono">{branchName}</code>
+				{/* Footer — error + selected branches left, buttons right */}
+				<DialogFooter className="flex-row items-center justify-between gap-2">
+					<div className="flex flex-col gap-1 min-w-0">
+						{error && <p className="text-xs text-destructive">{error}</p>}
+						<div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
+							{selectedBranches.map((b) => (
+								<code key={b} className="font-mono bg-muted px-1 rounded">
+									{b}
+								</code>
+							))}
+						</div>
 					</div>
-				)}
-
-				<DialogFooter>
-					<Button variant="outline" onClick={onClose} disabled={creating}>
-						Cancel
-					</Button>
-					<Button
-						onClick={handleCreate}
-						disabled={!branchName || !selectedRepoPath || creating}
-					>
-						{creating && <Loader2 className="size-3.5 mr-1 animate-spin" />}
-						{creating ? "Creating..." : "Create"}
-					</Button>
+					<div className="flex gap-2 shrink-0">
+						<Button variant="outline" onClick={onClose} disabled={creating}>
+							Cancel
+						</Button>
+						<Button
+							onClick={handleCreate}
+							disabled={
+								selectedBranches.length === 0 || !selectedRepoPath || creating
+							}
+						>
+							{creating && <Loader2 className="size-3.5 mr-1 animate-spin" />}
+							{creating
+								? "Creating..."
+								: selectedBranches.length > 1
+									? `Create ${selectedBranches.length}`
+									: "Create"}
+						</Button>
+					</div>
 				</DialogFooter>
 			</DialogContent>
 		</Dialog>
@@ -374,40 +429,57 @@ function BranchMode({
 	branches,
 	filter,
 	onFilterChange,
-	onSelect,
-	selectedBranch,
+	onToggle,
+	selectedBranches,
 }: {
 	branches: WorktreeBranch[];
 	filter: string;
 	onFilterChange: (filter: string) => void;
-	onSelect: (name: string) => void;
-	selectedBranch: string;
+	onToggle: (name: string) => void;
+	selectedBranches: string[];
 }) {
 	return (
-		<div className="space-y-2">
+		<div className="flex-1 min-h-0 flex flex-col gap-2">
 			<Input
 				value={filter}
 				onChange={(e) => onFilterChange(e.target.value)}
 				placeholder="Filter branches..."
 				autoFocus
 			/>
-			<ScrollArea className="h-[180px]">
+			<ScrollArea className="flex-1 min-h-[120px]">
 				<div className="space-y-0.5">
-					{branches.map((b) => (
-						<button
-							key={b.name}
-							type="button"
-							onClick={() => onSelect(b.name)}
-							className={`flex w-full items-center gap-2 px-2 py-1.5 text-sm rounded transition-colors ${
-								selectedBranch === b.name
-									? "bg-muted text-foreground"
-									: "hover:bg-secondary"
-							}`}
-						>
-							<GitBranch className="size-3.5 text-muted-foreground shrink-0" />
-							<span className="truncate">{b.name}</span>
-						</button>
-					))}
+					{branches.map((b) => {
+						const isSelected = selectedBranches.includes(b.name);
+						return (
+							// biome-ignore lint/a11y/useSemanticElements: Checkbox renders as <button> internally, so outer cannot be <button>
+							<div
+								key={b.name}
+								role="button"
+								tabIndex={0}
+								onClick={() => onToggle(b.name)}
+								onKeyDown={(e) => {
+									if (e.target !== e.currentTarget) return;
+									if (e.key === "Enter" || e.key === " ") {
+										e.preventDefault();
+										onToggle(b.name);
+									}
+								}}
+								className={`flex w-full items-center gap-2 px-2 py-1.5 text-sm rounded transition-colors cursor-pointer ${
+									isSelected ? "bg-muted text-foreground" : "hover:bg-secondary"
+								}`}
+							>
+								<Checkbox
+									checked={isSelected}
+									onCheckedChange={() => onToggle(b.name)}
+									onClick={(e) => e.stopPropagation()}
+									onKeyDown={(e) => e.stopPropagation()}
+									className="shrink-0"
+								/>
+								<GitBranch className="size-3.5 text-muted-foreground shrink-0" />
+								<span className="truncate">{b.name}</span>
+							</div>
+						);
+					})}
 					{branches.length === 0 && (
 						<div className="text-xs text-muted-foreground text-center py-4">
 							No branches without worktrees
@@ -421,19 +493,19 @@ function BranchMode({
 
 function IssueMode({
 	repoPath,
-	onSelect,
-	selectedBranch,
+	onToggle,
+	selectedBranches,
 	worktreeBranchNames,
 }: {
 	repoPath: string;
-	onSelect: (issue: IssueInfo) => void;
-	selectedBranch: string;
+	onToggle: (issue: IssueInfo) => void;
+	selectedBranches: string[];
 	worktreeBranchNames: Set<string>;
 }) {
 	const { issues, loading, refresh } = useIssues(repoPath);
 	const [filter, setFilter] = useState("");
-	const [labelFilter, setLabelFilter] = useState("");
-	const [milestoneFilter, setMilestoneFilter] = useState("");
+	const [labelFilters, setLabelFilters] = useState<string[]>([]);
+	const [milestoneFilters, setMilestoneFilters] = useState<string[]>([]);
 
 	const allLabels = useMemo(() => {
 		const set = new Set<string>();
@@ -470,24 +542,40 @@ function IssueMode({
 					String(i.number).includes(lower),
 			);
 		}
-		if (labelFilter) {
+		if (labelFilters.length > 0) {
+			// AND: issue must have ALL selected labels
 			result = result.filter((i) =>
-				i.labels.some((l) => l.name === labelFilter),
+				labelFilters.every((lf) => i.labels.some((l) => l.name === lf)),
 			);
 		}
-		if (milestoneFilter) {
-			if (milestoneFilter === "__none__") {
-				result = result.filter((i) => i.milestone === null);
-			} else {
-				result = result.filter((i) => i.milestone?.title === milestoneFilter);
-			}
+		if (milestoneFilters.length > 0) {
+			// OR: issue must belong to ANY selected milestone
+			result = result.filter((i) => {
+				if (milestoneFilters.includes("__none__")) {
+					if (i.milestone === null) return true;
+				}
+				return i.milestone
+					? milestoneFilters.includes(i.milestone.title)
+					: false;
+			});
 		}
 		result.sort((a, b) => b.number - a.number);
 		return result;
-	}, [issues, filter, labelFilter, milestoneFilter, worktreeBranchNames]);
+	}, [issues, filter, labelFilters, milestoneFilters, worktreeBranchNames]);
+
+	const milestoneOptions = useMemo(() => {
+		const items: { value: string; label: string }[] = [];
+		if (allMilestones.hasNone) {
+			items.push({ value: "__none__", label: "No milestone" });
+		}
+		for (const title of allMilestones.titles) {
+			items.push({ value: title, label: title });
+		}
+		return items;
+	}, [allMilestones]);
 
 	return (
-		<div className="space-y-2">
+		<div className="flex-1 min-h-0 flex flex-col gap-1.5">
 			<div className="flex gap-1">
 				<Input
 					value={filter}
@@ -507,46 +595,113 @@ function IssueMode({
 					<RefreshCw className="size-3.5" />
 				</Button>
 			</div>
-			{allLabels.length > 0 && (
-				<Select
-					value={labelFilter}
-					onValueChange={(v) => setLabelFilter(v === "__all__" ? "" : v)}
-				>
-					<SelectTrigger size="sm" className="w-full">
-						<SelectValue placeholder="All labels" />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="__all__">All labels</SelectItem>
-						{allLabels.map((label) => (
-							<SelectItem key={label} value={label}>
-								{label}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
+			{(allLabels.length > 0 || milestoneOptions.length > 0) && (
+				<div className="flex flex-wrap gap-1">
+					{allLabels.length > 0 && (
+						<Popover>
+							<PopoverTrigger asChild>
+								<Button size="sm" variant="outline" className="shrink-0 gap-1">
+									Labels
+									{labelFilters.length > 0 && (
+										<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
+											{labelFilters.length}
+										</span>
+									)}
+								</Button>
+							</PopoverTrigger>
+							<PopoverContent
+								className="w-[200px] p-0"
+								align="start"
+								onWheel={(e) => e.stopPropagation()}
+							>
+								<Command>
+									<CommandInput placeholder="Search labels..." />
+									<CommandList>
+										<CommandEmpty>No labels found.</CommandEmpty>
+										<CommandGroup>
+											{allLabels.map((label) => {
+												const selected = labelFilters.includes(label);
+												return (
+													<CommandItem
+														key={label}
+														onSelect={() =>
+															setLabelFilters((prev) =>
+																prev.includes(label)
+																	? prev.filter((l) => l !== label)
+																	: [...prev, label],
+															)
+														}
+													>
+														<Check
+															className={cn(
+																"size-3.5",
+																selected ? "opacity-100" : "opacity-0",
+															)}
+														/>
+														{label}
+													</CommandItem>
+												);
+											})}
+										</CommandGroup>
+									</CommandList>
+								</Command>
+							</PopoverContent>
+						</Popover>
+					)}
+					{milestoneOptions.length > 0 && (
+						<Popover>
+							<PopoverTrigger asChild>
+								<Button size="sm" variant="outline" className="shrink-0 gap-1">
+									Milestones
+									{milestoneFilters.length > 0 && (
+										<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
+											{milestoneFilters.length}
+										</span>
+									)}
+								</Button>
+							</PopoverTrigger>
+							<PopoverContent
+								className="w-[200px] p-0"
+								align="start"
+								onWheel={(e) => e.stopPropagation()}
+							>
+								<Command>
+									<CommandInput placeholder="Search milestones..." />
+									<CommandList>
+										<CommandEmpty>No milestones found.</CommandEmpty>
+										<CommandGroup>
+											{milestoneOptions.map((ms) => {
+												const selected = milestoneFilters.includes(ms.value);
+												return (
+													<CommandItem
+														key={ms.value}
+														onSelect={() =>
+															setMilestoneFilters((prev) =>
+																prev.includes(ms.value)
+																	? prev.filter((m) => m !== ms.value)
+																	: [...prev, ms.value],
+															)
+														}
+													>
+														<Check
+															className={cn(
+																"size-3.5",
+																selected ? "opacity-100" : "opacity-0",
+															)}
+														/>
+														{ms.label}
+													</CommandItem>
+												);
+											})}
+										</CommandGroup>
+									</CommandList>
+								</Command>
+							</PopoverContent>
+						</Popover>
+					)}
+				</div>
 			)}
-			{(allMilestones.titles.length > 0 || allMilestones.hasNone) && (
-				<Select
-					value={milestoneFilter}
-					onValueChange={(v) => setMilestoneFilter(v === "__all__" ? "" : v)}
-				>
-					<SelectTrigger size="sm" className="w-full">
-						<SelectValue placeholder="All milestones" />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="__all__">All milestones</SelectItem>
-						{allMilestones.hasNone && (
-							<SelectItem value="__none__">No milestone</SelectItem>
-						)}
-						{allMilestones.titles.map((title) => (
-							<SelectItem key={title} value={title}>
-								{title}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-			)}
-			<ScrollArea className="h-[180px]">
+			<ScrollArea className="flex-1 min-h-[120px]">
 				{loading ? (
 					<div className="flex items-center justify-center py-8">
 						<Loader2 className="size-4 text-muted-foreground animate-spin" />
@@ -554,20 +709,36 @@ function IssueMode({
 				) : (
 					<div className="space-y-0.5">
 						{filtered.map((issue) => {
-							const isSelected =
-								selectedBranch === generateIssueBranchName(issue.number);
+							const isSelected = selectedBranches.includes(
+								generateIssueBranchName(issue.number),
+							);
 							return (
-								<button
+								// biome-ignore lint/a11y/useSemanticElements: Checkbox renders as <button> internally, so outer cannot be <button>
+								<div
 									key={issue.number}
-									type="button"
-									onClick={() => onSelect(issue)}
-									className={`flex w-full items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors text-left ${
+									role="button"
+									tabIndex={0}
+									onClick={() => onToggle(issue)}
+									onKeyDown={(e) => {
+										if (e.target !== e.currentTarget) return;
+										if (e.key === "Enter" || e.key === " ") {
+											e.preventDefault();
+											onToggle(issue);
+										}
+									}}
+									className={`flex w-full items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors text-left cursor-pointer ${
 										isSelected
 											? "bg-muted text-foreground"
 											: "hover:bg-secondary"
 									}`}
 								>
-									<TicketCheck className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
+									<Checkbox
+										checked={isSelected}
+										onCheckedChange={() => onToggle(issue)}
+										onClick={(e) => e.stopPropagation()}
+										onKeyDown={(e) => e.stopPropagation()}
+										className="shrink-0 mt-0.5"
+									/>
 									<div className="min-w-0 flex-1">
 										<div>
 											<span className="text-muted-foreground">
@@ -604,7 +775,7 @@ function IssueMode({
 											</div>
 										)}
 									</div>
-								</button>
+								</div>
 							);
 						})}
 						{filtered.length === 0 && (
@@ -621,13 +792,13 @@ function IssueMode({
 
 function NotionMode({
 	repoPath,
-	onSelect,
-	selectedBranch,
+	onToggle,
+	selectedBranches,
 	worktreeBranchNames,
 }: {
 	repoPath: string;
-	onSelect: (task: NotionTask) => void;
-	selectedBranch: string;
+	onToggle: (task: NotionTask) => void;
+	selectedBranches: string[];
 	worktreeBranchNames: Set<string>;
 }) {
 	const { tasks, loading, loadMore, hasMore, search } =
@@ -645,7 +816,9 @@ function NotionMode({
 	);
 	const { labelOptions } = useNotionLabelOptions(repoPath);
 	const [titleFilter, setTitleFilter] = useState("");
-	const [labelFilters, setLabelFilters] = useState<Record<string, string>>({});
+	const [labelFilters, setLabelFilters] = useState<Record<string, string[]>>(
+		{},
+	);
 
 	const handleTitleChange = useCallback(
 		(value: string) => {
@@ -655,45 +828,94 @@ function NotionMode({
 		[labelFilters, search],
 	);
 
-	const handleLabelChange = useCallback(
+	const toggleLabelFilter = useCallback(
 		(propertyName: string, value: string) => {
-			const newFilters = { ...labelFilters, [propertyName]: value };
-			setLabelFilters(newFilters);
-			search(titleFilter, newFilters);
+			setLabelFilters((prev) => {
+				const current = prev[propertyName] ?? [];
+				const updated = current.includes(value)
+					? current.filter((v) => v !== value)
+					: [...current, value];
+				const newFilters = { ...prev, [propertyName]: updated };
+				search(titleFilter, newFilters);
+				return newFilters;
+			});
 		},
-		[titleFilter, labelFilters, search],
+		[titleFilter, search],
 	);
 
 	return (
-		<div className="space-y-2">
+		<div className="flex-1 min-h-0 flex flex-col gap-1.5">
 			<Input
 				value={titleFilter}
 				onChange={(e) => handleTitleChange(e.target.value)}
 				placeholder="Filter Notion tasks..."
 				autoFocus
 			/>
-			{labelOptions.map((opt) => (
-				<Select
-					key={opt.property_name}
-					value={labelFilters[opt.property_name] ?? ""}
-					onValueChange={(v) =>
-						handleLabelChange(opt.property_name, v === "__all__" ? "" : v)
-					}
-				>
-					<SelectTrigger size="sm" className="w-full">
-						<SelectValue placeholder={`${opt.property_name}: All`} />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="__all__">{opt.property_name}: All</SelectItem>
-						{opt.options.map((v, i) => (
-							<SelectItem key={v} value={opt.option_ids[i] ?? v}>
-								{v}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-			))}
-			<ScrollArea className="h-[180px]">
+			{labelOptions.length > 0 && (
+				<div className="flex flex-wrap gap-1">
+					{labelOptions.map((opt) => {
+						const selected = labelFilters[opt.property_name] ?? [];
+						return (
+							<Popover key={opt.property_name}>
+								<PopoverTrigger asChild>
+									<Button
+										size="sm"
+										variant="outline"
+										className="shrink-0 gap-1"
+									>
+										{opt.property_name}
+										{selected.length > 0 && (
+											<span className="ml-0.5 text-xs bg-primary text-primary-foreground rounded-full px-1.5 leading-tight">
+												{selected.length}
+											</span>
+										)}
+									</Button>
+								</PopoverTrigger>
+								<PopoverContent
+									className="w-[200px] p-0"
+									align="start"
+									onWheel={(e) => e.stopPropagation()}
+								>
+									<Command>
+										<CommandInput
+											placeholder={`Search ${opt.property_name.toLowerCase()}...`}
+										/>
+										<CommandList>
+											<CommandEmpty>No options found.</CommandEmpty>
+											<CommandGroup>
+												{opt.options.map((v, i) => {
+													const filterValue = opt.option_ids[i] ?? v;
+													const isSelected = selected.includes(filterValue);
+													return (
+														<CommandItem
+															key={v}
+															onSelect={() =>
+																toggleLabelFilter(
+																	opt.property_name,
+																	filterValue,
+																)
+															}
+														>
+															<Check
+																className={cn(
+																	"size-3.5",
+																	isSelected ? "opacity-100" : "opacity-0",
+																)}
+															/>
+															{v}
+														</CommandItem>
+													);
+												})}
+											</CommandGroup>
+										</CommandList>
+									</Command>
+								</PopoverContent>
+							</Popover>
+						);
+					})}
+				</div>
+			)}
+			<ScrollArea className="flex-1 min-h-[120px]">
 				{loading ? (
 					<div className="flex items-center justify-center py-8">
 						<Loader2 className="size-4 text-muted-foreground animate-spin" />
@@ -701,21 +923,36 @@ function NotionMode({
 				) : (
 					<div className="space-y-0.5">
 						{filteredTasks.map((task) => {
-							const isSelected =
-								selectedBranch ===
-								(task.branch_name || notionTaskToBranchName(task.title));
+							const branchName =
+								task.branch_name || notionTaskToBranchName(task.title);
+							const isSelected = selectedBranches.includes(branchName);
 							return (
-								<button
+								// biome-ignore lint/a11y/useSemanticElements: Checkbox renders as <button> internally, so outer cannot be <button>
+								<div
 									key={task.id}
-									type="button"
-									onClick={() => onSelect(task)}
-									className={`flex w-full items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors text-left ${
+									role="button"
+									tabIndex={0}
+									onClick={() => onToggle(task)}
+									onKeyDown={(e) => {
+										if (e.target !== e.currentTarget) return;
+										if (e.key === "Enter" || e.key === " ") {
+											e.preventDefault();
+											onToggle(task);
+										}
+									}}
+									className={`flex w-full items-start gap-2 px-2 py-1.5 text-sm rounded transition-colors text-left cursor-pointer ${
 										isSelected
 											? "bg-muted text-foreground"
 											: "hover:bg-secondary"
 									}`}
 								>
-									<NotebookPen className="size-3.5 text-muted-foreground shrink-0 mt-0.5" />
+									<Checkbox
+										checked={isSelected}
+										onCheckedChange={() => onToggle(task)}
+										onClick={(e) => e.stopPropagation()}
+										onKeyDown={(e) => e.stopPropagation()}
+										className="shrink-0 mt-0.5"
+									/>
 									<div className="min-w-0 flex-1">
 										<span>{task.title}</span>
 										{Object.keys(task.labels).length > 0 && (
@@ -733,7 +970,7 @@ function NotionMode({
 											</div>
 										)}
 									</div>
-								</button>
+								</div>
 							);
 						})}
 						{filteredTasks.length === 0 && (

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
 	ChevronDown,
@@ -593,6 +594,7 @@ export function WorkspaceList({
 					repoPaths={repoPaths}
 					onCreated={(rootPath, branchName, repoName) => {
 						setShowCreate(false);
+						emit("branch-list-sync");
 						onSelectWorktree(rootPath, branchName, repoName);
 					}}
 					onClose={() => setShowCreate(false)}
