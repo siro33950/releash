@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
 	Bell,
+	BookOpen,
 	Bot,
 	Check,
 	Code,
@@ -36,6 +37,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { useBackgroundConfig } from "@/hooks/useAppSettings";
+import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
 import { trackEvent } from "@/lib/telemetry";
@@ -53,6 +55,7 @@ import {
 	type DesktopNotifyMode,
 	INACTIVE_TIMEOUT_OPTIONS,
 } from "@/types/webhook";
+import { NotionSettingsSection } from "./NotionSettingsSection";
 
 const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
 
@@ -130,6 +133,7 @@ type SettingsSection =
 	| "appearance"
 	| "editor"
 	| "repositories"
+	| "notion"
 	| "agent"
 	| "remote"
 	| "background"
@@ -144,6 +148,7 @@ const SETTINGS_SECTIONS: {
 	{ id: "appearance", label: "Appearance", icon: Palette },
 	{ id: "editor", label: "Editor", icon: Code },
 	{ id: "repositories", label: "Repositories", icon: GitBranch },
+	{ id: "notion", label: "Notion", icon: BookOpen },
 	{ id: "agent", label: "Agent", icon: Bot },
 	{ id: "remote", label: "Remote", icon: Globe },
 	{ id: "background", label: "Background", icon: Monitor },
@@ -1083,6 +1088,7 @@ export function SettingsModal({
 	const remote = useRemoteConfig();
 	const background = useBackgroundConfig();
 	const repos = useRepoChanges();
+	const notion = useNotionSettings(repoPaths);
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
@@ -1092,6 +1098,7 @@ export function SettingsModal({
 		dispatchSettings({ type: "SYNC_OPEN", open, settings });
 		if (open) {
 			repos.reset();
+			notion.reset();
 		}
 	}
 
@@ -1158,6 +1165,7 @@ export function SettingsModal({
 	const { isDirty: remoteIsDirty, save: remoteSave } = remote;
 	const { isDirty: backgroundIsDirty, save: backgroundSave } = background;
 	const { isDirty: reposIsDirty, save: reposSave } = repos;
+	const { isDirty: notionIsDirty, save: notionSave } = notion;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -1174,6 +1182,9 @@ export function SettingsModal({
 			}
 			if (reposIsDirty) {
 				await reposSave();
+			}
+			if (notionIsDirty) {
+				await notionSave();
 			}
 			if (draft.telemetryEnabled) {
 				trackEvent("settings_saved");
@@ -1195,6 +1206,8 @@ export function SettingsModal({
 		backgroundSave,
 		reposIsDirty,
 		reposSave,
+		notionIsDirty,
+		notionSave,
 	]);
 
 	const isDirty =
@@ -1202,7 +1215,8 @@ export function SettingsModal({
 		webhookIsDirty ||
 		remoteIsDirty ||
 		backgroundIsDirty ||
-		reposIsDirty;
+		reposIsDirty ||
+		notionIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
@@ -1217,6 +1231,16 @@ export function SettingsModal({
 						onDirtyChange={repos.handleDirtyChange}
 						error={repos.error}
 						revision={repos.revision}
+					/>
+				);
+			case "notion":
+				return (
+					<NotionSettingsSection
+						repoPaths={repoPaths}
+						drafts={notion.drafts}
+						updateDraft={notion.updateDraft}
+						validate={notion.validate}
+						markForDelete={notion.markForDelete}
 					/>
 				);
 			case "agent":
