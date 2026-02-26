@@ -17,6 +17,7 @@ struct GitWatchPaths {
     main_repo: String,
     refs_heads: PathBuf,
     head_file: PathBuf,
+    index_file: PathBuf,
     worktrees_dir: PathBuf,
 }
 
@@ -32,6 +33,7 @@ fn resolve_git_watch_paths(repo_path: &str) -> Result<GitWatchPaths, String> {
         main_repo,
         refs_heads: git_dir.join("refs").join("heads"),
         head_file: git_dir.join("HEAD"),
+        index_file: git_dir.join("index"),
         worktrees_dir: git_dir.join("worktrees"),
     })
 }
@@ -47,6 +49,11 @@ pub struct FileChangeEvent {
     pub watcher_id: u64,
     pub path: String,
     pub kind: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct GitStatusChangedEvent {
+    pub repo_path: String,
 }
 
 struct WatcherSession {
@@ -143,6 +150,22 @@ pub fn start_watching(
     Ok(watcher_id)
 }
 
+fn classify_git_dir_events(events: &[notify_debouncer_mini::DebouncedEvent]) -> (bool, bool) {
+    let has_branch_change = events.iter().any(|e| {
+        let p = e.path.to_string_lossy().replace('\\', "/");
+        p.contains("/refs/heads/") || e.path.file_name().is_some_and(|n| n == "HEAD")
+    });
+    let has_index_change = events.iter().any(|e| {
+        let file_name = e
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
+        file_name == "index" || file_name == "index.lock" || file_name == "COMMIT_EDITMSG"
+    });
+    (has_branch_change, has_index_change)
+}
+
 fn build_branch_list_sync(repo_path: &str) -> Option<WsMessage> {
     let branches = crate::git::list_branches_with_status(repo_path.to_string()).ok()?;
     let branch_msgs: Vec<BranchCardMsg> = branches.into_iter().map(BranchCardMsg::from).collect();
@@ -169,6 +192,7 @@ pub fn start_git_dir_watching(
 
     let app_clone = app.clone();
     let main_repo_clone = paths.main_repo.clone();
+    let repo_path_clone = repo_path;
 
     let debouncer = new_debouncer(
         Duration::from_millis(500),
@@ -183,15 +207,35 @@ pub fn start_git_dir_watching(
                     return;
                 }
             };
-            let dominated_by_git = events.iter().any(|e| {
-                let p = e.path.to_string_lossy().replace('\\', "/");
-                p.contains("/refs/heads/") || p.ends_with("/HEAD") || p.contains("/worktrees/")
-            });
-            if dominated_by_git {
+            let (has_branch_change, has_index_change) = classify_git_dir_events(&events);
+
+            if has_branch_change {
                 if let Some(sync_msg) = build_branch_list_sync(&main_repo_clone) {
                     let _ = app_clone.emit("branch-list-sync", ());
                     if let Some(ws) = app_clone.try_state::<std::sync::Arc<WsBroadcaster>>() {
                         ws.try_send(sync_msg);
+                    }
+                }
+            }
+
+            if has_index_change || has_branch_change {
+                let _ = app_clone.emit(
+                    "git-status-changed",
+                    GitStatusChangedEvent {
+                        repo_path: repo_path_clone.clone(),
+                    },
+                );
+                if let Some(ws) = app_clone.try_state::<std::sync::Arc<WsBroadcaster>>() {
+                    if let Ok(statuses) = crate::git::get_git_status(repo_path_clone.clone()) {
+                        let files = statuses
+                            .into_iter()
+                            .map(|s| GitFileStatusMsg {
+                                path: s.path,
+                                index_status: s.index_status,
+                                worktree_status: s.worktree_status,
+                            })
+                            .collect();
+                        ws.try_send(WsMessage::GitStatusSync(GitStatusSync { files }));
                     }
                 }
             }
@@ -209,6 +253,12 @@ pub fn start_git_dir_watching(
             .watcher()
             .watch(&paths.head_file, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to watch HEAD: {e}"))?;
+    }
+    if let Some(git_dir) = paths.index_file.parent() {
+        debouncer
+            .watcher()
+            .watch(git_dir, RecursiveMode::NonRecursive)
+            .map_err(|e| format!("Failed to watch .git dir: {e}"))?;
     }
     if paths.worktrees_dir.exists() {
         debouncer
@@ -238,6 +288,8 @@ pub fn stop_watching(state: State<'_, FileWatcherManager>, watcher_id: u64) -> R
 mod tests {
     use super::*;
     use crate::git::test_helpers::*;
+    use notify_debouncer_mini::DebouncedEvent;
+    use std::path::PathBuf;
 
     #[test]
     fn test_resolve_git_watch_paths_main_repo() {
@@ -307,5 +359,79 @@ mod tests {
     fn test_resolve_git_watch_paths_invalid() {
         let result = resolve_git_watch_paths("/nonexistent/path");
         assert!(result.is_err());
+    }
+
+    fn make_event(path: &str) -> DebouncedEvent {
+        DebouncedEvent {
+            path: PathBuf::from(path),
+            kind: DebouncedEventKind::Any,
+        }
+    }
+
+    #[test]
+    fn classify_index_change() {
+        let events = vec![make_event("/repo/.git/index")];
+        let (branch, index) = classify_git_dir_events(&events);
+        assert!(!branch);
+        assert!(index);
+    }
+
+    #[test]
+    fn classify_index_lock() {
+        let events = vec![make_event("/repo/.git/index.lock")];
+        let (branch, index) = classify_git_dir_events(&events);
+        assert!(!branch);
+        assert!(index);
+    }
+
+    #[test]
+    fn classify_head_change() {
+        let events = vec![make_event("/repo/.git/HEAD")];
+        let (branch, index) = classify_git_dir_events(&events);
+        assert!(branch);
+        assert!(!index);
+    }
+
+    #[test]
+    fn classify_refs_heads_change() {
+        let events = vec![make_event("/repo/.git/refs/heads/main")];
+        let (branch, index) = classify_git_dir_events(&events);
+        assert!(branch);
+        assert!(!index);
+    }
+
+    #[test]
+    fn classify_commit_editmsg() {
+        let events = vec![make_event("/repo/.git/COMMIT_EDITMSG")];
+        let (branch, index) = classify_git_dir_events(&events);
+        assert!(!branch);
+        assert!(index);
+    }
+
+    #[test]
+    fn classify_mixed_events() {
+        let events = vec![
+            make_event("/repo/.git/refs/heads/feature"),
+            make_event("/repo/.git/index"),
+        ];
+        let (branch, index) = classify_git_dir_events(&events);
+        assert!(branch);
+        assert!(index);
+    }
+
+    #[test]
+    fn classify_unrelated_event() {
+        let events = vec![make_event("/repo/.git/config")];
+        let (branch, index) = classify_git_dir_events(&events);
+        assert!(!branch);
+        assert!(!index);
+    }
+
+    #[test]
+    fn classify_worktree_index() {
+        let events = vec![make_event("/repo/.git/worktrees/feat/index")];
+        let (branch, index) = classify_git_dir_events(&events);
+        assert!(!branch);
+        assert!(index);
     }
 }

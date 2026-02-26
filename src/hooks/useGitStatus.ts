@@ -120,5 +120,30 @@ export function useGitStatus(
 		};
 	}, [debouncedRefresh, rootPath]);
 
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let disposed = false;
+		const setup = async () => {
+			const off = await listen<{ repo_path: string }>(
+				"git-status-changed",
+				(event) => {
+					if (!disposed && rootPath && event.payload.repo_path === rootPath) {
+						debouncedRefresh();
+					}
+				},
+			);
+			if (disposed) {
+				off();
+				return;
+			}
+			unlisten = off;
+		};
+		setup();
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	}, [debouncedRefresh, rootPath]);
+
 	return { statusMap, stagedFiles, changedFiles, refresh };
 }
