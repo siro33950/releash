@@ -12,14 +12,13 @@ interface PaneTreeRendererProps {
 	theme?: Theme;
 	terminalStartupCommand?: string;
 	agentType?: string;
-	sessionKey?: string;
 	onFocus: (paneId: string) => void;
 	onClose: (paneId: string) => void;
 	onSplit: (paneId: string, direction: SplitDirection) => void;
 	setTerminalRef: (
 		paneId: string,
 	) => (handle: TerminalPanelHandle | null) => void;
-	onPtyReady?: (paneId: string, ptyId: number) => void;
+	onPtyReady?: (paneId: string, ptyId: number, sessionKey: string) => void;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -43,7 +42,6 @@ export function PaneTreeRenderer({
 	theme,
 	terminalStartupCommand,
 	agentType,
-	sessionKey,
 	onFocus,
 	onClose,
 	onSplit,
@@ -64,7 +62,6 @@ export function PaneTreeRenderer({
 				theme={theme}
 				terminalStartupCommand={terminalStartupCommand}
 				agentType={agentType}
-				sessionKey={sessionKey}
 				onFocus={onFocus}
 				onClose={onClose}
 				onSplit={onSplit}
@@ -98,7 +95,6 @@ export function PaneTreeRenderer({
 					theme={theme}
 					terminalStartupCommand={terminalStartupCommand}
 					agentType={agentType}
-					sessionKey={sessionKey}
 					onFocus={onFocus}
 					onClose={onClose}
 					onSplit={onSplit}
@@ -124,14 +120,13 @@ interface PaneTreePanelProps {
 	theme?: Theme;
 	terminalStartupCommand?: string;
 	agentType?: string;
-	sessionKey?: string;
 	onFocus: (paneId: string) => void;
 	onClose: (paneId: string) => void;
 	onSplit: (paneId: string, direction: SplitDirection) => void;
 	setTerminalRef: (
 		paneId: string,
 	) => (handle: TerminalPanelHandle | null) => void;
-	onPtyReady?: (paneId: string, ptyId: number) => void;
+	onPtyReady?: (paneId: string, ptyId: number, sessionKey: string) => void;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -157,7 +152,6 @@ function PaneTreePanel({
 	theme,
 	terminalStartupCommand,
 	agentType,
-	sessionKey,
 	onFocus,
 	onClose,
 	onSplit,
@@ -179,7 +173,6 @@ function PaneTreePanel({
 					theme={theme}
 					terminalStartupCommand={terminalStartupCommand}
 					agentType={agentType}
-					sessionKey={sessionKey}
 					onFocus={onFocus}
 					onClose={onClose}
 					onSplit={onSplit}

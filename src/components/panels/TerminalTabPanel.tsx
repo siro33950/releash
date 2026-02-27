@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { X } from "lucide-react";
 import {
@@ -35,7 +36,6 @@ interface TerminalTabPanelProps {
 	theme?: Theme;
 	terminalStartupCommand?: string;
 	agentType?: string;
-	sessionKey?: string;
 	tabPrefix?: string;
 }
 
@@ -43,14 +43,7 @@ export const TerminalTabPanel = forwardRef<
 	TerminalTabPanelHandle,
 	TerminalTabPanelProps
 >(function TerminalTabPanel(
-	{
-		cwd,
-		theme,
-		terminalStartupCommand,
-		agentType,
-		sessionKey,
-		tabPrefix = "Terminal",
-	},
+	{ cwd, theme, terminalStartupCommand, agentType, tabPrefix = "Terminal" },
 	ref,
 ) {
 	const {
@@ -66,8 +59,9 @@ export const TerminalTabPanel = forwardRef<
 		moveTabToPane,
 		movePaneToTab,
 		movePaneInTab,
+		updatePaneSessionKey,
 		activeTab,
-	} = useTerminalPanes(tabPrefix);
+	} = useTerminalPanes(tabPrefix, cwd ? `${cwd}::${tabPrefix}` : null);
 
 	const terminalRefs = useRef<Map<string, TerminalPanelHandle>>(new Map());
 
@@ -78,9 +72,13 @@ export const TerminalTabPanel = forwardRef<
 		Map<string, AgentState>
 	>(new Map());
 
-	const handlePtyReady = useCallback((paneId: string, ptyId: number) => {
-		paneIdToPtyIdRef.current.set(paneId, ptyId);
-	}, []);
+	const handlePtyReady = useCallback(
+		(paneId: string, ptyId: number, sessionKey: string) => {
+			paneIdToPtyIdRef.current.set(paneId, ptyId);
+			updatePaneSessionKey(paneId, sessionKey);
+		},
+		[updatePaneSessionKey],
+	);
 
 	// agent-state-changed イベントリスナー
 	useEffect(() => {
@@ -97,6 +95,22 @@ export const TerminalTabPanel = forwardRef<
 		return () => {
 			unlisten.then((fn) => fn());
 		};
+	}, [cwd]);
+
+	// worktree マウント時に孤立 PTY を GC
+	const tabsRef = useRef(tabs);
+	tabsRef.current = tabs;
+	useEffect(() => {
+		if (!cwd) return;
+		const knownKeys = tabsRef.current.flatMap((tab) =>
+			getAllLeaves(tab.paneTree)
+				.map((leaf) => leaf.sessionKey)
+				.filter((k): k is string => k !== null),
+		);
+		invoke("gc_ptys_for_worktree", {
+			worktreePath: cwd,
+			keepSessionKeys: knownKeys,
+		}).catch((e) => console.warn("gc_ptys_for_worktree failed:", e));
 	}, [cwd]);
 
 	useImperativeHandle(
@@ -347,7 +361,6 @@ export const TerminalTabPanel = forwardRef<
 								theme={theme}
 								terminalStartupCommand={terminalStartupCommand}
 								agentType={agentType}
-								sessionKey={sessionKey}
 								onFocus={setFocusedPane}
 								onClose={closeSpecificPane}
 								onSplit={handleSplit}

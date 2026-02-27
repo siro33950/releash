@@ -306,7 +306,7 @@ pub(super) async fn handle_pty_spawn_request(
     })
     .await
     {
-        Ok(Ok(pty_id)) => {
+        Ok(Ok((pty_id, _session_key))) => {
             broadcaster.try_send(WsMessage::PtyReady(PtyReady {
                 pty_id,
                 cols,

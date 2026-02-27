@@ -33,7 +33,7 @@ export interface TerminalPanelProps {
 	sessionKey?: string;
 	agentType?: string;
 	label?: string;
-	onPtyReady?: (ptyId: number) => void;
+	onPtyReady?: (ptyId: number, sessionKey: string) => void;
 	onSplitVertical?: () => void;
 	onSplitHorizontal?: () => void;
 	onBreakToTab?: () => void;

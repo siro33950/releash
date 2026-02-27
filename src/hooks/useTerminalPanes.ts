@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	closePane,
 	countLeaves,
@@ -9,6 +9,7 @@ import {
 } from "@/lib/paneTree";
 import type {
 	PaneLeaf,
+	PaneNode,
 	SplitDirection,
 	TerminalTab,
 } from "@/types/terminal-pane";
@@ -32,6 +33,20 @@ function nextPaneId() {
 export function _resetIdCounters(): void {
 	tabIdCounter = 0;
 	paneIdCounter = 0;
+}
+
+interface CachedTabState {
+	tabs: TerminalTab[];
+	activeTabId: string;
+	tabCounter: number;
+	paneNameCounter: number;
+}
+
+const tabStateCache = new Map<string, CachedTabState>();
+
+/** テスト用: キャッシュクリア */
+export function _clearTabStateCache(): void {
+	tabStateCache.clear();
 }
 
 type NavigationDirection = "left" | "right" | "up" | "down";
@@ -59,10 +74,14 @@ export interface UseTerminalPanesReturn {
 		direction: SplitDirection,
 		insertBefore?: boolean,
 	) => void;
+	updatePaneSessionKey: (paneId: string, sessionKey: string) => void;
 	activeTab: TerminalTab | undefined;
 }
 
-export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
+export function useTerminalPanes(
+	tabPrefix: string,
+	cacheKey?: string | null,
+): UseTerminalPanesReturn {
 	const tabCounter = useRef(1);
 	const paneNameCounterRef = useRef(1);
 	const tabsLengthRef = useRef(1);
@@ -74,15 +93,25 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 			id: nextPaneId(),
 			label: `${tabPrefix} ${paneNameCounterRef.current}`,
 			ptyId: null,
+			sessionKey: null,
 		};
 	}, [tabPrefix]);
 
 	const [tabs, setTabs] = useState<TerminalTab[]>(() => {
+		if (cacheKey) {
+			const cached = tabStateCache.get(cacheKey);
+			if (cached) {
+				tabCounter.current = cached.tabCounter;
+				paneNameCounterRef.current = cached.paneNameCounter;
+				return cached.tabs;
+			}
+		}
 		const pane: PaneLeaf = {
 			type: "leaf",
 			id: nextPaneId(),
 			label: `${tabPrefix} 1`,
 			ptyId: null,
+			sessionKey: null,
 		};
 		return [
 			{
@@ -93,8 +122,25 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 			},
 		];
 	});
-	const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
+	const [activeTabId, setActiveTabId] = useState<string>(() => {
+		if (cacheKey) {
+			const cached = tabStateCache.get(cacheKey);
+			if (cached) return cached.activeTabId;
+		}
+		return tabs[0].id;
+	});
 	tabsLengthRef.current = tabs.length;
+
+	// キャッシュ更新
+	useEffect(() => {
+		if (!cacheKey) return;
+		tabStateCache.set(cacheKey, {
+			tabs,
+			activeTabId,
+			tabCounter: tabCounter.current,
+			paneNameCounter: paneNameCounterRef.current,
+		});
+	}, [cacheKey, tabs, activeTabId]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId);
 
@@ -359,6 +405,22 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 		[],
 	);
 
+	const updatePaneSessionKey = useCallback(
+		(paneId: string, sessionKey: string) => {
+			setTabs((prev) =>
+				prev.map((tab) => {
+					const updated = updateNodeSessionKey(
+						tab.paneTree,
+						paneId,
+						sessionKey,
+					);
+					return updated === tab.paneTree ? tab : { ...tab, paneTree: updated };
+				}),
+			);
+		},
+		[],
+	);
+
 	return {
 		tabs,
 		activeTabId,
@@ -373,6 +435,27 @@ export function useTerminalPanes(tabPrefix: string): UseTerminalPanesReturn {
 		moveTabToPane,
 		movePaneToTab,
 		movePaneInTab,
+		updatePaneSessionKey,
 		activeTab,
 	};
+}
+
+function updateNodeSessionKey(
+	node: PaneNode,
+	paneId: string,
+	sessionKey: string,
+): PaneNode {
+	if (node.type === "leaf") {
+		if (node.id === paneId) {
+			return { ...node, sessionKey };
+		}
+		return node;
+	}
+	let changed = false;
+	const newChildren = node.children.map((child) => {
+		const updated = updateNodeSessionKey(child, paneId, sessionKey);
+		if (updated !== child) changed = true;
+		return updated;
+	});
+	return changed ? { ...node, children: newChildren } : node;
 }

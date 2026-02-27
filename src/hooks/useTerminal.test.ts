@@ -100,6 +100,7 @@ describe("useTerminal", () => {
 			if (cmd === "get_or_spawn_pty") {
 				return Promise.resolve({
 					pty_id: 1,
+					session_key: "test-uuid-1234",
 					buffered_output: "",
 					is_new: true,
 					is_exited: false,
@@ -131,6 +132,7 @@ describe("useTerminal", () => {
 				rows: 24,
 				cols: 80,
 				cwd: null,
+				sessionKey: null,
 				worktreePath: "",
 				label: null,
 			});
@@ -240,6 +242,7 @@ describe("useTerminal", () => {
 			if (cmd === "get_or_spawn_pty") {
 				return Promise.resolve({
 					pty_id: 1,
+					session_key: "test-uuid-existing",
 					buffered_output: "",
 					is_new: false,
 					is_exited: false,

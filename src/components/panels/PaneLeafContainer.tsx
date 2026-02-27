@@ -15,14 +15,13 @@ interface PaneLeafContainerProps {
 	theme?: Theme;
 	terminalStartupCommand?: string;
 	agentType?: string;
-	sessionKey?: string;
 	onFocus: (paneId: string) => void;
 	onClose: (paneId: string) => void;
 	onSplit: (paneId: string, direction: SplitDirection) => void;
 	setTerminalRef: (
 		paneId: string,
 	) => (handle: TerminalPanelHandle | null) => void;
-	onPtyReady?: (paneId: string, ptyId: number) => void;
+	onPtyReady?: (paneId: string, ptyId: number, sessionKey: string) => void;
 	onDropTab?: (
 		tabId: string,
 		targetPaneId: string,
@@ -46,7 +45,6 @@ export function PaneLeafContainer({
 	theme,
 	terminalStartupCommand,
 	agentType,
-	sessionKey,
 	onFocus,
 	onClose,
 	onSplit,
@@ -100,8 +98,8 @@ export function PaneLeafContainer({
 	}, [onBreakToTab, pane.id]);
 
 	const handlePtyReady = useCallback(
-		(ptyId: number) => {
-			onPtyReady?.(pane.id, ptyId);
+		(ptyId: number, sessionKey: string) => {
+			onPtyReady?.(pane.id, ptyId, sessionKey);
 		},
 		[onPtyReady, pane.id],
 	);
@@ -192,7 +190,7 @@ export function PaneLeafContainer({
 					terminalStartupCommand={terminalStartupCommand}
 					agentType={agentType}
 					label={pane.label}
-					sessionKey={sessionKey ? `${sessionKey}::${pane.label}` : undefined}
+					sessionKey={pane.sessionKey ?? undefined}
 					onPtyReady={handlePtyReady}
 					onSplitVertical={handleSplitVertical}
 					onSplitHorizontal={handleSplitHorizontal}

@@ -5,6 +5,7 @@ export interface PaneLeaf {
 	id: string;
 	label: string;
 	ptyId: number | null;
+	sessionKey: string | null;
 }
 
 export interface PaneContainer {
