@@ -15,7 +15,13 @@ import {
 } from "./paneTree";
 
 function leaf(id: string, label?: string): PaneLeaf {
-	return { type: "leaf", id, label: label ?? id, ptyId: null };
+	return {
+		type: "leaf",
+		id,
+		label: label ?? id,
+		ptyId: null,
+		sessionKey: null,
+	};
 }
 
 function container(
