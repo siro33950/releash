@@ -166,6 +166,7 @@ mod tests {
             exit_code,
             timestamp: 0.0,
             session_id: None,
+            pty_id: None,
         }
     }
 

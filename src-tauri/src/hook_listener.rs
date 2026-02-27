@@ -119,6 +119,13 @@ fn resolve_worktree_root(path: &str) -> String {
         .unwrap_or_else(|| normalize_slashes(path))
 }
 
+fn agent_state_key(worktree_path: &str, pty_id: &Option<String>) -> String {
+    match pty_id {
+        Some(id) if !id.is_empty() => format!("{}::{}", worktree_path, id),
+        _ => worktree_path.to_string(),
+    }
+}
+
 fn error_response(status: StatusCode, msg: &str) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -184,12 +191,11 @@ async fn handle_agent_hook(
     let sync = AgentStateSync::from_payload(&payload);
 
     let changed = {
+        let key = agent_state_key(&sync.worktree_path, &sync.pty_id);
         let mut states = state.agent_states.lock();
-        let should_update = states
-            .get(&sync.worktree_path)
-            .is_none_or(|prev| prev.state != sync.state);
+        let should_update = states.get(&key).is_none_or(|prev| prev.state != sync.state);
         if should_update {
-            states.insert(sync.worktree_path.clone(), sync.clone());
+            states.insert(key, sync.clone());
         }
         should_update
     };
@@ -272,6 +278,57 @@ mod tests {
     }
 
     #[test]
+    fn agent_state_key_with_pty_id() {
+        assert_eq!(
+            agent_state_key("/repo", &Some("42".to_string())),
+            "/repo::42"
+        );
+    }
+
+    #[test]
+    fn agent_state_key_without_pty_id() {
+        assert_eq!(agent_state_key("/repo", &None), "/repo");
+    }
+
+    #[test]
+    fn agent_state_key_with_empty_pty_id() {
+        assert_eq!(agent_state_key("/repo", &Some("".to_string())), "/repo");
+    }
+
+    #[test]
+    fn different_pty_ids_are_independent() {
+        let states: AgentStatesMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+
+        let sync1 = AgentStateSync {
+            worktree_path: "/repo".to_string(),
+            state: AgentState::Running,
+            exit_code: None,
+            timestamp: 1000.0,
+            session_id: None,
+            pty_id: Some("1".to_string()),
+        };
+        let sync2 = AgentStateSync {
+            worktree_path: "/repo".to_string(),
+            state: AgentState::Waiting,
+            exit_code: None,
+            timestamp: 1001.0,
+            session_id: None,
+            pty_id: Some("2".to_string()),
+        };
+
+        let key1 = agent_state_key(&sync1.worktree_path, &sync1.pty_id);
+        let key2 = agent_state_key(&sync2.worktree_path, &sync2.pty_id);
+
+        let mut map = states.lock();
+        map.insert(key1.clone(), sync1);
+        map.insert(key2.clone(), sync2);
+
+        assert_eq!(map.get(&key1).unwrap().state, AgentState::Running);
+        assert_eq!(map.get(&key2).unwrap().state, AgentState::Waiting);
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
     fn same_state_transition_is_skipped() {
         let states: AgentStatesMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let existing = AgentStateSync {
@@ -280,6 +337,7 @@ mod tests {
             exit_code: None,
             timestamp: 1000.0,
             session_id: None,
+            pty_id: None,
         };
         states.lock().insert("/repo".to_string(), existing.clone());
 
@@ -289,6 +347,7 @@ mod tests {
             exit_code: None,
             timestamp: 2000.0,
             session_id: None,
+            pty_id: None,
         };
 
         let map = states.lock();
@@ -312,6 +371,7 @@ mod tests {
             exit_code: None,
             timestamp: 1000.0,
             session_id: None,
+            pty_id: None,
         };
         states.lock().insert("/repo".to_string(), existing.clone());
 
@@ -321,6 +381,7 @@ mod tests {
             exit_code: None,
             timestamp: 2000.0,
             session_id: None,
+            pty_id: None,
         };
 
         let mut map = states.lock();
@@ -348,6 +409,7 @@ mod tests {
             exit_code: None,
             timestamp: 1000.0,
             session_id: None,
+            pty_id: None,
         };
 
         let map = states.lock();

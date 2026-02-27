@@ -88,6 +88,8 @@ impl PtyBackend for DirectPtyBackend {
             }
         }
 
+        cmd.env("RELEASH_PTY_ID", config.pty_id.to_string());
+
         if let Some(dir) = config.cwd {
             cmd.cwd(dir);
         }

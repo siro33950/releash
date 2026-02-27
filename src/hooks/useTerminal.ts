@@ -18,11 +18,14 @@ interface PtyExit {
 
 interface GetOrSpawnPtyResult {
 	pty_id: number;
+	session_key: string;
 	buffered_output: string;
 	is_new: boolean;
 	is_exited: boolean;
 	exit_code: number | null;
 }
+
+const sessionKeyCache = new Map<string, string>();
 
 const terminalDarkTheme: ITheme = {
 	foreground: "#e0e0e0",
@@ -96,6 +99,7 @@ export function useTerminal(
 	sessionKey?: string,
 	agentType?: string,
 	label?: string,
+	onPtyReady?: (ptyId: number, sessionKey: string) => void,
 ) {
 	const terminalRef = useRef<Terminal | null>(null);
 	const fitAddonRef = useRef<FitAddon | null>(null);
@@ -108,6 +112,8 @@ export function useTerminal(
 	startupCommandRef.current = terminalStartupCommand;
 	const agentTypeRef = useRef(agentType);
 	agentTypeRef.current = agentType;
+	const onPtyReadyRef = useRef(onPtyReady);
+	onPtyReadyRef.current = onPtyReady;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -174,14 +180,22 @@ export function useTerminal(
 			// 2. Get or spawn PTY for this worktree
 			const { rows, cols } = terminal;
 			const worktreePath = cwd ?? null;
-			const effectiveKey = sessionKey ?? worktreePath ?? "";
+			// sessionKey がない standalone の場合、cwd キャッシュから復元
+			const effectiveSessionKey =
+				sessionKey ?? (cwd ? sessionKeyCache.get(cwd) : undefined) ?? null;
 			const result = await invoke<GetOrSpawnPtyResult>("get_or_spawn_pty", {
 				rows,
 				cols,
 				cwd: worktreePath,
-				worktreePath: effectiveKey,
+				sessionKey: effectiveSessionKey,
+				worktreePath: worktreePath ?? "",
 				label: label ?? null,
 			});
+
+			// standalone 用: cwd → UUID キャッシュ更新
+			if (!sessionKey && cwd) {
+				sessionKeyCache.set(cwd, result.session_key);
+			}
 
 			if (!isMounted) {
 				if (killOnUnmountRef.current && !result.is_exited) {
@@ -205,6 +219,7 @@ export function useTerminal(
 
 			// 5. Set ptyId (from here, real-time output starts flowing)
 			ptyIdRef.current = result.pty_id;
+			onPtyReadyRef.current?.(result.pty_id, result.session_key);
 
 			// 初回fit()が不正確だった場合のセーフティネット:
 			// PTYスポーン後に最新のサイズで再同期する

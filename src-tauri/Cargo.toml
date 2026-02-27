@@ -61,6 +61,7 @@ rcgen = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 sentry = { version = "0.46", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "release-health"] }
 dirs = "6"
+uuid = { version = "1", features = ["v4"] }
 tauri-plugin-aptabase = "1.0.0"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]

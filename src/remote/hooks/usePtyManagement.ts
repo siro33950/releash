@@ -52,7 +52,8 @@ export function usePtyManagement({ subscribe, send }: UsePtyManagementOptions) {
 				setActivePtyId((prev) => (prev === pty_id ? null : prev));
 			}
 			if (msg.type === "worktree_select_response" && msg.payload.success) {
-				// セッション保持: activePtyIdのみリセット（直後にPtyReadyが流れるので復元される）
+				// worktree切り替え: セッション一覧をリセット（直後にPtyReadyで新worktreeのセッションが復元される）
+				setPtySessions([]);
 				setActivePtyId(null);
 			}
 		});

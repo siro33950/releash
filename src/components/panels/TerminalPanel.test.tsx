@@ -38,6 +38,23 @@ describe("TerminalPanel", () => {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
+		);
+	});
+
+	it("onPtyReady を useTerminal に中継する", () => {
+		const onPtyReady = vi.fn();
+		render(<TerminalPanel onPtyReady={onPtyReady} />);
+
+		expect(mockUseTerminal).toHaveBeenCalledWith(
+			expect.objectContaining({ current: expect.any(HTMLDivElement) }),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			onPtyReady,
 		);
 	});
 });

@@ -95,7 +95,7 @@ describe("usePtyManagement", () => {
 		expect(result.current.ptySessions[0].ptyId).toBe(2);
 	});
 
-	it("worktree_select_response でセッションが保持される", () => {
+	it("worktree_select_response でセッションがリセットされる", () => {
 		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
 
 		act(() => {
@@ -118,10 +118,48 @@ describe("usePtyManagement", () => {
 			});
 		});
 
-		// セッションは保持される（リセットされない）
-		expect(result.current.ptySessions).toHaveLength(2);
-		// activePtyId のみリセット
+		// worktree切り替えでセッション一覧がリセットされる
+		expect(result.current.ptySessions).toHaveLength(0);
 		expect(result.current.activePtyId).toBeNull();
+	});
+
+	it("worktree_select_response 後に PtyReady で新worktreeのセッションが復元される", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 1, cols: 80, rows: 24, label: "Terminal 1" },
+			});
+		});
+
+		expect(result.current.ptySessions).toHaveLength(1);
+
+		act(() => {
+			emit({
+				type: "worktree_select_response",
+				payload: { success: true, path: "/new-repo" },
+			});
+		});
+
+		expect(result.current.ptySessions).toHaveLength(0);
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: {
+					pty_id: 3,
+					cols: 80,
+					rows: 24,
+					label: "Terminal 1",
+					worktree_path: "/new-repo",
+				},
+			});
+		});
+
+		expect(result.current.ptySessions).toHaveLength(1);
+		expect(result.current.ptySessions[0].ptyId).toBe(3);
+		expect(result.current.activePtyId).toBe(3);
 	});
 
 	it("spawnPty が label 付き pty_spawn_request を送信する", () => {

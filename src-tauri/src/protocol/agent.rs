@@ -6,6 +6,8 @@ pub struct AgentHookPayload {
     pub event: String,
     pub exit_code: Option<i32>,
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub pty_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +26,8 @@ pub struct AgentStateSync {
     pub exit_code: Option<i32>,
     pub timestamp: f64,
     pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pty_id: Option<String>,
 }
 
 impl AgentStateSync {
@@ -50,6 +54,7 @@ impl AgentStateSync {
             exit_code: payload.exit_code,
             timestamp,
             session_id: payload.session_id.clone(),
+            pty_id: payload.pty_id.clone(),
         }
     }
 }
@@ -65,6 +70,7 @@ mod tests {
             event: "prompt_submit".to_string(),
             exit_code: None,
             session_id: None,
+            pty_id: None,
         };
         let sync = AgentStateSync::from_payload(&payload);
         assert_eq!(sync.state, AgentState::Running);
@@ -78,6 +84,7 @@ mod tests {
             event: "stop".to_string(),
             exit_code: Some(0),
             session_id: None,
+            pty_id: None,
         };
         let sync = AgentStateSync::from_payload(&payload);
         assert_eq!(sync.state, AgentState::Done);
@@ -90,6 +97,7 @@ mod tests {
             event: "stop".to_string(),
             exit_code: None,
             session_id: None,
+            pty_id: None,
         };
         let sync = AgentStateSync::from_payload(&payload);
         assert_eq!(sync.state, AgentState::Done);
@@ -102,6 +110,7 @@ mod tests {
             event: "stop".to_string(),
             exit_code: Some(1),
             session_id: None,
+            pty_id: None,
         };
         let sync = AgentStateSync::from_payload(&payload);
         assert_eq!(sync.state, AgentState::Error);
@@ -115,6 +124,7 @@ mod tests {
             event: "post_tool_use".to_string(),
             exit_code: None,
             session_id: None,
+            pty_id: None,
         };
         let sync = AgentStateSync::from_payload(&payload);
         assert_eq!(sync.state, AgentState::Running);
@@ -127,6 +137,7 @@ mod tests {
             event: "post_tool_use_failure".to_string(),
             exit_code: None,
             session_id: None,
+            pty_id: None,
         };
         let sync = AgentStateSync::from_payload(&payload);
         assert_eq!(sync.state, AgentState::Running);
@@ -139,6 +150,7 @@ mod tests {
             event: "session_start".to_string(),
             exit_code: None,
             session_id: Some("sess-456".to_string()),
+            pty_id: None,
         };
         let sync = AgentStateSync::from_payload(&payload);
         assert_eq!(sync.state, AgentState::Done);
@@ -152,6 +164,7 @@ mod tests {
             event: "notification".to_string(),
             exit_code: None,
             session_id: Some("sess-123".to_string()),
+            pty_id: None,
         };
         let sync = AgentStateSync::from_payload(&payload);
         assert_eq!(sync.state, AgentState::Waiting);
@@ -166,6 +179,7 @@ mod tests {
             exit_code: None,
             timestamp: 1234567890.0,
             session_id: None,
+            pty_id: None,
         };
         let json = serde_json::to_string(&sync).unwrap();
         let back: AgentStateSync = serde_json::from_str(&json).unwrap();
@@ -183,5 +197,55 @@ mod tests {
         assert_eq!(json, "\"error\"");
         let json = serde_json::to_string(&AgentState::Waiting).unwrap();
         assert_eq!(json, "\"waiting\"");
+    }
+
+    #[test]
+    fn from_payload_copies_pty_id() {
+        let payload = AgentHookPayload {
+            worktree_path: "/repo".to_string(),
+            event: "prompt_submit".to_string(),
+            exit_code: None,
+            session_id: None,
+            pty_id: Some("42".to_string()),
+        };
+        let sync = AgentStateSync::from_payload(&payload);
+        assert_eq!(sync.pty_id, Some("42".to_string()));
+        assert_eq!(sync.state, AgentState::Running);
+    }
+
+    #[test]
+    fn legacy_payload_without_pty_id_deserializes() {
+        let json = r#"{"worktree_path":"/repo","event":"stop","exit_code":0}"#;
+        let payload: AgentHookPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.pty_id, None);
+        assert_eq!(payload.worktree_path, "/repo");
+    }
+
+    #[test]
+    fn pty_id_none_is_skipped_in_serialization() {
+        let sync = AgentStateSync {
+            worktree_path: "/repo".to_string(),
+            state: AgentState::Running,
+            exit_code: None,
+            timestamp: 1000.0,
+            session_id: None,
+            pty_id: None,
+        };
+        let json = serde_json::to_string(&sync).unwrap();
+        assert!(!json.contains("pty_id"));
+    }
+
+    #[test]
+    fn pty_id_some_is_serialized() {
+        let sync = AgentStateSync {
+            worktree_path: "/repo".to_string(),
+            state: AgentState::Running,
+            exit_code: None,
+            timestamp: 1000.0,
+            session_id: None,
+            pty_id: Some("7".to_string()),
+        };
+        let json = serde_json::to_string(&sync).unwrap();
+        assert!(json.contains("\"pty_id\":\"7\""));
     }
 }

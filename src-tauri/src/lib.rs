@@ -180,6 +180,7 @@ pub fn run() {
             pty::list_pty_sessions,
             pty::get_or_spawn_pty,
             pty::kill_ptys_by_worktree,
+            pty::gc_ptys_for_worktree,
             // ファイル監視
             watcher::start_watching,
             watcher::start_git_dir_watching,

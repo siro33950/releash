@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { agentStateKey, aggregateAgentState } from "@/lib/agentStateUtils";
+import { normalizePath } from "@/lib/normalizePath";
 import type { PrStatus, WorktreeBranch } from "@/types/git";
 import type { AgentStateSync } from "@/types/protocol";
 
@@ -20,6 +22,7 @@ export function useWorktreeList(repoPath: string) {
 	const [loading, setLoading] = useState(true);
 	const refreshSeqRef = useRef(0);
 	const prevBranchesRef = useRef("");
+	const agentStatesRef = useRef<Map<string, AgentStateSync>>(new Map());
 
 	const enrichWithPrStatus = useCallback(
 		async (cards: WorktreeBranch[]): Promise<WorktreeBranch[]> => {
@@ -62,21 +65,19 @@ export function useWorktreeList(repoPath: string) {
 					},
 				);
 				const enriched = await enrichWithPrStatus(cards);
-				const agentStates = await invoke<Record<string, AgentStateSync>>(
+				const agentStatesRecord = await invoke<Record<string, AgentStateSync>>(
 					"get_agent_states",
 				).catch((): Record<string, AgentStateSync> => ({}));
+				const agentStatesMap = new Map(Object.entries(agentStatesRecord));
+				agentStatesRef.current = agentStatesMap;
 
 				const withAgentState = enriched.map((b) => {
-					const agent = b.worktree_path
-						? agentStates[b.worktree_path]
-						: undefined;
-					return agent
-						? {
-								...b,
-								agent_state: agent.state,
-								agent_state_timestamp: agent.timestamp,
-							}
-						: b;
+					if (!b.worktree_path) return b;
+					const bestState = aggregateAgentState(
+						agentStatesMap,
+						b.worktree_path,
+					);
+					return bestState ? { ...b, agent_state: bestState } : b;
 				});
 				const filtered = withAgentState.filter(
 					(b) => b.worktree_path != null && !b.is_default,
@@ -144,13 +145,24 @@ export function useWorktreeList(repoPath: string) {
 
 	useEffect(() => {
 		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
-			const { worktree_path, state, timestamp } = event.payload;
+			const payload = event.payload;
+			const key = agentStateKey(payload.worktree_path, payload.pty_id);
+			agentStatesRef.current.set(key, payload);
+
 			setBranches((prev) =>
-				prev.map((b) =>
-					b.worktree_path === worktree_path
-						? { ...b, agent_state: state, agent_state_timestamp: timestamp }
-						: b,
-				),
+				prev.map((b) => {
+					if (!b.worktree_path) return b;
+					if (
+						normalizePath(b.worktree_path) !==
+						normalizePath(payload.worktree_path)
+					)
+						return b;
+					const bestState = aggregateAgentState(
+						agentStatesRef.current,
+						b.worktree_path,
+					);
+					return bestState ? { ...b, agent_state: bestState } : b;
+				}),
 			);
 		});
 		return () => {

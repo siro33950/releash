@@ -106,11 +106,7 @@ export function RightSidebarBottom({
 					forceMount
 					className="flex-1 overflow-hidden data-[state=inactive]:hidden"
 				>
-					<TerminalPanel
-						cwd={rootPath}
-						theme={theme}
-						sessionKey={`${rootPath}::user`}
-					/>
+					<TerminalPanel cwd={rootPath} theme={theme} />
 				</TabsContent>
 				<TabsContent value="comments" className="flex-1 overflow-hidden">
 					<CommentList

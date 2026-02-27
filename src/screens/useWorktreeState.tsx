@@ -18,6 +18,7 @@ import { useGitActions } from "@/hooks/useGitActions";
 import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
 import { useLineComments } from "@/hooks/useLineComments";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
+import { agentStateKey, aggregateAgentState } from "@/lib/agentStateUtils";
 import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
 import { normalizePath } from "@/lib/normalizePath";
 import { useWorktreeComments } from "@/screens/useWorktreeComments";
@@ -30,7 +31,7 @@ import {
 	useWorktreeGitActions,
 } from "@/screens/useWorktreeGitActions";
 import { useWorktreeMenuHandlers } from "@/screens/useWorktreeMenuHandlers";
-import type { AgentState, AgentStateSync } from "@/types/protocol";
+import type { AgentStateSync } from "@/types/protocol";
 import type { AppSettings, DiffBase, DiffMode } from "@/types/settings";
 
 interface UseWorktreeStateParams {
@@ -79,7 +80,9 @@ export function useWorktreeState({
 
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
-	const [agentState, setAgentState] = useState<AgentState | undefined>();
+	const [agentStatesMap, setAgentStatesMap] = useState<
+		Map<string, AgentStateSync>
+	>(new Map());
 	const {
 		comments,
 		addComment,
@@ -173,13 +176,26 @@ export function useWorktreeState({
 			if (
 				normalizePath(event.payload.worktree_path) === normalizePath(rootPath)
 			) {
-				setAgentState(event.payload.state);
+				setAgentStatesMap((prev) => {
+					const key = agentStateKey(
+						event.payload.worktree_path,
+						event.payload.pty_id,
+					);
+					const next = new Map(prev);
+					next.set(key, event.payload);
+					return next;
+				});
 			}
 		});
 		return () => {
 			unlisten.then((f) => f());
 		};
 	}, [rootPath]);
+
+	const agentState = useMemo(
+		() => aggregateAgentState(agentStatesMap, rootPath),
+		[agentStatesMap, rootPath],
+	);
 
 	// --- Refs ---
 	const rootPathRef = useRef(rootPath);

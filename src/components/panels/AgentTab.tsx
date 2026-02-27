@@ -35,7 +35,6 @@ export const AgentTab = forwardRef<TerminalTabPanelHandle, AgentTabProps>(
 				theme={theme}
 				terminalStartupCommand={terminalStartupCommand}
 				agentType={agentType}
-				sessionKey={`agent::${rootPath}`}
 				tabPrefix="Agent"
 			/>
 		);

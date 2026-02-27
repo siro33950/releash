@@ -541,6 +541,15 @@ mod tests {
                 exit_code: None,
                 timestamp: 1234567890.0,
                 session_id: Some("sess-1".to_string()),
+                pty_id: None,
+            }),
+            WsMessage::AgentStateSync(AgentStateSync {
+                worktree_path: "/repo".to_string(),
+                state: AgentState::Waiting,
+                exit_code: None,
+                timestamp: 1234567890.0,
+                session_id: None,
+                pty_id: Some("42".to_string()),
             }),
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),

@@ -352,7 +352,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"prompt_submit\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\",\"pty_id\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"prompt_submit\" \"$RELEASH_PTY_ID\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
             }],
@@ -361,7 +361,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"stop\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\",\"pty_id\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"stop\" \"$RELEASH_PTY_ID\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
             }],
@@ -371,7 +371,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                     "hooks": [{
                         "type": "command",
                         "command": format!(
-                            "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"notification\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                            "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\",\"pty_id\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"notification\" \"$RELEASH_PTY_ID\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                         )
                     }]
                 },
@@ -380,7 +380,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                     "hooks": [{
                         "type": "command",
                         "command": format!(
-                            "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"notification\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                            "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\",\"pty_id\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"notification\" \"$RELEASH_PTY_ID\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                         )
                     }]
                 }
@@ -390,7 +390,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"post_tool_use\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\",\"pty_id\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"post_tool_use\" \"$RELEASH_PTY_ID\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
             }],
@@ -399,7 +399,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"post_tool_use_failure\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\",\"pty_id\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"post_tool_use_failure\" \"$RELEASH_PTY_ID\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
             }],
@@ -408,7 +408,7 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"session_start\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
+                        "printf '{{\"worktree_path\":\"%s\",\"event\":\"%s\",\"pty_id\":\"%s\"}}' \"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\" \"session_start\" \"$RELEASH_PTY_ID\" | curl -s -X POST http://localhost:{port}/hooks/agent -H 'Authorization: Bearer {token}' -H 'Content-Type: application/json' -d @- || true"
                     )
                 }]
             }]

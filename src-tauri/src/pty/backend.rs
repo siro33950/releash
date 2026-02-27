@@ -9,6 +9,7 @@ pub struct SpawnConfig {
     pub cwd: Option<String>,
     pub shell: String,
     pub integration_dir: Option<std::path::PathBuf>,
+    pub pty_id: u64,
 }
 
 pub struct BackendSession {
