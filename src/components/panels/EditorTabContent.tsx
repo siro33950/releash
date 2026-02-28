@@ -20,7 +20,11 @@ import { useDiffOperations } from "./useDiffOperations";
 
 export interface EditorTabContentProps {
 	filePath: string;
-	externalRevealLine?: { path: string; line: number } | null;
+	externalRevealLine?: {
+		path: string;
+		line: number;
+		openThread?: boolean;
+	} | null;
 	onExternalRevealConsumed?: () => void;
 }
 
@@ -38,8 +42,11 @@ export function EditorTabContent({
 		setDiffMode,
 		comments,
 		addComment,
+		deleteComment,
+		updateComment: updateCommentContent,
+		sendComment,
+		copyComment,
 		showSentComments,
-		showInlineComments,
 		rootPath,
 		onStageHunk,
 		onGitChanged,
@@ -54,7 +61,7 @@ export function EditorTabContent({
 	const [showPreview, setShowPreview] = useState(false);
 
 	const [revealLine, setRevealLine] = useState<
-		{ line: number; key: number } | undefined
+		{ line: number; key: number; openThread?: boolean } | undefined
 	>();
 	const revealKeyRef = useRef(0);
 
@@ -102,14 +109,22 @@ export function EditorTabContent({
 		filePath,
 	]);
 
+	const relativeFilePath = useMemo(() => {
+		if (rootPath && filePath.startsWith(`${rootPath}/`)) {
+			return filePath.slice(rootPath.length + 1);
+		}
+		return filePath;
+	}, [rootPath, filePath]);
+
 	const commentRanges = useMemo(() => {
 		return comments
 			.filter(
 				(c) =>
-					c.filePath === filePath && (showSentComments || c.status !== "sent"),
+					c.filePath === relativeFilePath &&
+					(showSentComments || c.status !== "sent"),
 			)
 			.map((c) => ({ start: c.lineNumber, end: c.endLine }));
-	}, [comments, filePath, showSentComments]);
+	}, [comments, relativeFilePath, showSentComments]);
 
 	const handleAddComment = useCallback(
 		(lineNumber: number, content: string, endLine?: number) => {
@@ -122,7 +137,7 @@ export function EditorTabContent({
 		(lineNumber: number): LineComment[] => {
 			return comments.filter(
 				(c) =>
-					c.filePath === filePath &&
+					c.filePath === relativeFilePath &&
 					(showSentComments || c.status !== "sent") &&
 					(c.lineNumber === lineNumber ||
 						(c.endLine != null &&
@@ -130,7 +145,7 @@ export function EditorTabContent({
 							lineNumber <= c.endLine)),
 			);
 		},
-		[comments, filePath, showSentComments],
+		[comments, relativeFilePath, showSentComments],
 	);
 
 	const {
@@ -181,6 +196,7 @@ export function EditorTabContent({
 			setRevealLine({
 				line: externalRevealLine.line,
 				key: revealKeyRef.current,
+				openThread: externalRevealLine.openThread,
 			});
 			onExternalRevealConsumed?.();
 		}
@@ -230,11 +246,14 @@ export function EditorTabContent({
 						diffBase === "branch-base" ? handleUnstageGroup : undefined
 					}
 					onAddComment={handleAddComment}
+					onDeleteComment={deleteComment}
+					onUpdateComment={updateCommentContent}
+					onSendComment={sendComment}
+					onCopyComment={copyComment}
 					getCommentsForLine={getCommentsForLine}
 					revealLine={revealLine}
 					theme={theme}
 					onSearchOccurrences={onSearchOccurrences}
-					showInlineComments={showInlineComments}
 				/>
 			</div>
 			{!isImage && (

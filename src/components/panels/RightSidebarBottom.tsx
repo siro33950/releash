@@ -22,12 +22,7 @@ interface RightSidebarBottomProps {
 	settings: AppSettings;
 	comments: LineComment[];
 	onCommentClick?: (filePath: string, lineNumber: number) => void;
-	onDeleteComment?: (id: string) => void;
-	onUpdateComment?: (id: string, content: string) => void;
 	onSendToTerminal?: (comments: LineComment[]) => void;
-	onSendComment?: (comment: LineComment) => void;
-	onCopyComment?: (comment: LineComment) => void;
-	onResolveComment?: (id: string) => void;
 	showSentComments?: boolean;
 	onToggleShowSent?: () => void;
 	onToggleCollapse?: () => void;
@@ -40,12 +35,7 @@ export function RightSidebarBottom({
 	settings,
 	comments,
 	onCommentClick,
-	onDeleteComment,
-	onUpdateComment,
 	onSendToTerminal,
-	onSendComment,
-	onCopyComment,
-	onResolveComment,
 	showSentComments,
 	onToggleShowSent,
 	onToggleCollapse,
@@ -123,11 +113,6 @@ export function RightSidebarBottom({
 						<CommentList
 							comments={comments}
 							onCommentClick={onCommentClick}
-							onDeleteComment={onDeleteComment}
-							onUpdateComment={onUpdateComment}
-							onSendComment={onSendComment}
-							onCopyComment={onCopyComment}
-							onResolveComment={onResolveComment}
 							showSentComments={showSentComments}
 							onToggleShowSent={onToggleShowSent}
 						/>

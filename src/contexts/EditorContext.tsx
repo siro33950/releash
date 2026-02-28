@@ -22,12 +22,11 @@ export interface EditorContextValue {
 	) => void;
 	deleteComment: (id: string) => void;
 	updateComment: (id: string, content: string) => void;
+	sendComment?: (comment: LineComment) => void;
+	copyComment?: (comment: LineComment) => void;
 
 	showSentComments: boolean;
 	toggleShowSentComments: () => void;
-
-	showInlineComments: boolean;
-	toggleShowInlineComments: () => void;
 
 	rootPath: string;
 	onStageHunk?: (repoPath: string, patch: string) => Promise<void>;

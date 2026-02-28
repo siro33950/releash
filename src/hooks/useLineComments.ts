@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-	CommentAuthor,
 	CommentSeverity,
 	CommentTarget,
 	LineComment,
@@ -54,7 +53,6 @@ export function useLineComments(worktreeName: string) {
 			lineNumber: number,
 			content: string,
 			endLine?: number,
-			author?: CommentAuthor,
 			severity?: CommentSeverity,
 			parentId?: string,
 			target?: CommentTarget,
@@ -68,7 +66,6 @@ export function useLineComments(worktreeName: string) {
 				status: "unsent",
 				createdAt: Date.now(),
 				...(parentId != null && { parentId }),
-				author: author ?? { type: "human", name: "User" },
 				...(severity != null && { severity }),
 				resolved: false,
 				target: target ?? "local",
@@ -143,12 +140,6 @@ export function useLineComments(worktreeName: string) {
 		setShowSentComments((prev) => !prev);
 	}, []);
 
-	const [showInlineComments, setShowInlineComments] = useState(true);
-
-	const toggleShowInlineComments = useCallback(() => {
-		setShowInlineComments((prev) => !prev);
-	}, []);
-
 	const unsentComments = comments.filter((c) => c.status === "unsent");
 
 	return {
@@ -163,7 +154,5 @@ export function useLineComments(worktreeName: string) {
 		setComments,
 		showSentComments,
 		toggleShowSentComments,
-		showInlineComments,
-		toggleShowInlineComments,
 	};
 }

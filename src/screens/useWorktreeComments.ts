@@ -11,7 +11,6 @@ import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { trackEvent } from "@/lib/telemetry";
 import type {
-	CommentAuthor,
 	CommentSeverity,
 	CommentTarget,
 	LineComment,
@@ -25,7 +24,6 @@ interface UseWorktreeCommentsParams {
 		lineNumber: number,
 		content: string,
 		endLine?: number,
-		author?: CommentAuthor,
 		severity?: CommentSeverity,
 		parentId?: string,
 		target?: CommentTarget,
@@ -66,7 +64,6 @@ export function useWorktreeComments({
 					status: c.status,
 					created_at: c.createdAt,
 					...(c.parentId != null && { parent_id: c.parentId }),
-					author: c.author,
 					...(c.severity != null && { severity: c.severity }),
 					resolved: c.resolved,
 					target: c.target,
@@ -81,25 +78,16 @@ export function useWorktreeComments({
 			line_number: number;
 			end_line?: number;
 			content: string;
-			author?: { type: "human" | "ai"; name: string };
 			severity?: "info" | "warning" | "error" | "suggestion";
 			target?: "ai" | "review" | "local";
 		}>("remote-comment-added", (event) => {
-			const {
-				file_path,
-				line_number,
-				end_line,
-				content,
-				author,
-				severity,
-				target,
-			} = event.payload;
+			const { file_path, line_number, end_line, content, severity, target } =
+				event.payload;
 			addComment(
 				file_path,
 				line_number,
 				content,
 				end_line ?? undefined,
-				author,
 				severity,
 				undefined,
 				target,
@@ -176,20 +164,19 @@ export function useWorktreeComments({
 
 	const handleCommentClick = useCallback(
 		(commentFilePath: string, lineNumber: number) => {
-			// MCP由来のコメントは相対パスの場合があるため、絶対パスに解決する
 			const absolutePath = commentFilePath.startsWith("/")
 				? commentFilePath
 				: `${rootPath}/${commentFilePath}`;
 			if (activeTabPath === absolutePath) {
 				dispatchEditor({
 					type: "SET_PENDING_REVEAL",
-					reveal: { path: absolutePath, line: lineNumber },
+					reveal: { path: absolutePath, line: lineNumber, openThread: true },
 				});
 			} else {
 				handleOpenFile(absolutePath);
 				dispatchEditor({
 					type: "SET_PENDING_REVEAL",
-					reveal: { path: absolutePath, line: lineNumber },
+					reveal: { path: absolutePath, line: lineNumber, openThread: true },
 				});
 			}
 		},

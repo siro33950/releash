@@ -3,13 +3,6 @@ export interface CommentRange {
 	end?: number;
 }
 
-export type CommentAuthorType = "human" | "ai";
-
-export interface CommentAuthor {
-	type: CommentAuthorType;
-	name: string;
-}
-
 export type CommentSeverity = "info" | "warning" | "error" | "suggestion";
 
 export type CommentTarget = "ai" | "review" | "local";
@@ -23,7 +16,6 @@ export interface LineComment {
 	status: "unsent" | "sent";
 	createdAt: number;
 	parentId?: string;
-	author: CommentAuthor;
 	severity?: CommentSeverity;
 	resolved: boolean;
 	target: CommentTarget;
@@ -38,7 +30,6 @@ export interface CommentItemDTO {
 	status: string;
 	created_at: number;
 	parent_id?: string;
-	author: { type: string; name: string };
 	severity?: string;
 	resolved: boolean;
 	target: string;
@@ -54,7 +45,6 @@ export function dtoToLineComment(dto: CommentItemDTO): LineComment {
 		status: dto.status as "unsent" | "sent",
 		createdAt: dto.created_at,
 		...(dto.parent_id != null && { parentId: dto.parent_id }),
-		author: dto.author as CommentAuthor,
 		...(dto.severity != null && {
 			severity: dto.severity as CommentSeverity,
 		}),
@@ -73,7 +63,6 @@ export function lineCommentToDTO(c: LineComment): CommentItemDTO {
 		status: c.status,
 		created_at: c.createdAt,
 		...(c.parentId != null && { parent_id: c.parentId }),
-		author: c.author,
 		...(c.severity != null && { severity: c.severity }),
 		resolved: c.resolved,
 		target: c.target,

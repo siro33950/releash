@@ -49,12 +49,16 @@ impl CommentStore {
         let mut items: Vec<CommentItem> =
             serde_json::from_str(&data).map_err(|e| format!("Failed to parse: {e}"))?;
 
+        // Migration: normalize absolute file_path to relative
+        let prefix = format!("{}/", worktree_name);
+        for item in &mut items {
+            if item.file_path.starts_with(&prefix) {
+                item.file_path = item.file_path[prefix.len()..].to_string();
+            }
+        }
+
         // Migration: fill defaults for old data missing new fields
         for item in &mut items {
-            if item.author.author_type.is_empty() {
-                item.author.author_type = "human".to_string();
-                item.author.name = "User".to_string();
-            }
             if item.target.is_empty() {
                 item.target = "local".to_string();
             }
@@ -79,7 +83,12 @@ impl CommentStore {
         Ok(())
     }
 
-    pub fn add(&self, worktree_name: &str, comment: CommentItem) {
+    pub fn add(&self, worktree_name: &str, mut comment: CommentItem) {
+        // Normalize absolute file_path to relative (strip worktree prefix)
+        let prefix = format!("{}/", worktree_name);
+        if comment.file_path.starts_with(&prefix) {
+            comment.file_path = comment.file_path[prefix.len()..].to_string();
+        }
         let mut entries = self.entries.write();
         entries
             .entry(worktree_name.to_string())
@@ -329,7 +338,6 @@ pub fn toggle_resolve_comment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::CommentAuthor;
     use tempfile::TempDir;
 
     fn make_comment(id: &str, file_path: &str, severity: Option<&str>) -> CommentItem {
@@ -342,7 +350,6 @@ mod tests {
             status: "unsent".to_string(),
             created_at: 1234567890.0,
             parent_id: None,
-            author: CommentAuthor::default(),
             severity: severity.map(|s| s.to_string()),
             resolved: false,
             target: "local".to_string(),
@@ -464,6 +471,47 @@ mod tests {
     }
 
     #[test]
+    fn add_normalizes_absolute_path() {
+        let store = CommentStore::default();
+        store.add(
+            "/Users/dev/project",
+            make_comment("c1", "/Users/dev/project/src/main.rs", None),
+        );
+        let all = store.get_all("/Users/dev/project");
+        assert_eq!(all[0].file_path, "src/main.rs");
+    }
+
+    #[test]
+    fn add_keeps_relative_path() {
+        let store = CommentStore::default();
+        store.add("myproject", make_comment("c1", "src/main.rs", None));
+        let all = store.get_all("myproject");
+        assert_eq!(all[0].file_path, "src/main.rs");
+    }
+
+    #[test]
+    fn load_normalizes_absolute_path() {
+        let dir = TempDir::new().unwrap();
+        let worktree = "/Users/dev/project";
+        let old_json = r#"[{
+            "id": "c1",
+            "file_path": "/Users/dev/project/src/main.rs",
+            "line_number": 10,
+            "content": "old comment",
+            "status": "unsent",
+            "created_at": 1234567890.0
+        }]"#;
+        let comments_dir = dir.path().join("comments");
+        std::fs::create_dir_all(&comments_dir).unwrap();
+        let safe_name = worktree.replace(['/', '\\'], "_");
+        std::fs::write(comments_dir.join(format!("{safe_name}.json")), old_json).unwrap();
+
+        let store = CommentStore::default();
+        let loaded = store.load(dir.path(), worktree).unwrap();
+        assert_eq!(loaded[0].file_path, "src/main.rs");
+    }
+
+    #[test]
     fn migration_fills_defaults() {
         let dir = TempDir::new().unwrap();
         let old_json = r#"[{
@@ -481,8 +529,6 @@ mod tests {
         let store = CommentStore::default();
         let loaded = store.load(dir.path(), "wt1").unwrap();
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].author.author_type, "human");
-        assert_eq!(loaded[0].author.name, "User");
         assert!(!loaded[0].resolved);
         assert_eq!(loaded[0].target, "local");
     }

@@ -20,6 +20,7 @@ export type { DiffBase, DiffMode } from "@/types/settings";
 interface RevealLine {
 	line: number;
 	key: number;
+	openThread?: boolean;
 }
 
 interface HunkCommentProps {
@@ -32,10 +33,13 @@ interface HunkCommentProps {
 		content: string,
 		endLine?: number,
 	) => void;
+	onDeleteComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
+	onSendComment?: (comment: LineComment) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
-	showInlineComments?: boolean;
 }
 
 interface NavigationHandlers {
@@ -202,7 +206,6 @@ function GutterEditor({
 	navigation,
 	filePath,
 	readOnly,
-	showInlineComments,
 }: {
 	originalContent: string;
 	modifiedContent: string;
@@ -231,7 +234,6 @@ function GutterEditor({
 		revealLine,
 		theme,
 		readOnly,
-		showInlineComments,
 	});
 
 	const actions = useEditorContextMenu(editorRef, navigation);
@@ -264,7 +266,6 @@ function DiffEditor({
 	navigation,
 	filePath,
 	readOnly,
-	showInlineComments,
 }: {
 	originalContent: string;
 	modifiedContent: string;
@@ -295,7 +296,6 @@ function DiffEditor({
 		revealLine,
 		theme,
 		readOnly,
-		showInlineComments,
 	});
 
 	const modifiedEditorProxy = useMemo<
@@ -338,13 +338,16 @@ interface MonacoDiffViewerProps {
 		content: string,
 		endLine?: number,
 	) => void;
+	onDeleteComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
+	onSendComment?: (comment: LineComment) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
 	filePath?: string;
 	onSearchOccurrences?: (text: string) => void;
 	readOnly?: boolean;
-	showInlineComments?: boolean;
 }
 
 export function MonacoDiffViewer({
@@ -360,13 +363,16 @@ export function MonacoDiffViewer({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
+	onDeleteComment,
+	onUpdateComment,
+	onSendComment,
+	onCopyComment,
 	getCommentsForLine,
 	revealLine,
 	theme,
 	filePath,
 	onSearchOccurrences,
 	readOnly,
-	showInlineComments,
 }: MonacoDiffViewerProps) {
 	const hunkCommentProps: HunkCommentProps = {
 		changeGroups,
@@ -374,10 +380,13 @@ export function MonacoDiffViewer({
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
+		onDeleteComment,
+		onUpdateComment,
+		onSendComment,
+		onCopyComment,
 		getCommentsForLine,
 		revealLine,
 		theme,
-		showInlineComments,
 	};
 
 	const navigation: NavigationHandlers | undefined = onSearchOccurrences

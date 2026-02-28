@@ -30,11 +30,14 @@ export interface DiffViewerSectionProps {
 	onStageHunk: (groupIndex: number) => Promise<void>;
 	onUnstageHunk: ((groupIndex: number) => Promise<void>) | undefined;
 	onAddComment: (lineNumber: number, content: string, endLine?: number) => void;
+	onDeleteComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
+	onSendComment?: (comment: LineComment) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine: (lineNumber: number) => LineComment[];
-	revealLine: { line: number; key: number } | undefined;
+	revealLine: { line: number; key: number; openThread?: boolean } | undefined;
 	theme?: Theme;
 	onSearchOccurrences?: (text: string) => void;
-	showInlineComments?: boolean;
 }
 
 export function DiffViewerSection({
@@ -54,11 +57,14 @@ export function DiffViewerSection({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
+	onDeleteComment,
+	onUpdateComment,
+	onSendComment,
+	onCopyComment,
 	getCommentsForLine,
 	revealLine,
 	theme,
 	onSearchOccurrences,
-	showInlineComments,
 }: DiffViewerSectionProps) {
 	if (isImage) {
 		return (
@@ -101,12 +107,15 @@ export function DiffViewerSection({
 				onStageHunk={onStageHunk}
 				onUnstageHunk={onUnstageHunk}
 				onAddComment={onAddComment}
+				onDeleteComment={onDeleteComment}
+				onUpdateComment={onUpdateComment}
+				onSendComment={onSendComment}
+				onCopyComment={onCopyComment}
 				getCommentsForLine={getCommentsForLine}
 				revealLine={revealLine}
 				theme={theme}
 				filePath={filePath}
 				onSearchOccurrences={onSearchOccurrences}
-				showInlineComments={showInlineComments}
 			/>
 		</Suspense>
 	);

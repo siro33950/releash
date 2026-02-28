@@ -2,13 +2,9 @@ import { loader } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import {
-	createInlineCommentManager,
-	type InlineCommentManager,
-} from "@/lib/commentInlineWidget";
-import {
-	type CommentViewZone,
-	openCommentViewZone,
-} from "@/lib/commentPeekWidget";
+	type CommentThreadZone,
+	createCommentThread,
+} from "@/lib/commentThreadWidget";
 import type { ChangeGroup } from "@/lib/computeHunks";
 import {
 	DIFF_ADDED_COLOR,
@@ -27,6 +23,7 @@ import type { Theme } from "@/types/settings";
 interface RevealLine {
 	line: number;
 	key: number;
+	openThread?: boolean;
 }
 
 interface UseMonacoDiffEditorOptions {
@@ -46,11 +43,14 @@ interface UseMonacoDiffEditorOptions {
 		content: string,
 		endLine?: number,
 	) => void;
+	onDeleteComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
+	onSendComment?: (comment: LineComment) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
 	readOnly?: boolean;
-	showInlineComments?: boolean;
 }
 
 interface HunkOverlay {
@@ -155,11 +155,14 @@ export function useMonacoDiffEditor(
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
+		onDeleteComment,
+		onUpdateComment,
+		onSendComment,
+		onCopyComment,
 		getCommentsForLine,
 		revealLine,
 		theme,
 		readOnly,
-		showInlineComments,
 	} = options;
 
 	const diffEditorRef = useRef<Monaco.editor.IStandaloneDiffEditor | null>(
@@ -178,30 +181,35 @@ export function useMonacoDiffEditor(
 	const onContentChangeRef = useRef(onContentChange);
 	const fontSizeRef = useRef(fontSize);
 	const onAddCommentRef = useRef(onAddComment);
+	const onDeleteCommentRef = useRef(onDeleteComment);
+	const onUpdateCommentRef = useRef(onUpdateComment);
+	const onSendCommentRef = useRef(onSendComment);
+	const onCopyCommentRef = useRef(onCopyComment);
 	const getCommentsForLineRef = useRef(getCommentsForLine);
 	const onStageHunkRef = useRef(onStageHunk);
 	const onUnstageHunkRef = useRef(onUnstageHunk);
 	const hunkOverlayContainerRef = useRef<HTMLDivElement | null>(null);
-	const commentInputWidgetRef = useRef<CommentViewZone | null>(null);
+	const commentInputWidgetRef = useRef<CommentThreadZone | null>(null);
 	const dragStartLineRef = useRef<number | null>(null);
 	const dragRangeDecorationsRef = useRef<string[]>([]);
 	const hoverLineRef = useRef<number | null>(null);
 	const hoverDecorationsRef = useRef<string[]>([]);
 	const isProgrammaticUpdateRef = useRef(false);
 	const themeRef = useRef(theme);
-	const inlineManagerRef = useRef<InlineCommentManager | null>(null);
-	const showInlineCommentsRef = useRef(showInlineComments);
 	const commentRangesRef = useRef(commentRanges);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
 	onContentChangeRef.current = onContentChange;
 	fontSizeRef.current = fontSize;
 	onAddCommentRef.current = onAddComment;
+	onDeleteCommentRef.current = onDeleteComment;
+	onUpdateCommentRef.current = onUpdateComment;
+	onSendCommentRef.current = onSendComment;
+	onCopyCommentRef.current = onCopyComment;
 	getCommentsForLineRef.current = getCommentsForLine;
 	onStageHunkRef.current = onStageHunk;
 	onUnstageHunkRef.current = onUnstageHunk;
 	themeRef.current = theme;
-	showInlineCommentsRef.current = showInlineComments;
 	commentRangesRef.current = commentRanges;
 
 	useEffect(() => {
@@ -261,10 +269,6 @@ export function useMonacoDiffEditor(
 					...(readOnly != null && { readOnly, originalEditable: false }),
 				},
 				{
-					// Override Monaco's internal ITextModelService (non-public DI) so that
-					// go-to-definition can resolve file:// URIs inside the Tauri webview.
-					// The default service cannot fetch file:// resources, so we redirect
-					// lookups to models already registered via ensureModelsForFiles.
 					textModelService: {
 						createModelReference(uri: Monaco.Uri) {
 							const m = monaco.editor.getModel(uri);
@@ -305,14 +309,6 @@ export function useMonacoDiffEditor(
 			setEditorReady(true);
 
 			const modifiedEditor = diffEditor.getModifiedEditor();
-			const inlineManager = createInlineCommentManager(modifiedEditor);
-			inlineManagerRef.current = inlineManager;
-			if (showInlineCommentsRef.current && commentRangesRef.current) {
-				inlineManager.update(
-					commentRangesRef.current,
-					(line) => getCommentsForLineRef.current?.(line) ?? [],
-				);
-			}
 
 			const updateDiffDecorations = () => {
 				const changes = diffEditor.getLineChanges();
@@ -357,10 +353,10 @@ export function useMonacoDiffEditor(
 				}
 
 				const existing = getCommentsForLineRef.current?.(lineNum) ?? [];
-				const zone = openCommentViewZone(ed, {
+				const zone = createCommentThread(ed, {
 					lineNumber: lineNum,
 					endLine,
-					existingComments: existing,
+					comments: existing,
 					onSubmit: (content) => {
 						onAddCommentRef.current?.(lineNum, content, endLine);
 						zone.dispose();
@@ -372,6 +368,11 @@ export function useMonacoDiffEditor(
 						commentInputWidgetRef.current = null;
 						ed.focus();
 					},
+					onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
+					onUpdateComment: (id, content) =>
+						onUpdateCommentRef.current?.(id, content),
+					onSendComment: (comment) => onSendCommentRef.current?.(comment),
+					onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
 				});
 				commentInputWidgetRef.current = zone;
 			};
@@ -520,8 +521,6 @@ export function useMonacoDiffEditor(
 		return () => {
 			isMounted = false;
 			setEditorReady(false);
-			inlineManagerRef.current?.dispose();
-			inlineManagerRef.current = null;
 			commentInputWidgetRef.current?.dispose();
 			commentInputWidgetRef.current = null;
 			intersectionObserverRef.current?.disconnect();
@@ -630,14 +629,27 @@ export function useMonacoDiffEditor(
 		if (!diffEditor || !monaco || !commentRanges) return;
 
 		const modifiedEditor = diffEditor.getModifiedEditor();
-		const decorations: Monaco.editor.IModelDeltaDecoration[] =
-			commentRanges.map((r) => ({
+		const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
+		const seen = new Set<number>();
+
+		for (const r of commentRanges) {
+			decorations.push({
 				range: new monaco.Range(r.start, 1, r.end ?? r.start, 1),
 				options: {
 					isWholeLine: true,
 					linesDecorationsClassName: "comment-marker",
 				},
-			}));
+			});
+			if (!seen.has(r.start)) {
+				seen.add(r.start);
+				decorations.push({
+					range: new monaco.Range(r.start, 1, r.start, 1),
+					options: {
+						linesDecorationsClassName: "comment-marker-icon",
+					},
+				});
+			}
+		}
 
 		commentDecorationsRef.current = modifiedEditor.deltaDecorations(
 			commentDecorationsRef.current,
@@ -646,26 +658,42 @@ export function useMonacoDiffEditor(
 	}, [commentRanges]);
 
 	useEffect(() => {
-		const manager = inlineManagerRef.current;
-		if (!manager) return;
-
-		if (!showInlineComments || !commentRanges) {
-			manager.update([], () => []);
-			return;
-		}
-
-		manager.update(
-			commentRanges,
-			(line) => getCommentsForLineRef.current?.(line) ?? [],
-		);
-	}, [commentRanges, showInlineComments]);
-
-	useEffect(() => {
 		const diffEditor = diffEditorRef.current;
 		if (!diffEditor || !revealLine) return;
 		const modifiedEditor = diffEditor.getModifiedEditor();
 		modifiedEditor.revealLineInCenter(revealLine.line);
 		modifiedEditor.setPosition({ lineNumber: revealLine.line, column: 1 });
+
+		if (revealLine.openThread) {
+			if (commentInputWidgetRef.current) {
+				commentInputWidgetRef.current.dispose();
+				commentInputWidgetRef.current = null;
+			}
+			const existing = getCommentsForLineRef.current?.(revealLine.line) ?? [];
+			if (existing.length > 0) {
+				const zone = createCommentThread(modifiedEditor, {
+					lineNumber: revealLine.line,
+					comments: existing,
+					onSubmit: (content) => {
+						onAddCommentRef.current?.(revealLine.line, content);
+						zone.dispose();
+						commentInputWidgetRef.current = null;
+						modifiedEditor.focus();
+					},
+					onCancel: () => {
+						zone.dispose();
+						commentInputWidgetRef.current = null;
+						modifiedEditor.focus();
+					},
+					onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
+					onUpdateComment: (id, content) =>
+						onUpdateCommentRef.current?.(id, content),
+					onSendComment: (comment) => onSendCommentRef.current?.(comment),
+					onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
+				});
+				commentInputWidgetRef.current = zone;
+			}
+		}
 	}, [revealLine]);
 
 	useEffect(() => {

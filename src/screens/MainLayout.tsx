@@ -106,7 +106,6 @@ function WorktreeContent({
 	const {
 		handleCommentClick: baseCommentClick,
 		handleSendToTerminal: baseSendToTerminal,
-		handleSendComment: baseSendComment,
 	} = s;
 
 	// コメントクリック → Editorに切り替え + 既存の行ジャンプ
@@ -125,15 +124,6 @@ function WorktreeContent({
 			setCenterTab("agent");
 		},
 		[setCenterTab, baseSendToTerminal],
-	);
-
-	// コメント単体送信 → 既存処理 + Agentに切り替え
-	const handleSingleCommentSent = useCallback(
-		(comment: LineComment) => {
-			baseSendComment(comment);
-			setCenterTab("agent");
-		},
-		[setCenterTab, baseSendComment],
 	);
 
 	const handleTabSelect = useCallback(
@@ -360,12 +350,7 @@ function WorktreeContent({
 											settings={settings}
 											comments={s.comments}
 											onCommentClick={handleCommentClick}
-											onDeleteComment={s.removeComment}
-											onUpdateComment={s.updateComment}
 											onSendToTerminal={handleCommentSent}
-											onSendComment={handleSingleCommentSent}
-											onCopyComment={s.handleCopyComment}
-											onResolveComment={s.resolveComment}
 											showSentComments={s.showSentComments}
 											onToggleShowSent={s.toggleShowSentComments}
 											onToggleCollapse={handleToggleRightBottom}

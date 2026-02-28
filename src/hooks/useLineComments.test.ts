@@ -260,27 +260,4 @@ describe("useLineComments", () => {
 
 		expect(result.current.showSentComments).toBe(false);
 	});
-
-	it("should default showInlineComments to true", () => {
-		const { result } = renderHook(() => useLineComments(WORKTREE));
-		expect(result.current.showInlineComments).toBe(true);
-	});
-
-	it("should toggle showInlineComments", () => {
-		const { result } = renderHook(() => useLineComments(WORKTREE));
-
-		expect(result.current.showInlineComments).toBe(true);
-
-		act(() => {
-			result.current.toggleShowInlineComments();
-		});
-
-		expect(result.current.showInlineComments).toBe(false);
-
-		act(() => {
-			result.current.toggleShowInlineComments();
-		});
-
-		expect(result.current.showInlineComments).toBe(true);
-	});
 });

@@ -8,7 +8,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler
 
 use tauri::Emitter;
 
-use crate::protocol::{CommentAuthor, CommentItem};
+use crate::protocol::CommentItem;
 
 use super::state::McpSharedState;
 
@@ -258,10 +258,6 @@ impl ReleashMcpServer {
             status: "unsent".to_string(),
             created_at: now,
             parent_id: None,
-            author: CommentAuthor {
-                author_type: "ai".to_string(),
-                name: "AI Reviewer".to_string(),
-            },
             severity: params.severity.clone(),
             resolved: false,
             target: "review".to_string(),
@@ -295,10 +291,6 @@ impl ReleashMcpServer {
                     line_number: params.line_number,
                     end_line: params.end_line,
                     content: params.content,
-                    author: CommentAuthor {
-                        author_type: "ai".to_string(),
-                        name: "AI Reviewer".to_string(),
-                    },
                     severity: params.severity,
                     target: "review".to_string(),
                 },

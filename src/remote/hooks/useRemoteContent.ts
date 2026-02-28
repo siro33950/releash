@@ -27,7 +27,6 @@ export function useRemoteContent({ subscribe, send }: UseRemoteContentOptions) {
 						content: c.content,
 						status: c.status,
 						createdAt: c.created_at,
-						author: c.author ?? { type: "human" as const, name: "User" },
 						resolved: c.resolved ?? false,
 						target: c.target ?? ("local" as const),
 					})),
@@ -60,7 +59,6 @@ export function useRemoteContent({ subscribe, send }: UseRemoteContentOptions) {
 				content,
 				status: "unsent",
 				createdAt: Date.now(),
-				author: { type: "human", name: "User" },
 				resolved: false,
 				target: "local",
 			};

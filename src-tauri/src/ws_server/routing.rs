@@ -106,7 +106,6 @@ mod tests {
             line_number: 10,
             end_line: None,
             content: "fix this".to_string(),
-            author: crate::protocol::CommentAuthor::default(),
             severity: None,
             target: "local".to_string(),
         });

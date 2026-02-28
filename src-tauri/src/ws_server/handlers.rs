@@ -1218,7 +1218,6 @@ mod tests {
             line_number: 1,
             end_line: None,
             content: "test comment".to_string(),
-            author: crate::protocol::CommentAuthor::default(),
             severity: None,
             target: "local".to_string(),
         };
