@@ -593,6 +593,12 @@ pub async fn update_mcp_config(
     port: u16,
     token: String,
 ) -> Result<(), String> {
+    if port == 0 {
+        return Err("mcp_port must be between 1 and 65535".to_string());
+    }
+    if token.trim().is_empty() {
+        return Err("mcp_token must not be empty".to_string());
+    }
     let app_config = state.inner().clone();
     tokio::task::spawn_blocking(move || {
         let mut config = app_config

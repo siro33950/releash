@@ -20,19 +20,19 @@ use self::state::McpSharedState;
 // ---------------------------------------------------------------------------
 
 pub struct McpServerHandle {
-    running: parking_lot::Mutex<bool>,
-    port: parking_lot::Mutex<Option<u16>>,
-    auth_token: parking_lot::Mutex<Option<String>>,
-    cancellation_token: parking_lot::Mutex<Option<CancellationToken>>,
+    running: Arc<parking_lot::Mutex<bool>>,
+    port: Arc<parking_lot::Mutex<Option<u16>>>,
+    auth_token: Arc<parking_lot::Mutex<Option<String>>>,
+    cancellation_token: Arc<parking_lot::Mutex<Option<CancellationToken>>>,
 }
 
 impl Default for McpServerHandle {
     fn default() -> Self {
         Self {
-            running: parking_lot::Mutex::new(false),
-            port: parking_lot::Mutex::new(None),
-            auth_token: parking_lot::Mutex::new(None),
-            cancellation_token: parking_lot::Mutex::new(None),
+            running: Arc::new(parking_lot::Mutex::new(false)),
+            port: Arc::new(parking_lot::Mutex::new(None)),
+            auth_token: Arc::new(parking_lot::Mutex::new(None)),
+            cancellation_token: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
 }
@@ -70,10 +70,27 @@ pub async fn start_mcp_server_core(
     state: McpSharedState,
     handle: &McpServerHandle,
 ) -> Result<McpConnectionInfo, String> {
-    if handle.is_running() {
-        return Err("MCP server is already running".to_string());
+    {
+        let mut running = handle.running.lock();
+        if *running {
+            return Err("MCP server is already running".to_string());
+        }
+        *running = true;
     }
 
+    match start_mcp_server_inner(state, handle).await {
+        Ok(info) => Ok(info),
+        Err(e) => {
+            *handle.running.lock() = false;
+            Err(e)
+        }
+    }
+}
+
+async fn start_mcp_server_inner(
+    state: McpSharedState,
+    handle: &McpServerHandle,
+) -> Result<McpConnectionInfo, String> {
     // config.toml から固定ポート/トークンを取得
     let config = state.app_config.get_config()?;
     let mcp_port = config.server.mcp_port;
@@ -108,13 +125,6 @@ pub async fn start_mcp_server_core(
         .port();
 
     let ct_for_shutdown = ct.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                ct_for_shutdown.cancelled().await;
-            })
-            .await;
-    });
 
     let info = McpConnectionInfo {
         url: format!("http://127.0.0.1:{port}/mcp"),
@@ -122,11 +132,32 @@ pub async fn start_mcp_server_core(
     };
 
     {
-        *handle.running.lock() = true;
         *handle.port.lock() = Some(port);
         *handle.auth_token.lock() = Some(token);
         *handle.cancellation_token.lock() = Some(ct);
     }
+
+    let running_flag = handle.running.clone();
+    let port_slot = handle.port.clone();
+    let auth_slot = handle.auth_token.clone();
+    let ct_slot = handle.cancellation_token.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let result = axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                ct_for_shutdown.cancelled().await;
+            })
+            .await;
+
+        if let Err(e) = result {
+            log::error!("MCP server exited with error: {e}");
+        }
+
+        *running_flag.lock() = false;
+        *port_slot.lock() = None;
+        *auth_slot.lock() = None;
+        *ct_slot.lock() = None;
+    });
 
     log::info!("MCP server started on 127.0.0.1:{port}");
     Ok(info)
@@ -150,11 +181,10 @@ pub fn stop_mcp_server_core(handle: &McpServerHandle) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-start helper (called from setup with AppHandle)
+// Shared state builder
 // ---------------------------------------------------------------------------
 
-pub async fn auto_start_mcp_server(app: &tauri::AppHandle) -> Result<McpConnectionInfo, String> {
-    let handle = app.state::<McpServerHandle>();
+fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
     let pty_manager = app.state::<Arc<crate::pty::PtyManager>>();
     let app_config = app.state::<Arc<crate::config::AppConfig>>();
     let broadcaster = app.state::<Arc<crate::ws_bridge::WsBroadcaster>>();
@@ -169,14 +199,22 @@ pub async fn auto_start_mcp_server(app: &tauri::AppHandle) -> Result<McpConnecti
         .cloned()
         .collect();
 
-    let state = McpSharedState {
+    Ok(McpSharedState {
         repo_paths: Arc::new(parking_lot::RwLock::new(repo_paths)),
         pty_manager: Arc::clone(&pty_manager),
         app_config: Arc::clone(app_config.inner()),
         broadcaster: Arc::clone(&broadcaster),
         agent_states: Arc::clone(agent_states.inner()),
-    };
+    })
+}
 
+// ---------------------------------------------------------------------------
+// Auto-start helper (called from setup with AppHandle)
+// ---------------------------------------------------------------------------
+
+pub async fn auto_start_mcp_server(app: &tauri::AppHandle) -> Result<McpConnectionInfo, String> {
+    let handle = app.state::<McpServerHandle>();
+    let state = build_mcp_state(app)?;
     start_mcp_server_core(state, &handle).await
 }
 
@@ -187,28 +225,7 @@ pub async fn auto_start_mcp_server(app: &tauri::AppHandle) -> Result<McpConnecti
 #[tauri::command]
 pub async fn start_mcp_server(app: tauri::AppHandle) -> Result<McpConnectionInfo, String> {
     let handle = app.state::<McpServerHandle>();
-    let pty_manager = app.state::<Arc<crate::pty::PtyManager>>();
-    let app_config = app.state::<Arc<crate::config::AppConfig>>();
-    let broadcaster = app.state::<Arc<crate::ws_bridge::WsBroadcaster>>();
-    let agent_states = app.state::<crate::hook_listener::AgentStatesMap>();
-
-    let config = app_config.get_config()?;
-    let repo_paths: Vec<String> = config
-        .app
-        .last_repo_paths
-        .iter()
-        .filter(|p| !p.is_empty())
-        .cloned()
-        .collect();
-
-    let state = McpSharedState {
-        repo_paths: Arc::new(parking_lot::RwLock::new(repo_paths)),
-        pty_manager: Arc::clone(&pty_manager),
-        app_config: Arc::clone(app_config.inner()),
-        broadcaster: Arc::clone(&broadcaster),
-        agent_states: Arc::clone(agent_states.inner()),
-    };
-
+    let state = build_mcp_state(&app)?;
     start_mcp_server_core(state, &handle).await
 }
 

@@ -14,9 +14,11 @@ pub async fn auth_middleware(
         .and_then(|v| v.to_str().ok());
 
     match auth_header {
-        Some(header) if header.starts_with("Bearer ") => {
-            let token = &header[7..];
-            if token == expected_token {
+        Some(header) => {
+            let mut parts = header.splitn(2, ' ');
+            let scheme = parts.next().unwrap_or_default();
+            let token = parts.next().unwrap_or_default();
+            if scheme.eq_ignore_ascii_case("bearer") && token == expected_token {
                 Ok(next.run(request).await)
             } else {
                 Err(StatusCode::UNAUTHORIZED)

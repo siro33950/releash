@@ -79,29 +79,39 @@ export function useMcpConfig() {
 		}
 	}, [draft]);
 
-	const generateConfig = useCallback(async (agentType: McpAgentType) => {
-		setError(null);
-		try {
-			return await invoke<GenerateResult>("generate_agent_mcp_config", {
-				agentType,
-			});
-		} catch (e) {
-			setError(String(e));
-			throw e;
-		}
-	}, []);
+	const generateConfig = useCallback(
+		async (agentType: McpAgentType) => {
+			setError(null);
+			try {
+				return await invoke<GenerateResult>("generate_agent_mcp_config", {
+					agentType,
+					port: draft.port,
+					token: draft.token,
+				});
+			} catch (e) {
+				setError(String(e));
+				throw e;
+			}
+		},
+		[draft.port, draft.token],
+	);
 
-	const previewConfig = useCallback(async (agentType: McpAgentType) => {
-		setError(null);
-		try {
-			return await invoke<string>("preview_agent_mcp_config", {
-				agentType,
-			});
-		} catch (e) {
-			setError(String(e));
-			throw e;
-		}
-	}, []);
+	const previewConfig = useCallback(
+		async (agentType: McpAgentType) => {
+			setError(null);
+			try {
+				return await invoke<string>("preview_agent_mcp_config", {
+					agentType,
+					port: draft.port,
+					token: draft.token,
+				});
+			} catch (e) {
+				setError(String(e));
+				throw e;
+			}
+		},
+		[draft.port, draft.token],
+	);
 
 	return {
 		draft,

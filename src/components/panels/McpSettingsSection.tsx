@@ -68,14 +68,16 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 		}
 	}, [generateConfig, selectedAgent]);
 
+	const displayContent = generateResult?.content ?? preview;
+
 	const handleCopy = useCallback(async () => {
-		if (!preview) return;
+		if (!displayContent) return;
 		try {
-			await navigator.clipboard.writeText(preview);
+			await navigator.clipboard.writeText(displayContent);
 			setCopied(true);
 			setTimeout(() => setCopied(false), 2000);
 		} catch {}
-	}, [preview]);
+	}, [displayContent]);
 
 	return (
 		<div className="flex flex-col gap-4">
@@ -89,16 +91,23 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 					<Input
 						id="mcp-port"
 						type="number"
+						min={1}
+						max={65535}
+						step={1}
 						variant="panel"
 						size="sm"
 						className="w-32"
 						value={draft.port}
-						onChange={(e) =>
+						onChange={(e) => {
+							const next = Number.parseInt(e.target.value, 10);
 							setDraft((d) => ({
 								...d,
-								port: Number(e.target.value) || 19801,
-							}))
-						}
+								port:
+									Number.isFinite(next) && next >= 1 && next <= 65535
+										? next
+										: 19801,
+							}));
+						}}
 					/>
 				</div>
 
@@ -198,7 +207,7 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 						</Button>
 					</div>
 					<pre className="rounded-md bg-muted p-3 text-xs font-mono overflow-auto max-h-40 whitespace-pre-wrap">
-						{generateResult?.content ?? preview}
+						{displayContent}
 					</pre>
 				</div>
 			)}

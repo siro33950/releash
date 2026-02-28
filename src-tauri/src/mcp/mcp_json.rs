@@ -51,8 +51,16 @@ pub fn generate_config(
     params: &McpConfigParams,
 ) -> Result<GenerateResult, String> {
     let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
+    generate_config_at(agent, params, &home)
+}
+
+pub fn generate_config_at(
+    agent: AgentKind,
+    params: &McpConfigParams,
+    base_dir: &Path,
+) -> Result<GenerateResult, String> {
     let rel = agent.global_path();
-    let file_path = home.join(rel);
+    let file_path = base_dir.join(rel);
 
     let content = match agent {
         AgentKind::Claude => generate_claude_config(&file_path, params)?,
@@ -73,14 +81,13 @@ fn url_for(port: u16) -> String {
 
 // ── JSON helpers ──
 
-fn read_existing_json(path: &Path) -> serde_json::Value {
+fn read_existing_json(path: &Path) -> Result<serde_json::Value, String> {
     if path.exists() {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
+        let s = fs::read_to_string(path)
+            .map_err(|e| format!("設定ファイル読み込み失敗 {}: {e}", path.display()))?;
+        serde_json::from_str(&s).map_err(|e| format!("JSONパース失敗 {}: {e}", path.display()))
     } else {
-        serde_json::json!({})
+        Ok(serde_json::json!({}))
     }
 }
 
@@ -91,13 +98,19 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, content).map_err(|e| format!("一時ファイル書き込み失敗: {e}"))?;
     fs::rename(&tmp, path).map_err(|e| format!("ファイルのリネーム失敗: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("パーミッション設定失敗: {e}"))?;
+    }
     Ok(())
 }
 
 // ── Claude Code ──
 
 fn generate_claude_config(path: &Path, params: &McpConfigParams) -> Result<String, String> {
-    let mut doc = read_existing_json(path);
+    let mut doc = read_existing_json(path)?;
 
     let servers = doc
         .as_object_mut()
@@ -128,10 +141,9 @@ fn generate_claude_config(path: &Path, params: &McpConfigParams) -> Result<Strin
 
 fn generate_codex_config(path: &Path, params: &McpConfigParams) -> Result<String, String> {
     let mut doc: toml::Value = if path.exists() {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()))
+        let s = fs::read_to_string(path)
+            .map_err(|e| format!("設定ファイル読み込み失敗 {}: {e}", path.display()))?;
+        toml::from_str(&s).map_err(|e| format!("TOMLパース失敗 {}: {e}", path.display()))?
     } else {
         toml::Value::Table(toml::map::Map::new())
     };
@@ -162,7 +174,7 @@ fn generate_codex_config(path: &Path, params: &McpConfigParams) -> Result<String
 // ── Gemini CLI ──
 
 fn generate_gemini_config(path: &Path, params: &McpConfigParams) -> Result<String, String> {
-    let mut doc = read_existing_json(path);
+    let mut doc = read_existing_json(path)?;
 
     let servers = doc
         .as_object_mut()
@@ -191,7 +203,7 @@ fn generate_gemini_config(path: &Path, params: &McpConfigParams) -> Result<Strin
 // ── Cursor ──
 
 fn generate_cursor_config(path: &Path, params: &McpConfigParams) -> Result<String, String> {
-    let mut doc = read_existing_json(path);
+    let mut doc = read_existing_json(path)?;
 
     let servers = doc
         .as_object_mut()
@@ -277,14 +289,16 @@ pub fn preview_config(agent: AgentKind, params: &McpConfigParams) -> Result<Stri
 pub async fn generate_agent_mcp_config(
     agent_type: String,
     state: tauri::State<'_, Arc<AppConfig>>,
+    port: Option<u16>,
+    token: Option<String>,
 ) -> Result<GenerateResult, String> {
     let app_config = state.inner().clone();
     tokio::task::spawn_blocking(move || {
         let config = app_config.get_config()?;
         let agent = AgentKind::from_str(&agent_type)?;
         let params = McpConfigParams {
-            port: config.server.mcp_port,
-            token: config.server.mcp_token.clone(),
+            port: port.unwrap_or(config.server.mcp_port),
+            token: token.unwrap_or_else(|| config.server.mcp_token.clone()),
         };
         generate_config(agent, &params)
     })
@@ -296,12 +310,14 @@ pub async fn generate_agent_mcp_config(
 pub fn preview_agent_mcp_config(
     agent_type: String,
     state: tauri::State<'_, Arc<AppConfig>>,
+    port: Option<u16>,
+    token: Option<String>,
 ) -> Result<String, String> {
     let config = state.get_config()?;
     let agent = AgentKind::from_str(&agent_type)?;
     let params = McpConfigParams {
-        port: config.server.mcp_port,
-        token: config.server.mcp_token.clone(),
+        port: port.unwrap_or(config.server.mcp_port),
+        token: token.unwrap_or_else(|| config.server.mcp_token.clone()),
     };
     preview_config(agent, &params)
 }
@@ -309,6 +325,7 @@ pub fn preview_agent_mcp_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn test_params() -> McpConfigParams {
         McpConfigParams {
@@ -332,8 +349,9 @@ mod tests {
 
     #[test]
     fn generate_claude_writes_global_config() {
+        let tmp = TempDir::new().unwrap();
         let params = test_params();
-        let result = generate_config(AgentKind::Claude, &params).unwrap();
+        let result = generate_config_at(AgentKind::Claude, &params, tmp.path()).unwrap();
 
         assert!(result.file_path.ends_with(".claude.json"));
         let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
@@ -350,8 +368,9 @@ mod tests {
 
     #[test]
     fn generate_codex_writes_global_config() {
+        let tmp = TempDir::new().unwrap();
         let params = test_params();
-        let result = generate_config(AgentKind::Codex, &params).unwrap();
+        let result = generate_config_at(AgentKind::Codex, &params, tmp.path()).unwrap();
 
         assert!(result.file_path.ends_with(".codex/config.toml"));
         assert!(result
@@ -364,8 +383,9 @@ mod tests {
 
     #[test]
     fn generate_gemini_writes_global_config() {
+        let tmp = TempDir::new().unwrap();
         let params = test_params();
-        let result = generate_config(AgentKind::Gemini, &params).unwrap();
+        let result = generate_config_at(AgentKind::Gemini, &params, tmp.path()).unwrap();
 
         assert!(result.file_path.ends_with(".gemini/settings.json"));
         let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
@@ -377,8 +397,9 @@ mod tests {
 
     #[test]
     fn generate_cursor_writes_global_config() {
+        let tmp = TempDir::new().unwrap();
         let params = test_params();
-        let result = generate_config(AgentKind::Cursor, &params).unwrap();
+        let result = generate_config_at(AgentKind::Cursor, &params, tmp.path()).unwrap();
 
         assert!(result.file_path.ends_with(".cursor/mcp.json"));
         let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
@@ -390,16 +411,9 @@ mod tests {
 
     #[test]
     fn generate_merges_with_existing_json() {
-        let home = dirs::home_dir().unwrap();
-        let path = home.join(".claude.json");
-        let had_existing = path.exists();
-        let backup = if had_existing {
-            Some(fs::read_to_string(&path).unwrap())
-        } else {
-            None
-        };
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".claude.json");
 
-        // Write test data with another server
         let existing = serde_json::json!({
             "mcpServers": {
                 "other-server": {
@@ -411,19 +425,11 @@ mod tests {
         fs::write(&path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
 
         let params = test_params();
-        let result = generate_config(AgentKind::Claude, &params).unwrap();
+        let result = generate_config_at(AgentKind::Claude, &params, tmp.path()).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
         assert!(parsed["mcpServers"]["other-server"].is_object());
         assert!(parsed["mcpServers"]["releash"].is_object());
-
-        // Restore original state
-        match backup {
-            Some(content) => fs::write(&path, content).unwrap(),
-            None => {
-                let _ = fs::remove_file(&path);
-            }
-        }
     }
 
     #[test]
