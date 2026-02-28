@@ -123,8 +123,7 @@ impl ServerHandler for ReleashMcpServer {
                 ..Default::default()
             },
             instructions: Some(
-                "Releash MCP Server: Git worktree management for AI coding agents."
-                    .to_string(),
+                "Releash MCP Server: Git worktree management for AI coding agents.".to_string(),
             ),
         }
     }
