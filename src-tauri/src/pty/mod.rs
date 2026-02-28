@@ -382,6 +382,26 @@ impl PtyManager {
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
+        let mut extra_env = Vec::new();
+        if let Some(mcp_handle) = app.try_state::<crate::mcp::McpServerHandle>() {
+            if let Some(info) = mcp_handle.connection_info() {
+                extra_env.push(("RELEASH_MCP_URL".to_string(), info.url));
+                extra_env.push(("RELEASH_MCP_TOKEN".to_string(), info.token));
+            } else if let Some(app_config) =
+                app.try_state::<std::sync::Arc<crate::config::AppConfig>>()
+            {
+                if let Ok(config) = app_config.get_config() {
+                    let port = config.server.mcp_port;
+                    let token = config.server.mcp_token.clone();
+                    extra_env.push((
+                        "RELEASH_MCP_URL".to_string(),
+                        format!("http://127.0.0.1:{port}/mcp"),
+                    ));
+                    extra_env.push(("RELEASH_MCP_TOKEN".to_string(), token));
+                }
+            }
+        }
+
         let config = SpawnConfig {
             rows,
             cols,
@@ -389,6 +409,7 @@ impl PtyManager {
             shell,
             integration_dir,
             pty_id,
+            extra_env,
         };
 
         let backend_session = self.backend.spawn(config)?;

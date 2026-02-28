@@ -108,10 +108,18 @@ pub struct ServerSection {
     pub hook_port: u16,
     #[serde(default)]
     pub token: String,
+    #[serde(default = "default_mcp_port")]
+    pub mcp_port: u16,
+    #[serde(default)]
+    pub mcp_token: String,
     #[serde(default)]
     pub tls: TlsSection,
     #[serde(default)]
     pub notify: NotifySection,
+}
+
+fn default_mcp_port() -> u16 {
+    19801
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -187,6 +195,8 @@ impl Default for ServerSection {
             port: default_port(),
             hook_port: default_hook_port(),
             token: String::new(),
+            mcp_port: default_mcp_port(),
+            mcp_token: String::new(),
             tls: TlsSection::default(),
             notify: NotifySection::default(),
         }
@@ -246,8 +256,16 @@ pub fn load_or_create_config(path: &Path) -> Result<ReleashConfig, String> {
         ReleashConfig::default()
     };
 
+    let mut needs_write = false;
     if config.server.token.is_empty() {
         config.server.token = generate_token();
+        needs_write = true;
+    }
+    if config.server.mcp_token.is_empty() {
+        config.server.mcp_token = generate_token();
+        needs_write = true;
+    }
+    if needs_write {
         write_config(path, &config)?;
     }
 
@@ -551,6 +569,78 @@ pub async fn get_hooks_status(state: tauri::State<'_, Arc<AppConfig>>) -> Result
     .map_err(|e| format!("task join error: {e}"))?
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    pub port: u16,
+    pub token: String,
+}
+
+#[tauri::command]
+pub fn get_mcp_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<McpConfig, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("ロック取得失敗: {e}"))?;
+    Ok(McpConfig {
+        port: config.server.mcp_port,
+        token: config.server.mcp_token.clone(),
+    })
+}
+
+#[tauri::command]
+pub async fn update_mcp_config(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppConfig>>,
+    port: u16,
+    token: String,
+) -> Result<(), String> {
+    let token = token.trim().to_string();
+    if port == 0 {
+        return Err("mcp_port must be between 1 and 65535".to_string());
+    }
+    if token.is_empty() {
+        return Err("mcp_token must not be empty".to_string());
+    }
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.server.mcp_port = port;
+        config.server.mcp_token = token;
+        write_config(&app_config.config_path, &config)?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))??;
+
+    crate::mcp::restart_mcp_server_if_running(&app).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn regenerate_mcp_token(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppConfig>>,
+) -> Result<String, String> {
+    let app_config = state.inner().clone();
+    let new_token = tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.server.mcp_token = generate_token();
+        write_config(&app_config.config_path, &config)?;
+        Ok::<String, String>(config.server.mcp_token.clone())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))??;
+
+    crate::mcp::restart_mcp_server_if_running(&app).await?;
+    Ok(new_token)
+}
+
 #[tauri::command]
 pub fn get_notify_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<NotifySection, String> {
     let config = state
@@ -730,6 +820,8 @@ mod tests {
         assert_eq!(config.server.bind, "127.0.0.1");
         assert_eq!(config.server.port, 9700);
         assert_eq!(config.server.token.len(), TOKEN_LENGTH);
+        assert_eq!(config.server.mcp_port, 19801);
+        assert_eq!(config.server.mcp_token.len(), TOKEN_LENGTH);
         assert!(!config.server.tls.enabled);
         assert!(config.telemetry_enabled);
         assert!(path.exists());

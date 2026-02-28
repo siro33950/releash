@@ -42,6 +42,10 @@ describe("SettingsModal", () => {
 					return Promise.resolve('{"hooks":{}}');
 				case "get_hooks_status":
 					return Promise.resolve("not_configured");
+				case "get_mcp_config":
+					return Promise.resolve({ port: 19801, token: "test-token" });
+				case "preview_agent_mcp_config":
+					return Promise.resolve("");
 				case "update_remote_config":
 				case "update_notify_config":
 					return Promise.resolve(null);
@@ -240,6 +244,10 @@ describe("SettingsModal", () => {
 						desktop_mode: "always",
 						inactive_timeout_minutes: 2,
 					});
+				case "get_mcp_config":
+					return Promise.resolve({ port: 19801, token: "test-token" });
+				case "preview_agent_mcp_config":
+					return Promise.resolve("");
 				case "update_remote_config":
 					return Promise.resolve(null);
 				default:
@@ -325,6 +333,10 @@ describe("SettingsModal", () => {
 						auto_start: false,
 						auto_start_on_lan: false,
 					});
+				case "get_mcp_config":
+					return Promise.resolve({ port: 19801, token: "test-token" });
+				case "preview_agent_mcp_config":
+					return Promise.resolve("");
 				default:
 					return Promise.resolve(null);
 			}
@@ -417,6 +429,10 @@ describe("SettingsModal", () => {
 						auto_start: false,
 						auto_start_on_lan: false,
 					});
+				case "get_mcp_config":
+					return Promise.resolve({ port: 19801, token: "test-token" });
+				case "preview_agent_mcp_config":
+					return Promise.resolve("");
 				default:
 					return Promise.resolve(null);
 			}

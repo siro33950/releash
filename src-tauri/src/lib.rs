@@ -3,6 +3,7 @@ mod focus_tracker;
 mod git;
 mod git_host;
 mod hook_listener;
+mod mcp;
 mod menu;
 mod native_drop;
 mod notion;
@@ -60,6 +61,7 @@ pub fn run() {
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::PrDetailCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
+        .manage(mcp::McpServerHandle::default())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let config_path = data_dir.join("releash.toml");
@@ -165,6 +167,16 @@ pub fn run() {
                 }
             }
 
+            // Auto-start MCP server
+            {
+                let mcp_app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = mcp::auto_start_mcp_server(&mcp_app_handle).await {
+                        log::error!("MCP server auto-start failed: {e}");
+                    }
+                });
+            }
+
             if telemetry_enabled {
                 let _ = app.track_event("app_started", None);
             }
@@ -261,6 +273,9 @@ pub fn run() {
             config::get_crash_reporting_enabled,
             config::update_crash_reporting,
             config::update_webhook_url,
+            config::get_mcp_config,
+            config::update_mcp_config,
+            config::regenerate_mcp_token,
             // Hook Listener
             hook_listener::get_agent_states,
             // ネットワーク
@@ -275,6 +290,13 @@ pub fn run() {
             ws_server::commands::broadcast_comments,
             ws_server::commands::update_server_repo_paths,
             ws_server::commands::update_terminal_startup_command,
+            // MCP Server
+            mcp::start_mcp_server,
+            mcp::stop_mcp_server,
+            mcp::get_mcp_server_status,
+            mcp::get_mcp_connection_info,
+            mcp::mcp_json::generate_agent_mcp_config,
+            mcp::mcp_json::preview_agent_mcp_config,
             // Menu
             menu::set_menu_items_enabled,
         ])
