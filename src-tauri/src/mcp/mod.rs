@@ -181,6 +181,32 @@ pub fn stop_mcp_server_core(handle: &McpServerHandle) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Restart helper — stop → start with latest config
+// ---------------------------------------------------------------------------
+
+pub async fn restart_mcp_server_if_running(
+    app: &tauri::AppHandle,
+) -> Result<Option<McpConnectionInfo>, String> {
+    let handle = app.state::<McpServerHandle>();
+
+    if !handle.is_running() {
+        return Ok(None);
+    }
+
+    stop_mcp_server_core(&handle)
+        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの停止に失敗しました: {e}"))?;
+
+    let state = build_mcp_state(app)
+        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの再起動に失敗しました: {e}"))?;
+
+    let info = start_mcp_server_core(state, &handle)
+        .await
+        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの再起動に失敗しました: {e}"))?;
+
+    Ok(Some(info))
+}
+
+// ---------------------------------------------------------------------------
 // Shared state builder
 // ---------------------------------------------------------------------------
 

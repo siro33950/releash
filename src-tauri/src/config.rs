@@ -589,6 +589,7 @@ pub fn get_mcp_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<McpConf
 
 #[tauri::command]
 pub async fn update_mcp_config(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppConfig>>,
     port: u16,
     token: String,
@@ -608,28 +609,35 @@ pub async fn update_mcp_config(
         config.server.mcp_port = port;
         config.server.mcp_token = token;
         write_config(&app_config.config_path, &config)?;
-        Ok(())
+        Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| format!("task join error: {e}"))??;
+
+    crate::mcp::restart_mcp_server_if_running(&app).await?;
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn regenerate_mcp_token(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppConfig>>,
 ) -> Result<String, String> {
     let app_config = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
+    let new_token = tokio::task::spawn_blocking(move || {
         let mut config = app_config
             .config
             .lock()
             .map_err(|e| format!("ロック取得失敗: {e}"))?;
         config.server.mcp_token = generate_token();
         write_config(&app_config.config_path, &config)?;
-        Ok(config.server.mcp_token.clone())
+        Ok::<String, String>(config.server.mcp_token.clone())
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| format!("task join error: {e}"))??;
+
+    crate::mcp::restart_mcp_server_if_running(&app).await?;
+    Ok(new_token)
 }
 
 #[tauri::command]
