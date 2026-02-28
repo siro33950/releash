@@ -24,6 +24,7 @@ pub struct McpServerHandle {
     port: Arc<parking_lot::Mutex<Option<u16>>>,
     auth_token: Arc<parking_lot::Mutex<Option<String>>>,
     cancellation_token: Arc<parking_lot::Mutex<Option<CancellationToken>>>,
+    server_task: Arc<tokio::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>>,
 }
 
 impl Default for McpServerHandle {
@@ -33,6 +34,7 @@ impl Default for McpServerHandle {
             port: Arc::new(parking_lot::Mutex::new(None)),
             auth_token: Arc::new(parking_lot::Mutex::new(None)),
             cancellation_token: Arc::new(parking_lot::Mutex::new(None)),
+            server_task: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 }
@@ -142,7 +144,7 @@ async fn start_mcp_server_inner(
     let auth_slot = handle.auth_token.clone();
     let ct_slot = handle.cancellation_token.clone();
 
-    tauri::async_runtime::spawn(async move {
+    let task = tauri::async_runtime::spawn(async move {
         let result = axum::serve(listener, router)
             .with_graceful_shutdown(async move {
                 ct_for_shutdown.cancelled().await;
@@ -158,18 +160,23 @@ async fn start_mcp_server_inner(
         *auth_slot.lock() = None;
         *ct_slot.lock() = None;
     });
+    *handle.server_task.lock().await = Some(task);
 
     log::info!("MCP server started on 127.0.0.1:{port}");
     Ok(info)
 }
 
-pub fn stop_mcp_server_core(handle: &McpServerHandle) -> Result<(), String> {
+pub async fn stop_mcp_server_core(handle: &McpServerHandle) -> Result<(), String> {
     if !handle.is_running() {
         return Err("MCP server is not running".to_string());
     }
 
     if let Some(ct) = handle.cancellation_token.lock().take() {
         ct.cancel();
+    }
+
+    if let Some(task) = handle.server_task.lock().await.take() {
+        let _ = task.await;
     }
 
     *handle.running.lock() = false;
@@ -194,6 +201,7 @@ pub async fn restart_mcp_server_if_running(
     }
 
     stop_mcp_server_core(&handle)
+        .await
         .map_err(|e| format!("設定は保存しましたが、MCPサーバーの停止に失敗しました: {e}"))?;
 
     let state = build_mcp_state(app)
@@ -256,8 +264,8 @@ pub async fn start_mcp_server(app: tauri::AppHandle) -> Result<McpConnectionInfo
 }
 
 #[tauri::command]
-pub fn stop_mcp_server(handle: tauri::State<'_, McpServerHandle>) -> Result<(), String> {
-    stop_mcp_server_core(&handle)
+pub async fn stop_mcp_server(handle: tauri::State<'_, McpServerHandle>) -> Result<(), String> {
+    stop_mcp_server_core(&handle).await
 }
 
 #[derive(serde::Serialize)]
@@ -313,15 +321,15 @@ mod tests {
         assert!(handle.connection_info().is_none());
     }
 
-    #[test]
-    fn stop_when_not_running_returns_error() {
+    #[tokio::test]
+    async fn stop_when_not_running_returns_error() {
         let handle = McpServerHandle::default();
-        let result = stop_mcp_server_core(&handle);
+        let result = stop_mcp_server_core(&handle).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn stop_cancels_and_clears_state() {
+    #[tokio::test]
+    async fn stop_cancels_and_clears_state() {
         let handle = McpServerHandle::default();
         let ct = CancellationToken::new();
         let ct_child = ct.child_token();
@@ -331,7 +339,7 @@ mod tests {
         *handle.auth_token.lock() = Some("tok".to_string());
         *handle.cancellation_token.lock() = Some(ct);
 
-        let result = stop_mcp_server_core(&handle);
+        let result = stop_mcp_server_core(&handle).await;
         assert!(result.is_ok());
         assert!(!handle.is_running());
         assert!(handle.port.lock().is_none());

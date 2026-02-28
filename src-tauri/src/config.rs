@@ -594,10 +594,11 @@ pub async fn update_mcp_config(
     port: u16,
     token: String,
 ) -> Result<(), String> {
+    let token = token.trim().to_string();
     if port == 0 {
         return Err("mcp_port must be between 1 and 65535".to_string());
     }
-    if token.trim().is_empty() {
+    if token.is_empty() {
         return Err("mcp_token must not be empty".to_string());
     }
     let app_config = state.inner().clone();
