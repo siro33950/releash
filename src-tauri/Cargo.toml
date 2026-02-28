@@ -63,6 +63,9 @@ sentry = { version = "0.46", default-features = false, features = ["backtrace", 
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-aptabase = "1.0.0"
+rmcp = { version = "0.16", features = ["server", "transport-streamable-http-server", "schemars"] }
+axum = "0.8"
+tokio-util = "0.7"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", branch = "release" }

@@ -11,6 +11,7 @@ import {
 	Loader2,
 	Monitor,
 	Palette,
+	Plug,
 	Shield,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useReducer, useState } from "react";
@@ -26,7 +27,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	Select,
 	SelectContent,
@@ -37,6 +37,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { useBackgroundConfig } from "@/hooks/useAppSettings";
+import { useMcpConfig } from "@/hooks/useMcpConfig";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
@@ -55,6 +56,7 @@ import {
 	type DesktopNotifyMode,
 	INACTIVE_TIMEOUT_OPTIONS,
 } from "@/types/webhook";
+import { McpSettingsSection } from "./McpSettingsSection";
 import { NotionSettingsSection } from "./NotionSettingsSection";
 
 const AGENT_TYPE_KEYS = Object.keys(AGENT_CONFIGS) as AgentType[];
@@ -135,6 +137,7 @@ type SettingsSection =
 	| "repositories"
 	| "notion"
 	| "agent"
+	| "mcp"
 	| "remote"
 	| "background"
 	| "notifications"
@@ -150,6 +153,7 @@ const SETTINGS_SECTIONS: {
 	{ id: "repositories", label: "Repositories", icon: GitBranch },
 	{ id: "notion", label: "Notion", icon: BookOpen },
 	{ id: "agent", label: "Agent", icon: Bot },
+	{ id: "mcp", label: "MCP", icon: Plug },
 	{ id: "remote", label: "Remote", icon: Globe },
 	{ id: "background", label: "Background", icon: Monitor },
 	{ id: "notifications", label: "Notifications", icon: Bell },
@@ -1089,6 +1093,7 @@ export function SettingsModal({
 	const background = useBackgroundConfig();
 	const repos = useRepoChanges();
 	const notion = useNotionSettings(repoPaths);
+	const mcp = useMcpConfig();
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
@@ -1166,6 +1171,7 @@ export function SettingsModal({
 	const { isDirty: backgroundIsDirty, save: backgroundSave } = background;
 	const { isDirty: reposIsDirty, save: reposSave } = repos;
 	const { isDirty: notionIsDirty, save: notionSave } = notion;
+	const { isDirty: mcpIsDirty, save: mcpSave } = mcp;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -1185,6 +1191,9 @@ export function SettingsModal({
 			}
 			if (notionIsDirty) {
 				await notionSave();
+			}
+			if (mcpIsDirty) {
+				await mcpSave();
 			}
 			if (draft.telemetryEnabled) {
 				trackEvent("settings_saved");
@@ -1208,6 +1217,8 @@ export function SettingsModal({
 		reposSave,
 		notionIsDirty,
 		notionSave,
+		mcpIsDirty,
+		mcpSave,
 	]);
 
 	const isDirty =
@@ -1216,7 +1227,8 @@ export function SettingsModal({
 		remoteIsDirty ||
 		backgroundIsDirty ||
 		reposIsDirty ||
-		notionIsDirty;
+		notionIsDirty ||
+		mcpIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
@@ -1259,6 +1271,8 @@ export function SettingsModal({
 						onCopyHooks={handleCopyHooks}
 					/>
 				);
+			case "mcp":
+				return <McpSettingsSection mcp={mcp} />;
 			case "remote":
 				return <RemoteSection remote={remote} />;
 			case "background":
@@ -1272,7 +1286,7 @@ export function SettingsModal({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-3xl h-[70vh] flex flex-col p-0 gap-0">
+			<DialogContent className="w-[60vw] sm:max-w-5xl h-[70vh] flex flex-col p-0 gap-0 overflow-hidden">
 				<DialogHeader className="px-6 pt-6 pb-0 shrink-0">
 					<DialogTitle>Settings</DialogTitle>
 					<DialogDescription className="sr-only">
@@ -1308,9 +1322,9 @@ export function SettingsModal({
 						})}
 					</nav>
 
-					<ScrollArea className="flex-1 min-h-0">
+					<div className="flex-1 min-h-0 overflow-auto">
 						<div className="px-6 py-4">{sectionContent}</div>
-					</ScrollArea>
+					</div>
 				</div>
 
 				<DialogFooter className="px-6 py-4 border-t border-border shrink-0">

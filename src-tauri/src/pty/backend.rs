@@ -10,6 +10,7 @@ pub struct SpawnConfig {
     pub shell: String,
     pub integration_dir: Option<std::path::PathBuf>,
     pub pty_id: u64,
+    pub extra_env: Vec<(String, String)>,
 }
 
 pub struct BackendSession {
