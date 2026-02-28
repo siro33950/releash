@@ -1,10 +1,52 @@
-import { useCallback, useState } from "react";
-import type { LineComment } from "@/types/comment";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+	CommentAuthor,
+	CommentSeverity,
+	CommentTarget,
+	LineComment,
+} from "@/types/comment";
+import {
+	type CommentItemDTO,
+	dtoToLineComment,
+	lineCommentToDTO,
+} from "@/types/comment";
 
-let nextId = 1;
-
-export function useLineComments() {
+export function useLineComments(worktreeName: string) {
 	const [comments, setComments] = useState<LineComment[]>([]);
+	const worktreeNameRef = useRef(worktreeName);
+	worktreeNameRef.current = worktreeName;
+
+	// Initial load
+	useEffect(() => {
+		invoke<CommentItemDTO[]>("load_comments", { worktreeName }).then(
+			(dtos) => {
+				setComments(dtos.map(dtoToLineComment));
+			},
+			(err) => console.error("Failed to load comments:", err),
+		);
+	}, [worktreeName]);
+
+	// Listen for external changes (MCP, remote, etc.)
+	useEffect(() => {
+		const unlisten = listen<{ worktree_name: string; source: string }>(
+			"comments-changed",
+			(event) => {
+				if (event.payload.worktree_name !== worktreeNameRef.current) return;
+				if (event.payload.source === "desktop") return;
+				invoke<CommentItemDTO[]>("load_comments", {
+					worktreeName: worktreeNameRef.current,
+				}).then(
+					(dtos) => setComments(dtos.map(dtoToLineComment)),
+					(err) => console.error("Failed to reload comments:", err),
+				);
+			},
+		);
+		return () => {
+			unlisten.then((f) => f());
+		};
+	}, []);
 
 	const addComment = useCallback(
 		(
@@ -12,17 +54,31 @@ export function useLineComments() {
 			lineNumber: number,
 			content: string,
 			endLine?: number,
+			author?: CommentAuthor,
+			severity?: CommentSeverity,
+			parentId?: string,
+			target?: CommentTarget,
 		) => {
 			const comment: LineComment = {
-				id: `comment-${nextId++}`,
+				id: crypto.randomUUID(),
 				filePath,
 				lineNumber,
 				...(endLine != null && { endLine }),
 				content,
 				status: "unsent",
 				createdAt: Date.now(),
+				...(parentId != null && { parentId }),
+				author: author ?? { type: "human", name: "User" },
+				...(severity != null && { severity }),
+				resolved: false,
+				target: target ?? "local",
 			};
 			setComments((prev) => [...prev, comment]);
+			invoke("add_comment", {
+				worktreeName: worktreeNameRef.current,
+				comment: lineCommentToDTO(comment),
+				source: "desktop",
+			}).catch(console.error);
 			return comment;
 		},
 		[],
@@ -30,12 +86,23 @@ export function useLineComments() {
 
 	const removeComment = useCallback((id: string) => {
 		setComments((prev) => prev.filter((c) => c.id !== id));
+		invoke("remove_comment", {
+			worktreeName: worktreeNameRef.current,
+			id,
+			source: "desktop",
+		}).catch(console.error);
 	}, []);
 
 	const updateComment = useCallback((id: string, content: string) => {
 		setComments((prev) =>
 			prev.map((c) => (c.id === id ? { ...c, content } : c)),
 		);
+		invoke("update_comment_content", {
+			worktreeName: worktreeNameRef.current,
+			id,
+			content,
+			source: "desktop",
+		}).catch(console.error);
 	}, []);
 
 	const markAsSent = useCallback((ids: string[]) => {
@@ -45,6 +112,22 @@ export function useLineComments() {
 				idSet.has(c.id) ? { ...c, status: "sent" as const } : c,
 			),
 		);
+		invoke("mark_comments_sent", {
+			worktreeName: worktreeNameRef.current,
+			ids,
+			source: "desktop",
+		}).catch(console.error);
+	}, []);
+
+	const resolveComment = useCallback((id: string) => {
+		setComments((prev) =>
+			prev.map((c) => (c.id === id ? { ...c, resolved: !c.resolved } : c)),
+		);
+		invoke("toggle_resolve_comment", {
+			worktreeName: worktreeNameRef.current,
+			id,
+			source: "desktop",
+		}).catch(console.error);
 	}, []);
 
 	const getCommentsForFile = useCallback(
@@ -60,6 +143,12 @@ export function useLineComments() {
 		setShowSentComments((prev) => !prev);
 	}, []);
 
+	const [showInlineComments, setShowInlineComments] = useState(true);
+
+	const toggleShowInlineComments = useCallback(() => {
+		setShowInlineComments((prev) => !prev);
+	}, []);
+
 	const unsentComments = comments.filter((c) => c.status === "unsent");
 
 	return {
@@ -69,9 +158,12 @@ export function useLineComments() {
 		removeComment,
 		updateComment,
 		markAsSent,
+		resolveComment,
 		getCommentsForFile,
 		setComments,
 		showSentComments,
 		toggleShowSentComments,
+		showInlineComments,
+		toggleShowInlineComments,
 	};
 }

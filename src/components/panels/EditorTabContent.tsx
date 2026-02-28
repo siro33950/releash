@@ -39,6 +39,7 @@ export function EditorTabContent({
 		comments,
 		addComment,
 		showSentComments,
+		showInlineComments,
 		rootPath,
 		onStageHunk,
 		onGitChanged,
@@ -233,6 +234,7 @@ export function EditorTabContent({
 					revealLine={revealLine}
 					theme={theme}
 					onSearchOccurrences={onSearchOccurrences}
+					showInlineComments={showInlineComments}
 				/>
 			</div>
 			{!isImage && (

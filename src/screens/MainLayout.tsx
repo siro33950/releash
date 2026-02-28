@@ -357,6 +357,7 @@ function WorktreeContent({
 										<RightSidebarBottom
 											rootPath={rootPath}
 											theme={settings.theme}
+											settings={settings}
 											comments={s.comments}
 											onCommentClick={handleCommentClick}
 											onDeleteComment={s.removeComment}
@@ -364,6 +365,7 @@ function WorktreeContent({
 											onSendToTerminal={handleCommentSent}
 											onSendComment={handleSingleCommentSent}
 											onCopyComment={s.handleCopyComment}
+											onResolveComment={s.resolveComment}
 											showSentComments={s.showSentComments}
 											onToggleShowSent={s.toggleShowSentComments}
 											onToggleCollapse={handleToggleRightBottom}

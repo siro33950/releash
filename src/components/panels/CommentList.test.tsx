@@ -12,6 +12,9 @@ function makeComment(overrides: Partial<LineComment> = {}): LineComment {
 		content: "test comment",
 		status: "unsent",
 		createdAt: Date.now(),
+		author: { type: "human", name: "User" },
+		resolved: false,
+		target: "local",
 		...overrides,
 	};
 }

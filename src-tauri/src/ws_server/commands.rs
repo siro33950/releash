@@ -8,6 +8,8 @@ use crate::ws_bridge::WsBroadcaster;
 use super::http::start_ws_server;
 use super::{StartServerResult, WsServerHandle, WsServerState};
 
+pub type SharedRepoPaths = Arc<parking_lot::RwLock<Vec<String>>>;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerStatusPayload {
     pub running: bool,
@@ -25,6 +27,7 @@ pub async fn start_server_core(
     let broadcaster = app.state::<Arc<WsBroadcaster>>();
     let pty_manager = app.state::<Arc<crate::pty::PtyManager>>();
     let pr_cache = app.state::<Arc<crate::git_host::PrCache>>();
+    let shared_repo_paths = app.state::<SharedRepoPaths>();
 
     {
         let running = handle.running.lock();
@@ -75,11 +78,14 @@ pub async fn start_server_core(
             .ok()
             .map(|d| d.join("resources").join("remote"))
     };
+    // Update shared repo_paths so MCP server sees the same list
+    *shared_repo_paths.write() = repo_paths.clone();
+
     let server_state = Arc::new(WsServerState::new(
         remote_dir,
         Arc::clone(&broadcaster),
         Some(Arc::clone(&pty_manager)),
-        repo_paths.clone(),
+        Arc::clone(shared_repo_paths.inner()),
         Arc::clone(config_state.inner()),
         Some(app.clone()),
         cfg.server.tls.enabled,
@@ -200,7 +206,11 @@ pub fn broadcast_comments(
 pub async fn update_server_repo_paths(
     repo_paths: Vec<String>,
     handle: tauri::State<'_, WsServerHandle>,
+    shared_repo_paths: tauri::State<'_, SharedRepoPaths>,
 ) -> Result<(), String> {
+    // Update shared Arc so MCP server also sees the change
+    *shared_repo_paths.write() = repo_paths.clone();
+
     let server_state = {
         let guard = handle.server_state.lock();
         guard.clone().ok_or("サーバーが起動していません")?

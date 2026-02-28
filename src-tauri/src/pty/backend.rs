@@ -11,6 +11,8 @@ pub struct SpawnConfig {
     pub integration_dir: Option<std::path::PathBuf>,
     pub pty_id: u64,
     pub extra_env: Vec<(String, String)>,
+    /// If set, run `shell -c "command"` instead of an interactive shell.
+    pub exec_command: Option<String>,
 }
 
 pub struct BackendSession {

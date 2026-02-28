@@ -158,6 +158,9 @@ export interface CommentItem {
 	content: string;
 	status: "unsent" | "sent";
 	created_at: number;
+	author?: { type: "human" | "ai"; name: string };
+	resolved?: boolean;
+	target?: "ai" | "review" | "local";
 }
 
 export interface DeleteComment {

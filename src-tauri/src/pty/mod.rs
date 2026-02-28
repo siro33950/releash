@@ -1,5 +1,6 @@
 pub mod backend;
 mod direct;
+pub mod oneshot;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -371,14 +372,53 @@ impl PtyManager {
         worktree_path: Option<String>,
         label: Option<String>,
     ) -> Result<(u64, String), String> {
+        self.spawn_inner(app, rows, cols, cwd, worktree_path, label, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_exec(
+        &self,
+        app: &AppHandle,
+        rows: u16,
+        cols: u16,
+        cwd: Option<String>,
+        worktree_path: Option<String>,
+        label: Option<String>,
+        exec_command: String,
+    ) -> Result<(u64, String), String> {
+        self.spawn_inner(
+            app,
+            rows,
+            cols,
+            cwd,
+            worktree_path,
+            label,
+            Some(exec_command),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_inner(
+        &self,
+        app: &AppHandle,
+        rows: u16,
+        cols: u16,
+        cwd: Option<String>,
+        worktree_path: Option<String>,
+        label: Option<String>,
+        exec_command: Option<String>,
+    ) -> Result<(u64, String), String> {
         let pty_id = generate_pty_id();
         let session_key = uuid::Uuid::new_v4().to_string();
 
-        let integration_dir = app
-            .path()
-            .app_data_dir()
-            .ok()
-            .and_then(|d| shell_integration::create_shell_integration_files(&d).ok());
+        let integration_dir = if exec_command.is_some() {
+            None // No shell integration for non-interactive exec
+        } else {
+            app.path()
+                .app_data_dir()
+                .ok()
+                .and_then(|d| shell_integration::create_shell_integration_files(&d).ok())
+        };
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
 
@@ -410,6 +450,7 @@ impl PtyManager {
             integration_dir,
             pty_id,
             extra_env,
+            exec_command,
         };
 
         let backend_session = self.backend.spawn(config)?;

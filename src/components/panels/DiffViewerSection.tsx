@@ -34,6 +34,7 @@ export interface DiffViewerSectionProps {
 	revealLine: { line: number; key: number } | undefined;
 	theme?: Theme;
 	onSearchOccurrences?: (text: string) => void;
+	showInlineComments?: boolean;
 }
 
 export function DiffViewerSection({
@@ -57,6 +58,7 @@ export function DiffViewerSection({
 	revealLine,
 	theme,
 	onSearchOccurrences,
+	showInlineComments,
 }: DiffViewerSectionProps) {
 	if (isImage) {
 		return (
@@ -104,6 +106,7 @@ export function DiffViewerSection({
 				theme={theme}
 				filePath={filePath}
 				onSearchOccurrences={onSearchOccurrences}
+				showInlineComments={showInlineComments}
 			/>
 		</Suspense>
 	);

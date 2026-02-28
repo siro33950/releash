@@ -35,6 +35,7 @@ interface HunkCommentProps {
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
+	showInlineComments?: boolean;
 }
 
 interface NavigationHandlers {
@@ -201,6 +202,7 @@ function GutterEditor({
 	navigation,
 	filePath,
 	readOnly,
+	showInlineComments,
 }: {
 	originalContent: string;
 	modifiedContent: string;
@@ -229,6 +231,7 @@ function GutterEditor({
 		revealLine,
 		theme,
 		readOnly,
+		showInlineComments,
 	});
 
 	const actions = useEditorContextMenu(editorRef, navigation);
@@ -261,6 +264,7 @@ function DiffEditor({
 	navigation,
 	filePath,
 	readOnly,
+	showInlineComments,
 }: {
 	originalContent: string;
 	modifiedContent: string;
@@ -291,6 +295,7 @@ function DiffEditor({
 		revealLine,
 		theme,
 		readOnly,
+		showInlineComments,
 	});
 
 	const modifiedEditorProxy = useMemo<
@@ -339,6 +344,7 @@ interface MonacoDiffViewerProps {
 	filePath?: string;
 	onSearchOccurrences?: (text: string) => void;
 	readOnly?: boolean;
+	showInlineComments?: boolean;
 }
 
 export function MonacoDiffViewer({
@@ -360,6 +366,7 @@ export function MonacoDiffViewer({
 	filePath,
 	onSearchOccurrences,
 	readOnly,
+	showInlineComments,
 }: MonacoDiffViewerProps) {
 	const hunkCommentProps: HunkCommentProps = {
 		changeGroups,
@@ -370,6 +377,7 @@ export function MonacoDiffViewer({
 		getCommentsForLine,
 		revealLine,
 		theme,
+		showInlineComments,
 	};
 
 	const navigation: NavigationHandlers | undefined = onSearchOccurrences

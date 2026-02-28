@@ -2,21 +2,24 @@ import {
 	ChevronDown,
 	ChevronUp,
 	MessageSquare,
+	Play,
 	Send,
 	Terminal,
 } from "lucide-react";
 import { useState } from "react";
 import { CommentList } from "@/components/panels/CommentList";
+import { ReviewModal } from "@/components/panels/ReviewModal";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { LineComment } from "@/types/comment";
-import type { Theme } from "@/types/settings";
+import type { AppSettings, Theme } from "@/types/settings";
 
-type RightBottomTab = "terminal" | "comments";
+type RightBottomTab = "terminal" | "review";
 
 interface RightSidebarBottomProps {
 	rootPath: string;
 	theme?: Theme;
+	settings: AppSettings;
 	comments: LineComment[];
 	onCommentClick?: (filePath: string, lineNumber: number) => void;
 	onDeleteComment?: (id: string) => void;
@@ -24,6 +27,7 @@ interface RightSidebarBottomProps {
 	onSendToTerminal?: (comments: LineComment[]) => void;
 	onSendComment?: (comment: LineComment) => void;
 	onCopyComment?: (comment: LineComment) => void;
+	onResolveComment?: (id: string) => void;
 	showSentComments?: boolean;
 	onToggleShowSent?: () => void;
 	onToggleCollapse?: () => void;
@@ -33,6 +37,7 @@ interface RightSidebarBottomProps {
 export function RightSidebarBottom({
 	rootPath,
 	theme,
+	settings,
 	comments,
 	onCommentClick,
 	onDeleteComment,
@@ -40,12 +45,14 @@ export function RightSidebarBottom({
 	onSendToTerminal,
 	onSendComment,
 	onCopyComment,
+	onResolveComment,
 	showSentComments,
 	onToggleShowSent,
 	onToggleCollapse,
 	collapsed,
 }: RightSidebarBottomProps) {
 	const [activeTab, setActiveTab] = useState<RightBottomTab>("terminal");
+	const [reviewModalOpen, setReviewModalOpen] = useState(false);
 	const unsentComments = comments.filter((c) => c.status === "unsent");
 
 	return (
@@ -76,7 +83,7 @@ export function RightSidebarBottom({
 								<Terminal className="size-3.5" />
 							</span>
 						</TabsTrigger>
-						<TabsTrigger value="comments" aria-label="Comments">
+						<TabsTrigger value="review" aria-label="Review">
 							<span className="inline-flex items-center gap-1.5">
 								<MessageSquare className="size-3.5" />
 								{unsentComments.length > 0 && (
@@ -87,7 +94,7 @@ export function RightSidebarBottom({
 							</span>
 						</TabsTrigger>
 					</TabsList>
-					{activeTab === "comments" &&
+					{activeTab === "review" &&
 						unsentComments.length > 0 &&
 						onSendToTerminal && (
 							<button
@@ -108,19 +115,44 @@ export function RightSidebarBottom({
 				>
 					<TerminalPanel cwd={rootPath} theme={theme} />
 				</TabsContent>
-				<TabsContent value="comments" className="flex-1 overflow-hidden">
-					<CommentList
-						comments={comments}
-						onCommentClick={onCommentClick}
-						onDeleteComment={onDeleteComment}
-						onUpdateComment={onUpdateComment}
-						onSendComment={onSendComment}
-						onCopyComment={onCopyComment}
-						showSentComments={showSentComments}
-						onToggleShowSent={onToggleShowSent}
-					/>
+				<TabsContent
+					value="review"
+					className="flex-1 overflow-hidden flex flex-col"
+				>
+					<div className="flex-1 min-h-0 overflow-hidden">
+						<CommentList
+							comments={comments}
+							onCommentClick={onCommentClick}
+							onDeleteComment={onDeleteComment}
+							onUpdateComment={onUpdateComment}
+							onSendComment={onSendComment}
+							onCopyComment={onCopyComment}
+							onResolveComment={onResolveComment}
+							showSentComments={showSentComments}
+							onToggleShowSent={onToggleShowSent}
+						/>
+					</div>
+					{settings.reviewAgent !== "none" && (
+						<div className="shrink-0 px-3 py-2 border-t border-border">
+							<button
+								type="button"
+								onClick={() => setReviewModalOpen(true)}
+								className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+							>
+								<Play className="h-3.5 w-3.5" />
+								AI Review
+							</button>
+						</div>
+					)}
 				</TabsContent>
 			</Tabs>
+			<ReviewModal
+				open={reviewModalOpen}
+				onOpenChange={setReviewModalOpen}
+				rootPath={rootPath}
+				comments={comments}
+				settings={settings}
+			/>
 		</div>
 	);
 }

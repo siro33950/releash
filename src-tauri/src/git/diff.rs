@@ -232,7 +232,6 @@ mod tests {
     #[test]
     fn test_get_file_at_branch_base_unborn_branch() {
         let (_dir, repo) = create_test_repo();
-        // unborn branch でもファイルは存在する必要がある（discover がパスを解決するため）
         let file_path = workdir_file(&repo, "hello.txt");
         std::fs::write(&file_path, "new file").unwrap();
         let result = get_file_at_branch_base(file_path);

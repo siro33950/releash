@@ -26,6 +26,9 @@ export interface EditorContextValue {
 	showSentComments: boolean;
 	toggleShowSentComments: () => void;
 
+	showInlineComments: boolean;
+	toggleShowInlineComments: () => void;
+
 	rootPath: string;
 	onStageHunk?: (repoPath: string, patch: string) => Promise<void>;
 	onGitChanged?: () => void;

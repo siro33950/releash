@@ -1,19 +1,26 @@
 import {
+	AlertTriangle,
+	Bot,
 	Check,
+	CheckCircle2,
+	Circle,
 	Copy,
 	Eye,
 	EyeOff,
+	Info,
+	Lightbulb,
 	MessageSquare,
 	Pencil,
 	Send,
 	Trash2,
 	X,
+	XCircle,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import type { LineComment } from "@/types/comment";
+import type { CommentSeverity, LineComment } from "@/types/comment";
 
 export interface CommentListProps {
 	comments: LineComment[];
@@ -22,8 +29,28 @@ export interface CommentListProps {
 	onUpdateComment?: (id: string, content: string) => void;
 	onSendComment?: (comment: LineComment) => void;
 	onCopyComment?: (comment: LineComment) => void;
+	onResolveComment?: (id: string) => void;
 	showSentComments?: boolean;
 	onToggleShowSent?: () => void;
+}
+
+function SeverityIcon({ severity }: { severity?: CommentSeverity }) {
+	switch (severity) {
+		case "error":
+			return <XCircle className="h-3 w-3 shrink-0 mt-0.5 text-destructive" />;
+		case "warning":
+			return (
+				<AlertTriangle className="h-3 w-3 shrink-0 mt-0.5 text-yellow-500" />
+			);
+		case "info":
+			return <Info className="h-3 w-3 shrink-0 mt-0.5 text-blue-400" />;
+		case "suggestion":
+			return <Lightbulb className="h-3 w-3 shrink-0 mt-0.5 text-green-400" />;
+		default:
+			return (
+				<MessageSquare className="h-3 w-3 shrink-0 mt-0.5 text-muted-foreground" />
+			);
+	}
 }
 
 export function CommentList({
@@ -33,6 +60,7 @@ export function CommentList({
 	onUpdateComment,
 	onSendComment,
 	onCopyComment,
+	onResolveComment,
 	showSentComments = false,
 	onToggleShowSent,
 }: CommentListProps) {
@@ -168,9 +196,10 @@ export function CommentList({
 											className={cn(
 												"group flex items-start gap-1.5 w-full px-1 py-1 text-[11px] rounded transition-colors",
 												"hover:bg-muted text-left",
+												comment.resolved && "opacity-50",
 											)}
 										>
-											<MessageSquare className="h-3 w-3 shrink-0 mt-0.5 text-muted-foreground" />
+											<SeverityIcon severity={comment.severity} />
 											<div className="min-w-0 flex-1">
 												<div className="flex items-center gap-1">
 													<span className="text-muted-foreground font-mono">
@@ -179,6 +208,9 @@ export function CommentList({
 															? `-${comment.endLine}`
 															: ""}
 													</span>
+													{comment.author.type === "ai" && (
+														<Bot className="h-3 w-3 text-purple-400" />
+													)}
 													<span
 														className={cn(
 															"text-[10px] px-1 rounded",
@@ -244,6 +276,26 @@ export function CommentList({
 											</div>
 											{editingId !== comment.id && (
 												<div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+													{onResolveComment && (
+														<button
+															type="button"
+															aria-label={
+																comment.resolved ? "Unresolve" : "Resolve"
+															}
+															onClick={(e) => {
+																e.stopPropagation();
+																onResolveComment(comment.id);
+															}}
+															className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+															title={comment.resolved ? "Unresolve" : "Resolve"}
+														>
+															{comment.resolved ? (
+																<CheckCircle2 className="h-3 w-3 text-status-added" />
+															) : (
+																<Circle className="h-3 w-3" />
+															)}
+														</button>
+													)}
 													{onSendComment && comment.status === "unsent" && (
 														<button
 															type="button"

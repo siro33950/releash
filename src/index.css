@@ -506,6 +506,59 @@
 	margin-left: 8px;
 }
 
+/* Comment inline display widget */
+.comment-inline-widget {
+	padding: 4px 0;
+	background: rgba(255, 0, 0, 0.3);
+}
+
+.comment-inline-item {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	padding: 2px 8px;
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.comment-inline-author {
+	flex-shrink: 0;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--accent);
+}
+
+.comment-inline-severity {
+	flex-shrink: 0;
+	font-size: 10px;
+	font-weight: 600;
+	padding: 0px 4px;
+	border-radius: 3px;
+	text-transform: uppercase;
+}
+
+.comment-inline-severity.severity-info {
+	background: color-mix(in oklch, var(--info) 20%, transparent);
+	color: var(--info);
+}
+.comment-inline-severity.severity-warning {
+	background: color-mix(in oklch, var(--warning) 20%, transparent);
+	color: var(--warning);
+}
+.comment-inline-severity.severity-error {
+	background: color-mix(in oklch, var(--destructive) 20%, transparent);
+	color: var(--destructive);
+}
+.comment-inline-severity.severity-suggestion {
+	background: color-mix(in oklch, var(--success) 20%, transparent);
+	color: var(--success);
+}
+
+.comment-inline-content {
+	color: var(--muted-foreground);
+	word-break: break-word;
+}
+
 /* Monaco peek widget: reference tree file names - override bold class */
 .monaco-editor .reference-zone-widget .ref-tree .monaco-icon-label.bold > .monaco-icon-label-container > .monaco-icon-name-container > .label-name {
 	font-weight: normal !important;

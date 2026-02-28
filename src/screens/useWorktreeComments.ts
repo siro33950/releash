@@ -10,7 +10,12 @@ import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPane
 import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { trackEvent } from "@/lib/telemetry";
-import type { LineComment } from "@/types/comment";
+import type {
+	CommentAuthor,
+	CommentSeverity,
+	CommentTarget,
+	LineComment,
+} from "@/types/comment";
 import type { EditorAction } from "./useWorktreeGitActions";
 
 interface UseWorktreeCommentsParams {
@@ -20,6 +25,10 @@ interface UseWorktreeCommentsParams {
 		lineNumber: number,
 		content: string,
 		endLine?: number,
+		author?: CommentAuthor,
+		severity?: CommentSeverity,
+		parentId?: string,
+		target?: CommentTarget,
 	) => LineComment;
 	removeComment: (id: string) => void;
 	updateComment: (id: string, content: string) => void;
@@ -56,6 +65,11 @@ export function useWorktreeComments({
 					content: c.content,
 					status: c.status,
 					created_at: c.createdAt,
+					...(c.parentId != null && { parent_id: c.parentId }),
+					author: c.author,
+					...(c.severity != null && { severity: c.severity }),
+					resolved: c.resolved,
+					target: c.target,
 				})),
 			},
 		}).catch(() => {});
@@ -67,9 +81,29 @@ export function useWorktreeComments({
 			line_number: number;
 			end_line?: number;
 			content: string;
+			author?: { type: "human" | "ai"; name: string };
+			severity?: "info" | "warning" | "error" | "suggestion";
+			target?: "ai" | "review" | "local";
 		}>("remote-comment-added", (event) => {
-			const { file_path, line_number, end_line, content } = event.payload;
-			addComment(file_path, line_number, content, end_line ?? undefined);
+			const {
+				file_path,
+				line_number,
+				end_line,
+				content,
+				author,
+				severity,
+				target,
+			} = event.payload;
+			addComment(
+				file_path,
+				line_number,
+				content,
+				end_line ?? undefined,
+				author,
+				severity,
+				undefined,
+				target,
+			);
 		});
 
 		const unlistenDelete = listen<{ id: string }>(
@@ -142,20 +176,24 @@ export function useWorktreeComments({
 
 	const handleCommentClick = useCallback(
 		(commentFilePath: string, lineNumber: number) => {
-			if (activeTabPath === commentFilePath) {
+			// MCP由来のコメントは相対パスの場合があるため、絶対パスに解決する
+			const absolutePath = commentFilePath.startsWith("/")
+				? commentFilePath
+				: `${rootPath}/${commentFilePath}`;
+			if (activeTabPath === absolutePath) {
 				dispatchEditor({
 					type: "SET_PENDING_REVEAL",
-					reveal: { path: commentFilePath, line: lineNumber },
+					reveal: { path: absolutePath, line: lineNumber },
 				});
 			} else {
-				handleOpenFile(commentFilePath);
+				handleOpenFile(absolutePath);
 				dispatchEditor({
 					type: "SET_PENDING_REVEAL",
-					reveal: { path: commentFilePath, line: lineNumber },
+					reveal: { path: absolutePath, line: lineNumber },
 				});
 			}
 		},
-		[activeTabPath, handleOpenFile, dispatchEditor],
+		[activeTabPath, handleOpenFile, dispatchEditor, rootPath],
 	);
 
 	return {

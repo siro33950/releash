@@ -2,6 +2,10 @@ import { loader } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import {
+	createInlineCommentManager,
+	type InlineCommentManager,
+} from "@/lib/commentInlineWidget";
+import {
 	type CommentViewZone,
 	openCommentViewZone,
 } from "@/lib/commentPeekWidget";
@@ -46,6 +50,7 @@ interface UseMonacoDiffEditorOptions {
 	revealLine?: RevealLine;
 	theme?: Theme;
 	readOnly?: boolean;
+	showInlineComments?: boolean;
 }
 
 interface HunkOverlay {
@@ -154,6 +159,7 @@ export function useMonacoDiffEditor(
 		revealLine,
 		theme,
 		readOnly,
+		showInlineComments,
 	} = options;
 
 	const diffEditorRef = useRef<Monaco.editor.IStandaloneDiffEditor | null>(
@@ -183,6 +189,9 @@ export function useMonacoDiffEditor(
 	const hoverDecorationsRef = useRef<string[]>([]);
 	const isProgrammaticUpdateRef = useRef(false);
 	const themeRef = useRef(theme);
+	const inlineManagerRef = useRef<InlineCommentManager | null>(null);
+	const showInlineCommentsRef = useRef(showInlineComments);
+	const commentRangesRef = useRef(commentRanges);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
 	onContentChangeRef.current = onContentChange;
@@ -192,6 +201,8 @@ export function useMonacoDiffEditor(
 	onStageHunkRef.current = onStageHunk;
 	onUnstageHunkRef.current = onUnstageHunk;
 	themeRef.current = theme;
+	showInlineCommentsRef.current = showInlineComments;
+	commentRangesRef.current = commentRanges;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -294,6 +305,14 @@ export function useMonacoDiffEditor(
 			setEditorReady(true);
 
 			const modifiedEditor = diffEditor.getModifiedEditor();
+			const inlineManager = createInlineCommentManager(modifiedEditor);
+			inlineManagerRef.current = inlineManager;
+			if (showInlineCommentsRef.current && commentRangesRef.current) {
+				inlineManager.update(
+					commentRangesRef.current,
+					(line) => getCommentsForLineRef.current?.(line) ?? [],
+				);
+			}
 
 			const updateDiffDecorations = () => {
 				const changes = diffEditor.getLineChanges();
@@ -501,6 +520,8 @@ export function useMonacoDiffEditor(
 		return () => {
 			isMounted = false;
 			setEditorReady(false);
+			inlineManagerRef.current?.dispose();
+			inlineManagerRef.current = null;
 			commentInputWidgetRef.current?.dispose();
 			commentInputWidgetRef.current = null;
 			intersectionObserverRef.current?.disconnect();
@@ -623,6 +644,21 @@ export function useMonacoDiffEditor(
 			decorations,
 		);
 	}, [commentRanges]);
+
+	useEffect(() => {
+		const manager = inlineManagerRef.current;
+		if (!manager) return;
+
+		if (!showInlineComments || !commentRanges) {
+			manager.update([], () => []);
+			return;
+		}
+
+		manager.update(
+			commentRanges,
+			(line) => getCommentsForLineRef.current?.(line) ?? [],
+		);
+	}, [commentRanges, showInlineComments]);
 
 	useEffect(() => {
 		const diffEditor = diffEditorRef.current;

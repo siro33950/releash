@@ -223,22 +223,20 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
     let app_config = app.state::<Arc<crate::config::AppConfig>>();
     let broadcaster = app.state::<Arc<crate::ws_bridge::WsBroadcaster>>();
     let agent_states = app.state::<crate::hook_listener::AgentStatesMap>();
+    let comment_store = app.state::<Arc<crate::comment_store::CommentStore>>();
+    let shared_repo_paths = app.state::<crate::ws_server::commands::SharedRepoPaths>();
 
-    let config = app_config.get_config()?;
-    let repo_paths: Vec<String> = config
-        .app
-        .last_repo_paths
-        .iter()
-        .filter(|p| !p.is_empty())
-        .cloned()
-        .collect();
+    let app_data_dir = app.path().app_data_dir().ok();
 
     Ok(McpSharedState {
-        repo_paths: Arc::new(parking_lot::RwLock::new(repo_paths)),
+        repo_paths: Arc::clone(shared_repo_paths.inner()),
         pty_manager: Arc::clone(&pty_manager),
         app_config: Arc::clone(app_config.inner()),
         broadcaster: Arc::clone(&broadcaster),
         agent_states: Arc::clone(agent_states.inner()),
+        comment_store: Arc::clone(comment_store.inner()),
+        app_handle: Some(app.clone()),
+        app_data_dir,
     })
 }
 

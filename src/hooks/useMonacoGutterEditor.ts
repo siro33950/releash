@@ -3,6 +3,10 @@ import { diffLines } from "diff";
 import type * as Monaco from "monaco-editor";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import {
+	createInlineCommentManager,
+	type InlineCommentManager,
+} from "@/lib/commentInlineWidget";
+import {
 	type CommentViewZone,
 	openCommentViewZone,
 } from "@/lib/commentPeekWidget";
@@ -46,6 +50,7 @@ interface UseMonacoGutterEditorOptions {
 	revealLine?: RevealLine;
 	theme?: Theme;
 	readOnly?: boolean;
+	showInlineComments?: boolean;
 }
 
 interface DiffResult {
@@ -102,6 +107,7 @@ export function useMonacoGutterEditor(
 		revealLine,
 		theme,
 		readOnly,
+		showInlineComments,
 	} = options;
 
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -124,6 +130,9 @@ export function useMonacoGutterEditor(
 	const hoverDecorationsRef = useRef<string[]>([]);
 	const isProgrammaticUpdateRef = useRef(false);
 	const themeRef = useRef(theme);
+	const inlineManagerRef = useRef<InlineCommentManager | null>(null);
+	const showInlineCommentsRef = useRef(showInlineComments);
+	const commentRangesRef = useRef(commentRanges);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
 	onContentChangeRef.current = onContentChange;
@@ -131,6 +140,8 @@ export function useMonacoGutterEditor(
 	onAddCommentRef.current = onAddComment;
 	getCommentsForLineRef.current = getCommentsForLine;
 	themeRef.current = theme;
+	showInlineCommentsRef.current = showInlineComments;
+	commentRangesRef.current = commentRanges;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -203,6 +214,14 @@ export function useMonacoGutterEditor(
 
 			modelRef.current = model;
 			editorRef.current = editor;
+			const inlineManager = createInlineCommentManager(editor);
+			inlineManagerRef.current = inlineManager;
+			if (showInlineCommentsRef.current && commentRangesRef.current) {
+				inlineManager.update(
+					commentRangesRef.current,
+					(line) => getCommentsForLineRef.current?.(line) ?? [],
+				);
+			}
 			setEditorReady(true);
 
 			const updateDecorations = () => {
@@ -420,6 +439,8 @@ export function useMonacoGutterEditor(
 
 		return () => {
 			isMounted = false;
+			inlineManagerRef.current?.dispose();
+			inlineManagerRef.current = null;
 			commentInputWidgetRef.current?.dispose();
 			commentInputWidgetRef.current = null;
 			intersectionObserverRef.current?.disconnect();
@@ -522,6 +543,21 @@ export function useMonacoGutterEditor(
 			decorations,
 		);
 	}, [commentRanges]);
+
+	useEffect(() => {
+		const manager = inlineManagerRef.current;
+		if (!manager) return;
+
+		if (!showInlineComments || !commentRanges) {
+			manager.update([], () => []);
+			return;
+		}
+
+		manager.update(
+			commentRanges,
+			(line) => getCommentsForLineRef.current?.(line) ?? [],
+		);
+	}, [commentRanges, showInlineComments]);
 
 	useEffect(() => {
 		const editor = editorRef.current;

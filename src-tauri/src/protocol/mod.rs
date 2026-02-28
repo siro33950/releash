@@ -460,6 +460,9 @@ mod tests {
                 line_number: 10,
                 end_line: None,
                 content: "fix this".to_string(),
+                author: CommentAuthor::default(),
+                severity: None,
+                target: "local".to_string(),
             }),
             WsMessage::DeleteComment(DeleteComment {
                 id: "c1".to_string(),
@@ -477,6 +480,11 @@ mod tests {
                     content: "fix this".to_string(),
                     status: "unsent".to_string(),
                     created_at: 1234567890.0,
+                    parent_id: None,
+                    author: CommentAuthor::default(),
+                    severity: None,
+                    resolved: false,
+                    target: "local".to_string(),
                 }],
             }),
             WsMessage::PtySpawnRequest(PtySpawnRequest {

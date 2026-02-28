@@ -630,7 +630,7 @@ mod tests {
             None,
             std::sync::Arc::new(WsBroadcaster::default()),
             None,
-            repo_paths,
+            std::sync::Arc::new(parking_lot::RwLock::new(repo_paths)),
             app_config,
             None,
             false,
@@ -1218,6 +1218,9 @@ mod tests {
             line_number: 1,
             end_line: None,
             content: "test comment".to_string(),
+            author: crate::protocol::CommentAuthor::default(),
+            severity: None,
+            target: "local".to_string(),
         };
         let result = handle_add_comment(&comment, &state);
         assert!(result.is_none());

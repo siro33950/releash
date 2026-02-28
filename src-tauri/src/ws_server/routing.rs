@@ -71,7 +71,7 @@ mod tests {
             None,
             Arc::new(WsBroadcaster::default()),
             None,
-            vec![],
+            Arc::new(parking_lot::RwLock::new(vec![])),
             app_config,
             None,
             false,
@@ -106,6 +106,9 @@ mod tests {
             line_number: 10,
             end_line: None,
             content: "fix this".to_string(),
+            author: crate::protocol::CommentAuthor::default(),
+            severity: None,
+            target: "local".to_string(),
         });
         let result = route_message(&msg, &state, &wt).await;
         assert!(result.is_none());

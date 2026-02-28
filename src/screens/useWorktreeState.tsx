@@ -89,9 +89,12 @@ export function useWorktreeState({
 		removeComment,
 		updateComment,
 		markAsSent,
+		resolveComment,
 		showSentComments,
 		toggleShowSentComments,
-	} = useLineComments();
+		showInlineComments,
+		toggleShowInlineComments,
+	} = useLineComments(rootPath);
 	const { stage, unstage, push, discard, stageHunk, createBranch } =
 		useGitActions();
 	const terminalRef = useRef<TerminalTabPanelHandle>(null);
@@ -438,6 +441,8 @@ export function useWorktreeState({
 			updateComment,
 			showSentComments,
 			toggleShowSentComments,
+			showInlineComments,
+			toggleShowInlineComments,
 			rootPath,
 			onStageHunk: stageHunk,
 			onGitChanged: refreshGit,
@@ -460,6 +465,8 @@ export function useWorktreeState({
 			updateComment,
 			showSentComments,
 			toggleShowSentComments,
+			showInlineComments,
+			toggleShowInlineComments,
 			rootPath,
 			stageHunk,
 			refreshGit,
@@ -501,6 +508,7 @@ export function useWorktreeState({
 		comments,
 		removeComment,
 		updateComment,
+		resolveComment,
 		showSentComments,
 		toggleShowSentComments,
 		gitError,
