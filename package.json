@@ -60,7 +60,7 @@
 		"tailwind-merge": "^3.5.0"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.3.14",
+		"@biomejs/biome": "^2.4.4",
 		"@playwright/test": "^1.58.2",
 		"@sentry/vite-plugin": "^4",
 		"@tailwindcss/vite": "^4.2.0",
