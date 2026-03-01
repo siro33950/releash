@@ -88,8 +88,9 @@ function emitPtyStatus(
 
 describe("useReviewExecution", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
+		mockInvoke.mockReset();
 		capturedListeners = new Map();
+		mockInvoke.mockResolvedValueOnce(null); // find_oneshot_pty on mount
 		mockInvoke.mockResolvedValue(undefined);
 	});
 
@@ -465,6 +466,75 @@ describe("useReviewExecution", () => {
 
 		// buildReviewCommand returns null for "none", so startReview bails out
 		expect(result.current.status).toBe("idle");
+	});
+
+	// -----------------------------------------------------------------------
+	// Mount-time state restoration from Rust
+	// -----------------------------------------------------------------------
+
+	it("should restore running review on mount", async () => {
+		mockInvoke.mockReset();
+		mockInvoke.mockResolvedValueOnce({
+			pty_id: 100,
+			status: "running",
+			started_at: 1000,
+			buffered_output: "partial output",
+		});
+		mockInvoke.mockResolvedValue(undefined);
+
+		const { result } = await renderReviewHook();
+
+		expect(result.current.status).toBe("running");
+		expect(result.current.ptyId).toBe(100);
+		expect(result.current.output).toBe("partial output");
+	});
+
+	it("should restore completed review on mount", async () => {
+		mockInvoke.mockReset();
+		mockInvoke.mockResolvedValueOnce({
+			pty_id: 200,
+			status: "completed",
+			started_at: 2000,
+			buffered_output: "done output",
+		});
+		mockInvoke.mockResolvedValue(undefined);
+
+		const { result } = await renderReviewHook();
+
+		expect(result.current.status).toBe("completed");
+		expect(result.current.ptyId).toBe(200);
+		expect(result.current.output).toBe("done output");
+	});
+
+	it("should stay idle when no review found on mount", async () => {
+		// Default beforeEach already returns null for find_oneshot_pty
+		const { result } = await renderReviewHook();
+
+		expect(result.current.status).toBe("idle");
+		expect(result.current.ptyId).toBeNull();
+		expect(result.current.output).toBe("");
+	});
+
+	it("should receive new output after restoring", async () => {
+		mockInvoke.mockReset();
+		mockInvoke.mockResolvedValueOnce({
+			pty_id: 300,
+			status: "running",
+			started_at: 3000,
+			buffered_output: "restored ",
+		});
+		mockInvoke.mockResolvedValue(undefined);
+
+		const { result } = await renderReviewHook();
+
+		expect(result.current.output).toBe("restored ");
+
+		// New output arrives via pty-output event
+		act(() => {
+			emitPtyOutput(300, "new data");
+		});
+
+		expect(result.current.output).toBe("restored new data");
 	});
 
 	it("should prevent double start", async () => {

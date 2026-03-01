@@ -117,6 +117,48 @@ export function useReviewExecution(
 		};
 	}, []);
 
+	// Mount-time: read current review state from Rust (the sole source of truth)
+	useEffect(() => {
+		if (!worktreePath) return;
+
+		const token = runTokenRef.current;
+
+		invoke<{
+			pty_id: number;
+			status: string;
+			started_at: number;
+			buffered_output: string;
+		} | null>("find_oneshot_pty", {
+			worktreePath,
+			label: "review",
+		})
+			.then((result) => {
+				if (!result || runTokenRef.current !== token) return;
+
+				const statusMap: Record<string, ReviewStatus> = {
+					starting: "running",
+					running: "running",
+					completed: "completed",
+					error: "error",
+					timeout: "error",
+					cancelled: "cancelled",
+				};
+				const mapped = statusMap[result.status];
+				if (!mapped) return;
+
+				ptyIdRef.current = result.pty_id;
+				reviewStartTimeRef.current = result.started_at;
+
+				setState({
+					status: mapped,
+					ptyId: result.pty_id,
+					summary: null,
+					output: result.buffered_output,
+				});
+			})
+			.catch(() => {});
+	}, [worktreePath]);
+
 	// Compute summary when status is completed (re-computes on new comments)
 	useEffect(() => {
 		if (state.status === "completed") {

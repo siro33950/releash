@@ -302,6 +302,7 @@ pub(super) async fn handle_pty_spawn_request(
             Some(worktree_path.clone()),
             Some(worktree_path),
             label,
+            crate::pty::PtyKind::Terminal,
         )
     })
     .await

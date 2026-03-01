@@ -26,6 +26,14 @@ fn generate_pty_id() -> u64 {
     PTY_ID_COUNTER.fetch_add(1, Ordering::SeqCst)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PtyKind {
+    Agent,
+    Terminal,
+    OneShot,
+}
+
 struct PtySession {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Arc<Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>>,
@@ -33,6 +41,7 @@ struct PtySession {
     session_key: String,
     worktree_path: Option<String>,
     label: Option<String>,
+    kind: PtyKind,
     output_buffer: Arc<Mutex<VecDeque<u8>>>,
     exited: Arc<AtomicBool>,
     exit_code: Arc<Mutex<Option<i32>>>,
@@ -45,6 +54,7 @@ pub struct FoundSession {
     pub is_exited: bool,
     pub exit_code: Option<i32>,
     pub label: Option<String>,
+    pub kind: PtyKind,
 }
 
 pub struct PtyManager {
@@ -68,6 +78,7 @@ pub struct PtySessionInfo {
     pub worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    pub kind: PtyKind,
 }
 
 /// UTF-8 処理 + リングバッファ更新の純粋ロジック。
@@ -175,6 +186,15 @@ fn spawn_output_reader(
         if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
             ws.try_send(WsMessage::PtyExit(PtyExitMsg { pty_id, exit_code }));
         }
+
+        // Delayed cleanup: remove exited session after 5 minutes
+        let app_cleanup = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(300));
+            if let Some(mgr) = app_cleanup.try_state::<Arc<PtyManager>>() {
+                mgr.remove_if_exited(pty_id);
+            }
+        });
     });
 }
 
@@ -229,6 +249,7 @@ impl PtyManager {
                 session_key: s.session_key.clone(),
                 worktree_path: s.worktree_path.clone(),
                 label: s.label.clone(),
+                kind: s.kind,
             })
             .collect()
     }
@@ -251,6 +272,22 @@ impl PtyManager {
         kill_result
     }
 
+    pub fn remove_if_exited(&self, pty_id: u64) {
+        let mut sessions = self.sessions.lock();
+        if let Some(session) = sessions.get(&pty_id) {
+            if session.exited.load(Ordering::SeqCst) {
+                sessions.remove(&pty_id);
+            }
+        }
+    }
+
+    pub fn get_exit_status(&self, pty_id: u64) -> Option<(bool, Option<i32>)> {
+        let sessions = self.sessions.lock();
+        sessions
+            .get(&pty_id)
+            .map(|s| (s.exited.load(Ordering::SeqCst), *s.exit_code.lock()))
+    }
+
     fn build_found_session(id: u64, session: &PtySession) -> FoundSession {
         let is_exited = session.exited.load(Ordering::SeqCst);
         let exit_code = *session.exit_code.lock();
@@ -269,6 +306,7 @@ impl PtyManager {
             is_exited,
             exit_code,
             label: session.label.clone(),
+            kind: session.kind,
         }
     }
 
@@ -315,13 +353,19 @@ impl PtyManager {
         killed_ids
     }
 
-    pub fn gc_by_worktree(&self, worktree_path: &str, keep_keys: &[String]) -> Vec<u64> {
+    pub fn gc_by_worktree(
+        &self,
+        worktree_path: &str,
+        keep_keys: &[String],
+        kind_filter: Option<PtyKind>,
+    ) -> Vec<u64> {
         let mut sessions = self.sessions.lock();
         let ids_to_kill: Vec<u64> = sessions
             .iter()
             .filter(|(_, s)| {
                 s.worktree_path.as_deref() == Some(worktree_path)
                     && !keep_keys.contains(&s.session_key)
+                    && kind_filter.as_ref().is_none_or(|k| s.kind == *k)
             })
             .map(|(&id, _)| id)
             .collect();
@@ -363,6 +407,7 @@ impl PtyManager {
         resizer.resize(rows, cols)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         &self,
         app: &AppHandle,
@@ -371,8 +416,9 @@ impl PtyManager {
         cwd: Option<String>,
         worktree_path: Option<String>,
         label: Option<String>,
+        kind: PtyKind,
     ) -> Result<(u64, String), String> {
-        self.spawn_inner(app, rows, cols, cwd, worktree_path, label, None)
+        self.spawn_inner(app, rows, cols, cwd, worktree_path, label, None, kind)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -385,6 +431,7 @@ impl PtyManager {
         worktree_path: Option<String>,
         label: Option<String>,
         exec_command: String,
+        kind: PtyKind,
     ) -> Result<(u64, String), String> {
         self.spawn_inner(
             app,
@@ -394,6 +441,7 @@ impl PtyManager {
             worktree_path,
             label,
             Some(exec_command),
+            kind,
         )
     }
 
@@ -407,6 +455,7 @@ impl PtyManager {
         worktree_path: Option<String>,
         label: Option<String>,
         exec_command: Option<String>,
+        kind: PtyKind,
     ) -> Result<(u64, String), String> {
         let pty_id = generate_pty_id();
         let session_key = uuid::Uuid::new_v4().to_string();
@@ -471,6 +520,7 @@ impl PtyManager {
             session_key: session_key.clone(),
             worktree_path,
             label,
+            kind,
             output_buffer: Arc::clone(&output_buffer),
             exited: Arc::clone(&exited),
             exit_code: Arc::clone(&exit_code_holder),
@@ -492,6 +542,14 @@ impl PtyManager {
     }
 }
 
+fn parse_pty_kind(kind: Option<&str>) -> PtyKind {
+    match kind {
+        Some("agent") => PtyKind::Agent,
+        Some("one_shot") => PtyKind::OneShot,
+        _ => PtyKind::Terminal,
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PtyOutput {
     pub pty_id: u64,
@@ -505,6 +563,7 @@ pub struct PtyExit {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_pty(
     app: AppHandle,
     state: State<'_, Arc<PtyManager>>,
@@ -513,8 +572,11 @@ pub fn spawn_pty(
     cwd: Option<String>,
     worktree_path: Option<String>,
     label: Option<String>,
+    kind: Option<String>,
 ) -> Result<u64, String> {
-    let (pty_id, _session_key) = state.spawn(&app, rows, cols, cwd, worktree_path, label)?;
+    let pty_kind = parse_pty_kind(kind.as_deref());
+    let (pty_id, _session_key) =
+        state.spawn(&app, rows, cols, cwd, worktree_path, label, pty_kind)?;
     Ok(pty_id)
 }
 
@@ -574,6 +636,7 @@ pub struct GetOrSpawnPtyResult {
     exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     label: Option<String>,
+    kind: PtyKind,
 }
 
 #[tauri::command]
@@ -587,7 +650,10 @@ pub fn get_or_spawn_pty(
     session_key: Option<String>,
     worktree_path: String,
     label: Option<String>,
+    kind: Option<String>,
 ) -> Result<GetOrSpawnPtyResult, String> {
+    let pty_kind = parse_pty_kind(kind.as_deref());
+
     if let Some(key) = &session_key {
         if let Some(found) = state.find_session(key) {
             return Ok(GetOrSpawnPtyResult {
@@ -598,13 +664,21 @@ pub fn get_or_spawn_pty(
                 is_exited: found.is_exited,
                 exit_code: found.exit_code,
                 label: found.label,
+                kind: found.kind,
             });
         }
     }
 
     // No existing session — spawn a new one
-    let (pty_id, new_session_key) =
-        state.spawn(&app, rows, cols, cwd, Some(worktree_path), label.clone())?;
+    let (pty_id, new_session_key) = state.spawn(
+        &app,
+        rows,
+        cols,
+        cwd,
+        Some(worktree_path),
+        label.clone(),
+        pty_kind,
+    )?;
     Ok(GetOrSpawnPtyResult {
         pty_id,
         session_key: new_session_key,
@@ -613,6 +687,7 @@ pub fn get_or_spawn_pty(
         is_exited: false,
         exit_code: None,
         label,
+        kind: pty_kind,
     })
 }
 
@@ -637,8 +712,10 @@ pub fn gc_ptys_for_worktree(
     state: State<'_, Arc<PtyManager>>,
     worktree_path: String,
     keep_session_keys: Vec<String>,
+    kind: Option<String>,
 ) -> Result<(), String> {
-    let killed_ids = state.gc_by_worktree(&worktree_path, &keep_session_keys);
+    let kind_filter = kind.as_deref().map(|k| parse_pty_kind(Some(k)));
+    let killed_ids = state.gc_by_worktree(&worktree_path, &keep_session_keys, kind_filter);
     if let Some(ws) = app.try_state::<Arc<WsBroadcaster>>() {
         for pty_id in killed_ids {
             ws.remove_pty_output_buffer(pty_id);
@@ -737,6 +814,7 @@ mod tests {
             session_key: uuid::Uuid::new_v4().to_string(),
             worktree_path: Some("/repo".to_string()),
             label: Some("dev".to_string()),
+            kind: PtyKind::Terminal,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"label\":\"dev\""));
@@ -752,6 +830,7 @@ mod tests {
             session_key: uuid::Uuid::new_v4().to_string(),
             worktree_path: Some("/repo".to_string()),
             label: None,
+            kind: PtyKind::Terminal,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(!json.contains("\"label\""));
@@ -766,6 +845,7 @@ mod tests {
             session_key: key.clone(),
             worktree_path: Some("/repo".to_string()),
             label: None,
+            kind: PtyKind::Agent,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains(&format!("\"session_key\":\"{}\"", key)));
@@ -803,10 +883,12 @@ mod tests {
             is_exited: false,
             exit_code: None,
             label: None,
+            kind: PtyKind::Terminal,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(!json.contains("\"label\""));
         assert!(json.contains("\"session_key\""));
+        assert!(json.contains("\"kind\":\"terminal\""));
     }
 
     // ---- process_pty_output tests ----
@@ -952,6 +1034,7 @@ mod tests {
             &uuid::Uuid::new_v4().to_string(),
             worktree_path,
             label,
+            PtyKind::Terminal,
         );
     }
 
@@ -961,6 +1044,7 @@ mod tests {
         session_key: &str,
         worktree_path: Option<&str>,
         label: Option<&str>,
+        kind: PtyKind,
     ) {
         let written = Arc::new(Mutex::new(Vec::<u8>::new()));
         let session = PtySession {
@@ -972,6 +1056,7 @@ mod tests {
             session_key: session_key.to_string(),
             worktree_path: worktree_path.map(|s| s.to_string()),
             label: label.map(|s| s.to_string()),
+            kind,
             output_buffer: Arc::new(Mutex::new(VecDeque::new())),
             exited: Arc::new(AtomicBool::new(false)),
             exit_code: Arc::new(Mutex::new(None)),
@@ -1043,7 +1128,7 @@ mod tests {
     fn test_find_session_by_uuid() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
         let key = uuid::Uuid::new_v4().to_string();
-        insert_test_session_with_key(&pm, 1, &key, Some("/repo"), Some("dev"));
+        insert_test_session_with_key(&pm, 1, &key, Some("/repo"), Some("dev"), PtyKind::Terminal);
         let found = pm.find_session(&key);
         assert!(found.is_some());
         let found = found.unwrap();
@@ -1065,7 +1150,7 @@ mod tests {
     fn test_find_session_buffered_output() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
         let key = uuid::Uuid::new_v4().to_string();
-        insert_test_session_with_key(&pm, 1, &key, Some("/repo"), None);
+        insert_test_session_with_key(&pm, 1, &key, Some("/repo"), None, PtyKind::Terminal);
         // Insert some data into the output buffer
         {
             let sessions = pm.sessions.lock();
@@ -1081,8 +1166,8 @@ mod tests {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
         let key1 = uuid::Uuid::new_v4().to_string();
         let key2 = uuid::Uuid::new_v4().to_string();
-        insert_test_session_with_key(&pm, 1, &key1, Some("/repo"), None);
-        insert_test_session_with_key(&pm, 2, &key2, Some("/repo"), None);
+        insert_test_session_with_key(&pm, 1, &key1, Some("/repo"), None, PtyKind::Terminal);
+        insert_test_session_with_key(&pm, 2, &key2, Some("/repo"), None, PtyKind::Terminal);
 
         let found = pm.find_session(&key1).unwrap();
         assert_eq!(found.pty_id, 1);
@@ -1147,11 +1232,18 @@ mod tests {
         let key1 = uuid::Uuid::new_v4().to_string();
         let key2 = uuid::Uuid::new_v4().to_string();
         let key3 = uuid::Uuid::new_v4().to_string();
-        insert_test_session_with_key(&pm, 1, &key1, Some("/repo"), Some("dev"));
-        insert_test_session_with_key(&pm, 2, &key2, Some("/repo"), Some("test"));
-        insert_test_session_with_key(&pm, 3, &key3, Some("/other"), None);
+        insert_test_session_with_key(&pm, 1, &key1, Some("/repo"), Some("dev"), PtyKind::Terminal);
+        insert_test_session_with_key(
+            &pm,
+            2,
+            &key2,
+            Some("/repo"),
+            Some("test"),
+            PtyKind::Terminal,
+        );
+        insert_test_session_with_key(&pm, 3, &key3, Some("/other"), None, PtyKind::Terminal);
 
-        let killed = pm.gc_by_worktree("/repo", &[key1.clone()]);
+        let killed = pm.gc_by_worktree("/repo", &[key1.clone()], None);
         // key2 のみ kill される（key1 は keep、key3 は別 worktree）
         assert_eq!(killed.len(), 1);
         assert!(killed.contains(&2));
@@ -1166,10 +1258,10 @@ mod tests {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
         let key1 = uuid::Uuid::new_v4().to_string();
         let key2 = uuid::Uuid::new_v4().to_string();
-        insert_test_session_with_key(&pm, 1, &key1, Some("/repo"), None);
-        insert_test_session_with_key(&pm, 2, &key2, Some("/repo"), None);
+        insert_test_session_with_key(&pm, 1, &key1, Some("/repo"), None, PtyKind::Terminal);
+        insert_test_session_with_key(&pm, 2, &key2, Some("/repo"), None, PtyKind::Terminal);
 
-        let killed = pm.gc_by_worktree("/repo", &[]);
+        let killed = pm.gc_by_worktree("/repo", &[], None);
         assert_eq!(killed.len(), 2);
         assert!(pm.sessions.lock().is_empty());
     }
@@ -1178,8 +1270,117 @@ mod tests {
     fn test_gc_by_worktree_no_match() {
         let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
         insert_test_session(&pm, 1, Some("/repo"), None);
-        let killed = pm.gc_by_worktree("/nonexistent", &[]);
+        let killed = pm.gc_by_worktree("/nonexistent", &[], None);
         assert!(killed.is_empty());
         assert_eq!(pm.sessions.lock().len(), 1);
+    }
+
+    // ---- PtyKind tests ----
+
+    #[test]
+    fn test_pty_kind_serialization() {
+        let agent_json = serde_json::to_string(&PtyKind::Agent).unwrap();
+        assert_eq!(agent_json, "\"agent\"");
+        let terminal_json = serde_json::to_string(&PtyKind::Terminal).unwrap();
+        assert_eq!(terminal_json, "\"terminal\"");
+        let oneshot_json = serde_json::to_string(&PtyKind::OneShot).unwrap();
+        assert_eq!(oneshot_json, "\"one_shot\"");
+
+        let deserialized: PtyKind = serde_json::from_str("\"agent\"").unwrap();
+        assert_eq!(deserialized, PtyKind::Agent);
+        let deserialized: PtyKind = serde_json::from_str("\"terminal\"").unwrap();
+        assert_eq!(deserialized, PtyKind::Terminal);
+        let deserialized: PtyKind = serde_json::from_str("\"one_shot\"").unwrap();
+        assert_eq!(deserialized, PtyKind::OneShot);
+    }
+
+    #[test]
+    fn test_remove_if_exited() {
+        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
+        insert_test_session(&pm, 1, Some("/repo"), None);
+        pm.sessions
+            .lock()
+            .get(&1)
+            .unwrap()
+            .exited
+            .store(true, Ordering::SeqCst);
+        pm.remove_if_exited(1);
+        assert!(pm.sessions.lock().get(&1).is_none());
+    }
+
+    #[test]
+    fn test_remove_if_exited_running() {
+        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
+        insert_test_session(&pm, 1, Some("/repo"), None);
+        pm.remove_if_exited(1);
+        assert!(pm.sessions.lock().get(&1).is_some());
+    }
+
+    #[test]
+    fn test_get_exit_status_running() {
+        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
+        insert_test_session(&pm, 1, Some("/repo"), None);
+        let status = pm.get_exit_status(1);
+        assert_eq!(status, Some((false, None)));
+    }
+
+    #[test]
+    fn test_get_exit_status_exited() {
+        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
+        insert_test_session(&pm, 1, Some("/repo"), None);
+        {
+            let sessions = pm.sessions.lock();
+            let s = sessions.get(&1).unwrap();
+            s.exited.store(true, Ordering::SeqCst);
+            *s.exit_code.lock() = Some(42);
+        }
+        let status = pm.get_exit_status(1);
+        assert_eq!(status, Some((true, Some(42))));
+    }
+
+    #[test]
+    fn test_get_exit_status_nonexistent() {
+        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
+        let status = pm.get_exit_status(99999);
+        assert!(status.is_none());
+    }
+
+    #[test]
+    fn test_list_pty_sessions_includes_kind() {
+        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
+        let key = uuid::Uuid::new_v4().to_string();
+        insert_test_session_with_key(&pm, 1, &key, Some("/repo"), Some("agent"), PtyKind::Agent);
+        insert_test_session(&pm, 2, Some("/repo"), Some("term"));
+        let sessions = pm.list_pty_sessions();
+        assert_eq!(sessions.len(), 2);
+        let agent_session = sessions.iter().find(|s| s.pty_id == 1).unwrap();
+        assert_eq!(agent_session.kind, PtyKind::Agent);
+        let term_session = sessions.iter().find(|s| s.pty_id == 2).unwrap();
+        assert_eq!(term_session.kind, PtyKind::Terminal);
+    }
+
+    #[test]
+    fn test_gc_by_worktree_with_kind_filter() {
+        let pm = PtyManager::with_backend(Box::new(DirectPtyBackend::new()));
+        let key1 = uuid::Uuid::new_v4().to_string();
+        let key2 = uuid::Uuid::new_v4().to_string();
+        let key3 = uuid::Uuid::new_v4().to_string();
+        insert_test_session_with_key(&pm, 1, &key1, Some("/repo"), None, PtyKind::Agent);
+        insert_test_session_with_key(&pm, 2, &key2, Some("/repo"), None, PtyKind::Terminal);
+        insert_test_session_with_key(&pm, 3, &key3, Some("/repo"), None, PtyKind::OneShot);
+
+        // Only GC Agent kind
+        let killed = pm.gc_by_worktree("/repo", &[], Some(PtyKind::Agent));
+        assert_eq!(killed, vec![1]);
+        assert_eq!(pm.sessions.lock().len(), 2);
+    }
+
+    #[test]
+    fn test_parse_pty_kind() {
+        assert_eq!(parse_pty_kind(Some("agent")), PtyKind::Agent);
+        assert_eq!(parse_pty_kind(Some("one_shot")), PtyKind::OneShot);
+        assert_eq!(parse_pty_kind(Some("terminal")), PtyKind::Terminal);
+        assert_eq!(parse_pty_kind(Some("unknown")), PtyKind::Terminal);
+        assert_eq!(parse_pty_kind(None), PtyKind::Terminal);
     }
 }

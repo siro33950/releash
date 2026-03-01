@@ -340,6 +340,7 @@ pub fn run() {
             pty::oneshot::cancel_oneshot_pty,
             pty::oneshot::get_oneshot_pty_status,
             pty::oneshot::list_oneshot_ptys,
+            pty::oneshot::find_oneshot_pty,
             // Menu
             menu::set_menu_items_enabled,
         ])
