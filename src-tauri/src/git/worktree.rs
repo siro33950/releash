@@ -107,10 +107,7 @@ pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, GitError>
         .unwrap_or("main")
         .to_string();
 
-    let main_base = repo.config().ok().and_then(|cfg| {
-        cfg.get_string(&format!("branch.{}.releash-base", main_branch))
-            .ok()
-    });
+    let main_base = super::config::resolve_branch_base(&repo, repo.config().ok().as_ref(), &main_branch);
 
     entries.push(WorktreeEntry {
         name: main_name,
@@ -150,10 +147,7 @@ pub fn list_worktrees(repo_path: String) -> Result<Vec<WorktreeEntry>, GitError>
             Ok(wt_repo) => {
                 let branch = get_branch_name_for_repo(&wt_repo);
                 let dirty = get_dirty_count_for_path(wt_path);
-                let base = wt_repo.config().ok().and_then(|cfg| {
-                    cfg.get_string(&format!("branch.{}.releash-base", branch))
-                        .ok()
-                });
+                let base = super::config::resolve_branch_base(&wt_repo, wt_repo.config().ok().as_ref(), &branch);
                 (branch, dirty, base)
             }
             Err(_) => ("unknown".to_string(), 0, None),
