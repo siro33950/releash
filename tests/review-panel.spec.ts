@@ -6,7 +6,7 @@ import { waitForApp } from "./helpers/utils";
 /**
  * WorktreeView の ReviewPanel テスト。
  * ReviewPanel は EditorPanel の下部パネルとして表示される。
- * Terminal / Comments タブの切り替えをテストする。
+ * Terminal / Review タブの切り替えをテストする。
  */
 function reviewConfig(overrides: Record<string, unknown> = {}) {
 	return buildMockConfig({

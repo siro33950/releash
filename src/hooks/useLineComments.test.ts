@@ -6,8 +6,16 @@ vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn().mockResolvedValue([]),
 }));
 
+type ListenCallback = (event: { payload: Record<string, unknown> }) => void;
+let capturedListeners: Map<string, ListenCallback>;
+
 vi.mock("@tauri-apps/api/event", () => ({
-	listen: vi.fn().mockResolvedValue(() => {}),
+	listen: vi.fn((eventName: string, callback: ListenCallback) => {
+		capturedListeners.set(eventName, callback);
+		return Promise.resolve(() => {
+			capturedListeners.delete(eventName);
+		});
+	}),
 }));
 
 const { invoke } = await import("@tauri-apps/api/core");
@@ -18,6 +26,7 @@ const WORKTREE = "/tmp/test-wt";
 describe("useLineComments", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		capturedListeners = new Map();
 		mockedInvoke.mockResolvedValue([]);
 	});
 
@@ -259,5 +268,79 @@ describe("useLineComments", () => {
 		});
 
 		expect(result.current.showResolvedComments).toBe(false);
+	});
+
+	it("should reload on external comments-changed for same worktree", async () => {
+		renderHook(() => useLineComments(WORKTREE));
+		await act(async () => {});
+
+		mockedInvoke.mockClear();
+		mockedInvoke.mockResolvedValueOnce([
+			{
+				id: "new-1",
+				file_path: "src/updated.ts",
+				line_number: 5,
+				content: "Reloaded",
+				status: "unsent",
+				created_at: 2000,
+				resolved: false,
+				target: "local",
+			},
+		]);
+
+		const listener = capturedListeners.get("comments-changed");
+		expect(listener).toBeDefined();
+
+		await act(async () => {
+			listener?.({
+				payload: { worktree_name: WORKTREE, source: "mcp" },
+			});
+		});
+
+		expect(mockedInvoke).toHaveBeenCalledWith("load_comments", {
+			worktreeName: WORKTREE,
+		});
+	});
+
+	it("should not reload when source is desktop", async () => {
+		renderHook(() => useLineComments(WORKTREE));
+		await act(async () => {});
+
+		mockedInvoke.mockClear();
+
+		const listener = capturedListeners.get("comments-changed");
+		expect(listener).toBeDefined();
+
+		await act(async () => {
+			listener?.({
+				payload: { worktree_name: WORKTREE, source: "desktop" },
+			});
+		});
+
+		expect(mockedInvoke).not.toHaveBeenCalledWith(
+			"load_comments",
+			expect.anything(),
+		);
+	});
+
+	it("should not reload for different worktree", async () => {
+		renderHook(() => useLineComments(WORKTREE));
+		await act(async () => {});
+
+		mockedInvoke.mockClear();
+
+		const listener = capturedListeners.get("comments-changed");
+		expect(listener).toBeDefined();
+
+		await act(async () => {
+			listener?.({
+				payload: { worktree_name: "/tmp/other-wt", source: "mcp" },
+			});
+		});
+
+		expect(mockedInvoke).not.toHaveBeenCalledWith(
+			"load_comments",
+			expect.anything(),
+		);
 	});
 });

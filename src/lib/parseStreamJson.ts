@@ -46,7 +46,8 @@ export function parseStreamJson(raw: string): string {
 			const formatted = formatEvent(event);
 			if (formatted) parts.push(formatted);
 		} catch {
-			parts.push(stripAnsi(trimmed));
+			const plain = stripAnsi(line);
+			if (plain.trim()) parts.push(plain);
 		}
 	}
 

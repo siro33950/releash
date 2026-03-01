@@ -639,13 +639,13 @@ export function useMonacoDiffEditor(
 	useEffect(() => {
 		const diffEditor = diffEditorRef.current;
 		const monaco = monacoRef.current;
-		if (!diffEditor || !monaco || !commentRanges) return;
+		if (!diffEditor || !monaco) return;
 
 		const modifiedEditor = diffEditor.getModifiedEditor();
 		const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
 		const seen = new Set<number>();
 
-		for (const r of commentRanges) {
+		for (const r of commentRanges ?? []) {
 			decorations.push({
 				range: new monaco.Range(r.start, 1, r.end ?? r.start, 1),
 				options: {
@@ -689,11 +689,15 @@ export function useMonacoDiffEditor(
 				}
 				const existing = getCommentsForLineRef.current?.(revealLine.line) ?? [];
 				if (existing.length > 0) {
+					const range = commentRangesRef.current?.find(
+						(r) => r.start === revealLine.line,
+					);
 					const zone = createCommentThread(modifiedEditor, {
 						lineNumber: revealLine.line,
+						endLine: range?.end,
 						comments: existing,
 						onSubmit: (content) => {
-							onAddCommentRef.current?.(revealLine.line, content);
+							onAddCommentRef.current?.(revealLine.line, content, range?.end);
 							zone.dispose();
 							commentInputWidgetRef.current = null;
 							modifiedEditor.focus();

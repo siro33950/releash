@@ -162,13 +162,16 @@ export function buildReviewCommand(
 	const config = AGENT_CONFIGS[reviewAgent];
 	if (!config.reviewCommand) return null;
 
+	const allowedModels = AGENT_MODELS[reviewAgent].map((m) => m.value);
+	const safeModel =
+		reviewModel && allowedModels.includes(reviewModel) ? reviewModel : "";
 	const modelFlagValue =
-		reviewModel && config.modelFlag ? `${config.modelFlag} ${reviewModel}` : "";
+		safeModel && config.modelFlag ? `${config.modelFlag} ${safeModel}` : "";
 
 	return config.reviewCommand
 		.replace("{model_flag}", modelFlagValue)
-		.replace("{prompt}", escapedPrompt)
 		.replace(/\s{2,}/g, " ")
+		.replace("{prompt}", escapedPrompt)
 		.trim();
 }
 

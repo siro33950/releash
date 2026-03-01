@@ -19,12 +19,18 @@ export function useLineComments(worktreeName: string) {
 
 	// Initial load
 	useEffect(() => {
+		let disposed = false;
 		invoke<CommentItemDTO[]>("load_comments", { worktreeName }).then(
 			(dtos) => {
-				setComments(dtos.map(dtoToLineComment));
+				if (!disposed) setComments(dtos.map(dtoToLineComment));
 			},
-			(err) => console.error("Failed to load comments:", err),
+			(err) => {
+				if (!disposed) console.error("Failed to load comments:", err);
+			},
 		);
+		return () => {
+			disposed = true;
+		};
 	}, [worktreeName]);
 
 	// Listen for external changes (MCP, remote, etc.)

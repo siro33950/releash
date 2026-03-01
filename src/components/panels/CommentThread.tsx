@@ -61,7 +61,7 @@ function CommentItem({
 	const handleSave = (e: MouseEvent) => {
 		e.stopPropagation();
 		const trimmed = editValue.trim();
-		if (trimmed && trimmed !== comment.content) {
+		if (trimmed && trimmed !== content) {
 			onUpdate?.(comment.id, trimmed);
 			setContent(trimmed);
 		}
@@ -79,7 +79,7 @@ function CommentItem({
 		if (e.key === "Enter" && !e.shiftKey) {
 			e.preventDefault();
 			const trimmed = editValue.trim();
-			if (trimmed && trimmed !== comment.content) {
+			if (trimmed && trimmed !== content) {
 				onUpdate?.(comment.id, trimmed);
 				setContent(trimmed);
 			}

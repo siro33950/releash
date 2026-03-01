@@ -390,7 +390,8 @@
 .comment-thread-item:last-child {
 	border-bottom: none;
 }
-.comment-thread-item:hover .comment-thread-item-actions {
+.comment-thread-item:hover .comment-thread-item-actions,
+.comment-thread-item:focus-within .comment-thread-item-actions {
 	opacity: 1;
 }
 
@@ -439,6 +440,10 @@
 .comment-thread-action-btn:hover {
 	background: var(--muted);
 	color: var(--foreground);
+}
+.comment-thread-action-btn:focus-visible {
+	outline: 1px solid var(--primary);
+	outline-offset: 1px;
 }
 .comment-thread-action-delete:hover {
 	background: color-mix(in oklch, var(--destructive) 20%, transparent);
@@ -505,7 +510,8 @@
 .comment-thread-item-content {
 	font-size: 12px;
 	color: var(--foreground);
-	word-break: break-word;
+	overflow-wrap: anywhere;
+	word-break: normal;
 	line-height: 1.4;
 }
 

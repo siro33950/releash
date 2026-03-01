@@ -247,7 +247,8 @@ impl ReleashMcpServer {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs_f64() * 1000.0;
+            .as_secs_f64()
+            * 1000.0;
 
         let comment = CommentItem {
             id: comment_id.clone(),

@@ -535,12 +535,12 @@ export function useMonacoGutterEditor(
 	useEffect(() => {
 		const editor = editorRef.current;
 		const monaco = monacoRef.current;
-		if (!editor || !monaco || !commentRanges) return;
+		if (!editor || !monaco) return;
 
 		const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
 		const seen = new Set<number>();
 
-		for (const r of commentRanges) {
+		for (const r of commentRanges ?? []) {
 			decorations.push({
 				range: new monaco.Range(r.start, 1, r.end ?? r.start, 1),
 				options: {
@@ -583,11 +583,15 @@ export function useMonacoGutterEditor(
 				}
 				const existing = getCommentsForLineRef.current?.(revealLine.line) ?? [];
 				if (existing.length > 0) {
+					const range = commentRangesRef.current?.find(
+						(r) => r.start === revealLine.line,
+					);
 					const zone = createCommentThread(editor, {
 						lineNumber: revealLine.line,
+						endLine: range?.end,
 						comments: existing,
 						onSubmit: (content) => {
-							onAddCommentRef.current?.(revealLine.line, content);
+							onAddCommentRef.current?.(revealLine.line, content, range?.end);
 							zone.dispose();
 							commentInputWidgetRef.current = null;
 							editor.focus();

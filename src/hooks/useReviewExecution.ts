@@ -117,9 +117,9 @@ export function useReviewExecution(
 		};
 	}, []);
 
-	// Compute summary once when status transitions to completed
+	// Compute summary when status is completed (re-computes on new comments)
 	useEffect(() => {
-		if (state.status === "completed" && prevStatusRef.current !== "completed") {
+		if (state.status === "completed") {
 			const reviewComments = comments.filter(
 				(c) =>
 					c.target === "review" && c.createdAt > reviewStartTimeRef.current,
@@ -137,19 +137,27 @@ export function useReviewExecution(
 		prevStatusRef.current = state.status;
 	}, [state.status, comments]);
 
+	const startInFlightRef = useRef(false);
+
 	const startReview = useCallback(async () => {
 		if (!worktreePath) return;
+		if (startInFlightRef.current) return;
+		startInFlightRef.current = true;
 
 		let prompt: string;
 		try {
 			prompt = await invoke<string>("get_review_prompt");
 		} catch {
+			startInFlightRef.current = false;
 			setState({ status: "error", ptyId: null, summary: null, output: "" });
 			return;
 		}
 
 		const command = buildReviewCommand(settings, prompt);
-		if (!command) return;
+		if (!command) {
+			startInFlightRef.current = false;
+			return;
+		}
 
 		reviewStartTimeRef.current = Date.now();
 		ptyIdRef.current = null;
@@ -201,6 +209,8 @@ export function useReviewExecution(
 			ptyIdRef.current = null;
 			awaitingPtyRef.current = false;
 			setState({ status: "error", ptyId: null, summary: null, output: "" });
+		} finally {
+			startInFlightRef.current = false;
 		}
 	}, [worktreePath, settings, applyStatusChange]);
 
