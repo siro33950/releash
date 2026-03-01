@@ -2,6 +2,7 @@ import {
 	Check,
 	ChevronDown,
 	ChevronUp,
+	Copy,
 	Loader2,
 	MessageSquare,
 	Play,
@@ -9,13 +10,15 @@ import {
 	Terminal,
 	X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { CommentList } from "@/components/panels/CommentList";
 import { ReviewModal } from "@/components/panels/ReviewModal";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useReviewExecution } from "@/hooks/useReviewExecution";
 import { useSkills } from "@/hooks/useSkills";
+import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import type { LineComment } from "@/types/comment";
 import type { AppSettings, Theme } from "@/types/settings";
 
@@ -82,6 +85,16 @@ export function RightSidebarBottom({
 				? "bg-destructive"
 				: null;
 
+	const unresolvedComments = useMemo(
+		() => comments.filter((c) => !c.resolved),
+		[comments],
+	);
+
+	const handleCopyComments = useCallback(() => {
+		const text = formatCommentsForTerminal(unresolvedComments);
+		navigator.clipboard.writeText(text);
+	}, [unresolvedComments]);
+
 	return (
 		<div className="flex flex-col h-full">
 			<Tabs
@@ -116,9 +129,9 @@ export function RightSidebarBottom({
 								{reviewDot && (
 									<span className={`size-1.5 rounded-full ${reviewDot}`} />
 								)}
-								{!reviewDot && unsentComments.length > 0 && (
+								{!reviewDot && unresolvedComments.length > 0 && (
 									<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
-										{unsentComments.length}
+										{unresolvedComments.length}
 									</span>
 								)}
 							</span>
@@ -148,45 +161,49 @@ export function RightSidebarBottom({
 					</div>
 					<div className="shrink-0 px-3 py-2 border-t border-border flex items-center gap-2">
 						{!reviewDisabled && (
-							<button
-								type="button"
+							<Button
+								variant="ghost"
+								size="xs"
+								className="flex-1"
 								onClick={
 									status === "idle"
 										? handleStartReview
 										: () => setReviewModalOpen(true)
 								}
 								disabled={
-									status === "idle" &&
-									(!selectedSkill || skills.length === 0)
+									status === "idle" && (!selectedSkill || skills.length === 0)
 								}
-								className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 disabled:pointer-events-none"
 							>
-								{status === "idle" && (
-									<Play className="h-3.5 w-3.5" />
-								)}
-								{isRunning && (
-									<Loader2 className="h-3.5 w-3.5 animate-spin" />
-								)}
+								{status === "idle" && <Play className="size-3" />}
+								{isRunning && <Loader2 className="size-3 animate-spin" />}
 								{status === "completed" && (
-									<Check className="h-3.5 w-3.5 text-green-400" />
+									<Check className="size-3 text-green-400" />
 								)}
 								{(status === "error" || status === "cancelled") && (
-									<X className="h-3.5 w-3.5 text-destructive" />
+									<X className="size-3 text-destructive" />
 								)}
 								AI Review
-							</button>
+							</Button>
 						)}
+						<Button
+							variant="ghost"
+							size="icon-xs"
+							onClick={handleCopyComments}
+							disabled={unresolvedComments.length === 0}
+							aria-label="Copy comments to clipboard"
+						>
+							<Copy />
+						</Button>
 						{onSendToTerminal && (
-							<button
-								type="button"
+							<Button
+								variant="ghost"
+								size="xs"
 								onClick={() => onSendToTerminal(unsentComments)}
 								disabled={unsentComments.length === 0}
-								className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50 disabled:pointer-events-none"
-								title="Send unsent comments to terminal"
 							>
-								<Send className="h-3.5 w-3.5" />
+								<Send />
 								Send
-							</button>
+							</Button>
 						)}
 					</div>
 				</TabsContent>

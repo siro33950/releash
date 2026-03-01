@@ -44,7 +44,6 @@ export function EditorTabContent({
 		addComment,
 		deleteComment,
 		updateComment: updateCommentContent,
-		sendComment,
 		copyComment,
 		showResolvedComments,
 		rootPath,
