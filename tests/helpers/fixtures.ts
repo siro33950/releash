@@ -102,15 +102,46 @@ const baseIpcHandler: Record<string, unknown> = {
 	"plugin:autostart|enable": null,
 	"plugin:autostart|disable": null,
 
+	// Comments
+	load_comments: [],
+	add_comment: null,
+	remove_comment: true,
+	update_comment_content: true,
+	mark_comments_sent: null,
+	toggle_resolve_comment: null,
+
+	// Branch base
+	get_branch_base: null,
+	set_branch_base: null,
+
 	// Terminal (PTY) — モック上は何もしない
-	get_or_spawn_pty: { pty_id: 1, output: "" },
+	get_or_spawn_pty: {
+		pty_id: 1,
+		session_key: "mock-session",
+		buffered_output: "",
+		is_new: true,
+		is_exited: false,
+		exit_code: null,
+		label: null,
+	},
 	write_pty: null,
 	resize_pty: null,
 	kill_ptys_by_worktree: null,
 
+	// MCP config
+	get_mcp_config: { port: 19801, token: "mock-token" },
+	update_mcp_config: null,
+	regenerate_mcp_token: "new-mock-token",
+	generate_agent_mcp_config: { file_path: "", content: "" },
+	preview_agent_mcp_config: "",
+
+	// Remote config
+	get_remote_config: { auto_start: false, auto_start_on_lan: false },
+	update_remote_config: null,
+
 	// Remote server
-	get_server_config: { ip: "0.0.0.0", port: 19700, mode: "local" },
-	get_server_info: null,
+	get_server_config: { port: 19700, token: "mock-token" },
+	get_server_info: { running: false, bound_ip: null, connection_mode: null },
 	get_network_info: [],
 	stop_server: null,
 

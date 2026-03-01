@@ -63,7 +63,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		bypassFlag: "--dangerously-skip-permissions",
 		label: "Claude Code",
 		reviewCommand:
-			'echo "/{skill}" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment" {model_flag}',
+			'echo "{prompt}" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment" {model_flag}',
 		modelFlag: "--model",
 	},
 	codex: {
@@ -71,7 +71,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		bypassFlag: "--dangerously-bypass-approvals-and-sandbox",
 		label: "Codex",
 		reviewCommand:
-			'codex exec --sandbox read-only --ask-for-approval never --json {model_flag} "{skill}"',
+			'codex exec --sandbox read-only --ask-for-approval never --json {model_flag} "{prompt}"',
 		modelFlag: "--model",
 	},
 	gemini: {
@@ -79,7 +79,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		bypassFlag: "--approval-mode=yolo",
 		label: "Gemini CLI",
 		reviewCommand:
-			'gemini -p --sandbox --output-format json {model_flag} "/{skill}"',
+			'gemini -p --sandbox --output-format json {model_flag} "{prompt}"',
 		modelFlag: "--model",
 	},
 	aider: {
@@ -94,7 +94,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		bypassFlag: "",
 		label: "Cursor",
 		reviewCommand:
-			'cursor-agent -p --output-format json {model_flag} "/{skill}"',
+			'cursor-agent -p --output-format json {model_flag} "{prompt}"',
 		modelFlag: "--model",
 	},
 	custom: {
@@ -116,7 +116,6 @@ export interface AppSettings {
 	terminalStartupCommand: string;
 	reviewAgent: AgentType;
 	reviewModel: string;
-	defaultReviewSkill: string;
 	customReviewCommand: string;
 	autoUpdate: boolean;
 	telemetryEnabled: boolean;
@@ -133,7 +132,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	terminalStartupCommand: "",
 	reviewAgent: "claude",
 	reviewModel: "",
-	defaultReviewSkill: "code-review",
 	customReviewCommand: "",
 	autoUpdate: true,
 	telemetryEnabled: true,
@@ -142,8 +140,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 export function buildReviewCommand(
 	settings: AppSettings,
-	promptTemplate: string,
-	skillName: string,
+	prompt: string,
 ): string | null {
 	const { reviewAgent, reviewModel, customReviewCommand } = settings;
 
@@ -151,7 +148,7 @@ export function buildReviewCommand(
 		return null;
 	}
 
-	const escapedPrompt = promptTemplate
+	const escapedPrompt = prompt
 		.replace(/\\/g, "\\\\")
 		.replace(/"/g, '\\"')
 		.replace(/\$/g, "\\$")
@@ -170,7 +167,6 @@ export function buildReviewCommand(
 
 	return config.reviewCommand
 		.replace("{model_flag}", modelFlagValue)
-		.replace("{skill}", skillName)
 		.replace("{prompt}", escapedPrompt)
 		.replace(/\s{2,}/g, " ")
 		.trim();

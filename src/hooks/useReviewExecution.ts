@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SkillDefinition } from "@/hooks/useSkills";
 import type { LineComment } from "@/types/comment";
 import { type AppSettings, buildReviewCommand } from "@/types/settings";
 
@@ -47,6 +46,7 @@ export function useReviewExecution(
 	const pendingStatusRef = useRef<
 		Map<number, { status: string; exit_code: number | null }>
 	>(new Map());
+	const pendingOutputRef = useRef<Map<number, string>>(new Map());
 
 	const applyStatusChange = useCallback((ptyId: number, status: string) => {
 		setState((prev) => {
@@ -93,18 +93,21 @@ export function useReviewExecution(
 		};
 	}, [applyStatusChange]);
 
-	// Capture PTY output — stream directly to state (mount once)
+	// Capture PTY output — buffer by pty_id until confirmed (mount once)
 	useEffect(() => {
 		const unlisten = listen<{ pty_id: number; data: string }>(
 			"pty-output",
 			(event) => {
 				const { pty_id, data } = event.payload;
 
-				if (ptyIdRef.current === pty_id || awaitingPtyRef.current) {
+				if (ptyIdRef.current === pty_id) {
 					setState((prev) => ({
 						...prev,
 						output: prev.output + data,
 					}));
+				} else if (awaitingPtyRef.current) {
+					const buf = pendingOutputRef.current.get(pty_id) ?? "";
+					pendingOutputRef.current.set(pty_id, buf + data);
 				}
 			},
 		);
@@ -134,59 +137,72 @@ export function useReviewExecution(
 		prevStatusRef.current = state.status;
 	}, [state.status, comments]);
 
-	const startReview = useCallback(
-		async (skill: SkillDefinition) => {
-			if (!worktreePath) return;
+	const startReview = useCallback(async () => {
+		if (!worktreePath) return;
 
-			const command = buildReviewCommand(
-				settings,
-				skill.prompt_template,
-				settings.defaultReviewSkill,
-			);
-			if (!command) return;
+		let prompt: string;
+		try {
+			prompt = await invoke<string>("get_review_prompt");
+		} catch {
+			setState({ status: "error", ptyId: null, summary: null, output: "" });
+			return;
+		}
 
-			reviewStartTimeRef.current = Date.now();
-			ptyIdRef.current = null;
-			awaitingPtyRef.current = true;
-			pendingStatusRef.current.clear();
+		const command = buildReviewCommand(settings, prompt);
+		if (!command) return;
 
-			setState({ status: "starting", ptyId: null, summary: null, output: "" });
+		reviewStartTimeRef.current = Date.now();
+		ptyIdRef.current = null;
+		awaitingPtyRef.current = true;
+		pendingStatusRef.current.clear();
 
-			try {
-				const info = await invoke<{
-					pty_id: number;
-					session_key: string;
-					status: string;
-				}>("spawn_oneshot_pty", {
-					command,
-					worktreePath,
-					label: `review:${skill.name}`,
-					timeoutSecs: skill.timeout ?? 300,
-				});
+		setState({ status: "starting", ptyId: null, summary: null, output: "" });
 
-				ptyIdRef.current = info.pty_id;
-				awaitingPtyRef.current = false;
+		try {
+			const info = await invoke<{
+				pty_id: number;
+				session_key: string;
+				status: string;
+			}>("spawn_oneshot_pty", {
+				command,
+				worktreePath,
+				label: "review",
+				timeoutSecs: 300,
+			});
 
+			ptyIdRef.current = info.pty_id;
+			awaitingPtyRef.current = false;
+
+			// Flush buffered output for this pty_id
+			const buffered = pendingOutputRef.current.get(info.pty_id) ?? "";
+			pendingOutputRef.current.clear();
+			if (buffered) {
+				setState((prev) => ({
+					...prev,
+					status: "running",
+					ptyId: info.pty_id,
+					output: prev.output + buffered,
+				}));
+			} else {
 				setState((prev) => ({
 					...prev,
 					status: "running",
 					ptyId: info.pty_id,
 				}));
-
-				// Flush buffered status if process already finished
-				const pendingStatus = pendingStatusRef.current.get(info.pty_id);
-				pendingStatusRef.current.delete(info.pty_id);
-				if (pendingStatus) {
-					applyStatusChange(info.pty_id, pendingStatus.status);
-				}
-			} catch {
-				ptyIdRef.current = null;
-				awaitingPtyRef.current = false;
-				setState({ status: "error", ptyId: null, summary: null, output: "" });
 			}
-		},
-		[worktreePath, settings, applyStatusChange],
-	);
+
+			// Flush buffered status if process already finished
+			const pendingStatus = pendingStatusRef.current.get(info.pty_id);
+			pendingStatusRef.current.delete(info.pty_id);
+			if (pendingStatus) {
+				applyStatusChange(info.pty_id, pendingStatus.status);
+			}
+		} catch {
+			ptyIdRef.current = null;
+			awaitingPtyRef.current = false;
+			setState({ status: "error", ptyId: null, summary: null, output: "" });
+		}
+	}, [worktreePath, settings, applyStatusChange]);
 
 	const cancelReview = useCallback(async () => {
 		const id = ptyIdRef.current;

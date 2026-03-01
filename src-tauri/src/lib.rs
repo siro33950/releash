@@ -11,10 +11,10 @@ mod notion;
 mod protocol;
 mod pty;
 mod qr_code;
+mod review_prompt;
 mod search;
 mod sentry_integration;
 mod shell_integration;
-mod skill;
 mod tls;
 mod tray;
 mod vpn_detect;
@@ -333,9 +333,8 @@ pub fn run() {
             comment_store::update_comment_content,
             comment_store::mark_comments_sent,
             comment_store::toggle_resolve_comment,
-            // Skills
-            skill::list_skills,
-            skill::register_review_skill,
+            // Review prompt
+            review_prompt::get_review_prompt,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,

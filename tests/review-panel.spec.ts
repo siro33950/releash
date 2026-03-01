@@ -32,7 +32,7 @@ function reviewConfig(overrides: Record<string, unknown> = {}) {
 }
 
 test.describe("Review Panel", () => {
-	test("Terminal と Comments タブが表示される", async ({ page }) => {
+	test("Terminal と Review タブが表示される", async ({ page }) => {
 		const config = reviewConfig();
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -44,16 +44,16 @@ test.describe("Review Panel", () => {
 			page.locator('[data-slot="tabs-trigger"]').filter({ hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
-		// ReviewPanel の Terminal / Comments タブが表示される
+		// ReviewPanel の Terminal / Review タブが表示される
 		const reviewPanel = page.getByTestId("review");
 		const terminalTab = reviewPanel.getByRole("tab", { name: "Terminal" });
-		const commentsTab = reviewPanel.getByRole("tab", { name: /Comments/ });
+		const reviewTab = reviewPanel.getByRole("tab", { name: "Review" });
 
 		await expect(terminalTab).toBeVisible();
-		await expect(commentsTab).toBeVisible();
+		await expect(reviewTab).toBeVisible();
 	});
 
-	test("Comments タブに切り替えるとコメント空メッセージが表示される", async ({
+	test("Review タブに切り替えるとコメント空メッセージが表示される", async ({
 		page,
 	}) => {
 		const config = reviewConfig();
@@ -67,9 +67,9 @@ test.describe("Review Panel", () => {
 			page.locator('[data-slot="tabs-trigger"]').filter({ hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
-		// Comments タブをクリック
+		// Review タブをクリック
 		const reviewPanel = page.getByTestId("review");
-		await reviewPanel.getByRole("tab", { name: /Comments/ }).click();
+		await reviewPanel.getByRole("tab", { name: "Review" }).click();
 
 		// 空メッセージ "No comments" が表示される
 		await expect(page.getByText("No comments")).toBeVisible();

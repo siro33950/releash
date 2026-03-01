@@ -17,7 +17,6 @@ import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useReviewExecution } from "@/hooks/useReviewExecution";
-import { useSkills } from "@/hooks/useSkills";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import type { LineComment } from "@/types/comment";
 import type { AppSettings, Theme } from "@/types/settings";
@@ -57,15 +56,8 @@ export function RightSidebarBottom({
 	const [reviewModalOpen, setReviewModalOpen] = useState(false);
 	const unsentComments = comments.filter((c) => c.status === "unsent");
 
-	const { skills } = useSkills(rootPath);
 	const { status, summary, output, startReview, cancelReview, reset } =
 		useReviewExecution(rootPath, comments, settings);
-
-	const selectedSkill = useMemo(
-		() =>
-			skills.find((s) => s.name === settings.defaultReviewSkill) ?? skills[0],
-		[skills, settings.defaultReviewSkill],
-	);
 
 	const isRunning = status === "starting" || status === "running";
 	const isFinished =
@@ -74,7 +66,7 @@ export function RightSidebarBottom({
 
 	const handleStartReview = () => {
 		if (isFinished) reset();
-		if (selectedSkill) startReview(selectedSkill);
+		startReview();
 	};
 
 	const reviewDot = isRunning
@@ -170,9 +162,7 @@ export function RightSidebarBottom({
 										? handleStartReview
 										: () => setReviewModalOpen(true)
 								}
-								disabled={
-									status === "idle" && (!selectedSkill || skills.length === 0)
-								}
+								disabled={false}
 							>
 								{status === "idle" && <Play className="size-3" />}
 								{isRunning && <Loader2 className="size-3 animate-spin" />}

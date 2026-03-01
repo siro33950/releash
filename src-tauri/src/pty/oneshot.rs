@@ -140,8 +140,10 @@ impl OneShotPtyManager {
         if let Some(mgr) = app.try_state::<Arc<OneShotPtyManager>>() {
             let mut entries = mgr.entries.lock();
             if let Some(entry) = entries.get_mut(&pty_id) {
-                entry.status = result.0;
-                entry.exit_code = result.1;
+                if entry.status != OneShotStatus::Cancelled {
+                    entry.status = result.0;
+                    entry.exit_code = result.1;
+                }
                 entry.completed_at = Some(now);
                 let _ = app.emit("oneshot-pty-status-changed", &*entry);
             }

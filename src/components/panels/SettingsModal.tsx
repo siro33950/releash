@@ -664,30 +664,6 @@ function ReviewSection({
 		draft.reviewAgent !== "custom" &&
 		modelOptions.length > 0;
 
-	const showSkill =
-		draft.reviewAgent !== "none" && draft.reviewAgent !== "custom";
-
-	const showRegister = showSkill && draft.reviewAgent !== "aider";
-
-	const [registerStatus, setRegisterStatus] = useState<{
-		type: "idle" | "success" | "error";
-		message: string;
-	}>({ type: "idle", message: "" });
-
-	const handleRegister = useCallback(async () => {
-		if (!draft.defaultReviewSkill) return;
-		setRegisterStatus({ type: "idle", message: "" });
-		try {
-			const path = await invoke<string>("register_review_skill", {
-				agent: draft.reviewAgent,
-				skillName: draft.defaultReviewSkill,
-			});
-			setRegisterStatus({ type: "success", message: `Created: ${path}` });
-		} catch (e) {
-			setRegisterStatus({ type: "error", message: String(e) });
-		}
-	}, [draft.reviewAgent, draft.defaultReviewSkill]);
-
 	return (
 		<div className="flex flex-col gap-4">
 			<div className="flex flex-col gap-1.5">
@@ -707,7 +683,6 @@ function ReviewSection({
 							reviewAgent: next,
 							reviewModel: modelExists ? d.reviewModel : "",
 						}));
-						setRegisterStatus({ type: "idle", message: "" });
 					}}
 				>
 					<SelectTrigger id="review-agent-select">
@@ -751,48 +726,6 @@ function ReviewSection({
 							))}
 						</SelectContent>
 					</Select>
-				</div>
-			)}
-
-			{showSkill && (
-				<div className="flex flex-col gap-1.5">
-					<label htmlFor="review-skill-input" className={labelClass}>
-						Trigger Skill
-					</label>
-					<div className="flex gap-2">
-						<Input
-							id="review-skill-input"
-							variant="panel"
-							size="sm"
-							value={draft.defaultReviewSkill}
-							onChange={(e) =>
-								updateDraft((d) => ({
-									...d,
-									defaultReviewSkill: e.target.value,
-								}))
-							}
-							placeholder="code-review"
-							className="flex-1"
-						/>
-						{showRegister && (
-							<Button
-								size="sm"
-								variant="outline"
-								onClick={handleRegister}
-								disabled={!draft.defaultReviewSkill}
-							>
-								Register
-							</Button>
-						)}
-					</div>
-					{registerStatus.type === "success" && (
-						<p className="text-[10px] text-success">{registerStatus.message}</p>
-					)}
-					{registerStatus.type === "error" && (
-						<p className="text-[10px] text-destructive">
-							{registerStatus.message}
-						</p>
-					)}
 				</div>
 			)}
 

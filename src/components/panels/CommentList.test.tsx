@@ -171,7 +171,7 @@ describe("CommentList", () => {
 				.getByRole("button", { name: /delete me/i })
 				.closest("[role='button']") ??
 			screen.getByText("delete me").closest("[role='button']");
-		await user.hover(row);
+		await user.hover(row!);
 		const deleteBtn = screen.getByLabelText("Delete comment");
 		await user.click(deleteBtn);
 		expect(onDelete).toHaveBeenCalledWith("c-42");
@@ -187,7 +187,7 @@ describe("CommentList", () => {
 			/>,
 		);
 		const row = screen.getByText("resolve me").closest("[role='button']");
-		await user.hover(row);
+		await user.hover(row!);
 		const resolveBtn = screen.getByLabelText("Resolve comment");
 		await user.click(resolveBtn);
 		expect(onResolve).toHaveBeenCalledWith("c-99");
@@ -206,7 +206,7 @@ describe("CommentList", () => {
 			/>,
 		);
 		const row = screen.getByText("already done").closest("[role='button']");
-		await user.hover(row);
+		await user.hover(row!);
 		expect(screen.queryByLabelText("Resolve comment")).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Delete comment")).toBeInTheDocument();
 	});
