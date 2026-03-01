@@ -17,17 +17,10 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
-import {
-	type ReviewStatus,
-	type ReviewSummary,
-	useReviewExecution,
-} from "@/hooks/useReviewExecution";
-import { useSkills } from "@/hooks/useSkills";
+import type { ReviewStatus, ReviewSummary } from "@/hooks/useReviewExecution";
 import { parseStreamJson } from "@/lib/parseStreamJson";
-import type { LineComment } from "@/types/comment";
-import type { AppSettings } from "@/types/settings";
 
-function StatusIndicator({ status }: { status: ReviewStatus }) {
+export function StatusIndicator({ status }: { status: ReviewStatus }) {
 	switch (status) {
 		case "starting":
 		case "running":
@@ -48,7 +41,7 @@ function StatusIndicator({ status }: { status: ReviewStatus }) {
 	}
 }
 
-function SummaryDisplay({ summary }: { summary: ReviewSummary }) {
+export function SummaryDisplay({ summary }: { summary: ReviewSummary }) {
 	if (summary.total === 0) {
 		return (
 			<span className="text-xs text-muted-foreground">No issues found</span>
@@ -89,32 +82,23 @@ function SummaryDisplay({ summary }: { summary: ReviewSummary }) {
 interface ReviewModalProps {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	rootPath: string | null;
-	comments: LineComment[];
-	settings: AppSettings;
+	status: ReviewStatus;
+	summary: ReviewSummary | null;
+	output: string;
+	onCancel: () => void;
+	onRetry: () => void;
 }
 
 export function ReviewModal({
 	open,
 	onOpenChange,
-	rootPath,
-	comments,
-	settings,
+	status,
+	summary,
+	output,
+	onCancel,
+	onRetry,
 }: ReviewModalProps) {
-	const { skills } = useSkills(rootPath);
-	const { status, summary, output, startReview, cancelReview, reset } =
-		useReviewExecution(rootPath, comments, settings);
-
-	const selectedSkill = useMemo(
-		() =>
-			skills.find((s) => s.name === settings.defaultReviewSkill) ?? skills[0],
-		[skills, settings.defaultReviewSkill],
-	);
-
 	const isRunning = status === "starting" || status === "running";
-	const isFinished =
-		status === "completed" || status === "error" || status === "cancelled";
-	const reviewDisabled = settings.reviewAgent === "none";
 
 	const outputRef = useRef<HTMLDivElement>(null);
 	const parsedOutput = useMemo(
@@ -131,29 +115,16 @@ export function ReviewModal({
 		}
 	}, [parsedOutput]);
 
-	// Reset state when modal closes
-	const handleOpenChange = (nextOpen: boolean) => {
-		if (!nextOpen && isFinished) {
-			reset();
-		}
-		onOpenChange(nextOpen);
-	};
-
-	const handleStart = () => {
-		if (isFinished) reset();
-		if (selectedSkill) startReview(selectedSkill);
-	};
-
 	return (
-		<Dialog open={open} onOpenChange={handleOpenChange}>
+		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="w-[70vw] max-w-[900px] h-[60vh] flex flex-col gap-0 p-0">
 				<DialogHeader className="px-6 py-4 shrink-0 border-b border-border">
 					<div className="flex items-center gap-3">
-						<DialogTitle>AI Review</DialogTitle>
+						<DialogTitle>AI Review Log</DialogTitle>
 						<StatusIndicator status={status} />
 					</div>
 					<DialogDescription className="sr-only">
-						AI code review progress
+						AI code review log output
 					</DialogDescription>
 				</DialogHeader>
 
@@ -163,11 +134,9 @@ export function ReviewModal({
 				>
 					{parsedOutput || (
 						<span className="text-muted-foreground">
-							{reviewDisabled
-								? "Review agent is not configured. Go to Settings > Review to select an agent."
-								: status === "idle"
-									? "Press Start to begin AI review"
-									: "Waiting for output..."}
+							{status === "idle"
+								? "No review output yet"
+								: "Waiting for output..."}
 						</span>
 					)}
 				</div>
@@ -176,19 +145,16 @@ export function ReviewModal({
 					<div className="flex-1">
 						{summary && <SummaryDisplay summary={summary} />}
 					</div>
-					{isRunning ? (
-						<Button variant="destructive" size="sm" onClick={cancelReview}>
+					{isRunning && (
+						<Button variant="destructive" size="sm" onClick={onCancel}>
 							<Square className="h-3.5 w-3.5 mr-1.5" />
 							Cancel
 						</Button>
-					) : (
-						<Button
-							size="sm"
-							onClick={handleStart}
-							disabled={reviewDisabled || !selectedSkill || skills.length === 0}
-						>
+					)}
+					{!isRunning && status !== "idle" && (
+						<Button variant="outline" size="sm" onClick={onRetry}>
 							<Play className="h-3.5 w-3.5 mr-1.5" />
-							{isFinished ? "Retry" : "Start"}
+							Retry
 						</Button>
 					)}
 				</DialogFooter>
