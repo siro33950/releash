@@ -41,11 +41,18 @@ export function useLineComments(worktreeName: string) {
 			(event) => {
 				if (event.payload.worktree_name !== worktreeNameRef.current) return;
 				if (event.payload.source === "desktop") return;
+				const currentWorktree = worktreeNameRef.current;
 				invoke<CommentItemDTO[]>("load_comments", {
-					worktreeName: worktreeNameRef.current,
+					worktreeName: currentWorktree,
 				}).then(
-					(dtos) => setComments(dtos.map(dtoToLineComment)),
-					(err) => console.error("Failed to reload comments:", err),
+					(dtos) => {
+						if (worktreeNameRef.current !== currentWorktree) return;
+						setComments(dtos.map(dtoToLineComment));
+					},
+					(err) => {
+						if (worktreeNameRef.current !== currentWorktree) return;
+						console.error("Failed to reload comments:", err);
+					},
 				);
 			},
 		);

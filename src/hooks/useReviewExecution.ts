@@ -138,11 +138,13 @@ export function useReviewExecution(
 	}, [state.status, comments]);
 
 	const startInFlightRef = useRef(false);
+	const runTokenRef = useRef(0);
 
 	const startReview = useCallback(async () => {
 		if (!worktreePath) return;
 		if (startInFlightRef.current) return;
 		startInFlightRef.current = true;
+		const runToken = ++runTokenRef.current;
 
 		let prompt: string;
 		try {
@@ -152,6 +154,7 @@ export function useReviewExecution(
 			setState({ status: "error", ptyId: null, summary: null, output: "" });
 			return;
 		}
+		if (runTokenRef.current !== runToken) return;
 
 		const command = buildReviewCommand(settings, prompt);
 		if (!command) {
@@ -178,6 +181,7 @@ export function useReviewExecution(
 				label: "review",
 				timeoutSecs: 300,
 			});
+			if (runTokenRef.current !== runToken) return;
 
 			ptyIdRef.current = info.pty_id;
 			awaitingPtyRef.current = false;
@@ -226,7 +230,10 @@ export function useReviewExecution(
 	}, []);
 
 	const reset = useCallback(() => {
+		runTokenRef.current += 1;
 		ptyIdRef.current = null;
+		awaitingPtyRef.current = false;
+		startInFlightRef.current = false;
 		pendingStatusRef.current.clear();
 		pendingOutputRef.current.clear();
 		setState({ status: "idle", ptyId: null, summary: null, output: "" });

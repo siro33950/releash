@@ -130,7 +130,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		expect(result.current.status).toBe("running");
@@ -151,7 +151,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		expect(result.current.status).toBe("error");
@@ -165,7 +165,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		expect(result.current.status).toBe("error");
@@ -175,7 +175,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook(null);
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		expect(result.current.status).toBe("idle");
@@ -192,7 +192,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		act(() => {
@@ -215,7 +215,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		act(() => {
@@ -236,7 +236,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		act(() => {
@@ -256,7 +256,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		act(() => {
@@ -276,7 +276,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		act(() => {
@@ -296,7 +296,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		await act(async () => {
@@ -318,7 +318,7 @@ describe("useReviewExecution", () => {
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		expect(result.current.status).toBe("running");
@@ -427,7 +427,7 @@ describe("useReviewExecution", () => {
 		const { result, rerender } = await renderReviewHook(WORKTREE, []);
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		// Provide comments and complete
@@ -460,7 +460,7 @@ describe("useReviewExecution", () => {
 		mockInvoke.mockResolvedValueOnce("prompt");
 
 		await act(async () => {
-			result.current.startReview();
+			await result.current.startReview();
 		});
 
 		// buildReviewCommand returns null for "none", so startReview bails out

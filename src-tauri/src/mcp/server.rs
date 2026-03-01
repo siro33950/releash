@@ -288,14 +288,22 @@ impl ReleashMcpServer {
             self.state.app_handle.as_ref(),
             self.state.app_data_dir.as_ref(),
         ) {
-            let _ = self.state.comment_store.save(data_dir, &worktree_path);
-            let _ = app.emit(
+            self.state
+                .comment_store
+                .save(data_dir, &worktree_path)
+                .map_err(|e| {
+                    McpError::internal_error(format!("Failed to save comments: {e}"), None)
+                })?;
+            app.emit(
                 "comments-changed",
                 crate::comment_store::CommentsChangedPayload {
                     worktree_name: worktree_path.clone(),
                     source: "mcp".to_string(),
                 },
-            );
+            )
+            .map_err(|e| {
+                McpError::internal_error(format!("Failed to emit comments-changed: {e}"), None)
+            })?;
         }
 
         // Broadcast via WebSocket
@@ -358,14 +366,22 @@ impl ReleashMcpServer {
             self.state.app_handle.as_ref(),
             self.state.app_data_dir.as_ref(),
         ) {
-            let _ = self.state.comment_store.save(data_dir, &worktree_path);
-            let _ = app.emit(
+            self.state
+                .comment_store
+                .save(data_dir, &worktree_path)
+                .map_err(|e| {
+                    McpError::internal_error(format!("Failed to save comments: {e}"), None)
+                })?;
+            app.emit(
                 "comments-changed",
                 crate::comment_store::CommentsChangedPayload {
                     worktree_name: worktree_path.clone(),
                     source: "mcp".to_string(),
                 },
-            );
+            )
+            .map_err(|e| {
+                McpError::internal_error(format!("Failed to emit comments-changed: {e}"), None)
+            })?;
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
