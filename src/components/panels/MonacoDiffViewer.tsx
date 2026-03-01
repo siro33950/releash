@@ -35,7 +35,6 @@ interface HunkCommentProps {
 	) => void;
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
-	onSendComment?: (comment: LineComment) => void;
 	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
@@ -340,7 +339,6 @@ interface MonacoDiffViewerProps {
 	) => void;
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
-	onSendComment?: (comment: LineComment) => void;
 	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
@@ -365,7 +363,6 @@ export function MonacoDiffViewer({
 	onAddComment,
 	onDeleteComment,
 	onUpdateComment,
-	onSendComment,
 	onCopyComment,
 	getCommentsForLine,
 	revealLine,
@@ -382,7 +379,6 @@ export function MonacoDiffViewer({
 		onAddComment,
 		onDeleteComment,
 		onUpdateComment,
-		onSendComment,
 		onCopyComment,
 		getCommentsForLine,
 		revealLine,

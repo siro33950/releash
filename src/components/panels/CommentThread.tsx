@@ -6,7 +6,9 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { Check, Copy, Pencil, Trash2, X } from "lucide-react";
 import { formatRelativeTime } from "@/lib/formatRelativeTime";
+import { MarkdownPreview } from "@/components/panels/MarkdownPreview";
 import type { LineComment } from "@/types/comment";
 
 export interface CommentThreadProps {
@@ -17,7 +19,6 @@ export interface CommentThreadProps {
 	onCancel: () => void;
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
-	onSendComment?: (comment: LineComment) => void;
 	onCopyComment?: (comment: LineComment) => void;
 	onResolveComment?: (id: string) => void;
 }
@@ -34,14 +35,12 @@ function CommentItem({
 	comment,
 	onDelete,
 	onUpdate,
-	onSend,
 	onCopy,
 	onResolve,
 }: {
 	comment: LineComment;
 	onDelete?: (id: string) => void;
 	onUpdate?: (id: string, content: string) => void;
-	onSend?: (comment: LineComment) => void;
 	onCopy?: (comment: LineComment) => void;
 	onResolve?: (id: string) => void;
 }) {
@@ -114,7 +113,7 @@ function CommentItem({
 									setEditing(true);
 								}}
 							>
-								&#x270E;
+								<Pencil className="h-3.5 w-3.5" />
 							</button>
 						)}
 						{onCopy && (
@@ -127,20 +126,7 @@ function CommentItem({
 									onCopy(comment);
 								}}
 							>
-								&#x2398;
-							</button>
-						)}
-						{onSend && comment.status === "unsent" && (
-							<button
-								type="button"
-								className="comment-thread-action-btn"
-								title="Send"
-								onClick={(e) => {
-									e.stopPropagation();
-									onSend(comment);
-								}}
-							>
-								&#x2197;
+								<Copy className="h-3.5 w-3.5" />
 							</button>
 						)}
 						{onResolve && (
@@ -154,7 +140,7 @@ function CommentItem({
 									setRemoved(true);
 								}}
 							>
-								&#x2713;
+								<Check className="h-3.5 w-3.5" />
 							</button>
 						)}
 						{onDelete && (
@@ -168,7 +154,7 @@ function CommentItem({
 									setRemoved(true);
 								}}
 							>
-								&#x2715;
+								<Trash2 className="h-3.5 w-3.5" />
 							</button>
 						)}
 					</div>
@@ -191,7 +177,7 @@ function CommentItem({
 							title="Save"
 							onClick={handleSave}
 						>
-							&#x2713;
+							<Check className="h-3.5 w-3.5" />
 						</button>
 						<button
 							type="button"
@@ -199,12 +185,14 @@ function CommentItem({
 							title="Cancel"
 							onClick={handleCancelEdit}
 						>
-							&#x2715;
+							<X className="h-3.5 w-3.5" />
 						</button>
 					</div>
 				</>
 			) : (
-				<div className="comment-thread-item-content">{content}</div>
+				<div className="comment-thread-item-content">
+					<MarkdownPreview content={content} className="comment-thread-markdown" />
+				</div>
 			)}
 		</div>
 	);
@@ -218,7 +206,6 @@ export function CommentThread({
 	onCancel,
 	onDeleteComment,
 	onUpdateComment,
-	onSendComment,
 	onCopyComment,
 	onResolveComment,
 }: CommentThreadProps) {
@@ -275,7 +262,6 @@ export function CommentThread({
 							comment={comment}
 							onDelete={onDeleteComment}
 							onUpdate={onUpdateComment}
-							onSend={onSendComment}
 							onCopy={onCopyComment}
 							onResolve={onResolveComment}
 						/>

@@ -13,7 +13,6 @@ export interface CommentThreadOptions {
 	onCancel: () => void;
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
-	onSendComment?: (comment: LineComment) => void;
 	onCopyComment?: (comment: LineComment) => void;
 	onResolveComment?: (id: string) => void;
 }
@@ -59,7 +58,6 @@ export function createCommentThread(
 		onCancel,
 		onDeleteComment,
 		onUpdateComment,
-		onSendComment,
 		onCopyComment,
 		onResolveComment,
 	} = options;
@@ -94,6 +92,28 @@ export function createCommentThread(
 		e.stopPropagation();
 	});
 
+	// Prevent editor from stealing scroll events when widget content is scrollable
+	widgetNode.addEventListener(
+		"wheel",
+		(e) => {
+			const scrollable = widgetNode.querySelector<HTMLElement>(
+				".comment-thread-items",
+			);
+			if (!scrollable) return;
+
+			const { scrollTop, scrollHeight, clientHeight } = scrollable;
+			const atTop = scrollTop <= 0 && e.deltaY < 0;
+			const atBottom =
+				scrollTop + clientHeight >= scrollHeight && e.deltaY > 0;
+
+			// Only propagate to editor if list is not scrollable or at boundary
+			if (scrollHeight > clientHeight && !atTop && !atBottom) {
+				e.stopPropagation();
+			}
+		},
+		{ passive: true },
+	);
+
 	// Keyboard shortcuts on the whole widget
 	widgetNode.addEventListener("keydown", (e) => {
 		e.stopPropagation();
@@ -125,7 +145,6 @@ export function createCommentThread(
 			onCancel,
 			onDeleteComment,
 			onUpdateComment,
-			onSendComment,
 			onCopyComment,
 			onResolveComment,
 		}),

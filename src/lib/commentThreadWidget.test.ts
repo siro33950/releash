@@ -228,31 +228,6 @@ describe("createCommentThread", () => {
 		disposeZone(zone);
 	});
 
-	it("should show send button only for unsent comments", async () => {
-		const editor = makeMockEditor();
-		const onSend = vi.fn();
-		const zone = await createZone(editor, {
-			lineNumber: 10,
-			comments: [
-				makeComment({ id: "unsent", status: "unsent" }),
-				makeComment({ id: "sent", status: "sent" }),
-			],
-			onSendComment: onSend,
-		});
-
-		const items = zone.domNode.querySelectorAll(".comment-thread-item");
-		const unsentActions = items[0].querySelectorAll(
-			".comment-thread-action-btn[title='Send']",
-		);
-		const sentActions = items[1].querySelectorAll(
-			".comment-thread-action-btn[title='Send']",
-		);
-
-		expect(unsentActions.length).toBe(1);
-		expect(sentActions.length).toBe(0);
-		disposeZone(zone);
-	});
-
 	it("should filter resolved comments when showResolvedComments is false", async () => {
 		const editor = makeMockEditor();
 		const zone = await createZone(editor, {

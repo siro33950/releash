@@ -45,7 +45,6 @@ interface UseMonacoDiffEditorOptions {
 	) => void;
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
-	onSendComment?: (comment: LineComment) => void;
 	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
@@ -157,7 +156,6 @@ export function useMonacoDiffEditor(
 		onAddComment,
 		onDeleteComment,
 		onUpdateComment,
-		onSendComment,
 		onCopyComment,
 		getCommentsForLine,
 		revealLine,
@@ -183,7 +181,6 @@ export function useMonacoDiffEditor(
 	const onAddCommentRef = useRef(onAddComment);
 	const onDeleteCommentRef = useRef(onDeleteComment);
 	const onUpdateCommentRef = useRef(onUpdateComment);
-	const onSendCommentRef = useRef(onSendComment);
 	const onCopyCommentRef = useRef(onCopyComment);
 	const getCommentsForLineRef = useRef(getCommentsForLine);
 	const onStageHunkRef = useRef(onStageHunk);
@@ -205,7 +202,6 @@ export function useMonacoDiffEditor(
 	onAddCommentRef.current = onAddComment;
 	onDeleteCommentRef.current = onDeleteComment;
 	onUpdateCommentRef.current = onUpdateComment;
-	onSendCommentRef.current = onSendComment;
 	onCopyCommentRef.current = onCopyComment;
 	getCommentsForLineRef.current = getCommentsForLine;
 	onStageHunkRef.current = onStageHunk;
@@ -299,6 +295,10 @@ export function useMonacoDiffEditor(
 				modified: modifiedModel,
 			});
 
+			if (!renderSideBySide) {
+				diffEditor.getOriginalEditor().updateOptions({ lineNumbers: "off" });
+			}
+
 			contentChangeListenerRef.current = diffEditor
 				.getModifiedEditor()
 				.onDidChangeModelContent(() => {
@@ -372,7 +372,6 @@ export function useMonacoDiffEditor(
 					onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
 					onUpdateComment: (id, content) =>
 						onUpdateCommentRef.current?.(id, content),
-					onSendComment: (comment) => onSendCommentRef.current?.(comment),
 					onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
 				});
 				commentInputWidgetRef.current = zone;
@@ -381,7 +380,8 @@ export function useMonacoDiffEditor(
 			modifiedEditor.onMouseDown((e: Monaco.editor.IEditorMouseEvent) => {
 				if (
 					e.target.type ===
-					monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS
+						monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS ||
+					e.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS
 				) {
 					const lineNum = e.target.position?.lineNumber;
 					if (!lineNum) return;
@@ -423,14 +423,19 @@ export function useMonacoDiffEditor(
 
 				if (lineNum !== hoverLineRef.current) {
 					hoverLineRef.current = lineNum;
+					const hasComment =
+						lineNum != null &&
+						commentRangesRef.current?.some(
+							(r) => lineNum >= r.start && lineNum <= (r.end ?? r.start),
+						);
 					hoverDecorationsRef.current = modifiedEditor.deltaDecorations(
 						hoverDecorationsRef.current,
-						lineNum != null
+						lineNum != null && !hasComment
 							? [
 									{
 										range: new monaco.Range(lineNum, 1, lineNum, 1),
 										options: {
-											linesDecorationsClassName: "comment-hover-icon",
+											lineNumberClassName: "comment-hover-margin",
 										},
 									},
 								]
@@ -652,7 +657,7 @@ export function useMonacoDiffEditor(
 				decorations.push({
 					range: new monaco.Range(r.start, 1, r.start, 1),
 					options: {
-						linesDecorationsClassName: "comment-marker-icon",
+						lineNumberClassName: "comment-marker-margin",
 					},
 				});
 			}
@@ -662,7 +667,7 @@ export function useMonacoDiffEditor(
 			commentDecorationsRef.current,
 			decorations,
 		);
-	}, [commentRanges]);
+	}, [commentRanges, editorReady]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: containerRef.current is a ref that doesn't trigger re-renders; visibility is handled by IntersectionObserver + pendingRevealRef
 	useEffect(() => {
@@ -700,7 +705,6 @@ export function useMonacoDiffEditor(
 						onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
 						onUpdateComment: (id, content) =>
 							onUpdateCommentRef.current?.(id, content),
-						onSendComment: (comment) => onSendCommentRef.current?.(comment),
 						onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
 					});
 					commentInputWidgetRef.current = zone;

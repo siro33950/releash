@@ -32,7 +32,6 @@ export interface DiffViewerSectionProps {
 	onAddComment: (lineNumber: number, content: string, endLine?: number) => void;
 	onDeleteComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
-	onSendComment?: (comment: LineComment) => void;
 	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine: (lineNumber: number) => LineComment[];
 	revealLine: { line: number; key: number; openThread?: boolean } | undefined;
@@ -59,7 +58,6 @@ export function DiffViewerSection({
 	onAddComment,
 	onDeleteComment,
 	onUpdateComment,
-	onSendComment,
 	onCopyComment,
 	getCommentsForLine,
 	revealLine,
@@ -109,7 +107,6 @@ export function DiffViewerSection({
 				onAddComment={onAddComment}
 				onDeleteComment={onDeleteComment}
 				onUpdateComment={onUpdateComment}
-				onSendComment={onSendComment}
 				onCopyComment={onCopyComment}
 				getCommentsForLine={getCommentsForLine}
 				revealLine={revealLine}

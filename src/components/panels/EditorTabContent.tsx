@@ -128,9 +128,9 @@ export function EditorTabContent({
 
 	const handleAddComment = useCallback(
 		(lineNumber: number, content: string, endLine?: number) => {
-			addComment(filePath, lineNumber, content, endLine);
+			addComment(relativeFilePath, lineNumber, content, endLine);
 		},
-		[filePath, addComment],
+		[relativeFilePath, addComment],
 	);
 
 	const getCommentsForLine = useCallback(
@@ -248,7 +248,6 @@ export function EditorTabContent({
 					onAddComment={handleAddComment}
 					onDeleteComment={deleteComment}
 					onUpdateComment={updateCommentContent}
-					onSendComment={sendComment}
 					onCopyComment={copyComment}
 					getCommentsForLine={getCommentsForLine}
 					revealLine={revealLine}
