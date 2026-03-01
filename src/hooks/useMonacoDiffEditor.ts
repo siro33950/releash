@@ -44,6 +44,7 @@ interface UseMonacoDiffEditorOptions {
 		endLine?: number,
 	) => void;
 	onDeleteComment?: (id: string) => void;
+	onResolveComment?: (id: string) => void;
 	onUpdateComment?: (id: string, content: string) => void;
 	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
@@ -155,6 +156,7 @@ export function useMonacoDiffEditor(
 		onUnstageHunk,
 		onAddComment,
 		onDeleteComment,
+		onResolveComment,
 		onUpdateComment,
 		onCopyComment,
 		getCommentsForLine,
@@ -180,6 +182,7 @@ export function useMonacoDiffEditor(
 	const fontSizeRef = useRef(fontSize);
 	const onAddCommentRef = useRef(onAddComment);
 	const onDeleteCommentRef = useRef(onDeleteComment);
+	const onResolveCommentRef = useRef(onResolveComment);
 	const onUpdateCommentRef = useRef(onUpdateComment);
 	const onCopyCommentRef = useRef(onCopyComment);
 	const getCommentsForLineRef = useRef(getCommentsForLine);
@@ -201,6 +204,7 @@ export function useMonacoDiffEditor(
 	fontSizeRef.current = fontSize;
 	onAddCommentRef.current = onAddComment;
 	onDeleteCommentRef.current = onDeleteComment;
+	onResolveCommentRef.current = onResolveComment;
 	onUpdateCommentRef.current = onUpdateComment;
 	onCopyCommentRef.current = onCopyComment;
 	getCommentsForLineRef.current = getCommentsForLine;
@@ -370,6 +374,7 @@ export function useMonacoDiffEditor(
 						ed.focus();
 					},
 					onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
+					onResolveComment: (id) => onResolveCommentRef.current?.(id),
 					onUpdateComment: (id, content) =>
 						onUpdateCommentRef.current?.(id, content),
 					onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
@@ -708,6 +713,7 @@ export function useMonacoDiffEditor(
 							modifiedEditor.focus();
 						},
 						onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
+						onResolveComment: (id) => onResolveCommentRef.current?.(id),
 						onUpdateComment: (id, content) =>
 							onUpdateCommentRef.current?.(id, content),
 						onCopyComment: (comment) => onCopyCommentRef.current?.(comment),

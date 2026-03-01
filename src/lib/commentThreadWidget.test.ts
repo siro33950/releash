@@ -228,6 +228,26 @@ describe("createCommentThread", () => {
 		disposeZone(zone);
 	});
 
+	it("should call onResolveComment when resolve button is clicked", async () => {
+		const editor = makeMockEditor();
+		const onResolve = vi.fn();
+		const zone = await createZone(editor, {
+			lineNumber: 10,
+			comments: [makeComment({ id: "res-1" })],
+			onResolveComment: onResolve,
+		});
+
+		const resolveBtn = zone.domNode.querySelector<HTMLButtonElement>(
+			".comment-thread-action-resolve",
+		);
+		act(() => {
+			resolveBtn?.click();
+		});
+
+		expect(onResolve).toHaveBeenCalledWith("res-1");
+		disposeZone(zone);
+	});
+
 	it("should filter resolved comments when showResolvedComments is false", async () => {
 		const editor = makeMockEditor();
 		const zone = await createZone(editor, {

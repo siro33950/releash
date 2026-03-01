@@ -43,6 +43,7 @@ export function EditorTabContent({
 		comments,
 		addComment,
 		deleteComment,
+		resolveComment,
 		updateComment: updateCommentContent,
 		copyComment,
 		showResolvedComments,
@@ -246,6 +247,7 @@ export function EditorTabContent({
 					}
 					onAddComment={handleAddComment}
 					onDeleteComment={deleteComment}
+					onResolveComment={resolveComment}
 					onUpdateComment={updateCommentContent}
 					onCopyComment={copyComment}
 					getCommentsForLine={getCommentsForLine}
