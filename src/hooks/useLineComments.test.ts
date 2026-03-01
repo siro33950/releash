@@ -238,26 +238,26 @@ describe("useLineComments", () => {
 		expect(aComments[1].content).toBe("comment3");
 	});
 
-	it("should default showSentComments to false", () => {
+	it("should default showResolvedComments to false", () => {
 		const { result } = renderHook(() => useLineComments(WORKTREE));
-		expect(result.current.showSentComments).toBe(false);
+		expect(result.current.showResolvedComments).toBe(false);
 	});
 
-	it("should toggle showSentComments", () => {
+	it("should toggle showResolvedComments", () => {
 		const { result } = renderHook(() => useLineComments(WORKTREE));
 
-		expect(result.current.showSentComments).toBe(false);
+		expect(result.current.showResolvedComments).toBe(false);
 
 		act(() => {
-			result.current.toggleShowSentComments();
+			result.current.toggleShowResolvedComments();
 		});
 
-		expect(result.current.showSentComments).toBe(true);
+		expect(result.current.showResolvedComments).toBe(true);
 
 		act(() => {
-			result.current.toggleShowSentComments();
+			result.current.toggleShowResolvedComments();
 		});
 
-		expect(result.current.showSentComments).toBe(false);
+		expect(result.current.showResolvedComments).toBe(false);
 	});
 });

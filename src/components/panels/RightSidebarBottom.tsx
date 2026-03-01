@@ -22,9 +22,11 @@ interface RightSidebarBottomProps {
 	settings: AppSettings;
 	comments: LineComment[];
 	onCommentClick?: (filePath: string, lineNumber: number) => void;
+	onDeleteComment?: (id: string) => void;
+	onResolveComment?: (id: string) => void;
 	onSendToTerminal?: (comments: LineComment[]) => void;
-	showSentComments?: boolean;
-	onToggleShowSent?: () => void;
+	showResolvedComments?: boolean;
+	onToggleShowResolved?: () => void;
 	onToggleCollapse?: () => void;
 	collapsed?: boolean;
 }
@@ -35,9 +37,11 @@ export function RightSidebarBottom({
 	settings,
 	comments,
 	onCommentClick,
+	onDeleteComment,
+	onResolveComment,
 	onSendToTerminal,
-	showSentComments,
-	onToggleShowSent,
+	showResolvedComments,
+	onToggleShowResolved,
 	onToggleCollapse,
 	collapsed,
 }: RightSidebarBottomProps) {
@@ -113,8 +117,10 @@ export function RightSidebarBottom({
 						<CommentList
 							comments={comments}
 							onCommentClick={onCommentClick}
-							showSentComments={showSentComments}
-							onToggleShowSent={onToggleShowSent}
+							onDeleteComment={onDeleteComment}
+							onResolveComment={onResolveComment}
+							showResolvedComments={showResolvedComments}
+							onToggleShowResolved={onToggleShowResolved}
 						/>
 					</div>
 					{settings.reviewAgent !== "none" && (

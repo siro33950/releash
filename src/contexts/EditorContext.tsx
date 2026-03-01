@@ -25,8 +25,8 @@ export interface EditorContextValue {
 	sendComment?: (comment: LineComment) => void;
 	copyComment?: (comment: LineComment) => void;
 
-	showSentComments: boolean;
-	toggleShowSentComments: () => void;
+	showResolvedComments: boolean;
+	toggleShowResolvedComments: () => void;
 
 	rootPath: string;
 	onStageHunk?: (repoPath: string, patch: string) => Promise<void>;

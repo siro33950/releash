@@ -116,7 +116,7 @@ export function useMonacoGutterEditor(
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	const modelRef = useRef<Monaco.editor.ITextModel | null>(null);
 	const monacoRef = useRef<typeof Monaco | null>(null);
-	const [, setEditorReady] = useState(false);
+	const [editorReady, setEditorReady] = useState(false);
 	const intersectionObserverRef = useRef<IntersectionObserver | null>(null);
 	const decorationsRef = useRef<string[]>([]);
 	const commentDecorationsRef = useRef<string[]>([]);
@@ -136,6 +136,7 @@ export function useMonacoGutterEditor(
 	const hoverLineRef = useRef<number | null>(null);
 	const hoverDecorationsRef = useRef<string[]>([]);
 	const isProgrammaticUpdateRef = useRef(false);
+	const pendingRevealRef = useRef<(() => void) | null>(null);
 	const themeRef = useRef(theme);
 	const commentRangesRef = useRef(commentRanges);
 	originalValueRef.current = originalValue;
@@ -427,6 +428,11 @@ export function useMonacoGutterEditor(
 				if (entries.some((e) => e.isIntersecting)) {
 					requestAnimationFrame(() => {
 						editorRef.current?.layout();
+						const pending = pendingRevealRef.current;
+						if (pending) {
+							pendingRevealRef.current = null;
+							pending();
+						}
 					});
 				}
 			});
@@ -440,6 +446,7 @@ export function useMonacoGutterEditor(
 
 		return () => {
 			isMounted = false;
+			pendingRevealRef.current = null;
 			commentInputWidgetRef.current?.dispose();
 			commentInputWidgetRef.current = null;
 			intersectionObserverRef.current?.disconnect();
@@ -556,43 +563,56 @@ export function useMonacoGutterEditor(
 		);
 	}, [commentRanges]);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: containerRef.current is a ref that doesn't trigger re-renders; visibility is handled by IntersectionObserver + pendingRevealRef
 	useEffect(() => {
+		if (!editorReady || !revealLine) return;
 		const editor = editorRef.current;
-		if (!editor || !revealLine) return;
-		editor.revealLineInCenter(revealLine.line);
-		editor.setPosition({ lineNumber: revealLine.line, column: 1 });
+		if (!editor) return;
 
-		if (revealLine.openThread) {
-			if (commentInputWidgetRef.current) {
-				commentInputWidgetRef.current.dispose();
-				commentInputWidgetRef.current = null;
+		const applyReveal = () => {
+			editor.layout();
+			editor.revealLineInCenter(revealLine.line);
+			editor.setPosition({ lineNumber: revealLine.line, column: 1 });
+
+			if (revealLine.openThread) {
+				if (commentInputWidgetRef.current) {
+					commentInputWidgetRef.current.dispose();
+					commentInputWidgetRef.current = null;
+				}
+				const existing = getCommentsForLineRef.current?.(revealLine.line) ?? [];
+				if (existing.length > 0) {
+					const zone = createCommentThread(editor, {
+						lineNumber: revealLine.line,
+						comments: existing,
+						onSubmit: (content) => {
+							onAddCommentRef.current?.(revealLine.line, content);
+							zone.dispose();
+							commentInputWidgetRef.current = null;
+							editor.focus();
+						},
+						onCancel: () => {
+							zone.dispose();
+							commentInputWidgetRef.current = null;
+							editor.focus();
+						},
+						onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
+						onUpdateComment: (id, content) =>
+							onUpdateCommentRef.current?.(id, content),
+						onSendComment: (comment) => onSendCommentRef.current?.(comment),
+						onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
+					});
+					commentInputWidgetRef.current = zone;
+				}
 			}
-			const existing = getCommentsForLineRef.current?.(revealLine.line) ?? [];
-			if (existing.length > 0) {
-				const zone = createCommentThread(editor, {
-					lineNumber: revealLine.line,
-					comments: existing,
-					onSubmit: (content) => {
-						onAddCommentRef.current?.(revealLine.line, content);
-						zone.dispose();
-						commentInputWidgetRef.current = null;
-						editor.focus();
-					},
-					onCancel: () => {
-						zone.dispose();
-						commentInputWidgetRef.current = null;
-						editor.focus();
-					},
-					onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
-					onUpdateComment: (id, content) =>
-						onUpdateCommentRef.current?.(id, content),
-					onSendComment: (comment) => onSendCommentRef.current?.(comment),
-					onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
-				});
-				commentInputWidgetRef.current = zone;
-			}
+		};
+
+		const container = containerRef.current;
+		if (container?.offsetParent !== null) {
+			applyReveal();
+		} else {
+			pendingRevealRef.current = applyReveal;
 		}
-	}, [revealLine]);
+	}, [revealLine, editorReady]);
 
 	useEffect(() => {
 		const monaco = monacoRef.current;

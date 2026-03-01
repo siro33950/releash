@@ -116,7 +116,7 @@ export function ReviewModal({
 		status === "completed" || status === "error" || status === "cancelled";
 	const reviewDisabled = settings.reviewAgent === "none";
 
-	const outputRef = useRef<HTMLPreElement>(null);
+	const outputRef = useRef<HTMLDivElement>(null);
 	const parsedOutput = useMemo(
 		() => parseStreamJson(output).replace(/^\n+/, ""),
 		[output],

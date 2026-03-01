@@ -13,7 +13,6 @@ function makeComment(
 		id: "c-1",
 		status: "unsent",
 		createdAt: Date.now(),
-		author: { type: "human", name: "User" },
 		resolved: false,
 		target: "local",
 		...overrides,

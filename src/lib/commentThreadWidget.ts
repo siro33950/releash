@@ -8,7 +8,7 @@ export interface CommentThreadOptions {
 	lineNumber: number;
 	endLine?: number;
 	comments: LineComment[];
-	showSentComments?: boolean;
+	showResolvedComments?: boolean;
 	onSubmit: (content: string) => void;
 	onCancel: () => void;
 	onDeleteComment?: (id: string) => void;
@@ -54,7 +54,7 @@ export function createCommentThread(
 		lineNumber,
 		endLine,
 		comments: rawComments,
-		showSentComments = true,
+		showResolvedComments = true,
 		onSubmit,
 		onCancel,
 		onDeleteComment,
@@ -64,9 +64,9 @@ export function createCommentThread(
 		onResolveComment,
 	} = options;
 
-	const comments = showSentComments
+	const comments = showResolvedComments
 		? rawComments
-		: rawComments.filter((c) => c.status !== "sent");
+		: rawComments.filter((c) => !c.resolved);
 
 	// VSCode ZoneWidget 方式:
 	// ViewZone = 空のdomNodeでスペース確保のみ

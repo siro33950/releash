@@ -46,7 +46,7 @@ export function EditorTabContent({
 		updateComment: updateCommentContent,
 		sendComment,
 		copyComment,
-		showSentComments,
+		showResolvedComments,
 		rootPath,
 		onStageHunk,
 		onGitChanged,
@@ -121,10 +121,10 @@ export function EditorTabContent({
 			.filter(
 				(c) =>
 					c.filePath === relativeFilePath &&
-					(showSentComments || c.status !== "sent"),
+					(showResolvedComments || !c.resolved),
 			)
 			.map((c) => ({ start: c.lineNumber, end: c.endLine }));
-	}, [comments, relativeFilePath, showSentComments]);
+	}, [comments, relativeFilePath, showResolvedComments]);
 
 	const handleAddComment = useCallback(
 		(lineNumber: number, content: string, endLine?: number) => {
@@ -138,14 +138,14 @@ export function EditorTabContent({
 			return comments.filter(
 				(c) =>
 					c.filePath === relativeFilePath &&
-					(showSentComments || c.status !== "sent") &&
+					(showResolvedComments || !c.resolved) &&
 					(c.lineNumber === lineNumber ||
 						(c.endLine != null &&
 							lineNumber >= c.lineNumber &&
 							lineNumber <= c.endLine)),
 			);
 		},
-		[comments, relativeFilePath, showSentComments],
+		[comments, relativeFilePath, showResolvedComments],
 	);
 
 	const {

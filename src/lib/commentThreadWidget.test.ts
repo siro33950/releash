@@ -253,15 +253,15 @@ describe("createCommentThread", () => {
 		disposeZone(zone);
 	});
 
-	it("should filter sent comments when showSentComments is false", async () => {
+	it("should filter resolved comments when showResolvedComments is false", async () => {
 		const editor = makeMockEditor();
 		const zone = await createZone(editor, {
 			lineNumber: 10,
 			comments: [
-				makeComment({ id: "unsent", status: "unsent" }),
-				makeComment({ id: "sent", status: "sent" }),
+				makeComment({ id: "active", resolved: false }),
+				makeComment({ id: "resolved", resolved: true }),
 			],
-			showSentComments: false,
+			showResolvedComments: false,
 		});
 
 		const items = zone.domNode.querySelectorAll(".comment-thread-item");

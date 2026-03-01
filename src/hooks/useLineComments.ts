@@ -134,10 +134,10 @@ export function useLineComments(worktreeName: string) {
 		[comments],
 	);
 
-	const [showSentComments, setShowSentComments] = useState(false);
+	const [showResolvedComments, setShowResolvedComments] = useState(false);
 
-	const toggleShowSentComments = useCallback(() => {
-		setShowSentComments((prev) => !prev);
+	const toggleShowResolvedComments = useCallback(() => {
+		setShowResolvedComments((prev) => !prev);
 	}, []);
 
 	const unsentComments = comments.filter((c) => c.status === "unsent");
@@ -152,7 +152,7 @@ export function useLineComments(worktreeName: string) {
 		resolveComment,
 		getCommentsForFile,
 		setComments,
-		showSentComments,
-		toggleShowSentComments,
+		showResolvedComments,
+		toggleShowResolvedComments,
 	};
 }

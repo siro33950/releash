@@ -350,9 +350,11 @@ function WorktreeContent({
 											settings={settings}
 											comments={s.comments}
 											onCommentClick={handleCommentClick}
+											onDeleteComment={s.removeComment}
+											onResolveComment={s.resolveComment}
 											onSendToTerminal={handleCommentSent}
-											showSentComments={s.showSentComments}
-											onToggleShowSent={s.toggleShowSentComments}
+											showResolvedComments={s.showResolvedComments}
+											onToggleShowResolved={s.toggleShowResolvedComments}
 											onToggleCollapse={handleToggleRightBottom}
 											collapsed={rightBottomCollapsed}
 										/>

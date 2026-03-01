@@ -29,13 +29,13 @@ export function RemoteCommentList({
 	onSendComment,
 	onCopyComment,
 }: RemoteCommentListProps) {
-	const [showSentComments, setShowSentComments] = useState(false);
+	const [showResolvedComments, setShowResolvedComments] = useState(false);
 	const unsentComments = comments.filter((c) => c.status === "unsent");
-	const sentCount = comments.filter((c) => c.status === "sent").length;
+	const resolvedCount = comments.filter((c) => c.resolved).length;
 	const visibleComments = useMemo(
 		() =>
-			showSentComments ? comments : comments.filter((c) => c.status !== "sent"),
-		[comments, showSentComments],
+			showResolvedComments ? comments : comments.filter((c) => !c.resolved),
+		[comments, showResolvedComments],
 	);
 	const [editingId, setEditingId] = useState<string | null>(null);
 	const [editContent, setEditContent] = useState("");
@@ -59,7 +59,7 @@ export function RemoteCommentList({
 		setEditContent("");
 	}, [editingId, editContent, onUpdateComment]);
 
-	if (visibleComments.length === 0 && sentCount === 0) {
+	if (visibleComments.length === 0 && resolvedCount === 0) {
 		return (
 			<div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground px-6">
 				<MessageSquare className="h-8 w-8" />
@@ -93,19 +93,19 @@ export function RemoteCommentList({
 							</span>
 						)}
 					</span>
-					{sentCount > 0 && (
+					{resolvedCount > 0 && (
 						<button
 							type="button"
-							onClick={() => setShowSentComments((prev) => !prev)}
+							onClick={() => setShowResolvedComments((prev) => !prev)}
 							className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-muted-foreground rounded hover:bg-muted transition-colors"
-							data-testid="toggle-sent-comments"
+							data-testid="toggle-resolved-comments"
 						>
-							{showSentComments ? (
+							{showResolvedComments ? (
 								<EyeOff className="h-3 w-3" />
 							) : (
 								<Eye className="h-3 w-3" />
 							)}
-							送信済み ({sentCount})
+							解決済み ({resolvedCount})
 						</button>
 					)}
 				</div>

@@ -1,10 +1,12 @@
 import {
 	AlertTriangle,
+	Check,
 	Eye,
 	EyeOff,
 	Info,
 	Lightbulb,
 	MessageSquare,
+	Trash2,
 	XCircle,
 } from "lucide-react";
 import { useMemo } from "react";
@@ -16,8 +18,10 @@ import type { CommentSeverity, LineComment } from "@/types/comment";
 export interface CommentListProps {
 	comments: LineComment[];
 	onCommentClick?: (filePath: string, lineNumber: number) => void;
-	showSentComments?: boolean;
-	onToggleShowSent?: () => void;
+	onDeleteComment?: (id: string) => void;
+	onResolveComment?: (id: string) => void;
+	showResolvedComments?: boolean;
+	onToggleShowResolved?: () => void;
 }
 
 function SeverityIcon({ severity }: { severity?: CommentSeverity }) {
@@ -42,18 +46,20 @@ function SeverityIcon({ severity }: { severity?: CommentSeverity }) {
 export function CommentList({
 	comments,
 	onCommentClick,
-	showSentComments = false,
-	onToggleShowSent,
+	onDeleteComment,
+	onResolveComment,
+	showResolvedComments = false,
+	onToggleShowResolved,
 }: CommentListProps) {
-	const sentCount = comments.filter((c) => c.status === "sent").length;
+	const resolvedCount = comments.filter((c) => c.resolved).length;
 
 	const visibleComments = useMemo(
 		() =>
-			showSentComments ? comments : comments.filter((c) => c.status !== "sent"),
-		[comments, showSentComments],
+			showResolvedComments ? comments : comments.filter((c) => !c.resolved),
+		[comments, showResolvedComments],
 	);
 
-	if (visibleComments.length === 0 && sentCount === 0) {
+	if (visibleComments.length === 0 && resolvedCount === 0) {
 		return (
 			<EmptyState
 				icon={MessageSquare}
@@ -86,21 +92,21 @@ export function CommentList({
 	}
 
 	return (
-		<ScrollArea className="h-full">
+		<ScrollArea className="h-full [&_[data-slot=scroll-area-viewport]>div]:!block">
 			<div className="p-2">
-				{sentCount > 0 && onToggleShowSent && (
+				{resolvedCount > 0 && onToggleShowResolved && (
 					<button
 						type="button"
-						onClick={onToggleShowSent}
+						onClick={onToggleShowResolved}
 						className="flex items-center gap-1 w-full px-1.5 py-1 mb-1.5 text-[11px] text-muted-foreground rounded hover:bg-muted transition-colors"
-						data-testid="toggle-sent-comments"
+						data-testid="toggle-resolved-comments"
 					>
-						{showSentComments ? (
+						{showResolvedComments ? (
 							<EyeOff className="h-3 w-3" />
 						) : (
 							<Eye className="h-3 w-3" />
 						)}
-						Sent ({sentCount})
+						Resolved ({resolvedCount})
 					</button>
 				)}
 				{[...grouped.entries()].map(([filePath, fileComments]) => {
@@ -131,7 +137,7 @@ export function CommentList({
 											}
 										}}
 										className={cn(
-											"flex items-start gap-1.5 w-full px-1 py-1 text-[11px] rounded transition-colors",
+											"group flex items-start gap-1.5 w-full px-1 py-1 text-[11px] rounded transition-colors",
 											"hover:bg-muted text-left",
 											comment.resolved && "opacity-50",
 										)}
@@ -153,8 +159,56 @@ export function CommentList({
 												>
 													{comment.status === "sent" ? "sent" : "unsent"}
 												</span>
+												{(onResolveComment || onDeleteComment) && (
+													<div className="hidden group-hover:flex items-center gap-0.5 ml-auto">
+														{onResolveComment && !comment.resolved && (
+															// biome-ignore lint/a11y/useSemanticElements: nested inside role="button", cannot use <button>
+															<span
+																role="button"
+																tabIndex={0}
+																className="p-0.5 rounded hover:bg-green-500/20 text-muted-foreground hover:text-green-500 transition-colors"
+																aria-label="Resolve comment"
+																onClick={(e) => {
+																	e.stopPropagation();
+																	onResolveComment(comment.id);
+																}}
+																onKeyDown={(e) => {
+																	if (e.key === "Enter" || e.key === " ") {
+																		e.preventDefault();
+																		e.stopPropagation();
+																		onResolveComment(comment.id);
+																	}
+																}}
+															>
+																<Check className="h-3 w-3" />
+															</span>
+														)}
+														{onDeleteComment && (
+															// biome-ignore lint/a11y/useSemanticElements: nested inside role="button", cannot use <button>
+															<span
+																role="button"
+																tabIndex={0}
+																className="p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
+																aria-label="Delete comment"
+																onClick={(e) => {
+																	e.stopPropagation();
+																	onDeleteComment(comment.id);
+																}}
+																onKeyDown={(e) => {
+																	if (e.key === "Enter" || e.key === " ") {
+																		e.preventDefault();
+																		e.stopPropagation();
+																		onDeleteComment(comment.id);
+																	}
+																}}
+															>
+																<Trash2 className="h-3 w-3" />
+															</span>
+														)}
+													</div>
+												)}
 											</div>
-											<span className="block truncate text-foreground">
+											<span className="line-clamp-2 text-foreground">
 												{comment.content}
 											</span>
 										</div>
