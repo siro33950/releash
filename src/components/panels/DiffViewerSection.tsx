@@ -30,8 +30,12 @@ export interface DiffViewerSectionProps {
 	onStageHunk: (groupIndex: number) => Promise<void>;
 	onUnstageHunk: ((groupIndex: number) => Promise<void>) | undefined;
 	onAddComment: (lineNumber: number, content: string, endLine?: number) => void;
+	onDeleteComment?: (id: string) => void;
+	onResolveComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine: (lineNumber: number) => LineComment[];
-	revealLine: { line: number; key: number } | undefined;
+	revealLine: { line: number; key: number; openThread?: boolean } | undefined;
 	theme?: Theme;
 	onSearchOccurrences?: (text: string) => void;
 }
@@ -53,6 +57,10 @@ export function DiffViewerSection({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
+	onDeleteComment,
+	onResolveComment,
+	onUpdateComment,
+	onCopyComment,
 	getCommentsForLine,
 	revealLine,
 	theme,
@@ -99,6 +107,10 @@ export function DiffViewerSection({
 				onStageHunk={onStageHunk}
 				onUnstageHunk={onUnstageHunk}
 				onAddComment={onAddComment}
+				onDeleteComment={onDeleteComment}
+				onResolveComment={onResolveComment}
+				onUpdateComment={onUpdateComment}
+				onCopyComment={onCopyComment}
 				getCommentsForLine={getCommentsForLine}
 				revealLine={revealLine}
 				theme={theme}

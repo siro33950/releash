@@ -180,9 +180,15 @@ export function useTerminal(
 			// 2. Get or spawn PTY for this worktree
 			const { rows, cols } = terminal;
 			const worktreePath = cwd ?? null;
-			// sessionKey がない standalone の場合、cwd キャッシュから復元
+			// sessionKey がない standalone の場合のみ、cwd キャッシュから復元
+			// onPtyReady がある場合はペイン管理側がセッションキーを保持するため
+			// キャッシュを使わず新規PTYをスポーンさせる
 			const effectiveSessionKey =
-				sessionKey ?? (cwd ? sessionKeyCache.get(cwd) : undefined) ?? null;
+				sessionKey ??
+				(!onPtyReadyRef.current && cwd
+					? sessionKeyCache.get(cwd)
+					: undefined) ??
+				null;
 			const result = await invoke<GetOrSpawnPtyResult>("get_or_spawn_pty", {
 				rows,
 				cols,
@@ -190,10 +196,11 @@ export function useTerminal(
 				sessionKey: effectiveSessionKey,
 				worktreePath: worktreePath ?? "",
 				label: label ?? null,
+				kind: agentTypeRef.current ? "agent" : "terminal",
 			});
 
-			// standalone 用: cwd → UUID キャッシュ更新
-			if (!sessionKey && cwd) {
+			// standalone 用: cwd → UUID キャッシュ更新（管理ペインでは不要）
+			if (!sessionKey && !onPtyReadyRef.current && cwd) {
 				sessionKeyCache.set(cwd, result.session_key);
 			}
 

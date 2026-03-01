@@ -6,6 +6,10 @@ use rmcp::model::*;
 use rmcp::schemars;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 
+use tauri::Emitter;
+
+use crate::protocol::CommentItem;
+
 use super::state::McpSharedState;
 
 // ---------------------------------------------------------------------------
@@ -52,10 +56,7 @@ impl From<WorktreeError> for McpError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct WorktreesListParams {
-    /// Repository path (uses first configured repo if omitted)
-    pub repo_path: Option<String>,
-}
+pub struct WorktreesListParams {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateWorkspaceParams {
@@ -67,6 +68,48 @@ pub struct CreateWorkspaceParams {
     pub repo_path: String,
     /// Worktree path (auto-generated from branch name if omitted)
     pub worktree_path: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Review tool parameter types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PostReviewCommentParams {
+    /// Worktree path (from worktrees_list)
+    pub worktree: String,
+    /// File path relative to repository root
+    pub file_path: String,
+    /// Line number
+    pub line_number: u32,
+    /// End line (for range comments)
+    pub end_line: Option<u32>,
+    /// Comment content
+    pub content: String,
+    /// Severity: "info", "warning", "error", "suggestion"
+    pub severity: Option<String>,
+}
+
+const VALID_SEVERITIES: &[&str] = &["info", "warning", "error", "suggestion"];
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetReviewCommentsParams {
+    /// Worktree path (from worktrees_list)
+    pub worktree: String,
+    /// Filter by file path
+    pub file_path: Option<String>,
+    /// Filter by severity
+    pub severity: Option<String>,
+    /// Filter by resolved status
+    pub resolved: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ResolveCommentParams {
+    /// Worktree path (from worktrees_list)
+    pub worktree: String,
+    /// Comment ID to resolve/unresolve
+    pub comment_id: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -88,34 +131,53 @@ impl ReleashMcpServer {
         }
     }
 
-    fn resolve_allowed_repo_path(&self, requested: Option<String>) -> Result<String, McpError> {
-        let configured = self.state.repo_paths.read();
-        let candidate = requested
-            .or_else(|| configured.first().cloned())
-            .ok_or_else(|| McpError::invalid_params("repo_path is required", None))?;
-
-        if configured.iter().any(|p| p == &candidate) {
-            Ok(candidate)
-        } else {
-            Err(McpError::invalid_params(
-                "repo_path is not in configured repositories",
-                None,
-            ))
+    fn resolve_worktree(&self, requested: &str) -> Result<String, McpError> {
+        let repo_paths = self.state.repo_paths.read();
+        if repo_paths.is_empty() {
+            return Err(McpError::invalid_params("No repositories configured", None));
         }
+
+        for repo_path in repo_paths.iter() {
+            let worktrees =
+                crate::git::worktree::list_worktrees(repo_path.clone()).map_err(|e| {
+                    McpError::internal_error(format!("Failed to list worktrees: {e}"), None)
+                })?;
+            if worktrees.iter().any(|w| w.path == requested) {
+                return Ok(requested.to_string());
+            }
+        }
+
+        Err(McpError::invalid_params(
+            format!(
+                "Worktree not found: {requested}. Use worktrees_list to get available worktrees."
+            ),
+            None,
+        ))
     }
 
-    #[tool(description = "List all git worktrees for a repository")]
+    #[tool(
+        description = "List all git worktrees across configured repositories. Returns path, branch, dirty_count etc. Use the path value as the 'worktree' parameter for other tools."
+    )]
     async fn worktrees_list(
         &self,
-        Parameters(params): Parameters<WorktreesListParams>,
+        Parameters(_params): Parameters<WorktreesListParams>,
     ) -> Result<CallToolResult, McpError> {
-        let repo_path = self.resolve_allowed_repo_path(params.repo_path)?;
+        let repo_paths = self.state.repo_paths.read().clone();
+        if repo_paths.is_empty() {
+            return Err(McpError::invalid_params("No repositories configured", None));
+        }
 
-        let entries =
-            tokio::task::spawn_blocking(move || crate::git::worktree::list_worktrees(repo_path))
-                .await
-                .map_err(WorktreeError::from)?
-                .map_err(WorktreeError::from)?;
+        let entries = tokio::task::spawn_blocking(move || {
+            let mut all = Vec::new();
+            for repo_path in &repo_paths {
+                if let Ok(entries) = crate::git::worktree::list_worktrees(repo_path.clone()) {
+                    all.extend(entries);
+                }
+            }
+            all
+        })
+        .await
+        .map_err(WorktreeError::from)?;
 
         let json = serde_json::to_string_pretty(&entries).map_err(WorktreeError::from)?;
 
@@ -127,7 +189,18 @@ impl ReleashMcpServer {
         &self,
         Parameters(params): Parameters<CreateWorkspaceParams>,
     ) -> Result<CallToolResult, McpError> {
-        let repo = self.resolve_allowed_repo_path(Some(params.repo_path.clone()))?;
+        // create_workspace still uses repo_path since it needs a base repository
+        let repo = {
+            let configured = self.state.repo_paths.read();
+            if configured.iter().any(|p| p == &params.repo_path) {
+                params.repo_path.clone()
+            } else {
+                return Err(McpError::invalid_params(
+                    "repo_path is not in configured repositories",
+                    None,
+                ));
+            }
+        };
 
         let worktree_path = if let Some(path) = params.worktree_path {
             path
@@ -159,6 +232,163 @@ impl ReleashMcpServer {
         let json = serde_json::to_string_pretty(&entry).map_err(WorktreeError::from)?;
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    // -----------------------------------------------------------------------
+    // Review tools
+    // -----------------------------------------------------------------------
+
+    #[tool(
+        description = "Post a review comment on a specific file and line. The comment is stored and broadcast to the UI."
+    )]
+    async fn post_review_comment(
+        &self,
+        Parameters(params): Parameters<PostReviewCommentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let worktree_path = self.resolve_worktree(&params.worktree)?;
+
+        if let Some(ref s) = params.severity {
+            if !VALID_SEVERITIES.contains(&s.as_str()) {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "Invalid severity: {s}. Must be one of: info, warning, error, suggestion"
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        let comment_id = uuid::Uuid::new_v4().to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0;
+
+        let comment = CommentItem {
+            id: comment_id.clone(),
+            file_path: params.file_path.clone(),
+            line_number: params.line_number,
+            end_line: params.end_line,
+            content: params.content.clone(),
+            status: "unsent".to_string(),
+            created_at: now,
+            parent_id: None,
+            severity: params.severity.clone(),
+            resolved: false,
+            target: "review".to_string(),
+        };
+
+        self.state
+            .comment_store
+            .add(&worktree_path, comment.clone());
+
+        // Persist and notify desktop UI
+        if let (Some(app), Some(data_dir)) = (
+            self.state.app_handle.as_ref(),
+            self.state.app_data_dir.as_ref(),
+        ) {
+            self.state
+                .comment_store
+                .save(data_dir, &worktree_path)
+                .map_err(|e| {
+                    McpError::internal_error(format!("Failed to save comments: {e}"), None)
+                })?;
+            app.emit(
+                "comments-changed",
+                crate::comment_store::CommentsChangedPayload {
+                    worktree_name: worktree_path.clone(),
+                    source: "mcp".to_string(),
+                },
+            )
+            .map_err(|e| {
+                McpError::internal_error(format!("Failed to emit comments-changed: {e}"), None)
+            })?;
+        }
+
+        // Broadcast via WebSocket
+        self.state
+            .broadcaster
+            .try_send(crate::protocol::WsMessage::AddComment(
+                crate::protocol::AddComment {
+                    file_path: params.file_path,
+                    line_number: params.line_number,
+                    end_line: params.end_line,
+                    content: params.content,
+                    severity: params.severity,
+                    target: "review".to_string(),
+                },
+            ));
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Comment posted: {comment_id}"
+        ))]))
+    }
+
+    #[tool(
+        description = "Get review comments, optionally filtered by file_path, severity, or resolved status."
+    )]
+    async fn get_review_comments(
+        &self,
+        Parameters(params): Parameters<GetReviewCommentsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let worktree_path = self.resolve_worktree(&params.worktree)?;
+
+        let comments = self.state.comment_store.get_filtered(
+            &worktree_path,
+            params.file_path.as_deref(),
+            params.severity.as_deref(),
+            params.resolved,
+        );
+
+        let json = serde_json::to_string_pretty(&comments).map_err(WorktreeError::from)?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(description = "Toggle the resolved status of a review comment by its ID.")]
+    async fn resolve_comment(
+        &self,
+        Parameters(params): Parameters<ResolveCommentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let worktree_path = self.resolve_worktree(&params.worktree)?;
+
+        let resolved = self
+            .state
+            .comment_store
+            .resolve(&worktree_path, &params.comment_id)
+            .ok_or_else(|| {
+                McpError::invalid_params(format!("Comment not found: {}", params.comment_id), None)
+            })?;
+
+        // Persist and notify desktop UI
+        if let (Some(app), Some(data_dir)) = (
+            self.state.app_handle.as_ref(),
+            self.state.app_data_dir.as_ref(),
+        ) {
+            self.state
+                .comment_store
+                .save(data_dir, &worktree_path)
+                .map_err(|e| {
+                    McpError::internal_error(format!("Failed to save comments: {e}"), None)
+                })?;
+            app.emit(
+                "comments-changed",
+                crate::comment_store::CommentsChangedPayload {
+                    worktree_name: worktree_path.clone(),
+                    source: "mcp".to_string(),
+                },
+            )
+            .map_err(|e| {
+                McpError::internal_error(format!("Failed to emit comments-changed: {e}"), None)
+            })?;
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Comment {} {}",
+            params.comment_id,
+            if resolved { "resolved" } else { "unresolved" }
+        ))]))
     }
 }
 
@@ -196,6 +426,7 @@ mod tests {
         let broadcaster = Arc::new(crate::ws_bridge::WsBroadcaster::default());
         let agent_states: crate::hook_listener::AgentStatesMap =
             Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+        let comment_store = Arc::new(crate::comment_store::CommentStore::default());
 
         let state = McpSharedState {
             repo_paths: Arc::new(parking_lot::RwLock::new(repo_paths)),
@@ -203,37 +434,57 @@ mod tests {
             app_config,
             broadcaster,
             agent_states,
+            comment_store,
+            app_handle: None,
+            app_data_dir: None,
         };
         ReleashMcpServer::new(state)
     }
 
     #[test]
-    fn resolve_repo_path_uses_first_configured_when_none() {
-        let server = make_server(vec!["/tmp/repo1".to_string(), "/tmp/repo2".to_string()]);
-        let result = server.resolve_allowed_repo_path(None).unwrap();
-        assert_eq!(result, "/tmp/repo1");
+    fn resolve_worktree_validates_against_real_worktrees() {
+        use crate::git::test_helpers::{create_initial_commit, create_test_repo};
+
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let server = make_server(vec![repo_path.clone()]);
+        // The main worktree path matches the repo_path
+        let result = server.resolve_worktree(&repo_path);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), repo_path);
     }
 
     #[test]
-    fn resolve_repo_path_accepts_configured_path() {
-        let server = make_server(vec!["/tmp/repo1".to_string(), "/tmp/repo2".to_string()]);
-        let result = server
-            .resolve_allowed_repo_path(Some("/tmp/repo2".to_string()))
-            .unwrap();
-        assert_eq!(result, "/tmp/repo2");
-    }
+    fn resolve_worktree_rejects_unknown_path() {
+        use crate::git::test_helpers::{create_initial_commit, create_test_repo};
 
-    #[test]
-    fn resolve_repo_path_rejects_unconfigured_path() {
-        let server = make_server(vec!["/tmp/repo1".to_string()]);
-        let result = server.resolve_allowed_repo_path(Some("/tmp/evil".to_string()));
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        let repo_path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let server = make_server(vec![repo_path]);
+        let result = server.resolve_worktree("/tmp/nonexistent");
         assert!(result.is_err());
     }
 
     #[test]
-    fn resolve_repo_path_returns_error_when_empty_and_no_configured() {
+    fn resolve_worktree_returns_error_when_no_repos_configured() {
         let server = make_server(vec![]);
-        let result = server.resolve_allowed_repo_path(None);
+        let result = server.resolve_worktree("/tmp/any");
         assert!(result.is_err());
     }
 

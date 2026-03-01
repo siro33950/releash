@@ -13,6 +13,8 @@ function makeComment(
 		id: "c-1",
 		status: "unsent",
 		createdAt: Date.now(),
+		resolved: false,
+		target: "local",
 		...overrides,
 	};
 }

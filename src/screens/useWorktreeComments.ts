@@ -10,7 +10,11 @@ import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPane
 import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import { trackEvent } from "@/lib/telemetry";
-import type { LineComment } from "@/types/comment";
+import type {
+	CommentSeverity,
+	CommentTarget,
+	LineComment,
+} from "@/types/comment";
 import type { EditorAction } from "./useWorktreeGitActions";
 
 interface UseWorktreeCommentsParams {
@@ -20,6 +24,9 @@ interface UseWorktreeCommentsParams {
 		lineNumber: number,
 		content: string,
 		endLine?: number,
+		severity?: CommentSeverity,
+		parentId?: string,
+		target?: CommentTarget,
 	) => LineComment;
 	removeComment: (id: string) => void;
 	updateComment: (id: string, content: string) => void;
@@ -56,6 +63,10 @@ export function useWorktreeComments({
 					content: c.content,
 					status: c.status,
 					created_at: c.createdAt,
+					...(c.parentId != null && { parent_id: c.parentId }),
+					...(c.severity != null && { severity: c.severity }),
+					resolved: c.resolved,
+					target: c.target,
 				})),
 			},
 		}).catch(() => {});
@@ -67,9 +78,20 @@ export function useWorktreeComments({
 			line_number: number;
 			end_line?: number;
 			content: string;
+			severity?: "info" | "warning" | "error" | "suggestion";
+			target?: "ai" | "review" | "local";
 		}>("remote-comment-added", (event) => {
-			const { file_path, line_number, end_line, content } = event.payload;
-			addComment(file_path, line_number, content, end_line ?? undefined);
+			const { file_path, line_number, end_line, content, severity, target } =
+				event.payload;
+			addComment(
+				file_path,
+				line_number,
+				content,
+				end_line ?? undefined,
+				severity,
+				undefined,
+				target,
+			);
 		});
 
 		const unlistenDelete = listen<{ id: string }>(
@@ -142,20 +164,23 @@ export function useWorktreeComments({
 
 	const handleCommentClick = useCallback(
 		(commentFilePath: string, lineNumber: number) => {
-			if (activeTabPath === commentFilePath) {
+			const absolutePath = commentFilePath.startsWith("/")
+				? commentFilePath
+				: `${rootPath}/${commentFilePath}`;
+			if (activeTabPath === absolutePath) {
 				dispatchEditor({
 					type: "SET_PENDING_REVEAL",
-					reveal: { path: commentFilePath, line: lineNumber },
+					reveal: { path: absolutePath, line: lineNumber, openThread: true },
 				});
 			} else {
-				handleOpenFile(commentFilePath);
+				handleOpenFile(absolutePath);
 				dispatchEditor({
 					type: "SET_PENDING_REVEAL",
-					reveal: { path: commentFilePath, line: lineNumber },
+					reveal: { path: absolutePath, line: lineNumber, openThread: true },
 				});
 			}
 		},
-		[activeTabPath, handleOpenFile, dispatchEditor],
+		[activeTabPath, handleOpenFile, dispatchEditor, rootPath],
 	);
 
 	return {

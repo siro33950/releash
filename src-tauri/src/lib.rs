@@ -1,3 +1,4 @@
+mod comment_store;
 mod config;
 mod focus_tracker;
 mod git;
@@ -10,6 +11,7 @@ mod notion;
 mod protocol;
 mod pty;
 mod qr_code;
+mod review_prompt;
 mod search;
 mod sentry_integration;
 mod shell_integration;
@@ -54,6 +56,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
+        .manage(Arc::new(comment_store::CommentStore::default()))
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))
@@ -62,7 +65,16 @@ pub fn run() {
         .manage(Arc::new(git_host::PrDetailCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
         .manage(mcp::McpServerHandle::default())
+        .manage::<ws_server::commands::SharedRepoPaths>(Arc::new(parking_lot::RwLock::new(
+            Vec::new(),
+        )))
         .setup(|app| {
+            // OneShotPtyManager shares the same PtyManager instance
+            let pty_mgr = app.state::<Arc<pty::PtyManager>>();
+            app.manage(Arc::new(pty::oneshot::OneShotPtyManager::new(Arc::clone(
+                pty_mgr.inner(),
+            ))));
+
             let data_dir = app.path().app_data_dir()?;
             let config_path = data_dir.join("releash.toml");
             let config = load_or_create_config(&config_path)
@@ -74,6 +86,21 @@ pub fn run() {
 
             let app_config = Arc::new(AppConfig::new(config, config_path));
             app.manage(app_config.clone());
+
+            // Initialize shared repo_paths from config
+            {
+                let shared_repo_paths = app.state::<ws_server::commands::SharedRepoPaths>();
+                if let Ok(cfg) = app_config.get_config() {
+                    let paths: Vec<String> = cfg
+                        .app
+                        .last_repo_paths
+                        .iter()
+                        .filter(|p| !p.is_empty())
+                        .cloned()
+                        .collect();
+                    *shared_repo_paths.write() = paths;
+                }
+            }
 
             let agent_states: hook_listener::AgentStatesMap = Arc::new(parking_lot::Mutex::new(
                 HashMap::<String, AgentStateSync>::new(),
@@ -297,6 +324,23 @@ pub fn run() {
             mcp::get_mcp_connection_info,
             mcp::mcp_json::generate_agent_mcp_config,
             mcp::mcp_json::preview_agent_mcp_config,
+            // Comments
+            comment_store::load_comments,
+            comment_store::save_comments,
+            comment_store::cleanup_comments,
+            comment_store::add_comment,
+            comment_store::remove_comment,
+            comment_store::update_comment_content,
+            comment_store::mark_comments_sent,
+            comment_store::toggle_resolve_comment,
+            // Review prompt
+            review_prompt::get_review_prompt,
+            // OneShot PTY
+            pty::oneshot::spawn_oneshot_pty,
+            pty::oneshot::cancel_oneshot_pty,
+            pty::oneshot::get_oneshot_pty_status,
+            pty::oneshot::list_oneshot_ptys,
+            pty::oneshot::find_oneshot_pty,
             // Menu
             menu::set_menu_items_enabled,
         ])

@@ -1,7 +1,9 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use crate::comment_store::CommentStore;
 use crate::config::AppConfig;
 use crate::hook_listener::AgentStatesMap;
 use crate::pty::PtyManager;
@@ -13,10 +15,12 @@ pub struct McpSharedState {
     #[allow(dead_code)]
     pub pty_manager: Arc<PtyManager>,
     pub app_config: Arc<AppConfig>,
-    #[allow(dead_code)]
     pub broadcaster: Arc<WsBroadcaster>,
     #[allow(dead_code)]
     pub agent_states: AgentStatesMap,
+    pub comment_store: Arc<CommentStore>,
+    pub app_handle: Option<tauri::AppHandle>,
+    pub app_data_dir: Option<PathBuf>,
 }
 
 #[cfg(test)]
@@ -33,6 +37,7 @@ mod tests {
         let pty_manager = Arc::new(PtyManager::default());
         let broadcaster = Arc::new(WsBroadcaster::default());
         let agent_states: AgentStatesMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let comment_store = Arc::new(CommentStore::default());
 
         McpSharedState {
             repo_paths: Arc::new(RwLock::new(vec!["/tmp/repo".to_string()])),
@@ -40,6 +45,9 @@ mod tests {
             app_config,
             broadcaster,
             agent_states,
+            comment_store,
+            app_handle: None,
+            app_data_dir: None,
         }
     }
 
@@ -53,6 +61,7 @@ mod tests {
         assert!(Arc::ptr_eq(&state.app_config, &cloned.app_config));
         assert!(Arc::ptr_eq(&state.broadcaster, &cloned.broadcaster));
         assert!(Arc::ptr_eq(&state.agent_states, &cloned.agent_states));
+        assert!(Arc::ptr_eq(&state.comment_store, &cloned.comment_store));
     }
 
     #[test]

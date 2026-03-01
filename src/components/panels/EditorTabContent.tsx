@@ -20,7 +20,11 @@ import { useDiffOperations } from "./useDiffOperations";
 
 export interface EditorTabContentProps {
 	filePath: string;
-	externalRevealLine?: { path: string; line: number } | null;
+	externalRevealLine?: {
+		path: string;
+		line: number;
+		openThread?: boolean;
+	} | null;
 	onExternalRevealConsumed?: () => void;
 }
 
@@ -38,7 +42,11 @@ export function EditorTabContent({
 		setDiffMode,
 		comments,
 		addComment,
-		showSentComments,
+		deleteComment,
+		resolveComment,
+		updateComment: updateCommentContent,
+		copyComment,
+		showResolvedComments,
 		rootPath,
 		onStageHunk,
 		onGitChanged,
@@ -53,7 +61,7 @@ export function EditorTabContent({
 	const [showPreview, setShowPreview] = useState(false);
 
 	const [revealLine, setRevealLine] = useState<
-		{ line: number; key: number } | undefined
+		{ line: number; key: number; openThread?: boolean } | undefined
 	>();
 	const revealKeyRef = useRef(0);
 
@@ -101,35 +109,43 @@ export function EditorTabContent({
 		filePath,
 	]);
 
+	const relativeFilePath = useMemo(() => {
+		if (rootPath && filePath.startsWith(`${rootPath}/`)) {
+			return filePath.slice(rootPath.length + 1);
+		}
+		return filePath;
+	}, [rootPath, filePath]);
+
 	const commentRanges = useMemo(() => {
 		return comments
 			.filter(
 				(c) =>
-					c.filePath === filePath && (showSentComments || c.status !== "sent"),
+					c.filePath === relativeFilePath &&
+					(showResolvedComments || !c.resolved),
 			)
 			.map((c) => ({ start: c.lineNumber, end: c.endLine }));
-	}, [comments, filePath, showSentComments]);
+	}, [comments, relativeFilePath, showResolvedComments]);
 
 	const handleAddComment = useCallback(
 		(lineNumber: number, content: string, endLine?: number) => {
-			addComment(filePath, lineNumber, content, endLine);
+			addComment(relativeFilePath, lineNumber, content, endLine);
 		},
-		[filePath, addComment],
+		[relativeFilePath, addComment],
 	);
 
 	const getCommentsForLine = useCallback(
 		(lineNumber: number): LineComment[] => {
 			return comments.filter(
 				(c) =>
-					c.filePath === filePath &&
-					(showSentComments || c.status !== "sent") &&
+					c.filePath === relativeFilePath &&
+					(showResolvedComments || !c.resolved) &&
 					(c.lineNumber === lineNumber ||
 						(c.endLine != null &&
 							lineNumber >= c.lineNumber &&
 							lineNumber <= c.endLine)),
 			);
 		},
-		[comments, filePath, showSentComments],
+		[comments, relativeFilePath, showResolvedComments],
 	);
 
 	const {
@@ -180,6 +196,7 @@ export function EditorTabContent({
 			setRevealLine({
 				line: externalRevealLine.line,
 				key: revealKeyRef.current,
+				openThread: externalRevealLine.openThread,
 			});
 			onExternalRevealConsumed?.();
 		}
@@ -229,6 +246,10 @@ export function EditorTabContent({
 						diffBase === "branch-base" ? handleUnstageGroup : undefined
 					}
 					onAddComment={handleAddComment}
+					onDeleteComment={deleteComment}
+					onResolveComment={resolveComment}
+					onUpdateComment={updateCommentContent}
+					onCopyComment={copyComment}
 					getCommentsForLine={getCommentsForLine}
 					revealLine={revealLine}
 					theme={theme}

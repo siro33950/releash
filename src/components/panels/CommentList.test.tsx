@@ -12,6 +12,8 @@ function makeComment(overrides: Partial<LineComment> = {}): LineComment {
 		content: "test comment",
 		status: "unsent",
 		createdAt: Date.now(),
+		resolved: false,
+		target: "local",
 		...overrides,
 	};
 }
@@ -46,7 +48,7 @@ describe("CommentList", () => {
 					makeComment({ id: "c-1", status: "unsent" }),
 					makeComment({ id: "c-2", status: "sent", lineNumber: 20 }),
 				]}
-				showSentComments={true}
+				showResolvedComments={true}
 			/>,
 		);
 		expect(screen.getByText("unsent")).toBeInTheDocument();
@@ -73,140 +75,152 @@ describe("CommentList", () => {
 		expect(onClick).toHaveBeenCalledWith("/src/App.tsx", 15);
 	});
 
-	it("should hide sent comments when showSentComments is false", () => {
+	it("should hide resolved comments when showResolvedComments is false", () => {
 		render(
 			<CommentList
 				comments={[
-					makeComment({ id: "c-1", status: "unsent", content: "unsent one" }),
+					makeComment({ id: "c-1", content: "active one" }),
 					makeComment({
 						id: "c-2",
-						status: "sent",
+						resolved: true,
 						lineNumber: 20,
-						content: "sent one",
+						content: "resolved one",
 					}),
 				]}
-				showSentComments={false}
-				onToggleShowSent={vi.fn()}
+				showResolvedComments={false}
+				onToggleShowResolved={vi.fn()}
 			/>,
 		);
-		expect(screen.getByText("unsent one")).toBeInTheDocument();
-		expect(screen.queryByText("sent one")).not.toBeInTheDocument();
+		expect(screen.getByText("active one")).toBeInTheDocument();
+		expect(screen.queryByText("resolved one")).not.toBeInTheDocument();
 	});
 
-	it("should show sent comments when showSentComments is true", () => {
+	it("should show resolved comments when showResolvedComments is true", () => {
 		render(
 			<CommentList
 				comments={[
-					makeComment({ id: "c-1", status: "unsent", content: "unsent one" }),
+					makeComment({ id: "c-1", content: "active one" }),
 					makeComment({
 						id: "c-2",
-						status: "sent",
+						resolved: true,
 						lineNumber: 20,
-						content: "sent one",
+						content: "resolved one",
 					}),
 				]}
-				showSentComments={true}
-				onToggleShowSent={vi.fn()}
+				showResolvedComments={true}
+				onToggleShowResolved={vi.fn()}
 			/>,
 		);
-		expect(screen.getByText("unsent one")).toBeInTheDocument();
-		expect(screen.getByText("sent one")).toBeInTheDocument();
+		expect(screen.getByText("active one")).toBeInTheDocument();
+		expect(screen.getByText("resolved one")).toBeInTheDocument();
 	});
 
-	it("should show toggle button with sent count", () => {
+	it("should show toggle button with resolved count", () => {
 		render(
 			<CommentList
 				comments={[
-					makeComment({ id: "c-1", status: "sent" }),
-					makeComment({ id: "c-2", status: "sent", lineNumber: 20 }),
+					makeComment({ id: "c-1", resolved: true }),
+					makeComment({ id: "c-2", resolved: true, lineNumber: 20 }),
 				]}
-				showSentComments={false}
-				onToggleShowSent={vi.fn()}
+				showResolvedComments={false}
+				onToggleShowResolved={vi.fn()}
 			/>,
 		);
-		expect(screen.getByTestId("toggle-sent-comments")).toBeInTheDocument();
-		expect(screen.getByText(/Sent \(2\)/)).toBeInTheDocument();
+		expect(screen.getByTestId("toggle-resolved-comments")).toBeInTheDocument();
+		expect(screen.getByText(/Resolved \(2\)/)).toBeInTheDocument();
 	});
 
-	it("should call onToggleShowSent when toggle button is clicked", async () => {
+	it("should call onToggleShowResolved when toggle button is clicked", async () => {
 		const user = userEvent.setup();
 		const onToggle = vi.fn();
 		render(
 			<CommentList
-				comments={[makeComment({ id: "c-1", status: "sent" })]}
-				showSentComments={false}
-				onToggleShowSent={onToggle}
+				comments={[makeComment({ id: "c-1", resolved: true })]}
+				showResolvedComments={false}
+				onToggleShowResolved={onToggle}
 			/>,
 		);
-		await user.click(screen.getByTestId("toggle-sent-comments"));
+		await user.click(screen.getByTestId("toggle-resolved-comments"));
 		expect(onToggle).toHaveBeenCalledTimes(1);
 	});
 
-	it("should not show toggle button when no sent comments", () => {
+	it("should not show toggle button when no resolved comments", () => {
 		render(
 			<CommentList
-				comments={[makeComment({ id: "c-1", status: "unsent" })]}
-				showSentComments={false}
-				onToggleShowSent={vi.fn()}
+				comments={[makeComment({ id: "c-1" })]}
+				showResolvedComments={false}
+				onToggleShowResolved={vi.fn()}
 			/>,
 		);
 		expect(
-			screen.queryByTestId("toggle-sent-comments"),
+			screen.queryByTestId("toggle-resolved-comments"),
 		).not.toBeInTheDocument();
 	});
 
-	it("should show send button for unsent comment when onSendComment is provided", () => {
-		render(
-			<CommentList
-				comments={[makeComment({ status: "unsent" })]}
-				onSendComment={vi.fn()}
-			/>,
-		);
-		expect(screen.getByTitle("Send")).toBeInTheDocument();
-	});
-
-	it("should not show send button for sent comment", () => {
-		render(
-			<CommentList
-				comments={[makeComment({ status: "sent" })]}
-				onSendComment={vi.fn()}
-				showSentComments={true}
-			/>,
-		);
-		expect(screen.queryByTitle("Send")).not.toBeInTheDocument();
-	});
-
-	it("should not show send button when onSendComment is not provided", () => {
-		render(<CommentList comments={[makeComment({ status: "unsent" })]} />);
-		expect(screen.queryByTitle("Send")).not.toBeInTheDocument();
-	});
-
-	it("should call onSendComment when send button is clicked", async () => {
+	it("should call onDeleteComment when delete button is clicked", async () => {
 		const user = userEvent.setup();
-		const onSend = vi.fn();
-		const comment = makeComment({ status: "unsent" });
-		render(<CommentList comments={[comment]} onSendComment={onSend} />);
-		await user.click(screen.getByTitle("Send"));
-		expect(onSend).toHaveBeenCalledWith(comment);
-	});
-
-	it("should show copy button when onCopyComment is provided", () => {
+		const onDelete = vi.fn();
 		render(
 			<CommentList
-				comments={[makeComment({ status: "sent" })]}
-				onCopyComment={vi.fn()}
-				showSentComments={true}
+				comments={[makeComment({ id: "c-42", content: "delete me" })]}
+				onDeleteComment={onDelete}
 			/>,
 		);
-		expect(screen.getByTitle("Copy")).toBeInTheDocument();
+		const row =
+			screen
+				.getByRole("button", { name: /delete me/i })
+				.closest("[role='button']") ??
+			screen.getByText("delete me").closest("[role='button']");
+		if (!row) throw new Error("row not found");
+		await user.hover(row);
+		const deleteBtn = screen.getByLabelText("Delete comment");
+		await user.click(deleteBtn);
+		expect(onDelete).toHaveBeenCalledWith("c-42");
 	});
 
-	it("should call onCopyComment when copy button is clicked", async () => {
+	it("should call onResolveComment when resolve button is clicked", async () => {
 		const user = userEvent.setup();
-		const onCopy = vi.fn();
-		const comment = makeComment();
-		render(<CommentList comments={[comment]} onCopyComment={onCopy} />);
-		await user.click(screen.getByTitle("Copy"));
-		expect(onCopy).toHaveBeenCalledWith(comment);
+		const onResolve = vi.fn();
+		render(
+			<CommentList
+				comments={[makeComment({ id: "c-99", content: "resolve me" })]}
+				onResolveComment={onResolve}
+			/>,
+		);
+		const row = screen.getByText("resolve me").closest("[role='button']");
+		if (!row) throw new Error("row not found");
+		await user.hover(row);
+		const resolveBtn = screen.getByLabelText("Resolve comment");
+		await user.click(resolveBtn);
+		expect(onResolve).toHaveBeenCalledWith("c-99");
+	});
+
+	it("should not show resolve button for already resolved comments", async () => {
+		const user = userEvent.setup();
+		render(
+			<CommentList
+				comments={[
+					makeComment({ id: "c-1", content: "already done", resolved: true }),
+				]}
+				showResolvedComments={true}
+				onResolveComment={vi.fn()}
+				onDeleteComment={vi.fn()}
+			/>,
+		);
+		const row = screen.getByText("already done").closest("[role='button']");
+		if (!row) throw new Error("row not found");
+		await user.hover(row);
+		expect(screen.queryByLabelText("Resolve comment")).not.toBeInTheDocument();
+		expect(screen.getByLabelText("Delete comment")).toBeInTheDocument();
+	});
+
+	it("should not show action buttons when callbacks are not provided", () => {
+		render(
+			<CommentList
+				comments={[makeComment({ id: "c-1", content: "no actions" })]}
+			/>,
+		);
+		expect(screen.queryByLabelText("Delete comment")).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("Resolve comment")).not.toBeInTheDocument();
 	});
 });

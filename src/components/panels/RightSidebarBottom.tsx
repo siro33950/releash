@@ -1,31 +1,39 @@
 import {
+	Check,
 	ChevronDown,
 	ChevronUp,
+	Copy,
+	Loader2,
 	MessageSquare,
+	Play,
 	Send,
 	Terminal,
+	X,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { CommentList } from "@/components/panels/CommentList";
+import { ReviewModal } from "@/components/panels/ReviewModal";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useReviewExecution } from "@/hooks/useReviewExecution";
+import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import type { LineComment } from "@/types/comment";
-import type { Theme } from "@/types/settings";
+import type { AppSettings, Theme } from "@/types/settings";
 
-type RightBottomTab = "terminal" | "comments";
+type RightBottomTab = "terminal" | "review";
 
 interface RightSidebarBottomProps {
 	rootPath: string;
 	theme?: Theme;
+	settings: AppSettings;
 	comments: LineComment[];
 	onCommentClick?: (filePath: string, lineNumber: number) => void;
 	onDeleteComment?: (id: string) => void;
-	onUpdateComment?: (id: string, content: string) => void;
+	onResolveComment?: (id: string) => void;
 	onSendToTerminal?: (comments: LineComment[]) => void;
-	onSendComment?: (comment: LineComment) => void;
-	onCopyComment?: (comment: LineComment) => void;
-	showSentComments?: boolean;
-	onToggleShowSent?: () => void;
+	showResolvedComments?: boolean;
+	onToggleShowResolved?: () => void;
 	onToggleCollapse?: () => void;
 	collapsed?: boolean;
 }
@@ -33,20 +41,51 @@ interface RightSidebarBottomProps {
 export function RightSidebarBottom({
 	rootPath,
 	theme,
+	settings,
 	comments,
 	onCommentClick,
 	onDeleteComment,
-	onUpdateComment,
+	onResolveComment,
 	onSendToTerminal,
-	onSendComment,
-	onCopyComment,
-	showSentComments,
-	onToggleShowSent,
+	showResolvedComments,
+	onToggleShowResolved,
 	onToggleCollapse,
 	collapsed,
 }: RightSidebarBottomProps) {
 	const [activeTab, setActiveTab] = useState<RightBottomTab>("terminal");
+	const [reviewModalOpen, setReviewModalOpen] = useState(false);
 	const unsentComments = comments.filter((c) => c.status === "unsent");
+
+	const { status, summary, output, startReview, cancelReview, reset } =
+		useReviewExecution(rootPath, comments, settings);
+
+	const isRunning = status === "starting" || status === "running";
+	const isFinished =
+		status === "completed" || status === "error" || status === "cancelled";
+	const reviewDisabled = settings.reviewAgent === "none";
+
+	const handleStartReview = () => {
+		if (isFinished) reset();
+		startReview();
+	};
+
+	const reviewDot = isRunning
+		? "bg-blue-400 animate-pulse"
+		: status === "completed"
+			? "bg-green-400"
+			: status === "error"
+				? "bg-destructive"
+				: null;
+
+	const unresolvedComments = useMemo(
+		() => comments.filter((c) => !c.resolved),
+		[comments],
+	);
+
+	const handleCopyComments = useCallback(() => {
+		const text = formatCommentsForTerminal(unresolvedComments);
+		navigator.clipboard.writeText(text);
+	}, [unresolvedComments]);
 
 	return (
 		<div className="flex flex-col h-full">
@@ -76,30 +115,20 @@ export function RightSidebarBottom({
 								<Terminal className="size-3.5" />
 							</span>
 						</TabsTrigger>
-						<TabsTrigger value="comments" aria-label="Comments">
+						<TabsTrigger value="review" aria-label="Review">
 							<span className="inline-flex items-center gap-1.5">
 								<MessageSquare className="size-3.5" />
-								{unsentComments.length > 0 && (
+								{reviewDot && (
+									<span className={`size-1.5 rounded-full ${reviewDot}`} />
+								)}
+								{!reviewDot && unresolvedComments.length > 0 && (
 									<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
-										{unsentComments.length}
+										{unresolvedComments.length}
 									</span>
 								)}
 							</span>
 						</TabsTrigger>
 					</TabsList>
-					{activeTab === "comments" &&
-						unsentComments.length > 0 &&
-						onSendToTerminal && (
-							<button
-								type="button"
-								onClick={() => onSendToTerminal(unsentComments)}
-								className="flex items-center gap-1 px-2 ml-auto text-[10px] bg-primary/20 text-primary rounded hover:bg-primary/30 transition-colors"
-								title="Send unsent comments to terminal"
-							>
-								<Send className="h-3 w-3" />
-								Send
-							</button>
-						)}
 				</div>
 				<TabsContent
 					value="terminal"
@@ -108,19 +137,76 @@ export function RightSidebarBottom({
 				>
 					<TerminalPanel cwd={rootPath} theme={theme} />
 				</TabsContent>
-				<TabsContent value="comments" className="flex-1 overflow-hidden">
-					<CommentList
-						comments={comments}
-						onCommentClick={onCommentClick}
-						onDeleteComment={onDeleteComment}
-						onUpdateComment={onUpdateComment}
-						onSendComment={onSendComment}
-						onCopyComment={onCopyComment}
-						showSentComments={showSentComments}
-						onToggleShowSent={onToggleShowSent}
-					/>
+				<TabsContent
+					value="review"
+					className="flex-1 overflow-hidden flex flex-col"
+				>
+					<div className="flex-1 min-h-0 overflow-hidden">
+						<CommentList
+							comments={comments}
+							onCommentClick={onCommentClick}
+							onDeleteComment={onDeleteComment}
+							onResolveComment={onResolveComment}
+							showResolvedComments={showResolvedComments}
+							onToggleShowResolved={onToggleShowResolved}
+						/>
+					</div>
+					<div className="shrink-0 px-3 py-2 border-t border-border flex items-center gap-2">
+						{!reviewDisabled && (
+							<Button
+								variant="ghost"
+								size="xs"
+								className="flex-1"
+								onClick={
+									status === "idle"
+										? handleStartReview
+										: () => setReviewModalOpen(true)
+								}
+								disabled={false}
+							>
+								{status === "idle" && <Play className="size-3" />}
+								{isRunning && <Loader2 className="size-3 animate-spin" />}
+								{status === "completed" && (
+									<Check className="size-3 text-green-400" />
+								)}
+								{(status === "error" || status === "cancelled") && (
+									<X className="size-3 text-destructive" />
+								)}
+								AI Review
+							</Button>
+						)}
+						<Button
+							variant="ghost"
+							size="icon-xs"
+							onClick={handleCopyComments}
+							disabled={unresolvedComments.length === 0}
+							aria-label="Copy comments to clipboard"
+						>
+							<Copy />
+						</Button>
+						{onSendToTerminal && (
+							<Button
+								variant="ghost"
+								size="xs"
+								onClick={() => onSendToTerminal(unsentComments)}
+								disabled={unsentComments.length === 0}
+							>
+								<Send />
+								Send
+							</Button>
+						)}
+					</div>
 				</TabsContent>
 			</Tabs>
+			<ReviewModal
+				open={reviewModalOpen}
+				onOpenChange={setReviewModalOpen}
+				status={status}
+				summary={summary}
+				output={output}
+				onCancel={cancelReview}
+				onRetry={handleStartReview}
+			/>
 		</div>
 	);
 }

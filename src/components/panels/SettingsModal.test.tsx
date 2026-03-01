@@ -7,7 +7,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppSettings } from "@/types/settings";
+import { type AppSettings, DEFAULT_SETTINGS } from "@/types/settings";
 import { SettingsModal } from "./SettingsModal";
 
 // Radix UI uses pointer events; jsdom doesn't implement them
@@ -55,18 +55,7 @@ describe("SettingsModal", () => {
 		});
 	});
 
-	const defaultSettings: AppSettings = {
-		theme: "dark",
-		fontSize: 14,
-		defaultDiffBase: "staged",
-		defaultDiffMode: "inline",
-		agent: "none",
-		agentAutoApprove: false,
-		terminalStartupCommand: "",
-		autoUpdate: true,
-		telemetryEnabled: true,
-		enableCrashReporting: true,
-	};
+	const defaultSettings: AppSettings = { ...DEFAULT_SETTINGS };
 
 	const defaultProps = {
 		open: true,

@@ -2,9 +2,9 @@ import { loader } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import {
-	type CommentViewZone,
-	openCommentViewZone,
-} from "@/lib/commentPeekWidget";
+	type CommentThreadZone,
+	createCommentThread,
+} from "@/lib/commentThreadWidget";
 import type { ChangeGroup } from "@/lib/computeHunks";
 import {
 	DIFF_ADDED_COLOR,
@@ -23,6 +23,7 @@ import type { Theme } from "@/types/settings";
 interface RevealLine {
 	line: number;
 	key: number;
+	openThread?: boolean;
 }
 
 interface UseMonacoDiffEditorOptions {
@@ -42,6 +43,10 @@ interface UseMonacoDiffEditorOptions {
 		content: string,
 		endLine?: number,
 	) => void;
+	onDeleteComment?: (id: string) => void;
+	onResolveComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
@@ -150,6 +155,10 @@ export function useMonacoDiffEditor(
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
+		onDeleteComment,
+		onResolveComment,
+		onUpdateComment,
+		onCopyComment,
 		getCommentsForLine,
 		revealLine,
 		theme,
@@ -172,26 +181,37 @@ export function useMonacoDiffEditor(
 	const onContentChangeRef = useRef(onContentChange);
 	const fontSizeRef = useRef(fontSize);
 	const onAddCommentRef = useRef(onAddComment);
+	const onDeleteCommentRef = useRef(onDeleteComment);
+	const onResolveCommentRef = useRef(onResolveComment);
+	const onUpdateCommentRef = useRef(onUpdateComment);
+	const onCopyCommentRef = useRef(onCopyComment);
 	const getCommentsForLineRef = useRef(getCommentsForLine);
 	const onStageHunkRef = useRef(onStageHunk);
 	const onUnstageHunkRef = useRef(onUnstageHunk);
 	const hunkOverlayContainerRef = useRef<HTMLDivElement | null>(null);
-	const commentInputWidgetRef = useRef<CommentViewZone | null>(null);
+	const commentInputWidgetRef = useRef<CommentThreadZone | null>(null);
 	const dragStartLineRef = useRef<number | null>(null);
 	const dragRangeDecorationsRef = useRef<string[]>([]);
 	const hoverLineRef = useRef<number | null>(null);
 	const hoverDecorationsRef = useRef<string[]>([]);
+	const pendingRevealRef = useRef<(() => void) | null>(null);
 	const isProgrammaticUpdateRef = useRef(false);
 	const themeRef = useRef(theme);
+	const commentRangesRef = useRef(commentRanges);
 	originalValueRef.current = originalValue;
 	modifiedValueRef.current = modifiedValue;
 	onContentChangeRef.current = onContentChange;
 	fontSizeRef.current = fontSize;
 	onAddCommentRef.current = onAddComment;
+	onDeleteCommentRef.current = onDeleteComment;
+	onResolveCommentRef.current = onResolveComment;
+	onUpdateCommentRef.current = onUpdateComment;
+	onCopyCommentRef.current = onCopyComment;
 	getCommentsForLineRef.current = getCommentsForLine;
 	onStageHunkRef.current = onStageHunk;
 	onUnstageHunkRef.current = onUnstageHunk;
 	themeRef.current = theme;
+	commentRangesRef.current = commentRanges;
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -250,10 +270,6 @@ export function useMonacoDiffEditor(
 					...(readOnly != null && { readOnly, originalEditable: false }),
 				},
 				{
-					// Override Monaco's internal ITextModelService (non-public DI) so that
-					// go-to-definition can resolve file:// URIs inside the Tauri webview.
-					// The default service cannot fetch file:// resources, so we redirect
-					// lookups to models already registered via ensureModelsForFiles.
 					textModelService: {
 						createModelReference(uri: Monaco.Uri) {
 							const m = monaco.editor.getModel(uri);
@@ -282,6 +298,10 @@ export function useMonacoDiffEditor(
 				original: originalModel,
 				modified: modifiedModel,
 			});
+
+			if (!renderSideBySide) {
+				diffEditor.getOriginalEditor().updateOptions({ lineNumbers: "off" });
+			}
 
 			contentChangeListenerRef.current = diffEditor
 				.getModifiedEditor()
@@ -338,10 +358,10 @@ export function useMonacoDiffEditor(
 				}
 
 				const existing = getCommentsForLineRef.current?.(lineNum) ?? [];
-				const zone = openCommentViewZone(ed, {
+				const zone = createCommentThread(ed, {
 					lineNumber: lineNum,
 					endLine,
-					existingComments: existing,
+					comments: existing,
 					onSubmit: (content) => {
 						onAddCommentRef.current?.(lineNum, content, endLine);
 						zone.dispose();
@@ -353,6 +373,11 @@ export function useMonacoDiffEditor(
 						commentInputWidgetRef.current = null;
 						ed.focus();
 					},
+					onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
+					onResolveComment: (id) => onResolveCommentRef.current?.(id),
+					onUpdateComment: (id, content) =>
+						onUpdateCommentRef.current?.(id, content),
+					onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
 				});
 				commentInputWidgetRef.current = zone;
 			};
@@ -360,7 +385,8 @@ export function useMonacoDiffEditor(
 			modifiedEditor.onMouseDown((e: Monaco.editor.IEditorMouseEvent) => {
 				if (
 					e.target.type ===
-					monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS
+						monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS ||
+					e.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS
 				) {
 					const lineNum = e.target.position?.lineNumber;
 					if (!lineNum) return;
@@ -402,14 +428,19 @@ export function useMonacoDiffEditor(
 
 				if (lineNum !== hoverLineRef.current) {
 					hoverLineRef.current = lineNum;
+					const hasComment =
+						lineNum != null &&
+						commentRangesRef.current?.some(
+							(r) => lineNum >= r.start && lineNum <= (r.end ?? r.start),
+						);
 					hoverDecorationsRef.current = modifiedEditor.deltaDecorations(
 						hoverDecorationsRef.current,
-						lineNum != null
+						lineNum != null && !hasComment
 							? [
 									{
 										range: new monaco.Range(lineNum, 1, lineNum, 1),
 										options: {
-											linesDecorationsClassName: "comment-hover-icon",
+											lineNumberClassName: "comment-hover-margin",
 										},
 									},
 								]
@@ -487,6 +518,11 @@ export function useMonacoDiffEditor(
 				if (entries.some((e) => e.isIntersecting)) {
 					requestAnimationFrame(() => {
 						diffEditorRef.current?.layout();
+						const pending = pendingRevealRef.current;
+						if (pending) {
+							pendingRevealRef.current = null;
+							pending();
+						}
 					});
 				}
 			});
@@ -501,6 +537,7 @@ export function useMonacoDiffEditor(
 		return () => {
 			isMounted = false;
 			setEditorReady(false);
+			pendingRevealRef.current = null;
 			commentInputWidgetRef.current?.dispose();
 			commentInputWidgetRef.current = null;
 			intersectionObserverRef.current?.disconnect();
@@ -603,34 +640,96 @@ export function useMonacoDiffEditor(
 		};
 	}, [changeGroups, editorReady]);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: editorReady ensures editor/monaco refs are initialized before applying decorations
 	useEffect(() => {
 		const diffEditor = diffEditorRef.current;
 		const monaco = monacoRef.current;
-		if (!diffEditor || !monaco || !commentRanges) return;
+		if (!diffEditor || !monaco) return;
 
 		const modifiedEditor = diffEditor.getModifiedEditor();
-		const decorations: Monaco.editor.IModelDeltaDecoration[] =
-			commentRanges.map((r) => ({
+		const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
+		const seen = new Set<number>();
+
+		for (const r of commentRanges ?? []) {
+			decorations.push({
 				range: new monaco.Range(r.start, 1, r.end ?? r.start, 1),
 				options: {
 					isWholeLine: true,
 					linesDecorationsClassName: "comment-marker",
 				},
-			}));
+			});
+			if (!seen.has(r.start)) {
+				seen.add(r.start);
+				decorations.push({
+					range: new monaco.Range(r.start, 1, r.start, 1),
+					options: {
+						lineNumberClassName: "comment-marker-margin",
+					},
+				});
+			}
+		}
 
 		commentDecorationsRef.current = modifiedEditor.deltaDecorations(
 			commentDecorationsRef.current,
 			decorations,
 		);
-	}, [commentRanges]);
+	}, [commentRanges, editorReady]);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: containerRef.current is a ref that doesn't trigger re-renders; visibility is handled by IntersectionObserver + pendingRevealRef
 	useEffect(() => {
+		if (!editorReady || !revealLine) return;
 		const diffEditor = diffEditorRef.current;
-		if (!diffEditor || !revealLine) return;
-		const modifiedEditor = diffEditor.getModifiedEditor();
-		modifiedEditor.revealLineInCenter(revealLine.line);
-		modifiedEditor.setPosition({ lineNumber: revealLine.line, column: 1 });
-	}, [revealLine]);
+		if (!diffEditor) return;
+
+		const applyReveal = () => {
+			const modifiedEditor = diffEditor.getModifiedEditor();
+			diffEditor.layout();
+			modifiedEditor.revealLineInCenter(revealLine.line);
+			modifiedEditor.setPosition({ lineNumber: revealLine.line, column: 1 });
+
+			if (revealLine.openThread) {
+				if (commentInputWidgetRef.current) {
+					commentInputWidgetRef.current.dispose();
+					commentInputWidgetRef.current = null;
+				}
+				const existing = getCommentsForLineRef.current?.(revealLine.line) ?? [];
+				if (existing.length > 0) {
+					const range = commentRangesRef.current?.find(
+						(r) => r.start === revealLine.line,
+					);
+					const zone = createCommentThread(modifiedEditor, {
+						lineNumber: revealLine.line,
+						endLine: range?.end,
+						comments: existing,
+						onSubmit: (content) => {
+							onAddCommentRef.current?.(revealLine.line, content, range?.end);
+							zone.dispose();
+							commentInputWidgetRef.current = null;
+							modifiedEditor.focus();
+						},
+						onCancel: () => {
+							zone.dispose();
+							commentInputWidgetRef.current = null;
+							modifiedEditor.focus();
+						},
+						onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
+						onResolveComment: (id) => onResolveCommentRef.current?.(id),
+						onUpdateComment: (id, content) =>
+							onUpdateCommentRef.current?.(id, content),
+						onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
+					});
+					commentInputWidgetRef.current = zone;
+				}
+			}
+		};
+
+		const container = containerRef.current;
+		if (container?.offsetParent !== null) {
+			applyReveal();
+		} else {
+			pendingRevealRef.current = applyReveal;
+		}
+	}, [revealLine, editorReady]);
 
 	useEffect(() => {
 		const monaco = monacoRef.current;

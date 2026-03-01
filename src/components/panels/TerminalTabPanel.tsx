@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { X } from "lucide-react";
 import {
@@ -95,22 +94,6 @@ export const TerminalTabPanel = forwardRef<
 		return () => {
 			unlisten.then((fn) => fn());
 		};
-	}, [cwd]);
-
-	// worktree マウント時に孤立 PTY を GC
-	const tabsRef = useRef(tabs);
-	tabsRef.current = tabs;
-	useEffect(() => {
-		if (!cwd) return;
-		const knownKeys = tabsRef.current.flatMap((tab) =>
-			getAllLeaves(tab.paneTree)
-				.map((leaf) => leaf.sessionKey)
-				.filter((k): k is string => k !== null),
-		);
-		invoke("gc_ptys_for_worktree", {
-			worktreePath: cwd,
-			keepSessionKeys: knownKeys,
-		}).catch((e) => console.warn("gc_ptys_for_worktree failed:", e));
 	}, [cwd]);
 
 	useImperativeHandle(

@@ -27,6 +27,8 @@ export function useRemoteContent({ subscribe, send }: UseRemoteContentOptions) {
 						content: c.content,
 						status: c.status,
 						createdAt: c.created_at,
+						resolved: c.resolved ?? false,
+						target: c.target ?? ("local" as const),
 					})),
 				);
 			}
@@ -57,6 +59,8 @@ export function useRemoteContent({ subscribe, send }: UseRemoteContentOptions) {
 				content,
 				status: "unsent",
 				createdAt: Date.now(),
+				resolved: false,
+				target: "local",
 			};
 			setComments((prev) => [...prev, comment]);
 		},

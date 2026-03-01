@@ -20,6 +20,7 @@ export type { DiffBase, DiffMode } from "@/types/settings";
 interface RevealLine {
 	line: number;
 	key: number;
+	openThread?: boolean;
 }
 
 interface HunkCommentProps {
@@ -32,6 +33,10 @@ interface HunkCommentProps {
 		content: string,
 		endLine?: number,
 	) => void;
+	onDeleteComment?: (id: string) => void;
+	onResolveComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
@@ -195,6 +200,9 @@ function GutterEditor({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
+	onDeleteComment,
+	onUpdateComment,
+	onCopyComment,
 	getCommentsForLine,
 	revealLine,
 	theme,
@@ -225,6 +233,9 @@ function GutterEditor({
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
+		onDeleteComment,
+		onUpdateComment,
+		onCopyComment,
 		getCommentsForLine,
 		revealLine,
 		theme,
@@ -255,6 +266,9 @@ function DiffEditor({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
+	onDeleteComment,
+	onUpdateComment,
+	onCopyComment,
 	getCommentsForLine,
 	revealLine,
 	theme,
@@ -287,6 +301,9 @@ function DiffEditor({
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
+		onDeleteComment,
+		onUpdateComment,
+		onCopyComment,
 		getCommentsForLine,
 		revealLine,
 		theme,
@@ -333,6 +350,10 @@ interface MonacoDiffViewerProps {
 		content: string,
 		endLine?: number,
 	) => void;
+	onDeleteComment?: (id: string) => void;
+	onResolveComment?: (id: string) => void;
+	onUpdateComment?: (id: string, content: string) => void;
+	onCopyComment?: (comment: LineComment) => void;
 	getCommentsForLine?: (lineNumber: number) => LineComment[];
 	revealLine?: RevealLine;
 	theme?: Theme;
@@ -354,6 +375,10 @@ export function MonacoDiffViewer({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
+	onDeleteComment,
+	onResolveComment,
+	onUpdateComment,
+	onCopyComment,
 	getCommentsForLine,
 	revealLine,
 	theme,
@@ -367,6 +392,10 @@ export function MonacoDiffViewer({
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
+		onDeleteComment,
+		onResolveComment,
+		onUpdateComment,
+		onCopyComment,
 		getCommentsForLine,
 		revealLine,
 		theme,

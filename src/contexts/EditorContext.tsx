@@ -21,10 +21,13 @@ export interface EditorContextValue {
 		endLine?: number,
 	) => void;
 	deleteComment: (id: string) => void;
+	resolveComment?: (id: string) => void;
 	updateComment: (id: string, content: string) => void;
+	sendComment?: (comment: LineComment) => void;
+	copyComment?: (comment: LineComment) => void;
 
-	showSentComments: boolean;
-	toggleShowSentComments: () => void;
+	showResolvedComments: boolean;
+	toggleShowResolvedComments: () => void;
 
 	rootPath: string;
 	onStageHunk?: (repoPath: string, patch: string) => Promise<void>;

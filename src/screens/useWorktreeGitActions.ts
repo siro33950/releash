@@ -85,7 +85,7 @@ export type EditorAction =
 	| { type: "TRIGGER_SEARCH"; query: string }
 	| {
 			type: "SET_PENDING_REVEAL";
-			reveal: { path: string; line: number } | null;
+			reveal: { path: string; line: number; openThread?: boolean } | null;
 	  }
 	| { type: "INCREMENT_NEW_FOLDER" };
 
@@ -93,7 +93,7 @@ export interface EditorState {
 	activeView: string;
 	searchFocusKey: number;
 	searchInitialQuery: string;
-	pendingReveal: { path: string; line: number } | null;
+	pendingReveal: { path: string; line: number; openThread?: boolean } | null;
 	newFolderKey: number;
 }
 

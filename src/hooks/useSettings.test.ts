@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_SETTINGS } from "@/types/settings";
 import { useSettings } from "./useSettings";
 
 describe("useSettings", () => {
@@ -14,18 +15,7 @@ describe("useSettings", () => {
 
 	it("should return default settings when localStorage is empty", () => {
 		const { result } = renderHook(() => useSettings());
-		expect(result.current.settings).toEqual({
-			theme: "dark",
-			fontSize: 14,
-			defaultDiffBase: "staged",
-			defaultDiffMode: "inline",
-			agent: "none",
-			agentAutoApprove: false,
-			terminalStartupCommand: "",
-			autoUpdate: true,
-			telemetryEnabled: true,
-			enableCrashReporting: true,
-		});
+		expect(result.current.settings).toEqual(DEFAULT_SETTINGS);
 	});
 
 	it("should load settings from localStorage", () => {
@@ -48,18 +38,7 @@ describe("useSettings", () => {
 	it("should handle invalid JSON in localStorage", () => {
 		localStorage.setItem("releash-settings", "not-json");
 		const { result } = renderHook(() => useSettings());
-		expect(result.current.settings).toEqual({
-			theme: "dark",
-			fontSize: 14,
-			defaultDiffBase: "staged",
-			defaultDiffMode: "inline",
-			agent: "none",
-			agentAutoApprove: false,
-			terminalStartupCommand: "",
-			autoUpdate: true,
-			telemetryEnabled: true,
-			enableCrashReporting: true,
-		});
+		expect(result.current.settings).toEqual(DEFAULT_SETTINGS);
 	});
 
 	it("should save settings to localStorage on change", () => {

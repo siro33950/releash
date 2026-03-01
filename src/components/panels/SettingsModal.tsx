@@ -6,6 +6,7 @@ import {
 	Check,
 	Code,
 	Copy,
+	Eye,
 	GitBranch,
 	Globe,
 	Loader2,
@@ -46,6 +47,7 @@ import { cn } from "@/lib/utils";
 import type { BranchInfo } from "@/types/git";
 import {
 	AGENT_CONFIGS,
+	AGENT_MODELS,
 	type AgentType,
 	type AppSettings,
 	type DiffBase,
@@ -137,6 +139,7 @@ type SettingsSection =
 	| "repositories"
 	| "notion"
 	| "agent"
+	| "review"
 	| "mcp"
 	| "remote"
 	| "background"
@@ -153,6 +156,7 @@ const SETTINGS_SECTIONS: {
 	{ id: "repositories", label: "Repositories", icon: GitBranch },
 	{ id: "notion", label: "Notion", icon: BookOpen },
 	{ id: "agent", label: "Agent", icon: Bot },
+	{ id: "review", label: "Review", icon: Eye },
 	{ id: "mcp", label: "MCP", icon: Plug },
 	{ id: "remote", label: "Remote", icon: Globe },
 	{ id: "background", label: "Background", icon: Monitor },
@@ -641,6 +645,115 @@ function AgentSection({
 							</div>
 						</>
 					)}
+				</div>
+			)}
+		</div>
+	);
+}
+
+function ReviewSection({
+	draft,
+	updateDraft,
+}: {
+	draft: AppSettings;
+	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
+}) {
+	const modelOptions = AGENT_MODELS[draft.reviewAgent];
+	const showModel =
+		draft.reviewAgent !== "none" &&
+		draft.reviewAgent !== "custom" &&
+		modelOptions.length > 0;
+
+	return (
+		<div className="flex flex-col gap-4">
+			<div className="flex flex-col gap-1.5">
+				<label htmlFor="review-agent-select" className={labelClass}>
+					Review Agent
+				</label>
+				<Select
+					value={draft.reviewAgent}
+					onValueChange={(value) => {
+						const next = value as AgentType;
+						const nextModels = AGENT_MODELS[next];
+						const modelExists = nextModels.some(
+							(m) => m.value === draft.reviewModel,
+						);
+						updateDraft((d) => ({
+							...d,
+							reviewAgent: next,
+							reviewModel: modelExists ? d.reviewModel : "",
+						}));
+					}}
+				>
+					<SelectTrigger id="review-agent-select">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						{AGENT_TYPE_KEYS.map((key) => (
+							<SelectItem key={key} value={key}>
+								{AGENT_CONFIGS[key].label}
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
+			</div>
+
+			{showModel && (
+				<div className="flex flex-col gap-1.5">
+					<label htmlFor="review-model-select" className={labelClass}>
+						Model
+					</label>
+					<Select
+						value={draft.reviewModel}
+						onValueChange={(value) =>
+							updateDraft((d) => ({
+								...d,
+								reviewModel: value === "__default__" ? "" : value,
+							}))
+						}
+					>
+						<SelectTrigger id="review-model-select">
+							<SelectValue placeholder="Default" />
+						</SelectTrigger>
+						<SelectContent>
+							{modelOptions.map((m) => (
+								<SelectItem
+									key={m.value || "__default__"}
+									value={m.value || "__default__"}
+								>
+									{m.label}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</div>
+			)}
+
+			{draft.reviewAgent === "custom" && (
+				<div className="flex flex-col gap-1.5">
+					<label htmlFor="custom-review-cmd" className={labelClass}>
+						Custom Review Command
+					</label>
+					<textarea
+						id="custom-review-cmd"
+						value={draft.customReviewCommand}
+						onChange={(e) =>
+							updateDraft((d) => ({
+								...d,
+								customReviewCommand: e.target.value,
+							}))
+						}
+						placeholder='e.g. my-tool --review "{prompt}"'
+						rows={3}
+						className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+					/>
+					<p className="text-[10px] text-muted-foreground">
+						Use{" "}
+						<code className="bg-muted-foreground/20 px-0.5 rounded">
+							{"{prompt}"}
+						</code>{" "}
+						as a placeholder for the review prompt.
+					</p>
 				</div>
 			)}
 		</div>
@@ -1271,6 +1384,8 @@ export function SettingsModal({
 						onCopyHooks={handleCopyHooks}
 					/>
 				);
+			case "review":
+				return <ReviewSection draft={draft} updateDraft={updateDraft} />;
 			case "mcp":
 				return <McpSettingsSection mcp={mcp} />;
 			case "remote":

@@ -51,7 +51,14 @@ impl PtyBackend for DirectPtyBackend {
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
         let shell = &config.shell;
-        let mut cmd = if let Some(ref int_dir) = config.integration_dir {
+        let mut cmd = if let Some(ref exec) = config.exec_command {
+            // Non-interactive login shell: -l ensures PATH is set up from profile
+            let mut c = CommandBuilder::new(shell);
+            c.arg("-l");
+            c.arg("-c");
+            c.arg(exec);
+            c
+        } else if let Some(ref int_dir) = config.integration_dir {
             if shell.ends_with("/bash") {
                 let mut c = CommandBuilder::new(shell);
                 c.arg("--rcfile");
