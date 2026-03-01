@@ -122,6 +122,7 @@ export function useReviewExecution(
 		if (!worktreePath) return;
 
 		const token = runTokenRef.current;
+		let active = true;
 
 		invoke<{
 			pty_id: number;
@@ -133,7 +134,7 @@ export function useReviewExecution(
 			label: "review",
 		})
 			.then((result) => {
-				if (!result || runTokenRef.current !== token) return;
+				if (!active || !result || runTokenRef.current !== token) return;
 
 				const statusMap: Record<string, ReviewStatus> = {
 					starting: "running",
@@ -157,6 +158,10 @@ export function useReviewExecution(
 				});
 			})
 			.catch(() => {});
+
+		return () => {
+			active = false;
+		};
 	}, [worktreePath]);
 
 	// Compute summary when status is completed (re-computes on new comments)

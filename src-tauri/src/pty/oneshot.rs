@@ -217,6 +217,9 @@ impl OneShotPtyManager {
                     entry.info.exit_code = result.1;
                 }
                 entry.info.completed_at = Some(now);
+                if let Some(listener_id) = entry.output_listener_id.take() {
+                    app.unlisten(listener_id);
+                }
                 let _ = app.emit("oneshot-pty-status-changed", &entry.info);
             }
         }
@@ -226,11 +229,7 @@ impl OneShotPtyManager {
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
             if let Some(mgr) = app_cleanup.try_state::<Arc<OneShotPtyManager>>() {
-                if let Some(entry) = mgr.entries.lock().remove(&pty_id) {
-                    if let Some(listener_id) = entry.output_listener_id {
-                        app_cleanup.unlisten(listener_id);
-                    }
-                }
+                mgr.entries.lock().remove(&pty_id);
             }
         });
     }
@@ -285,9 +284,19 @@ impl OneShotPtyManager {
                     .partial_cmp(&b.info.started_at)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|e| FindOneShotPtyResult {
-                info: e.info.clone(),
-                buffered_output: e.output.clone(),
+            .map(|e| {
+                let buffered_output = if e.output.is_empty() {
+                    self.pty_manager
+                        .find_session(&e.info.session_key)
+                        .map(|s| s.buffered_output)
+                        .unwrap_or_default()
+                } else {
+                    e.output.clone()
+                };
+                FindOneShotPtyResult {
+                    info: e.info.clone(),
+                    buffered_output,
+                }
             })
     }
 }
