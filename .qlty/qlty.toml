@@ -18,7 +18,7 @@ name = "clippy"
 
 [[plugin]]
 name = "biome"
-version = "2.3.14"
+version = "2.4.4"
 
 [smells.function_complexity]
 threshold = 20
