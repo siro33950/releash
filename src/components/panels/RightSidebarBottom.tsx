@@ -88,19 +88,6 @@ export function RightSidebarBottom({
 							</span>
 						</TabsTrigger>
 					</TabsList>
-					{activeTab === "review" &&
-						unsentComments.length > 0 &&
-						onSendToTerminal && (
-							<button
-								type="button"
-								onClick={() => onSendToTerminal(unsentComments)}
-								className="flex items-center gap-1 px-2 ml-auto text-[10px] bg-primary/20 text-primary rounded hover:bg-primary/30 transition-colors"
-								title="Send unsent comments to terminal"
-							>
-								<Send className="h-3 w-3" />
-								Send
-							</button>
-						)}
 				</div>
 				<TabsContent
 					value="terminal"
@@ -123,18 +110,32 @@ export function RightSidebarBottom({
 							onToggleShowResolved={onToggleShowResolved}
 						/>
 					</div>
-					{settings.reviewAgent !== "none" && (
-						<div className="shrink-0 px-3 py-2 border-t border-border">
-							<button
-								type="button"
-								onClick={() => setReviewModalOpen(true)}
-								className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-							>
-								<Play className="h-3.5 w-3.5" />
-								AI Review
-							</button>
+					{(unsentComments.length > 0 && onSendToTerminal) ||
+					settings.reviewAgent !== "none" ? (
+						<div className="shrink-0 px-3 py-2 border-t border-border flex items-center gap-2">
+							{settings.reviewAgent !== "none" && (
+								<button
+									type="button"
+									onClick={() => setReviewModalOpen(true)}
+									className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+								>
+									<Play className="h-3.5 w-3.5" />
+									AI Review
+								</button>
+							)}
+							{unsentComments.length > 0 && onSendToTerminal && (
+								<button
+									type="button"
+									onClick={() => onSendToTerminal(unsentComments)}
+									className="flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+									title="Send unsent comments to terminal"
+								>
+									<Send className="h-3.5 w-3.5" />
+									Send
+								</button>
+							)}
 						</div>
-					)}
+					) : null}
 				</TabsContent>
 			</Tabs>
 			<ReviewModal
