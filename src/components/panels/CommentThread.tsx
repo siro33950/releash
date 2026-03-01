@@ -1,3 +1,4 @@
+import { Check, Copy, Pencil, Trash2, X } from "lucide-react";
 import {
 	type KeyboardEvent,
 	type MouseEvent,
@@ -6,9 +7,8 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { Check, Copy, Pencil, Trash2, X } from "lucide-react";
-import { formatRelativeTime } from "@/lib/formatRelativeTime";
 import { MarkdownPreview } from "@/components/panels/MarkdownPreview";
+import { formatRelativeTime } from "@/lib/formatRelativeTime";
 import type { LineComment } from "@/types/comment";
 
 export interface CommentThreadProps {
@@ -191,7 +191,10 @@ function CommentItem({
 				</>
 			) : (
 				<div className="comment-thread-item-content">
-					<MarkdownPreview content={content} className="comment-thread-markdown" />
+					<MarkdownPreview
+						content={content}
+						className="comment-thread-markdown"
+					/>
 				</div>
 			)}
 		</div>

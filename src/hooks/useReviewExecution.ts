@@ -40,10 +40,10 @@ export function useReviewExecution(
 		output: "",
 	});
 
-	const startCommentsCountRef = useRef(0);
+	const reviewStartTimeRef = useRef(0);
 	const ptyIdRef = useRef<number | null>(null);
-	// When true, accept pty-output from any pty_id (before invoke returns)
 	const awaitingPtyRef = useRef(false);
+	const prevStatusRef = useRef<ReviewStatus>("idle");
 	const pendingStatusRef = useRef<
 		Map<number, { status: string; exit_code: number | null }>
 	>(new Map());
@@ -114,12 +114,12 @@ export function useReviewExecution(
 		};
 	}, []);
 
-	// Compute summary when status changes to completed
+	// Compute summary once when status transitions to completed
 	useEffect(() => {
-		if (state.status === "completed") {
+		if (state.status === "completed" && prevStatusRef.current !== "completed") {
 			const reviewComments = comments.filter(
 				(c) =>
-					c.target === "review" && c.createdAt > startCommentsCountRef.current,
+					c.target === "review" && c.createdAt > reviewStartTimeRef.current,
 			);
 			const summary: ReviewSummary = {
 				total: reviewComments.length,
@@ -131,6 +131,7 @@ export function useReviewExecution(
 			};
 			setState((prev) => ({ ...prev, summary }));
 		}
+		prevStatusRef.current = state.status;
 	}, [state.status, comments]);
 
 	const startReview = useCallback(
@@ -144,7 +145,7 @@ export function useReviewExecution(
 			);
 			if (!command) return;
 
-			startCommentsCountRef.current = Date.now();
+			reviewStartTimeRef.current = Date.now();
 			ptyIdRef.current = null;
 			awaitingPtyRef.current = true;
 			pendingStatusRef.current.clear();
@@ -199,7 +200,6 @@ export function useReviewExecution(
 
 	const reset = useCallback(() => {
 		ptyIdRef.current = null;
-		awaitingPtyRef.current = false;
 		setState({ status: "idle", ptyId: null, summary: null, output: "" });
 	}, []);
 

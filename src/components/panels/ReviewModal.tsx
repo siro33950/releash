@@ -130,7 +130,7 @@ export function ReviewModal({
 
 				<div
 					ref={outputRef}
-					className="flex-1 min-h-0 overflow-auto p-3 text-sm text-foreground whitespace-pre-wrap break-words"
+					className="flex-1 min-h-0 overflow-auto p-3 text-sm text-foreground whitespace-pre-wrap break-words select-text"
 				>
 					{parsedOutput || (
 						<span className="text-muted-foreground">

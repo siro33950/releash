@@ -103,8 +103,7 @@ export function createCommentThread(
 
 			const { scrollTop, scrollHeight, clientHeight } = scrollable;
 			const atTop = scrollTop <= 0 && e.deltaY < 0;
-			const atBottom =
-				scrollTop + clientHeight >= scrollHeight && e.deltaY > 0;
+			const atBottom = scrollTop + clientHeight >= scrollHeight && e.deltaY > 0;
 
 			// Only propagate to editor if list is not scrollable or at boundary
 			if (scrollHeight > clientHeight && !atTop && !atBottom) {

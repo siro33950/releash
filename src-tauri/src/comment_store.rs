@@ -52,8 +52,8 @@ impl CommentStore {
         // Migration: normalize absolute file_path to relative
         let prefix = format!("{}/", worktree_name);
         for item in &mut items {
-            if item.file_path.starts_with(&prefix) {
-                item.file_path = item.file_path[prefix.len()..].to_string();
+            if let Some(stripped) = item.file_path.strip_prefix(&prefix) {
+                item.file_path = stripped.to_string();
             }
         }
 
@@ -86,8 +86,8 @@ impl CommentStore {
     pub fn add(&self, worktree_name: &str, mut comment: CommentItem) {
         // Normalize absolute file_path to relative (strip worktree prefix)
         let prefix = format!("{}/", worktree_name);
-        if comment.file_path.starts_with(&prefix) {
-            comment.file_path = comment.file_path[prefix.len()..].to_string();
+        if let Some(stripped) = comment.file_path.strip_prefix(&prefix) {
+            comment.file_path = stripped.to_string();
         }
         let mut entries = self.entries.write();
         entries

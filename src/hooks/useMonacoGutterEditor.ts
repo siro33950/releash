@@ -531,6 +531,7 @@ export function useMonacoGutterEditor(
 		);
 	}, [originalValue]);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: editorReady ensures editor/monaco refs are initialized before applying decorations
 	useEffect(() => {
 		const editor = editorRef.current;
 		const monaco = monacoRef.current;

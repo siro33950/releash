@@ -146,6 +146,15 @@ impl OneShotPtyManager {
                 let _ = app.emit("oneshot-pty-status-changed", &*entry);
             }
         }
+
+        // Clean up completed entry after a delay
+        let app_cleanup = app.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            if let Some(mgr) = app_cleanup.try_state::<Arc<OneShotPtyManager>>() {
+                mgr.entries.lock().remove(&pty_id);
+            }
+        });
     }
 
     pub fn cancel(&self, app: &AppHandle, pty_id: u64) -> Result<(), String> {

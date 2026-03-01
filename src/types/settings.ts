@@ -151,7 +151,11 @@ export function buildReviewCommand(
 		return null;
 	}
 
-	const escapedPrompt = promptTemplate.replace(/"/g, '\\"');
+	const escapedPrompt = promptTemplate
+		.replace(/\\/g, "\\\\")
+		.replace(/"/g, '\\"')
+		.replace(/\$/g, "\\$")
+		.replace(/`/g, "\\`");
 
 	if (reviewAgent === "custom") {
 		if (!customReviewCommand) return null;

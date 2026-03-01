@@ -635,6 +635,7 @@ export function useMonacoDiffEditor(
 		};
 	}, [changeGroups, editorReady]);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: editorReady ensures editor/monaco refs are initialized before applying decorations
 	useEffect(() => {
 		const diffEditor = diffEditorRef.current;
 		const monaco = monacoRef.current;

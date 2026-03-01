@@ -170,7 +170,7 @@ describe("CommentList", () => {
 			screen
 				.getByRole("button", { name: /delete me/i })
 				.closest("[role='button']") ??
-			screen.getByText("delete me").closest("[role='button']")!;
+			screen.getByText("delete me").closest("[role='button']");
 		await user.hover(row);
 		const deleteBtn = screen.getByLabelText("Delete comment");
 		await user.click(deleteBtn);
@@ -186,7 +186,7 @@ describe("CommentList", () => {
 				onResolveComment={onResolve}
 			/>,
 		);
-		const row = screen.getByText("resolve me").closest("[role='button']")!;
+		const row = screen.getByText("resolve me").closest("[role='button']");
 		await user.hover(row);
 		const resolveBtn = screen.getByLabelText("Resolve comment");
 		await user.click(resolveBtn);
@@ -205,7 +205,7 @@ describe("CommentList", () => {
 				onDeleteComment={vi.fn()}
 			/>,
 		);
-		const row = screen.getByText("already done").closest("[role='button']")!;
+		const row = screen.getByText("already done").closest("[role='button']");
 		await user.hover(row);
 		expect(screen.queryByLabelText("Resolve comment")).not.toBeInTheDocument();
 		expect(screen.getByLabelText("Delete comment")).toBeInTheDocument();

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type OneShotStatus =
 	| "starting"
@@ -26,6 +26,8 @@ export function useOneShotPty() {
 		new Map(),
 	);
 	const [outputs, setOutputs] = useState<Map<number, string>>(new Map());
+	const activePtysRef = useRef(activePtys);
+	activePtysRef.current = activePtys;
 
 	useEffect(() => {
 		const unlistenStatus = listen<OneShotPtyInfo>(
@@ -45,7 +47,7 @@ export function useOneShotPty() {
 			(event) => {
 				const { pty_id, data } = event.payload;
 				setOutputs((prev) => {
-					if (!activePtys.has(pty_id)) return prev;
+					if (!activePtysRef.current.has(pty_id)) return prev;
 					const next = new Map(prev);
 					const existing = next.get(pty_id) ?? "";
 					next.set(pty_id, existing + data);
@@ -58,7 +60,7 @@ export function useOneShotPty() {
 			unlistenStatus.then((f) => f());
 			unlistenOutput.then((f) => f());
 		};
-	}, [activePtys]);
+	}, []);
 
 	const spawn = useCallback(
 		async (
