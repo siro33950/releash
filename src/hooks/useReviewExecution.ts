@@ -163,6 +163,7 @@ export function useReviewExecution(
 		ptyIdRef.current = null;
 		awaitingPtyRef.current = true;
 		pendingStatusRef.current.clear();
+		pendingOutputRef.current.clear();
 
 		setState({ status: "starting", ptyId: null, summary: null, output: "" });
 
@@ -226,6 +227,8 @@ export function useReviewExecution(
 
 	const reset = useCallback(() => {
 		ptyIdRef.current = null;
+		pendingStatusRef.current.clear();
+		pendingOutputRef.current.clear();
 		setState({ status: "idle", ptyId: null, summary: null, output: "" });
 	}, []);
 

@@ -35,6 +35,26 @@ export interface CommentItemDTO {
 	target: string;
 }
 
+function normalizeStatus(value: string): "unsent" | "sent" {
+	return value === "sent" ? "sent" : "unsent";
+}
+
+function normalizeTarget(value: string): CommentTarget {
+	if (value === "ai" || value === "review" || value === "local") return value;
+	return "local";
+}
+
+function normalizeSeverity(value: string): CommentSeverity | undefined {
+	if (
+		value === "info" ||
+		value === "warning" ||
+		value === "error" ||
+		value === "suggestion"
+	)
+		return value;
+	return undefined;
+}
+
 export function dtoToLineComment(dto: CommentItemDTO): LineComment {
 	return {
 		id: dto.id,
@@ -42,14 +62,14 @@ export function dtoToLineComment(dto: CommentItemDTO): LineComment {
 		lineNumber: dto.line_number,
 		...(dto.end_line != null && { endLine: dto.end_line }),
 		content: dto.content,
-		status: dto.status as "unsent" | "sent",
+		status: normalizeStatus(dto.status),
 		createdAt: dto.created_at,
 		...(dto.parent_id != null && { parentId: dto.parent_id }),
 		...(dto.severity != null && {
-			severity: dto.severity as CommentSeverity,
+			severity: normalizeSeverity(dto.severity),
 		}),
 		resolved: dto.resolved,
-		target: dto.target as CommentTarget,
+		target: normalizeTarget(dto.target),
 	};
 }
 

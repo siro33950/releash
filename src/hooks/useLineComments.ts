@@ -20,6 +20,7 @@ export function useLineComments(worktreeName: string) {
 	// Initial load
 	useEffect(() => {
 		let disposed = false;
+		setComments([]);
 		invoke<CommentItemDTO[]>("load_comments", { worktreeName }).then(
 			(dtos) => {
 				if (!disposed) setComments(dtos.map(dtoToLineComment));

@@ -90,6 +90,8 @@ pub struct PostReviewCommentParams {
     pub severity: Option<String>,
 }
 
+const VALID_SEVERITIES: &[&str] = &["info", "warning", "error", "suggestion"];
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetReviewCommentsParams {
     /// Worktree path (from worktrees_list)
@@ -137,7 +139,9 @@ impl ReleashMcpServer {
 
         for repo_path in repo_paths.iter() {
             let worktrees =
-                crate::git::worktree::list_worktrees(repo_path.clone()).unwrap_or_default();
+                crate::git::worktree::list_worktrees(repo_path.clone()).map_err(|e| {
+                    McpError::internal_error(format!("Failed to list worktrees: {e}"), None)
+                })?;
             if worktrees.iter().any(|w| w.path == requested) {
                 return Ok(requested.to_string());
             }
@@ -242,6 +246,17 @@ impl ReleashMcpServer {
         Parameters(params): Parameters<PostReviewCommentParams>,
     ) -> Result<CallToolResult, McpError> {
         let worktree_path = self.resolve_worktree(&params.worktree)?;
+
+        if let Some(ref s) = params.severity {
+            if !VALID_SEVERITIES.contains(&s.as_str()) {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "Invalid severity: {s}. Must be one of: info, warning, error, suggestion"
+                    ),
+                    None,
+                ));
+            }
+        }
 
         let comment_id = uuid::Uuid::new_v4().to_string();
         let now = std::time::SystemTime::now()
