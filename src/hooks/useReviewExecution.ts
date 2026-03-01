@@ -221,7 +221,7 @@ export function useReviewExecution(
 				command,
 				worktreePath,
 				label: "review",
-				timeoutSecs: 300,
+				timeoutSecs: null,
 			});
 			if (runTokenRef.current !== runToken) return;
 

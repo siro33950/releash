@@ -149,7 +149,6 @@ impl OneShotPtyManager {
         timeout_secs: Option<u64>,
         pty_manager: Arc<PtyManager>,
     ) {
-        let timeout = timeout_secs.unwrap_or(300);
         let (tx, rx) = tokio::sync::oneshot::channel::<Option<i32>>();
         let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
 
@@ -177,26 +176,29 @@ impl OneShotPtyManager {
             });
         }
 
-        let result = tokio::select! {
-            exit_code = rx => {
-                match exit_code {
-                    Ok(code) => {
-                        let status = match code {
-                            Some(0) => OneShotStatus::Completed,
-                            _ => OneShotStatus::Error,
-                        };
-                        (status, code)
+        let map_exit = |exit_code: Result<Option<i32>, _>| match exit_code {
+            Ok(code) => {
+                let status = match code {
+                    Some(0) => OneShotStatus::Completed,
+                    _ => OneShotStatus::Error,
+                };
+                (status, code)
+            }
+            Err(_) => (OneShotStatus::Error, None),
+        };
+
+        let result = if let Some(timeout) = timeout_secs {
+            tokio::select! {
+                exit_code = rx => map_exit(exit_code),
+                _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
+                    if let Some(mgr) = app.try_state::<Arc<PtyManager>>() {
+                        let _ = mgr.kill(pty_id);
                     }
-                    Err(_) => (OneShotStatus::Error, None),
+                    (OneShotStatus::Timeout, None)
                 }
             }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
-                // Timeout — kill the PTY
-                if let Some(mgr) = app.try_state::<Arc<PtyManager>>() {
-                    let _ = mgr.kill(pty_id);
-                }
-                (OneShotStatus::Timeout, None)
-            }
+        } else {
+            map_exit(rx.await)
         };
 
         app.unlisten(listener);
