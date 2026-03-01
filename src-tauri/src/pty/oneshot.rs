@@ -278,7 +278,13 @@ impl OneShotPtyManager {
         self.entries
             .lock()
             .values()
-            .find(|e| e.info.worktree_path == worktree_path && e.info.label == label)
+            .filter(|e| e.info.worktree_path == worktree_path && e.info.label == label)
+            .max_by(|a, b| {
+                a.info
+                    .started_at
+                    .partial_cmp(&b.info.started_at)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|e| FindOneShotPtyResult {
                 info: e.info.clone(),
                 buffered_output: e.output.clone(),
@@ -463,6 +469,35 @@ mod tests {
 
         let result = mgr.find_by_worktree_and_label("/repo", "review");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_by_worktree_and_label_returns_latest() {
+        let pm = Arc::new(PtyManager::default());
+        let mgr = OneShotPtyManager::new(pm);
+
+        {
+            let mut entries = mgr.entries.lock();
+
+            let mut old = make_entry(1, "/repo", "review", OneShotStatus::Completed);
+            old.info.started_at = 1000.0;
+            entries.insert(1, old);
+
+            let mut newer = make_entry(2, "/repo", "review", OneShotStatus::Running);
+            newer.info.started_at = 2000.0;
+            entries.insert(2, newer);
+
+            // Different label — should not interfere
+            let mut other = make_entry(3, "/repo", "agent", OneShotStatus::Running);
+            other.info.started_at = 9999.0;
+            entries.insert(3, other);
+        }
+
+        let result = mgr.find_by_worktree_and_label("/repo", "review");
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.info.pty_id, 2);
+        assert_eq!(result.info.started_at, 2000.0);
     }
 
     #[test]

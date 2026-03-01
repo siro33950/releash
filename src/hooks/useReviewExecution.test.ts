@@ -537,6 +537,52 @@ describe("useReviewExecution", () => {
 		expect(result.current.output).toBe("restored new data");
 	});
 
+	it("should compute summary correctly after mount restoration (seconds → ms conversion)", async () => {
+		const rustStartedAtSecs = Date.now() / 1000; // Rust uses seconds
+		const restoredMs = rustStartedAtSecs * 1000; // Expected ms after conversion
+
+		mockInvoke.mockReset();
+		mockInvoke.mockResolvedValueOnce({
+			pty_id: 400,
+			status: "completed",
+			started_at: rustStartedAtSecs,
+			buffered_output: "",
+		});
+		mockInvoke.mockResolvedValue(undefined);
+
+		// Comments: one before restoration time (should be excluded),
+		// two after (should be included)
+		const comments: LineComment[] = [
+			makeComment({
+				id: "before",
+				severity: "error",
+				createdAt: restoredMs - 5000,
+			}),
+			makeComment({
+				id: "after1",
+				severity: "warning",
+				createdAt: restoredMs + 1000,
+			}),
+			makeComment({
+				id: "after2",
+				severity: "info",
+				createdAt: restoredMs + 2000,
+			}),
+		];
+
+		const { result } = await renderReviewHook(WORKTREE, comments);
+
+		// Wait for summary computation useEffect
+		await act(async () => {});
+
+		expect(result.current.status).toBe("completed");
+		expect(result.current.summary).not.toBeNull();
+		expect(result.current.summary?.total).toBe(2);
+		expect(result.current.summary?.warnings).toBe(1);
+		expect(result.current.summary?.infos).toBe(1);
+		expect(result.current.summary?.errors).toBe(0);
+	});
+
 	it("should prevent double start", async () => {
 		let resolvePrompt = (_v: string) => {};
 		mockInvoke.mockReturnValueOnce(

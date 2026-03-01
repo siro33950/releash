@@ -147,7 +147,7 @@ export function useReviewExecution(
 				if (!mapped) return;
 
 				ptyIdRef.current = result.pty_id;
-				reviewStartTimeRef.current = result.started_at;
+				reviewStartTimeRef.current = result.started_at * 1000;
 
 				setState({
 					status: mapped,
