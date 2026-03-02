@@ -9,6 +9,7 @@ import {
 	Separator,
 } from "react-resizable-panels";
 import { BranchSelector } from "@/components/layout/BranchSelector";
+
 import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { AgentTab } from "@/components/panels/AgentTab";

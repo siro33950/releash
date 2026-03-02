@@ -162,7 +162,13 @@ export function useWorktreeState({
 		return activeTabLanguage;
 	}, [activeTabLanguage]);
 
-	const { transport: lspTransport } = useLsp(rootPath, lspLanguage);
+	const {
+		transport: lspTransport,
+		status: lspStatus,
+		error: lspError,
+		crashCount: lspCrashCount,
+		retryManually: lspRetryManually,
+	} = useLsp(rootPath, lspLanguage);
 
 	const [monacoInstance, setMonacoInstance] = useState<
 		typeof import("monaco-editor") | null
@@ -487,6 +493,10 @@ export function useWorktreeState({
 			theme: settings.theme,
 			fontSize: settings.fontSize,
 			onSearchOccurrences: handleSearchOccurrences,
+			lspStatus,
+			lspError,
+			lspCrashCount,
+			lspRetryManually,
 		}),
 		[
 			getFileContent,
@@ -512,6 +522,10 @@ export function useWorktreeState({
 			settings.theme,
 			settings.fontSize,
 			handleSearchOccurrences,
+			lspStatus,
+			lspError,
+			lspCrashCount,
+			lspRetryManually,
 		],
 	);
 
@@ -591,5 +605,8 @@ export function useWorktreeState({
 		onSettingsSave,
 		settings,
 		rootPath,
+		lspStatus,
+		lspCrashCount,
+		lspRetryManually,
 	};
 }
