@@ -954,6 +954,85 @@ pub async fn find_references(
         .map_err(|e| format!("task join error: {e}"))?
 }
 
+// === Document symbols (for outline view) ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentSymbol {
+    pub name: String,
+    pub kind: String,
+    pub line: usize,
+    pub column: usize,
+    pub end_line: usize,
+}
+
+fn list_document_symbols_inner(
+    file_path: String,
+    language: String,
+) -> Result<Vec<DocumentSymbol>, String> {
+    let Some(tags_config) = get_tags_config(&language) else {
+        return Ok(Vec::new());
+    };
+
+    let content =
+        fs::read_to_string(&file_path).map_err(|e| format!("ファイル読み込み失敗: {e}"))?;
+    let content_bytes = content.as_bytes();
+
+    let mut ctx = TagsContext::new();
+    let (tags, _) = ctx
+        .generate_tags(tags_config, content_bytes, None)
+        .map_err(|e| format!("タグ生成失敗: {e}"))?;
+
+    let mut symbols = Vec::new();
+    for tag_result in tags {
+        let tag = match tag_result {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        if !tag.is_definition {
+            continue;
+        }
+
+        let name = match std::str::from_utf8(&content_bytes[tag.name_range.clone()]) {
+            Ok(n) => n.to_string(),
+            Err(_) => continue,
+        };
+
+        let kind = tags_config.syntax_type_name(tag.syntax_type_id).to_string();
+
+        let line_content = content.lines().nth(tag.span.start.row).unwrap_or("");
+        let column = line_content
+            .get(..tag.span.start.column)
+            .map(|prefix| prefix.chars().count())
+            .unwrap_or(tag.span.start.column)
+            + 1;
+
+        symbols.push(DocumentSymbol {
+            name,
+            kind,
+            line: tag.span.start.row + 1,
+            column,
+            end_line: tag.span.end.row + 1,
+        });
+    }
+
+    // Sort by line number, deduplicate same position
+    symbols.sort_by_key(|s| (s.line, s.column));
+    symbols.dedup_by(|a, b| a.line == b.line && a.column == b.column && a.name == b.name);
+
+    Ok(symbols)
+}
+
+#[tauri::command]
+pub async fn list_document_symbols(
+    file_path: String,
+    language: String,
+) -> Result<Vec<DocumentSymbol>, String> {
+    tokio::task::spawn_blocking(move || list_document_symbols_inner(file_path, language))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

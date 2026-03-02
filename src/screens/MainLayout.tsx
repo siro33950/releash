@@ -23,6 +23,7 @@ import {
 import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
+import { SymbolOutlinePanel } from "@/components/panels/SymbolOutlinePanel";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -294,7 +295,9 @@ function WorktreeContent({
 														? "search"
 														: s.activeView === "pr"
 															? "pr"
-															: "explorer"
+															: s.activeView === "symbols"
+																? "symbols"
+																: "explorer"
 											}
 											onTabChange={(tab: RightTopTab) => {
 												const view = tab === "changes" ? "git" : tab;
@@ -323,6 +326,23 @@ function WorktreeContent({
 												<PullRequestPanel
 													rootPath={rootPath}
 													branch={s.branch}
+												/>
+											}
+											symbolsContent={
+												<SymbolOutlinePanel
+													filePath={s.activeTab?.path ?? null}
+													language={s.activeTab?.language ?? null}
+													onSelectSymbol={(line) => {
+														if (s.activeTab?.path) {
+															s.dispatchEditor({
+																type: "SET_PENDING_REVEAL",
+																reveal: {
+																	path: s.activeTab.path,
+																	line,
+																},
+															});
+														}
+													}}
 												/>
 											}
 										/>

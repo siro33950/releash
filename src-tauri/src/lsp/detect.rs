@@ -1,0 +1,213 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspServerConfig {
+    pub command: String,
+    pub args: Vec<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspServerEntry {
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Default language server mappings.
+/// Maps language ID → (command, args, file extensions).
+struct DefaultServer {
+    command: &'static str,
+    args: &'static [&'static str],
+    extensions: &'static [&'static str],
+}
+
+static DEFAULT_SERVERS: &[(&str, DefaultServer)] = &[
+    (
+        "typescript",
+        DefaultServer {
+            command: "typescript-language-server",
+            args: &["--stdio"],
+            extensions: &["ts", "tsx", "js", "jsx", "mts", "cts"],
+        },
+    ),
+    (
+        "rust",
+        DefaultServer {
+            command: "rust-analyzer",
+            args: &[],
+            extensions: &["rs"],
+        },
+    ),
+    (
+        "go",
+        DefaultServer {
+            command: "gopls",
+            args: &[],
+            extensions: &["go"],
+        },
+    ),
+];
+
+/// Cache of detected servers (command → is_available).
+static WHICH_CACHE: OnceLock<std::sync::Mutex<HashMap<String, bool>>> = OnceLock::new();
+
+fn which_cache() -> &'static std::sync::Mutex<HashMap<String, bool>> {
+    WHICH_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Check if a command is available on PATH.
+fn is_command_available(command: &str) -> bool {
+    let mut cache = which_cache().lock().unwrap();
+    if let Some(&available) = cache.get(command) {
+        return available;
+    }
+
+    let available = std::process::Command::new("which")
+        .arg(command)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    cache.insert(command.to_string(), available);
+    available
+}
+
+/// Detect a language server for the given file extension.
+/// First checks user config, then falls back to default detection.
+pub fn detect_server(
+    language: &str,
+    user_config: &HashMap<String, LspServerEntry>,
+) -> Option<LspServerConfig> {
+    // Check user config first
+    if let Some(entry) = user_config.get(language) {
+        if !entry.enabled {
+            return None;
+        }
+        if !entry.command.is_empty() {
+            return Some(LspServerConfig {
+                command: entry.command.clone(),
+                args: entry.args.clone(),
+                enabled: true,
+            });
+        }
+    }
+
+    // Check if user has explicitly disabled
+    if user_config.get(language).is_some_and(|e| !e.enabled) {
+        return None;
+    }
+
+    // Fall back to default detection
+    for &(lang, ref default) in DEFAULT_SERVERS {
+        if lang == language && is_command_available(default.command) {
+            return Some(LspServerConfig {
+                command: default.command.to_string(),
+                args: default.args.iter().map(|s| s.to_string()).collect(),
+                enabled: true,
+            });
+        }
+    }
+
+    None
+}
+
+/// Get the language ID for a file extension.
+pub fn language_for_extension(ext: &str) -> Option<&'static str> {
+    for &(lang, ref default) in DEFAULT_SERVERS {
+        if default.extensions.contains(&ext) {
+            return Some(lang);
+        }
+    }
+    None
+}
+
+/// List all default supported languages.
+pub fn supported_languages() -> Vec<&'static str> {
+    DEFAULT_SERVERS.iter().map(|&(lang, _)| lang).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_for_extension_typescript() {
+        assert_eq!(language_for_extension("ts"), Some("typescript"));
+        assert_eq!(language_for_extension("tsx"), Some("typescript"));
+        assert_eq!(language_for_extension("js"), Some("typescript"));
+        assert_eq!(language_for_extension("jsx"), Some("typescript"));
+    }
+
+    #[test]
+    fn language_for_extension_rust() {
+        assert_eq!(language_for_extension("rs"), Some("rust"));
+    }
+
+    #[test]
+    fn language_for_extension_go() {
+        assert_eq!(language_for_extension("go"), Some("go"));
+    }
+
+    #[test]
+    fn language_for_extension_unknown() {
+        assert_eq!(language_for_extension("xyz"), None);
+    }
+
+    #[test]
+    fn supported_languages_includes_defaults() {
+        let langs = supported_languages();
+        assert!(langs.contains(&"typescript"));
+        assert!(langs.contains(&"rust"));
+        assert!(langs.contains(&"go"));
+    }
+
+    #[test]
+    fn detect_server_respects_disabled_config() {
+        let mut config = HashMap::new();
+        config.insert(
+            "typescript".to_string(),
+            LspServerEntry {
+                command: String::new(),
+                args: vec![],
+                enabled: false,
+            },
+        );
+        assert!(detect_server("typescript", &config).is_none());
+    }
+
+    #[test]
+    fn detect_server_uses_custom_command() {
+        let mut config = HashMap::new();
+        config.insert(
+            "typescript".to_string(),
+            LspServerEntry {
+                command: "my-custom-lsp".to_string(),
+                args: vec!["--stdio".to_string()],
+                enabled: true,
+            },
+        );
+        let result = detect_server("typescript", &config);
+        assert!(result.is_some());
+        let server = result.unwrap();
+        assert_eq!(server.command, "my-custom-lsp");
+        assert_eq!(server.args, vec!["--stdio"]);
+    }
+
+    #[test]
+    fn detect_server_unknown_language_returns_none() {
+        let config = HashMap::new();
+        assert!(detect_server("brainfuck", &config).is_none());
+    }
+}

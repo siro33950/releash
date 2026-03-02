@@ -16,6 +16,25 @@ const SUPPORTED_LANGUAGES = [
 
 let providersRegistered = false;
 
+/**
+ * Set of language IDs for which an LSP server is active.
+ * When LSP is active for a language, the tree-sitter providers skip their work
+ * to avoid duplicate results.
+ */
+const lspActiveLanguages = new Set<string>();
+
+export function setLspActive(language: string, active: boolean): void {
+	if (active) {
+		lspActiveLanguages.add(language);
+	} else {
+		lspActiveLanguages.delete(language);
+	}
+}
+
+export function isLspActive(language: string): boolean {
+	return lspActiveLanguages.has(language);
+}
+
 export interface NavigationCallbacks {
 	onOpenFileAtLine: (relativePath: string, line: number) => void;
 	getRootPath: () => string | null;
@@ -68,6 +87,9 @@ export function registerDefinitionProviders(
 				model: Monaco.editor.ITextModel,
 				position: Monaco.Position,
 			): Promise<Monaco.languages.Location[] | null> => {
+				// Skip tree-sitter provider when LSP is active for this language
+				if (lspActiveLanguages.has(searchLang)) return null;
+
 				const rootPath = callbacks.getRootPath();
 				if (!rootPath) {
 					console.warn("[Releash] find_definition: rootPath is null");
@@ -128,6 +150,9 @@ export function registerDefinitionProviders(
 				model: Monaco.editor.ITextModel,
 				position: Monaco.Position,
 			): Promise<Monaco.languages.Location[] | null> => {
+				// Skip tree-sitter provider when LSP is active for this language
+				if (lspActiveLanguages.has(searchLang)) return null;
+
 				const rootPath = callbacks.getRootPath();
 				if (!rootPath) return null;
 

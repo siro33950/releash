@@ -44,7 +44,7 @@ tree-sitter-python = "0.25"
 tree-sitter-go = "0.25"
 toml = "1.0"
 rand = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "process"] }
 tokio-tungstenite = "0.28"
 hmac = "0.12"
 sha2 = "0.10"
@@ -66,6 +66,8 @@ tauri-plugin-aptabase = "1.0.0"
 rmcp = { version = "0.17", features = ["server", "transport-streamable-http-server", "schemars"] }
 axum = "0.8"
 tokio-util = "0.7"
+lsp-types = "0.97"
+bytes = "1"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", branch = "release" }

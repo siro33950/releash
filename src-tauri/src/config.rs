@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::lsp::detect::LspServerEntry;
 use crate::notion::types::NotionRepoConfig;
 
 const TOKEN_LENGTH: usize = 48;
@@ -28,6 +29,8 @@ pub struct ReleashConfig {
     pub remote: RemoteSection,
     #[serde(default)]
     pub app: AppSection,
+    #[serde(default)]
+    pub lsp: HashMap<String, LspServerEntry>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -94,6 +97,7 @@ impl Default for ReleashConfig {
             notion: HashMap::new(),
             remote: RemoteSection::default(),
             app: AppSection::default(),
+            lsp: HashMap::new(),
         }
     }
 }
