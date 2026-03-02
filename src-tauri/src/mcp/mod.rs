@@ -224,7 +224,7 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
     let broadcaster = app.state::<Arc<crate::ws_bridge::WsBroadcaster>>();
     let agent_states = app.state::<crate::hook_listener::AgentStatesMap>();
     let comment_store = app.state::<Arc<crate::comment_store::CommentStore>>();
-    let shared_repo_paths = app.state::<crate::ws_server::commands::SharedRepoPaths>();
+    let shared_repo_paths = app.state::<crate::repo_registry::SharedRepoPaths>();
 
     let app_data_dir = app.path().app_data_dir().ok();
 

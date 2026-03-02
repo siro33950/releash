@@ -11,6 +11,7 @@ mod notion;
 mod protocol;
 mod pty;
 mod qr_code;
+mod repo_registry;
 mod review_prompt;
 mod search;
 mod sentry_integration;
@@ -65,9 +66,7 @@ pub fn run() {
         .manage(Arc::new(git_host::PrDetailCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
         .manage(mcp::McpServerHandle::default())
-        .manage::<ws_server::commands::SharedRepoPaths>(Arc::new(parking_lot::RwLock::new(
-            Vec::new(),
-        )))
+        .manage::<repo_registry::SharedRepoPaths>(Arc::new(parking_lot::RwLock::new(Vec::new())))
         .setup(|app| {
             // OneShotPtyManager shares the same PtyManager instance
             let pty_mgr = app.state::<Arc<pty::PtyManager>>();
@@ -89,7 +88,7 @@ pub fn run() {
 
             // Initialize shared repo_paths from config
             {
-                let shared_repo_paths = app.state::<ws_server::commands::SharedRepoPaths>();
+                let shared_repo_paths = app.state::<repo_registry::SharedRepoPaths>();
                 if let Ok(cfg) = app_config.get_config() {
                     let paths: Vec<String> = cfg
                         .app
@@ -134,6 +133,7 @@ pub fn run() {
                 broadcaster: app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone(),
                 agent_states,
                 focus_tracker,
+                repo_paths: Arc::clone(app.state::<repo_registry::SharedRepoPaths>().inner()),
             };
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = hook_listener::start_hook_listener(hook_state).await {
@@ -167,26 +167,14 @@ pub fn run() {
             }
 
             // Auto-start server if configured
-            let auto_start_config = app_config.get_config().ok().filter(|c| {
-                c.remote.auto_start
-                    && (!c.app.last_repo_paths.is_empty() || !c.app.last_root_path.is_empty())
-            });
+            let auto_start_config = app_config.get_config().ok().filter(|c| c.remote.auto_start);
             if let Some(cfg) = auto_start_config {
-                let handle = app.handle().clone();
-                let repo_paths: Vec<String> = if !cfg.app.last_repo_paths.is_empty() {
-                    cfg.app.last_repo_paths.clone()
-                } else {
-                    vec![cfg.app.last_root_path.clone()]
-                }
-                .into_iter()
-                .filter(|p| !p.trim().is_empty())
-                .collect();
                 let bind_ip = cfg.app.last_bind_ip.clone();
-                if !repo_paths.is_empty() && !bind_ip.is_empty() {
+                if !bind_ip.is_empty() {
+                    let handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) =
-                            ws_server::commands::start_server_core(&handle, repo_paths, bind_ip)
-                                .await
+                            ws_server::commands::start_server_core(&handle, bind_ip).await
                         {
                             log::error!("Auto-start server failed: {e}");
                         }
@@ -315,8 +303,11 @@ pub fn run() {
             ws_server::commands::get_server_status,
             ws_server::commands::get_server_info,
             ws_server::commands::broadcast_comments,
-            ws_server::commands::update_server_repo_paths,
             ws_server::commands::update_terminal_startup_command,
+            // Repo registry
+            repo_registry::get_repo_paths,
+            repo_registry::add_repo_path,
+            repo_registry::remove_repo_path,
             // MCP Server
             mcp::start_mcp_server,
             mcp::stop_mcp_server,

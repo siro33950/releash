@@ -14,11 +14,11 @@ interface ServerInfo {
 	connection_mode: "vpn" | "lan" | null;
 }
 
-export function useRemoteAutoStart(repoPaths: string[], ready: boolean) {
+export function useRemoteAutoStart(ready: boolean) {
 	const attempted = useRef(false);
 
 	useEffect(() => {
-		if (!ready || attempted.current || repoPaths.length === 0) return;
+		if (!ready || attempted.current) return;
 		attempted.current = true;
 
 		(async () => {
@@ -44,12 +44,11 @@ export function useRemoteAutoStart(repoPaths: string[], ready: boolean) {
 				if (!bindIp) return;
 
 				await invoke("start_server", {
-					repoPaths,
 					bindIp,
 				});
 			} catch (e) {
 				console.warn("Remote auto-start failed:", e);
 			}
 		})();
-	}, [ready, repoPaths]);
+	}, [ready]);
 }

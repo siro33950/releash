@@ -3,12 +3,11 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::config::AppConfig;
+use crate::repo_registry::SharedRepoPaths;
 use crate::ws_bridge::WsBroadcaster;
 
 use super::http::start_ws_server;
 use super::{StartServerResult, WsServerHandle, WsServerState};
-
-pub type SharedRepoPaths = Arc<parking_lot::RwLock<Vec<String>>>;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerStatusPayload {
@@ -19,7 +18,6 @@ pub struct ServerStatusPayload {
 
 pub async fn start_server_core(
     app: &tauri::AppHandle,
-    repo_paths: Vec<String>,
     bind_ip: String,
 ) -> Result<StartServerResult, String> {
     let handle = app.state::<WsServerHandle>();
@@ -78,9 +76,6 @@ pub async fn start_server_core(
             .ok()
             .map(|d| d.join("resources").join("remote"))
     };
-    // Update shared repo_paths so MCP server sees the same list
-    *shared_repo_paths.write() = repo_paths.clone();
-
     let server_state = Arc::new(WsServerState::new(
         remote_dir,
         Arc::clone(&broadcaster),
@@ -114,12 +109,8 @@ pub async fn start_server_core(
         },
     );
 
-    // Save last server context
-    let last_root = repo_paths.first().cloned().unwrap_or_default();
-    let saved_repo_paths = repo_paths.clone();
+    // Save last bind IP
     let _ = config_state.with_config_mut(|config| {
-        config.app.last_repo_paths = saved_repo_paths;
-        config.app.last_root_path = last_root;
         config.app.last_bind_ip = bind_ip.clone();
         Ok(())
     });
@@ -161,11 +152,10 @@ pub async fn stop_server_core(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn start_server(
-    repo_paths: Vec<String>,
     bind_ip: String,
     app: tauri::AppHandle,
 ) -> Result<StartServerResult, String> {
-    start_server_core(&app, repo_paths, bind_ip).await
+    start_server_core(&app, bind_ip).await
 }
 
 #[tauri::command]
@@ -200,29 +190,6 @@ pub fn broadcast_comments(
     broadcaster: tauri::State<'_, Arc<WsBroadcaster>>,
 ) {
     broadcaster.try_send(crate::protocol::WsMessage::CommentsSync(comments));
-}
-
-#[tauri::command]
-pub async fn update_server_repo_paths(
-    repo_paths: Vec<String>,
-    handle: tauri::State<'_, WsServerHandle>,
-    shared_repo_paths: tauri::State<'_, SharedRepoPaths>,
-) -> Result<(), String> {
-    // Update shared Arc so MCP server also sees the change
-    *shared_repo_paths.write() = repo_paths.clone();
-
-    let server_state = {
-        let guard = handle.server_state.lock();
-        guard.clone().ok_or("サーバーが起動していません")?
-    };
-    server_state.update_repo_paths(repo_paths);
-    let worktrees = super::handlers::build_all_worktrees(&server_state).await;
-    server_state
-        .broadcaster
-        .try_send(crate::protocol::WsMessage::WorktreeListResponse(
-            crate::protocol::WorktreeListResponse { worktrees },
-        ));
-    Ok(())
 }
 
 #[tauri::command]

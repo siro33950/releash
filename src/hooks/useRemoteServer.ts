@@ -50,9 +50,6 @@ export function useRemoteServer() {
 		null,
 	);
 	const [showLanConfirm, setShowLanConfirm] = useState(false);
-	const [pendingRepoPaths, setPendingRepoPaths] = useState<string[] | null>(
-		null,
-	);
 
 	const refreshConfig = useCallback(async () => {
 		try {
@@ -135,11 +132,10 @@ export function useRemoteServer() {
 	}, [refreshQr]);
 
 	const doStartServer = useCallback(
-		async (repoPaths: string[], bindIp: string) => {
+		async (bindIp: string) => {
 			setError(null);
 			try {
 				const result = await invoke<StartServerResult>("start_server", {
-					repoPaths,
 					bindIp,
 				});
 				setRunning(true);
@@ -154,41 +150,27 @@ export function useRemoteServer() {
 		[refreshQr],
 	);
 
-	const startServer = useCallback(
-		async (repoPaths: string[]) => {
-			if (!selectedIp) {
-				setError("Please select an IP address");
-				return;
-			}
-			const selected = interfaces.find((i) => i.ip === selectedIp);
-			if (selected?.kind === "lan") {
-				setPendingRepoPaths(repoPaths);
-				setShowLanConfirm(true);
-				return;
-			}
-			await doStartServer(repoPaths, selectedIp);
-		},
-		[selectedIp, interfaces, doStartServer],
-	);
+	const startServer = useCallback(async () => {
+		if (!selectedIp) {
+			setError("Please select an IP address");
+			return;
+		}
+		const selected = interfaces.find((i) => i.ip === selectedIp);
+		if (selected?.kind === "lan") {
+			setShowLanConfirm(true);
+			return;
+		}
+		await doStartServer(selectedIp);
+	}, [selectedIp, interfaces, doStartServer]);
 
 	const confirmLanStart = useCallback(async () => {
 		setShowLanConfirm(false);
-		if (!pendingRepoPaths || !selectedIp) return;
-		await doStartServer(pendingRepoPaths, selectedIp);
-		setPendingRepoPaths(null);
-	}, [pendingRepoPaths, selectedIp, doStartServer]);
+		if (!selectedIp) return;
+		await doStartServer(selectedIp);
+	}, [selectedIp, doStartServer]);
 
 	const cancelLanStart = useCallback(() => {
 		setShowLanConfirm(false);
-		setPendingRepoPaths(null);
-	}, []);
-
-	const updateRepoPaths = useCallback(async (repoPaths: string[]) => {
-		try {
-			await invoke("update_server_repo_paths", { repoPaths });
-		} catch (e) {
-			setError(formatRemoteServerError(e));
-		}
 	}, []);
 
 	const updateTerminalStartupCommand = useCallback(async (command: string) => {
@@ -255,7 +237,6 @@ export function useRemoteServer() {
 		refreshStatus,
 		updatePort,
 		regenerateToken,
-		updateRepoPaths,
 		updateTerminalStartupCommand,
 	};
 }

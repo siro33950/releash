@@ -17,12 +17,7 @@ describe("useRemoteAutoStart", () => {
 	});
 
 	it("should not start when ready is false", () => {
-		renderHook(() => useRemoteAutoStart(["/repo"], false));
-		expect(mockInvoke).not.toHaveBeenCalled();
-	});
-
-	it("should not start when repoPaths is empty", () => {
-		renderHook(() => useRemoteAutoStart([], true));
+		renderHook(() => useRemoteAutoStart(false));
 		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
@@ -32,7 +27,7 @@ describe("useRemoteAutoStart", () => {
 			auto_start_on_lan: false,
 		});
 
-		renderHook(() => useRemoteAutoStart(["/repo"], true));
+		renderHook(() => useRemoteAutoStart(true));
 		await vi.waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("get_remote_config");
 		});
@@ -48,7 +43,7 @@ describe("useRemoteAutoStart", () => {
 				connection_mode: "vpn",
 			});
 
-		renderHook(() => useRemoteAutoStart(["/repo"], true));
+		renderHook(() => useRemoteAutoStart(true));
 		await vi.waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("get_server_info");
 		});
@@ -69,10 +64,9 @@ describe("useRemoteAutoStart", () => {
 			])
 			.mockResolvedValueOnce({ ip: "10.8.0.2", mode: "vpn" });
 
-		renderHook(() => useRemoteAutoStart(["/repo"], true));
+		renderHook(() => useRemoteAutoStart(true));
 		await vi.waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("start_server", {
-				repoPaths: ["/repo"],
 				bindIp: "10.8.0.2",
 			});
 		});
@@ -86,13 +80,14 @@ describe("useRemoteAutoStart", () => {
 				bound_ip: null,
 				connection_mode: null,
 			})
-			.mockResolvedValueOnce([{ name: "en0", ip: "192.168.1.10", kind: "lan" }])
+			.mockResolvedValueOnce([
+				{ name: "en0", ip: "192.168.1.10", kind: "lan" },
+			])
 			.mockResolvedValueOnce({ ip: "192.168.1.10", mode: "lan" });
 
-		renderHook(() => useRemoteAutoStart(["/repo"], true));
+		renderHook(() => useRemoteAutoStart(true));
 		await vi.waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("start_server", {
-				repoPaths: ["/repo"],
 				bindIp: "192.168.1.10",
 			});
 		});
@@ -110,7 +105,7 @@ describe("useRemoteAutoStart", () => {
 				{ name: "en0", ip: "192.168.1.10", kind: "lan" },
 			]);
 
-		renderHook(() => useRemoteAutoStart(["/repo"], true));
+		renderHook(() => useRemoteAutoStart(true));
 		await vi.waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("get_network_info");
 		});
@@ -130,7 +125,7 @@ describe("useRemoteAutoStart", () => {
 			})
 			.mockResolvedValueOnce([]);
 
-		renderHook(() => useRemoteAutoStart(["/repo"], true));
+		renderHook(() => useRemoteAutoStart(true));
 		await vi.waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("get_network_info");
 		});
@@ -147,8 +142,8 @@ describe("useRemoteAutoStart", () => {
 		});
 
 		const { rerender } = renderHook(
-			({ paths, ready }) => useRemoteAutoStart(paths, ready),
-			{ initialProps: { paths: ["/repo"], ready: true } },
+			({ ready }) => useRemoteAutoStart(ready),
+			{ initialProps: { ready: true } },
 		);
 
 		await vi.waitFor(() => {
@@ -156,7 +151,7 @@ describe("useRemoteAutoStart", () => {
 		});
 
 		mockInvoke.mockClear();
-		rerender({ paths: ["/repo", "/repo2"], ready: true });
+		rerender({ ready: true });
 
 		await new Promise((r) => setTimeout(r, 50));
 		expect(mockInvoke).not.toHaveBeenCalled();
