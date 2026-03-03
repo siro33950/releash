@@ -196,20 +196,18 @@ pub async fn restart_mcp_server_if_running(
 ) -> Result<Option<McpConnectionInfo>, String> {
     let handle = app.state::<McpServerHandle>();
 
-    if !handle.is_running() {
-        return Ok(None);
+    if handle.is_running() {
+        stop_mcp_server_core(&handle)
+            .await
+            .map_err(|e| format!("設定は保存しましたが、MCPサーバーの停止に失敗しました: {e}"))?;
     }
 
-    stop_mcp_server_core(&handle)
-        .await
-        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの停止に失敗しました: {e}"))?;
-
     let state = build_mcp_state(app)
-        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの再起動に失敗しました: {e}"))?;
+        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの起動に失敗しました: {e}"))?;
 
     let info = start_mcp_server_core(state, &handle)
         .await
-        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの再起動に失敗しました: {e}"))?;
+        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの起動に失敗しました: {e}"))?;
 
     Ok(Some(info))
 }

@@ -25,20 +25,37 @@ const DEFAULT_CONFIG: McpConfig = {
 	token: "",
 };
 
+function agentSetsEqual(a: McpAgentType[], b: McpAgentType[]): boolean {
+	if (a.length !== b.length) return false;
+	const sorted = (arr: McpAgentType[]) => [...arr].sort();
+	const sa = sorted(a);
+	const sb = sorted(b);
+	return sa.every((v, i) => v === sb[i]);
+}
+
 export function useMcpConfig() {
 	const [config, setConfig] = useState<McpConfig>(DEFAULT_CONFIG);
 	const [draft, setDraft] = useState<McpConfig>(DEFAULT_CONFIG);
+	const [selectedAgents, setSelectedAgents] = useState<McpAgentType[]>([]);
+	const [initialAgents, setInitialAgents] = useState<McpAgentType[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [saveResults, setSaveResults] = useState<GenerateResult[]>([]);
 
-	useEffect(() => {
+	const loadData = useCallback(() => {
 		setLoading(true);
 		setError(null);
-		invoke<McpConfig>("get_mcp_config")
-			.then((cfg) => {
+		Promise.all([
+			invoke<McpConfig>("get_mcp_config"),
+			invoke<string[]>("get_configured_agents"),
+		])
+			.then(([cfg, agents]) => {
 				setConfig(cfg);
 				setDraft(cfg);
+				const typed = agents as McpAgentType[];
+				setInitialAgents(typed);
+				setSelectedAgents(typed);
 			})
 			.catch((e) => {
 				setError(String(e));
@@ -48,24 +65,48 @@ export function useMcpConfig() {
 			});
 	}, []);
 
-	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
+	useEffect(() => {
+		loadData();
+	}, [loadData]);
+
+	const configDirty = JSON.stringify(draft) !== JSON.stringify(config);
+	const agentsDirty = !agentSetsEqual(selectedAgents, initialAgents);
+	const isDirty = configDirty || agentsDirty;
 
 	const save = useCallback(async () => {
 		setSaving(true);
 		setError(null);
+		setSaveResults([]);
 		try {
-			await invoke("update_mcp_config", {
-				port: draft.port,
-				token: draft.token,
-			});
+			// チェックが外されたエージェントの設定を削除
+			const removed = initialAgents.filter((a) => !selectedAgents.includes(a));
+			await Promise.all(
+				removed.map((agent) =>
+					invoke<boolean>("remove_agent_mcp_config", {
+						agentType: agent,
+					}),
+				),
+			);
+
+			const results = await invoke<GenerateResult[]>(
+				"save_and_generate_mcp_configs",
+				{
+					port: draft.port,
+					token: draft.token,
+					agentTypes: selectedAgents,
+				},
+			);
 			setConfig(draft);
+			setInitialAgents([...selectedAgents]);
+			setSaveResults(results);
+			return results;
 		} catch (e) {
 			setError(String(e));
 			throw e;
 		} finally {
 			setSaving(false);
 		}
-	}, [draft]);
+	}, [draft, selectedAgents, initialAgents]);
 
 	const regenerateToken = useCallback(async () => {
 		setError(null);
@@ -79,50 +120,18 @@ export function useMcpConfig() {
 		}
 	}, [draft]);
 
-	const generateConfig = useCallback(
-		async (agentType: McpAgentType) => {
-			setError(null);
-			try {
-				return await invoke<GenerateResult>("generate_agent_mcp_config", {
-					agentType,
-					port: draft.port,
-					token: draft.token,
-				});
-			} catch (e) {
-				setError(String(e));
-				throw e;
-			}
-		},
-		[draft.port, draft.token],
-	);
-
-	const previewConfig = useCallback(
-		async (agentType: McpAgentType) => {
-			setError(null);
-			try {
-				return await invoke<string>("preview_agent_mcp_config", {
-					agentType,
-					port: draft.port,
-					token: draft.token,
-				});
-			} catch (e) {
-				setError(String(e));
-				throw e;
-			}
-		},
-		[draft.port, draft.token],
-	);
-
 	return {
 		draft,
 		setDraft,
+		selectedAgents,
+		setSelectedAgents,
 		isDirty,
 		loading,
 		saving,
 		error,
 		save,
+		saveResults,
 		regenerateToken,
-		generateConfig,
-		previewConfig,
+		reload: loadData,
 	};
 }

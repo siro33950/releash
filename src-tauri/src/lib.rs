@@ -316,6 +316,9 @@ pub fn run() {
             mcp::stop_mcp_server,
             mcp::get_mcp_server_status,
             mcp::get_mcp_connection_info,
+            mcp::mcp_json::get_configured_agents,
+            mcp::mcp_json::remove_agent_mcp_config,
+            mcp::mcp_json::save_and_generate_mcp_configs,
             mcp::mcp_json::generate_agent_mcp_config,
             mcp::mcp_json::preview_agent_mcp_config,
             // Comments

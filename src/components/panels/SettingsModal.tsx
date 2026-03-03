@@ -1217,6 +1217,7 @@ export function SettingsModal({
 		if (open) {
 			repos.reset();
 			notion.reset();
+			mcp.reload();
 		}
 	}
 
