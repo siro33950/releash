@@ -227,6 +227,7 @@ export function DiffToolbar({
 							<TooltipTrigger asChild>
 								<button
 									type="button"
+									aria-label={label}
 									onClick={() => onDiffModeChange(mode)}
 									className={cn(
 										"flex items-center justify-center w-6 h-5 rounded transition-colors",

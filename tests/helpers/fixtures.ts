@@ -134,6 +134,9 @@ const baseIpcHandler: Record<string, unknown> = {
 	regenerate_mcp_token: "new-mock-token",
 	generate_agent_mcp_config: { file_path: "", content: "" },
 	preview_agent_mcp_config: "",
+	get_configured_agents: [],
+	save_and_generate_mcp_configs: [],
+	remove_agent_mcp_config: true,
 
 	// Remote config
 	get_remote_config: { auto_start: false, auto_start_on_lan: false },
