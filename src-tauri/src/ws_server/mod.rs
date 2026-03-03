@@ -5,7 +5,7 @@ mod http;
 mod rate_limit;
 mod routing;
 mod session;
-mod validation;
+pub(crate) mod validation;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

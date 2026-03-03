@@ -61,13 +61,20 @@ export function useLsp(
 	const startingRef = useRef(false);
 	const unmountedRef = useRef(false);
 	const crashTimestampsRef = useRef<number[]>([]);
+	const pendingRestartRef = useRef<{
+		rootPath: string;
+		language: string;
+	} | null>(null);
 
 	// Always keep the latest args accessible for restart
 	const argsRef = useRef({ rootPath, language });
 	argsRef.current = { rootPath, language };
 
 	const startServer = useCallback(async (rp: string, lang: string) => {
-		if (startingRef.current) return;
+		if (startingRef.current) {
+			pendingRestartRef.current = { rootPath: rp, language: lang };
+			return;
+		}
 		startingRef.current = true;
 		setState((prev) => ({
 			...prev,
@@ -189,6 +196,11 @@ export function useLsp(
 			}
 		} finally {
 			startingRef.current = false;
+			const pending = pendingRestartRef.current;
+			if (pending) {
+				pendingRestartRef.current = null;
+				startServer(pending.rootPath, pending.language);
+			}
 		}
 	}, []);
 
@@ -304,6 +316,14 @@ export function useLsp(
 	const retryManually = useCallback(() => {
 		const { rootPath: rp, language: lang } = argsRef.current;
 		if (!rp || !lang) return;
+
+		// Clean up existing transport before retrying
+		const existing = transportRef.current;
+		if (existing) {
+			transportRef.current = null;
+			invoke("shutdown_lsp", { sessionId: existing.sessionId }).catch(() => {});
+			existing.dispose();
+		}
 
 		// Reset crash tracking
 		crashTimestampsRef.current = [];

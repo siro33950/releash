@@ -115,11 +115,6 @@ pub fn detect_server(
         }
     }
 
-    // Check if user has explicitly disabled
-    if user_config.get(language).is_some_and(|e| !e.enabled) {
-        return None;
-    }
-
     // 2. Check cached binary
     if let Some(cache_dir) = lsp_cache_dir {
         if let Some(config) = download::get_cached_server(language, cache_dir) {

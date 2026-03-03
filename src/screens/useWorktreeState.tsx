@@ -152,10 +152,11 @@ export function useWorktreeState({
 	const activeTabLanguage = activeTab?.language ?? null;
 	const lspLanguage = useMemo(() => {
 		if (!activeTabLanguage) return null;
-		// Normalize React variants to base language for LSP
+		// Normalize React variants and JavaScript to TypeScript for LSP
 		if (
 			activeTabLanguage === "typescriptreact" ||
-			activeTabLanguage === "javascriptreact"
+			activeTabLanguage === "javascriptreact" ||
+			activeTabLanguage === "javascript"
 		) {
 			return "typescript";
 		}

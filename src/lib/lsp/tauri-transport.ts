@@ -47,6 +47,7 @@ interface LspMessage {
  */
 export class TauriTransport implements IMessageTransport {
 	private _listener: MessageListener | undefined;
+	private _pendingMessages: string[] = [];
 	private _stateValue: ConnectionState = { state: "connecting" };
 	private _stateListeners: Set<(e: ConnectionState) => void> = new Set();
 	private _disposeListeners: Set<{ dispose(): void }> = new Set();
@@ -91,7 +92,10 @@ export class TauriTransport implements IMessageTransport {
 	}
 
 	handleMessage(raw: string): void {
-		if (!this._listener) return;
+		if (!this._listener) {
+			this._pendingMessages.push(raw);
+			return;
+		}
 		try {
 			const message = JSON.parse(raw) as Message;
 			this._listener(message);
@@ -110,6 +114,12 @@ export class TauriTransport implements IMessageTransport {
 
 	setListener(listener: MessageListener | undefined): void {
 		this._listener = listener;
+		if (listener && this._pendingMessages.length > 0) {
+			const pending = this._pendingMessages.splice(0);
+			for (const raw of pending) {
+				this.handleMessage(raw);
+			}
+		}
 	}
 
 	toString(): string {
@@ -142,13 +152,13 @@ export async function createTauriTransport(
 	args: string[],
 ): Promise<TauriTransport> {
 	let transport: TauriTransport | null = null;
-	const pendingMessages: string[] = [];
+	const earlyMessages: string[] = [];
 
 	const channel = new Channel<LspMessage>((msg) => {
 		if (transport) {
 			transport.handleMessage(msg.message);
 		} else {
-			pendingMessages.push(msg.message);
+			earlyMessages.push(msg.message);
 		}
 	});
 
@@ -164,7 +174,8 @@ export async function createTauriTransport(
 	transport.setWorktreePath(worktreePath);
 	transport.setOpen();
 
-	for (const msg of pendingMessages) {
+	// Feed early messages to transport (buffered internally until setListener)
+	for (const msg of earlyMessages) {
 		transport.handleMessage(msg);
 	}
 

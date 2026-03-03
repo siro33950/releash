@@ -502,6 +502,8 @@ impl ReleashMcpServer {
         let git_ref = params.git_ref.clone();
 
         let (content, language, line_count) = tokio::task::spawn_blocking(move || {
+            crate::ws_server::validation::validate_relative_path(&file_path, &worktree_path)
+                .map_err(crate::git::error::GitError::Custom)?;
             let full_path = std::path::Path::new(&worktree_path).join(&file_path);
             let full_path_str = full_path.to_string_lossy().to_string();
 
@@ -851,6 +853,8 @@ impl ReleashMcpServer {
         file_path: &str,
         language: &str,
     ) -> Result<String, McpError> {
+        crate::ws_server::validation::validate_relative_path(file_path, worktree_path)
+            .map_err(|e| McpError::invalid_params(e, None))?;
         let full_path = std::path::Path::new(worktree_path).join(file_path);
         let content = tokio::fs::read_to_string(&full_path).await.map_err(|e| {
             McpError::internal_error(
@@ -859,7 +863,11 @@ impl ReleashMcpServer {
             )
         })?;
 
-        let uri = format!("file://{}", full_path.to_string_lossy().replace(' ', "%20"));
+        let uri = url::Url::from_file_path(&full_path)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| {
+                format!("file://{}", full_path.to_string_lossy().replace(' ', "%20"))
+            });
 
         let did_open = serde_json::json!({
             "jsonrpc": "2.0",

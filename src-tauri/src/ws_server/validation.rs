@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub(super) fn normalize_path(path: &std::path::Path) -> PathBuf {
+pub(crate) fn normalize_path(path: &std::path::Path) -> PathBuf {
     let mut components = Vec::new();
     for component in path.components() {
         match component {
@@ -14,7 +14,7 @@ pub(super) fn normalize_path(path: &std::path::Path) -> PathBuf {
     components.iter().collect()
 }
 
-pub(super) fn validate_relative_path(path: &str, repo_root: &str) -> Result<PathBuf, String> {
+pub(crate) fn validate_relative_path(path: &str, repo_root: &str) -> Result<PathBuf, String> {
     if std::path::Path::new(path).is_absolute() {
         return Err("絶対パスは拒否されます".to_string());
     }

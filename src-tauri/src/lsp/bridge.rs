@@ -181,7 +181,9 @@ pub fn inject_root_uri(message: &str, worktree_path: &str) -> Result<String, Str
     }
 
     if let Some(params) = json.get_mut("params") {
-        let uri = format!("file://{}", worktree_path.replace(' ', "%20"));
+        let uri = url::Url::from_file_path(worktree_path)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| format!("file://{}", worktree_path.replace(' ', "%20")));
         params["rootUri"] = serde_json::Value::String(uri.clone());
 
         // Also set workspaceFolders if not provided

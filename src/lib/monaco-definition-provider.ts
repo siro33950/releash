@@ -26,8 +26,15 @@ const lspActiveLanguages = new Set<string>();
 export function setLspActive(language: string, active: boolean): void {
 	if (active) {
 		lspActiveLanguages.add(language);
+		// TypeScript LSP also handles JavaScript files
+		if (language === "typescript") {
+			lspActiveLanguages.add("javascript");
+		}
 	} else {
 		lspActiveLanguages.delete(language);
+		if (language === "typescript") {
+			lspActiveLanguages.delete("javascript");
+		}
 	}
 }
 

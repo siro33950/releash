@@ -281,7 +281,7 @@ async fn fetch_latest_rust_analyzer_version() -> Result<String, LspDownloadError
     // GitHub redirects to /releases/tag/<version>
     if let Some(location) = resp.headers().get("location") {
         let loc = location.to_str().unwrap_or("");
-        if let Some(tag) = loc.rsplit('/').next() {
+        if let Some(tag) = loc.rsplit('/').next().filter(|t| !t.is_empty()) {
             return Ok(tag.to_string());
         }
     }
@@ -320,7 +320,12 @@ fn rust_analyzer_target() -> &'static str {
 }
 
 fn is_command_available(command: &str) -> bool {
-    std::process::Command::new("which")
+    #[cfg(unix)]
+    let check = "which";
+    #[cfg(windows)]
+    let check = "where";
+
+    std::process::Command::new(check)
         .arg(command)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

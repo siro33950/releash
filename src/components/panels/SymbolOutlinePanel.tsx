@@ -92,8 +92,9 @@ export function SymbolOutlinePanel({
 					setSymbols(result);
 				}
 			})
-			.catch(() => {
+			.catch((err) => {
 				if (!cancelled) {
+					console.error("[SymbolOutlinePanel] Failed to fetch symbols:", err);
 					setSymbols([]);
 				}
 			})

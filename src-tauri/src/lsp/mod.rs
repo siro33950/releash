@@ -156,14 +156,18 @@ impl LspManager {
     }
 
     pub async fn shutdown(&self, session_id: u64) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or(format!("LSPセッション {session_id} が見つかりません"))?;
+        let mut session = {
+            let mut sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or(format!("LSPセッション {session_id} が見つかりません"))?;
 
-        if session.status != LspStatus::Running {
-            return Ok(());
-        }
+            if session.status != LspStatus::Running {
+                return Ok(());
+            }
+
+            sessions.remove(&session_id).unwrap()
+        };
 
         session.status = LspStatus::ShuttingDown;
 
@@ -171,9 +175,7 @@ impl LspManager {
         let shutdown_request = r#"{"jsonrpc":"2.0","id":99999,"method":"shutdown","params":null}"#;
         if let Err(e) = bridge::write_to_stdin(&mut session.stdin, shutdown_request).await {
             log::warn!("LSP shutdown request failed for session {session_id}: {e}");
-            // Force kill if shutdown request fails
             let _ = session.child.kill().await;
-            sessions.remove(&session_id);
             return Ok(());
         }
 
@@ -181,18 +183,12 @@ impl LspManager {
         let exit_notification = r#"{"jsonrpc":"2.0","method":"exit","params":null}"#;
         let _ = bridge::write_to_stdin(&mut session.stdin, exit_notification).await;
 
-        // Wait briefly for the process to exit, then force kill
-        let child = &mut session.child;
-        let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+        // Wait briefly for the process to exit, then force kill (lock not held)
+        let timeout =
+            tokio::time::timeout(std::time::Duration::from_secs(5), session.child.wait()).await;
 
-        match timeout {
-            Ok(Ok(_)) => {
-                sessions.remove(&session_id);
-            }
-            _ => {
-                let _ = session.child.kill().await;
-                sessions.remove(&session_id);
-            }
+        if timeout.is_err() || timeout.is_ok_and(|r| r.is_err()) {
+            let _ = session.child.kill().await;
         }
 
         Ok(())
@@ -294,14 +290,14 @@ impl LspManager {
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         // Register the pending request (lock is scoped)
-        let request_id = {
+        let (request_id, pending_requests) = {
             let sessions = self.sessions.lock().await;
             let session = sessions
                 .get(&session_id)
                 .ok_or(format!("LSPセッション {session_id} が見つかりません"))?;
             let id = session.request_id_counter.fetch_add(1, Ordering::Relaxed);
             session.pending_requests.lock().await.insert(id, tx);
-            id
+            (id, session.pending_requests.clone())
         };
 
         let message = serde_json::json!({
@@ -311,13 +307,30 @@ impl LspManager {
             "params": params,
         });
 
-        self.send_message(session_id, &message.to_string(), worktree_path)
-            .await?;
-
-        let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx)
+        if let Err(e) = self
+            .send_message(session_id, &message.to_string(), worktree_path)
             .await
-            .map_err(|_| format!("LSPリクエスト '{method}' がタイムアウト ({timeout_ms}ms)"))?
-            .map_err(|_| format!("LSPリクエスト '{method}' のチャネルが閉じられました"))?;
+        {
+            pending_requests.lock().await.remove(&request_id);
+            return Err(e);
+        }
+
+        let result =
+            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await {
+                Ok(Ok(val)) => val,
+                Ok(Err(_)) => {
+                    pending_requests.lock().await.remove(&request_id);
+                    return Err(format!(
+                        "LSPリクエスト '{method}' のチャネルが閉じられました"
+                    ));
+                }
+                Err(_) => {
+                    pending_requests.lock().await.remove(&request_id);
+                    return Err(format!(
+                        "LSPリクエスト '{method}' がタイムアウト ({timeout_ms}ms)"
+                    ));
+                }
+            };
 
         if let Some(error) = result.get("error") {
             return Err(format!("LSPエラー: {error}"));

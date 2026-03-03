@@ -50,7 +50,7 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 		}
 		let cancelled = false;
 
-		Promise.all(
+		Promise.allSettled(
 			selectedAgents.map((agent) =>
 				invoke<string>("preview_agent_mcp_config", {
 					agentType: agent,
@@ -58,20 +58,25 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 					token: draft.token,
 				}).then((content) => ({ agent, content })),
 			),
-		)
-			.then((results) => {
-				if (cancelled) return;
-				const formatted = results
-					.map(({ agent, content }) => {
-						const label = MCP_AGENT_OPTIONS.find(
-							(o) => o.value === agent,
-						)?.label;
-						return `// ${label}\n${content}`;
-					})
-					.join("\n\n");
-				setPreview(formatted);
-			})
-			.catch(() => {});
+		).then((results) => {
+			if (cancelled) return;
+			const formatted = results
+				.filter(
+					(
+						r,
+					): r is PromiseFulfilledResult<{
+					agent: McpAgentType;
+					content: string;
+				}> =>
+						r.status === "fulfilled",
+				)
+				.map(({ value: { agent, content } }) => {
+					const label = MCP_AGENT_OPTIONS.find((o) => o.value === agent)?.label;
+					return `// ${label}\n${content}`;
+				})
+				.join("\n\n");
+			setPreview(formatted);
+		});
 
 		return () => {
 			cancelled = true;

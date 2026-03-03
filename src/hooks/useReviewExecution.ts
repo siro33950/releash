@@ -481,6 +481,8 @@ export function useReviewExecution(
 	}, [worktreePath, settings]);
 
 	const cancelReview = useCallback(async () => {
+		// Invalidate current run token to prevent completion events from overwriting status
+		runTokenRef.current += 1;
 		// Cancel all running PTYs
 		const cancelPromises = Array.from(ptyIdSetRef.current).map((id) => {
 			const file = fileStatesRef.current.find((f) => f.ptyId === id);

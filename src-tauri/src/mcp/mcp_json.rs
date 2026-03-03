@@ -414,6 +414,12 @@ pub async fn save_and_generate_mcp_configs(
         return Err("mcp_token must not be empty".to_string());
     }
 
+    // 0. agent_types を先にパースしてバリデーション（不正な値で config 保存を防止）
+    let parsed_agents: Vec<AgentKind> = agent_types
+        .iter()
+        .map(|s| AgentKind::from_str(s))
+        .collect::<Result<Vec<_>, _>>()?;
+
     // 1. config.toml 保存
     let app_config = state.inner().clone();
     let port_for_save = port;
@@ -432,7 +438,7 @@ pub async fn save_and_generate_mcp_configs(
     crate::mcp::restart_mcp_server_if_running(&app).await?;
 
     // 3. 再起動後の実ポート/トークンで各エージェント設定を生成
-    if agent_types.is_empty() {
+    if parsed_agents.is_empty() {
         return Ok(vec![]);
     }
 
@@ -443,12 +449,9 @@ pub async fn save_and_generate_mcp_configs(
     };
 
     tokio::task::spawn_blocking(move || {
-        agent_types
+        parsed_agents
             .iter()
-            .map(|agent_str| {
-                let agent = AgentKind::from_str(agent_str)?;
-                generate_config(agent, &params)
-            })
+            .map(|agent| generate_config(*agent, &params))
             .collect::<Result<Vec<_>, _>>()
     })
     .await
