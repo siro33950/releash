@@ -168,6 +168,19 @@ pub fn language_for_extension(ext: &str) -> Option<&'static str> {
     None
 }
 
+/// Get the LSP protocol languageId for a file extension.
+/// Unlike `language_for_extension` (which returns the server key),
+/// this returns the correct languageId per LSP specification.
+pub fn lsp_language_id(ext: &str) -> Option<&'static str> {
+    match ext {
+        "tsx" => Some("typescriptreact"),
+        "jsx" => Some("javascriptreact"),
+        "ts" | "mts" | "cts" => Some("typescript"),
+        "js" | "mjs" | "cjs" => Some("javascript"),
+        _ => language_for_extension(ext),
+    }
+}
+
 /// List all default supported languages.
 pub fn supported_languages() -> Vec<&'static str> {
     DEFAULT_SERVERS.iter().map(|&(lang, _)| lang).collect()
@@ -193,6 +206,21 @@ mod tests {
     #[test]
     fn language_for_extension_go() {
         assert_eq!(language_for_extension("go"), Some("go"));
+    }
+
+    #[test]
+    fn lsp_language_id_distinguishes_jsx() {
+        assert_eq!(lsp_language_id("tsx"), Some("typescriptreact"));
+        assert_eq!(lsp_language_id("jsx"), Some("javascriptreact"));
+        assert_eq!(lsp_language_id("ts"), Some("typescript"));
+        assert_eq!(lsp_language_id("js"), Some("javascript"));
+        assert_eq!(lsp_language_id("mts"), Some("typescript"));
+        assert_eq!(lsp_language_id("cts"), Some("typescript"));
+        assert_eq!(lsp_language_id("mjs"), Some("javascript"));
+        assert_eq!(lsp_language_id("cjs"), Some("javascript"));
+        assert_eq!(lsp_language_id("rs"), Some("rust"));
+        assert_eq!(lsp_language_id("go"), Some("go"));
+        assert_eq!(lsp_language_id("xyz"), None);
     }
 
     #[test]

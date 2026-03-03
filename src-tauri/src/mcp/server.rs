@@ -573,21 +573,22 @@ impl ReleashMcpServer {
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
 
-            let language = match crate::lsp::detect::language_for_extension(ext) {
+            let server_lang = match crate::lsp::detect::language_for_extension(ext) {
                 Some(lang) => lang,
                 None => continue,
             };
+            let language_id = crate::lsp::detect::lsp_language_id(ext).unwrap_or(server_lang);
 
-            let session_id = match lsp.ensure_session(&app, &worktree_path, language).await {
+            let session_id = match lsp.ensure_session(&app, &worktree_path, server_lang).await {
                 Ok(id) => id,
                 Err(e) => {
-                    log::warn!("Failed to ensure LSP session for {language}: {e}");
+                    log::warn!("Failed to ensure LSP session for {server_lang}: {e}");
                     continue;
                 }
             };
 
             let uri = self
-                .did_open_file(&lsp, session_id, &worktree_path, file_path, language)
+                .did_open_file(&lsp, session_id, &worktree_path, file_path, language_id)
                 .await?;
 
             let diagnostics = lsp
@@ -640,20 +641,21 @@ impl ReleashMcpServer {
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
-        let language = crate::lsp::detect::language_for_extension(ext).ok_or_else(|| {
+        let server_lang = crate::lsp::detect::language_for_extension(ext).ok_or_else(|| {
             McpError::invalid_params(
                 format!("Unsupported language for extension: {ext}"),
                 None,
             )
         })?;
+        let language_id = crate::lsp::detect::lsp_language_id(ext).unwrap_or(server_lang);
 
         let session_id = lsp
-            .ensure_session(&app, &worktree_path, language)
+            .ensure_session(&app, &worktree_path, server_lang)
             .await
             .map_err(|e| McpError::internal_error(e, None))?;
 
         let uri = self
-            .did_open_file(&lsp, session_id, &worktree_path, &params.file_path, language)
+            .did_open_file(&lsp, session_id, &worktree_path, &params.file_path, language_id)
             .await?;
 
         let result = lsp
@@ -688,20 +690,21 @@ impl ReleashMcpServer {
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
-        let language = crate::lsp::detect::language_for_extension(ext).ok_or_else(|| {
+        let server_lang = crate::lsp::detect::language_for_extension(ext).ok_or_else(|| {
             McpError::invalid_params(
                 format!("Unsupported language for extension: {ext}"),
                 None,
             )
         })?;
+        let language_id = crate::lsp::detect::lsp_language_id(ext).unwrap_or(server_lang);
 
         let session_id = lsp
-            .ensure_session(&app, &worktree_path, language)
+            .ensure_session(&app, &worktree_path, server_lang)
             .await
             .map_err(|e| McpError::internal_error(e, None))?;
 
         let uri = self
-            .did_open_file(&lsp, session_id, &worktree_path, &params.file_path, language)
+            .did_open_file(&lsp, session_id, &worktree_path, &params.file_path, language_id)
             .await?;
 
         let position = serde_json::json!({
