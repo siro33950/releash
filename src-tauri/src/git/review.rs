@@ -86,8 +86,9 @@ pub fn get_review_diff(
         let path = delta
             .new_file()
             .path()
+            .or_else(|| delta.old_file().path())
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+            .ok_or_else(|| GitError::Custom(format!("delta {i} has no file path")))?;
         let old_path = if delta.status() == git2::Delta::Renamed {
             delta
                 .old_file()
@@ -234,8 +235,9 @@ pub fn get_hunk_ranges(
         let path = delta
             .new_file()
             .path()
+            .or_else(|| delta.old_file().path())
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+            .ok_or_else(|| GitError::Custom(format!("delta {i} has no file path")))?;
 
         if let Some(patch) = git2::Patch::from_diff(&diff, i)? {
             let mut ranges = Vec::new();
@@ -257,7 +259,7 @@ pub fn get_hunk_ranges(
 pub fn is_line_in_hunk_ranges(line_1based: u32, ranges: &[(u32, u32)]) -> bool {
     ranges
         .iter()
-        .any(|&(start, lines)| line_1based >= start && line_1based < start + lines)
+        .any(|&(start, lines)| line_1based >= start && line_1based < start.saturating_add(lines))
 }
 
 pub(crate) fn find_base_commit<'a>(

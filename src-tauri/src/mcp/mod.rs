@@ -197,9 +197,15 @@ pub async fn restart_mcp_server_if_running(
     let handle = app.state::<McpServerHandle>();
 
     if handle.is_running() {
-        stop_mcp_server_core(&handle)
-            .await
-            .map_err(|e| format!("設定は保存しましたが、MCPサーバーの停止に失敗しました: {e}"))?;
+        if let Err(e) = stop_mcp_server_core(&handle).await {
+            // Stop failed — check if it's actually still running
+            if handle.is_running() {
+                return Err(format!(
+                    "設定は保存しましたが、MCPサーバーの停止に失敗しました: {e}"
+                ));
+            }
+            // Already stopped — proceed
+        }
     }
 
     let state = build_mcp_state(app)

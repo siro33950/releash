@@ -41,6 +41,8 @@ interface LspMessage {
 	message: string;
 }
 
+const MAX_BUFFERED_MESSAGES = 1000;
+
 /**
  * IMessageTransport implementation that communicates with LSP servers
  * via Tauri IPC (invoke + Channel).
@@ -93,6 +95,9 @@ export class TauriTransport implements IMessageTransport {
 
 	handleMessage(raw: string): void {
 		if (!this._listener) {
+			if (this._pendingMessages.length >= MAX_BUFFERED_MESSAGES) {
+				this._pendingMessages.shift();
+			}
 			this._pendingMessages.push(raw);
 			return;
 		}
@@ -158,6 +163,9 @@ export async function createTauriTransport(
 		if (transport) {
 			transport.handleMessage(msg.message);
 		} else {
+			if (earlyMessages.length >= MAX_BUFFERED_MESSAGES) {
+				earlyMessages.shift();
+			}
 			earlyMessages.push(msg.message);
 		}
 	});

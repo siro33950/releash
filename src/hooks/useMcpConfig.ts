@@ -53,7 +53,10 @@ export function useMcpConfig() {
 			.then(([cfg, agents]) => {
 				setConfig(cfg);
 				setDraft(cfg);
-				const typed = agents as McpAgentType[];
+				const validValues = new Set(MCP_AGENT_OPTIONS.map((o) => o.value));
+				const typed = (agents as string[]).filter((a): a is McpAgentType =>
+					validValues.has(a as McpAgentType),
+				);
 				setInitialAgents(typed);
 				setSelectedAgents(typed);
 			})

@@ -25,13 +25,23 @@ pub(crate) fn validate_relative_path(path: &str, repo_root: &str) -> Result<Path
     if !resolved.starts_with(&root) {
         return Err("プロジェクトルート外のパスは拒否されます".to_string());
     }
-    if resolved.exists() {
-        let canonical = resolved.canonicalize().map_err(|e| e.to_string())?;
-        if !canonical.starts_with(&root) {
-            return Err(
-                "シンボリックリンクによるプロジェクトルート外へのアクセスは拒否されます"
-                    .to_string(),
-            );
+    // Canonicalize the deepest existing ancestor to catch symlinks
+    // even when the file itself does not exist yet.
+    let mut check = resolved.as_path();
+    loop {
+        if check.exists() {
+            let canonical = check.canonicalize().map_err(|e| e.to_string())?;
+            if !canonical.starts_with(&root) {
+                return Err(
+                    "シンボリックリンクによるプロジェクトルート外へのアクセスは拒否されます"
+                        .to_string(),
+                );
+            }
+            break;
+        }
+        match check.parent() {
+            Some(parent) => check = parent,
+            None => break,
         }
     }
     Ok(resolved)

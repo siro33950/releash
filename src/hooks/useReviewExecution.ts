@@ -75,6 +75,8 @@ export function useReviewExecution(
 	const pendingStatusRef = useRef<
 		Map<number, { status: string; exit_code: number | null }>
 	>(new Map());
+	// Map pty_id → runToken so events use the correct token (not the current one)
+	const ptyRunTokenMapRef = useRef<Map<number, number>>(new Map());
 
 	// Stable refs for settings to avoid circular useCallback dependencies
 	const worktreePathRef = useRef(worktreePath);
@@ -149,9 +151,14 @@ export function useReviewExecution(
 					timeoutSecs: null,
 				});
 
-				if (runTokenRef.current !== runToken) return;
+				if (runTokenRef.current !== runToken) {
+					// Token changed — cancel the orphaned PTY
+					invoke("cancel_oneshot_pty", { ptyId: info.pty_id }).catch(() => {});
+					return;
+				}
 
 				ptyIdSetRef.current.add(info.pty_id);
+				ptyRunTokenMapRef.current.set(info.pty_id, runToken);
 
 				if (fileIdx >= 0) {
 					fileStatesRef.current[fileIdx] = {
@@ -249,8 +256,11 @@ export function useReviewExecution(
 
 			// Check if this pty_id belongs to our review session
 			if (ptyIdSetRef.current.has(pty_id)) {
-				handlePtyFinishedRef.current(pty_id, status, runTokenRef.current);
-			} else {
+				const token =
+					ptyRunTokenMapRef.current.get(pty_id) ?? runTokenRef.current;
+				ptyRunTokenMapRef.current.delete(pty_id);
+				handlePtyFinishedRef.current(pty_id, status, token);
+			} else if (ptyIdSetRef.current.size > 0 || startInFlightRef.current) {
 				// Buffer it - might arrive before spawn returns
 				pendingStatusRef.current.set(pty_id, {
 					status,
@@ -354,10 +364,13 @@ export function useReviewExecution(
 				totalCountRef.current = fileStates.length;
 				doneCountRef.current = doneCount;
 
+				const hasError = fileStates.some((f) => f.status === "error");
 				const overallStatus: ReviewStatus = hasRunning
 					? "running"
 					: doneCount >= fileStates.length
-						? "completed"
+						? hasError
+							? "error"
+							: "completed"
 						: "running";
 
 				setState({
@@ -443,10 +456,11 @@ export function useReviewExecution(
 		}
 
 		// Initialize state
-		const concurrency = settings.reviewConcurrency ?? 5;
+		const concurrency = Math.max(1, settings.reviewConcurrency ?? 5);
 		concurrencyRef.current = concurrency;
 		reviewStartTimeRef.current = Date.now();
 		ptyIdSetRef.current = new Set();
+		ptyRunTokenMapRef.current.clear();
 		totalCountRef.current = tasks.length;
 		doneCountRef.current = 0;
 		activeCountRef.current = 0;
@@ -500,6 +514,7 @@ export function useReviewExecution(
 	const reset = useCallback(() => {
 		runTokenRef.current += 1;
 		ptyIdSetRef.current = new Set();
+		ptyRunTokenMapRef.current.clear();
 		fileStatesRef.current = [];
 		taskQueueRef.current = [];
 		activeCountRef.current = 0;

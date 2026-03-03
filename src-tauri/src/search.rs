@@ -524,6 +524,7 @@ fn collect_definition_tags(
 
     let before_len = results.len();
     let content_str = std::str::from_utf8(content).unwrap_or("");
+    let lines: Vec<&str> = content_str.lines().collect();
 
     for tag_result in tags {
         let tag = match tag_result {
@@ -547,9 +548,9 @@ fn collect_definition_tags(
         let kind = config.syntax_type_name(tag.syntax_type_id).to_string();
         let line_number = tag.span.start.row + 1;
 
-        let line_content = content_str
-            .lines()
-            .nth(tag.span.start.row)
+        let line_content = lines
+            .get(tag.span.start.row)
+            .copied()
             .unwrap_or("")
             .to_string();
 
@@ -883,6 +884,7 @@ fn find_references_inner(root_path: String, symbol: String) -> Result<Vec<Search
         };
 
         let content_str = std::str::from_utf8(&content).unwrap_or("");
+        let content_lines: Vec<&str> = content_str.lines().collect();
 
         for tag_result in tags {
             let tag = match tag_result {
@@ -908,9 +910,9 @@ fn find_references_inner(root_path: String, symbol: String) -> Result<Vec<Search
             }
 
             let line_number = tag.span.start.row + 1;
-            let line_content = content_str
-                .lines()
-                .nth(tag.span.start.row)
+            let line_content = content_lines
+                .get(tag.span.start.row)
+                .copied()
                 .unwrap_or("")
                 .to_string();
 
@@ -982,6 +984,7 @@ fn list_document_symbols_inner(
         .generate_tags(tags_config, content_bytes, None)
         .map_err(|e| format!("タグ生成失敗: {e}"))?;
 
+    let content_lines: Vec<&str> = content.lines().collect();
     let mut symbols = Vec::new();
     for tag_result in tags {
         let tag = match tag_result {
@@ -1000,7 +1003,7 @@ fn list_document_symbols_inner(
 
         let kind = tags_config.syntax_type_name(tag.syntax_type_id).to_string();
 
-        let line_content = content.lines().nth(tag.span.start.row).unwrap_or("");
+        let line_content = content_lines.get(tag.span.start.row).copied().unwrap_or("");
         let column = line_content
             .get(..tag.span.start.column)
             .map(|prefix| prefix.chars().count())

@@ -77,6 +77,7 @@ export function SymbolOutlinePanel({
 	useEffect(() => {
 		if (!filePath || !language) {
 			setSymbols([]);
+			setLoading(false);
 			return;
 		}
 

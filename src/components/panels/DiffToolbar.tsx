@@ -79,6 +79,7 @@ function LspIndicator() {
 			<PopoverTrigger asChild>
 				<button
 					type="button"
+					aria-label="Language Server status"
 					className="flex items-center px-1.5 h-full hover:bg-muted-foreground/15 transition-colors"
 				>
 					<Braces
@@ -186,6 +187,7 @@ export function DiffToolbar({
 						onClick={onGoToPrev}
 						className="p-0.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
 						title="Previous hunk"
+						aria-label="Previous hunk"
 					>
 						<ChevronLeft className="h-3.5 w-3.5" />
 					</button>
@@ -194,6 +196,7 @@ export function DiffToolbar({
 						onClick={onGoToNext}
 						className="p-0.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
 						title="Next hunk"
+						aria-label="Next hunk"
 					>
 						<ChevronRight className="h-3.5 w-3.5" />
 					</button>
@@ -228,6 +231,7 @@ export function DiffToolbar({
 								<button
 									type="button"
 									aria-label={label}
+									aria-pressed={diffMode === mode}
 									onClick={() => onDiffModeChange(mode)}
 									className={cn(
 										"flex items-center justify-center w-6 h-5 rounded transition-colors",

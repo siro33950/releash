@@ -335,6 +335,7 @@ function WorktreeContent({
 													language={s.activeTab?.language ?? null}
 													onSelectSymbol={(line) => {
 														if (s.activeTab?.path) {
+															setCenterTab("editor");
 															s.dispatchEditor({
 																type: "SET_PENDING_REVEAL",
 																reveal: {

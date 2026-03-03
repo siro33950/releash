@@ -41,7 +41,7 @@ static DEFAULT_SERVERS: &[(&str, DefaultServer)] = &[
         DefaultServer {
             command: "typescript-language-server",
             args: &["--stdio"],
-            extensions: &["ts", "tsx", "js", "jsx", "mts", "cts"],
+            extensions: &["ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs"],
         },
     ),
     (
@@ -191,6 +191,8 @@ mod tests {
         assert_eq!(language_for_extension("tsx"), Some("typescript"));
         assert_eq!(language_for_extension("js"), Some("typescript"));
         assert_eq!(language_for_extension("jsx"), Some("typescript"));
+        assert_eq!(language_for_extension("mjs"), Some("typescript"));
+        assert_eq!(language_for_extension("cjs"), Some("typescript"));
     }
 
     #[test]

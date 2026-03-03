@@ -195,8 +195,11 @@ impl LspManager {
     }
 
     pub async fn kill(&self, session_id: u64) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(mut session) = sessions.remove(&session_id) {
+        let removed = {
+            let mut sessions = self.sessions.lock().await;
+            sessions.remove(&session_id)
+        };
+        if let Some(mut session) = removed {
             let _ = session.child.kill().await;
         }
         Ok(())
@@ -241,17 +244,20 @@ impl LspManager {
     }
 
     pub async fn kill_by_worktree(&self, worktree_path: &str) {
-        let mut sessions = self.sessions.lock().await;
-        let ids_to_remove: Vec<u64> = sessions
-            .values()
-            .filter(|s| s.worktree_path == worktree_path)
-            .map(|s| s.id)
-            .collect();
-
-        for id in ids_to_remove {
-            if let Some(mut session) = sessions.remove(&id) {
-                let _ = session.child.kill().await;
-            }
+        let removed: Vec<LspSession> = {
+            let mut sessions = self.sessions.lock().await;
+            let ids_to_remove: Vec<u64> = sessions
+                .values()
+                .filter(|s| s.worktree_path == worktree_path)
+                .map(|s| s.id)
+                .collect();
+            ids_to_remove
+                .into_iter()
+                .filter_map(|id| sessions.remove(&id))
+                .collect()
+        };
+        for mut session in removed {
+            let _ = session.child.kill().await;
         }
     }
 
@@ -456,8 +462,13 @@ impl LspManager {
             "workspaceFolders": null,
         });
 
-        self.request(id, "initialize", init_params, worktree_path, 30000)
-            .await?;
+        if let Err(e) = self
+            .request(id, "initialize", init_params, worktree_path, 30000)
+            .await
+        {
+            let _ = self.kill(id).await;
+            return Err(e);
+        }
 
         // Send initialized notification
         let initialized_msg = serde_json::json!({
@@ -465,8 +476,13 @@ impl LspManager {
             "method": "initialized",
             "params": {}
         });
-        self.send_message(id, &initialized_msg.to_string(), worktree_path)
-            .await?;
+        if let Err(e) = self
+            .send_message(id, &initialized_msg.to_string(), worktree_path)
+            .await
+        {
+            let _ = self.kill(id).await;
+            return Err(e);
+        }
 
         Ok(id)
     }

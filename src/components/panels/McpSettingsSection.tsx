@@ -60,21 +60,17 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 			),
 		).then((results) => {
 			if (cancelled) return;
-			const formatted = results
-				.filter(
-					(
-						r,
-					): r is PromiseFulfilledResult<{
-						agent: McpAgentType;
-						content: string;
-					}> => r.status === "fulfilled",
-				)
-				.map(({ value: { agent, content } }) => {
+			const parts: string[] = [];
+			for (const r of results) {
+				if (r.status === "fulfilled") {
+					const { agent, content } = r.value;
 					const label = MCP_AGENT_OPTIONS.find((o) => o.value === agent)?.label;
-					return `// ${label}\n${content}`;
-				})
-				.join("\n\n");
-			setPreview(formatted);
+					parts.push(`// ${label}\n${content}`);
+				} else {
+					parts.push(`// Error: ${String(r.reason)}`);
+				}
+			}
+			setPreview(parts.join("\n\n"));
 		});
 
 		return () => {

@@ -45,8 +45,13 @@ export function useLspMonaco(
 		}
 
 		return () => {
-			// MonacoLspClient does not expose a public dispose method.
-			// Feature cleanup happens when the transport is disposed by useLsp.
+			if (
+				clientRef.current &&
+				"dispose" in clientRef.current &&
+				typeof clientRef.current.dispose === "function"
+			) {
+				clientRef.current.dispose();
+			}
 			clientRef.current = null;
 			setConnected(false);
 		};

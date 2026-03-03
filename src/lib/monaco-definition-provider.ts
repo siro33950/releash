@@ -24,15 +24,16 @@ let providersRegistered = false;
 const lspActiveLanguages = new Set<string>();
 
 export function setLspActive(language: string, active: boolean): void {
+	const normalized = getLanguageForProvider(language);
 	if (active) {
-		lspActiveLanguages.add(language);
+		lspActiveLanguages.add(normalized);
 		// TypeScript LSP also handles JavaScript files
-		if (language === "typescript") {
+		if (normalized === "typescript") {
 			lspActiveLanguages.add("javascript");
 		}
 	} else {
-		lspActiveLanguages.delete(language);
-		if (language === "typescript") {
+		lspActiveLanguages.delete(normalized);
+		if (normalized === "typescript") {
 			lspActiveLanguages.delete("javascript");
 		}
 	}
@@ -226,4 +227,5 @@ export function registerDefinitionProviders(
 
 export function _resetForTesting() {
 	providersRegistered = false;
+	lspActiveLanguages.clear();
 }
