@@ -332,6 +332,45 @@ describe("useRemoteServer", () => {
 		expect(result.current.connectionMode).toBe("vpn");
 	});
 
+	it("should clear state when server-status-changed event fires with running=false", async () => {
+		const { result } = renderHook(() => useRemoteServer());
+
+		await vi.waitFor(() => {
+			expect(capturedListeners.has("server-status-changed")).toBe(true);
+		});
+
+		act(() => {
+			const listener = capturedListeners.get("server-status-changed");
+			listener?.({
+				payload: {
+					running: true,
+					bound_ip: "100.64.0.1",
+					connection_mode: "vpn",
+				},
+			});
+		});
+
+		await vi.waitFor(() => {
+			expect(result.current.running).toBe(true);
+		});
+
+		act(() => {
+			const listener = capturedListeners.get("server-status-changed");
+			listener?.({
+				payload: {
+					running: false,
+					bound_ip: null,
+					connection_mode: null,
+				},
+			});
+		});
+
+		expect(result.current.running).toBe(false);
+		expect(result.current.boundIp).toBeNull();
+		expect(result.current.connectionMode).toBeNull();
+		expect(result.current.qrData).toBeNull();
+	});
+
 	it("should set error when invoke fails", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
 			switch (cmd) {

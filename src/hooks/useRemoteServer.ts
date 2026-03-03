@@ -156,18 +156,27 @@ export function useRemoteServer() {
 			return;
 		}
 		const selected = interfaces.find((i) => i.ip === selectedIp);
-		if (selected?.kind === "lan") {
+		if (!selected) {
+			setError("Selected IP is no longer available");
+			return;
+		}
+		if (selected.kind === "lan") {
 			setShowLanConfirm(true);
 			return;
 		}
-		await doStartServer(selectedIp);
+		await doStartServer(selected.ip);
 	}, [selectedIp, interfaces, doStartServer]);
 
 	const confirmLanStart = useCallback(async () => {
 		setShowLanConfirm(false);
 		if (!selectedIp) return;
-		await doStartServer(selectedIp);
-	}, [selectedIp, doStartServer]);
+		const selected = interfaces.find((i) => i.ip === selectedIp);
+		if (!selected) {
+			setError("Selected IP is no longer available");
+			return;
+		}
+		await doStartServer(selected.ip);
+	}, [selectedIp, interfaces, doStartServer]);
 
 	const cancelLanStart = useCallback(() => {
 		setShowLanConfirm(false);

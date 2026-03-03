@@ -8,6 +8,7 @@ pub type SharedRepoPaths = Arc<parking_lot::RwLock<Vec<String>>>;
 
 fn normalize_repo_path(path: &str) -> String {
     let replaced = path.replace('\\', "/");
+    let had_unc_prefix = replaced.starts_with("//");
     let mut result = String::with_capacity(replaced.len());
     let mut prev_slash = false;
     for c in replaced.chars() {
@@ -21,7 +22,11 @@ fn normalize_repo_path(path: &str) -> String {
             prev_slash = false;
         }
     }
-    result.trim_end_matches('/').to_string()
+    let mut normalized = result.trim_end_matches('/').to_string();
+    if had_unc_prefix && normalized.starts_with('/') && !normalized.starts_with("//") {
+        normalized.insert(0, '/');
+    }
+    normalized
 }
 
 /// Add a repo path to SharedRepoPaths and persist to config.toml.
@@ -36,25 +41,21 @@ pub fn add_repo(
         return Ok(false);
     }
 
-    let added = {
-        let mut paths = shared.write();
-        if paths.iter().any(|p| p == &normalized) {
-            false
-        } else {
-            paths.push(normalized.clone());
-            true
-        }
-    };
-
-    if added {
-        let current = shared.read().clone();
-        app_config.with_config_mut(|config| {
-            config.app.last_repo_paths = current;
-            Ok(())
-        })?;
+    let mut paths = shared.write();
+    if paths.iter().any(|p| p == &normalized) {
+        return Ok(false);
     }
 
-    Ok(added)
+    let mut new_paths = paths.clone();
+    new_paths.push(normalized);
+
+    app_config.with_config_mut(|config| {
+        config.app.last_repo_paths = new_paths.clone();
+        Ok(())
+    })?;
+
+    *paths = new_paths;
+    Ok(true)
 }
 
 pub fn remove_repo(
@@ -64,22 +65,23 @@ pub fn remove_repo(
 ) -> Result<bool, String> {
     let normalized = normalize_repo_path(path);
 
-    let removed = {
-        let mut paths = shared.write();
-        let before = paths.len();
-        paths.retain(|p| p != &normalized);
-        paths.len() != before
-    };
-
-    if removed {
-        let current = shared.read().clone();
-        app_config.with_config_mut(|config| {
-            config.app.last_repo_paths = current;
-            Ok(())
-        })?;
+    let mut paths = shared.write();
+    let new_paths: Vec<String> = paths
+        .iter()
+        .filter(|p| *p != &normalized)
+        .cloned()
+        .collect();
+    if new_paths.len() == paths.len() {
+        return Ok(false);
     }
 
-    Ok(removed)
+    app_config.with_config_mut(|config| {
+        config.app.last_repo_paths = new_paths.clone();
+        Ok(())
+    })?;
+
+    *paths = new_paths;
+    Ok(true)
 }
 
 pub fn get_repos(shared: &SharedRepoPaths) -> Vec<String> {
@@ -172,6 +174,22 @@ mod tests {
         assert_eq!(
             normalize_repo_path("C:\\Users\\\\test\\repo/"),
             "C:/Users/test/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_unc_prefix() {
+        assert_eq!(
+            normalize_repo_path("\\\\server\\share\\repo"),
+            "//server/share/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_unc_with_duplicate_slashes() {
+        assert_eq!(
+            normalize_repo_path("\\\\server\\share\\\\repo"),
+            "//server/share/repo"
         );
     }
 

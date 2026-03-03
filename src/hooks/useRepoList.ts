@@ -15,7 +15,7 @@ export function useRepoList(): UseRepoListReturn {
 	useEffect(() => {
 		invoke<string[]>("get_repo_paths")
 			.then(setRepoPaths)
-			.catch(() => {});
+			.catch((err) => console.warn("[useRepoList] get_repo_paths failed", err));
 	}, []);
 
 	useEffect(() => {
@@ -28,15 +28,21 @@ export function useRepoList(): UseRepoListReturn {
 	}, []);
 
 	const addRepo = useCallback((path: string) => {
-		invoke("add_repo_path", { path }).catch(() => {});
+		invoke("add_repo_path", { path }).catch((err) =>
+			console.warn("[useRepoList] add_repo_path failed", err),
+		);
 	}, []);
 
 	const removeRepo = useCallback((path: string) => {
-		invoke("remove_repo_path", { path }).catch(() => {});
+		invoke("remove_repo_path", { path }).catch((err) =>
+			console.warn("[useRepoList] remove_repo_path failed", err),
+		);
 	}, []);
 
 	const initFromCwd = useCallback((cwdRepoPath: string) => {
-		invoke("add_repo_path", { path: cwdRepoPath }).catch(() => {});
+		invoke("add_repo_path", { path: cwdRepoPath }).catch((err) =>
+			console.warn("[useRepoList] add_repo_path(initFromCwd) failed", err),
+		);
 	}, []);
 
 	return { repoPaths, addRepo, removeRepo, initFromCwd };
