@@ -7,6 +7,7 @@ import {
 	RotateCw,
 	SplitSquareHorizontal,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
 	Popover,
 	PopoverContent,
@@ -77,10 +78,11 @@ function LspIndicator() {
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
-				<button
-					type="button"
+				<Button
+					variant="ghost"
+					size="icon-xs"
 					aria-label="Language Server status"
-					className="flex items-center px-1.5 h-full hover:bg-muted-foreground/15 transition-colors"
+					className="h-full rounded-none px-1.5"
 				>
 					<Braces
 						className={cn(
@@ -89,7 +91,7 @@ function LspIndicator() {
 							iconStyle.pulse && "animate-pulse",
 						)}
 					/>
-				</button>
+				</Button>
 			</PopoverTrigger>
 			<PopoverContent side="top" align="start" className="w-56 p-3 text-xs">
 				<div className="font-medium text-sm mb-2">Language Server</div>
@@ -118,14 +120,15 @@ function LspIndicator() {
 								Error: {lspError}
 							</div>
 						)}
-						<button
-							type="button"
+						<Button
+							variant="ghost"
+							size="xs"
 							onClick={lspRetryManually}
-							className="flex items-center gap-1.5 px-2 py-1 rounded text-xs bg-muted hover:bg-muted-foreground/15 transition-colors w-full"
+							className="w-full justify-start bg-muted hover:bg-muted-foreground/15"
 						>
 							<RotateCw className="size-3" />
 							Restart
-						</button>
+						</Button>
 					</div>
 				)}
 			</PopoverContent>
@@ -164,42 +167,46 @@ export function DiffToolbar({
 				<div className="flex items-center gap-1">
 					{showStageButtons && (
 						<>
-							<button
-								type="button"
+							<Button
+								variant="ghost"
+								size="xs"
 								onClick={onStageAll}
-								className="px-1.5 py-0.5 text-[10px] bg-status-added/20 text-status-added rounded hover:bg-status-added/30 transition-colors"
+								className="bg-status-added/20 text-status-added hover:bg-status-added/30 hover:text-status-added text-[10px]"
 							>
 								Stage All
-							</button>
+							</Button>
 							{diffBase === "branch-base" && (
-								<button
-									type="button"
+								<Button
+									variant="ghost"
+									size="xs"
 									onClick={onUnstageAll}
-									className="px-1.5 py-0.5 text-[10px] bg-status-modified/20 text-status-modified rounded hover:bg-status-modified/30 transition-colors"
+									className="bg-status-modified/20 text-status-modified hover:bg-status-modified/30 hover:text-status-modified text-[10px]"
 								>
 									Unstage All
-								</button>
+								</Button>
 							)}
 						</>
 					)}
-					<button
-						type="button"
+					<Button
+						variant="ghost"
+						size="icon-xs"
 						onClick={onGoToPrev}
-						className="p-0.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
 						title="Previous hunk"
 						aria-label="Previous hunk"
+						className="text-muted-foreground hover:text-foreground"
 					>
 						<ChevronLeft className="h-3.5 w-3.5" />
-					</button>
-					<button
-						type="button"
+					</Button>
+					<Button
+						variant="ghost"
+						size="icon-xs"
 						onClick={onGoToNext}
-						className="p-0.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
 						title="Next hunk"
 						aria-label="Next hunk"
+						className="text-muted-foreground hover:text-foreground"
 					>
 						<ChevronRight className="h-3.5 w-3.5" />
-					</button>
+					</Button>
 					<span className="text-[10px] text-muted-foreground font-mono">
 						{currentIndex + 1}/{total}
 					</span>
@@ -228,20 +235,21 @@ export function DiffToolbar({
 					{diffModes.map(({ mode, icon: Icon, label }) => (
 						<Tooltip key={mode}>
 							<TooltipTrigger asChild>
-								<button
-									type="button"
+								<Button
+									variant="ghost"
+									size="icon-xs"
 									aria-label={label}
 									aria-pressed={diffMode === mode}
 									onClick={() => onDiffModeChange(mode)}
 									className={cn(
-										"flex items-center justify-center w-6 h-5 rounded transition-colors",
+										"w-6 h-5",
 										diffMode === mode
 											? "bg-background shadow-sm text-foreground"
 											: "text-muted-foreground hover:text-foreground",
 									)}
 								>
 									<Icon className="h-3.5 w-3.5" />
-								</button>
+								</Button>
 							</TooltipTrigger>
 							<TooltipContent side="top" className="text-xs">
 								{label}

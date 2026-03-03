@@ -81,22 +81,14 @@ export function useMcpConfig() {
 		setError(null);
 		setSaveResults([]);
 		try {
-			// チェックが外されたエージェントの設定を削除
 			const removed = initialAgents.filter((a) => !selectedAgents.includes(a));
-			await Promise.all(
-				removed.map((agent) =>
-					invoke<boolean>("remove_agent_mcp_config", {
-						agentType: agent,
-					}),
-				),
-			);
-
 			const results = await invoke<GenerateResult[]>(
 				"save_and_generate_mcp_configs",
 				{
 					port: draft.port,
 					token: draft.token,
 					agentTypes: selectedAgents,
+					removedAgents: removed,
 				},
 			);
 			setConfig(draft);

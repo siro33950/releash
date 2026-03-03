@@ -405,6 +405,7 @@ pub async fn save_and_generate_mcp_configs(
     port: u16,
     token: String,
     agent_types: Vec<String>,
+    removed_agents: Vec<String>,
 ) -> Result<Vec<GenerateResult>, String> {
     let token = token.trim().to_string();
     if port == 0 {
@@ -414,13 +415,26 @@ pub async fn save_and_generate_mcp_configs(
         return Err("mcp_token must not be empty".to_string());
     }
 
-    // 0. agent_types を先にパースしてバリデーション（不正な値で config 保存を防止）
+    // 0. agent_types / removed_agents を先にパースしてバリデーション
     let parsed_agents: Vec<AgentKind> = agent_types
         .iter()
         .map(|s| AgentKind::from_str(s))
         .collect::<Result<Vec<_>, _>>()?;
 
-    // 1. config.toml 保存
+    let parsed_removed: Vec<AgentKind> = removed_agents
+        .iter()
+        .map(|s| AgentKind::from_str(s))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // 1. removed_agents の設定を削除
+    if !parsed_removed.is_empty() {
+        let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
+        for agent in &parsed_removed {
+            remove_releash_entry_at(*agent, &home)?;
+        }
+    }
+
+    // 2. config.toml 保存
     let app_config = state.inner().clone();
     let port_for_save = port;
     let token_for_save = token.clone();
@@ -434,10 +448,10 @@ pub async fn save_and_generate_mcp_configs(
     .await
     .map_err(|e| format!("task join error: {e}"))??;
 
-    // 2. MCPサーバー再起動（停止中なら起動）
+    // 3. MCPサーバー再起動（停止中なら起動）
     crate::mcp::restart_mcp_server_if_running(&app).await?;
 
-    // 3. 再起動後の実ポート/トークンで各エージェント設定を生成
+    // 4. 再起動後の実ポート/トークンで各エージェント設定を生成
     if parsed_agents.is_empty() {
         return Ok(vec![]);
     }

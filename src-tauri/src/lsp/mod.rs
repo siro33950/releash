@@ -32,7 +32,7 @@ struct LspSession {
     language: String,
     worktree_path: String,
     child: Child,
-    stdin: ChildStdin,
+    stdin: Arc<Mutex<ChildStdin>>,
     status: LspStatus,
     command: String,
     pending_requests: bridge::PendingRequests,
@@ -159,7 +159,7 @@ impl LspManager {
             language,
             worktree_path,
             child,
-            stdin,
+            stdin: Arc::new(Mutex::new(stdin)),
             status: LspStatus::Running,
             command,
             pending_requests,
@@ -190,15 +190,18 @@ impl LspManager {
 
         // Send LSP shutdown request
         let shutdown_request = r#"{"jsonrpc":"2.0","id":99999,"method":"shutdown","params":null}"#;
-        if let Err(e) = bridge::write_to_stdin(&mut session.stdin, shutdown_request).await {
-            log::warn!("LSP shutdown request failed for session {session_id}: {e}");
-            let _ = session.child.kill().await;
-            return Ok(());
-        }
+        {
+            let mut stdin = session.stdin.lock().await;
+            if let Err(e) = bridge::write_to_stdin(&mut stdin, shutdown_request).await {
+                log::warn!("LSP shutdown request failed for session {session_id}: {e}");
+                let _ = session.child.kill().await;
+                return Ok(());
+            }
 
-        // Send exit notification
-        let exit_notification = r#"{"jsonrpc":"2.0","method":"exit","params":null}"#;
-        let _ = bridge::write_to_stdin(&mut session.stdin, exit_notification).await;
+            // Send exit notification
+            let exit_notification = r#"{"jsonrpc":"2.0","method":"exit","params":null}"#;
+            let _ = bridge::write_to_stdin(&mut stdin, exit_notification).await;
+        }
 
         // Wait briefly for the process to exit, then force kill (lock not held)
         let timeout =
@@ -284,17 +287,22 @@ impl LspManager {
         message: &str,
         worktree_path: &str,
     ) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(&session_id)
-            .ok_or(format!("LSPセッション {session_id} が見つかりません"))?;
+        let stdin = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or(format!("LSPセッション {session_id} が見つかりません"))?;
 
-        if session.status != LspStatus::Running {
-            return Err(format!("LSPセッション {session_id} は実行中ではありません"));
-        }
+            if session.status != LspStatus::Running {
+                return Err(format!("LSPセッション {session_id} は実行中ではありません"));
+            }
+
+            session.stdin.clone()
+        };
 
         let message = bridge::inject_root_uri(message, worktree_path)?;
-        bridge::write_to_stdin(&mut session.stdin, &message).await
+        let mut stdin_guard = stdin.lock().await;
+        bridge::write_to_stdin(&mut stdin_guard, &message).await
     }
 
     // -----------------------------------------------------------------------

@@ -2,9 +2,10 @@ import type * as Monaco from "monaco-editor";
 import { useEffect, useRef, useState } from "react";
 import type { TauriTransport } from "../lib/lsp/tauri-transport";
 
-// Extract the transport type expected by MonacoLspClient's constructor.
-// IMessageTransport is not exported from the monaco.lsp namespace directly,
-// so we infer it from the constructor parameters.
+// monaco.lsp is an undocumented API available since Monaco 0.55.0.
+// Type declarations: src/types/monaco-lsp.d.ts
+// If Monaco removes or changes this API, the runtime guard below will
+// degrade gracefully (connected = false). Pin monaco-editor version in package.json.
 type LspTransport = ConstructorParameters<typeof Monaco.lsp.MonacoLspClient>[0];
 
 /**
