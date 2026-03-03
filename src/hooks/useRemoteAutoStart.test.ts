@@ -80,9 +80,7 @@ describe("useRemoteAutoStart", () => {
 				bound_ip: null,
 				connection_mode: null,
 			})
-			.mockResolvedValueOnce([
-				{ name: "en0", ip: "192.168.1.10", kind: "lan" },
-			])
+			.mockResolvedValueOnce([{ name: "en0", ip: "192.168.1.10", kind: "lan" }])
 			.mockResolvedValueOnce({ ip: "192.168.1.10", mode: "lan" });
 
 		renderHook(() => useRemoteAutoStart(true));
@@ -141,10 +139,9 @@ describe("useRemoteAutoStart", () => {
 			auto_start_on_lan: false,
 		});
 
-		const { rerender } = renderHook(
-			({ ready }) => useRemoteAutoStart(ready),
-			{ initialProps: { ready: true } },
-		);
+		const { rerender } = renderHook(({ ready }) => useRemoteAutoStart(ready), {
+			initialProps: { ready: true },
+		});
 
 		await vi.waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("get_remote_config");

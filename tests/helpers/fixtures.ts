@@ -139,6 +139,11 @@ const baseIpcHandler: Record<string, unknown> = {
 	get_remote_config: { auto_start: false, auto_start_on_lan: false },
 	update_remote_config: null,
 
+	// Repo registry
+	get_repo_paths: ["/test/repo"],
+	add_repo_path: null,
+	remove_repo_path: null,
+
 	// Remote server
 	get_server_config: { port: 19700, token: "mock-token" },
 	get_server_info: { running: false, bound_ip: null, connection_mode: null },
