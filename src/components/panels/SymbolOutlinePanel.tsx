@@ -123,7 +123,7 @@ export function SymbolOutlinePanel({
 	if (!filePath) {
 		return (
 			<div className="flex items-center justify-center h-full text-xs text-muted-foreground">
-				ファイルを開いてください
+				Open a file
 			</div>
 		);
 	}
@@ -139,7 +139,7 @@ export function SymbolOutlinePanel({
 	if (symbols.length === 0) {
 		return (
 			<div className="flex items-center justify-center h-full text-xs text-muted-foreground">
-				シンボルが見つかりません
+				No symbols found
 			</div>
 		);
 	}

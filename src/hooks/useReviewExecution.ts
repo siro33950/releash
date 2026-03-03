@@ -372,6 +372,9 @@ export function useReviewExecution(
 				activeCountRef.current = fileStates.filter(
 					(f) => f.status === "running",
 				).length;
+				errorCountRef.current = fileStates.filter(
+					(f) => f.status === "error",
+				).length;
 
 				const hasError = fileStates.some((f) => f.status === "error");
 				const overallStatus: ReviewStatus = hasRunning
