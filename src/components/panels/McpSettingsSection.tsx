@@ -65,10 +65,9 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 					(
 						r,
 					): r is PromiseFulfilledResult<{
-					agent: McpAgentType;
-					content: string;
-				}> =>
-						r.status === "fulfilled",
+						agent: McpAgentType;
+						content: string;
+					}> => r.status === "fulfilled",
 				)
 				.map(({ value: { agent, content } }) => {
 					const label = MCP_AGENT_OPTIONS.find((o) => o.value === agent)?.label;
