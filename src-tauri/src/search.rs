@@ -977,7 +977,7 @@ fn list_document_symbols_inner(
     };
 
     // Validate file_path is within root_path to prevent path traversal
-    if let Some(ref root) = root_path {
+    let resolved_path = if let Some(ref root) = root_path {
         let canonical_root =
             std::fs::canonicalize(root).map_err(|e| format!("ルートパス解決失敗: {e}"))?;
         let canonical_file =
@@ -985,10 +985,13 @@ fn list_document_symbols_inner(
         if canonical_file.strip_prefix(&canonical_root).is_err() {
             return Err("ファイルパスが許可されたルート外です".to_string());
         }
-    }
+        canonical_file
+    } else {
+        std::path::PathBuf::from(&file_path)
+    };
 
     let content =
-        fs::read_to_string(&file_path).map_err(|e| format!("ファイル読み込み失敗: {e}"))?;
+        fs::read_to_string(&resolved_path).map_err(|e| format!("ファイル読み込み失敗: {e}"))?;
     let content_bytes = content.as_bytes();
 
     let mut ctx = TagsContext::new();

@@ -369,6 +369,9 @@ export function useReviewExecution(
 				fileStatesRef.current = fileStates;
 				totalCountRef.current = fileStates.length;
 				doneCountRef.current = doneCount;
+				activeCountRef.current = fileStates.filter(
+					(f) => f.status === "running",
+				).length;
 
 				const hasError = fileStates.some((f) => f.status === "error");
 				const overallStatus: ReviewStatus = hasRunning
@@ -503,13 +506,9 @@ export function useReviewExecution(
 		// Invalidate current run token to prevent completion events from overwriting status
 		runTokenRef.current += 1;
 		// Cancel all running PTYs
-		const cancelPromises = Array.from(ptyIdSetRef.current).map((id) => {
-			const file = fileStatesRef.current.find((f) => f.ptyId === id);
-			if (file && file.status === "running") {
-				return invoke("cancel_oneshot_pty", { ptyId: id }).catch(() => {});
-			}
-			return Promise.resolve();
-		});
+		const cancelPromises = Array.from(ptyIdSetRef.current).map((id) =>
+			invoke("cancel_oneshot_pty", { ptyId: id }).catch(() => {}),
+		);
 		// Clear the queue
 		taskQueueRef.current = [];
 		await Promise.all(cancelPromises);

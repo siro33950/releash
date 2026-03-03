@@ -152,7 +152,7 @@ export function SymbolOutlinePanel({
 					const colorClass = getKindColor(symbol.kind);
 					return (
 						<button
-							key={`${symbol.name}-${symbol.line}`}
+							key={`${symbol.name}-${symbol.line}-${symbol.column}-${symbol.kind}`}
 							type="button"
 							className="flex items-center gap-1.5 w-full px-3 py-0.5 text-xs hover:bg-accent/50 cursor-pointer text-left"
 							onClick={() => handleClick(symbol.line)}
