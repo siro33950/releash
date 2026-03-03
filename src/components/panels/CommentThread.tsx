@@ -275,7 +275,7 @@ export function CommentThread({
 				<textarea
 					ref={textareaRef}
 					className="comment-thread-textarea"
-					placeholder="返信を入力..."
+					placeholder="Type a reply..."
 					rows={3}
 				/>
 				<div className="comment-thread-actions">
@@ -284,14 +284,14 @@ export function CommentThread({
 						className="comment-thread-cancel-btn"
 						onClick={handleCancelClick}
 					>
-						キャンセル
+						Cancel
 					</button>
 					<button
 						type="button"
 						className="comment-thread-submit-btn"
 						onClick={handleSubmitClick}
 					>
-						追加
+						Add
 					</button>
 				</div>
 			</div>

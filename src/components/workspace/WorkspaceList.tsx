@@ -443,7 +443,7 @@ export function WorkspaceList({
 								size="icon-xs"
 								variant="ghost"
 								className="size-5"
-								aria-label="グループ"
+								aria-label="Group"
 								title="Group by"
 							>
 								<LayoutList className="size-3" />
@@ -475,7 +475,7 @@ export function WorkspaceList({
 								size="icon-xs"
 								variant="ghost"
 								className="size-5"
-								aria-label="フィルター"
+								aria-label="Filter"
 								title="Filter"
 							>
 								<Filter className="size-3" />
@@ -523,7 +523,7 @@ export function WorkspaceList({
 						className="size-5"
 						onClick={() => setShowCreate(true)}
 						title="Add worktree"
-						aria-label="ワークツリーを追加"
+						aria-label="Add Worktree"
 					>
 						<Plus className="size-3" />
 					</Button>

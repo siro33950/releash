@@ -163,27 +163,27 @@ function EditorContextMenuContent({
 			{actions.hasNavigation && (
 				<>
 					<ContextMenuItem onClick={actions.handleGoToDefinition}>
-						定義へ移動
+						Go to Definition
 					</ContextMenuItem>
 					<ContextMenuItem onClick={actions.handleFindReferences}>
-						参照を検索
+						Find References
 					</ContextMenuItem>
 					<ContextMenuSeparator />
 					<ContextMenuItem onClick={actions.handleSearchOccurrences}>
-						すべての出現箇所を検索
+						Find All Occurrences
 					</ContextMenuItem>
 					<ContextMenuSeparator />
 				</>
 			)}
-			<ContextMenuItem onClick={actions.handleCopy}>コピー</ContextMenuItem>
-			<ContextMenuItem onClick={actions.handleCut}>切り取り</ContextMenuItem>
-			<ContextMenuItem onClick={actions.handlePaste}>貼り付け</ContextMenuItem>
+			<ContextMenuItem onClick={actions.handleCopy}>Copy</ContextMenuItem>
+			<ContextMenuItem onClick={actions.handleCut}>Cut</ContextMenuItem>
+			<ContextMenuItem onClick={actions.handlePaste}>Paste</ContextMenuItem>
 			<ContextMenuSeparator />
-			<ContextMenuItem onClick={actions.handleUndo}>元に戻す</ContextMenuItem>
-			<ContextMenuItem onClick={actions.handleRedo}>やり直し</ContextMenuItem>
+			<ContextMenuItem onClick={actions.handleUndo}>Undo</ContextMenuItem>
+			<ContextMenuItem onClick={actions.handleRedo}>Redo</ContextMenuItem>
 			<ContextMenuSeparator />
 			<ContextMenuItem onClick={actions.handleSelectAll}>
-				全選択
+				Select All
 			</ContextMenuItem>
 		</ContextMenuContent>
 	);

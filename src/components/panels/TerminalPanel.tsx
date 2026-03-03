@@ -178,28 +178,28 @@ export const TerminalPanel = forwardRef<
 					{isDragOver && (
 						<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none">
 							<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
-								ドロップしてパスを入力
+								Drop to insert path
 							</span>
 						</div>
 					)}
 				</div>
 			</ContextMenuTrigger>
 			<ContextMenuContent className="w-56">
-				<ContextMenuItem onClick={handleCopy}>コピー</ContextMenuItem>
-				<ContextMenuItem onClick={handlePaste}>貼り付け</ContextMenuItem>
+				<ContextMenuItem onClick={handleCopy}>Copy</ContextMenuItem>
+				<ContextMenuItem onClick={handlePaste}>Paste</ContextMenuItem>
 				<ContextMenuSeparator />
-				<ContextMenuItem onClick={handleSelectAll}>全選択</ContextMenuItem>
-				<ContextMenuItem onClick={handleClear}>クリア</ContextMenuItem>
+				<ContextMenuItem onClick={handleSelectAll}>Select All</ContextMenuItem>
+				<ContextMenuItem onClick={handleClear}>Clear</ContextMenuItem>
 				<ContextMenuSeparator />
 				{onSplitVertical && (
 					<ContextMenuItem onClick={onSplitVertical}>
-						垂直分割
+						Split Vertical
 						<ContextMenuShortcut>⌘D</ContextMenuShortcut>
 					</ContextMenuItem>
 				)}
 				{onSplitHorizontal && (
 					<ContextMenuItem onClick={onSplitHorizontal}>
-						水平分割
+						Split Horizontal
 						<ContextMenuShortcut>⇧⌘D</ContextMenuShortcut>
 					</ContextMenuItem>
 				)}
@@ -207,7 +207,7 @@ export const TerminalPanel = forwardRef<
 					<>
 						<ContextMenuSeparator />
 						<ContextMenuItem onClick={onBreakToTab}>
-							タブに分離
+							Move to Tab
 							<ContextMenuShortcut>⇧⌘T</ContextMenuShortcut>
 						</ContextMenuItem>
 					</>
@@ -216,7 +216,7 @@ export const TerminalPanel = forwardRef<
 					<>
 						<ContextMenuSeparator />
 						<ContextMenuItem variant="destructive" onClick={onClosePane}>
-							閉じる
+							Close
 						</ContextMenuItem>
 					</>
 				)}

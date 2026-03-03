@@ -24,12 +24,12 @@ export function SidebarRootContextMenu({
 
 	return (
 		<ContextMenuContent className="w-56">
-			<ContextMenuItem onClick={onNewFile}>新規ファイル</ContextMenuItem>
-			<ContextMenuItem onClick={onNewFolder}>新規フォルダ</ContextMenuItem>
+			<ContextMenuItem onClick={onNewFile}>New File</ContextMenuItem>
+			<ContextMenuItem onClick={onNewFolder}>New Folder</ContextMenuItem>
 			{clipboard && (
 				<>
 					<ContextMenuSeparator />
-					<ContextMenuItem onClick={onPaste}>貼り付け</ContextMenuItem>
+					<ContextMenuItem onClick={onPaste}>Paste</ContextMenuItem>
 				</>
 			)}
 		</ContextMenuContent>

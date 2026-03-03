@@ -44,7 +44,7 @@ export function RemoteAppHeader({
 					onClick={onDisconnect}
 					className="text-xs px-2 py-0.5 rounded bg-secondary hover:bg-secondary/80 text-secondary-foreground transition-colors"
 				>
-					切断
+					Disconnect
 				</button>
 			</div>
 		</header>

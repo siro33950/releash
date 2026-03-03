@@ -26,7 +26,7 @@ export function usePtyManagement({ subscribe, send }: UsePtyManagementOptions) {
 			if (msg.type === "pty_spawn_response") {
 				setPtySpawning(false);
 				if (!msg.payload.success) {
-					setPtySpawnError(msg.payload.error ?? "PTY起動に失敗しました");
+					setPtySpawnError(msg.payload.error ?? "Failed to start PTY");
 				}
 			}
 			if (msg.type === "pty_ready") {

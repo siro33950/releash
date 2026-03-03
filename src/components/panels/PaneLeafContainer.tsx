@@ -136,8 +136,8 @@ export function PaneLeafContainer({
 						type="button"
 						onClick={handleBreakToTab}
 						className="px-1 hover:text-foreground transition-colors"
-						aria-label={`${pane.label} をタブに分離`}
-						title="タブに分離"
+						aria-label={`Move ${pane.label} to tab`}
+						title="Move to Tab"
 					>
 						&#x2934;
 					</button>
@@ -146,8 +146,8 @@ export function PaneLeafContainer({
 					type="button"
 					onClick={handleSplitVertical}
 					className="px-1 hover:text-foreground transition-colors"
-					aria-label={`${pane.label} を垂直分割`}
-					title="垂直分割 (⌘D)"
+					aria-label={`Split ${pane.label} vertically`}
+					title="Split Vertically (⌘D)"
 				>
 					┃
 				</button>
@@ -155,8 +155,8 @@ export function PaneLeafContainer({
 					type="button"
 					onClick={handleSplitHorizontal}
 					className="px-1 hover:text-foreground transition-colors"
-					aria-label={`${pane.label} を水平分割`}
-					title="水平分割 (⇧⌘D)"
+					aria-label={`Split ${pane.label} horizontally`}
+					title="Split Horizontally (⇧⌘D)"
 				>
 					━
 				</button>
@@ -164,8 +164,8 @@ export function PaneLeafContainer({
 					type="button"
 					onClick={handleClose}
 					className="px-1 hover:text-foreground transition-colors"
-					aria-label={`${pane.label} を閉じる`}
-					title="閉じる"
+					aria-label={`Close ${pane.label}`}
+					title="Close"
 				>
 					✕
 				</button>

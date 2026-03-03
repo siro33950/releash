@@ -63,9 +63,9 @@ export function RemoteCommentList({
 		return (
 			<div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground px-6">
 				<MessageSquare className="h-8 w-8" />
-				<span className="text-sm font-medium">コメントなし</span>
+				<span className="text-sm font-medium">No comments</span>
 				<p className="text-xs text-center leading-relaxed">
-					Diff画面のコメントボタンからコメントを追加できます
+					Add comments using the comment button in the Diff view.
 				</p>
 			</div>
 		);
@@ -105,7 +105,7 @@ export function RemoteCommentList({
 							) : (
 								<Eye className="h-3 w-3" />
 							)}
-							解決済み ({resolvedCount})
+							Resolved ({resolvedCount})
 						</button>
 					)}
 				</div>
@@ -116,7 +116,7 @@ export function RemoteCommentList({
 						className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-primary/20 text-primary rounded hover:bg-primary/30 transition-colors min-h-[32px]"
 					>
 						<Send className="h-3.5 w-3.5" />
-						送信
+						Send
 					</button>
 				)}
 			</div>
@@ -179,7 +179,7 @@ export function RemoteCommentList({
 															className="flex items-center gap-1 px-2 py-1 text-xs bg-primary/20 text-primary rounded hover:bg-primary/30 transition-colors"
 														>
 															<Check className="h-3 w-3" />
-															保存
+															Save
 														</button>
 														<button
 															type="button"
@@ -187,7 +187,7 @@ export function RemoteCommentList({
 															className="flex items-center gap-1 px-2 py-1 text-xs bg-secondary text-secondary-foreground rounded hover:bg-secondary/80 transition-colors"
 														>
 															<X className="h-3 w-3" />
-															キャンセル
+															Cancel
 														</button>
 													</div>
 												</div>
@@ -204,7 +204,7 @@ export function RemoteCommentList({
 														type="button"
 														onClick={() => onSendComment(comment)}
 														className="p-1 rounded hover:bg-primary/20 text-muted-foreground hover:text-primary transition-colors"
-														title="送信"
+														title="Send"
 													>
 														<Send className="h-3.5 w-3.5" />
 													</button>
@@ -214,7 +214,7 @@ export function RemoteCommentList({
 														type="button"
 														onClick={() => onCopyComment(comment)}
 														className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-secondary-foreground transition-colors"
-														title="コピー"
+														title="Copy"
 													>
 														<Copy className="h-3.5 w-3.5" />
 													</button>
@@ -224,7 +224,7 @@ export function RemoteCommentList({
 														type="button"
 														onClick={() => startEditing(comment)}
 														className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-secondary-foreground transition-colors"
-														title="編集"
+														title="Edit"
 													>
 														<Pencil className="h-3.5 w-3.5" />
 													</button>
@@ -234,7 +234,7 @@ export function RemoteCommentList({
 														type="button"
 														onClick={() => onDeleteComment(comment.id)}
 														className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
-														title="削除"
+														title="Delete"
 													>
 														<Trash2 className="h-3.5 w-3.5" />
 													</button>

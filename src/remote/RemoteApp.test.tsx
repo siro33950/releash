@@ -38,17 +38,17 @@ describe("RemoteApp", () => {
 
 	it("shows connection form initially", () => {
 		render(<RemoteApp />);
-		expect(screen.getByText("接続")).toBeInTheDocument();
+		expect(screen.getByText("Connect")).toBeInTheDocument();
 	});
 
 	it("shows connection form with host input", () => {
 		render(<RemoteApp />);
-		expect(screen.getByLabelText(/ホスト/)).toBeInTheDocument();
+		expect(screen.getByLabelText(/Host/)).toBeInTheDocument();
 	});
 
 	it("shows token input", () => {
 		render(<RemoteApp />);
-		expect(screen.getByLabelText(/トークン/)).toBeInTheDocument();
+		expect(screen.getByLabelText(/Token/)).toBeInTheDocument();
 	});
 
 	it("transitions to main UI after connection", async () => {
@@ -62,18 +62,18 @@ describe("RemoteApp", () => {
 
 		render(<RemoteApp />);
 
-		const hostInput = screen.getByLabelText(/ホスト/);
-		const tokenInput = screen.getByLabelText(/トークン/);
+		const hostInput = screen.getByLabelText(/Host/);
+		const tokenInput = screen.getByLabelText(/Token/);
 
 		await user.clear(hostInput);
 		await user.type(hostInput, "192.168.1.100:9700");
 		await user.clear(tokenInput);
 		await user.type(tokenInput, "mytoken");
 
-		const connectBtn = screen.getByText("接続");
+		const connectBtn = screen.getByText("Connect");
 		await user.click(connectBtn);
 
 		expect(screen.getByText("Releash Remote")).toBeInTheDocument();
-		expect(screen.getByText("切断")).toBeInTheDocument();
+		expect(screen.getByText("Disconnect")).toBeInTheDocument();
 	});
 });

@@ -45,7 +45,7 @@ export function QrTokenScanner({ onScan, onClose }: QrTokenScannerProps) {
 			<div className="w-full max-w-sm mx-4 bg-card rounded-xl border border-border overflow-hidden">
 				<div className="flex items-center justify-between px-4 py-3 border-b border-border">
 					<span className="text-sm font-medium text-card-foreground">
-						トークンQRをスキャン
+						Scan Token QR
 					</span>
 					<button
 						type="button"

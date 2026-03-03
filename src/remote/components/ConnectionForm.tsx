@@ -58,7 +58,7 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 			>
 				<h1 className="text-2xl font-bold text-center">Releash Remote</h1>
 				<p className="text-sm text-muted-foreground text-center">
-					Mac上のReleashに接続します
+					Connect to Releash on Mac
 				</p>
 
 				<div className="space-y-2">
@@ -66,7 +66,7 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 						className="block text-sm font-medium text-secondary-foreground"
 						htmlFor="host"
 					>
-						ホスト (IP:ポート)
+						Host (IP:Port)
 					</label>
 					<input
 						id="host"
@@ -83,7 +83,7 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 						className="block text-sm font-medium text-secondary-foreground"
 						htmlFor="token"
 					>
-						トークン
+						Token
 					</label>
 					<div className="flex gap-2">
 						<input
@@ -91,7 +91,7 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 							type="password"
 							value={token}
 							onChange={(e) => setToken(e.target.value)}
-							placeholder="認証トークンを入力"
+							placeholder="Enter auth token"
 							className="flex-1 px-4 py-2 rounded-lg bg-input border border-border text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 						/>
 						<button
@@ -99,7 +99,7 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 							onClick={() => setScanning(true)}
 							className="px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80 text-secondary-foreground text-sm font-medium transition-colors shrink-0"
 						>
-							QRスキャン
+							QR Scan
 						</button>
 					</div>
 				</div>
@@ -109,7 +109,7 @@ export function ConnectionForm({ onConnect }: ConnectionFormProps) {
 					disabled={!host || !token}
 					className="w-full py-3 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
 				>
-					接続
+					Connect
 				</button>
 			</form>
 

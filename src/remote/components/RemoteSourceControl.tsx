@@ -203,7 +203,7 @@ export function RemoteSourceControl({
 					<button
 						type="button"
 						className="shrink-0"
-						aria-label="閉じる"
+						aria-label="Close"
 						onClick={onClearPushResult}
 					>
 						<X className="h-3 w-3" />
@@ -217,7 +217,7 @@ export function RemoteSourceControl({
 					<button
 						type="button"
 						className="shrink-0"
-						aria-label="エラーを閉じる"
+						aria-label="Close error"
 						onClick={onClearError}
 					>
 						<X className="h-3 w-3" />

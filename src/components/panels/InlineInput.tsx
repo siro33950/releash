@@ -66,7 +66,7 @@ export function InlineInput({
 		const newValue = e.target.value;
 		setValue(newValue);
 		if (INVALID_CHARS.test(newValue)) {
-			setError("/, \\, : は使用できません");
+			setError("/, \\, : are not allowed");
 		} else {
 			setError(null);
 		}
