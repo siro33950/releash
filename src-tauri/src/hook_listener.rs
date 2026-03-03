@@ -9,6 +9,8 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
+use tauri::Manager;
+
 use crate::config::{AppConfig, DesktopNotifyMode, NotifySection};
 use crate::focus_tracker::FocusTracker;
 use crate::protocol::{AgentHookPayload, AgentState, AgentStateSync, WsMessage};
@@ -29,6 +31,7 @@ pub struct HookListenerState {
     pub broadcaster: Arc<WsBroadcaster>,
     pub agent_states: Arc<parking_lot::Mutex<HashMap<String, AgentStateSync>>>,
     pub focus_tracker: Arc<parking_lot::Mutex<FocusTracker>>,
+    pub repo_paths: crate::repo_registry::SharedRepoPaths,
 }
 
 pub async fn start_hook_listener(state: HookListenerState) -> Result<(), String> {
@@ -187,6 +190,35 @@ async fn handle_agent_hook(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {e}")),
     };
     payload.worktree_path = resolve_worktree_root(&payload.worktree_path);
+
+    // Auto-register the main repo path
+    {
+        let wt_path = payload.worktree_path.clone();
+        let repo_paths = Arc::clone(&state.repo_paths);
+        let app_config = Arc::clone(&state.app_config);
+        let app_handle = state.app_handle.clone();
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                let main_path =
+                    crate::git::worktree::get_main_repo_path(wt_path).map_err(|e| e.to_string())?;
+                crate::repo_registry::add_repo(&repo_paths, &app_config, &main_path)
+            })
+            .await;
+
+            match result {
+                Ok(Ok(true)) => {
+                    use tauri::Emitter;
+                    let current = crate::repo_registry::get_repos(
+                        &app_handle.state::<crate::repo_registry::SharedRepoPaths>(),
+                    );
+                    let _ = app_handle.emit("repo-paths-changed", &current);
+                }
+                Ok(Err(e)) => log::warn!("Failed to auto-register repo: {e}"),
+                Err(e) => log::warn!("Failed to auto-register repo (join): {e}"),
+                _ => {}
+            }
+        });
+    }
 
     let sync = AgentStateSync::from_payload(&payload);
 

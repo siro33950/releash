@@ -15,16 +15,14 @@ import { Button } from "@/components/ui/button";
 import { Message } from "@/components/ui/message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRemoteServer } from "@/hooks/useRemoteServer";
+import { useRepoList } from "@/hooks/useRepoList";
 
 export interface RemotePanelProps {
-	rootPaths: string[];
 	terminalStartupCommand: string;
 }
 
-export function RemotePanel({
-	rootPaths,
-	terminalStartupCommand,
-}: RemotePanelProps) {
+export function RemotePanel({ terminalStartupCommand }: RemotePanelProps) {
+	const { repoPaths } = useRepoList();
 	const {
 		running,
 		qrData,
@@ -43,7 +41,6 @@ export function RemotePanel({
 		refreshStatus,
 		updatePort,
 		regenerateToken,
-		updateRepoPaths,
 		updateTerminalStartupCommand,
 	} = useRemoteServer();
 
@@ -61,12 +58,6 @@ export function RemotePanel({
 
 	useEffect(() => {
 		if (running) {
-			updateRepoPaths(rootPaths);
-		}
-	}, [running, rootPaths, updateRepoPaths]);
-
-	useEffect(() => {
-		if (running) {
 			updateTerminalStartupCommand(terminalStartupCommand);
 		}
 	}, [running, terminalStartupCommand, updateTerminalStartupCommand]);
@@ -74,8 +65,8 @@ export function RemotePanel({
 	const handleToggle = async () => {
 		if (running) {
 			await stopServer();
-		} else if (rootPaths.length > 0) {
-			await startServer(rootPaths);
+		} else {
+			await startServer();
 		}
 	};
 
@@ -133,7 +124,7 @@ export function RemotePanel({
 							variant={running ? "destructive" : "default"}
 							className="w-full text-xs"
 							onClick={handleToggle}
-							disabled={!running && rootPaths.length === 0}
+							disabled={!running && repoPaths.length === 0}
 						>
 							{running ? "Stop Server" : "Start Server"}
 						</Button>
@@ -308,7 +299,7 @@ export function RemotePanel({
 					)}
 
 					{/* No root path warning */}
-					{rootPaths.length === 0 && (
+					{repoPaths.length === 0 && (
 						<p className="text-xs text-muted-foreground">
 							Open a folder before starting server
 						</p>

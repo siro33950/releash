@@ -31,7 +31,7 @@ function App() {
 	const { repoPaths, addRepo, initFromCwd } = useRepoList();
 
 	const [initializing, setInitializing] = useState(true);
-	useRemoteAutoStart(repoPaths, !initializing);
+	useRemoteAutoStart(!initializing);
 	const [, setProviderStatuses] = useState<
 		Record<string, ProviderStatus | null>
 	>({});
@@ -188,7 +188,6 @@ function App() {
 						<DialogTitle>Remote Access</DialogTitle>
 					</DialogHeader>
 					<RemotePanel
-						rootPaths={repoPaths}
 						terminalStartupCommand={buildTerminalCommand(settings)}
 					/>
 				</DialogContent>

@@ -109,10 +109,6 @@ impl WsServerState {
         self.repo_paths.read().clone()
     }
 
-    pub(crate) fn update_repo_paths(&self, paths: Vec<String>) {
-        *self.repo_paths.write() = paths;
-    }
-
     pub(crate) fn get_terminal_startup_command(&self) -> String {
         self.terminal_startup_command.read().clone()
     }
@@ -178,38 +174,6 @@ mod tests {
         assert_eq!(
             state.get_repo_paths(),
             vec!["/repo/a".to_string(), "/repo/b".to_string()]
-        );
-    }
-
-    #[test]
-    fn test_update_repo_paths() {
-        let config = crate::config::ReleashConfig::default();
-        let app_config = Arc::new(AppConfig::new(
-            config,
-            std::path::PathBuf::from("/tmp/test-releash.toml"),
-        ));
-        let state = WsServerState::new(
-            None,
-            Arc::new(WsBroadcaster::default()),
-            None,
-            Arc::new(parking_lot::RwLock::new(vec!["/repo/a".to_string()])),
-            app_config,
-            None,
-            false,
-            Arc::new(crate::git_host::PrCache::new()),
-        );
-        state.update_repo_paths(vec![
-            "/repo/x".to_string(),
-            "/repo/y".to_string(),
-            "/repo/z".to_string(),
-        ]);
-        assert_eq!(
-            state.get_repo_paths(),
-            vec![
-                "/repo/x".to_string(),
-                "/repo/y".to_string(),
-                "/repo/z".to_string()
-            ]
         );
     }
 }
