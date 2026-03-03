@@ -120,6 +120,7 @@ export interface AppSettings {
 	autoUpdate: boolean;
 	telemetryEnabled: boolean;
 	enableCrashReporting: boolean;
+	reviewConcurrency: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -136,6 +137,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	autoUpdate: true,
 	telemetryEnabled: true,
 	enableCrashReporting: true,
+	reviewConcurrency: 5,
 };
 
 export function buildReviewCommand(

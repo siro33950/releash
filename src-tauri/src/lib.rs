@@ -332,6 +332,7 @@ pub fn run() {
             comment_store::toggle_resolve_comment,
             // Review prompt
             review_prompt::get_review_prompt,
+            review_prompt::get_per_file_review_tasks,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,

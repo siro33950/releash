@@ -99,6 +99,7 @@ pub struct PostReviewCommentParams {
 }
 
 const VALID_SEVERITIES: &[&str] = &["info", "warning", "error", "suggestion"];
+const VALID_FILTER_MODES: &[&str] = &["diff_context", "file", "nofilter"];
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetReviewCommentsParams {
@@ -128,6 +129,8 @@ pub struct ReviewDiffParams {
     pub base_branch: Option<String>,
     /// File paths to include full diff for. If omitted, returns summary only (file list + stats, no hunks).
     pub paths: Option<Vec<String>>,
+    /// Maximum diff lines (additions + deletions) per file. Files exceeding this limit return stats only (hunks omitted, truncated=true). Use read_file to review truncated files. Defaults to 500.
+    pub max_lines_per_file: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -148,8 +151,12 @@ pub struct ReadFileParams {
 pub struct CheckDiagnosticsParams {
     /// Worktree path (from worktrees_list)
     pub worktree: String,
-    /// File paths relative to repository root. If omitted, checks all changed files.
+    /// File paths relative to repository root. If omitted, checks all changed files (for "file"/"diff_context" modes) or all files (for "nofilter" mode).
     pub file_paths: Option<Vec<String>>,
+    /// Filter mode: "diff_context" (only diagnostics within diff hunk ranges), "file" (all diagnostics for changed files), "nofilter" (all diagnostics for all files). Defaults to "file".
+    pub filter_mode: Option<String>,
+    /// Base branch for diff_context mode (auto-detected if omitted)
+    pub base_branch: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -456,7 +463,7 @@ impl ReleashMcpServer {
     // -----------------------------------------------------------------------
 
     #[tool(
-        description = "Get the diff of a worktree compared to its base branch. Two modes: (1) Summary mode (paths omitted) — returns file list with per-file stats (additions/deletions), no hunks. (2) Detail mode (paths specified) — returns full diff with hunks for the specified files only."
+        description = "Get the diff of a worktree compared to its base branch. Two modes: (1) Summary mode (paths omitted) — returns file list with per-file stats (additions/deletions), no hunks. (2) Detail mode (paths specified) — returns full diff with hunks for the specified files only. Files exceeding max_lines_per_file (default: 500) return stats only with truncated=true; use read_file to review those files."
     )]
     async fn review_diff(
         &self,
@@ -465,12 +472,14 @@ impl ReleashMcpServer {
         let worktree_path = self.resolve_worktree(&params.worktree)?;
         let base = params.base_branch.clone();
         let paths = params.paths.clone();
+        let max_lines = params.max_lines_per_file.unwrap_or(500) as usize;
 
         let review_diff = tokio::task::spawn_blocking(move || {
             crate::git::review::get_review_diff(
                 &worktree_path,
                 base.as_deref(),
                 paths.as_deref(),
+                Some(max_lines),
             )
         })
         .await
@@ -499,8 +508,7 @@ impl ReleashMcpServer {
             let content = if let Some(ref git_ref) = git_ref {
                 crate::git::diff::get_file_at_ref(full_path_str, git_ref.clone())?
             } else {
-                std::fs::read_to_string(&full_path)
-                    .map_err(crate::git::error::GitError::Io)?
+                std::fs::read_to_string(&full_path).map_err(crate::git::error::GitError::Io)?
             };
 
             let ext = std::path::Path::new(&file_path)
@@ -532,7 +540,7 @@ impl ReleashMcpServer {
     // -----------------------------------------------------------------------
 
     #[tool(
-        description = "Check diagnostics (errors, warnings) for files in a worktree using LSP. If file_paths is omitted, checks all changed files."
+        description = "Check diagnostics (errors, warnings) for files in a worktree using LSP. Three filter modes: 'diff_context' — only diagnostics within diff hunk ranges (changed lines); 'file' (default) — all diagnostics for changed files; 'nofilter' — all diagnostics for all files in the worktree."
     )]
     async fn check_diagnostics(
         &self,
@@ -541,16 +549,31 @@ impl ReleashMcpServer {
         let worktree_path = self.resolve_worktree(&params.worktree)?;
         let (lsp, app) = self.get_lsp_and_app()?;
 
+        let filter_mode = params.filter_mode.as_deref().unwrap_or("file");
+        if !VALID_FILTER_MODES.contains(&filter_mode) {
+            return Err(McpError::invalid_params(
+                format!(
+                    "Invalid filter_mode: {filter_mode}. Must be one of: diff_context, file, nofilter"
+                ),
+                None,
+            ));
+        }
+
         let file_paths = if let Some(paths) = params.file_paths {
             paths
-        } else {
+        } else if filter_mode == "nofilter" {
             let wt = worktree_path.clone();
-            let statuses = tokio::task::spawn_blocking(move || {
-                crate::git::status::get_git_status(wt)
-            })
-            .await
-            .map_err(WorktreeError::from)?
-            .map_err(WorktreeError::from)?;
+            tokio::task::spawn_blocking(move || collect_all_files(&wt))
+                .await
+                .map_err(WorktreeError::from)?
+        } else {
+            // "file" or "diff_context": use changed files from git status
+            let wt = worktree_path.clone();
+            let statuses =
+                tokio::task::spawn_blocking(move || crate::git::status::get_git_status(wt))
+                    .await
+                    .map_err(WorktreeError::from)?
+                    .map_err(WorktreeError::from)?;
 
             statuses
                 .into_iter()
@@ -561,6 +584,22 @@ impl ReleashMcpServer {
                 })
                 .map(|s| s.path)
                 .collect()
+        };
+
+        // For diff_context mode, get hunk ranges to filter diagnostics
+        let hunk_ranges = if filter_mode == "diff_context" {
+            let wt = worktree_path.clone();
+            let base = params.base_branch.clone();
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    crate::git::review::get_hunk_ranges(&wt, base.as_deref())
+                })
+                .await
+                .map_err(WorktreeError::from)?
+                .map_err(WorktreeError::from)?,
+            )
+        } else {
+            None
         };
 
         let mut results = Vec::new();
@@ -596,6 +635,31 @@ impl ReleashMcpServer {
                 .await
                 .unwrap_or_default();
 
+            // Filter diagnostics by hunk ranges in diff_context mode
+            let diagnostics = if let Some(ref ranges_map) = hunk_ranges {
+                if let Some(ranges) = ranges_map.get(file_path) {
+                    diagnostics
+                        .into_iter()
+                        .filter(|diag| {
+                            diag.get("range")
+                                .and_then(|r| r.get("start"))
+                                .and_then(|s| s.get("line"))
+                                .and_then(|l| l.as_u64())
+                                .map(|line_0based| {
+                                    let line_1based = (line_0based as u32) + 1;
+                                    crate::git::review::is_line_in_hunk_ranges(line_1based, ranges)
+                                })
+                                .unwrap_or(false)
+                        })
+                        .collect()
+                } else {
+                    // File not in diff — no diagnostics in diff_context mode
+                    Vec::new()
+                }
+            } else {
+                diagnostics
+            };
+
             for diag in &diagnostics {
                 match diag.get("severity").and_then(|v| v.as_u64()) {
                     Some(1) => total_errors += 1,
@@ -614,6 +678,7 @@ impl ReleashMcpServer {
 
         let response = serde_json::json!({
             "files": results,
+            "filter_mode": filter_mode,
             "summary": {
                 "total_files": file_paths.len(),
                 "files_with_diagnostics": results.len(),
@@ -642,10 +707,7 @@ impl ReleashMcpServer {
             .unwrap_or("");
 
         let server_lang = crate::lsp::detect::language_for_extension(ext).ok_or_else(|| {
-            McpError::invalid_params(
-                format!("Unsupported language for extension: {ext}"),
-                None,
-            )
+            McpError::invalid_params(format!("Unsupported language for extension: {ext}"), None)
         })?;
         let language_id = crate::lsp::detect::lsp_language_id(ext).unwrap_or(server_lang);
 
@@ -655,7 +717,13 @@ impl ReleashMcpServer {
             .map_err(|e| McpError::internal_error(e, None))?;
 
         let uri = self
-            .did_open_file(&lsp, session_id, &worktree_path, &params.file_path, language_id)
+            .did_open_file(
+                &lsp,
+                session_id,
+                &worktree_path,
+                &params.file_path,
+                language_id,
+            )
             .await?;
 
         let result = lsp
@@ -691,10 +759,7 @@ impl ReleashMcpServer {
             .unwrap_or("");
 
         let server_lang = crate::lsp::detect::language_for_extension(ext).ok_or_else(|| {
-            McpError::invalid_params(
-                format!("Unsupported language for extension: {ext}"),
-                None,
-            )
+            McpError::invalid_params(format!("Unsupported language for extension: {ext}"), None)
         })?;
         let language_id = crate::lsp::detect::lsp_language_id(ext).unwrap_or(server_lang);
 
@@ -704,7 +769,13 @@ impl ReleashMcpServer {
             .map_err(|e| McpError::internal_error(e, None))?;
 
         let uri = self
-            .did_open_file(&lsp, session_id, &worktree_path, &params.file_path, language_id)
+            .did_open_file(
+                &lsp,
+                session_id,
+                &worktree_path,
+                &params.file_path,
+                language_id,
+            )
             .await?;
 
         let position = serde_json::json!({
@@ -762,9 +833,7 @@ impl ReleashMcpServer {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    fn get_lsp_and_app(
-        &self,
-    ) -> Result<(Arc<crate::lsp::LspManager>, tauri::AppHandle), McpError> {
+    fn get_lsp_and_app(&self) -> Result<(Arc<crate::lsp::LspManager>, tauri::AppHandle), McpError> {
         let app = self
             .state
             .app_handle
@@ -790,10 +859,7 @@ impl ReleashMcpServer {
             )
         })?;
 
-        let uri = format!(
-            "file://{}",
-            full_path.to_string_lossy().replace(' ', "%20")
-        );
+        let uri = format!("file://{}", full_path.to_string_lossy().replace(' ', "%20"));
 
         let did_open = serde_json::json!({
             "jsonrpc": "2.0",
@@ -814,6 +880,34 @@ impl ReleashMcpServer {
 
         Ok(uri)
     }
+}
+
+/// Collect all files in a worktree, respecting .gitignore.
+/// Only returns files that have a recognized language extension.
+fn collect_all_files(worktree_path: &str) -> Vec<String> {
+    let root = std::path::Path::new(worktree_path);
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .build();
+
+    let mut files = Vec::new();
+    for entry in walker.flatten() {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if crate::lsp::detect::language_for_extension(ext).is_none() {
+            continue;
+        }
+        if let Ok(rel) = path.strip_prefix(root) {
+            files.push(rel.to_string_lossy().to_string());
+        }
+    }
+    files
 }
 
 #[tool_handler]
@@ -919,5 +1013,56 @@ mod tests {
         );
         let mcp_err: McpError = err.into();
         assert!(!mcp_err.message.is_empty());
+    }
+
+    #[test]
+    fn check_diagnostics_params_deserialize_defaults() {
+        let json = r#"{"worktree": "/tmp/test"}"#;
+        let params: CheckDiagnosticsParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.worktree, "/tmp/test");
+        assert!(params.file_paths.is_none());
+        assert!(params.filter_mode.is_none());
+        assert!(params.base_branch.is_none());
+    }
+
+    #[test]
+    fn check_diagnostics_params_deserialize_with_filter_mode() {
+        let json =
+            r#"{"worktree": "/tmp/test", "filter_mode": "diff_context", "base_branch": "main"}"#;
+        let params: CheckDiagnosticsParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.filter_mode.as_deref(), Some("diff_context"));
+        assert_eq!(params.base_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn collect_all_files_respects_gitignore() {
+        use crate::git::test_helpers::{create_initial_commit, create_test_repo};
+
+        let (dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+
+        let workdir = repo.workdir().unwrap();
+        // Create files with recognized extensions
+        std::fs::write(workdir.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(workdir.join("lib.ts"), "export {}").unwrap();
+        // Create a file that should be ignored
+        std::fs::write(workdir.join(".gitignore"), "ignored.rs\n").unwrap();
+        std::fs::write(workdir.join("ignored.rs"), "// ignored").unwrap();
+        // Create a file with unrecognized extension
+        std::fs::write(workdir.join("data.xyz"), "data").unwrap();
+
+        let repo_path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let files = collect_all_files(&repo_path);
+        assert!(files.contains(&"main.rs".to_string()));
+        assert!(files.contains(&"lib.ts".to_string()));
+        assert!(!files.contains(&"ignored.rs".to_string()));
+        assert!(!files.contains(&"data.xyz".to_string()));
     }
 }

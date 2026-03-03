@@ -107,10 +107,8 @@ impl LspManager {
 
         let id = generate_session_id();
 
-        let pending_requests: bridge::PendingRequests =
-            Arc::new(Mutex::new(HashMap::new()));
-        let diagnostics_cache: bridge::DiagnosticsCache =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending_requests: bridge::PendingRequests = Arc::new(Mutex::new(HashMap::new()));
+        let diagnostics_cache: bridge::DiagnosticsCache = Arc::new(Mutex::new(HashMap::new()));
         let request_id_counter = Arc::new(AtomicI64::new(1));
 
         // Spawn stdout reader task
@@ -316,13 +314,10 @@ impl LspManager {
         self.send_message(session_id, &message.to_string(), worktree_path)
             .await?;
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            rx,
-        )
-        .await
-        .map_err(|_| format!("LSPリクエスト '{method}' がタイムアウト ({timeout_ms}ms)"))?
-        .map_err(|_| format!("LSPリクエスト '{method}' のチャネルが閉じられました"))?;
+        let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx)
+            .await
+            .map_err(|_| format!("LSPリクエスト '{method}' がタイムアウト ({timeout_ms}ms)"))?
+            .map_err(|_| format!("LSPリクエスト '{method}' のチャネルが閉じられました"))?;
 
         if let Some(error) = result.get("error") {
             return Err(format!("LSPエラー: {error}"));
@@ -368,8 +363,7 @@ impl LspManager {
             session.diagnostics_cache.clone()
         };
 
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
 
         loop {
             {
@@ -405,12 +399,8 @@ impl LspManager {
         let cfg = app_config.get_config()?;
         let cache_dir = download::lsp_cache_dir(app)?;
 
-        let server_config = detect::detect_server(
-            language,
-            &cfg.lsp,
-            Some(&cache_dir),
-            Some(worktree_path),
-        );
+        let server_config =
+            detect::detect_server(language, &cfg.lsp, Some(&cache_dir), Some(worktree_path));
 
         let server_config = match server_config {
             Some(config) => config,
@@ -701,9 +691,7 @@ mod tests {
     #[tokio::test]
     async fn wait_for_diagnostics_returns_error_for_nonexistent_session() {
         let manager = LspManager::default();
-        let result = manager
-            .wait_for_diagnostics(999, "file:///test", 100)
-            .await;
+        let result = manager.wait_for_diagnostics(999, "file:///test", 100).await;
         assert!(result.is_err());
     }
 }

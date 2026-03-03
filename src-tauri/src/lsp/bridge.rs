@@ -77,9 +77,14 @@ pub fn spawn_stdout_reader(
     diagnostics_cache: DiagnosticsCache,
 ) {
     tokio::spawn(async move {
-        if let Err(e) =
-            read_stdout_loop(session_id, stdout, channel, pending_requests, diagnostics_cache)
-                .await
+        if let Err(e) = read_stdout_loop(
+            session_id,
+            stdout,
+            channel,
+            pending_requests,
+            diagnostics_cache,
+        )
+        .await
         {
             log::debug!("LSP[{session_id}] stdout reader ended: {e}");
         }
