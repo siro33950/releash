@@ -270,7 +270,9 @@ describe("createCommentThread", () => {
 
 		const textarea = zone.domNode.querySelector(".comment-thread-textarea");
 		expect(textarea).not.toBeNull();
-		expect((textarea as HTMLTextAreaElement).placeholder).toBe("Type a reply...");
+		expect((textarea as HTMLTextAreaElement).placeholder).toBe(
+			"Type a reply...",
+		);
 		disposeZone(zone);
 	});
 
