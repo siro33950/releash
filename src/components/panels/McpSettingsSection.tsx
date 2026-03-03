@@ -1,16 +1,10 @@
+import { invoke } from "@tauri-apps/api/core";
 import { Check, Copy, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select";
-import {
-	type GenerateResult,
 	MCP_AGENT_OPTIONS,
 	type McpAgentType,
 	type useMcpConfig,
@@ -26,58 +20,72 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 	const {
 		draft,
 		setDraft,
+		selectedAgents,
+		setSelectedAgents,
 		loading,
+		saving,
 		error,
+		saveResults,
 		regenerateToken,
-		generateConfig,
-		previewConfig,
 	} = mcp;
 
-	const [selectedAgent, setSelectedAgent] = useState<McpAgentType>("claude");
 	const [preview, setPreview] = useState("");
-	const [generateResult, setGenerateResult] = useState<GenerateResult | null>(
-		null,
-	);
-	const [generating, setGenerating] = useState(false);
 	const [copied, setCopied] = useState(false);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: draft triggers preview refresh on config change
+	const toggleAgent = useCallback(
+		(agent: McpAgentType) => {
+			setSelectedAgents((prev) =>
+				prev.includes(agent)
+					? prev.filter((a) => a !== agent)
+					: [...prev, agent],
+			);
+		},
+		[setSelectedAgents],
+	);
+
 	useEffect(() => {
-		if (loading) return;
+		if (loading || selectedAgents.length === 0) {
+			setPreview("");
+			return;
+		}
 		let cancelled = false;
-		previewConfig(selectedAgent)
-			.then((content) => {
-				if (!cancelled) setPreview(content);
-			})
-			.catch(() => {});
+
+		Promise.allSettled(
+			selectedAgents.map((agent) =>
+				invoke<string>("preview_agent_mcp_config", {
+					agentType: agent,
+					port: draft.port,
+					token: draft.token,
+				}).then((content) => ({ agent, content })),
+			),
+		).then((results) => {
+			if (cancelled) return;
+			const parts: string[] = [];
+			for (const r of results) {
+				if (r.status === "fulfilled") {
+					const { agent, content } = r.value;
+					const label = MCP_AGENT_OPTIONS.find((o) => o.value === agent)?.label;
+					parts.push(`// ${label}\n${content}`);
+				} else {
+					parts.push(`// Error: ${String(r.reason)}`);
+				}
+			}
+			setPreview(parts.join("\n\n"));
+		});
+
 		return () => {
 			cancelled = true;
 		};
-	}, [selectedAgent, draft.port, draft.token, loading, previewConfig]);
-
-	const handleGenerate = useCallback(async () => {
-		setGenerating(true);
-		setGenerateResult(null);
-		try {
-			const result = await generateConfig(selectedAgent);
-			setGenerateResult(result);
-		} catch {
-			// error is handled in hook
-		} finally {
-			setGenerating(false);
-		}
-	}, [generateConfig, selectedAgent]);
-
-	const displayContent = generateResult?.content ?? preview;
+	}, [selectedAgents, draft.port, draft.token, loading]);
 
 	const handleCopy = useCallback(async () => {
-		if (!displayContent) return;
+		if (!preview) return;
 		try {
-			await navigator.clipboard.writeText(displayContent);
+			await navigator.clipboard.writeText(preview);
 			setCopied(true);
 			setTimeout(() => setCopied(false), 2000);
 		} catch {}
-	}, [displayContent]);
+	}, [preview]);
 
 	return (
 		<div className="flex flex-col gap-4">
@@ -142,48 +150,49 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 			</div>
 
 			<div className="border-t border-border pt-4 flex flex-col gap-3">
-				<h3 className="text-sm font-medium">Generate Agent Config</h3>
+				<h3 className="text-sm font-medium">Agent Config</h3>
+				<p className="text-[10px] text-muted-foreground">
+					Select agents to generate config files on save
+				</p>
 
-				<div className="flex flex-col gap-1.5">
-					<label htmlFor="mcp-agent" className={labelClass}>
-						Agent
-					</label>
-					<Select
-						value={selectedAgent}
-						onValueChange={(v) => setSelectedAgent(v as McpAgentType)}
-					>
-						<SelectTrigger id="mcp-agent" className="w-48">
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							{MCP_AGENT_OPTIONS.map((opt) => (
-								<SelectItem key={opt.value} value={opt.value}>
-									{opt.label}
-								</SelectItem>
-							))}
-						</SelectContent>
-					</Select>
+				<div className="flex flex-col gap-2">
+					{MCP_AGENT_OPTIONS.map((opt) => (
+						<div key={opt.value} className="flex items-center gap-2">
+							<Checkbox
+								id={`mcp-agent-${opt.value}`}
+								checked={selectedAgents.includes(opt.value)}
+								onCheckedChange={() => toggleAgent(opt.value)}
+								disabled={saving}
+							/>
+							<label
+								htmlFor={`mcp-agent-${opt.value}`}
+								className="text-xs cursor-pointer"
+							>
+								{opt.label}
+							</label>
+						</div>
+					))}
 				</div>
 
-				<div className="flex items-center gap-2">
-					<Button
-						type="button"
-						size="sm"
-						onClick={handleGenerate}
-						disabled={generating}
-					>
-						{generating ? (
-							<Loader2 className="size-3.5 animate-spin" />
-						) : (
-							"Generate"
-						)}
-					</Button>
-					{generateResult && (
-						<span className="text-xs text-green-500 truncate">
-							{generateResult.file_path}
-						</span>
-					)}
-				</div>
+				{saving && (
+					<div className="flex items-center gap-2 text-xs text-muted-foreground">
+						<Loader2 className="size-3.5 animate-spin" />
+						Saving & restarting...
+					</div>
+				)}
+
+				{saveResults.length > 0 && (
+					<div className="flex flex-col gap-1">
+						{saveResults.map((r) => (
+							<span
+								key={r.file_path}
+								className="text-xs text-green-500 truncate"
+							>
+								{r.file_path}
+							</span>
+						))}
+					</div>
+				)}
 
 				{error && <p className="text-xs text-destructive">{error}</p>}
 			</div>
@@ -207,7 +216,7 @@ export function McpSettingsSection({ mcp }: McpSettingsSectionProps) {
 						</Button>
 					</div>
 					<pre className="rounded-md bg-muted p-3 text-xs font-mono overflow-auto max-h-40 whitespace-pre-wrap">
-						{displayContent}
+						{preview}
 					</pre>
 				</div>
 			)}

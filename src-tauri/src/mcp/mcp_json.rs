@@ -25,6 +25,15 @@ impl AgentKind {
         }
     }
 
+    fn to_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Gemini => "gemini",
+            Self::Cursor => "cursor",
+        }
+    }
+
     fn global_path(&self) -> &'static str {
         match self {
             Self::Claude => ".claude.json",
@@ -283,7 +292,185 @@ pub fn preview_config(agent: AgentKind, params: &McpConfigParams) -> Result<Stri
     }
 }
 
+// ── Configured agents detection ──
+
+const ALL_AGENTS: [AgentKind; 4] = [
+    AgentKind::Claude,
+    AgentKind::Codex,
+    AgentKind::Gemini,
+    AgentKind::Cursor,
+];
+
+fn has_releash_entry(agent: AgentKind, base_dir: &Path) -> bool {
+    let path = base_dir.join(agent.global_path());
+    if !path.exists() {
+        return false;
+    }
+    let Ok(content) = fs::read_to_string(&path) else {
+        return false;
+    };
+    match agent {
+        AgentKind::Codex => {
+            // TOML: mcp_servers.releash
+            let Ok(doc) = toml::from_str::<toml::Value>(&content) else {
+                return false;
+            };
+            doc.get("mcp_servers")
+                .and_then(|s| s.get("releash"))
+                .is_some()
+        }
+        _ => {
+            // JSON: mcpServers.releash
+            let Ok(doc) = serde_json::from_str::<serde_json::Value>(&content) else {
+                return false;
+            };
+            doc.get("mcpServers")
+                .and_then(|s| s.get("releash"))
+                .is_some()
+        }
+    }
+}
+
+fn remove_releash_entry_at(agent: AgentKind, base_dir: &Path) -> Result<bool, String> {
+    let path = base_dir.join(agent.global_path());
+    if !path.exists() {
+        return Ok(false);
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("設定ファイル読み込み失敗 {}: {e}", path.display()))?;
+
+    match agent {
+        AgentKind::Codex => {
+            let mut doc: toml::Value = toml::from_str(&content)
+                .map_err(|e| format!("TOMLパース失敗 {}: {e}", path.display()))?;
+            let removed = doc
+                .get_mut("mcp_servers")
+                .and_then(|s| s.as_table_mut())
+                .map(|t| t.remove("releash").is_some())
+                .unwrap_or(false);
+            if removed {
+                let out = toml::to_string_pretty(&doc)
+                    .map_err(|e| format!("TOMLシリアライズ失敗: {e}"))?;
+                write_atomic(&path, &out)?;
+            }
+            Ok(removed)
+        }
+        _ => {
+            let mut doc: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| format!("JSONパース失敗 {}: {e}", path.display()))?;
+            let removed = doc
+                .get_mut("mcpServers")
+                .and_then(|s| s.as_object_mut())
+                .map(|o| o.remove("releash").is_some())
+                .unwrap_or(false);
+            if removed {
+                let out = serde_json::to_string_pretty(&doc)
+                    .map_err(|e| format!("JSONシリアライズ失敗: {e}"))?;
+                write_atomic(&path, &out)?;
+            }
+            Ok(removed)
+        }
+    }
+}
+
+fn get_configured_agents_at(base_dir: &Path) -> Vec<String> {
+    ALL_AGENTS
+        .iter()
+        .filter(|a| has_releash_entry(**a, base_dir))
+        .map(|a| a.to_str().to_string())
+        .collect()
+}
+
 // ── Tauri commands ──
+
+#[tauri::command]
+pub fn get_configured_agents() -> Vec<String> {
+    let Some(home) = dirs::home_dir() else {
+        return vec![];
+    };
+    get_configured_agents_at(&home)
+}
+
+#[tauri::command]
+pub fn remove_agent_mcp_config(agent_type: String) -> Result<bool, String> {
+    let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
+    let agent = AgentKind::from_str(&agent_type)?;
+    remove_releash_entry_at(agent, &home)
+}
+
+#[tauri::command]
+pub async fn save_and_generate_mcp_configs(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppConfig>>,
+    port: u16,
+    token: String,
+    agent_types: Vec<String>,
+    removed_agents: Vec<String>,
+) -> Result<Vec<GenerateResult>, String> {
+    let token = token.trim().to_string();
+    if port == 0 {
+        return Err("mcp_port must be between 1 and 65535".to_string());
+    }
+    if token.is_empty() {
+        return Err("mcp_token must not be empty".to_string());
+    }
+
+    // 0. agent_types / removed_agents を先にパースしてバリデーション
+    let parsed_agents: Vec<AgentKind> = agent_types
+        .iter()
+        .map(|s| AgentKind::from_str(s))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let parsed_removed: Vec<AgentKind> = removed_agents
+        .iter()
+        .map(|s| AgentKind::from_str(s))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // 1. removed_agents の設定を削除
+    if !parsed_removed.is_empty() {
+        let home = dirs::home_dir().ok_or("ホームディレクトリの取得に失敗")?;
+        for agent in &parsed_removed {
+            remove_releash_entry_at(*agent, &home)?;
+        }
+    }
+
+    // 2. config.toml 保存
+    let app_config = state.inner().clone();
+    let port_for_save = port;
+    let token_for_save = token.clone();
+    tokio::task::spawn_blocking(move || {
+        app_config.with_config_mut(|config| {
+            config.server.mcp_port = port_for_save;
+            config.server.mcp_token = token_for_save;
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))??;
+
+    // 3. MCPサーバー再起動（停止中なら起動）
+    crate::mcp::restart_mcp_server_if_running(&app).await?;
+
+    // 4. 再起動後の実ポート/トークンで各エージェント設定を生成
+    if parsed_agents.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let config = state.get_config()?;
+    let params = McpConfigParams {
+        port: config.server.mcp_port,
+        token: config.server.mcp_token.clone(),
+    };
+
+    tokio::task::spawn_blocking(move || {
+        parsed_agents
+            .iter()
+            .map(|agent| generate_config(*agent, &params))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
 
 #[tauri::command]
 pub async fn generate_agent_mcp_config(
@@ -446,5 +633,135 @@ mod tests {
         assert_eq!(AgentKind::Codex.global_path(), ".codex/config.toml");
         assert_eq!(AgentKind::Gemini.global_path(), ".gemini/settings.json");
         assert_eq!(AgentKind::Cursor.global_path(), ".cursor/mcp.json");
+    }
+
+    #[test]
+    fn to_str_roundtrips() {
+        for kind in &ALL_AGENTS {
+            assert_eq!(AgentKind::from_str(kind.to_str()).unwrap(), *kind);
+        }
+    }
+
+    #[test]
+    fn configured_agents_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        assert!(get_configured_agents_at(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn configured_agents_detects_claude() {
+        let tmp = TempDir::new().unwrap();
+        let params = test_params();
+        generate_config_at(AgentKind::Claude, &params, tmp.path()).unwrap();
+        let agents = get_configured_agents_at(tmp.path());
+        assert_eq!(agents, vec!["claude"]);
+    }
+
+    #[test]
+    fn configured_agents_detects_codex() {
+        let tmp = TempDir::new().unwrap();
+        let params = test_params();
+        generate_config_at(AgentKind::Codex, &params, tmp.path()).unwrap();
+        let agents = get_configured_agents_at(tmp.path());
+        assert_eq!(agents, vec!["codex"]);
+    }
+
+    #[test]
+    fn configured_agents_detects_all() {
+        let tmp = TempDir::new().unwrap();
+        let params = test_params();
+        for kind in &ALL_AGENTS {
+            generate_config_at(*kind, &params, tmp.path()).unwrap();
+        }
+        let agents = get_configured_agents_at(tmp.path());
+        assert_eq!(agents, vec!["claude", "codex", "gemini", "cursor"]);
+    }
+
+    #[test]
+    fn configured_agents_ignores_json_without_releash() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".claude.json");
+        let doc = serde_json::json!({
+            "mcpServers": {
+                "other-server": { "type": "http" }
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+        assert!(get_configured_agents_at(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn configured_agents_ignores_broken_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".claude.json");
+        fs::write(&path, "not valid json {{{").unwrap();
+        assert!(get_configured_agents_at(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn remove_releash_entry_json() {
+        let tmp = TempDir::new().unwrap();
+        let params = test_params();
+        generate_config_at(AgentKind::Claude, &params, tmp.path()).unwrap();
+        assert!(has_releash_entry(AgentKind::Claude, tmp.path()));
+
+        let removed = remove_releash_entry_at(AgentKind::Claude, tmp.path()).unwrap();
+        assert!(removed);
+        assert!(!has_releash_entry(AgentKind::Claude, tmp.path()));
+    }
+
+    #[test]
+    fn remove_releash_entry_preserves_other_servers() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".claude.json");
+        let doc = serde_json::json!({
+            "mcpServers": {
+                "other-server": { "type": "http", "url": "http://localhost:3000" },
+                "releash": { "type": "http", "url": "http://127.0.0.1:19801/mcp" }
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+
+        let removed = remove_releash_entry_at(AgentKind::Claude, tmp.path()).unwrap();
+        assert!(removed);
+
+        let content = fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed["mcpServers"]["other-server"].is_object());
+        assert!(parsed["mcpServers"]["releash"].is_null());
+    }
+
+    #[test]
+    fn remove_releash_entry_codex() {
+        let tmp = TempDir::new().unwrap();
+        let params = test_params();
+        generate_config_at(AgentKind::Codex, &params, tmp.path()).unwrap();
+        assert!(has_releash_entry(AgentKind::Codex, tmp.path()));
+
+        let removed = remove_releash_entry_at(AgentKind::Codex, tmp.path()).unwrap();
+        assert!(removed);
+        assert!(!has_releash_entry(AgentKind::Codex, tmp.path()));
+    }
+
+    #[test]
+    fn remove_releash_entry_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let removed = remove_releash_entry_at(AgentKind::Claude, tmp.path()).unwrap();
+        assert!(!removed);
+    }
+
+    #[test]
+    fn remove_releash_entry_no_releash_key() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(".claude.json");
+        let doc = serde_json::json!({
+            "mcpServers": {
+                "other-server": { "type": "http" }
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+
+        let removed = remove_releash_entry_at(AgentKind::Claude, tmp.path()).unwrap();
+        assert!(!removed);
     }
 }

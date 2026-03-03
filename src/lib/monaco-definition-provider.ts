@@ -16,6 +16,33 @@ const SUPPORTED_LANGUAGES = [
 
 let providersRegistered = false;
 
+/**
+ * Set of language IDs for which an LSP server is active.
+ * When LSP is active for a language, the tree-sitter providers skip their work
+ * to avoid duplicate results.
+ */
+const lspActiveLanguages = new Set<string>();
+
+export function setLspActive(language: string, active: boolean): void {
+	const normalized = getLanguageForProvider(language);
+	if (active) {
+		lspActiveLanguages.add(normalized);
+		// TypeScript LSP also handles JavaScript files
+		if (normalized === "typescript") {
+			lspActiveLanguages.add("javascript");
+		}
+	} else {
+		lspActiveLanguages.delete(normalized);
+		if (normalized === "typescript") {
+			lspActiveLanguages.delete("javascript");
+		}
+	}
+}
+
+export function isLspActive(language: string): boolean {
+	return lspActiveLanguages.has(getLanguageForProvider(language));
+}
+
 export interface NavigationCallbacks {
 	onOpenFileAtLine: (relativePath: string, line: number) => void;
 	getRootPath: () => string | null;
@@ -68,6 +95,9 @@ export function registerDefinitionProviders(
 				model: Monaco.editor.ITextModel,
 				position: Monaco.Position,
 			): Promise<Monaco.languages.Location[] | null> => {
+				// Skip tree-sitter provider when LSP is active for this language
+				if (lspActiveLanguages.has(searchLang)) return null;
+
 				const rootPath = callbacks.getRootPath();
 				if (!rootPath) {
 					console.warn("[Releash] find_definition: rootPath is null");
@@ -128,6 +158,9 @@ export function registerDefinitionProviders(
 				model: Monaco.editor.ITextModel,
 				position: Monaco.Position,
 			): Promise<Monaco.languages.Location[] | null> => {
+				// Skip tree-sitter provider when LSP is active for this language
+				if (lspActiveLanguages.has(searchLang)) return null;
+
 				const rootPath = callbacks.getRootPath();
 				if (!rootPath) return null;
 
@@ -194,4 +227,5 @@ export function registerDefinitionProviders(
 
 export function _resetForTesting() {
 	providersRegistered = false;
+	lspActiveLanguages.clear();
 }

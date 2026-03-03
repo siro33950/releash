@@ -2,11 +2,12 @@ import {
 	FileDiff,
 	FolderTree,
 	GitPullRequestArrow,
+	ListTree,
 	Search,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-export type RightTopTab = "explorer" | "changes" | "search" | "pr";
+export type RightTopTab = "explorer" | "changes" | "search" | "pr" | "symbols";
 
 interface RightSidebarTopProps {
 	activeTab: RightTopTab;
@@ -15,12 +16,14 @@ interface RightSidebarTopProps {
 	changesContent: React.ReactNode;
 	searchContent: React.ReactNode;
 	prContent: React.ReactNode;
+	symbolsContent?: React.ReactNode;
 }
 
 const tabs: { key: RightTopTab; icon: React.ElementType; label: string }[] = [
 	{ key: "changes", icon: FileDiff, label: "Changes" },
 	{ key: "explorer", icon: FolderTree, label: "Explorer" },
 	{ key: "search", icon: Search, label: "Search" },
+	{ key: "symbols", icon: ListTree, label: "Symbols" },
 	{ key: "pr", icon: GitPullRequestArrow, label: "Pull Requests" },
 ];
 
@@ -31,12 +34,14 @@ export function RightSidebarTop({
 	changesContent,
 	searchContent,
 	prContent,
+	symbolsContent,
 }: RightSidebarTopProps) {
 	const contentMap: Record<RightTopTab, React.ReactNode> = {
 		explorer: explorerContent,
 		changes: changesContent,
 		search: searchContent,
 		pr: prContent,
+		symbols: symbolsContent ?? null,
 	};
 
 	return (

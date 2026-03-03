@@ -56,8 +56,15 @@ export function RightSidebarBottom({
 	const [reviewModalOpen, setReviewModalOpen] = useState(false);
 	const unsentComments = comments.filter((c) => c.status === "unsent");
 
-	const { status, summary, output, startReview, cancelReview, reset } =
-		useReviewExecution(rootPath, comments, settings);
+	const {
+		status,
+		summary,
+		progress,
+		fileStates,
+		startReview,
+		cancelReview,
+		reset,
+	} = useReviewExecution(rootPath, comments, settings);
 
 	const isRunning = status === "starting" || status === "running";
 	const isFinished =
@@ -203,7 +210,8 @@ export function RightSidebarBottom({
 				onOpenChange={setReviewModalOpen}
 				status={status}
 				summary={summary}
-				output={output}
+				progress={progress}
+				fileStates={fileStates}
 				onCancel={cancelReview}
 				onRetry={handleStartReview}
 			/>

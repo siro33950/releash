@@ -4,6 +4,7 @@ mod focus_tracker;
 mod git;
 mod git_host;
 mod hook_listener;
+mod lsp;
 mod mcp;
 mod menu;
 mod native_drop;
@@ -59,6 +60,7 @@ pub fn run() {
         ))
         .manage(Arc::new(comment_store::CommentStore::default()))
         .manage(Arc::new(pty::PtyManager::default()))
+        .manage(Arc::new(lsp::LspManager::default()))
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))
         .manage(ws_server::WsServerHandle::default())
@@ -270,6 +272,7 @@ pub fn run() {
             search::search_files,
             search::find_definition,
             search::find_references,
+            search::list_document_symbols,
             // アプリ設定
             config::get_server_config,
             config::update_server_port,
@@ -313,6 +316,9 @@ pub fn run() {
             mcp::stop_mcp_server,
             mcp::get_mcp_server_status,
             mcp::get_mcp_connection_info,
+            mcp::mcp_json::get_configured_agents,
+            mcp::mcp_json::remove_agent_mcp_config,
+            mcp::mcp_json::save_and_generate_mcp_configs,
             mcp::mcp_json::generate_agent_mcp_config,
             mcp::mcp_json::preview_agent_mcp_config,
             // Comments
@@ -326,12 +332,24 @@ pub fn run() {
             comment_store::toggle_resolve_comment,
             // Review prompt
             review_prompt::get_review_prompt,
+            review_prompt::get_per_file_review_tasks,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,
             pty::oneshot::get_oneshot_pty_status,
             pty::oneshot::list_oneshot_ptys,
             pty::oneshot::find_oneshot_pty,
+            // LSP
+            lsp::spawn_lsp,
+            lsp::lsp_send,
+            lsp::shutdown_lsp,
+            lsp::kill_lsp,
+            lsp::list_lsp_sessions,
+            lsp::kill_lsp_by_worktree,
+            lsp::detect_lsp_server,
+            lsp::install_lsp_server,
+            lsp::get_language_for_extension,
+            lsp::get_supported_lsp_languages,
             // Menu
             menu::set_menu_items_enabled,
         ])

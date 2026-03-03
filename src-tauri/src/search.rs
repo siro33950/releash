@@ -524,6 +524,7 @@ fn collect_definition_tags(
 
     let before_len = results.len();
     let content_str = std::str::from_utf8(content).unwrap_or("");
+    let lines: Vec<&str> = content_str.lines().collect();
 
     for tag_result in tags {
         let tag = match tag_result {
@@ -547,9 +548,9 @@ fn collect_definition_tags(
         let kind = config.syntax_type_name(tag.syntax_type_id).to_string();
         let line_number = tag.span.start.row + 1;
 
-        let line_content = content_str
-            .lines()
-            .nth(tag.span.start.row)
+        let line_content = lines
+            .get(tag.span.start.row)
+            .copied()
             .unwrap_or("")
             .to_string();
 
@@ -883,6 +884,7 @@ fn find_references_inner(root_path: String, symbol: String) -> Result<Vec<Search
         };
 
         let content_str = std::str::from_utf8(&content).unwrap_or("");
+        let content_lines: Vec<&str> = content_str.lines().collect();
 
         for tag_result in tags {
             let tag = match tag_result {
@@ -908,9 +910,9 @@ fn find_references_inner(root_path: String, symbol: String) -> Result<Vec<Search
             }
 
             let line_number = tag.span.start.row + 1;
-            let line_content = content_str
-                .lines()
-                .nth(tag.span.start.row)
+            let line_content = content_lines
+                .get(tag.span.start.row)
+                .copied()
                 .unwrap_or("")
                 .to_string();
 
@@ -950,6 +952,102 @@ pub async fn find_references(
     symbol: String,
 ) -> Result<Vec<SearchMatch>, String> {
     tokio::task::spawn_blocking(move || find_references_inner(root_path, symbol))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
+}
+
+// === Document symbols (for outline view) ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentSymbol {
+    pub name: String,
+    pub kind: String,
+    pub line: usize,
+    pub column: usize,
+    pub end_line: usize,
+}
+
+fn list_document_symbols_inner(
+    file_path: String,
+    language: String,
+    root_path: Option<String>,
+) -> Result<Vec<DocumentSymbol>, String> {
+    let Some(tags_config) = get_tags_config(&language) else {
+        return Ok(Vec::new());
+    };
+
+    // Validate file_path is within root_path to prevent path traversal
+    let resolved_path = if let Some(ref root) = root_path {
+        let canonical_root =
+            std::fs::canonicalize(root).map_err(|e| format!("ルートパス解決失敗: {e}"))?;
+        let canonical_file =
+            std::fs::canonicalize(&file_path).map_err(|e| format!("ファイルパス解決失敗: {e}"))?;
+        if canonical_file.strip_prefix(&canonical_root).is_err() {
+            return Err("ファイルパスが許可されたルート外です".to_string());
+        }
+        canonical_file
+    } else {
+        std::path::PathBuf::from(&file_path)
+    };
+
+    let content =
+        fs::read_to_string(&resolved_path).map_err(|e| format!("ファイル読み込み失敗: {e}"))?;
+    let content_bytes = content.as_bytes();
+
+    let mut ctx = TagsContext::new();
+    let (tags, _) = ctx
+        .generate_tags(tags_config, content_bytes, None)
+        .map_err(|e| format!("タグ生成失敗: {e}"))?;
+
+    let content_lines: Vec<&str> = content.lines().collect();
+    let mut symbols = Vec::new();
+    for tag_result in tags {
+        let tag = match tag_result {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+
+        if !tag.is_definition {
+            continue;
+        }
+
+        let name = match std::str::from_utf8(&content_bytes[tag.name_range.clone()]) {
+            Ok(n) => n.to_string(),
+            Err(_) => continue,
+        };
+
+        let kind = tags_config.syntax_type_name(tag.syntax_type_id).to_string();
+
+        let line_content = content_lines.get(tag.span.start.row).copied().unwrap_or("");
+        let column = line_content
+            .get(..tag.span.start.column)
+            .map(|prefix| prefix.chars().count())
+            .unwrap_or(tag.span.start.column)
+            + 1;
+
+        symbols.push(DocumentSymbol {
+            name,
+            kind,
+            line: tag.span.start.row + 1,
+            column,
+            end_line: tag.span.end.row + 1,
+        });
+    }
+
+    // Sort by line number, deduplicate same position
+    symbols.sort_by_key(|s| (s.line, s.column));
+    symbols.dedup_by(|a, b| a.line == b.line && a.column == b.column && a.name == b.name);
+
+    Ok(symbols)
+}
+
+#[tauri::command]
+pub async fn list_document_symbols(
+    file_path: String,
+    language: String,
+    root_path: Option<String>,
+) -> Result<Vec<DocumentSymbol>, String> {
+    tokio::task::spawn_blocking(move || list_document_symbols_inner(file_path, language, root_path))
         .await
         .map_err(|e| format!("task join error: {e}"))?
 }

@@ -17,9 +17,14 @@ import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
 import { useLineComments } from "@/hooks/useLineComments";
+import { useLsp } from "@/hooks/useLsp";
+import { useLspMonaco } from "@/hooks/useLspMonaco";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
 import { agentStateKey, aggregateAgentState } from "@/lib/agentStateUtils";
-import { registerDefinitionProviders } from "@/lib/monaco-definition-provider";
+import {
+	registerDefinitionProviders,
+	setLspActive,
+} from "@/lib/monaco-definition-provider";
 import { normalizePath } from "@/lib/normalizePath";
 import { useWorktreeComments } from "@/screens/useWorktreeComments";
 import {
@@ -142,6 +147,45 @@ export function useWorktreeState({
 	const editorLayout = useEditorLayout(handleTabClose);
 	const activeTabPath = editorLayout.getActiveTabPath();
 	const activeTab = activeTabPath ? getFileContent(activeTabPath) : null;
+
+	// --- LSP integration ---
+	const activeTabLanguage = activeTab?.language ?? null;
+	const lspLanguage = useMemo(() => {
+		if (!activeTabLanguage) return null;
+		// Normalize React variants and JavaScript to TypeScript for LSP
+		if (
+			activeTabLanguage === "typescriptreact" ||
+			activeTabLanguage === "javascriptreact" ||
+			activeTabLanguage === "javascript"
+		) {
+			return "typescript";
+		}
+		return activeTabLanguage;
+	}, [activeTabLanguage]);
+
+	const {
+		transport: lspTransport,
+		status: lspStatus,
+		error: lspError,
+		crashCount: lspCrashCount,
+		retryManually: lspRetryManually,
+	} = useLsp(rootPath, lspLanguage);
+
+	const [monacoInstance, setMonacoInstance] = useState<
+		typeof import("monaco-editor") | null
+	>(null);
+	const { connected: lspConnected } = useLspMonaco(
+		monacoInstance,
+		lspTransport,
+	);
+
+	// Track LSP active state for tree-sitter fallback
+	useEffect(() => {
+		if (lspLanguage && lspConnected) {
+			setLspActive(lspLanguage, true);
+			return () => setLspActive(lspLanguage, false);
+		}
+	}, [lspLanguage, lspConnected]);
 
 	// --- File watcher ---
 	useFileWatcher({
@@ -323,6 +367,7 @@ export function useWorktreeState({
 		import("@monaco-editor/react")
 			.then(({ loader }) => loader.init())
 			.then((monaco) => {
+				setMonacoInstance(monaco);
 				registerDefinitionProviders(monaco, {
 					onOpenFileAtLine: (relativePath, line) => {
 						const rp = rootPathRef.current;
@@ -449,6 +494,10 @@ export function useWorktreeState({
 			theme: settings.theme,
 			fontSize: settings.fontSize,
 			onSearchOccurrences: handleSearchOccurrences,
+			lspStatus,
+			lspError,
+			lspCrashCount,
+			lspRetryManually,
 		}),
 		[
 			getFileContent,
@@ -474,6 +523,10 @@ export function useWorktreeState({
 			settings.theme,
 			settings.fontSize,
 			handleSearchOccurrences,
+			lspStatus,
+			lspError,
+			lspCrashCount,
+			lspRetryManually,
 		],
 	);
 
@@ -553,5 +606,8 @@ export function useWorktreeState({
 		onSettingsSave,
 		settings,
 		rootPath,
+		lspStatus,
+		lspCrashCount,
+		lspRetryManually,
 	};
 }

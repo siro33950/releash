@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { UseLspReturn } from "@/hooks/useLsp";
 import type { LineComment } from "@/types/comment";
 import type { TabInfo } from "@/types/editor";
 import type { DiffBase, DiffMode, Theme } from "@/types/settings";
@@ -37,6 +38,11 @@ export interface EditorContextValue {
 	theme?: Theme;
 	fontSize?: number;
 	onSearchOccurrences?: (text: string) => void;
+
+	lspStatus: UseLspReturn["status"];
+	lspError: string | null;
+	lspCrashCount: number;
+	lspRetryManually: () => void;
 }
 
 export const EditorContext = createContext<EditorContextValue | null>(null);

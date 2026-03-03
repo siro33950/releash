@@ -63,7 +63,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		bypassFlag: "--dangerously-skip-permissions",
 		label: "Claude Code",
 		reviewCommand:
-			'echo "{prompt}" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment" {model_flag}',
+			'echo "{prompt}" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment,mcp__releash__review_diff,mcp__releash__read_file,mcp__releash__check_diagnostics,mcp__releash__get_file_symbols,mcp__releash__explore_symbol" {model_flag}',
 		modelFlag: "--model",
 	},
 	codex: {
@@ -120,6 +120,7 @@ export interface AppSettings {
 	autoUpdate: boolean;
 	telemetryEnabled: boolean;
 	enableCrashReporting: boolean;
+	reviewConcurrency: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -136,6 +137,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	autoUpdate: true,
 	telemetryEnabled: true,
 	enableCrashReporting: true,
+	reviewConcurrency: 5,
 };
 
 export function buildReviewCommand(

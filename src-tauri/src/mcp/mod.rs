@@ -193,25 +193,27 @@ pub async fn stop_mcp_server_core(handle: &McpServerHandle) -> Result<(), String
 
 pub async fn restart_mcp_server_if_running(
     app: &tauri::AppHandle,
-) -> Result<Option<McpConnectionInfo>, String> {
+) -> Result<McpConnectionInfo, String> {
     let handle = app.state::<McpServerHandle>();
 
-    if !handle.is_running() {
-        return Ok(None);
+    if handle.is_running() {
+        if let Err(e) = stop_mcp_server_core(&handle).await {
+            // Stop failed — check if it's actually still running
+            if handle.is_running() {
+                return Err(format!(
+                    "設定は保存しましたが、MCPサーバーの停止に失敗しました: {e}"
+                ));
+            }
+            // Already stopped — proceed
+        }
     }
 
-    stop_mcp_server_core(&handle)
-        .await
-        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの停止に失敗しました: {e}"))?;
-
     let state = build_mcp_state(app)
-        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの再起動に失敗しました: {e}"))?;
+        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの起動に失敗しました: {e}"))?;
 
-    let info = start_mcp_server_core(state, &handle)
+    start_mcp_server_core(state, &handle)
         .await
-        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの再起動に失敗しました: {e}"))?;
-
-    Ok(Some(info))
+        .map_err(|e| format!("設定は保存しましたが、MCPサーバーの起動に失敗しました: {e}"))
 }
 
 // ---------------------------------------------------------------------------
