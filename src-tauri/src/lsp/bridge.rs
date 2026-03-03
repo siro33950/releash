@@ -1,12 +1,20 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use bytes::BytesMut;
 use tauri::ipc::Channel;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{ChildStdin, ChildStdout};
+use tokio::sync::Mutex;
 
 use super::LspMessage;
 
 const CONTENT_LENGTH_HEADER: &str = "Content-Length: ";
 const HEADER_SEPARATOR: &[u8] = b"\r\n\r\n";
+
+pub type PendingRequests =
+    Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<serde_json::Value>>>>;
+pub type DiagnosticsCache = Arc<Mutex<HashMap<String, Vec<serde_json::Value>>>>;
 
 /// Encode a JSON message with Content-Length header for LSP protocol.
 pub fn encode(json: &[u8]) -> Vec<u8> {
@@ -59,10 +67,20 @@ pub async fn write_to_stdin(stdin: &mut ChildStdin, json: &str) -> Result<(), St
     Ok(())
 }
 
-/// Spawn an async task that reads LSP messages from stdout and sends them via Tauri Channel.
-pub fn spawn_stdout_reader(session_id: u64, stdout: ChildStdout, channel: Channel<LspMessage>) {
+/// Spawn an async task that reads LSP messages from stdout, routes responses
+/// to pending requests, caches diagnostics, and optionally forwards to a Tauri Channel.
+pub fn spawn_stdout_reader(
+    session_id: u64,
+    stdout: ChildStdout,
+    channel: Option<Channel<LspMessage>>,
+    pending_requests: PendingRequests,
+    diagnostics_cache: DiagnosticsCache,
+) {
     tokio::spawn(async move {
-        if let Err(e) = read_stdout_loop(session_id, stdout, channel).await {
+        if let Err(e) =
+            read_stdout_loop(session_id, stdout, channel, pending_requests, diagnostics_cache)
+                .await
+        {
             log::debug!("LSP[{session_id}] stdout reader ended: {e}");
         }
     });
@@ -71,7 +89,9 @@ pub fn spawn_stdout_reader(session_id: u64, stdout: ChildStdout, channel: Channe
 async fn read_stdout_loop(
     session_id: u64,
     stdout: ChildStdout,
-    channel: Channel<LspMessage>,
+    channel: Option<Channel<LspMessage>>,
+    pending_requests: PendingRequests,
+    diagnostics_cache: DiagnosticsCache,
 ) -> Result<(), String> {
     let mut buf = BytesMut::with_capacity(8192);
     let mut reader = tokio::io::BufReader::new(stdout);
@@ -93,10 +113,44 @@ async fn read_stdout_loop(
         while let Some(body) = decode(&mut buf) {
             match String::from_utf8(body) {
                 Ok(json_str) => {
-                    let _ = channel.send(LspMessage {
-                        session_id,
-                        message: json_str,
-                    });
+                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                        // Response message: has "id" but no "method"
+                        let is_response = msg.get("id").is_some() && msg.get("method").is_none();
+                        if is_response {
+                            if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
+                                let mut pending = pending_requests.lock().await;
+                                if let Some(sender) = pending.remove(&id) {
+                                    let _ = sender.send(msg);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Diagnostics notification
+                        if msg.get("method").and_then(|v| v.as_str())
+                            == Some("textDocument/publishDiagnostics")
+                        {
+                            if let Some(params) = msg.get("params") {
+                                if let (Some(uri), Some(diags)) = (
+                                    params.get("uri").and_then(|v| v.as_str()),
+                                    params.get("diagnostics").and_then(|v| v.as_array()),
+                                ) {
+                                    diagnostics_cache
+                                        .lock()
+                                        .await
+                                        .insert(uri.to_string(), diags.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    // Forward to Tauri channel if available
+                    if let Some(ref channel) = channel {
+                        let _ = channel.send(LspMessage {
+                            session_id,
+                            message: json_str,
+                        });
+                    }
                 }
                 Err(e) => {
                     log::warn!("LSP[{session_id}] non-UTF-8 message: {e}");
@@ -254,5 +308,37 @@ mod tests {
             json["params"]["workspaceFolders"][0]["uri"],
             "file:///custom"
         );
+    }
+
+    #[tokio::test]
+    async fn pending_requests_insert_and_resolve() {
+        let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        pending.lock().await.insert(42, tx);
+        assert_eq!(pending.lock().await.len(), 1);
+
+        // Simulate routing: remove sender and send response
+        let sender = pending.lock().await.remove(&42).unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":42,"result":{"ok":true}}"#).unwrap();
+        sender.send(response).unwrap();
+
+        let result = rx.await.unwrap();
+        assert_eq!(result["result"]["ok"], true);
+        assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn diagnostics_cache_insert_and_retrieve() {
+        let cache: DiagnosticsCache = Arc::new(Mutex::new(HashMap::new()));
+
+        let uri = "file:///test/file.ts";
+        let diags = vec![serde_json::json!({"message": "error", "severity": 1})];
+        cache.lock().await.insert(uri.to_string(), diags.clone());
+
+        let cached = cache.lock().await.get(uri).cloned().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0]["message"], "error");
     }
 }

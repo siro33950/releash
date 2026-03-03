@@ -16,7 +16,7 @@ describe("buildReviewCommand", () => {
 		const settings = makeSettings({ reviewAgent: "claude", reviewModel: "" });
 		const result = buildReviewCommand(settings, prompt);
 		expect(result).toBe(
-			'echo "Review this code for bugs" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment"',
+			'echo "Review this code for bugs" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment,mcp__releash__review_diff,mcp__releash__read_file,mcp__releash__check_diagnostics,mcp__releash__get_file_symbols,mcp__releash__explore_symbol"',
 		);
 	});
 
@@ -27,7 +27,7 @@ describe("buildReviewCommand", () => {
 		});
 		const result = buildReviewCommand(settings, prompt);
 		expect(result).toBe(
-			'echo "Review this code for bugs" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment" --model claude-sonnet-4-5-20250929',
+			'echo "Review this code for bugs" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment,mcp__releash__review_diff,mcp__releash__read_file,mcp__releash__check_diagnostics,mcp__releash__get_file_symbols,mcp__releash__explore_symbol" --model claude-sonnet-4-5-20250929',
 		);
 	});
 

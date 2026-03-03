@@ -3,7 +3,7 @@ pub mod detect;
 pub mod download;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,9 @@ struct LspSession {
     stdin: ChildStdin,
     status: LspStatus,
     command: String,
+    pending_requests: bridge::PendingRequests,
+    diagnostics_cache: bridge::DiagnosticsCache,
+    request_id_counter: Arc<AtomicI64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,7 +75,7 @@ impl LspManager {
         language: String,
         command: String,
         args: Vec<String>,
-        on_message: Channel<LspMessage>,
+        on_message: Option<Channel<LspMessage>>,
     ) -> Result<u64, String> {
         // Check for existing session
         if let Some(session) = self.find_by_language(&worktree_path, &language).await {
@@ -104,8 +107,20 @@ impl LspManager {
 
         let id = generate_session_id();
 
+        let pending_requests: bridge::PendingRequests =
+            Arc::new(Mutex::new(HashMap::new()));
+        let diagnostics_cache: bridge::DiagnosticsCache =
+            Arc::new(Mutex::new(HashMap::new()));
+        let request_id_counter = Arc::new(AtomicI64::new(1));
+
         // Spawn stdout reader task
-        spawn_stdout_reader(id, stdout, on_message);
+        spawn_stdout_reader(
+            id,
+            stdout,
+            on_message,
+            pending_requests.clone(),
+            diagnostics_cache.clone(),
+        );
 
         // Spawn stderr logger
         if let Some(stderr) = stderr {
@@ -132,6 +147,9 @@ impl LspManager {
             stdin,
             status: LspStatus::Running,
             command,
+            pending_requests,
+            diagnostics_cache,
+            request_id_counter,
         };
 
         self.sessions.lock().await.insert(id, session);
@@ -262,6 +280,196 @@ impl LspManager {
         bridge::write_to_stdin(&mut session.stdin, &message).await
     }
 
+    // -----------------------------------------------------------------------
+    // MCP-oriented methods
+    // -----------------------------------------------------------------------
+
+    /// Send a JSON-RPC request and wait for the response.
+    pub async fn request(
+        &self,
+        session_id: u64,
+        method: &str,
+        params: serde_json::Value,
+        worktree_path: &str,
+        timeout_ms: u64,
+    ) -> Result<serde_json::Value, String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Register the pending request (lock is scoped)
+        let request_id = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or(format!("LSPセッション {session_id} が見つかりません"))?;
+            let id = session.request_id_counter.fetch_add(1, Ordering::Relaxed);
+            session.pending_requests.lock().await.insert(id, tx);
+            id
+        };
+
+        let message = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        });
+
+        self.send_message(session_id, &message.to_string(), worktree_path)
+            .await?;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            rx,
+        )
+        .await
+        .map_err(|_| format!("LSPリクエスト '{method}' がタイムアウト ({timeout_ms}ms)"))?
+        .map_err(|_| format!("LSPリクエスト '{method}' のチャネルが閉じられました"))?;
+
+        if let Some(error) = result.get("error") {
+            return Err(format!("LSPエラー: {error}"));
+        }
+
+        Ok(result
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
+    }
+
+    /// Get cached diagnostics for a URI.
+    #[allow(dead_code)]
+    pub async fn get_cached_diagnostics(
+        &self,
+        session_id: u64,
+        uri: &str,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let diagnostics_cache = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or(format!("LSPセッション {session_id} が見つかりません"))?;
+            session.diagnostics_cache.clone()
+        };
+        let cache = diagnostics_cache.lock().await;
+        Ok(cache.get(uri).cloned().unwrap_or_default())
+    }
+
+    /// Wait for diagnostics to appear in the cache for the given URI.
+    /// Returns empty vec on timeout (does not error).
+    pub async fn wait_for_diagnostics(
+        &self,
+        session_id: u64,
+        uri: &str,
+        timeout_ms: u64,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let diagnostics_cache = {
+            let sessions = self.sessions.lock().await;
+            let session = sessions
+                .get(&session_id)
+                .ok_or(format!("LSPセッション {session_id} が見つかりません"))?;
+            session.diagnostics_cache.clone()
+        };
+
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+
+        loop {
+            {
+                let cache = diagnostics_cache.lock().await;
+                if let Some(diags) = cache.get(uri) {
+                    return Ok(diags.clone());
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(Vec::new());
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Ensure a running LSP session exists for the given language.
+    /// Creates and initializes one if needed (headless, no Tauri channel).
+    pub async fn ensure_session(
+        &self,
+        app: &AppHandle,
+        worktree_path: &str,
+        language: &str,
+    ) -> Result<u64, String> {
+        // Check for existing session
+        if let Some(session) = self.find_by_language(worktree_path, language).await {
+            return Ok(session.id);
+        }
+
+        // Detect LSP server
+        let app_config = app.state::<Arc<crate::config::AppConfig>>();
+        let cfg = app_config.get_config()?;
+        let cache_dir = download::lsp_cache_dir(app)?;
+
+        let server_config = detect::detect_server(
+            language,
+            &cfg.lsp,
+            Some(&cache_dir),
+            Some(worktree_path),
+        );
+
+        let server_config = match server_config {
+            Some(config) => config,
+            None => download::install_lsp_server(app, language, &cache_dir)
+                .await
+                .map_err(|e| format!("LSPサーバーのインストール失敗: {e}"))?,
+        };
+
+        // Spawn headless (no channel)
+        let id = self
+            .spawn(
+                app,
+                worktree_path.to_string(),
+                language.to_string(),
+                server_config.command,
+                server_config.args,
+                None,
+            )
+            .await?;
+
+        // Send initialize request
+        let init_params = serde_json::json!({
+            "processId": std::process::id(),
+            "capabilities": {
+                "textDocument": {
+                    "publishDiagnostics": {
+                        "relatedInformation": true
+                    },
+                    "documentSymbol": {
+                        "hierarchicalDocumentSymbolSupport": true
+                    },
+                    "hover": {
+                        "contentFormat": ["markdown", "plaintext"]
+                    },
+                    "definition": {},
+                    "references": {}
+                }
+            },
+            "rootUri": null,
+            "workspaceFolders": null,
+        });
+
+        self.request(id, "initialize", init_params, worktree_path, 30000)
+            .await?;
+
+        // Send initialized notification
+        let initialized_msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        });
+        self.send_message(id, &initialized_msg.to_string(), worktree_path)
+            .await?;
+
+        Ok(id)
+    }
+
+    // -----------------------------------------------------------------------
+
     async fn stderr_logger(
         session_id: u64,
         stderr: tokio::process::ChildStderr,
@@ -324,7 +532,14 @@ pub async fn spawn_lsp(
     on_message: Channel<LspMessage>,
 ) -> Result<u64, String> {
     state
-        .spawn(&app, worktree_path, language, command, args, on_message)
+        .spawn(
+            &app,
+            worktree_path,
+            language,
+            command,
+            args,
+            Some(on_message),
+        )
         .await
 }
 
@@ -465,5 +680,30 @@ mod tests {
         let manager = LspManager::default();
         manager.kill_by_worktree("/nonexistent").await;
         assert!(manager.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_returns_error_for_nonexistent_session() {
+        let manager = LspManager::default();
+        let result = manager
+            .request(999, "test", serde_json::json!({}), "/path", 1000)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_cached_diagnostics_returns_error_for_nonexistent_session() {
+        let manager = LspManager::default();
+        let result = manager.get_cached_diagnostics(999, "file:///test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn wait_for_diagnostics_returns_error_for_nonexistent_session() {
+        let manager = LspManager::default();
+        let result = manager
+            .wait_for_diagnostics(999, "file:///test", 100)
+            .await;
+        assert!(result.is_err());
     }
 }

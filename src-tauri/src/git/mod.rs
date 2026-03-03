@@ -10,6 +10,7 @@ pub(crate) mod log;
 pub(crate) mod stage;
 pub(crate) mod status;
 pub(crate) mod util;
+pub(crate) mod review;
 pub(crate) mod worktree;
 
 pub(crate) use branch::get_current_branch;
