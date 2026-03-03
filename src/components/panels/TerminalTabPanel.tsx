@@ -274,7 +274,7 @@ export const TerminalTabPanel = forwardRef<
 					onDragOver={handlePaneDragOverTabBar}
 					onDrop={handlePaneDropOnTabBar}
 				>
-					<TabsList aria-label="ターミナルタブ">
+					<TabsList aria-label="Terminal Tabs">
 						{tabs.map((tab) => (
 							<TabsTrigger key={tab.id} value={tab.id} asChild>
 								{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}

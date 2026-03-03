@@ -89,7 +89,7 @@ export function DiffTabContent({
 					/>
 				) : (
 					<div className="flex items-center justify-center h-full text-muted-foreground">
-						<p>接続中...</p>
+						<p>Connecting...</p>
 					</div>
 				)}
 			</div>

@@ -215,14 +215,14 @@ export function RemoteDiffPanel({
 			{selectionStart != null && (
 				<div className="flex items-center px-3 py-1 border-b border-warning/50 bg-warning/10 shrink-0">
 					<span className="text-xs text-warning">
-						L{selectionStart} から範囲選択中 — 終了行をタップ
+						Selecting from L{selectionStart} — tap end line
 					</span>
 					<button
 						type="button"
 						onClick={() => setSelectionStart(null)}
 						className="ml-auto text-xs px-2 py-0.5 rounded bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors"
 					>
-						キャンセル
+						Cancel
 					</button>
 				</div>
 			)}

@@ -29,12 +29,12 @@ export function RemoteCommentInput({
 					L{lineNumber}
 					{endLine != null ? `-${endLine}` : ""}
 				</span>
-				<span className="text-xs text-muted-foreground">コメントを追加</span>
+				<span className="text-xs text-muted-foreground">Add Comment</span>
 			</div>
 			<textarea
 				value={content}
 				onChange={(e) => setContent(e.target.value)}
-				placeholder="コメントを入力..."
+				placeholder="Enter comment..."
 				className="w-full bg-input text-foreground text-sm rounded px-3 py-2 resize-none border border-border focus:border-primary focus:outline-none"
 				rows={3}
 			/>
@@ -44,7 +44,7 @@ export function RemoteCommentInput({
 					onClick={onCancel}
 					className="text-xs px-3 py-1.5 rounded bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors min-h-[32px]"
 				>
-					キャンセル
+					Cancel
 				</button>
 				<button
 					type="button"
@@ -52,7 +52,7 @@ export function RemoteCommentInput({
 					disabled={!content.trim()}
 					className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed min-h-[32px]"
 				>
-					保存
+					Save
 				</button>
 			</div>
 		</div>

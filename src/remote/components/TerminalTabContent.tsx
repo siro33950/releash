@@ -55,7 +55,7 @@ export function TerminalTabContent({
 			<>
 				<div
 					role="tablist"
-					aria-label="ターミナルタブ"
+					aria-label="Terminal Tabs"
 					className="flex items-center gap-1 px-2 py-1 border-b border-border bg-card shrink-0 overflow-x-auto"
 				>
 					{ptySessions.map((s) => (
@@ -156,22 +156,20 @@ export function TerminalTabContent({
 	) {
 		return (
 			<div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
-				<p>ターミナルセッションがありません</p>
+				<p>No terminal sessions</p>
 				<button
 					type="button"
 					onClick={() => spawnPty()}
 					disabled={ptySpawning || !selectedWorktree}
 					className="px-4 py-2 rounded bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed text-primary-foreground text-sm transition-colors"
 				>
-					{ptySpawning ? "起動中..." : "ターミナルを起動"}
+					{ptySpawning ? "Starting..." : "Start Terminal"}
 				</button>
 				{ptySpawnError && (
 					<p className="text-destructive text-xs">{ptySpawnError}</p>
 				)}
 				{!selectedWorktree && (
-					<p className="text-muted-foreground text-xs">
-						Worktreeを選択してください
-					</p>
+					<p className="text-muted-foreground text-xs">Select a worktree</p>
 				)}
 			</div>
 		);
@@ -180,7 +178,7 @@ export function TerminalTabContent({
 	if (activeTab === "terminal" && status !== "connected") {
 		return (
 			<div className="flex items-center justify-center h-full text-muted-foreground">
-				<p>接続されていません</p>
+				<p>Not connected</p>
 			</div>
 		);
 	}

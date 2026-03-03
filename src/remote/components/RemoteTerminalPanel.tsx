@@ -296,14 +296,14 @@ export function RemoteTerminalPanel({
 					autoCapitalize="off"
 					spellCheck={false}
 					className="flex-1 px-3 py-2 bg-input text-foreground border border-border rounded text-sm outline-none focus:border-primary resize-none max-h-24 leading-5"
-					placeholder="コマンドを入力..."
+					placeholder="Enter command..."
 				/>
 				<button
 					type="button"
 					className="px-4 py-2 bg-primary text-primary-foreground rounded text-sm active:bg-primary/90 shrink-0"
 					onClick={handleSubmit}
 				>
-					送信
+					Send
 				</button>
 			</div>
 		</div>
