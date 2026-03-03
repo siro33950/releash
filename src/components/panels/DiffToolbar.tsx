@@ -48,6 +48,7 @@ const lspIconStyle: Record<
 	{ className: string; pulse: boolean }
 > = {
 	idle: { className: "text-muted-foreground/50", pulse: false },
+	downloading: { className: "text-info", pulse: true },
 	starting: { className: "text-info", pulse: true },
 	running: { className: "text-success", pulse: false },
 	restarting: { className: "text-warning", pulse: true },
@@ -59,6 +60,7 @@ const lspDotColor: Record<
 	Exclude<UseLspReturn["status"], "idle">,
 	{ dot: string; label: string }
 > = {
+	downloading: { dot: "bg-info", label: "Downloading..." },
 	starting: { dot: "bg-warning", label: "Starting" },
 	running: { dot: "bg-success", label: "Running" },
 	restarting: { dot: "bg-warning", label: "Restarting" },

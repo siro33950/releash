@@ -343,6 +343,7 @@ pub fn run() {
             lsp::list_lsp_sessions,
             lsp::kill_lsp_by_worktree,
             lsp::detect_lsp_server,
+            lsp::install_lsp_server,
             lsp::get_language_for_extension,
             lsp::get_supported_lsp_languages,
             // Menu

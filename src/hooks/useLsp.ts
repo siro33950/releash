@@ -14,7 +14,14 @@ interface LspServerConfig {
 
 interface LspState {
 	sessionId: number | null;
-	status: "idle" | "starting" | "running" | "error" | "restarting" | "stopped";
+	status:
+		| "idle"
+		| "downloading"
+		| "starting"
+		| "running"
+		| "error"
+		| "restarting"
+		| "stopped";
 	error: string | null;
 	crashCount: number;
 }
@@ -70,13 +77,52 @@ export function useLsp(
 		}));
 
 		try {
-			const config = await invoke<LspServerConfig | null>("detect_lsp_server", {
+			let config = await invoke<LspServerConfig | null>("detect_lsp_server", {
 				language: lang,
+				worktreePath: rp,
 			});
 
 			if (unmountedRef.current) {
 				startingRef.current = false;
 				return;
+			}
+
+			// If no server found, check if it's a supported language and auto-install
+			if (!config) {
+				const supported = await invoke<string[]>("get_supported_lsp_languages");
+				if (supported.includes(lang)) {
+					setState((prev) => ({
+						...prev,
+						status: "downloading",
+						error: null,
+					}));
+
+					try {
+						config = await invoke<LspServerConfig>("install_lsp_server", {
+							language: lang,
+						});
+					} catch (installErr) {
+						if (!unmountedRef.current) {
+							const msg =
+								installErr instanceof Error
+									? installErr.message
+									: String(installErr);
+							setState((prev) => ({
+								...prev,
+								sessionId: null,
+								status: "error",
+								error: msg,
+							}));
+						}
+						startingRef.current = false;
+						return;
+					}
+
+					if (unmountedRef.current) {
+						startingRef.current = false;
+						return;
+					}
+				}
 			}
 
 			if (!config) {
@@ -89,6 +135,11 @@ export function useLsp(
 				startingRef.current = false;
 				return;
 			}
+
+			setState((prev) => ({
+				...prev,
+				status: "starting",
+			}));
 
 			const transport = await createTauriTransport(
 				rp,
@@ -225,6 +276,30 @@ export function useLsp(
 			unlisten.then((fn) => fn());
 		};
 	}, [startServer]);
+
+	// Listen for download progress events
+	useEffect(() => {
+		const unlisten = listen<{
+			language: string;
+			status: string;
+			progress: number;
+		}>("lsp-download-progress", (event) => {
+			const { language: lang } = argsRef.current;
+			if (event.payload.language !== lang) return;
+
+			if (event.payload.status === "error") {
+				setState((prev) => ({
+					...prev,
+					status: "error",
+					error: "Download failed",
+				}));
+			}
+		});
+
+		return () => {
+			unlisten.then((fn) => fn());
+		};
+	}, []);
 
 	const retryManually = useCallback(() => {
 		const { rootPath: rp, language: lang } = argsRef.current;

@@ -1,6 +1,10 @@
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::OnceLock;
+
+use serde::{Deserialize, Serialize};
+
+use super::download;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerConfig {
@@ -84,13 +88,20 @@ fn is_command_available(command: &str) -> bool {
     available
 }
 
-/// Detect a language server for the given file extension.
-/// First checks user config, then falls back to default detection.
+/// Detect a language server for the given language.
+///
+/// Detection priority:
+/// 1. User config (releash.toml `[lsp]`)
+/// 2. Cached binary in `lsp_cache_dir`
+/// 3. Workspace `node_modules/.bin/` (TypeScript only)
+/// 4. System PATH
 pub fn detect_server(
     language: &str,
     user_config: &HashMap<String, LspServerEntry>,
+    lsp_cache_dir: Option<&Path>,
+    worktree_path: Option<&str>,
 ) -> Option<LspServerConfig> {
-    // Check user config first
+    // 1. Check user config first
     if let Some(entry) = user_config.get(language) {
         if !entry.enabled {
             return None;
@@ -109,7 +120,31 @@ pub fn detect_server(
         return None;
     }
 
-    // Fall back to default detection
+    // 2. Check cached binary
+    if let Some(cache_dir) = lsp_cache_dir {
+        if let Some(config) = download::get_cached_server(language, cache_dir) {
+            return Some(config);
+        }
+    }
+
+    // 3. Check workspace node_modules (TypeScript only)
+    if language == "typescript" {
+        if let Some(wt) = worktree_path {
+            let bin = std::path::Path::new(wt)
+                .join("node_modules")
+                .join(".bin")
+                .join("typescript-language-server");
+            if bin.exists() {
+                return Some(LspServerConfig {
+                    command: bin.to_string_lossy().to_string(),
+                    args: vec!["--stdio".to_string()],
+                    enabled: true,
+                });
+            }
+        }
+    }
+
+    // 4. Fall back to system PATH
     for &(lang, ref default) in DEFAULT_SERVERS {
         if lang == language && is_command_available(default.command) {
             return Some(LspServerConfig {
@@ -184,7 +219,7 @@ mod tests {
                 enabled: false,
             },
         );
-        assert!(detect_server("typescript", &config).is_none());
+        assert!(detect_server("typescript", &config, None, None).is_none());
     }
 
     #[test]
@@ -198,7 +233,7 @@ mod tests {
                 enabled: true,
             },
         );
-        let result = detect_server("typescript", &config);
+        let result = detect_server("typescript", &config, None, None);
         assert!(result.is_some());
         let server = result.unwrap();
         assert_eq!(server.command, "my-custom-lsp");
@@ -208,6 +243,40 @@ mod tests {
     #[test]
     fn detect_server_unknown_language_returns_none() {
         let config = HashMap::new();
-        assert!(detect_server("brainfuck", &config).is_none());
+        assert!(detect_server("brainfuck", &config, None, None).is_none());
+    }
+
+    #[test]
+    fn detect_server_finds_cached_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("rust-analyzer");
+        std::fs::write(&bin, b"fake").unwrap();
+
+        let config = HashMap::new();
+        let result = detect_server("rust", &config, Some(dir.path()), None);
+        assert!(result.is_some());
+        let server = result.unwrap();
+        assert!(server.command.contains("rust-analyzer"));
+    }
+
+    #[test]
+    fn detect_server_finds_workspace_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bin = bin_dir.join("typescript-language-server");
+        std::fs::write(&bin, b"fake").unwrap();
+
+        let config = HashMap::new();
+        let result = detect_server(
+            "typescript",
+            &config,
+            None,
+            Some(dir.path().to_str().unwrap()),
+        );
+        assert!(result.is_some());
+        let server = result.unwrap();
+        assert!(server.command.contains("typescript-language-server"));
+        assert_eq!(server.args, vec!["--stdio"]);
     }
 }

@@ -1,5 +1,6 @@
 pub mod bridge;
 pub mod detect;
+pub mod download;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -370,11 +371,30 @@ pub async fn kill_lsp_by_worktree(
 
 #[tauri::command]
 pub fn detect_lsp_server(
+    app: AppHandle,
     config_state: State<'_, Arc<crate::config::AppConfig>>,
     language: String,
+    worktree_path: Option<String>,
 ) -> Result<Option<detect::LspServerConfig>, String> {
     let cfg = config_state.get_config()?;
-    Ok(detect::detect_server(&language, &cfg.lsp))
+    let cache_dir = download::lsp_cache_dir(&app)?;
+    Ok(detect::detect_server(
+        &language,
+        &cfg.lsp,
+        Some(&cache_dir),
+        worktree_path.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub async fn install_lsp_server(
+    app: AppHandle,
+    language: String,
+) -> Result<detect::LspServerConfig, String> {
+    let cache_dir = download::lsp_cache_dir(&app)?;
+    download::install_lsp_server(&app, &language, &cache_dir)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
