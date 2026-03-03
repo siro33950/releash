@@ -65,7 +65,7 @@ export function RemoteCommentList({
 				<MessageSquare className="h-8 w-8" />
 				<span className="text-sm font-medium">No comments</span>
 				<p className="text-xs text-center leading-relaxed">
-					Add comments from the comment button on the Diff view
+					Add comments using the comment button in the Diff view.
 				</p>
 			</div>
 		);
