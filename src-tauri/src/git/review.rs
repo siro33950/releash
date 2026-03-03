@@ -66,7 +66,10 @@ pub fn get_review_diff(
     let mut opts = git2::DiffOptions::new();
     opts.include_untracked(false);
 
-    let diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
+    let mut diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
+    let mut find_opts = git2::DiffFindOptions::new();
+    find_opts.renames(true).copies(true);
+    diff.find_similar(Some(&mut find_opts))?;
 
     let diff_stats = diff.stats()?;
     let stats = DiffStats {
@@ -115,6 +118,7 @@ pub fn get_review_diff(
             continue;
         }
 
+        let is_binary = delta.old_file().is_binary() || delta.new_file().is_binary();
         let (binary, file_stats, hunks, truncated) = match git2::Patch::from_diff(&diff, i)? {
             Some(patch) => {
                 let (_, additions, deletions) = patch.line_stats()?;
@@ -177,10 +181,10 @@ pub fn get_review_diff(
                 } else {
                     (Vec::new(), false)
                 };
-                (false, file_stats, hunks, truncated)
+                (is_binary, file_stats, hunks, truncated)
             }
             None => (
-                true,
+                is_binary,
                 FileStats {
                     additions: 0,
                     deletions: 0,

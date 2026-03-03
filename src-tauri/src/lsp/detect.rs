@@ -76,7 +76,12 @@ fn is_command_available(command: &str) -> bool {
         return available;
     }
 
-    let available = std::process::Command::new("which")
+    #[cfg(unix)]
+    let check = "which";
+    #[cfg(windows)]
+    let check = "where";
+
+    let available = std::process::Command::new(check)
         .arg(command)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

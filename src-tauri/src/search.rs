@@ -970,10 +970,22 @@ pub struct DocumentSymbol {
 fn list_document_symbols_inner(
     file_path: String,
     language: String,
+    root_path: Option<String>,
 ) -> Result<Vec<DocumentSymbol>, String> {
     let Some(tags_config) = get_tags_config(&language) else {
         return Ok(Vec::new());
     };
+
+    // Validate file_path is within root_path to prevent path traversal
+    if let Some(ref root) = root_path {
+        let canonical_root =
+            std::fs::canonicalize(root).map_err(|e| format!("ルートパス解決失敗: {e}"))?;
+        let canonical_file =
+            std::fs::canonicalize(&file_path).map_err(|e| format!("ファイルパス解決失敗: {e}"))?;
+        if canonical_file.strip_prefix(&canonical_root).is_err() {
+            return Err("ファイルパスが許可されたルート外です".to_string());
+        }
+    }
 
     let content =
         fs::read_to_string(&file_path).map_err(|e| format!("ファイル読み込み失敗: {e}"))?;
@@ -1030,8 +1042,9 @@ fn list_document_symbols_inner(
 pub async fn list_document_symbols(
     file_path: String,
     language: String,
+    root_path: Option<String>,
 ) -> Result<Vec<DocumentSymbol>, String> {
-    tokio::task::spawn_blocking(move || list_document_symbols_inner(file_path, language))
+    tokio::task::spawn_blocking(move || list_document_symbols_inner(file_path, language, root_path))
         .await
         .map_err(|e| format!("task join error: {e}"))?
 }

@@ -40,7 +40,7 @@ export function setLspActive(language: string, active: boolean): void {
 }
 
 export function isLspActive(language: string): boolean {
-	return lspActiveLanguages.has(language);
+	return lspActiveLanguages.has(getLanguageForProvider(language));
 }
 
 export interface NavigationCallbacks {

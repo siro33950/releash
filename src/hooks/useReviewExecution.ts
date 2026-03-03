@@ -152,6 +152,7 @@ export function useReviewExecution(
 				});
 
 				if (runTokenRef.current !== runToken) {
+					activeCountRef.current = Math.max(0, activeCountRef.current - 1);
 					// Token changed — cancel the orphaned PTY
 					invoke("cancel_oneshot_pty", { ptyId: info.pty_id }).catch(() => {});
 					return;
@@ -211,6 +212,11 @@ export function useReviewExecution(
 		(ptyId: number, status: string, runToken: number) => {
 			if (runTokenRef.current !== runToken) return;
 
+			ptyIdSetRef.current.delete(ptyId);
+			ptyRunTokenMapRef.current.delete(ptyId);
+			pendingStatusRef.current.delete(ptyId);
+			pendingOutputRef.current.delete(ptyId);
+
 			const fileIdx = fileStatesRef.current.findIndex((f) => f.ptyId === ptyId);
 			if (fileIdx < 0) return;
 
@@ -260,7 +266,7 @@ export function useReviewExecution(
 					ptyRunTokenMapRef.current.get(pty_id) ?? runTokenRef.current;
 				ptyRunTokenMapRef.current.delete(pty_id);
 				handlePtyFinishedRef.current(pty_id, status, token);
-			} else if (ptyIdSetRef.current.size > 0 || startInFlightRef.current) {
+			} else if (activeCountRef.current > 0 || startInFlightRef.current) {
 				// Buffer it - might arrive before spawn returns
 				pendingStatusRef.current.set(pty_id, {
 					status,
@@ -293,7 +299,7 @@ export function useReviewExecution(
 						...prev,
 						fileStates: [...fileStatesRef.current],
 					}));
-				} else if (ptyIdSetRef.current.size > 0 || startInFlightRef.current) {
+				} else if (activeCountRef.current > 0 || startInFlightRef.current) {
 					// Buffer output for PTY IDs we haven't matched yet
 					const buf = pendingOutputRef.current.get(pty_id) ?? "";
 					pendingOutputRef.current.set(pty_id, buf + data);
@@ -485,13 +491,12 @@ export function useReviewExecution(
 			fileStates: [...fileStates],
 		});
 
-		startInFlightRef.current = false;
-
 		// Spawn initial batch
 		const initialBatch = Math.min(concurrency, tasks.length);
 		for (let i = 0; i < initialBatch; i++) {
 			spawnNextTaskRef.current(runToken);
 		}
+		startInFlightRef.current = false;
 	}, [worktreePath, settings]);
 
 	const cancelReview = useCallback(async () => {
@@ -508,7 +513,16 @@ export function useReviewExecution(
 		// Clear the queue
 		taskQueueRef.current = [];
 		await Promise.all(cancelPromises);
-		setState((prev) => ({ ...prev, status: "cancelled" }));
+		ptyIdSetRef.current.clear();
+		ptyRunTokenMapRef.current.clear();
+		activeCountRef.current = 0;
+		pendingStatusRef.current.clear();
+		pendingOutputRef.current.clear();
+		setState((prev) => ({
+			...prev,
+			status: "cancelled",
+			ptyIds: new Set(),
+		}));
 	}, []);
 
 	const reset = useCallback(() => {

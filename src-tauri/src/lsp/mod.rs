@@ -137,6 +137,23 @@ impl LspManager {
             Self::monitor_exit(session_id, manager, app_handle).await;
         });
 
+        // Double-check: another task may have inserted a session while we were spawning
+        {
+            let sessions = self.sessions.lock().await;
+            if let Some(existing) = sessions.values().find(|s| {
+                s.worktree_path == worktree_path
+                    && s.language == language
+                    && s.status == LspStatus::Running
+            }) {
+                let existing_id = existing.id;
+                drop(sessions);
+                // Kill the newly spawned process since we already have one
+                let mut child = child;
+                let _ = child.kill().await;
+                return Ok(existing_id);
+            }
+        }
+
         let session = LspSession {
             id,
             language,

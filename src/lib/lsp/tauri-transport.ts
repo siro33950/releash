@@ -48,6 +48,7 @@ const MAX_BUFFERED_MESSAGES = 1000;
  * via Tauri IPC (invoke + Channel).
  */
 export class TauriTransport implements IMessageTransport {
+	private _disposed = false;
 	private _listener: MessageListener | undefined;
 	private _pendingMessages: string[] = [];
 	private _stateValue: ConnectionState = { state: "connecting" };
@@ -94,6 +95,7 @@ export class TauriTransport implements IMessageTransport {
 	}
 
 	handleMessage(raw: string): void {
+		if (this._disposed) return;
 		if (!this._listener) {
 			if (this._pendingMessages.length >= MAX_BUFFERED_MESSAGES) {
 				this._pendingMessages.shift();
@@ -110,6 +112,7 @@ export class TauriTransport implements IMessageTransport {
 	}
 
 	async send(message: Message): Promise<void> {
+		if (this._disposed) return;
 		await invoke("lsp_send", {
 			sessionId: this.sessionId,
 			message: JSON.stringify(message),
@@ -132,6 +135,9 @@ export class TauriTransport implements IMessageTransport {
 	}
 
 	dispose(): void {
+		if (this._disposed) return;
+		this._disposed = true;
+		this._pendingMessages = [];
 		this.setClosed();
 		for (const d of this._disposeListeners) {
 			d.dispose();

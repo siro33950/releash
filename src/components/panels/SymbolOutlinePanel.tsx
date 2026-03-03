@@ -22,6 +22,7 @@ interface DocumentSymbol {
 interface SymbolOutlinePanelProps {
 	filePath: string | null;
 	language: string | null;
+	rootPath?: string | null;
 	onSelectSymbol?: (line: number) => void;
 }
 
@@ -69,6 +70,7 @@ function getKindColor(kind: string): string {
 export function SymbolOutlinePanel({
 	filePath,
 	language,
+	rootPath,
 	onSelectSymbol,
 }: SymbolOutlinePanelProps) {
 	const [symbols, setSymbols] = useState<DocumentSymbol[]>([]);
@@ -87,6 +89,7 @@ export function SymbolOutlinePanel({
 		invoke<DocumentSymbol[]>("list_document_symbols", {
 			filePath,
 			language,
+			rootPath: rootPath ?? undefined,
 		})
 			.then((result) => {
 				if (!cancelled) {
@@ -108,7 +111,7 @@ export function SymbolOutlinePanel({
 		return () => {
 			cancelled = true;
 		};
-	}, [filePath, language]);
+	}, [filePath, language, rootPath]);
 
 	const handleClick = useCallback(
 		(line: number) => {

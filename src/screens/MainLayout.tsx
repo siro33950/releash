@@ -333,6 +333,7 @@ function WorktreeContent({
 												<SymbolOutlinePanel
 													filePath={s.activeTab?.path ?? null}
 													language={s.activeTab?.language ?? null}
+													rootPath={rootPath}
 													onSelectSymbol={(line) => {
 														if (s.activeTab?.path) {
 															setCenterTab("editor");
