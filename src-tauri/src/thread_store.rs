@@ -125,6 +125,25 @@ fn migrate_comments_to_threads(comments: Vec<CommentItem>, worktree_name: &str) 
         .collect()
 }
 
+/// Normalize and validate a thread's file_path.
+/// Strips the worktree prefix if present, rejects absolute paths and `..` traversal.
+fn normalize_file_path(file_path: &str, worktree_name: &str) -> Result<String, String> {
+    let prefix = format!("{}/", worktree_name);
+    let path = file_path.strip_prefix(&prefix).unwrap_or(file_path);
+
+    if path.starts_with('/') || path.starts_with('\\') {
+        return Err(format!("Absolute path not allowed: {path}"));
+    }
+
+    for component in Path::new(path).components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(format!("Path traversal not allowed: {path}"));
+        }
+    }
+
+    Ok(path.to_string())
+}
+
 impl ThreadStore {
     pub fn load(&self, app_data_dir: &Path, worktree_name: &str) -> Result<Vec<Thread>, String> {
         let file_path = threads_file(app_data_dir, worktree_name);
@@ -176,17 +195,14 @@ impl ThreadStore {
         Ok(())
     }
 
-    pub fn add_thread(&self, worktree_name: &str, mut thread: Thread) {
-        // Normalize absolute file_path to relative
-        let prefix = format!("{}/", worktree_name);
-        if let Some(stripped) = thread.file_path.strip_prefix(&prefix) {
-            thread.file_path = stripped.to_string();
-        }
+    pub fn add_thread(&self, worktree_name: &str, mut thread: Thread) -> Result<(), String> {
+        thread.file_path = normalize_file_path(&thread.file_path, worktree_name)?;
         let mut entries = self.entries.write();
         entries
             .entry(worktree_name.to_string())
             .or_default()
             .push(thread);
+        Ok(())
     }
 
     pub fn add_entry(&self, worktree_name: &str, thread_id: &str, entry: ThreadEntry) -> bool {
@@ -240,10 +256,14 @@ impl ThreadStore {
         None
     }
 
-    pub fn set_all(&self, worktree_name: &str, threads: Vec<Thread>) {
+    pub fn set_all(&self, worktree_name: &str, mut threads: Vec<Thread>) -> Result<(), String> {
+        for thread in &mut threads {
+            thread.file_path = normalize_file_path(&thread.file_path, worktree_name)?;
+        }
         self.entries
             .write()
             .insert(worktree_name.to_string(), threads);
+        Ok(())
     }
 
     pub fn get_all(&self, worktree_name: &str) -> Vec<Thread> {
@@ -296,15 +316,16 @@ impl ThreadStore {
             .collect()
     }
 
-    pub fn update_thread(&self, worktree_name: &str, updated: Thread) -> bool {
+    pub fn update_thread(&self, worktree_name: &str, mut updated: Thread) -> Result<bool, String> {
+        updated.file_path = normalize_file_path(&updated.file_path, worktree_name)?;
         let mut entries = self.entries.write();
         if let Some(threads) = entries.get_mut(worktree_name) {
             if let Some(thread) = threads.iter_mut().find(|t| t.id == updated.id) {
                 *thread = updated;
-                return true;
+                return Ok(true);
             }
         }
-        false
+        Ok(false)
     }
 
     pub fn cleanup(&self, app_data_dir: &Path, worktree_name: &str) -> Result<(), String> {
@@ -371,7 +392,7 @@ pub fn save_threads(
     worktree_name: String,
     threads: Vec<Thread>,
 ) -> Result<(), String> {
-    store.set_all(&worktree_name, threads);
+    store.set_all(&worktree_name, threads)?;
     let data_dir = app
         .path()
         .app_data_dir()
@@ -400,7 +421,7 @@ pub fn add_thread(
     thread: Thread,
     source: String,
 ) -> Result<Vec<Thread>, String> {
-    store.add_thread(&worktree_name, thread);
+    store.add_thread(&worktree_name, thread)?;
     persist_and_notify(&app, &store, &worktree_name, &source)
 }
 
@@ -457,7 +478,7 @@ pub fn update_thread(
     thread: Thread,
     source: String,
 ) -> Result<Vec<Thread>, String> {
-    if !store.update_thread(&worktree_name, thread) {
+    if !store.update_thread(&worktree_name, thread)? {
         return Err("Thread not found".into());
     }
     persist_and_notify(&app, &store, &worktree_name, &source)
@@ -521,8 +542,12 @@ mod tests {
     #[test]
     fn add_and_get_all() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "file.rs", "comment 1"));
-        store.add_thread("wt1", make_thread("t2", "file.rs", "comment 2"));
+        store
+            .add_thread("wt1", make_thread("t1", "file.rs", "comment 1"))
+            .unwrap();
+        store
+            .add_thread("wt1", make_thread("t2", "file.rs", "comment 2"))
+            .unwrap();
         let all = store.get_all("wt1");
         assert_eq!(all.len(), 2);
     }
@@ -530,7 +555,9 @@ mod tests {
     #[test]
     fn add_entry_to_thread() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "file.rs", "original"));
+        store
+            .add_thread("wt1", make_thread("t1", "file.rs", "original"))
+            .unwrap();
         assert!(store.add_entry("wt1", "t1", make_entry("e1", "reply")));
         let all = store.get_all("wt1");
         assert_eq!(all[0].entries.len(), 2);
@@ -546,7 +573,9 @@ mod tests {
     #[test]
     fn remove_thread() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "file.rs", "comment"));
+        store
+            .add_thread("wt1", make_thread("t1", "file.rs", "comment"))
+            .unwrap();
         assert!(store.remove_thread("wt1", "t1"));
         assert!(!store.remove_thread("wt1", "t1"));
         assert_eq!(store.get_all("wt1").len(), 0);
@@ -555,7 +584,9 @@ mod tests {
     #[test]
     fn update_entry() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "file.rs", "original"));
+        store
+            .add_thread("wt1", make_thread("t1", "file.rs", "original"))
+            .unwrap();
         assert!(store.update_entry("wt1", "t1", "t1-e0", "updated"));
         assert_eq!(store.get_all("wt1")[0].entries[0].content, "updated");
     }
@@ -563,7 +594,9 @@ mod tests {
     #[test]
     fn update_entry_nonexistent() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "file.rs", "original"));
+        store
+            .add_thread("wt1", make_thread("t1", "file.rs", "original"))
+            .unwrap();
         assert!(!store.update_entry("wt1", "t1", "nonexistent", "updated"));
         assert!(!store.update_entry("wt1", "nonexistent", "e0", "updated"));
     }
@@ -571,7 +604,9 @@ mod tests {
     #[test]
     fn resolve_toggles() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "file.rs", "comment"));
+        store
+            .add_thread("wt1", make_thread("t1", "file.rs", "comment"))
+            .unwrap();
         assert_eq!(store.resolve_thread("wt1", "t1"), Some(true));
         assert_eq!(store.resolve_thread("wt1", "t1"), Some(false));
         assert_eq!(store.resolve_thread("wt1", "nonexistent"), None);
@@ -581,7 +616,9 @@ mod tests {
     fn save_and_load() {
         let dir = TempDir::new().unwrap();
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "file.rs", "comment"));
+        store
+            .add_thread("wt1", make_thread("t1", "file.rs", "comment"))
+            .unwrap();
         store.save(dir.path(), "wt1").unwrap();
 
         let store2 = ThreadStore::default();
@@ -603,7 +640,9 @@ mod tests {
     fn cleanup_removes_file_and_memory() {
         let dir = TempDir::new().unwrap();
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "file.rs", "comment"));
+        store
+            .add_thread("wt1", make_thread("t1", "file.rs", "comment"))
+            .unwrap();
         store.save(dir.path(), "wt1").unwrap();
 
         store.cleanup(dir.path(), "wt1").unwrap();
@@ -614,8 +653,12 @@ mod tests {
     #[test]
     fn set_all_replaces() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "file.rs", "first"));
-        store.set_all("wt1", vec![make_thread("t2", "other.rs", "second")]);
+        store
+            .add_thread("wt1", make_thread("t1", "file.rs", "first"))
+            .unwrap();
+        store
+            .set_all("wt1", vec![make_thread("t2", "other.rs", "second")])
+            .unwrap();
         let all = store.get_all("wt1");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, "t2");
@@ -624,12 +667,33 @@ mod tests {
     #[test]
     fn add_normalizes_absolute_path() {
         let store = ThreadStore::default();
-        store.add_thread(
-            "/Users/dev/project",
-            make_thread("t1", "/Users/dev/project/src/main.rs", "comment"),
-        );
+        store
+            .add_thread(
+                "/Users/dev/project",
+                make_thread("t1", "/Users/dev/project/src/main.rs", "comment"),
+            )
+            .unwrap();
         let all = store.get_all("/Users/dev/project");
         assert_eq!(all[0].file_path, "src/main.rs");
+    }
+
+    #[test]
+    fn add_rejects_path_traversal() {
+        let store = ThreadStore::default();
+        assert!(store
+            .add_thread("wt1", make_thread("t1", "../etc/passwd", "bad"))
+            .is_err());
+        assert!(store
+            .add_thread("wt1", make_thread("t2", "src/../../etc/passwd", "bad"))
+            .is_err());
+    }
+
+    #[test]
+    fn add_rejects_absolute_path() {
+        let store = ThreadStore::default();
+        assert!(store
+            .add_thread("wt1", make_thread("t1", "/etc/passwd", "bad"))
+            .is_err());
     }
 
     #[test]
@@ -696,8 +760,12 @@ mod tests {
     #[test]
     fn get_thread_by_id() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "a.rs", "first"));
-        store.add_thread("wt1", make_thread("t2", "b.rs", "second"));
+        store
+            .add_thread("wt1", make_thread("t1", "a.rs", "first"))
+            .unwrap();
+        store
+            .add_thread("wt1", make_thread("t2", "b.rs", "second"))
+            .unwrap();
         let thread = store.get_thread("wt1", "t1").unwrap();
         assert_eq!(thread.id, "t1");
         assert_eq!(thread.entries[0].content, "first");
@@ -706,7 +774,9 @@ mod tests {
     #[test]
     fn get_thread_not_found() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "a.rs", "first"));
+        store
+            .add_thread("wt1", make_thread("t1", "a.rs", "first"))
+            .unwrap();
         assert!(store.get_thread("wt1", "nonexistent").is_none());
         assert!(store.get_thread("nonexistent", "t1").is_none());
     }
@@ -714,8 +784,12 @@ mod tests {
     #[test]
     fn get_filtered_by_file_path() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "a.rs", "aaa"));
-        store.add_thread("wt1", make_thread("t2", "b.rs", "bbb"));
+        store
+            .add_thread("wt1", make_thread("t1", "a.rs", "aaa"))
+            .unwrap();
+        store
+            .add_thread("wt1", make_thread("t2", "b.rs", "bbb"))
+            .unwrap();
         let result = store.get_filtered("wt1", Some("a.rs"), None, None);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "t1");
@@ -726,8 +800,10 @@ mod tests {
         let store = ThreadStore::default();
         let mut t = make_thread("t1", "a.rs", "warning");
         t.severity = Some("warning".to_string());
-        store.add_thread("wt1", t);
-        store.add_thread("wt1", make_thread("t2", "a.rs", "no severity"));
+        store.add_thread("wt1", t).unwrap();
+        store
+            .add_thread("wt1", make_thread("t2", "a.rs", "no severity"))
+            .unwrap();
         let result = store.get_filtered("wt1", None, Some("warning"), None);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "t1");
@@ -736,8 +812,12 @@ mod tests {
     #[test]
     fn get_filtered_by_resolved() {
         let store = ThreadStore::default();
-        store.add_thread("wt1", make_thread("t1", "a.rs", "open"));
-        store.add_thread("wt1", make_thread("t2", "a.rs", "resolved"));
+        store
+            .add_thread("wt1", make_thread("t1", "a.rs", "open"))
+            .unwrap();
+        store
+            .add_thread("wt1", make_thread("t2", "a.rs", "resolved"))
+            .unwrap();
         store.resolve_thread("wt1", "t2");
         let result = store.get_filtered("wt1", None, None, Some(false));
         assert_eq!(result.len(), 1);

@@ -390,7 +390,10 @@ impl ReleashMcpServer {
             created_at: now,
         };
 
-        self.state.thread_store.add_thread(&worktree_path, thread);
+        self.state
+            .thread_store
+            .add_thread(&worktree_path, thread)
+            .map_err(|e| McpError::internal_error(e, None))?;
 
         self.persist_and_emit_threads_changed(&worktree_path)?;
 

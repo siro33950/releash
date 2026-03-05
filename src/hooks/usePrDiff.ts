@@ -57,6 +57,7 @@ export function usePrDiff(
 	useEffect(() => {
 		if (!prNumber) {
 			setReviewThreads([]);
+			setReviewThreadsLoading(false);
 			return;
 		}
 
@@ -113,6 +114,7 @@ export function usePrDiff(
 			.catch((err) => {
 				if (!cancelled) {
 					setError(String(err));
+					setFiles([]);
 					setLoading(false);
 				}
 			});

@@ -248,6 +248,13 @@ export function createCommentThread(
 	) => {
 		if (partial.thread !== undefined) {
 			currentThread = partial.thread;
+			const newAfterLine = partial.thread.endLine ?? partial.thread.lineNumber;
+			if (zoneConfig.afterLineNumber !== newAfterLine) {
+				zoneConfig.afterLineNumber = newAfterLine;
+				editor.changeViewZones((accessor) => {
+					accessor.layoutZone(zoneId);
+				});
+			}
 		}
 		if (partial.aiRunningThreadIds !== undefined) {
 			currentAiRunningThreadIds = partial.aiRunningThreadIds;

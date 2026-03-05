@@ -229,12 +229,17 @@ export function EditorTabContent({
 	);
 
 	useEffect(() => {
-		if (!recalculateAnchorsForFile || !modifiedContent) return;
+		if (!recalculateAnchorsForFile || fileContent?.content == null) return;
 		const timer = setTimeout(() => {
 			recalculateAnchorsForFile(relativeFilePath, modifiedContent);
 		}, 500);
 		return () => clearTimeout(timer);
-	}, [modifiedContent, relativeFilePath, recalculateAnchorsForFile]);
+	}, [
+		modifiedContent,
+		relativeFilePath,
+		recalculateAnchorsForFile,
+		fileContent?.content,
+	]);
 
 	if (!fileContent) {
 		return (

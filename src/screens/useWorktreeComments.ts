@@ -15,8 +15,8 @@ interface UseWorktreeThreadsParams {
 		isAi?: boolean,
 		authorName?: string,
 		action?: "implement" | "posted-to-pr",
-	) => void;
-	resolveThread: (threadId: string) => void;
+	) => void | Promise<unknown>;
+	resolveThread: (threadId: string) => void | Promise<void>;
 	activeTabPath: string | null;
 	handleOpenFile: (path: string) => Promise<void>;
 	terminalRef: RefObject<TerminalTabPanelHandle | null>;
@@ -64,20 +64,24 @@ export function useWorktreeThreads({
 	}, []);
 
 	const handleImplementThread = useCallback(
-		(threadId: string) => {
+		async (threadId: string) => {
 			if (!terminalRef.current) return;
 			const prompt = formatImplementPrompt(threadId);
 			terminalRef.current.writeToTerminal(prompt);
 			terminalRef.current.writeToTerminal("\r");
-			addEntry(
-				threadId,
-				"Sent to agent for implementation",
-				false,
-				undefined,
-				"implement",
-			);
-			resolveThread(threadId);
-			trackEvent("thread_implemented");
+			try {
+				await addEntry(
+					threadId,
+					"Sent to agent for implementation",
+					false,
+					undefined,
+					"implement",
+				);
+				await resolveThread(threadId);
+				trackEvent("thread_implemented");
+			} catch (err) {
+				console.error("Failed to implement thread:", err);
+			}
 		},
 		[addEntry, resolveThread, terminalRef],
 	);

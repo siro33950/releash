@@ -72,6 +72,13 @@ function EntryItem({
 	const editRef = useRef<HTMLTextAreaElement>(null);
 
 	useEffect(() => {
+		if (!editing) {
+			setContent(entry.content);
+			setEditValue(entry.content);
+		}
+	}, [entry.content, editing]);
+
+	useEffect(() => {
 		if (editing && editRef.current) {
 			editRef.current.focus();
 		}

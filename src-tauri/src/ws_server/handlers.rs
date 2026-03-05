@@ -658,12 +658,13 @@ pub(super) fn handle_update_comment(
 
 // --- Thread handlers ---
 
-fn thread_persist_emit_broadcast(state: &WsServerState, worktree_name: &str) {
+fn thread_persist_emit_broadcast(state: &WsServerState, worktree_name: &str) -> Result<(), String> {
     if let Some(app) = &state.app_handle {
-        let data_dir = app.path().app_data_dir().ok();
-        if let Some(dir) = data_dir {
-            let _ = state.thread_store.save(&dir, worktree_name);
-        }
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get app data dir: {e}"))?;
+        state.thread_store.save(&data_dir, worktree_name)?;
         let local_threads = state.thread_store.get_all(worktree_name);
         // Emit local-only threads to desktop (desktop merges PR threads on its own)
         let _ = app.emit(
@@ -692,6 +693,7 @@ fn thread_persist_emit_broadcast(state: &WsServerState, worktree_name: &str) {
     state
         .broadcaster
         .try_send(WsMessage::ThreadsSync(ThreadsSync { threads: merged }));
+    Ok(())
 }
 
 pub(super) async fn handle_create_thread(
@@ -734,8 +736,18 @@ pub(super) async fn handle_create_thread(
         created_at: now,
     };
 
-    state.thread_store.add_thread(&worktree_name, thread);
-    thread_persist_emit_broadcast(state, &worktree_name);
+    if let Err(e) = state.thread_store.add_thread(&worktree_name, thread) {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "INVALID_PATH".to_string(),
+            message: e,
+        }));
+    }
+    if let Err(e) = thread_persist_emit_broadcast(state, &worktree_name) {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "PERSIST_ERROR".to_string(),
+            message: e,
+        }));
+    }
     None
 }
 
@@ -778,7 +790,12 @@ pub(super) async fn handle_add_thread_entry(
             message: format!("Thread not found: {}", req.thread_id),
         }));
     }
-    thread_persist_emit_broadcast(state, &worktree_name);
+    if let Err(e) = thread_persist_emit_broadcast(state, &worktree_name) {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "PERSIST_ERROR".to_string(),
+            message: e,
+        }));
+    }
     None
 }
 
@@ -805,7 +822,12 @@ pub(super) async fn handle_resolve_thread(
             message: format!("Thread not found: {}", req.thread_id),
         }));
     }
-    thread_persist_emit_broadcast(state, &worktree_name);
+    if let Err(e) = thread_persist_emit_broadcast(state, &worktree_name) {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "PERSIST_ERROR".to_string(),
+            message: e,
+        }));
+    }
     None
 }
 
@@ -831,7 +853,12 @@ pub(super) async fn handle_delete_thread(
             message: format!("Thread not found: {}", req.thread_id),
         }));
     }
-    thread_persist_emit_broadcast(state, &worktree_name);
+    if let Err(e) = thread_persist_emit_broadcast(state, &worktree_name) {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "PERSIST_ERROR".to_string(),
+            message: e,
+        }));
+    }
     None
 }
 
@@ -857,7 +884,12 @@ pub(super) async fn handle_update_thread_entry(
             message: format!("Entry not found: {}/{}", req.thread_id, req.entry_id),
         }));
     }
-    thread_persist_emit_broadcast(state, &worktree_name);
+    if let Err(e) = thread_persist_emit_broadcast(state, &worktree_name) {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "PERSIST_ERROR".to_string(),
+            message: e,
+        }));
+    }
     None
 }
 
