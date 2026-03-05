@@ -70,6 +70,7 @@ export function useReviewExecution(
 	const runTokenRef = useRef(0);
 	const startInFlightRef = useRef(false);
 	const concurrencyRef = useRef(5);
+	const mountedRef = useRef(true);
 
 	// Per-file output buffers (for PTY output arriving before ptyId is confirmed)
 	const pendingOutputRef = useRef<Map<number, string>>(new Map());
@@ -85,7 +86,15 @@ export function useReviewExecution(
 	const settingsRef = useRef(settings);
 	settingsRef.current = settings;
 
+	// Prevent state updates after unmount (PTYs keep running for recovery)
+	useEffect(() => {
+		return () => {
+			mountedRef.current = false;
+		};
+	}, []);
+
 	const syncState = useCallback(() => {
+		if (!mountedRef.current) return;
 		const allDone =
 			totalCountRef.current > 0 &&
 			doneCountRef.current >= totalCountRef.current;
@@ -151,6 +160,8 @@ export function useReviewExecution(
 					label: `review:${task.file_path}`,
 					timeoutSecs: null,
 				});
+
+				if (!mountedRef.current) return;
 
 				if (runTokenRef.current !== runToken) {
 					activeCountRef.current = Math.max(0, activeCountRef.current - 1);
@@ -251,6 +262,7 @@ export function useReviewExecution(
 			status: string;
 			exit_code: number | null;
 		}>("oneshot-pty-status-changed", (event) => {
+			if (!mountedRef.current) return;
 			const { pty_id, status } = event.payload;
 
 			const isTerminal =
@@ -286,6 +298,7 @@ export function useReviewExecution(
 		const unlisten = listen<{ pty_id: number; data: string }>(
 			"pty-output",
 			(event) => {
+				if (!mountedRef.current) return;
 				const { pty_id, data } = event.payload;
 
 				const fileIdx = fileStatesRef.current.findIndex(
