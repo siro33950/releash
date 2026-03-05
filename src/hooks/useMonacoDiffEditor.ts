@@ -405,7 +405,7 @@ export function useMonacoDiffEditor(
 
 				const zone = createCommentThread(ed, {
 					thread,
-					onSubmit: (content) => {
+					onSubmit: async (content) => {
 						if (isNew) {
 							onAddCommentRef.current?.(lineNum, content, endLine);
 							zone.dispose();
@@ -413,7 +413,7 @@ export function useMonacoDiffEditor(
 							openWidgetInfoRef.current = null;
 							ed.focus();
 						} else {
-							onAddEntryRef.current?.(thread.id, content);
+							await onAddEntryRef.current?.(thread.id, content);
 							onAskAIRef.current?.(thread.id);
 							const textarea = zone.domNode.querySelector<HTMLTextAreaElement>(
 								".comment-thread-textarea",
@@ -764,8 +764,8 @@ export function useMonacoDiffEditor(
 					const thread = existingThreads[0];
 					const zone = createCommentThread(modifiedEditor, {
 						thread,
-						onSubmit: (content) => {
-							onAddEntryRef.current?.(thread.id, content);
+						onSubmit: async (content) => {
+							await onAddEntryRef.current?.(thread.id, content);
 							onAskAIRef.current?.(thread.id);
 							const textarea = zone.domNode.querySelector<HTMLTextAreaElement>(
 								".comment-thread-textarea",

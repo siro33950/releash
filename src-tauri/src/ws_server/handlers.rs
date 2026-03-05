@@ -674,21 +674,24 @@ fn thread_persist_emit_broadcast(state: &WsServerState, worktree_name: &str) {
                 threads: local_threads.clone(),
             },
         );
-        // Merge cached PR threads for WebSocket broadcast (remote needs them)
-        let mut merged = local_threads;
-        if let Some(pr_threads) = state.pr_threads_cache.read().get(worktree_name) {
-            let local_ids: std::collections::HashSet<String> =
-                merged.iter().map(|t| t.id.clone()).collect();
-            for t in pr_threads {
-                if !local_ids.contains(&t.id) {
-                    merged.push(t.clone());
-                }
+    }
+
+    // Merge cached PR threads for WebSocket broadcast (remote needs them)
+    // Broadcast outside app_handle block so WS clients are notified even without desktop
+    let local_threads = state.thread_store.get_all(worktree_name);
+    let mut merged = local_threads;
+    if let Some(pr_threads) = state.pr_threads_cache.read().get(worktree_name) {
+        let local_ids: std::collections::HashSet<String> =
+            merged.iter().map(|t| t.id.clone()).collect();
+        for t in pr_threads {
+            if !local_ids.contains(&t.id) {
+                merged.push(t.clone());
             }
         }
-        state
-            .broadcaster
-            .try_send(WsMessage::ThreadsSync(ThreadsSync { threads: merged }));
     }
+    state
+        .broadcaster
+        .try_send(WsMessage::ThreadsSync(ThreadsSync { threads: merged }));
 }
 
 pub(super) async fn handle_create_thread(
@@ -766,9 +769,15 @@ pub(super) async fn handle_add_thread_entry(
         created_at: now,
     };
 
-    state
+    if !state
         .thread_store
-        .add_entry(&worktree_name, &req.thread_id, entry);
+        .add_entry(&worktree_name, &req.thread_id, entry)
+    {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "THREAD_NOT_FOUND".to_string(),
+            message: format!("Thread not found: {}", req.thread_id),
+        }));
+    }
     thread_persist_emit_broadcast(state, &worktree_name);
     None
 }
@@ -786,9 +795,16 @@ pub(super) async fn handle_resolve_thread(
         }
     };
 
-    state
+    if state
         .thread_store
-        .resolve_thread(&worktree_name, &req.thread_id);
+        .resolve_thread(&worktree_name, &req.thread_id)
+        .is_none()
+    {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "THREAD_NOT_FOUND".to_string(),
+            message: format!("Thread not found: {}", req.thread_id),
+        }));
+    }
     thread_persist_emit_broadcast(state, &worktree_name);
     None
 }
@@ -806,9 +822,15 @@ pub(super) async fn handle_delete_thread(
         }
     };
 
-    state
+    if !state
         .thread_store
-        .remove_thread(&worktree_name, &req.thread_id);
+        .remove_thread(&worktree_name, &req.thread_id)
+    {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "THREAD_NOT_FOUND".to_string(),
+            message: format!("Thread not found: {}", req.thread_id),
+        }));
+    }
     thread_persist_emit_broadcast(state, &worktree_name);
     None
 }
@@ -826,9 +848,15 @@ pub(super) async fn handle_update_thread_entry(
         }
     };
 
-    state
+    if !state
         .thread_store
-        .update_entry(&worktree_name, &req.thread_id, &req.entry_id, &req.content);
+        .update_entry(&worktree_name, &req.thread_id, &req.entry_id, &req.content)
+    {
+        return Some(WsMessage::Error(ErrorMsg {
+            code: "THREAD_NOT_FOUND".to_string(),
+            message: format!("Entry not found: {}/{}", req.thread_id, req.entry_id),
+        }));
+    }
     thread_persist_emit_broadcast(state, &worktree_name);
     None
 }

@@ -167,7 +167,7 @@ export function buildReviewCommand(
 
 	if (reviewAgent === "custom") {
 		if (!customReviewCommand) return null;
-		return customReviewCommand.replace("{prompt}", escapedPrompt);
+		return customReviewCommand.replace("{prompt}", () => escapedPrompt);
 	}
 
 	const config = AGENT_CONFIGS[reviewAgent];
@@ -182,7 +182,7 @@ export function buildReviewCommand(
 	return config.reviewCommand
 		.replace("{model_flag}", modelFlagValue)
 		.replace(/\s{2,}/g, " ")
-		.replace("{prompt}", escapedPrompt)
+		.replace("{prompt}", () => escapedPrompt)
 		.trim();
 }
 
@@ -214,7 +214,7 @@ export function buildThreadCommand(
 	return config.threadCommand
 		.replace("{model_flag}", modelFlagValue)
 		.replace(/\s{2,}/g, " ")
-		.replace("{prompt}", escapedPrompt)
+		.replace("{prompt}", () => escapedPrompt)
 		.trim();
 }
 

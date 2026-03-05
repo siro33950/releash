@@ -114,6 +114,7 @@ export function useWorktreeState({
 		prDetail?.base_ref_name ?? null,
 		prDetail?.head_ref_name ?? null,
 	);
+	const { replyToThread, postPrComment, reviewThreads } = prDiff;
 
 	const [dismissedPrThreadIds, setDismissedPrThreadIds] = useState(
 		() => new Set<string>(),
@@ -123,20 +124,15 @@ export function useWorktreeState({
 	);
 
 	const mergedThreads = useMemo(() => {
-		if (prDiff.reviewThreads.length === 0) return threads;
+		if (reviewThreads.length === 0) return threads;
 		const localIds = new Set(threads.map((t) => t.id));
-		const prOnly = prDiff.reviewThreads
+		const prOnly = reviewThreads
 			.filter((t) => !localIds.has(t.id) && !dismissedPrThreadIds.has(t.id))
 			.map((t) =>
 				resolvedPrThreadIds.has(t.id) ? { ...t, resolved: true } : t,
 			);
 		return [...threads, ...prOnly];
-	}, [
-		threads,
-		prDiff.reviewThreads,
-		dismissedPrThreadIds,
-		resolvedPrThreadIds,
-	]);
+	}, [threads, reviewThreads, dismissedPrThreadIds, resolvedPrThreadIds]);
 
 	// Track which threads are using summarize mode
 	const summarizeThreadIdsRef = useRef<Set<string>>(new Set());
@@ -210,12 +206,16 @@ export function useWorktreeState({
 				);
 				let postedComment: { id: number } | null = null;
 				if (thread?.entries[0]?.prCommentId) {
-					postedComment = await prDiff.replyToThread(
+					postedComment = await replyToThread(
 						pendingPostToPr.threadId,
 						editedSummary,
 					);
 				} else {
-					postedComment = await prDiff.postPrComment(editedSummary);
+					postedComment = await postPrComment(editedSummary);
+				}
+				if (!postedComment) {
+					console.error("Failed to post comment to PR");
+					return;
 				}
 				addEntry(
 					pendingPostToPr.threadId,
@@ -223,7 +223,7 @@ export function useWorktreeState({
 					false,
 					undefined,
 					"posted-to-pr",
-					postedComment?.id,
+					postedComment.id,
 				);
 				setPendingPostToPr(null);
 			} catch (e) {
@@ -232,7 +232,7 @@ export function useWorktreeState({
 				setPostToPrLoading(false);
 			}
 		},
-		[pendingPostToPr, mergedThreads, prDiff, addEntry],
+		[pendingPostToPr, mergedThreads, replyToThread, postPrComment, addEntry],
 	);
 
 	const handlePostToPrCancel = useCallback(() => {

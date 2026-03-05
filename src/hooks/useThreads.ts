@@ -130,6 +130,7 @@ export function useThreads(worktreeName: string) {
 				setThreads(latest);
 			} catch (err) {
 				console.error(err);
+				throw err;
 			}
 			return entry;
 		},

@@ -205,14 +205,13 @@ export function useThreadAI(
 
 				// Update placeholder with actual file path
 				const current = taskMapRef.current.get(threadId);
-				if (current) {
-					const task: ThreadAITask = {
-						...current,
-						filePath: result.file_path,
-					};
-					taskMapRef.current.set(threadId, task);
-					syncState();
-				}
+				if (!current || current.status !== "running") return;
+				const task: ThreadAITask = {
+					...current,
+					filePath: result.file_path,
+				};
+				taskMapRef.current.set(threadId, task);
+				syncState();
 
 				const info = await invoke<{
 					pty_id: number;

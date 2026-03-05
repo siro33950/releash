@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Thread } from "@/types/thread";
 
 export interface UseUnresolvedNavigationResult {
@@ -27,6 +27,14 @@ export function useUnresolvedNavigation(
 	}, [threads]);
 
 	const total = sorted.length;
+
+	useEffect(() => {
+		if (total === 0) {
+			setCurrentIndex(-1);
+		} else if (currentIndex >= total) {
+			setCurrentIndex(total - 1);
+		}
+	}, [total, currentIndex]);
 
 	const currentThread = useMemo(() => {
 		if (currentIndex >= 0 && currentIndex < total) {

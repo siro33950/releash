@@ -717,6 +717,10 @@ export function useMonacoGutterEditor(
 		const thread = threads.find((t) => t.id === info.threadId);
 		if (thread) {
 			widget.update({ thread });
+		} else if (info.threadId !== "") {
+			widget.dispose();
+			commentInputWidgetRef.current = null;
+			openWidgetInfoRef.current = null;
 		}
 	}, [getThreadsForLine]);
 

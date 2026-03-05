@@ -131,6 +131,7 @@ export function usePrDiff(
 
 		let cancelled = false;
 		setFileDiffLoading(true);
+		setFileDiff(null);
 
 		const absPath = `${rootPath}/${selectedFile}`;
 

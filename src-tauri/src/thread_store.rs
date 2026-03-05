@@ -15,12 +15,14 @@ pub struct ThreadsChangedPayload {
 
 pub struct ThreadStore {
     entries: RwLock<HashMap<String, Vec<Thread>>>,
+    file_lock: parking_lot::Mutex<()>,
 }
 
 impl Default for ThreadStore {
     fn default() -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
+            file_lock: parking_lot::Mutex::new(()),
         }
     }
 }
@@ -158,6 +160,8 @@ impl ThreadStore {
     }
 
     pub fn save(&self, app_data_dir: &Path, worktree_name: &str) -> Result<(), String> {
+        let _guard = self.file_lock.lock();
+
         let dir = threads_dir(app_data_dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {e}"))?;
 

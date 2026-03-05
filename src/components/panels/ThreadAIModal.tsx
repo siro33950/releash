@@ -43,7 +43,8 @@ export function ThreadAIModal({
 
 	const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
 
-	// When opened with a specific thread, select it (only once per open)
+	// When opened with a specific thread, select it (only once per open);
+	// otherwise auto-select first running task or first task
 	const appliedRef = useRef(false);
 
 	useEffect(() => {
@@ -51,6 +52,7 @@ export function ThreadAIModal({
 			appliedRef.current = false;
 			return;
 		}
+		// Prioritize initialThreadId (once per open)
 		if (
 			!appliedRef.current &&
 			initialThreadId &&
@@ -58,11 +60,9 @@ export function ThreadAIModal({
 		) {
 			appliedRef.current = true;
 			setSelectedThreadId(initialThreadId);
+			return;
 		}
-	}, [open, initialThreadId, taskList]);
-
-	// Auto-select first running task, or first task
-	useEffect(() => {
+		// Auto-select fallback
 		if (!hasTasks) {
 			setSelectedThreadId(null);
 			return;
@@ -75,7 +75,7 @@ export function ThreadAIModal({
 		}
 		const running = taskList.find((t) => t.status === "running");
 		setSelectedThreadId(running?.threadId ?? taskList[0]?.threadId ?? null);
-	}, [hasTasks, taskList, selectedThreadId]);
+	}, [open, initialThreadId, hasTasks, taskList, selectedThreadId]);
 
 	const selectedTask = useMemo(
 		() => taskList.find((t) => t.threadId === selectedThreadId) ?? null,
