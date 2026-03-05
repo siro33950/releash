@@ -43,13 +43,20 @@ export function ThreadAIModal({
 
 	const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
 
-	// When opened with a specific thread, select it
+	// When opened with a specific thread, select it (only once per open)
+	const appliedRef = useRef(false);
+
 	useEffect(() => {
+		if (!open) {
+			appliedRef.current = false;
+			return;
+		}
 		if (
-			open &&
+			!appliedRef.current &&
 			initialThreadId &&
 			taskList.some((t) => t.threadId === initialThreadId)
 		) {
+			appliedRef.current = true;
 			setSelectedThreadId(initialThreadId);
 		}
 	}, [open, initialThreadId, taskList]);

@@ -149,8 +149,12 @@ fn read_code_snippet(path: &std::path::Path, line_number: u32, end_line: Option<
         return "(empty file)".to_string();
     }
 
-    let start_line = (line_number as usize).saturating_sub(1);
-    let end_line = end_line.map(|e| e as usize).unwrap_or(start_line + 1);
+    let start_line = (line_number as usize)
+        .saturating_sub(1)
+        .min(total_lines.saturating_sub(1));
+    let end_line = end_line
+        .map(|e| (e as usize).min(total_lines))
+        .unwrap_or((start_line + 1).min(total_lines));
 
     let ctx_start = start_line.saturating_sub(CONTEXT_LINES);
     let ctx_end = (end_line + CONTEXT_LINES).min(total_lines);

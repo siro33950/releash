@@ -142,16 +142,20 @@ export function usePrDiff(
 				filePath: absPath,
 				gitRef: headRef,
 			}).catch(() => ""),
-		]).then(([originalContent, modifiedContent]) => {
-			if (!cancelled) {
-				setFileDiff({
-					filename: selectedFile,
-					originalContent,
-					modifiedContent,
-				});
-				setFileDiffLoading(false);
-			}
-		});
+		])
+			.then(([originalContent, modifiedContent]) => {
+				if (!cancelled) {
+					setFileDiff({
+						filename: selectedFile,
+						originalContent,
+						modifiedContent,
+					});
+					setFileDiffLoading(false);
+				}
+			})
+			.catch(() => {
+				if (!cancelled) setFileDiffLoading(false);
+			});
 
 		return () => {
 			cancelled = true;

@@ -97,6 +97,7 @@ export function useThreads(worktreeName: string) {
 				setThreads(latest);
 			} catch (err) {
 				console.error(err);
+				throw err;
 			}
 			return thread;
 		},
@@ -188,26 +189,29 @@ export function useThreads(worktreeName: string) {
 
 	const recalculateAnchorsForFile = useCallback(
 		(filePath: string, currentContent: string) => {
+			const threadsToSync: Thread[] = [];
 			setThreads((prev) => {
 				const updated = recalculateThreadAnchors(
 					prev,
 					filePath,
 					currentContent,
 				);
-				if (updated === prev) return prev;
 				let changed = false;
 				for (let i = 0; i < prev.length; i++) {
 					if (prev[i] !== updated[i]) {
 						changed = true;
-						invoke("update_thread", {
-							worktreeName: worktreeNameRef.current,
-							thread: updated[i],
-							source: "desktop",
-						}).catch(console.error);
+						threadsToSync.push(updated[i]);
 					}
 				}
 				return changed ? updated : prev;
 			});
+			for (const thread of threadsToSync) {
+				invoke("update_thread", {
+					worktreeName: worktreeNameRef.current,
+					thread,
+					source: "desktop",
+				}).catch(console.error);
+			}
 		},
 		[],
 	);

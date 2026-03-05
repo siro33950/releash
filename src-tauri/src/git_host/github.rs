@@ -79,7 +79,7 @@ impl GitHostProvider for GitHubProvider {
             repo_path,
         );
         match output {
-            Some(stdout) => serde_json::from_str(&stdout).unwrap_or_default(),
+            Some(stdout) => parse_pr_files(&stdout),
             None => Vec::new(),
         }
     }
@@ -269,6 +269,23 @@ fn parse_gh_pr_detail(json_str: &str) -> Option<PrDetail> {
 
 fn parse_gh_issue_list_output(json_str: &str) -> Vec<IssueInfo> {
     serde_json::from_str(json_str).unwrap_or_default()
+}
+
+fn parse_pr_files(json_str: &str) -> Vec<PrFile> {
+    if let Ok(files) = serde_json::from_str::<Vec<PrFile>>(json_str) {
+        return files;
+    }
+    let mut all = Vec::new();
+    for line in json_str.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(page) = serde_json::from_str::<Vec<PrFile>>(line) {
+            all.extend(page);
+        }
+    }
+    all
 }
 
 fn parse_pr_review_comments(json_str: &str) -> Vec<PrReviewComment> {

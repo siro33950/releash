@@ -60,10 +60,10 @@ export function useUnresolvedNavigation(
 		(threadId: string) => {
 			const idx = sorted.findIndex((t) => t.id === threadId);
 			if (idx >= 0) {
-				setCurrentIndex(idx);
+				navigateTo(idx);
 			}
 		},
-		[sorted],
+		[sorted, navigateTo],
 	);
 
 	return {

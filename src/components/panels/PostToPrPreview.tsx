@@ -34,7 +34,7 @@ export function PostToPrPreview({
 	}
 
 	return (
-		<Dialog open={open} onOpenChange={(o) => !o && onCancel()}>
+		<Dialog open={open} onOpenChange={(o) => !o && !loading && onCancel()}>
 			<DialogContent className="max-w-lg">
 				<DialogHeader>
 					<DialogTitle>Post to Pull Request</DialogTitle>

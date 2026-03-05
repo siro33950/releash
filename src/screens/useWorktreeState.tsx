@@ -187,7 +187,6 @@ export function useWorktreeState({
 
 	const handleAskAI = useCallback(
 		(threadId: string) => {
-			console.log("[DEBUG] handleAskAI called with threadId:", threadId);
 			threadAI.askAI(threadId, prNumber ?? undefined);
 		},
 		[threadAI, prNumber],
@@ -231,6 +230,8 @@ export function useWorktreeState({
 					"posted-to-pr",
 					postedComment?.id,
 				);
+			} catch (e) {
+				console.error("Failed to post to PR:", e);
 			} finally {
 				setPostToPrLoading(false);
 				setPendingPostToPr(null);

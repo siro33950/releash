@@ -135,7 +135,10 @@ export function RemoteThreadList({
 													)}
 													{thread.entries.length > 1 && (
 														<span className="text-[10px] px-1 rounded bg-muted text-muted-foreground">
-															{thread.entries.length} replies
+															{thread.entries.length - 1}{" "}
+															{thread.entries.length - 1 === 1
+																? "reply"
+																: "replies"}
 														</span>
 													)}
 												</div>

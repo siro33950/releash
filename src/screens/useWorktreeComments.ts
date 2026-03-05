@@ -65,11 +65,10 @@ export function useWorktreeThreads({
 
 	const handleImplementThread = useCallback(
 		(threadId: string) => {
+			if (!terminalRef.current) return;
 			const prompt = formatImplementPrompt(threadId);
-			if (terminalRef.current) {
-				terminalRef.current.writeToTerminal(prompt);
-				terminalRef.current.writeToTerminal("\r");
-			}
+			terminalRef.current.writeToTerminal(prompt);
+			terminalRef.current.writeToTerminal("\r");
 			addEntry(
 				threadId,
 				"Sent to agent for implementation",

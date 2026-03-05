@@ -407,7 +407,9 @@ pub fn add_thread_entry(
     entry: ThreadEntry,
     source: String,
 ) -> Result<Vec<Thread>, String> {
-    store.add_entry(&worktree_name, &thread_id, entry);
+    if !store.add_entry(&worktree_name, &thread_id, entry) {
+        return Err("Thread not found".into());
+    }
     persist_and_notify(&app, &store, &worktree_name, &source)
 }
 
@@ -419,7 +421,9 @@ pub fn remove_thread(
     thread_id: String,
     source: String,
 ) -> Result<Vec<Thread>, String> {
-    store.remove_thread(&worktree_name, &thread_id);
+    if !store.remove_thread(&worktree_name, &thread_id) {
+        return Err("Thread not found".into());
+    }
     persist_and_notify(&app, &store, &worktree_name, &source)
 }
 
@@ -433,7 +437,9 @@ pub fn update_thread_entry_content(
     content: String,
     source: String,
 ) -> Result<Vec<Thread>, String> {
-    store.update_entry(&worktree_name, &thread_id, &entry_id, &content);
+    if !store.update_entry(&worktree_name, &thread_id, &entry_id, &content) {
+        return Err("Entry not found".into());
+    }
     persist_and_notify(&app, &store, &worktree_name, &source)
 }
 
@@ -445,7 +451,9 @@ pub fn update_thread(
     thread: Thread,
     source: String,
 ) -> Result<Vec<Thread>, String> {
-    store.update_thread(&worktree_name, thread);
+    if !store.update_thread(&worktree_name, thread) {
+        return Err("Thread not found".into());
+    }
     persist_and_notify(&app, &store, &worktree_name, &source)
 }
 
@@ -457,7 +465,9 @@ pub fn toggle_resolve_thread(
     thread_id: String,
     source: String,
 ) -> Result<Vec<Thread>, String> {
-    store.resolve_thread(&worktree_name, &thread_id);
+    store
+        .resolve_thread(&worktree_name, &thread_id)
+        .ok_or_else(|| "Thread not found".to_string())?;
     persist_and_notify(&app, &store, &worktree_name, &source)
 }
 

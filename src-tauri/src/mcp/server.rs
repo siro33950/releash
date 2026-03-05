@@ -422,7 +422,7 @@ impl ReleashMcpServer {
     }
 
     #[tool(
-        description = "Get review comments, optionally filtered by file_path, severity, or resolved status."
+        description = "Deprecated: use list_threads instead. Get review comments, optionally filtered by file_path, severity, or resolved status."
     )]
     async fn get_review_comments(
         &self,

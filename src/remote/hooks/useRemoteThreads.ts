@@ -15,7 +15,7 @@ export function useRemoteThreads({ subscribe, send }: UseRemoteThreadsOptions) {
 		return subscribe((msg) => {
 			if (msg.type === "threads_sync") {
 				// Rust now sends camelCase directly — no conversion needed
-				setThreads(msg.payload.threads as Thread[]);
+				setThreads(msg.payload.threads);
 			}
 		});
 	}, [subscribe]);

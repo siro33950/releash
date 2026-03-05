@@ -696,8 +696,13 @@ pub(super) async fn handle_create_thread(
     state: &WsServerState,
     selected_worktree: &Arc<Mutex<Option<String>>>,
 ) -> Option<WsMessage> {
-    let wt = selected_worktree.lock().await;
-    let worktree_name = wt.as_deref()?;
+    let worktree_name = {
+        let wt = selected_worktree.lock().await;
+        match wt.as_deref() {
+            Some(name) => name.to_string(),
+            None => return Some(no_worktree_selected_error()),
+        }
+    };
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -726,8 +731,8 @@ pub(super) async fn handle_create_thread(
         created_at: now,
     };
 
-    state.thread_store.add_thread(worktree_name, thread);
-    thread_persist_emit_broadcast(state, worktree_name);
+    state.thread_store.add_thread(&worktree_name, thread);
+    thread_persist_emit_broadcast(state, &worktree_name);
     None
 }
 
@@ -736,8 +741,13 @@ pub(super) async fn handle_add_thread_entry(
     state: &WsServerState,
     selected_worktree: &Arc<Mutex<Option<String>>>,
 ) -> Option<WsMessage> {
-    let wt = selected_worktree.lock().await;
-    let worktree_name = wt.as_deref()?;
+    let worktree_name = {
+        let wt = selected_worktree.lock().await;
+        match wt.as_deref() {
+            Some(name) => name.to_string(),
+            None => return Some(no_worktree_selected_error()),
+        }
+    };
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -758,8 +768,8 @@ pub(super) async fn handle_add_thread_entry(
 
     state
         .thread_store
-        .add_entry(worktree_name, &req.thread_id, entry);
-    thread_persist_emit_broadcast(state, worktree_name);
+        .add_entry(&worktree_name, &req.thread_id, entry);
+    thread_persist_emit_broadcast(state, &worktree_name);
     None
 }
 
@@ -768,13 +778,18 @@ pub(super) async fn handle_resolve_thread(
     state: &WsServerState,
     selected_worktree: &Arc<Mutex<Option<String>>>,
 ) -> Option<WsMessage> {
-    let wt = selected_worktree.lock().await;
-    let worktree_name = wt.as_deref()?;
+    let worktree_name = {
+        let wt = selected_worktree.lock().await;
+        match wt.as_deref() {
+            Some(name) => name.to_string(),
+            None => return Some(no_worktree_selected_error()),
+        }
+    };
 
     state
         .thread_store
-        .resolve_thread(worktree_name, &req.thread_id);
-    thread_persist_emit_broadcast(state, worktree_name);
+        .resolve_thread(&worktree_name, &req.thread_id);
+    thread_persist_emit_broadcast(state, &worktree_name);
     None
 }
 
@@ -783,13 +798,18 @@ pub(super) async fn handle_delete_thread(
     state: &WsServerState,
     selected_worktree: &Arc<Mutex<Option<String>>>,
 ) -> Option<WsMessage> {
-    let wt = selected_worktree.lock().await;
-    let worktree_name = wt.as_deref()?;
+    let worktree_name = {
+        let wt = selected_worktree.lock().await;
+        match wt.as_deref() {
+            Some(name) => name.to_string(),
+            None => return Some(no_worktree_selected_error()),
+        }
+    };
 
     state
         .thread_store
-        .remove_thread(worktree_name, &req.thread_id);
-    thread_persist_emit_broadcast(state, worktree_name);
+        .remove_thread(&worktree_name, &req.thread_id);
+    thread_persist_emit_broadcast(state, &worktree_name);
     None
 }
 
@@ -798,13 +818,18 @@ pub(super) async fn handle_update_thread_entry(
     state: &WsServerState,
     selected_worktree: &Arc<Mutex<Option<String>>>,
 ) -> Option<WsMessage> {
-    let wt = selected_worktree.lock().await;
-    let worktree_name = wt.as_deref()?;
+    let worktree_name = {
+        let wt = selected_worktree.lock().await;
+        match wt.as_deref() {
+            Some(name) => name.to_string(),
+            None => return Some(no_worktree_selected_error()),
+        }
+    };
 
     state
         .thread_store
-        .update_entry(worktree_name, &req.thread_id, &req.entry_id, &req.content);
-    thread_persist_emit_broadcast(state, worktree_name);
+        .update_entry(&worktree_name, &req.thread_id, &req.entry_id, &req.content);
+    thread_persist_emit_broadcast(state, &worktree_name);
     None
 }
 

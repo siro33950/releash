@@ -108,7 +108,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = (y - era * 400) as u64;
     let m_adj = if m > 2 { m - 3 } else { m + 9 } as u64;
-    let doy = (153 * m_adj + 2) / 5 + d as u64 - 1;
+    let doy = (153 * m_adj + 2) / 5 + (d as u64).saturating_sub(1);
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146097 + doe as i64 - 719468
 }

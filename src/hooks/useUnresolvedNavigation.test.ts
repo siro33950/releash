@@ -120,11 +120,27 @@ describe("useUnresolvedNavigation", () => {
 		expect(result.current.total).toBe(0);
 	});
 
-	it("goToThread sets index correctly", () => {
+	it("goToThread sets index and calls onNavigate", () => {
+		const onNavigate = vi.fn();
 		const threads = [makeThread("t1", "a.rs", 10), makeThread("t2", "b.rs", 5)];
-		const { result } = renderHook(() => useUnresolvedNavigation(threads));
+		const { result } = renderHook(() =>
+			useUnresolvedNavigation(threads, onNavigate),
+		);
 
 		act(() => result.current.goToThread("t2"));
 		expect(result.current.currentIndex).toBe(1);
+		expect(onNavigate).toHaveBeenCalledWith("b.rs", 5);
+	});
+
+	it("goToThread does nothing for unknown thread id", () => {
+		const onNavigate = vi.fn();
+		const threads = [makeThread("t1", "a.rs", 10)];
+		const { result } = renderHook(() =>
+			useUnresolvedNavigation(threads, onNavigate),
+		);
+
+		act(() => result.current.goToThread("unknown"));
+		expect(onNavigate).not.toHaveBeenCalled();
+		expect(result.current.currentIndex).toBe(-1);
 	});
 });

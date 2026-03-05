@@ -6,7 +6,6 @@ import type { Thread } from "@/types/thread";
 
 export interface CommentThreadOptions {
 	thread: Thread;
-	showResolvedThreads?: boolean;
 	onSubmit: (content: string) => void;
 	onCancel: () => void;
 	onDeleteThread?: (threadId: string) => void;

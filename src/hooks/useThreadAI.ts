@@ -154,21 +154,25 @@ export function useThreadAI(
 
 	const spawnTask = useCallback(
 		async (threadId: string, mode: "ask" | "summarize", prNumber?: number) => {
-			console.log(
-				"[DEBUG] spawnTask called, threadId:",
-				threadId,
-				"mode:",
-				mode,
-			);
 			const wt = worktreePathRef.current;
-			if (!wt) {
-				console.log("[DEBUG] spawnTask: no worktreePath, returning");
-				return;
-			}
+			if (!wt) return;
 
 			// If already running for this thread, do nothing
 			const existing = taskMapRef.current.get(threadId);
 			if (existing?.status === "running") return;
+
+			// Set running state before any await to prevent duplicate spawns
+			const placeholder: ThreadAITask = {
+				threadId,
+				filePath: "",
+				lineInfo: "",
+				mode,
+				status: "running",
+				ptyId: null,
+				output: "",
+			};
+			taskMapRef.current.set(threadId, placeholder);
+			syncState();
 
 			try {
 				const invokeCmd =
@@ -182,10 +186,6 @@ export function useThreadAI(
 				});
 
 				const command = buildThreadCommand(settingsRef.current, result.prompt);
-				console.log(
-					"[DEBUG] spawnTask: command:",
-					command ? "has command" : "null (no AI agent)",
-				);
 				if (!command) {
 					const errorTask: ThreadAITask = {
 						threadId,
@@ -201,18 +201,16 @@ export function useThreadAI(
 					return;
 				}
 
-				// Create the task in running state
-				const task: ThreadAITask = {
-					threadId,
-					filePath: result.file_path,
-					lineInfo: "",
-					mode,
-					status: "running",
-					ptyId: null,
-					output: "",
-				};
-				taskMapRef.current.set(threadId, task);
-				syncState();
+				// Update placeholder with actual file path
+				const current = taskMapRef.current.get(threadId);
+				if (current) {
+					const task: ThreadAITask = {
+						...current,
+						filePath: result.file_path,
+					};
+					taskMapRef.current.set(threadId, task);
+					syncState();
+				}
 
 				const info = await invoke<{
 					pty_id: number;
@@ -254,7 +252,6 @@ export function useThreadAI(
 					}
 				}
 			} catch (err) {
-				console.error("[DEBUG] spawnTask error:", err);
 				const errorTask: ThreadAITask = {
 					threadId,
 					filePath: "",
