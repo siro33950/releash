@@ -190,9 +190,9 @@ export function buildThreadCommand(
 	settings: AppSettings,
 	prompt: string,
 ): string | null {
-	const { reviewAgent, reviewModel, customReviewCommand } = settings;
+	const { reviewAgent, reviewModel } = settings;
 
-	if (reviewAgent === "none") {
+	if (reviewAgent === "none" || reviewAgent === "custom") {
 		return null;
 	}
 
@@ -201,11 +201,6 @@ export function buildThreadCommand(
 		.replace(/"/g, '\\"')
 		.replace(/\$/g, "\\$")
 		.replace(/`/g, "\\`");
-
-	if (reviewAgent === "custom") {
-		if (!customReviewCommand) return null;
-		return customReviewCommand.replace("{prompt}", escapedPrompt);
-	}
 
 	const config = AGENT_CONFIGS[reviewAgent];
 	if (!config.threadCommand) return null;

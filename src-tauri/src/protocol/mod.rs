@@ -616,7 +616,6 @@ mod tests {
             }),
             WsMessage::ResolveThread(ResolveThread {
                 thread_id: "t1".to_string(),
-                resolved: true,
             }),
             WsMessage::DeleteThread(DeleteThread {
                 thread_id: "t1".to_string(),

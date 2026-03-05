@@ -166,27 +166,25 @@ export function useWorktreeState({
 	const threadAI = useThreadAI(rootPath, settings, {
 		onCompleted: handleAICompleted,
 	});
+	const { askAI, summarizeForPr, removeTask, taskMap } = threadAI;
 
 	const aiRunningThreadIds = useMemo(() => {
 		const ids = new Set<string>();
-		for (const [threadId, task] of threadAI.taskMap) {
+		for (const [threadId, task] of taskMap) {
 			if (task.status === "running") {
 				ids.add(threadId);
 			}
 		}
 		return ids;
-	}, [threadAI.taskMap]);
+	}, [taskMap]);
 
-	const aiTaskThreadIds = useMemo(
-		() => new Set(threadAI.taskMap.keys()),
-		[threadAI.taskMap],
-	);
+	const aiTaskThreadIds = useMemo(() => new Set(taskMap.keys()), [taskMap]);
 
 	const handleAskAI = useCallback(
 		(threadId: string) => {
-			threadAI.askAI(threadId, prNumber ?? undefined);
+			askAI(threadId, prNumber ?? undefined);
 		},
-		[threadAI, prNumber],
+		[askAI, prNumber],
 	);
 
 	const handleOpenThreadAIModal = useCallback((threadId?: string) => {
@@ -197,9 +195,9 @@ export function useWorktreeState({
 	const handlePostToPr = useCallback(
 		(threadId: string) => {
 			summarizeThreadIdsRef.current.add(threadId);
-			threadAI.summarizeForPr(threadId, prNumber ?? undefined);
+			summarizeForPr(threadId, prNumber ?? undefined);
 		},
-		[threadAI, prNumber],
+		[summarizeForPr, prNumber],
 	);
 
 	const handlePostToPrConfirm = useCallback(
@@ -611,7 +609,7 @@ export function useWorktreeState({
 	// Wrap delete/resolve to also clean up AI tasks
 	const handleDeleteThread = useCallback(
 		(threadId: string) => {
-			threadAI.removeTask(threadId);
+			removeTask(threadId);
 			const thread = mergedThreads.find((t) => t.id === threadId);
 			if (thread && getThreadOrigin(thread) === "pr") {
 				setDismissedPrThreadIds((prev) => new Set(prev).add(threadId));
@@ -619,12 +617,12 @@ export function useWorktreeState({
 				removeThread(threadId);
 			}
 		},
-		[removeThread, threadAI, mergedThreads],
+		[removeThread, removeTask, mergedThreads],
 	);
 
 	const handleResolveThread = useCallback(
 		(threadId: string) => {
-			threadAI.removeTask(threadId);
+			removeTask(threadId);
 			const thread = mergedThreads.find((t) => t.id === threadId);
 			if (thread && getThreadOrigin(thread) === "pr") {
 				setResolvedPrThreadIds((prev) => {
@@ -640,7 +638,7 @@ export function useWorktreeState({
 				resolveThread(threadId);
 			}
 		},
-		[resolveThread, threadAI, mergedThreads],
+		[resolveThread, removeTask, mergedThreads],
 	);
 
 	// --- EditorContext value ---

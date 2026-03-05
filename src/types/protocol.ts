@@ -203,7 +203,6 @@ export interface AddThreadEntry {
 
 export interface ResolveThread {
 	thread_id: string;
-	resolved: boolean;
 }
 
 export interface DeleteThread {

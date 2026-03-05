@@ -95,16 +95,16 @@ fn build_prompt_with_template(
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let mut prompt = template
+    let mut prompt = template.to_string();
+    prompt = expand_conditional_section(&prompt, "PR_DIFF", pr_diff.as_deref());
+    prompt = expand_conditional_section(&prompt, "DIFF", diff.as_deref());
+    prompt = prompt
         .replace("{{WORKTREE}}", worktree_path)
         .replace("{{THREAD_ID}}", thread_id)
         .replace("{{FILE_PATH}}", file_path)
         .replace("{{LINE_RANGE}}", &line_range)
         .replace("{{CODE_SNIPPET}}", &code_snippet)
         .replace("{{THREAD_ENTRIES}}", &thread_entries);
-
-    prompt = expand_conditional_section(&prompt, "PR_DIFF", pr_diff.as_deref());
-    prompt = expand_conditional_section(&prompt, "DIFF", diff.as_deref());
 
     Ok(ThreadAiPrompt {
         prompt,

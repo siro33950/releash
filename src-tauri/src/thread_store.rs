@@ -162,8 +162,10 @@ impl ThreadStore {
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {e}"))?;
 
         let file_path = threads_file(app_data_dir, worktree_name);
-        let entries = self.entries.read();
-        let threads = entries.get(worktree_name).cloned().unwrap_or_default();
+        let threads = {
+            let entries = self.entries.read();
+            entries.get(worktree_name).cloned().unwrap_or_default()
+        };
         let json = serde_json::to_string_pretty(&threads)
             .map_err(|e| format!("Failed to serialize: {e}"))?;
         std::fs::write(&file_path, json).map_err(|e| format!("Failed to write: {e}"))?;

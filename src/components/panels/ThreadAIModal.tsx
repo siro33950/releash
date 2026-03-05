@@ -92,12 +92,16 @@ export function ThreadAIModal({
 
 	const outputRef = useRef<HTMLDivElement>(null);
 
-	// Auto-scroll to bottom when new output arrives
+	// Auto-scroll to bottom when new output arrives (only if near bottom)
 	// biome-ignore lint/correctness/useExhaustiveDependencies: trigger scroll on output change
 	useEffect(() => {
 		const el = outputRef.current;
 		if (el) {
-			el.scrollTop = el.scrollHeight;
+			const isNearBottom =
+				el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+			if (isNearBottom) {
+				el.scrollTop = el.scrollHeight;
+			}
 		}
 	}, [parsedOutput]);
 

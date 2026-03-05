@@ -577,7 +577,7 @@ mod tests {
             {"filename": "src/new.rs", "status": "added", "additions": 50, "deletions": 0}
         ])
         .to_string();
-        let files: Vec<PrFile> = serde_json::from_str(&json).unwrap();
+        let files = parse_pr_files(&json);
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].filename, "src/main.rs");
         assert_eq!(files[0].status, "modified");
@@ -586,8 +586,23 @@ mod tests {
 
     #[test]
     fn parse_pr_files_empty() {
-        let files: Vec<PrFile> = serde_json::from_str("[]").unwrap();
+        let files = parse_pr_files("[]");
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn parse_pr_files_paginated_output() {
+        let page1 = serde_json::json!([
+            {"filename": "a.rs", "status": "modified", "additions": 1, "deletions": 0}
+        ]);
+        let page2 = serde_json::json!([
+            {"filename": "b.rs", "status": "added", "additions": 5, "deletions": 0}
+        ]);
+        let paginated = format!("{}\n{}", page1, page2);
+        let files = parse_pr_files(&paginated);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].filename, "a.rs");
+        assert_eq!(files[1].filename, "b.rs");
     }
 
     /// run_gh_with_timeout と同じパターン（try_wait ポーリング + 後から stdout 読み取り）で

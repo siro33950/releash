@@ -922,6 +922,7 @@ impl ReleashMcpServer {
             self.state.app_handle.as_ref(),
             self.state.app_data_dir.as_ref(),
         ) {
+            let threads = self.state.thread_store.get_all(worktree_path);
             self.state
                 .thread_store
                 .save(data_dir, worktree_path)
@@ -933,12 +934,17 @@ impl ReleashMcpServer {
                 crate::thread_store::ThreadsChangedPayload {
                     worktree_name: worktree_path.to_string(),
                     source: "mcp".to_string(),
-                    threads: self.state.thread_store.get_all(worktree_path),
+                    threads: threads.clone(),
                 },
             )
             .map_err(|e| {
                 McpError::internal_error(format!("Failed to emit threads-changed: {e}"), None)
             })?;
+            self.state
+                .broadcaster
+                .try_send(crate::protocol::WsMessage::ThreadsSync(
+                    crate::protocol::thread::ThreadsSync { threads },
+                ));
         }
         Ok(())
     }

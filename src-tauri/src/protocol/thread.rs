@@ -100,8 +100,6 @@ pub struct AddThreadEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolveThread {
     pub thread_id: String,
-    #[serde(default)]
-    pub resolved: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

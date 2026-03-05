@@ -33,6 +33,7 @@ You can use the following tools to gather additional context:
 - `get_file_symbols` — List symbols (functions, classes, etc.) in a file
 - `explore_symbol` — Find symbol definitions and references
 - `check_diagnostics` — Check for lint/type errors
+- `add_thread_entry` — Post a reply to the thread conversation
 
 ## Instructions
 

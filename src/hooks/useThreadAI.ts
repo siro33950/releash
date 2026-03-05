@@ -37,6 +37,7 @@ export function useThreadAI(
 	const pendingStatusRef = useRef<
 		Map<number, { status: string; exit_code: number | null }>
 	>(new Map());
+	const mountedRef = useRef(true);
 
 	const worktreePathRef = useRef(worktreePath);
 	worktreePathRef.current = worktreePath;
@@ -83,6 +84,7 @@ export function useThreadAI(
 	// Cancel all running PTYs on unmount
 	useEffect(() => {
 		return () => {
+			mountedRef.current = false;
 			for (const ptyId of ptyThreadMapRef.current.keys()) {
 				invoke("cancel_oneshot_pty", { ptyId }).catch(() => {});
 			}
@@ -222,6 +224,11 @@ export function useThreadAI(
 					label: `thread-${mode}:${threadId}`,
 					timeoutSecs: 120,
 				});
+
+				if (!mountedRef.current) {
+					invoke("cancel_oneshot_pty", { ptyId: info.pty_id }).catch(() => {});
+					return;
+				}
 
 				// Check if task was cancelled/removed during await
 				const currentTask = taskMapRef.current.get(threadId);

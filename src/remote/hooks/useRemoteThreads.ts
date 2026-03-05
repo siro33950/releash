@@ -54,7 +54,7 @@ export function useRemoteThreads({ subscribe, send }: UseRemoteThreadsOptions) {
 		(threadId: string) => {
 			send({
 				type: "resolve_thread",
-				payload: { thread_id: threadId, resolved: true },
+				payload: { thread_id: threadId },
 			});
 		},
 		[send],

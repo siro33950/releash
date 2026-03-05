@@ -98,6 +98,7 @@ export function usePrDiff(
 		let cancelled = false;
 		setLoading(true);
 		setError(null);
+		setSelectedFile(null);
 
 		invoke<PrFile[]>("get_pr_files", {
 			repoPath: rootPath,
