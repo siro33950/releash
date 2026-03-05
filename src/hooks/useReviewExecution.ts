@@ -449,6 +449,7 @@ export function useReviewExecution(
 			});
 		} catch {
 			startInFlightRef.current = false;
+			if (!mountedRef.current) return;
 			setState({
 				status: "error",
 				ptyIds: new Set(),
@@ -459,6 +460,11 @@ export function useReviewExecution(
 			return;
 		}
 
+		if (!mountedRef.current) {
+			startInFlightRef.current = false;
+			return;
+		}
+
 		if (runTokenRef.current !== runToken) {
 			startInFlightRef.current = false;
 			return;
@@ -466,6 +472,7 @@ export function useReviewExecution(
 
 		if (tasks.length === 0) {
 			startInFlightRef.current = false;
+			if (!mountedRef.current) return;
 			setState({
 				status: "completed",
 				ptyIds: new Set(),
