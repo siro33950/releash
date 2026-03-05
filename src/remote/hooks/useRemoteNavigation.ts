@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Subscribe } from "./useMessageBus";
 import type { DiffBase } from "./useRemoteFileContent";
 
-export type Tab = "changes" | "diff" | "terminal" | "comments";
+export type Tab = "changes" | "diff" | "terminal" | "comments" | "threads";
 
 interface UseRemoteNavigationOptions {
 	subscribe: Subscribe;

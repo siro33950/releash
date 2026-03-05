@@ -11,8 +11,9 @@ import { useMonacoDiffEditor } from "@/hooks/useMonacoDiffEditor";
 import { useMonacoGutterEditor } from "@/hooks/useMonacoGutterEditor";
 import type { ChangeGroup } from "@/lib/computeHunks";
 import { cn } from "@/lib/utils";
-import type { CommentRange, LineComment } from "@/types/comment";
+import type { CommentRange } from "@/types/comment";
 import type { DiffMode, Theme } from "@/types/settings";
+import type { Thread } from "@/types/thread";
 
 export type { CommentRange } from "@/types/comment";
 export type { DiffBase, DiffMode } from "@/types/settings";
@@ -33,11 +34,18 @@ interface HunkCommentProps {
 		content: string,
 		endLine?: number,
 	) => void;
-	onDeleteComment?: (id: string) => void;
-	onResolveComment?: (id: string) => void;
-	onUpdateComment?: (id: string, content: string) => void;
-	onCopyComment?: (comment: LineComment) => void;
-	getCommentsForLine?: (lineNumber: number) => LineComment[];
+	onAddEntry?: (threadId: string, content: string) => void;
+	onDeleteThread?: (threadId: string) => void;
+	onResolveThread?: (threadId: string) => void;
+	onImplementThread?: (threadId: string) => void;
+	onPostToPr?: (threadId: string) => void;
+	aiRunningThreadIds?: Set<string>;
+	aiTaskThreadIds?: Set<string>;
+	onOpenThreadAIModal?: (threadId?: string) => void;
+	onAskAI?: (threadId: string) => void;
+	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
+	onCopyThread?: (thread: Thread) => void;
+	getThreadsForLine?: (lineNumber: number) => Thread[];
 	revealLine?: RevealLine;
 	theme?: Theme;
 }
@@ -200,10 +208,18 @@ function GutterEditor({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
-	onDeleteComment,
-	onUpdateComment,
-	onCopyComment,
-	getCommentsForLine,
+	onAddEntry,
+	onDeleteThread,
+	onResolveThread,
+	onImplementThread,
+	onPostToPr,
+	aiRunningThreadIds,
+	aiTaskThreadIds,
+	onOpenThreadAIModal,
+	onAskAI,
+	onUpdateEntry,
+	onCopyThread,
+	getThreadsForLine,
 	revealLine,
 	theme,
 	navigation,
@@ -233,10 +249,18 @@ function GutterEditor({
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
-		onDeleteComment,
-		onUpdateComment,
-		onCopyComment,
-		getCommentsForLine,
+		onAddEntry,
+		onDeleteThread,
+		onResolveThread,
+		onImplementThread,
+		onPostToPr,
+		aiRunningThreadIds,
+		aiTaskThreadIds,
+		onOpenThreadAIModal,
+		onAskAI,
+		onUpdateEntry,
+		onCopyThread,
+		getThreadsForLine,
 		revealLine,
 		theme,
 		readOnly,
@@ -266,10 +290,18 @@ function DiffEditor({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
-	onDeleteComment,
-	onUpdateComment,
-	onCopyComment,
-	getCommentsForLine,
+	onAddEntry,
+	onDeleteThread,
+	onResolveThread,
+	onImplementThread,
+	onPostToPr,
+	aiRunningThreadIds,
+	aiTaskThreadIds,
+	onOpenThreadAIModal,
+	onAskAI,
+	onUpdateEntry,
+	onCopyThread,
+	getThreadsForLine,
 	revealLine,
 	theme,
 	navigation,
@@ -301,10 +333,18 @@ function DiffEditor({
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
-		onDeleteComment,
-		onUpdateComment,
-		onCopyComment,
-		getCommentsForLine,
+		onAddEntry,
+		onDeleteThread,
+		onResolveThread,
+		onImplementThread,
+		onPostToPr,
+		aiRunningThreadIds,
+		aiTaskThreadIds,
+		onOpenThreadAIModal,
+		onAskAI,
+		onUpdateEntry,
+		onCopyThread,
+		getThreadsForLine,
 		revealLine,
 		theme,
 		readOnly,
@@ -350,11 +390,18 @@ interface MonacoDiffViewerProps {
 		content: string,
 		endLine?: number,
 	) => void;
-	onDeleteComment?: (id: string) => void;
-	onResolveComment?: (id: string) => void;
-	onUpdateComment?: (id: string, content: string) => void;
-	onCopyComment?: (comment: LineComment) => void;
-	getCommentsForLine?: (lineNumber: number) => LineComment[];
+	onAddEntry?: (threadId: string, content: string) => void;
+	onDeleteThread?: (threadId: string) => void;
+	onResolveThread?: (threadId: string) => void;
+	onImplementThread?: (threadId: string) => void;
+	onPostToPr?: (threadId: string) => void;
+	aiRunningThreadIds?: Set<string>;
+	aiTaskThreadIds?: Set<string>;
+	onOpenThreadAIModal?: (threadId?: string) => void;
+	onAskAI?: (threadId: string) => void;
+	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
+	onCopyThread?: (thread: Thread) => void;
+	getThreadsForLine?: (lineNumber: number) => Thread[];
 	revealLine?: RevealLine;
 	theme?: Theme;
 	filePath?: string;
@@ -375,11 +422,18 @@ export function MonacoDiffViewer({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
-	onDeleteComment,
-	onResolveComment,
-	onUpdateComment,
-	onCopyComment,
-	getCommentsForLine,
+	onAddEntry,
+	onDeleteThread,
+	onResolveThread,
+	onImplementThread,
+	onPostToPr,
+	aiRunningThreadIds,
+	aiTaskThreadIds,
+	onOpenThreadAIModal,
+	onAskAI,
+	onUpdateEntry,
+	onCopyThread,
+	getThreadsForLine,
 	revealLine,
 	theme,
 	filePath,
@@ -392,11 +446,18 @@ export function MonacoDiffViewer({
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
-		onDeleteComment,
-		onResolveComment,
-		onUpdateComment,
-		onCopyComment,
-		getCommentsForLine,
+		onAddEntry,
+		onDeleteThread,
+		onResolveThread,
+		onImplementThread,
+		onPostToPr,
+		aiRunningThreadIds,
+		aiTaskThreadIds,
+		onOpenThreadAIModal,
+		onAskAI,
+		onUpdateEntry,
+		onCopyThread,
+		getThreadsForLine,
 		revealLine,
 		theme,
 	};

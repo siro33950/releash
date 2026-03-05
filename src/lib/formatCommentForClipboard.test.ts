@@ -1,28 +1,35 @@
 import { describe, expect, it } from "vitest";
-import type { LineComment } from "@/types/comment";
+import type { Thread } from "@/types/thread";
 import { formatCommentForClipboard } from "./formatCommentForClipboard";
 
-function makeComment(
-	overrides: Partial<LineComment> & {
+function makeThread(
+	overrides: Partial<Thread> & {
 		filePath: string;
 		lineNumber: number;
 		content: string;
 	},
-): LineComment {
+): Thread {
+	const { content, ...rest } = overrides;
 	return {
-		id: "c-1",
-		status: "unsent",
+		id: "t-1",
+		entries: [
+			{
+				id: "e-1",
+				content,
+				isAi: false,
+				createdAt: Date.now(),
+			},
+		],
 		createdAt: Date.now(),
 		resolved: false,
-		target: "local",
-		...overrides,
+		...rest,
 	};
 }
 
 describe("formatCommentForClipboard", () => {
 	it("should format a single-line comment", () => {
 		const result = formatCommentForClipboard(
-			makeComment({
+			makeThread({
 				filePath: "/src/App.tsx",
 				lineNumber: 42,
 				content: "変数名を改善してください",
@@ -33,7 +40,7 @@ describe("formatCommentForClipboard", () => {
 
 	it("should format a range comment with endLine", () => {
 		const result = formatCommentForClipboard(
-			makeComment({
+			makeThread({
 				filePath: "/src/hooks/useAuth.ts",
 				lineNumber: 5,
 				content: "この範囲をリファクタしてください",

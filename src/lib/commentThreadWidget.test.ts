@@ -1,21 +1,29 @@
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { LineComment } from "@/types/comment";
+import type { Thread, ThreadEntry } from "@/types/thread";
 import type {
 	CommentThreadOptions,
 	CommentThreadZone,
 } from "./commentThreadWidget";
 
-function makeComment(overrides: Partial<LineComment> = {}): LineComment {
+function makeEntry(overrides: Partial<ThreadEntry> = {}): ThreadEntry {
 	return {
-		id: "test-id",
+		id: "e-1",
+		content: "Test comment",
+		isAi: false,
+		createdAt: Date.now(),
+		...overrides,
+	};
+}
+
+function makeThread(overrides: Partial<Thread> = {}): Thread {
+	return {
+		id: "t-1",
 		filePath: "test.ts",
 		lineNumber: 10,
-		content: "Test comment",
-		status: "unsent",
-		createdAt: Date.now(),
+		entries: [makeEntry()],
 		resolved: false,
-		target: "local",
+		createdAt: Date.now(),
 		...overrides,
 	};
 }
@@ -61,13 +69,12 @@ describe("createCommentThread", () => {
 
 	async function createZone(
 		editor: ReturnType<typeof makeMockEditor>,
-		opts: Partial<CommentThreadOptions> & { lineNumber: number },
+		opts: Partial<CommentThreadOptions> & { thread: Thread },
 	): Promise<CommentThreadZone> {
 		const { createCommentThread } = await import("./commentThreadWidget");
 		let zone: CommentThreadZone | undefined;
 		act(() => {
 			zone = createCommentThread(editor as never, {
-				comments: [],
 				onSubmit: vi.fn(),
 				onCancel: vi.fn(),
 				...opts,
@@ -82,7 +89,9 @@ describe("createCommentThread", () => {
 
 	it("should create a widget with header showing line number", async () => {
 		const editor = makeMockEditor();
-		const zone = await createZone(editor, { lineNumber: 42 });
+		const zone = await createZone(editor, {
+			thread: makeThread({ lineNumber: 42 }),
+		});
 
 		const header = zone.domNode.querySelector(".comment-thread-header-title");
 		expect(header?.textContent).toBe("L42");
@@ -92,8 +101,7 @@ describe("createCommentThread", () => {
 	it("should show line range in header for multi-line comment", async () => {
 		const editor = makeMockEditor();
 		const zone = await createZone(editor, {
-			lineNumber: 42,
-			endLine: 48,
+			thread: makeThread({ lineNumber: 42, endLine: 48 }),
 		});
 
 		const header = zone.domNode.querySelector(".comment-thread-header-title");
@@ -104,11 +112,12 @@ describe("createCommentThread", () => {
 	it("should render existing comments with content", async () => {
 		const editor = makeMockEditor();
 		const zone = await createZone(editor, {
-			lineNumber: 10,
-			comments: [
-				makeComment({ content: "First comment" }),
-				makeComment({ id: "id2", content: "Second comment" }),
-			],
+			thread: makeThread({
+				entries: [
+					makeEntry({ id: "e-1", content: "First comment" }),
+					makeEntry({ id: "e-2", content: "Second comment" }),
+				],
+			}),
 		});
 
 		const items = zone.domNode.querySelectorAll(".comment-thread-item");
@@ -125,8 +134,7 @@ describe("createCommentThread", () => {
 	it("should show severity badge when present", async () => {
 		const editor = makeMockEditor();
 		const zone = await createZone(editor, {
-			lineNumber: 10,
-			comments: [makeComment({ severity: "error" })],
+			thread: makeThread({ severity: "error" }),
 		});
 
 		const badge = zone.domNode.querySelector(".comment-thread-severity");
@@ -140,7 +148,7 @@ describe("createCommentThread", () => {
 		const editor = makeMockEditor();
 		const onSubmit = vi.fn();
 		const zone = await createZone(editor, {
-			lineNumber: 10,
+			thread: makeThread({ entries: [] }),
 			onSubmit,
 		});
 
@@ -174,7 +182,7 @@ describe("createCommentThread", () => {
 		const editor = makeMockEditor();
 		const onCancel = vi.fn();
 		const zone = await createZone(editor, {
-			lineNumber: 10,
+			thread: makeThread({ entries: [] }),
 			onCancel,
 		});
 
@@ -193,7 +201,7 @@ describe("createCommentThread", () => {
 		const editor = makeMockEditor();
 		const onCancel = vi.fn();
 		const zone = await createZone(editor, {
-			lineNumber: 10,
+			thread: makeThread({ entries: [] }),
 			onCancel,
 		});
 
@@ -208,13 +216,12 @@ describe("createCommentThread", () => {
 		disposeZone(zone);
 	});
 
-	it("should call onDeleteComment when delete button is clicked", async () => {
+	it("should call onDeleteThread when delete button is clicked", async () => {
 		const editor = makeMockEditor();
 		const onDelete = vi.fn();
 		const zone = await createZone(editor, {
-			lineNumber: 10,
-			comments: [makeComment({ id: "del-1" })],
-			onDeleteComment: onDelete,
+			thread: makeThread({ id: "t-del-1" }),
+			onDeleteThread: onDelete,
 		});
 
 		const deleteBtn = zone.domNode.querySelector<HTMLButtonElement>(
@@ -224,17 +231,16 @@ describe("createCommentThread", () => {
 			deleteBtn?.click();
 		});
 
-		expect(onDelete).toHaveBeenCalledWith("del-1");
+		expect(onDelete).toHaveBeenCalledWith("t-del-1");
 		disposeZone(zone);
 	});
 
-	it("should call onResolveComment when resolve button is clicked", async () => {
+	it("should call onResolveThread when resolve button is clicked", async () => {
 		const editor = makeMockEditor();
 		const onResolve = vi.fn();
 		const zone = await createZone(editor, {
-			lineNumber: 10,
-			comments: [makeComment({ id: "res-1" })],
-			onResolveComment: onResolve,
+			thread: makeThread({ id: "t-res-1" }),
+			onResolveThread: onResolve,
 		});
 
 		const resolveBtn = zone.domNode.querySelector<HTMLButtonElement>(
@@ -244,29 +250,15 @@ describe("createCommentThread", () => {
 			resolveBtn?.click();
 		});
 
-		expect(onResolve).toHaveBeenCalledWith("res-1");
-		disposeZone(zone);
-	});
-
-	it("should filter resolved comments when showResolvedComments is false", async () => {
-		const editor = makeMockEditor();
-		const zone = await createZone(editor, {
-			lineNumber: 10,
-			comments: [
-				makeComment({ id: "active", resolved: false }),
-				makeComment({ id: "resolved", resolved: true }),
-			],
-			showResolvedComments: false,
-		});
-
-		const items = zone.domNode.querySelectorAll(".comment-thread-item");
-		expect(items.length).toBe(1);
+		expect(onResolve).toHaveBeenCalledWith("t-res-1");
 		disposeZone(zone);
 	});
 
 	it("should have a textarea for reply input", async () => {
 		const editor = makeMockEditor();
-		const zone = await createZone(editor, { lineNumber: 10 });
+		const zone = await createZone(editor, {
+			thread: makeThread({ entries: [] }),
+		});
 
 		const textarea = zone.domNode.querySelector(".comment-thread-textarea");
 		expect(textarea).not.toBeNull();
@@ -278,7 +270,9 @@ describe("createCommentThread", () => {
 
 	it("should create a ViewZone and OverlayWidget", async () => {
 		const editor = makeMockEditor();
-		const zone = await createZone(editor, { lineNumber: 10 });
+		const zone = await createZone(editor, {
+			thread: makeThread(),
+		});
 
 		expect(editor.changeViewZones).toHaveBeenCalled();
 		expect(editor.addOverlayWidget).toHaveBeenCalled();
@@ -288,7 +282,9 @@ describe("createCommentThread", () => {
 
 	it("should set width excluding minimap and scrollbar (VSCode ZoneWidget formula)", async () => {
 		const editor = makeMockEditor();
-		const zone = await createZone(editor, { lineNumber: 10 });
+		const zone = await createZone(editor, {
+			thread: makeThread(),
+		});
 
 		// width:800 - minimapWidth:0 - scrollbarWidth:14 - contentLeft:60 = 726px
 		expect(zone.domNode.style.width).toBe("726px");
@@ -298,7 +294,9 @@ describe("createCommentThread", () => {
 
 	it("should remove OverlayWidget on dispose", async () => {
 		const editor = makeMockEditor();
-		const zone = await createZone(editor, { lineNumber: 10 });
+		const zone = await createZone(editor, {
+			thread: makeThread(),
+		});
 
 		disposeZone(zone);
 		expect(editor.removeOverlayWidget).toHaveBeenCalled();

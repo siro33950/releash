@@ -15,6 +15,7 @@ import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { AgentTab } from "@/components/panels/AgentTab";
 import { EditorTabContent } from "@/components/panels/EditorTabContent";
 import { EmptyState } from "@/components/panels/EmptyState";
+import { PostToPrPreview } from "@/components/panels/PostToPrPreview";
 import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
 import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
 import {
@@ -25,6 +26,7 @@ import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
 import { SymbolOutlinePanel } from "@/components/panels/SymbolOutlinePanel";
+import { ThreadAIModal } from "@/components/panels/ThreadAIModal";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -49,9 +51,9 @@ import {
 	GitErrorDialog,
 	SavingConflictDialog,
 } from "@/screens/WorktreeViewDialogs";
-import type { LineComment } from "@/types/comment";
 import type { AppSettings } from "@/types/settings";
 import { buildTerminalCommand } from "@/types/settings";
+import type { Thread } from "@/types/thread";
 
 interface MainLayoutProps {
 	selectedRootPath: string | null;
@@ -106,26 +108,35 @@ function WorktreeContent({
 	});
 
 	const {
-		handleCommentClick: baseCommentClick,
+		handleThreadClick: baseThreadClick,
 		handleSendToTerminal: baseSendToTerminal,
 	} = s;
 
-	// コメントクリック → Editorに切り替え + 既存の行ジャンプ
-	const handleCommentClick = useCallback(
+	// スレッドクリック → Editorに切り替え + 既存の行ジャンプ
+	const handleThreadClick = useCallback(
 		(filePath: string, lineNumber: number) => {
 			setCenterTab("editor");
-			baseCommentClick(filePath, lineNumber);
+			baseThreadClick(filePath, lineNumber);
 		},
-		[setCenterTab, baseCommentClick],
+		[setCenterTab, baseThreadClick],
 	);
 
-	// コメント一括送信 → 既存処理 + Agentに切り替え
-	const handleCommentSent = useCallback(
-		(unsent: LineComment[]) => {
-			baseSendToTerminal(unsent);
+	// スレッド一括送信 → 既存処理 + Agentに切り替え
+	const handleThreadsSent = useCallback(
+		(threadsToSend: Thread[]) => {
+			baseSendToTerminal(threadsToSend);
 			setCenterTab("agent");
 		},
 		[setCenterTab, baseSendToTerminal],
+	);
+
+	const handlePrFileSelect = useCallback(
+		(filename: string, _orig: string, _mod: string) => {
+			const absolutePath = `${rootPath}/${filename}`;
+			s.handleOpenFile(absolutePath);
+			setCenterTab("editor");
+		},
+		[rootPath, s.handleOpenFile, setCenterTab],
 	);
 
 	const handleTabSelect = useCallback(
@@ -327,6 +338,7 @@ function WorktreeContent({
 												<PullRequestPanel
 													rootPath={rootPath}
 													branch={s.branch}
+													onFileSelect={handlePrFileSelect}
 												/>
 											}
 											symbolsContent={
@@ -371,15 +383,17 @@ function WorktreeContent({
 											rootPath={rootPath}
 											theme={settings.theme}
 											settings={settings}
-											comments={s.comments}
-											onCommentClick={handleCommentClick}
-											onDeleteComment={s.removeComment}
-											onResolveComment={s.resolveComment}
-											onSendToTerminal={handleCommentSent}
-											showResolvedComments={s.showResolvedComments}
-											onToggleShowResolved={s.toggleShowResolvedComments}
+											threads={s.threads}
+											onThreadClick={handleThreadClick}
+											onDeleteThread={s.removeThread}
+											onResolveThread={s.resolveThread}
+											onSendToTerminal={handleThreadsSent}
+											showResolvedThreads={s.showResolvedThreads}
+											onToggleShowResolved={s.toggleShowResolvedThreads}
 											onToggleCollapse={handleToggleRightBottom}
 											collapsed={rightBottomCollapsed}
+											aiTaskThreadIds={s.aiTaskThreadIds}
+											onOpenThreadAILog={s.handleOpenThreadAIModal}
 										/>
 									</div>
 								</Panel>
@@ -444,6 +458,20 @@ function WorktreeContent({
 					settings={settings}
 					onSave={onSettingsSave}
 					repoPaths={[rootPath]}
+				/>
+				<PostToPrPreview
+					open={!!s.pendingPostToPr}
+					summary={s.pendingPostToPr?.summary ?? ""}
+					loading={s.postToPrLoading}
+					onPost={s.handlePostToPrConfirm}
+					onCancel={s.handlePostToPrCancel}
+				/>
+				<ThreadAIModal
+					open={s.threadAIModalOpen}
+					onOpenChange={s.setThreadAIModalOpen}
+					tasks={s.threadAI.taskMap}
+					onCancelTask={s.threadAI.cancelTask}
+					initialThreadId={s.threadAIInitialThreadId}
 				/>
 			</EditorContext.Provider>
 		</GitStatusProvider>

@@ -17,6 +17,8 @@ mod review_prompt;
 mod search;
 mod sentry_integration;
 mod shell_integration;
+mod thread_ai;
+mod thread_store;
 mod tls;
 mod tray;
 mod vpn_detect;
@@ -59,6 +61,7 @@ pub fn run() {
             Some(vec!["--hidden"]),
         ))
         .manage(Arc::new(comment_store::CommentStore::default()))
+        .manage(Arc::new(thread_store::ThreadStore::default()))
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(Arc::new(lsp::LspManager::default()))
         .manage(watcher::FileWatcherManager::default())
@@ -261,6 +264,10 @@ pub fn run() {
             git_host::get_pr_detail,
             git_host::fetch_issues,
             git_host::get_cached_issues,
+            git_host::get_pr_files,
+            git_host::get_pr_review_comments,
+            git_host::reply_to_pr_review_comment,
+            git_host::post_pr_comment,
             // Notion
             notion::query_notion_tasks,
             notion::fetch_notion_label_options,
@@ -306,6 +313,7 @@ pub fn run() {
             ws_server::commands::get_server_status,
             ws_server::commands::get_server_info,
             ws_server::commands::broadcast_comments,
+            ws_server::commands::broadcast_threads,
             ws_server::commands::update_terminal_startup_command,
             // Repo registry
             repo_registry::get_repo_paths,
@@ -321,7 +329,7 @@ pub fn run() {
             mcp::mcp_json::save_and_generate_mcp_configs,
             mcp::mcp_json::generate_agent_mcp_config,
             mcp::mcp_json::preview_agent_mcp_config,
-            // Comments
+            // Comments (legacy)
             comment_store::load_comments,
             comment_store::save_comments,
             comment_store::cleanup_comments,
@@ -330,9 +338,22 @@ pub fn run() {
             comment_store::update_comment_content,
             comment_store::mark_comments_sent,
             comment_store::toggle_resolve_comment,
+            // Threads
+            thread_store::load_threads,
+            thread_store::save_threads,
+            thread_store::cleanup_threads,
+            thread_store::add_thread,
+            thread_store::add_thread_entry,
+            thread_store::remove_thread,
+            thread_store::update_thread_entry_content,
+            thread_store::update_thread,
+            thread_store::toggle_resolve_thread,
             // Review prompt
             review_prompt::get_review_prompt,
             review_prompt::get_per_file_review_tasks,
+            // Thread AI
+            thread_ai::build_thread_ai_prompt,
+            thread_ai::build_thread_summarize_prompt,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,

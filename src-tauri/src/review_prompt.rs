@@ -3,8 +3,8 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::State;
 
-use crate::comment_store::CommentStore;
 use crate::git::review::get_review_diff;
+use crate::thread_store::ThreadStore;
 
 const DEFAULT_REVIEW_PROMPT: &str = include_str!("../resources/prompts/review.txt");
 const PER_FILE_REVIEW_TEMPLATE: &str = include_str!("../resources/prompts/review_file.txt");
@@ -23,7 +23,7 @@ pub struct PerFileReviewTask {
 #[tauri::command]
 pub fn get_per_file_review_tasks(
     worktree_path: String,
-    comment_store: State<'_, Arc<CommentStore>>,
+    thread_store: State<'_, Arc<ThreadStore>>,
 ) -> Result<Vec<PerFileReviewTask>, String> {
     let diff = get_review_diff(&worktree_path, None, None, None)
         .map_err(|e| format!("failed to get review diff: {e}"))?;
@@ -59,22 +59,27 @@ pub fn get_per_file_review_tasks(
         .changed_files
         .iter()
         .map(|file| {
-            // Get existing comments for this file
-            let file_comments =
-                comment_store.get_filtered(&worktree_path, Some(&file.path), None, None);
-            let existing_comments = if file_comments.is_empty() {
+            // Get existing threads for this file
+            let file_threads =
+                thread_store.get_filtered(&worktree_path, Some(&file.path), None, None);
+            let existing_comments = if file_threads.is_empty() {
                 "None".to_string()
             } else {
-                file_comments
+                file_threads
                     .iter()
-                    .map(|c| {
+                    .map(|t| {
+                        let first_content = t
+                            .entries
+                            .first()
+                            .map(|e| e.content.chars().take(200).collect::<String>())
+                            .unwrap_or_default();
                         format!(
                             "- [{}] L{}: {} (severity: {}, resolved: {})",
-                            c.id,
-                            c.line_number,
-                            c.content.chars().take(200).collect::<String>(),
-                            c.severity.as_deref().unwrap_or("none"),
-                            c.resolved,
+                            t.id,
+                            t.line_number,
+                            first_content,
+                            t.severity.as_deref().unwrap_or("none"),
+                            t.resolved,
                         )
                     })
                     .collect::<Vec<_>>()

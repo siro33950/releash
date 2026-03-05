@@ -1,4 +1,10 @@
-import { FileDiff, GitBranch, MessageSquare, Terminal } from "lucide-react";
+import {
+	FileDiff,
+	GitBranch,
+	MessageSquare,
+	MessageSquareDashed,
+	Terminal,
+} from "lucide-react";
 import { useState } from "react";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { DiffTabContent } from "./components/DiffTabContent";
@@ -6,6 +12,7 @@ import { RemoteAppHeader } from "./components/RemoteAppHeader";
 import { RemoteCommentList } from "./components/RemoteCommentList";
 import { RemoteDashboard } from "./components/RemoteDashboard";
 import { RemoteSourceControl } from "./components/RemoteSourceControl";
+import { RemoteThreadList } from "./components/RemoteThreadList";
 import { TabBar } from "./components/TabBar";
 import { TerminalTabContent } from "./components/TerminalTabContent";
 import { useAgentState } from "./hooks/useAgentState";
@@ -18,6 +25,7 @@ import { useRemoteFileContent } from "./hooks/useRemoteFileContent";
 import { useRemoteGitActions } from "./hooks/useRemoteGitActions";
 import { useRemoteGitStatus } from "./hooks/useRemoteGitStatus";
 import { type Tab, useRemoteNavigation } from "./hooks/useRemoteNavigation";
+import { useRemoteThreads } from "./hooks/useRemoteThreads";
 import { useRemoteWorktrees } from "./hooks/useRemoteWorktrees";
 import { useWebSocket } from "./hooks/useWebSocket";
 
@@ -26,6 +34,7 @@ const tabs: { id: Tab; label: string; icon: typeof GitBranch }[] = [
 	{ id: "changes", label: "Changes", icon: GitBranch },
 	{ id: "diff", label: "Diff", icon: FileDiff },
 	{ id: "comments", label: "Comments", icon: MessageSquare },
+	{ id: "threads", label: "Threads", icon: MessageSquareDashed },
 ];
 
 export function RemoteApp() {
@@ -99,6 +108,12 @@ export function RemoteApp() {
 		send,
 		subscribe,
 	});
+	const {
+		threads,
+		addEntry: addThreadEntry,
+		resolveThread,
+		deleteThread,
+	} = useRemoteThreads({ subscribe, send });
 	const { agentStates } = useAgentState({ subscribe });
 
 	const {
@@ -124,6 +139,8 @@ export function RemoteApp() {
 		handleSendToTerminal,
 		handleSendComment,
 		handleCopyComment,
+		handleSendThreadsToTerminal,
+		handleCopyThread,
 		hasDiffChanges,
 		handleStageAll,
 		handleUnstageAll,
@@ -243,6 +260,20 @@ export function RemoteApp() {
 								onUpdateComment={updateComment}
 								onSendComment={handleSendComment}
 								onCopyComment={handleCopyComment}
+							/>
+						</div>
+
+						<div
+							className="absolute inset-0"
+							style={{ display: activeTab === "threads" ? undefined : "none" }}
+						>
+							<RemoteThreadList
+								threads={threads}
+								onSendToTerminal={handleSendThreadsToTerminal}
+								onDeleteThread={deleteThread}
+								onResolveThread={resolveThread}
+								onAddEntry={addThreadEntry}
+								onCopyThread={handleCopyThread}
 							/>
 						</div>
 

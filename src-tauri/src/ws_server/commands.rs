@@ -26,6 +26,7 @@ pub async fn start_server_core(
     let pty_manager = app.state::<Arc<crate::pty::PtyManager>>();
     let pr_cache = app.state::<Arc<crate::git_host::PrCache>>();
     let shared_repo_paths = app.state::<SharedRepoPaths>();
+    let thread_store = app.state::<Arc<crate::thread_store::ThreadStore>>();
 
     {
         let running = handle.running.lock();
@@ -85,6 +86,7 @@ pub async fn start_server_core(
         Some(app.clone()),
         cfg.server.tls.enabled,
         Arc::clone(&pr_cache),
+        Arc::clone(thread_store.inner()),
     ));
 
     start_ws_server(&cfg, Arc::clone(&server_state), shutdown_rx).await?;
@@ -190,6 +192,14 @@ pub fn broadcast_comments(
     broadcaster: tauri::State<'_, Arc<WsBroadcaster>>,
 ) {
     broadcaster.try_send(crate::protocol::WsMessage::CommentsSync(comments));
+}
+
+#[tauri::command]
+pub fn broadcast_threads(
+    threads: crate::protocol::ThreadsSync,
+    broadcaster: tauri::State<'_, Arc<WsBroadcaster>>,
+) {
+    broadcaster.try_send(crate::protocol::WsMessage::ThreadsSync(threads));
 }
 
 #[tauri::command]

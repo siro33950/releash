@@ -1,21 +1,28 @@
 import { describe, expect, it } from "vitest";
-import type { LineComment } from "@/types/comment";
+import type { Thread } from "@/types/thread";
 import { formatCommentsForTerminal } from "./formatCommentsForTerminal";
 
-function makeComment(
-	overrides: Partial<LineComment> & {
+function makeThread(
+	overrides: Partial<Thread> & {
 		filePath: string;
 		lineNumber: number;
 		content: string;
 	},
-): LineComment {
+): Thread {
+	const { content, ...rest } = overrides;
 	return {
-		id: "c-1",
-		status: "unsent",
+		id: "t-1",
+		entries: [
+			{
+				id: "e-1",
+				content,
+				isAi: false,
+				createdAt: Date.now(),
+			},
+		],
 		createdAt: Date.now(),
 		resolved: false,
-		target: "local",
-		...overrides,
+		...rest,
 	};
 }
 
@@ -29,7 +36,7 @@ describe("formatCommentsForTerminal", () => {
 	it("should strip rootPath to produce relative paths", () => {
 		const result = formatCommentsForTerminal(
 			[
-				makeComment({
+				makeThread({
 					filePath: `${ROOT}/src/App.tsx`,
 					lineNumber: 42,
 					content: "変数名を改善してください",
@@ -45,20 +52,20 @@ describe("formatCommentsForTerminal", () => {
 	it("should group comments by file and separate with =====", () => {
 		const result = formatCommentsForTerminal(
 			[
-				makeComment({
-					id: "c-1",
+				makeThread({
+					id: "t-1",
 					filePath: `${ROOT}/src/App.tsx`,
 					lineNumber: 10,
 					content: "comment A",
 				}),
-				makeComment({
-					id: "c-2",
+				makeThread({
+					id: "t-2",
 					filePath: `${ROOT}/src/hooks/useAuth.ts`,
 					lineNumber: 5,
 					content: "comment B",
 				}),
-				makeComment({
-					id: "c-3",
+				makeThread({
+					id: "t-3",
 					filePath: `${ROOT}/src/App.tsx`,
 					lineNumber: 20,
 					content: "comment C",
@@ -84,7 +91,7 @@ describe("formatCommentsForTerminal", () => {
 	it("should format range comment as L5-12", () => {
 		const result = formatCommentsForTerminal(
 			[
-				makeComment({
+				makeThread({
 					filePath: `${ROOT}/src/App.tsx`,
 					lineNumber: 5,
 					content: "range comment",
@@ -99,14 +106,14 @@ describe("formatCommentsForTerminal", () => {
 	it("should sort comments by line number within a file", () => {
 		const result = formatCommentsForTerminal(
 			[
-				makeComment({
-					id: "c-1",
+				makeThread({
+					id: "t-1",
 					filePath: `${ROOT}/src/App.tsx`,
 					lineNumber: 50,
 					content: "later",
 				}),
-				makeComment({
-					id: "c-2",
+				makeThread({
+					id: "t-2",
 					filePath: `${ROOT}/src/App.tsx`,
 					lineNumber: 10,
 					content: "earlier",
@@ -129,7 +136,7 @@ describe("formatCommentsForTerminal", () => {
 	it("should not append separator after the last comment", () => {
 		const result = formatCommentsForTerminal(
 			[
-				makeComment({
+				makeThread({
 					filePath: `${ROOT}/src/App.tsx`,
 					lineNumber: 1,
 					content: "only one",
@@ -142,7 +149,7 @@ describe("formatCommentsForTerminal", () => {
 
 	it("should keep filePath as-is when rootPath is not provided", () => {
 		const result = formatCommentsForTerminal([
-			makeComment({
+			makeThread({
 				filePath: "src/App.tsx",
 				lineNumber: 1,
 				content: "relative path comment",

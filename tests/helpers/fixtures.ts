@@ -102,13 +102,34 @@ const baseIpcHandler: Record<string, unknown> = {
 	"plugin:autostart|enable": null,
 	"plugin:autostart|disable": null,
 
-	// Comments
+	// Comments (legacy)
 	load_comments: [],
 	add_comment: null,
 	remove_comment: true,
 	update_comment_content: true,
 	mark_comments_sent: null,
 	toggle_resolve_comment: null,
+
+	// Threads
+	load_threads: [],
+	save_threads: null,
+	cleanup_threads: null,
+	add_thread: null,
+	add_thread_entry: null,
+	remove_thread: null,
+	update_thread_entry_content: null,
+	update_thread: null,
+	toggle_resolve_thread: null,
+	broadcast_threads: null,
+
+	// Thread AI
+	build_thread_ai_prompt: null,
+	build_thread_summarize_prompt: null,
+
+	// OneShot PTY
+	cancel_oneshot_pty: null,
+	spawn_oneshot_pty: null,
+	get_oneshot_pty_output: null,
 
 	// Branch base
 	get_branch_base: null,
@@ -173,6 +194,10 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// PullRequestPanel
 	get_pr_detail: null,
+	get_pr_files: [],
+	get_pr_review_comments: [],
+	reply_to_pr_review_comment: null,
+	post_pr_comment: null,
 
 	// IssuePanel
 	list_branches: [],

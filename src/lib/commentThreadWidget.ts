@@ -2,25 +2,38 @@ import type * as Monaco from "monaco-editor";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { CommentThread } from "@/components/panels/CommentThread";
-import type { LineComment } from "@/types/comment";
+import type { Thread } from "@/types/thread";
 
 export interface CommentThreadOptions {
-	lineNumber: number;
-	endLine?: number;
-	comments: LineComment[];
-	showResolvedComments?: boolean;
+	thread: Thread;
 	onSubmit: (content: string) => void;
 	onCancel: () => void;
-	onDeleteComment?: (id: string) => void;
-	onUpdateComment?: (id: string, content: string) => void;
-	onCopyComment?: (comment: LineComment) => void;
-	onResolveComment?: (id: string) => void;
+	onDeleteThread?: (threadId: string) => void;
+	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
+	onCopyThread?: (thread: Thread) => void;
+	onResolveThread?: (threadId: string) => void;
+	onImplementThread?: (threadId: string) => void;
+	onPostToPr?: (threadId: string) => void;
+	aiRunningThreadIds?: Set<string>;
+	aiTaskThreadIds?: Set<string>;
+	onOpenThreadAIModal?: (threadId?: string) => void;
 }
 
 export interface CommentThreadZone {
 	zoneId: string;
 	domNode: HTMLElement;
 	dispose: () => void;
+	update: (
+		partial: Partial<
+			Pick<
+				CommentThreadOptions,
+				| "aiRunningThreadIds"
+				| "aiTaskThreadIds"
+				| "onOpenThreadAIModal"
+				| "thread"
+			>
+		>,
+	) => void;
 }
 
 const HEADER_HEIGHT = 32;
@@ -28,15 +41,25 @@ const ITEM_HEIGHT = 52;
 const ITEM_MAX_VISIBLE = 4;
 const INPUT_AREA_HEIGHT = 88;
 const ACTIONS_HEIGHT = 40;
+const CONCLUSION_HEIGHT = 40;
 const PADDING = 8;
 
-function computeInitialHeight(commentCount: number): number {
+function computeInitialHeight(
+	entryCount: number,
+	hasConclusionActions: boolean,
+): number {
 	const itemsHeight =
-		commentCount > 0
-			? Math.min(commentCount * ITEM_HEIGHT, ITEM_MAX_VISIBLE * ITEM_HEIGHT)
+		entryCount > 0
+			? Math.min(entryCount * ITEM_HEIGHT, ITEM_MAX_VISIBLE * ITEM_HEIGHT)
 			: 0;
+	const conclusionHeight = hasConclusionActions ? CONCLUSION_HEIGHT : 0;
 	return (
-		HEADER_HEIGHT + itemsHeight + INPUT_AREA_HEIGHT + ACTIONS_HEIGHT + PADDING
+		HEADER_HEIGHT +
+		itemsHeight +
+		INPUT_AREA_HEIGHT +
+		ACTIONS_HEIGHT +
+		conclusionHeight +
+		PADDING
 	);
 }
 
@@ -50,21 +73,24 @@ export function createCommentThread(
 	options: CommentThreadOptions,
 ): CommentThreadZone {
 	const {
-		lineNumber,
-		endLine,
-		comments: rawComments,
-		showResolvedComments = true,
+		thread,
 		onSubmit,
 		onCancel,
-		onDeleteComment,
-		onUpdateComment,
-		onCopyComment,
-		onResolveComment,
+		onDeleteThread,
+		onUpdateEntry,
+		onCopyThread,
+		onResolveThread,
+		onImplementThread,
+		onPostToPr,
+		aiRunningThreadIds,
+		aiTaskThreadIds,
+		onOpenThreadAIModal,
 	} = options;
 
-	const comments = showResolvedComments
-		? rawComments
-		: rawComments.filter((c) => !c.resolved);
+	let currentThread = thread;
+	let currentAiRunningThreadIds = aiRunningThreadIds;
+	let currentAiTaskThreadIds = aiTaskThreadIds;
+	let currentOnOpenThreadAIModal = onOpenThreadAIModal;
 
 	// VSCode ZoneWidget 方式:
 	// ViewZone = 空のdomNodeでスペース確保のみ
@@ -135,26 +161,35 @@ export function createCommentThread(
 
 	// React レンダリング
 	const root = createRoot(widgetNode);
-	root.render(
-		createElement(CommentThread, {
-			lineNumber,
-			endLine,
-			comments,
-			onSubmit,
-			onCancel,
-			onDeleteComment,
-			onUpdateComment,
-			onCopyComment,
-			onResolveComment,
-		}),
-	);
+	const renderWidget = () => {
+		root.render(
+			createElement(CommentThread, {
+				thread: currentThread,
+				onSubmit,
+				onCancel,
+				onDeleteThread,
+				onUpdateEntry,
+				onCopyThread,
+				onResolveThread,
+				onImplementThread,
+				onPostToPr,
+				aiRunningThreadIds: currentAiRunningThreadIds,
+				aiTaskThreadIds: currentAiTaskThreadIds,
+				onOpenThreadAIModal: currentOnOpenThreadAIModal,
+			}),
+		);
+	};
+	renderWidget();
 
 	// ViewZone（スペース確保 + OverlayWidget 位置同期）
 	// heightInPx は初期推定値。React描画後に ResizeObserver で実際の高さに同期する。
-	const afterLineNumber = endLine ?? lineNumber;
+	const afterLineNumber = thread.endLine ?? thread.lineNumber;
 	const zoneConfig: Monaco.editor.IViewZone = {
 		afterLineNumber,
-		heightInPx: computeInitialHeight(comments.length),
+		heightInPx: computeInitialHeight(
+			thread.entries.length,
+			!!(onImplementThread || onPostToPr),
+		),
 		domNode: zoneDomNode,
 		suppressMouseDown: true,
 		onDomNodeTop: (top: number) => {
@@ -179,8 +214,6 @@ export function createCommentThread(
 	editor.addOverlayWidget(overlayWidget);
 
 	// React描画後に実際の高さを計測し、ViewZoneの高さを同期する
-	// delegate の heightInPx を書き換えて accessor.layoutZone(id) を呼ぶと
-	// Monaco が _computeWhitespaceProps → _heightInPixels で再読み込みする
 	const resizeObserver = new ResizeObserver(() => {
 		const actualHeight = widgetNode.offsetHeight;
 		if (actualHeight > 0 && actualHeight !== zoneConfig.heightInPx) {
@@ -202,9 +235,43 @@ export function createCommentThread(
 		});
 	};
 
+	const update = (
+		partial: Partial<
+			Pick<
+				CommentThreadOptions,
+				| "aiRunningThreadIds"
+				| "aiTaskThreadIds"
+				| "onOpenThreadAIModal"
+				| "thread"
+			>
+		>,
+	) => {
+		if (partial.thread !== undefined) {
+			currentThread = partial.thread;
+			const newAfterLine = partial.thread.endLine ?? partial.thread.lineNumber;
+			if (zoneConfig.afterLineNumber !== newAfterLine) {
+				zoneConfig.afterLineNumber = newAfterLine;
+				editor.changeViewZones((accessor) => {
+					accessor.layoutZone(zoneId);
+				});
+			}
+		}
+		if (partial.aiRunningThreadIds !== undefined) {
+			currentAiRunningThreadIds = partial.aiRunningThreadIds;
+		}
+		if (partial.aiTaskThreadIds !== undefined) {
+			currentAiTaskThreadIds = partial.aiTaskThreadIds;
+		}
+		if (partial.onOpenThreadAIModal !== undefined) {
+			currentOnOpenThreadAIModal = partial.onOpenThreadAIModal;
+		}
+		renderWidget();
+	};
+
 	return {
 		zoneId,
 		domNode: widgetNode,
 		dispose,
+		update,
 	};
 }

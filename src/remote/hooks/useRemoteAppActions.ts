@@ -2,11 +2,33 @@ import { useCallback, useMemo } from "react";
 import { computeHunks } from "@/lib/computeHunks";
 import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
+import { formatImplementPrompt } from "@/lib/formatImplementPrompt";
 import { generatePatch } from "@/lib/generatePatch";
 import type { LineComment } from "@/types/comment";
 import type { WsMessage } from "@/types/protocol";
+import type { Thread } from "@/types/thread";
 import type { DiffBase } from "./useRemoteFileContent";
 import type { Tab } from "./useRemoteNavigation";
+
+function lineCommentToThread(c: LineComment): Thread {
+	return {
+		id: c.id,
+		filePath: c.filePath,
+		lineNumber: c.lineNumber,
+		...(c.endLine != null && { endLine: c.endLine }),
+		entries: [
+			{
+				id: c.id,
+				content: c.content,
+				isAi: c.target === "review",
+				createdAt: c.createdAt,
+			},
+		],
+		resolved: c.resolved,
+		...(c.severity != null && { severity: c.severity }),
+		createdAt: c.createdAt,
+	};
+}
 
 interface FileContent {
 	path: string;
@@ -130,7 +152,7 @@ export function useRemoteAppActions({
 
 	const handleSendToTerminal = useCallback(
 		(unsent: LineComment[]) => {
-			const text = formatCommentsForTerminal(unsent);
+			const text = formatCommentsForTerminal(unsent.map(lineCommentToThread));
 			if (!text) return;
 			if (activePtyId != null) {
 				send({
@@ -155,7 +177,7 @@ export function useRemoteAppActions({
 
 	const handleSendComment = useCallback(
 		(comment: LineComment) => {
-			const text = formatCommentsForTerminal([comment]);
+			const text = formatCommentsForTerminal([lineCommentToThread(comment)]);
 			if (!text) return;
 			if (activePtyId != null) {
 				send({
@@ -177,9 +199,66 @@ export function useRemoteAppActions({
 	);
 
 	const handleCopyComment = useCallback((comment: LineComment) => {
-		const text = formatCommentForClipboard(comment);
+		const text = formatCommentForClipboard(lineCommentToThread(comment));
 		navigator.clipboard.writeText(text).catch(() => {});
 	}, []);
+
+	const handleSendThreadsToTerminal = useCallback(
+		(threadsToSend: Thread[]) => {
+			const text = formatCommentsForTerminal(threadsToSend);
+			if (!text) return;
+			if (activePtyId != null) {
+				send({
+					type: "pty_input",
+					payload: { pty_id: activePtyId, data: text },
+				});
+				send({
+					type: "pty_input",
+					payload: { pty_id: activePtyId, data: "\r" },
+				});
+			}
+		},
+		[send, activePtyId],
+	);
+
+	const handleCopyThread = useCallback((thread: Thread) => {
+		const text = formatCommentForClipboard(thread);
+		navigator.clipboard.writeText(text).catch(() => {});
+	}, []);
+
+	const handleImplementThread = useCallback(
+		(threadId: string) => {
+			const prompt = formatImplementPrompt(threadId);
+			if (activePtyId != null) {
+				send({
+					type: "pty_input",
+					payload: { pty_id: activePtyId, data: prompt },
+				});
+				send({
+					type: "pty_input",
+					payload: { pty_id: activePtyId, data: "\r" },
+				});
+			}
+		},
+		[send, activePtyId],
+	);
+
+	const handleAskAI = useCallback(
+		(threadId: string) => {
+			const text = `Use the get_thread tool with thread_id="${threadId}" to read the thread, then answer the question.`;
+			if (activePtyId != null) {
+				send({
+					type: "pty_input",
+					payload: { pty_id: activePtyId, data: text },
+				});
+				send({
+					type: "pty_input",
+					payload: { pty_id: activePtyId, data: "\r" },
+				});
+			}
+		},
+		[send, activePtyId],
+	);
 
 	const hasDiffChanges = useMemo(() => {
 		if (!content) return false;
@@ -230,6 +309,10 @@ export function useRemoteAppActions({
 		handleSendToTerminal,
 		handleSendComment,
 		handleCopyComment,
+		handleSendThreadsToTerminal,
+		handleCopyThread,
+		handleImplementThread,
+		handleAskAI,
 		hasDiffChanges,
 		handleStageAll,
 		handleUnstageAll,

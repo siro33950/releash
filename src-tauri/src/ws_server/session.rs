@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use tauri::Emitter;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
@@ -158,10 +157,6 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
         .map_err(|e| format!("Failed to send auth result: {e}"))?;
 
     log::info!("Client authenticated: {}", peer_addr);
-
-    if let Some(app) = &state.app_handle {
-        let _ = app.emit("remote-connected", ());
-    }
 
     // --- WsBroadcaster セットアップ（PTYスポーン前に初期化） ---
     let (tx, mut rx) = WsBroadcaster::create_channel();

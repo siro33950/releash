@@ -145,6 +145,7 @@ impl CommentStore {
         entries.get(worktree_name).cloned().unwrap_or_default()
     }
 
+    #[allow(dead_code)] // Retained for backward compatibility during ThreadStore migration
     pub fn get_filtered(
         &self,
         worktree_name: &str,

@@ -10,23 +10,27 @@ import {
 import { SidebarPanel } from "@/components/panels/SidebarPanel";
 import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPanel";
 import type { EditorContextValue } from "@/contexts/EditorContext";
+import { useBranchPr } from "@/hooks/useBranchPr";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useEditorLayout } from "@/hooks/useEditorLayout";
 import { useFileContents } from "@/hooks/useFileContents";
 import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
-import { useLineComments } from "@/hooks/useLineComments";
 import { useLsp } from "@/hooks/useLsp";
 import { useLspMonaco } from "@/hooks/useLspMonaco";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
+import { usePrDetail } from "@/hooks/usePrDetail";
+import { usePrDiff } from "@/hooks/usePrDiff";
+import { useThreadAI } from "@/hooks/useThreadAI";
+import { useThreads } from "@/hooks/useThreads";
 import { agentStateKey, aggregateAgentState } from "@/lib/agentStateUtils";
 import {
 	registerDefinitionProviders,
 	setLspActive,
 } from "@/lib/monaco-definition-provider";
 import { normalizePath } from "@/lib/normalizePath";
-import { useWorktreeComments } from "@/screens/useWorktreeComments";
+import { useWorktreeThreads } from "@/screens/useWorktreeComments";
 import {
 	editorReducer,
 	gitReducer,
@@ -38,6 +42,7 @@ import {
 import { useWorktreeMenuHandlers } from "@/screens/useWorktreeMenuHandlers";
 import type { AgentStateSync } from "@/types/protocol";
 import type { AppSettings, DiffBase, DiffMode } from "@/types/settings";
+import { getThreadOrigin } from "@/types/thread";
 
 interface UseWorktreeStateParams {
 	rootPath: string;
@@ -89,15 +94,151 @@ export function useWorktreeState({
 		Map<string, AgentStateSync>
 	>(new Map());
 	const {
-		comments,
-		addComment,
-		removeComment,
-		updateComment,
-		markAsSent,
-		resolveComment,
-		showResolvedComments,
-		toggleShowResolvedComments,
-	} = useLineComments(rootPath);
+		threads,
+		createThread,
+		addEntry,
+		removeThread,
+		updateEntry,
+		resolveThread,
+		showResolvedThreads,
+		toggleShowResolvedThreads,
+		recalculateAnchorsForFile,
+	} = useThreads(rootPath);
+
+	// --- PR integration ---
+	const { prNumber } = useBranchPr(rootPath, branch);
+	const { detail: prDetail } = usePrDetail(rootPath, prNumber);
+	const prDiff = usePrDiff(
+		rootPath,
+		prNumber,
+		prDetail?.base_ref_name ?? null,
+		prDetail?.head_ref_name ?? null,
+	);
+	const { replyToThread, postPrComment, reviewThreads } = prDiff;
+
+	const [dismissedPrThreadIds, setDismissedPrThreadIds] = useState(
+		() => new Set<string>(),
+	);
+	const [resolvedPrThreadIds, setResolvedPrThreadIds] = useState(
+		() => new Set<string>(),
+	);
+
+	const mergedThreads = useMemo(() => {
+		if (reviewThreads.length === 0) return threads;
+		const localIds = new Set(threads.map((t) => t.id));
+		const prOnly = reviewThreads
+			.filter((t) => !localIds.has(t.id) && !dismissedPrThreadIds.has(t.id))
+			.map((t) =>
+				resolvedPrThreadIds.has(t.id) ? { ...t, resolved: true } : t,
+			);
+		return [...threads, ...prOnly];
+	}, [threads, reviewThreads, dismissedPrThreadIds, resolvedPrThreadIds]);
+
+	// Track which threads are using summarize mode
+	const summarizeThreadIdsRef = useRef<Set<string>>(new Set());
+
+	const [pendingPostToPr, setPendingPostToPr] = useState<{
+		threadId: string;
+		summary: string;
+	} | null>(null);
+	const [postToPrLoading, setPostToPrLoading] = useState(false);
+	const [threadAIModalOpen, setThreadAIModalOpen] = useState(false);
+	const [threadAIInitialThreadId, setThreadAIInitialThreadId] = useState<
+		string | null
+	>(null);
+
+	const handleAICompleted = useCallback((threadId: string, output: string) => {
+		// AI posts its response via MCP add_thread_entry tool.
+		// UI updates automatically via threads-changed event.
+		if (summarizeThreadIdsRef.current.has(threadId)) {
+			summarizeThreadIdsRef.current.delete(threadId);
+			// For summarize, show the post-to-PR preview.
+			const summary = output.trim();
+			if (summary) {
+				setPendingPostToPr({ threadId, summary });
+			}
+		}
+	}, []);
+	const threadAI = useThreadAI(rootPath, settings, {
+		onCompleted: handleAICompleted,
+	});
+	const { askAI, summarizeForPr, removeTask, taskMap } = threadAI;
+
+	const aiRunningThreadIds = useMemo(() => {
+		const ids = new Set<string>();
+		for (const [threadId, task] of taskMap) {
+			if (task.status === "running") {
+				ids.add(threadId);
+			}
+		}
+		return ids;
+	}, [taskMap]);
+
+	const aiTaskThreadIds = useMemo(() => new Set(taskMap.keys()), [taskMap]);
+
+	const handleAskAI = useCallback(
+		(threadId: string) => {
+			askAI(threadId, prNumber ?? undefined);
+		},
+		[askAI, prNumber],
+	);
+
+	const handleOpenThreadAIModal = useCallback((threadId?: string) => {
+		setThreadAIInitialThreadId(threadId ?? null);
+		setThreadAIModalOpen(true);
+	}, []);
+
+	const handlePostToPr = useCallback(
+		(threadId: string) => {
+			summarizeThreadIdsRef.current.add(threadId);
+			summarizeForPr(threadId, prNumber ?? undefined);
+		},
+		[summarizeForPr, prNumber],
+	);
+
+	const handlePostToPrConfirm = useCallback(
+		async (editedSummary: string) => {
+			if (!pendingPostToPr) return;
+			setPostToPrLoading(true);
+			try {
+				const thread = mergedThreads.find(
+					(t) => t.id === pendingPostToPr.threadId,
+				);
+				let postedComment: { id: number } | null = null;
+				if (thread?.entries[0]?.prCommentId) {
+					postedComment = await replyToThread(
+						pendingPostToPr.threadId,
+						editedSummary,
+					);
+				} else {
+					postedComment = await postPrComment(editedSummary);
+				}
+				if (!postedComment) {
+					console.error("Failed to post comment to PR");
+					return;
+				}
+				addEntry(
+					pendingPostToPr.threadId,
+					"Posted to PR",
+					false,
+					undefined,
+					"posted-to-pr",
+					postedComment.id,
+				);
+				setPendingPostToPr(null);
+			} catch (e) {
+				console.error("Failed to post to PR:", e);
+			} finally {
+				setPostToPrLoading(false);
+			}
+		},
+		[pendingPostToPr, mergedThreads, replyToThread, postPrComment, addEntry],
+	);
+
+	const handlePostToPrCancel = useCallback(() => {
+		setPendingPostToPr(null);
+	}, []);
+
 	const { stage, unstage, push, discard, stageHunk, createBranch } =
 		useGitActions();
 	const terminalRef = useRef<TerminalTabPanelHandle>(null);
@@ -246,8 +387,8 @@ export function useWorktreeState({
 	const rootPathRef = useRef(rootPath);
 	rootPathRef.current = rootPath;
 
-	const commentsRef = useRef(comments);
-	commentsRef.current = comments;
+	const threadsRef = useRef(threads);
+	threadsRef.current = threads;
 
 	const settingsRef = useRef(settings);
 	settingsRef.current = settings;
@@ -306,21 +447,18 @@ export function useWorktreeState({
 
 	const {
 		handleSendToTerminal,
-		handleSendComment,
-		handleCopyComment,
-		handleCommentClick,
-	} = useWorktreeComments({
-		comments,
-		addComment,
-		removeComment,
-		updateComment,
-		markAsSent,
+		handleSendThread,
+		handleCopyThread,
+		handleImplementThread,
+		handleThreadClick,
+	} = useWorktreeThreads({
+		addEntry,
+		resolveThread,
 		activeTabPath,
 		handleOpenFile,
 		terminalRef,
 		rootPath,
 		dispatchEditor,
-		commentsRef,
 	});
 
 	// --- Drag & drop ---
@@ -468,6 +606,41 @@ export function useWorktreeState({
 
 	const closingTab = closingTabPath ? getFileContent(closingTabPath) : null;
 
+	// Wrap delete/resolve to also clean up AI tasks
+	const handleDeleteThread = useCallback(
+		(threadId: string) => {
+			removeTask(threadId);
+			const thread = mergedThreads.find((t) => t.id === threadId);
+			if (thread && getThreadOrigin(thread) === "pr") {
+				setDismissedPrThreadIds((prev) => new Set(prev).add(threadId));
+			} else {
+				removeThread(threadId);
+			}
+		},
+		[removeThread, removeTask, mergedThreads],
+	);
+
+	const handleResolveThread = useCallback(
+		(threadId: string) => {
+			removeTask(threadId);
+			const thread = mergedThreads.find((t) => t.id === threadId);
+			if (thread && getThreadOrigin(thread) === "pr") {
+				setResolvedPrThreadIds((prev) => {
+					const next = new Set(prev);
+					if (next.has(threadId)) {
+						next.delete(threadId);
+					} else {
+						next.add(threadId);
+					}
+					return next;
+				});
+			} else {
+				resolveThread(threadId);
+			}
+		},
+		[resolveThread, removeTask, mergedThreads],
+	);
+
 	// --- EditorContext value ---
 	const editorContextValue = useMemo<EditorContextValue>(
 		() => ({
@@ -478,15 +651,41 @@ export function useWorktreeState({
 			diffMode,
 			setDiffBase,
 			setDiffMode,
-			comments,
-			addComment,
-			deleteComment: removeComment,
-			resolveComment,
-			updateComment,
-			sendComment: handleSendComment,
-			copyComment: handleCopyComment,
-			showResolvedComments,
-			toggleShowResolvedComments,
+			threads: mergedThreads,
+			createThread: async (
+				filePath,
+				lineNumber,
+				content,
+				endLine?,
+				fileContent?,
+			) => {
+				const thread = await createThread(
+					filePath,
+					lineNumber,
+					content,
+					endLine,
+					undefined,
+					undefined,
+					undefined,
+					fileContent,
+				);
+				handleAskAI(thread.id);
+			},
+			addEntry,
+			deleteThread: handleDeleteThread,
+			resolveThread: handleResolveThread,
+			implementThread: handleImplementThread,
+			onPostToPr: prNumber ? handlePostToPr : undefined,
+			aiRunningThreadIds,
+			aiTaskThreadIds,
+			onOpenThreadAIModal: handleOpenThreadAIModal,
+			onAskAI: handleAskAI,
+			updateEntry,
+			sendThread: handleSendThread,
+			copyThread: handleCopyThread,
+			recalculateAnchorsForFile,
+			showResolvedThreads,
+			toggleShowResolvedThreads,
 			rootPath,
 			onStageHunk: stageHunk,
 			onGitChanged: refreshGit,
@@ -507,15 +706,24 @@ export function useWorktreeState({
 			diffMode,
 			setDiffBase,
 			setDiffMode,
-			comments,
-			addComment,
-			removeComment,
-			resolveComment,
-			updateComment,
-			handleSendComment,
-			handleCopyComment,
-			showResolvedComments,
-			toggleShowResolvedComments,
+			mergedThreads,
+			createThread,
+			addEntry,
+			handleDeleteThread,
+			handleResolveThread,
+			handleImplementThread,
+			handleAskAI,
+			prNumber,
+			handlePostToPr,
+			aiRunningThreadIds,
+			aiTaskThreadIds,
+			handleOpenThreadAIModal,
+			updateEntry,
+			handleSendThread,
+			handleCopyThread,
+			recalculateAnchorsForFile,
+			showResolvedThreads,
+			toggleShowResolvedThreads,
 			rootPath,
 			stageHunk,
 			refreshGit,
@@ -558,12 +766,12 @@ export function useWorktreeState({
 		ready,
 		activeView,
 		editorDragOver,
-		comments,
-		removeComment,
-		updateComment,
-		resolveComment,
-		showResolvedComments,
-		toggleShowResolvedComments,
+		threads: mergedThreads,
+		removeThread: handleDeleteThread,
+		updateEntry,
+		resolveThread: handleResolveThread,
+		showResolvedThreads,
+		toggleShowResolvedThreads,
 		gitError,
 		isSettingsOpen,
 		closingTabPath,
@@ -588,9 +796,9 @@ export function useWorktreeState({
 		handleEditorDrop,
 		editorDropZoneRef,
 		handleSendToTerminal,
-		handleSendComment,
-		handleCopyComment,
-		handleCommentClick,
+		handleSendThread,
+		handleCopyThread,
+		handleThreadClick,
 		handleUnsavedSave,
 		handleUnsavedDiscard,
 		handleUnsavedCancel,
@@ -609,5 +817,16 @@ export function useWorktreeState({
 		lspStatus,
 		lspCrashCount,
 		lspRetryManually,
+		threadAI,
+		threadAIModalOpen,
+		setThreadAIModalOpen,
+		threadAIInitialThreadId,
+		aiTaskThreadIds,
+		handleOpenThreadAIModal,
+		addEntry,
+		pendingPostToPr,
+		postToPrLoading,
+		handlePostToPrConfirm,
+		handlePostToPrCancel,
 	};
 }

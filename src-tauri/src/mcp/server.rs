@@ -8,7 +8,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler
 
 use tauri::{Emitter, Manager};
 
-use crate::protocol::CommentItem;
+use crate::protocol::thread::{Thread, ThreadEntry};
 
 use super::state::McpSharedState;
 
@@ -119,6 +119,42 @@ pub struct ResolveCommentParams {
     pub worktree: String,
     /// Comment ID to resolve/unresolve
     pub comment_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// Thread tool parameter types (Phase D-1)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetThreadParams {
+    /// Worktree path (from worktrees_list)
+    pub worktree: String,
+    /// Thread ID
+    pub thread_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListThreadsParams {
+    /// Worktree path (from worktrees_list)
+    pub worktree: String,
+    /// Filter by file path
+    pub file_path: Option<String>,
+    /// Filter by severity
+    pub severity: Option<String>,
+    /// Filter by resolved status
+    pub resolved: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AddThreadEntryParams {
+    /// Worktree path (from worktrees_list)
+    pub worktree: String,
+    /// Thread ID to add entry to
+    pub thread_id: String,
+    /// Entry content (message text)
+    pub content: String,
+    /// Whether the entry is from AI
+    pub is_ai: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -306,7 +342,7 @@ impl ReleashMcpServer {
     // -----------------------------------------------------------------------
 
     #[tool(
-        description = "Post a review comment on a specific file and line. The comment is stored and broadcast to the UI."
+        description = "Post a review comment on a specific file and line. The comment is stored as a thread and broadcast to the UI."
     )]
     async fn post_review_comment(
         &self,
@@ -325,75 +361,49 @@ impl ReleashMcpServer {
             }
         }
 
-        let comment_id = uuid::Uuid::new_v4().to_string();
+        let thread_id = uuid::Uuid::new_v4().to_string();
+        let entry_id = uuid::Uuid::new_v4().to_string();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64()
             * 1000.0;
 
-        let comment = CommentItem {
-            id: comment_id.clone(),
+        let thread = Thread {
+            id: thread_id.clone(),
             file_path: params.file_path.clone(),
             line_number: params.line_number,
             end_line: params.end_line,
-            content: params.content.clone(),
-            status: "unsent".to_string(),
-            created_at: now,
-            parent_id: None,
-            severity: params.severity.clone(),
+            entries: vec![ThreadEntry {
+                id: entry_id,
+                content: params.content.clone(),
+                is_ai: true,
+                action: None,
+                author_name: Some("AI Review".to_string()),
+                author_avatar_url: None,
+                pr_comment_id: None,
+                created_at: now,
+            }],
             resolved: false,
-            target: "review".to_string(),
+            severity: params.severity.clone(),
+            anchor: None,
+            created_at: now,
         };
 
         self.state
-            .comment_store
-            .add(&worktree_path, comment.clone());
+            .thread_store
+            .add_thread(&worktree_path, thread)
+            .map_err(|e| McpError::internal_error(e, None))?;
 
-        // Persist and notify desktop UI
-        if let (Some(app), Some(data_dir)) = (
-            self.state.app_handle.as_ref(),
-            self.state.app_data_dir.as_ref(),
-        ) {
-            self.state
-                .comment_store
-                .save(data_dir, &worktree_path)
-                .map_err(|e| {
-                    McpError::internal_error(format!("Failed to save comments: {e}"), None)
-                })?;
-            app.emit(
-                "comments-changed",
-                crate::comment_store::CommentsChangedPayload {
-                    worktree_name: worktree_path.clone(),
-                    source: "mcp".to_string(),
-                },
-            )
-            .map_err(|e| {
-                McpError::internal_error(format!("Failed to emit comments-changed: {e}"), None)
-            })?;
-        }
-
-        // Broadcast via WebSocket
-        self.state
-            .broadcaster
-            .try_send(crate::protocol::WsMessage::AddComment(
-                crate::protocol::AddComment {
-                    file_path: params.file_path,
-                    line_number: params.line_number,
-                    end_line: params.end_line,
-                    content: params.content,
-                    severity: params.severity,
-                    target: "review".to_string(),
-                },
-            ));
+        self.persist_and_emit_threads_changed(&worktree_path)?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Comment posted: {comment_id}"
+            "Comment posted: {thread_id}"
         ))]))
     }
 
     #[tool(
-        description = "Get review comments, optionally filtered by file_path, severity, or resolved status."
+        description = "Deprecated: use list_threads instead. Get review comments, optionally filtered by file_path, severity, or resolved status."
     )]
     async fn get_review_comments(
         &self,
@@ -401,19 +411,20 @@ impl ReleashMcpServer {
     ) -> Result<CallToolResult, McpError> {
         let worktree_path = self.resolve_worktree(&params.worktree)?;
 
-        let comments = self.state.comment_store.get_filtered(
+        let threads = self.state.thread_store.get_filtered(
             &worktree_path,
             params.file_path.as_deref(),
             params.severity.as_deref(),
             params.resolved,
         );
 
-        let json = serde_json::to_string_pretty(&comments).map_err(WorktreeError::from)?;
+        // Return threads serialized as JSON
+        let json = serde_json::to_string_pretty(&threads).map_err(WorktreeError::from)?;
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    #[tool(description = "Toggle the resolved status of a review comment by its ID.")]
+    #[tool(description = "Toggle the resolved status of a review comment (thread) by its ID.")]
     async fn resolve_comment(
         &self,
         Parameters(params): Parameters<ResolveCommentParams>,
@@ -422,39 +433,113 @@ impl ReleashMcpServer {
 
         let resolved = self
             .state
-            .comment_store
-            .resolve(&worktree_path, &params.comment_id)
+            .thread_store
+            .resolve_thread(&worktree_path, &params.comment_id)
             .ok_or_else(|| {
-                McpError::invalid_params(format!("Comment not found: {}", params.comment_id), None)
+                McpError::invalid_params(format!("Thread not found: {}", params.comment_id), None)
             })?;
 
-        // Persist and notify desktop UI
-        if let (Some(app), Some(data_dir)) = (
-            self.state.app_handle.as_ref(),
-            self.state.app_data_dir.as_ref(),
-        ) {
-            self.state
-                .comment_store
-                .save(data_dir, &worktree_path)
-                .map_err(|e| {
-                    McpError::internal_error(format!("Failed to save comments: {e}"), None)
-                })?;
-            app.emit(
-                "comments-changed",
-                crate::comment_store::CommentsChangedPayload {
-                    worktree_name: worktree_path.clone(),
-                    source: "mcp".to_string(),
-                },
-            )
-            .map_err(|e| {
-                McpError::internal_error(format!("Failed to emit comments-changed: {e}"), None)
-            })?;
-        }
+        self.persist_and_emit_threads_changed(&worktree_path)?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Comment {} {}",
+            "Thread {} {}",
             params.comment_id,
             if resolved { "resolved" } else { "unresolved" }
+        ))]))
+    }
+
+    // -----------------------------------------------------------------------
+    // Thread tools (Phase D-1)
+    // -----------------------------------------------------------------------
+
+    #[tool(
+        description = "Get a thread by its ID. Returns the full thread with all entries (messages)."
+    )]
+    async fn get_thread(
+        &self,
+        Parameters(params): Parameters<GetThreadParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let worktree_path = self.resolve_worktree(&params.worktree)?;
+
+        let thread = self
+            .state
+            .thread_store
+            .get_thread(&worktree_path, &params.thread_id)
+            .ok_or_else(|| {
+                McpError::invalid_params(format!("Thread not found: {}", params.thread_id), None)
+            })?;
+
+        let json = serde_json::to_string_pretty(&thread).map_err(WorktreeError::from)?;
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        description = "List threads in a worktree, optionally filtered by file_path, severity, or resolved status."
+    )]
+    async fn list_threads(
+        &self,
+        Parameters(params): Parameters<ListThreadsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let worktree_path = self.resolve_worktree(&params.worktree)?;
+
+        let threads = self.state.thread_store.get_filtered(
+            &worktree_path,
+            params.file_path.as_deref(),
+            params.severity.as_deref(),
+            params.resolved,
+        );
+
+        let json = serde_json::to_string_pretty(&threads).map_err(WorktreeError::from)?;
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        description = "Add an entry (message) to an existing thread. Use is_ai=true for AI-generated responses."
+    )]
+    async fn add_thread_entry(
+        &self,
+        Parameters(params): Parameters<AddThreadEntryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let worktree_path = self.resolve_worktree(&params.worktree)?;
+
+        let entry_id = uuid::Uuid::new_v4().to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+            * 1000.0;
+
+        let entry = ThreadEntry {
+            id: entry_id.clone(),
+            content: params.content.clone(),
+            is_ai: params.is_ai,
+            action: None,
+            author_name: if params.is_ai {
+                Some("AI".to_string())
+            } else {
+                None
+            },
+            author_avatar_url: None,
+            pr_comment_id: None,
+            created_at: now,
+        };
+
+        let added = self
+            .state
+            .thread_store
+            .add_entry(&worktree_path, &params.thread_id, entry);
+
+        if !added {
+            return Err(McpError::invalid_params(
+                format!("Thread not found: {}", params.thread_id),
+                None,
+            ));
+        }
+
+        self.persist_and_emit_threads_changed(&worktree_path)?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Entry added: {entry_id}"
         ))]))
     }
 
@@ -835,6 +920,38 @@ impl ReleashMcpServer {
     // Internal helpers
     // -----------------------------------------------------------------------
 
+    fn persist_and_emit_threads_changed(&self, worktree_path: &str) -> Result<(), McpError> {
+        if let (Some(app), Some(data_dir)) = (
+            self.state.app_handle.as_ref(),
+            self.state.app_data_dir.as_ref(),
+        ) {
+            let threads = self.state.thread_store.get_all(worktree_path);
+            self.state
+                .thread_store
+                .save(data_dir, worktree_path)
+                .map_err(|e| {
+                    McpError::internal_error(format!("Failed to save threads: {e}"), None)
+                })?;
+            app.emit(
+                "threads-changed",
+                crate::thread_store::ThreadsChangedPayload {
+                    worktree_name: worktree_path.to_string(),
+                    source: "mcp".to_string(),
+                    threads: threads.clone(),
+                },
+            )
+            .map_err(|e| {
+                McpError::internal_error(format!("Failed to emit threads-changed: {e}"), None)
+            })?;
+            self.state
+                .broadcaster
+                .try_send(crate::protocol::WsMessage::ThreadsSync(
+                    crate::protocol::thread::ThreadsSync { threads },
+                ));
+        }
+        Ok(())
+    }
+
     fn get_lsp_and_app(&self) -> Result<(Arc<crate::lsp::LspManager>, tauri::AppHandle), McpError> {
         let app = self
             .state
@@ -953,6 +1070,7 @@ mod tests {
         let agent_states: crate::hook_listener::AgentStatesMap =
             Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
         let comment_store = Arc::new(crate::comment_store::CommentStore::default());
+        let thread_store = Arc::new(crate::thread_store::ThreadStore::default());
 
         let state = McpSharedState {
             repo_paths: Arc::new(parking_lot::RwLock::new(repo_paths)),
@@ -961,6 +1079,7 @@ mod tests {
             broadcaster,
             agent_states,
             comment_store,
+            thread_store,
             app_handle: None,
             app_data_dir: None,
         };

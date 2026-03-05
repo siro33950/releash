@@ -226,6 +226,7 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
     let broadcaster = app.state::<Arc<crate::ws_bridge::WsBroadcaster>>();
     let agent_states = app.state::<crate::hook_listener::AgentStatesMap>();
     let comment_store = app.state::<Arc<crate::comment_store::CommentStore>>();
+    let thread_store = app.state::<Arc<crate::thread_store::ThreadStore>>();
     let shared_repo_paths = app.state::<crate::repo_registry::SharedRepoPaths>();
 
     let app_data_dir = app.path().app_data_dir().ok();
@@ -237,6 +238,7 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
         broadcaster: Arc::clone(&broadcaster),
         agent_states: Arc::clone(agent_states.inner()),
         comment_store: Arc::clone(comment_store.inner()),
+        thread_store: Arc::clone(thread_store.inner()),
         app_handle: Some(app.clone()),
         app_data_dir,
     })

@@ -32,7 +32,8 @@ export function useBranchPr(rootPath: string, branchName: string | null) {
 				setPrNumber(null);
 				setPrUrl(null);
 			}
-		} catch {
+		} catch (err) {
+			console.error("Failed to fetch PR status:", err);
 			setPrNumber(null);
 			setPrUrl(null);
 		} finally {
