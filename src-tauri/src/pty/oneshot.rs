@@ -255,17 +255,31 @@ impl OneShotPtyManager {
         self.entries.lock().get(&pty_id).map(|e| e.info.clone())
     }
 
-    pub fn list_active(&self) -> Vec<OneShotPtyInfo> {
+    pub fn list_active_for_worktree(&self, worktree_path: &str) -> Vec<FindOneShotPtyResult> {
         self.entries
             .lock()
             .values()
             .filter(|e| {
-                matches!(
-                    e.info.status,
-                    OneShotStatus::Starting | OneShotStatus::Running
-                )
+                e.info.worktree_path == worktree_path
+                    && matches!(
+                        e.info.status,
+                        OneShotStatus::Starting | OneShotStatus::Running
+                    )
             })
-            .map(|e| e.info.clone())
+            .map(|e| {
+                let buffered_output = if e.output.is_empty() {
+                    self.pty_manager
+                        .find_session(&e.info.session_key)
+                        .map(|s| s.buffered_output)
+                        .unwrap_or_default()
+                } else {
+                    e.output.clone()
+                };
+                FindOneShotPtyResult {
+                    info: e.info.clone(),
+                    buffered_output,
+                }
+            })
             .collect()
     }
 
@@ -335,8 +349,11 @@ pub fn get_oneshot_pty_status(
 }
 
 #[tauri::command]
-pub fn list_oneshot_ptys(state: State<'_, Arc<OneShotPtyManager>>) -> Vec<OneShotPtyInfo> {
-    state.list_active()
+pub fn list_oneshot_ptys(
+    state: State<'_, Arc<OneShotPtyManager>>,
+    worktree_path: String,
+) -> Vec<FindOneShotPtyResult> {
+    state.list_active_for_worktree(&worktree_path)
 }
 
 #[tauri::command]
@@ -409,7 +426,7 @@ mod tests {
     fn oneshot_manager_new() {
         let pm = Arc::new(PtyManager::default());
         let mgr = OneShotPtyManager::new(pm);
-        assert!(mgr.list_active().is_empty());
+        assert!(mgr.list_active_for_worktree("/repo").is_empty());
     }
 
     #[test]
@@ -423,7 +440,7 @@ mod tests {
     fn test_active_pty_ids_empty() {
         let pm = Arc::new(PtyManager::default());
         let mgr = OneShotPtyManager::new(pm);
-        assert!(mgr.list_active().is_empty());
+        assert!(mgr.list_active_for_worktree("/repo").is_empty());
     }
 
     #[test]
@@ -446,12 +463,53 @@ mod tests {
             );
         }
 
-        let active = mgr.list_active();
+        let active = mgr.list_active_for_worktree("/repo");
         assert_eq!(active.len(), 2);
-        let ids: Vec<u64> = active.iter().map(|e| e.pty_id).collect();
+        let ids: Vec<u64> = active.iter().map(|e| e.info.pty_id).collect();
         assert!(ids.contains(&1));
         assert!(ids.contains(&3));
         assert!(!ids.contains(&2));
+    }
+
+    #[test]
+    fn list_active_for_worktree_filters_by_path() {
+        let pm = Arc::new(PtyManager::default());
+        let mgr = OneShotPtyManager::new(pm);
+
+        {
+            let mut entries = mgr.entries.lock();
+            entries.insert(
+                1,
+                make_entry(1, "/repo-a", "review:src/a.ts", OneShotStatus::Running),
+            );
+            entries.insert(
+                2,
+                make_entry(2, "/repo-b", "review:src/b.ts", OneShotStatus::Running),
+            );
+            entries.insert(
+                3,
+                make_entry(3, "/repo-a", "review:src/c.ts", OneShotStatus::Starting),
+            );
+            entries.insert(4, {
+                let mut e = make_entry(4, "/repo-a", "review:src/d.ts", OneShotStatus::Completed);
+                e.info.exit_code = Some(0);
+                e.info.completed_at = Some(1.0);
+                e
+            });
+        }
+
+        let active_a = mgr.list_active_for_worktree("/repo-a");
+        assert_eq!(active_a.len(), 2);
+        let ids_a: Vec<u64> = active_a.iter().map(|e| e.info.pty_id).collect();
+        assert!(ids_a.contains(&1));
+        assert!(ids_a.contains(&3));
+
+        let active_b = mgr.list_active_for_worktree("/repo-b");
+        assert_eq!(active_b.len(), 1);
+        assert_eq!(active_b[0].info.pty_id, 2);
+
+        let active_c = mgr.list_active_for_worktree("/repo-c");
+        assert!(active_c.is_empty());
     }
 
     #[test]

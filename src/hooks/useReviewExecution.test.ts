@@ -571,6 +571,7 @@ describe("useReviewExecution", () => {
 		// Reset mock for this specific test
 		mockInvoke.mockReset();
 		mockInvoke.mockResolvedValueOnce([]); // list_oneshot_ptys on mount
+		mockInvoke.mockResolvedValue(undefined); // default for cleanup/cancel calls
 
 		const tasks = [makeTask("src/a.ts"), makeTask("src/b.ts")];
 
@@ -614,5 +615,63 @@ describe("useReviewExecution", () => {
 		expect(
 			mockInvoke.mock.calls.filter((c) => c[0] === "spawn_oneshot_pty").length,
 		).toBe(2);
+	});
+
+	it("should not cancel PTYs on unmount (keep running for recovery)", async () => {
+		mockInvoke
+			.mockResolvedValueOnce([makeTask("src/a.ts"), makeTask("src/b.ts")])
+			.mockResolvedValueOnce({
+				pty_id: 50,
+				session_key: "s1",
+				status: "running",
+			})
+			.mockResolvedValueOnce({
+				pty_id: 51,
+				session_key: "s2",
+				status: "running",
+			});
+
+		const { result, unmount } = await renderReviewHook();
+
+		await act(async () => {
+			await result.current.startReview();
+		});
+
+		expect(result.current.status).toBe("running");
+
+		// Clear mock to isolate unmount calls
+		mockInvoke.mockClear();
+		mockInvoke.mockResolvedValue(undefined);
+
+		unmount();
+
+		// PTYs should NOT be cancelled — they keep running for mount-time recovery
+		const cancelCalls = mockInvoke.mock.calls.filter(
+			(c) => c[0] === "cancel_oneshot_pty",
+		);
+		expect(cancelCalls).toHaveLength(0);
+	});
+
+	it("should not update state after unmount via syncState", async () => {
+		mockInvoke
+			.mockResolvedValueOnce([makeTask("src/a.ts")])
+			.mockResolvedValueOnce({
+				pty_id: 60,
+				session_key: "s",
+				status: "running",
+			});
+
+		const { result, unmount } = await renderReviewHook();
+
+		await act(async () => {
+			await result.current.startReview();
+		});
+
+		unmount();
+
+		// Emitting events after unmount should not throw
+		expect(() => {
+			emitPtyStatus(60, "completed", 0);
+		}).not.toThrow();
 	});
 });

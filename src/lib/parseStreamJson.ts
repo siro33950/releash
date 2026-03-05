@@ -33,7 +33,8 @@ interface StreamEvent {
  * Parse Claude Code `--output-format stream-json` NDJSON output
  * into human-readable text. Non-JSON lines fall through to ANSI stripping.
  */
-export function parseStreamJson(raw: string): string {
+export function parseStreamJson(raw: string | undefined | null): string {
+	if (!raw) return "";
 	const lines = raw.split("\n");
 	const parts: string[] = [];
 
