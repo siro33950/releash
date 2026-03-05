@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { LineComment } from "@/types/comment";
 import { DEFAULT_SETTINGS } from "@/types/settings";
+import type { Thread } from "@/types/thread";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -31,16 +31,21 @@ vi.mock("@tauri-apps/api/event", () => ({
 const WORKTREE = "/tmp/test-worktree";
 const SETTINGS = { ...DEFAULT_SETTINGS, reviewAgent: "claude" as const };
 
-function makeComment(overrides: Partial<LineComment> = {}): LineComment {
+function makeThread(overrides: Partial<Thread> = {}): Thread {
 	return {
-		id: "c-1",
+		id: "t-1",
 		filePath: "src/file.ts",
 		lineNumber: 10,
-		content: "review issue",
-		status: "unsent",
+		entries: [
+			{
+				id: "e-1",
+				content: "review issue",
+				isAi: true,
+				createdAt: Date.now(),
+			},
+		],
 		createdAt: Date.now(),
 		resolved: false,
-		target: "review",
 		severity: "warning",
 		...overrides,
 	};
@@ -81,13 +86,13 @@ describe("useReviewExecution", () => {
 
 	async function renderReviewHook(
 		worktreePath: string | null = WORKTREE,
-		comments: LineComment[] = [],
+		threads: Thread[] = [],
 	) {
 		const { useReviewExecution } = await import("./useReviewExecution");
 		const utils = renderHook(
-			(props: { wt: string | null; comments: LineComment[] }) =>
-				useReviewExecution(props.wt, props.comments, SETTINGS),
-			{ initialProps: { wt: worktreePath, comments } },
+			(props: { wt: string | null; threads: Thread[] }) =>
+				useReviewExecution(props.wt, props.threads, SETTINGS),
+			{ initialProps: { wt: worktreePath, threads } },
 		);
 		// flush useEffect listeners
 		await act(async () => {});
@@ -392,18 +397,29 @@ describe("useReviewExecution", () => {
 
 	it("should compute summary when status is completed", async () => {
 		const now = Date.now();
-		const comments: LineComment[] = [
-			makeComment({ id: "e1", severity: "error", createdAt: now + 100 }),
-			makeComment({ id: "w1", severity: "warning", createdAt: now + 200 }),
-			makeComment({ id: "i1", severity: "info", createdAt: now + 300 }),
-			makeComment({ id: "s1", severity: "suggestion", createdAt: now + 400 }),
-			// Old comment - should not be counted
-			makeComment({ id: "old", severity: "error", createdAt: now - 100000 }),
-			// Non-review comment - should not be counted
-			makeComment({
-				id: "local",
+		const threads: Thread[] = [
+			makeThread({ id: "t-e1", severity: "error", createdAt: now + 100 }),
+			makeThread({ id: "t-w1", severity: "warning", createdAt: now + 200 }),
+			makeThread({ id: "t-i1", severity: "info", createdAt: now + 300 }),
+			makeThread({
+				id: "t-s1",
+				severity: "suggestion",
+				createdAt: now + 400,
+			}),
+			// Old thread - should not be counted
+			makeThread({ id: "t-old", severity: "error", createdAt: now - 100000 }),
+			// Non-review thread (isAi: false) - should not be counted
+			makeThread({
+				id: "t-local",
 				severity: "error",
-				target: "local",
+				entries: [
+					{
+						id: "e-local",
+						content: "local issue",
+						isAi: false,
+						createdAt: now + 500,
+					},
+				],
 				createdAt: now + 500,
 			}),
 		];
@@ -422,8 +438,8 @@ describe("useReviewExecution", () => {
 			await result.current.startReview();
 		});
 
-		// Provide comments and complete
-		rerender({ wt: WORKTREE, comments });
+		// Provide threads and complete
+		rerender({ wt: WORKTREE, threads });
 
 		act(() => {
 			emitPtyStatus(10, "completed", 0);

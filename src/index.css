@@ -604,6 +604,69 @@
 	background: color-mix(in oklch, var(--primary) 85%, black);
 }
 
+.comment-thread-ai-thinking {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	font-size: 12px;
+	color: var(--blue-400, #60a5fa);
+	background: color-mix(in oklch, var(--primary) 5%, transparent);
+	border: none;
+	border-top: 1px solid var(--border);
+	cursor: pointer;
+	width: 100%;
+	text-align: left;
+}
+.comment-thread-ai-thinking:hover {
+	background: color-mix(in oklch, var(--primary) 10%, transparent);
+}
+
+.comment-thread-ai-log {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	font-size: 12px;
+	color: var(--muted-foreground);
+	background: transparent;
+	border: none;
+	border-top: 1px solid var(--border);
+	cursor: pointer;
+	width: 100%;
+	text-align: left;
+}
+.comment-thread-ai-log:hover {
+	background: color-mix(in oklch, var(--primary) 10%, transparent);
+	color: var(--foreground);
+}
+
+.comment-thread-conclusion {
+	display: flex;
+	gap: 8px;
+	padding: 8px;
+	border-top: 1px solid var(--border);
+}
+
+.comment-thread-conclusion-btn {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 10px;
+	font-size: 12px;
+	border-radius: 4px;
+	border: 1px solid var(--border);
+	background: transparent;
+	color: var(--muted-foreground);
+	cursor: pointer;
+	transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.comment-thread-conclusion-btn:hover {
+	background: var(--muted);
+	color: var(--foreground);
+	border-color: var(--foreground);
+}
 
 /* Comment range highlight (drag selection) */
 .comment-range-highlight {

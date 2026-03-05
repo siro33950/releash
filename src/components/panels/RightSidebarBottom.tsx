@@ -18,8 +18,8 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useReviewExecution } from "@/hooks/useReviewExecution";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
-import type { LineComment } from "@/types/comment";
 import type { AppSettings, Theme } from "@/types/settings";
+import type { Thread } from "@/types/thread";
 
 type RightBottomTab = "terminal" | "review";
 
@@ -27,34 +27,37 @@ interface RightSidebarBottomProps {
 	rootPath: string;
 	theme?: Theme;
 	settings: AppSettings;
-	comments: LineComment[];
-	onCommentClick?: (filePath: string, lineNumber: number) => void;
-	onDeleteComment?: (id: string) => void;
-	onResolveComment?: (id: string) => void;
-	onSendToTerminal?: (comments: LineComment[]) => void;
-	showResolvedComments?: boolean;
+	threads: Thread[];
+	onThreadClick?: (filePath: string, lineNumber: number) => void;
+	onDeleteThread?: (id: string) => void;
+	onResolveThread?: (id: string) => void;
+	onSendToTerminal?: (threads: Thread[]) => void;
+	showResolvedThreads?: boolean;
 	onToggleShowResolved?: () => void;
 	onToggleCollapse?: () => void;
 	collapsed?: boolean;
+	aiTaskThreadIds?: Set<string>;
+	onOpenThreadAILog?: (threadId: string) => void;
 }
 
 export function RightSidebarBottom({
 	rootPath,
 	theme,
 	settings,
-	comments,
-	onCommentClick,
-	onDeleteComment,
-	onResolveComment,
+	threads,
+	onThreadClick,
+	onDeleteThread,
+	onResolveThread,
 	onSendToTerminal,
-	showResolvedComments,
+	showResolvedThreads,
 	onToggleShowResolved,
 	onToggleCollapse,
 	collapsed,
+	aiTaskThreadIds,
+	onOpenThreadAILog,
 }: RightSidebarBottomProps) {
 	const [activeTab, setActiveTab] = useState<RightBottomTab>("terminal");
 	const [reviewModalOpen, setReviewModalOpen] = useState(false);
-	const unsentComments = comments.filter((c) => c.status === "unsent");
 
 	const {
 		status,
@@ -64,7 +67,7 @@ export function RightSidebarBottom({
 		startReview,
 		cancelReview,
 		reset,
-	} = useReviewExecution(rootPath, comments, settings);
+	} = useReviewExecution(rootPath, threads, settings);
 
 	const isRunning = status === "starting" || status === "running";
 	const isFinished =
@@ -84,15 +87,15 @@ export function RightSidebarBottom({
 				? "bg-destructive"
 				: null;
 
-	const unresolvedComments = useMemo(
-		() => comments.filter((c) => !c.resolved),
-		[comments],
+	const unresolvedThreads = useMemo(
+		() => threads.filter((t) => !t.resolved),
+		[threads],
 	);
 
-	const handleCopyComments = useCallback(() => {
-		const text = formatCommentsForTerminal(unresolvedComments);
+	const handleCopyThreads = useCallback(() => {
+		const text = formatCommentsForTerminal(unresolvedThreads);
 		navigator.clipboard.writeText(text);
-	}, [unresolvedComments]);
+	}, [unresolvedThreads]);
 
 	return (
 		<div className="flex flex-col h-full">
@@ -128,9 +131,9 @@ export function RightSidebarBottom({
 								{reviewDot && (
 									<span className={`size-1.5 rounded-full ${reviewDot}`} />
 								)}
-								{!reviewDot && unresolvedComments.length > 0 && (
+								{!reviewDot && unresolvedThreads.length > 0 && (
 									<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
-										{unresolvedComments.length}
+										{unresolvedThreads.length}
 									</span>
 								)}
 							</span>
@@ -150,12 +153,14 @@ export function RightSidebarBottom({
 				>
 					<div className="flex-1 min-h-0 overflow-hidden">
 						<CommentList
-							comments={comments}
-							onCommentClick={onCommentClick}
-							onDeleteComment={onDeleteComment}
-							onResolveComment={onResolveComment}
-							showResolvedComments={showResolvedComments}
+							threads={threads}
+							onThreadClick={onThreadClick}
+							onDeleteThread={onDeleteThread}
+							onResolveThread={onResolveThread}
+							showResolvedThreads={showResolvedThreads}
 							onToggleShowResolved={onToggleShowResolved}
+							aiTaskThreadIds={aiTaskThreadIds}
+							onOpenThreadAILog={onOpenThreadAILog}
 						/>
 					</div>
 					<div className="shrink-0 px-3 py-2 border-t border-border flex items-center gap-2">
@@ -185,8 +190,8 @@ export function RightSidebarBottom({
 						<Button
 							variant="ghost"
 							size="icon-xs"
-							onClick={handleCopyComments}
-							disabled={unresolvedComments.length === 0}
+							onClick={handleCopyThreads}
+							disabled={unresolvedThreads.length === 0}
 							aria-label="Copy comments to clipboard"
 						>
 							<Copy />
@@ -195,8 +200,8 @@ export function RightSidebarBottom({
 							<Button
 								variant="ghost"
 								size="xs"
-								onClick={() => onSendToTerminal(unsentComments)}
-								disabled={unsentComments.length === 0}
+								onClick={() => onSendToTerminal(unresolvedThreads)}
+								disabled={unresolvedThreads.length === 0}
 							>
 								<Send />
 								Send

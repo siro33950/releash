@@ -1,172 +1,93 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import {
-	type MutableRefObject,
-	type RefObject,
-	useCallback,
-	useEffect,
-} from "react";
+import type { RefObject } from "react";
+import { useCallback } from "react";
 import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPanel";
 import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
+import { formatImplementPrompt } from "@/lib/formatImplementPrompt";
 import { trackEvent } from "@/lib/telemetry";
-import type {
-	CommentSeverity,
-	CommentTarget,
-	LineComment,
-} from "@/types/comment";
+import type { Thread } from "@/types/thread";
 import type { EditorAction } from "./useWorktreeGitActions";
 
-interface UseWorktreeCommentsParams {
-	comments: LineComment[];
-	addComment: (
-		filePath: string,
-		lineNumber: number,
+interface UseWorktreeThreadsParams {
+	addEntry: (
+		threadId: string,
 		content: string,
-		endLine?: number,
-		severity?: CommentSeverity,
-		parentId?: string,
-		target?: CommentTarget,
-	) => LineComment;
-	removeComment: (id: string) => void;
-	updateComment: (id: string, content: string) => void;
-	markAsSent: (ids: string[]) => void;
+		isAi?: boolean,
+		authorName?: string,
+		action?: "implement" | "posted-to-pr",
+	) => void;
+	resolveThread: (threadId: string) => void;
 	activeTabPath: string | null;
 	handleOpenFile: (path: string) => Promise<void>;
 	terminalRef: RefObject<TerminalTabPanelHandle | null>;
 	rootPath: string;
 	dispatchEditor: React.Dispatch<EditorAction>;
-	commentsRef: MutableRefObject<LineComment[]>;
 }
 
-export function useWorktreeComments({
-	comments,
-	addComment,
-	removeComment,
-	updateComment,
-	markAsSent,
+export function useWorktreeThreads({
+	addEntry,
+	resolveThread,
 	activeTabPath,
 	handleOpenFile,
 	terminalRef,
 	rootPath,
 	dispatchEditor,
-	commentsRef,
-}: UseWorktreeCommentsParams) {
-	const broadcastComments = useCallback((commentsList: LineComment[]) => {
-		invoke("broadcast_comments", {
-			comments: {
-				comments: commentsList.map((c) => ({
-					id: c.id,
-					file_path: c.filePath,
-					line_number: c.lineNumber,
-					...(c.endLine != null && { end_line: c.endLine }),
-					content: c.content,
-					status: c.status,
-					created_at: c.createdAt,
-					...(c.parentId != null && { parent_id: c.parentId }),
-					...(c.severity != null && { severity: c.severity }),
-					resolved: c.resolved,
-					target: c.target,
-				})),
-			},
-		}).catch(() => {});
-	}, []);
-
-	useEffect(() => {
-		const unlistenComment = listen<{
-			file_path: string;
-			line_number: number;
-			end_line?: number;
-			content: string;
-			severity?: "info" | "warning" | "error" | "suggestion";
-			target?: "ai" | "review" | "local";
-		}>("remote-comment-added", (event) => {
-			const { file_path, line_number, end_line, content, severity, target } =
-				event.payload;
-			addComment(
-				file_path,
-				line_number,
-				content,
-				end_line ?? undefined,
-				severity,
-				undefined,
-				target,
-			);
-		});
-
-		const unlistenDelete = listen<{ id: string }>(
-			"remote-comment-deleted",
-			(event) => {
-				removeComment(event.payload.id);
-			},
-		);
-
-		const unlistenUpdate = listen<{ id: string; content: string }>(
-			"remote-comment-updated",
-			(event) => {
-				updateComment(event.payload.id, event.payload.content);
-			},
-		);
-
-		const unlistenConnected = listen("remote-connected", () => {
-			broadcastComments(commentsRef.current);
-		});
-
-		return () => {
-			unlistenComment.then((f) => f());
-			unlistenDelete.then((f) => f());
-			unlistenUpdate.then((f) => f());
-			unlistenConnected.then((f) => f());
-		};
-	}, [
-		addComment,
-		removeComment,
-		updateComment,
-		broadcastComments,
-		commentsRef,
-	]);
-
-	useEffect(() => {
-		broadcastComments(comments);
-	}, [comments, broadcastComments]);
-
+}: UseWorktreeThreadsParams) {
 	const handleSendToTerminal = useCallback(
-		(unsent: LineComment[]) => {
-			const text = formatCommentsForTerminal(unsent, rootPath);
+		(threadsToSend: Thread[]) => {
+			const text = formatCommentsForTerminal(threadsToSend, rootPath);
 			if (text && terminalRef.current) {
 				terminalRef.current.writeToTerminal(text);
 				terminalRef.current.writeToTerminal("\r");
-				markAsSent(unsent.map((c) => c.id));
-				trackEvent("comment_sent", { count: unsent.length });
+				trackEvent("comment_sent", { count: threadsToSend.length });
 			}
 		},
-		[markAsSent, rootPath, terminalRef],
+		[rootPath, terminalRef],
 	);
 
-	const handleSendComment = useCallback(
-		(comment: LineComment) => {
-			const text = formatCommentsForTerminal([comment], rootPath);
+	const handleSendThread = useCallback(
+		(thread: Thread) => {
+			const text = formatCommentsForTerminal([thread], rootPath);
 			if (text && terminalRef.current) {
 				terminalRef.current.writeToTerminal(text);
 				terminalRef.current.writeToTerminal("\r");
-				markAsSent([comment.id]);
 				trackEvent("comment_sent", { count: 1 });
 			}
 		},
-		[markAsSent, rootPath, terminalRef],
+		[rootPath, terminalRef],
 	);
 
-	const handleCopyComment = useCallback((comment: LineComment) => {
-		const text = formatCommentForClipboard(comment);
+	const handleCopyThread = useCallback((thread: Thread) => {
+		const text = formatCommentForClipboard(thread);
 		navigator.clipboard.writeText(text).catch(() => {});
 		trackEvent("comment_copied");
 	}, []);
 
-	const handleCommentClick = useCallback(
-		(commentFilePath: string, lineNumber: number) => {
-			const absolutePath = commentFilePath.startsWith("/")
-				? commentFilePath
-				: `${rootPath}/${commentFilePath}`;
+	const handleImplementThread = useCallback(
+		(threadId: string) => {
+			const prompt = formatImplementPrompt(threadId);
+			if (terminalRef.current) {
+				terminalRef.current.writeToTerminal(prompt);
+				terminalRef.current.writeToTerminal("\r");
+			}
+			addEntry(
+				threadId,
+				"Sent to agent for implementation",
+				false,
+				undefined,
+				"implement",
+			);
+			resolveThread(threadId);
+			trackEvent("thread_implemented");
+		},
+		[addEntry, resolveThread, terminalRef],
+	);
+
+	const handleThreadClick = useCallback(
+		(threadFilePath: string, lineNumber: number) => {
+			const absolutePath = threadFilePath.startsWith("/")
+				? threadFilePath
+				: `${rootPath}/${threadFilePath}`;
 			if (activeTabPath === absolutePath) {
 				dispatchEditor({
 					type: "SET_PENDING_REVEAL",
@@ -185,8 +106,9 @@ export function useWorktreeComments({
 
 	return {
 		handleSendToTerminal,
-		handleSendComment,
-		handleCopyComment,
-		handleCommentClick,
+		handleSendThread,
+		handleCopyThread,
+		handleImplementThread,
+		handleThreadClick,
 	};
 }

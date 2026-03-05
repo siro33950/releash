@@ -1,36 +1,35 @@
-import type { LineComment } from "@/types/comment";
+import type { Thread } from "@/types/thread";
 
 export function formatCommentsForTerminal(
-	comments: LineComment[],
+	threads: Thread[],
 	rootPath?: string,
 ): string {
-	if (comments.length === 0) return "";
+	if (threads.length === 0) return "";
 
-	const grouped = new Map<string, LineComment[]>();
-	for (const comment of comments) {
-		const existing = grouped.get(comment.filePath);
+	const grouped = new Map<string, Thread[]>();
+	for (const thread of threads) {
+		const existing = grouped.get(thread.filePath);
 		if (existing) {
-			existing.push(comment);
+			existing.push(thread);
 		} else {
-			grouped.set(comment.filePath, [comment]);
+			grouped.set(thread.filePath, [thread]);
 		}
 	}
 
 	const blocks: string[] = [];
-	for (const [filePath, fileComments] of grouped) {
+	for (const [filePath, fileThreads] of grouped) {
 		const prefix = rootPath ? `${rootPath}/` : "";
 		const relativePath = filePath.startsWith(prefix)
 			? filePath.slice(prefix.length)
 			: filePath;
-		const sorted = [...fileComments].sort(
-			(a, b) => a.lineNumber - b.lineNumber,
-		);
-		for (const c of sorted) {
+		const sorted = [...fileThreads].sort((a, b) => a.lineNumber - b.lineNumber);
+		for (const t of sorted) {
 			const lineLabel =
-				c.endLine != null
-					? `L${c.lineNumber}-${c.endLine}`
-					: `L${c.lineNumber}`;
-			blocks.push(`${relativePath}:${lineLabel}\n${c.content}`);
+				t.endLine != null
+					? `L${t.lineNumber}-${t.endLine}`
+					: `L${t.lineNumber}`;
+			const content = t.entries.map((e) => e.content).join("\n---\n");
+			blocks.push(`${relativePath}:${lineLabel}\n${content}`);
 		}
 	}
 

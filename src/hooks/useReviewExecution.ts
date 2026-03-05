@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { LineComment } from "@/types/comment";
 import { type AppSettings, buildReviewCommand } from "@/types/settings";
+import type { Thread } from "@/types/thread";
+import { getThreadOrigin } from "@/types/thread";
 
 export interface ReviewSummary {
 	total: number;
@@ -44,7 +45,7 @@ export interface ReviewExecutionState {
 
 export function useReviewExecution(
 	worktreePath: string | null,
-	comments: LineComment[],
+	threads: Thread[],
 	settings: AppSettings,
 ) {
 	const [state, setState] = useState<ReviewExecutionState>({
@@ -403,22 +404,23 @@ export function useReviewExecution(
 	// Compute summary when status is completed
 	useEffect(() => {
 		if (state.status === "completed") {
-			const reviewComments = comments.filter(
-				(c) =>
-					c.target === "review" && c.createdAt > reviewStartTimeRef.current,
+			const reviewThreads = threads.filter(
+				(t) =>
+					getThreadOrigin(t) === "ai-review" &&
+					t.createdAt > reviewStartTimeRef.current,
 			);
 			const summary: ReviewSummary = {
-				total: reviewComments.length,
-				errors: reviewComments.filter((c) => c.severity === "error").length,
-				warnings: reviewComments.filter((c) => c.severity === "warning").length,
-				infos: reviewComments.filter((c) => c.severity === "info").length,
-				suggestions: reviewComments.filter((c) => c.severity === "suggestion")
+				total: reviewThreads.length,
+				errors: reviewThreads.filter((t) => t.severity === "error").length,
+				warnings: reviewThreads.filter((t) => t.severity === "warning").length,
+				infos: reviewThreads.filter((t) => t.severity === "info").length,
+				suggestions: reviewThreads.filter((t) => t.severity === "suggestion")
 					.length,
 			};
 			setState((prev) => ({ ...prev, summary }));
 		}
 		prevStatusRef.current = state.status;
-	}, [state.status, comments]);
+	}, [state.status, threads]);
 
 	const startReview = useCallback(async () => {
 		if (!worktreePath) return;

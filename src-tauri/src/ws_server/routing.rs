@@ -41,6 +41,16 @@ pub(super) async fn route_message(
         WsMessage::AddComment(comment) => handle_add_comment(comment, state),
         WsMessage::DeleteComment(req) => handle_delete_comment(req, state),
         WsMessage::UpdateComment(req) => handle_update_comment(req, state),
+        // Threads
+        WsMessage::CreateThread(req) => handle_create_thread(req, state, selected_worktree).await,
+        WsMessage::AddThreadEntry(req) => {
+            handle_add_thread_entry(req, state, selected_worktree).await
+        }
+        WsMessage::ResolveThread(req) => handle_resolve_thread(req, state, selected_worktree).await,
+        WsMessage::DeleteThread(req) => handle_delete_thread(req, state, selected_worktree).await,
+        WsMessage::UpdateThreadEntry(req) => {
+            handle_update_thread_entry(req, state, selected_worktree).await
+        }
         _ => Some(WsMessage::Error(ErrorMsg {
             code: "INVALID_MESSAGE".to_string(),
             message: "Unexpected message from client".to_string(),
@@ -76,6 +86,7 @@ mod tests {
             None,
             false,
             Arc::new(crate::git_host::PrCache::new()),
+            Arc::new(crate::thread_store::ThreadStore::default()),
         )
     }
 

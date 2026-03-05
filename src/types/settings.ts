@@ -16,6 +16,7 @@ export interface AgentConfig {
 	bypassFlag: string;
 	label: string;
 	reviewCommand: string | null;
+	threadCommand: string | null;
 	modelFlag: string;
 }
 
@@ -56,6 +57,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		bypassFlag: "",
 		label: "None",
 		reviewCommand: null,
+		threadCommand: null,
 		modelFlag: "",
 	},
 	claude: {
@@ -64,6 +66,8 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		label: "Claude Code",
 		reviewCommand:
 			'echo "{prompt}" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment,mcp__releash__review_diff,mcp__releash__read_file,mcp__releash__check_diagnostics,mcp__releash__get_file_symbols,mcp__releash__explore_symbol" {model_flag}',
+		threadCommand:
+			'echo "{prompt}" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__get_thread,mcp__releash__add_thread_entry,mcp__releash__list_threads,mcp__releash__read_file,mcp__releash__review_diff,mcp__releash__check_diagnostics,mcp__releash__get_file_symbols,mcp__releash__explore_symbol" {model_flag}',
 		modelFlag: "--model",
 	},
 	codex: {
@@ -72,6 +76,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		label: "Codex",
 		reviewCommand:
 			'codex exec --sandbox read-only --ask-for-approval never --json {model_flag} "{prompt}"',
+		threadCommand: null,
 		modelFlag: "--model",
 	},
 	gemini: {
@@ -80,6 +85,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		label: "Gemini CLI",
 		reviewCommand:
 			'gemini -p --sandbox --output-format json {model_flag} "{prompt}"',
+		threadCommand: null,
 		modelFlag: "--model",
 	},
 	aider: {
@@ -87,6 +93,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		bypassFlag: "--yes-always",
 		label: "Aider",
 		reviewCommand: 'aider --message --yes-always {model_flag} "{prompt}"',
+		threadCommand: null,
 		modelFlag: "--model",
 	},
 	cursor: {
@@ -95,6 +102,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		label: "Cursor",
 		reviewCommand:
 			'cursor-agent -p --output-format json {model_flag} "{prompt}"',
+		threadCommand: null,
 		modelFlag: "--model",
 	},
 	custom: {
@@ -102,6 +110,7 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		bypassFlag: "",
 		label: "Custom",
 		reviewCommand: null,
+		threadCommand: null,
 		modelFlag: "",
 	},
 };
@@ -171,6 +180,43 @@ export function buildReviewCommand(
 		safeModel && config.modelFlag ? `${config.modelFlag} ${safeModel}` : "";
 
 	return config.reviewCommand
+		.replace("{model_flag}", modelFlagValue)
+		.replace(/\s{2,}/g, " ")
+		.replace("{prompt}", escapedPrompt)
+		.trim();
+}
+
+export function buildThreadCommand(
+	settings: AppSettings,
+	prompt: string,
+): string | null {
+	const { reviewAgent, reviewModel, customReviewCommand } = settings;
+
+	if (reviewAgent === "none") {
+		return null;
+	}
+
+	const escapedPrompt = prompt
+		.replace(/\\/g, "\\\\")
+		.replace(/"/g, '\\"')
+		.replace(/\$/g, "\\$")
+		.replace(/`/g, "\\`");
+
+	if (reviewAgent === "custom") {
+		if (!customReviewCommand) return null;
+		return customReviewCommand.replace("{prompt}", escapedPrompt);
+	}
+
+	const config = AGENT_CONFIGS[reviewAgent];
+	if (!config.threadCommand) return null;
+
+	const allowedModels = AGENT_MODELS[reviewAgent].map((m) => m.value);
+	const safeModel =
+		reviewModel && allowedModels.includes(reviewModel) ? reviewModel : "";
+	const modelFlagValue =
+		safeModel && config.modelFlag ? `${config.modelFlag} ${safeModel}` : "";
+
+	return config.threadCommand
 		.replace("{model_flag}", modelFlagValue)
 		.replace(/\s{2,}/g, " ")
 		.replace("{prompt}", escapedPrompt)

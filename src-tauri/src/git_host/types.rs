@@ -99,9 +99,52 @@ pub struct IssueInfo {
     pub milestone: Option<Milestone>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrFile {
+    pub filename: String,
+    pub status: String,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrReviewComment {
+    pub id: u64,
+    pub path: String,
+    pub line: Option<u32>,
+    pub original_line: Option<u32>,
+    pub body: String,
+    #[serde(alias = "user")]
+    pub author: PrReviewCommentAuthor,
+    pub in_reply_to_id: Option<u64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrReviewCommentAuthor {
+    pub login: String,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostedComment {
+    pub id: u64,
+}
+
 pub trait GitHostProvider: Send + Sync {
     fn detect_open_prs(&self, repo_path: &str) -> HashMap<String, PrInfo>;
     fn detect_merged_prs(&self, repo_path: &str) -> Vec<String>;
     fn get_pr_detail(&self, repo_path: &str, pr_number: u64) -> Option<PrDetail>;
     fn list_issues(&self, repo_path: &str) -> Vec<IssueInfo>;
+    fn get_pr_files(&self, repo_path: &str, pr_number: u64) -> Vec<PrFile>;
+    fn get_pr_review_comments(&self, repo_path: &str, pr_number: u64) -> Vec<PrReviewComment>;
+    fn reply_to_pr_review_comment(
+        &self,
+        repo_path: &str,
+        pr_number: u64,
+        comment_id: u64,
+        body: &str,
+    ) -> Option<PostedComment>;
+    fn post_pr_comment(&self, repo_path: &str, pr_number: u64, body: &str)
+        -> Option<PostedComment>;
 }

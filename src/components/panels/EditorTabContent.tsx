@@ -10,7 +10,7 @@ import {
 } from "@/lib/computeHunks";
 import { isImageFile } from "@/lib/imageUtils";
 import { isMarkdownFile } from "@/lib/markdownUtils";
-import type { LineComment } from "@/types/comment";
+import type { Thread } from "@/types/thread";
 import { Breadcrumb } from "./Breadcrumb";
 import { DiffToolbar } from "./DiffToolbar";
 import { DiffViewerSection } from "./DiffViewerSection";
@@ -40,13 +40,21 @@ export function EditorTabContent({
 		diffMode,
 		setDiffBase,
 		setDiffMode,
-		comments,
-		addComment,
-		deleteComment,
-		resolveComment,
-		updateComment: updateCommentContent,
-		copyComment,
-		showResolvedComments,
+		threads,
+		createThread,
+		addEntry,
+		deleteThread,
+		resolveThread,
+		implementThread,
+		onPostToPr,
+		aiRunningThreadIds,
+		aiTaskThreadIds,
+		onOpenThreadAIModal,
+		onAskAI,
+		updateEntry,
+		copyThread,
+		recalculateAnchorsForFile,
+		showResolvedThreads,
 		rootPath,
 		onStageHunk,
 		onGitChanged,
@@ -117,35 +125,48 @@ export function EditorTabContent({
 	}, [rootPath, filePath]);
 
 	const commentRanges = useMemo(() => {
-		return comments
+		return threads
 			.filter(
-				(c) =>
-					c.filePath === relativeFilePath &&
-					(showResolvedComments || !c.resolved),
+				(t) =>
+					t.filePath === relativeFilePath &&
+					(showResolvedThreads || !t.resolved),
 			)
-			.map((c) => ({ start: c.lineNumber, end: c.endLine }));
-	}, [comments, relativeFilePath, showResolvedComments]);
+			.map((t) => ({ start: t.lineNumber, end: t.endLine }));
+	}, [threads, relativeFilePath, showResolvedThreads]);
 
-	const handleAddComment = useCallback(
+	const handleCreateThread = useCallback(
 		(lineNumber: number, content: string, endLine?: number) => {
-			addComment(relativeFilePath, lineNumber, content, endLine);
-		},
-		[relativeFilePath, addComment],
-	);
-
-	const getCommentsForLine = useCallback(
-		(lineNumber: number): LineComment[] => {
-			return comments.filter(
-				(c) =>
-					c.filePath === relativeFilePath &&
-					(showResolvedComments || !c.resolved) &&
-					(c.lineNumber === lineNumber ||
-						(c.endLine != null &&
-							lineNumber >= c.lineNumber &&
-							lineNumber <= c.endLine)),
+			createThread(
+				relativeFilePath,
+				lineNumber,
+				content,
+				endLine,
+				modifiedContent,
 			);
 		},
-		[comments, relativeFilePath, showResolvedComments],
+		[relativeFilePath, createThread, modifiedContent],
+	);
+
+	const handleAddEntry = useCallback(
+		(threadId: string, content: string) => {
+			addEntry(threadId, content);
+		},
+		[addEntry],
+	);
+
+	const getThreadsForLine = useCallback(
+		(lineNumber: number): Thread[] => {
+			return threads.filter(
+				(t) =>
+					t.filePath === relativeFilePath &&
+					(showResolvedThreads || !t.resolved) &&
+					(t.lineNumber === lineNumber ||
+						(t.endLine != null &&
+							lineNumber >= t.lineNumber &&
+							lineNumber <= t.endLine)),
+			);
+		},
+		[threads, relativeFilePath, showResolvedThreads],
 	);
 
 	const {
@@ -207,6 +228,14 @@ export function EditorTabContent({
 		[filePath, updateContent],
 	);
 
+	useEffect(() => {
+		if (!recalculateAnchorsForFile || !modifiedContent) return;
+		const timer = setTimeout(() => {
+			recalculateAnchorsForFile(relativeFilePath, modifiedContent);
+		}, 500);
+		return () => clearTimeout(timer);
+	}, [modifiedContent, relativeFilePath, recalculateAnchorsForFile]);
+
 	if (!fileContent) {
 		return (
 			<EmptyState
@@ -245,12 +274,19 @@ export function EditorTabContent({
 					onUnstageHunk={
 						diffBase === "branch-base" ? handleUnstageGroup : undefined
 					}
-					onAddComment={handleAddComment}
-					onDeleteComment={deleteComment}
-					onResolveComment={resolveComment}
-					onUpdateComment={updateCommentContent}
-					onCopyComment={copyComment}
-					getCommentsForLine={getCommentsForLine}
+					onAddComment={handleCreateThread}
+					onAddEntry={handleAddEntry}
+					onDeleteThread={deleteThread}
+					onResolveThread={resolveThread}
+					onImplementThread={implementThread}
+					onPostToPr={onPostToPr}
+					aiRunningThreadIds={aiRunningThreadIds}
+					aiTaskThreadIds={aiTaskThreadIds}
+					onOpenThreadAIModal={onOpenThreadAIModal}
+					onAskAI={onAskAI}
+					onUpdateEntry={updateEntry}
+					onCopyThread={copyThread}
+					getThreadsForLine={getThreadsForLine}
 					revealLine={revealLine}
 					theme={theme}
 					onSearchOccurrences={onSearchOccurrences}

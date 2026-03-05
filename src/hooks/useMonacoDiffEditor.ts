@@ -17,8 +17,9 @@ import {
 	monacoLightTheme,
 	monacoTheme,
 } from "@/lib/monaco-config";
-import type { CommentRange, LineComment } from "@/types/comment";
+import type { CommentRange } from "@/types/comment";
 import type { Theme } from "@/types/settings";
+import type { Thread } from "@/types/thread";
 
 interface RevealLine {
 	line: number;
@@ -43,11 +44,18 @@ interface UseMonacoDiffEditorOptions {
 		content: string,
 		endLine?: number,
 	) => void;
-	onDeleteComment?: (id: string) => void;
-	onResolveComment?: (id: string) => void;
-	onUpdateComment?: (id: string, content: string) => void;
-	onCopyComment?: (comment: LineComment) => void;
-	getCommentsForLine?: (lineNumber: number) => LineComment[];
+	onAddEntry?: (threadId: string, content: string) => void;
+	onDeleteThread?: (threadId: string) => void;
+	onResolveThread?: (threadId: string) => void;
+	onImplementThread?: (threadId: string) => void;
+	onPostToPr?: (threadId: string) => void;
+	onAskAI?: (threadId: string) => void;
+	aiRunningThreadIds?: Set<string>;
+	aiTaskThreadIds?: Set<string>;
+	onOpenThreadAIModal?: (threadId?: string) => void;
+	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
+	onCopyThread?: (thread: Thread) => void;
+	getThreadsForLine?: (lineNumber: number) => Thread[];
 	revealLine?: RevealLine;
 	theme?: Theme;
 	readOnly?: boolean;
@@ -155,11 +163,18 @@ export function useMonacoDiffEditor(
 		onStageHunk,
 		onUnstageHunk,
 		onAddComment,
-		onDeleteComment,
-		onResolveComment,
-		onUpdateComment,
-		onCopyComment,
-		getCommentsForLine,
+		onAddEntry,
+		onDeleteThread,
+		onResolveThread,
+		onImplementThread,
+		onPostToPr,
+		onAskAI,
+		aiRunningThreadIds,
+		aiTaskThreadIds,
+		onOpenThreadAIModal,
+		onUpdateEntry,
+		onCopyThread,
+		getThreadsForLine,
 		revealLine,
 		theme,
 		readOnly,
@@ -181,15 +196,26 @@ export function useMonacoDiffEditor(
 	const onContentChangeRef = useRef(onContentChange);
 	const fontSizeRef = useRef(fontSize);
 	const onAddCommentRef = useRef(onAddComment);
-	const onDeleteCommentRef = useRef(onDeleteComment);
-	const onResolveCommentRef = useRef(onResolveComment);
-	const onUpdateCommentRef = useRef(onUpdateComment);
-	const onCopyCommentRef = useRef(onCopyComment);
-	const getCommentsForLineRef = useRef(getCommentsForLine);
+	const onAddEntryRef = useRef(onAddEntry);
+	const onDeleteThreadRef = useRef(onDeleteThread);
+	const onResolveThreadRef = useRef(onResolveThread);
+	const onImplementThreadRef = useRef(onImplementThread);
+	const onPostToPrRef = useRef(onPostToPr);
+	const onAskAIRef = useRef(onAskAI);
+	const aiRunningThreadIdsRef = useRef(aiRunningThreadIds);
+	const aiTaskThreadIdsRef = useRef(aiTaskThreadIds);
+	const onOpenThreadAIModalRef = useRef(onOpenThreadAIModal);
+	const onUpdateEntryRef = useRef(onUpdateEntry);
+	const onCopyThreadRef = useRef(onCopyThread);
+	const getThreadsForLineRef = useRef(getThreadsForLine);
 	const onStageHunkRef = useRef(onStageHunk);
 	const onUnstageHunkRef = useRef(onUnstageHunk);
 	const hunkOverlayContainerRef = useRef<HTMLDivElement | null>(null);
 	const commentInputWidgetRef = useRef<CommentThreadZone | null>(null);
+	const openWidgetInfoRef = useRef<{
+		threadId: string;
+		lineNumber: number;
+	} | null>(null);
 	const dragStartLineRef = useRef<number | null>(null);
 	const dragRangeDecorationsRef = useRef<string[]>([]);
 	const hoverLineRef = useRef<number | null>(null);
@@ -203,11 +229,18 @@ export function useMonacoDiffEditor(
 	onContentChangeRef.current = onContentChange;
 	fontSizeRef.current = fontSize;
 	onAddCommentRef.current = onAddComment;
-	onDeleteCommentRef.current = onDeleteComment;
-	onResolveCommentRef.current = onResolveComment;
-	onUpdateCommentRef.current = onUpdateComment;
-	onCopyCommentRef.current = onCopyComment;
-	getCommentsForLineRef.current = getCommentsForLine;
+	onAddEntryRef.current = onAddEntry;
+	onDeleteThreadRef.current = onDeleteThread;
+	onResolveThreadRef.current = onResolveThread;
+	onImplementThreadRef.current = onImplementThread;
+	onPostToPrRef.current = onPostToPr;
+	onAskAIRef.current = onAskAI;
+	aiRunningThreadIdsRef.current = aiRunningThreadIds;
+	aiTaskThreadIdsRef.current = aiTaskThreadIds;
+	onOpenThreadAIModalRef.current = onOpenThreadAIModal;
+	onUpdateEntryRef.current = onUpdateEntry;
+	onCopyThreadRef.current = onCopyThread;
+	getThreadsForLineRef.current = getThreadsForLine;
 	onStageHunkRef.current = onStageHunk;
 	onUnstageHunkRef.current = onUnstageHunk;
 	themeRef.current = theme;
@@ -355,31 +388,62 @@ export function useMonacoDiffEditor(
 				if (commentInputWidgetRef.current) {
 					commentInputWidgetRef.current.dispose();
 					commentInputWidgetRef.current = null;
+					openWidgetInfoRef.current = null;
 				}
 
-				const existing = getCommentsForLineRef.current?.(lineNum) ?? [];
-				const zone = createCommentThread(ed, {
+				const existingThreads = getThreadsForLineRef.current?.(lineNum) ?? [];
+				const thread: Thread = existingThreads[0] ?? {
+					id: "",
+					filePath: "",
 					lineNumber: lineNum,
-					endLine,
-					comments: existing,
+					...(endLine != null && { endLine }),
+					entries: [],
+					resolved: false,
+					createdAt: Date.now(),
+				};
+				const isNew = existingThreads.length === 0;
+
+				const zone = createCommentThread(ed, {
+					thread,
 					onSubmit: (content) => {
-						onAddCommentRef.current?.(lineNum, content, endLine);
-						zone.dispose();
-						commentInputWidgetRef.current = null;
-						ed.focus();
+						if (isNew) {
+							onAddCommentRef.current?.(lineNum, content, endLine);
+							zone.dispose();
+							commentInputWidgetRef.current = null;
+							openWidgetInfoRef.current = null;
+							ed.focus();
+						} else {
+							onAddEntryRef.current?.(thread.id, content);
+							onAskAIRef.current?.(thread.id);
+							const textarea = zone.domNode.querySelector<HTMLTextAreaElement>(
+								".comment-thread-textarea",
+							);
+							if (textarea) textarea.value = "";
+						}
 					},
 					onCancel: () => {
 						zone.dispose();
 						commentInputWidgetRef.current = null;
+						openWidgetInfoRef.current = null;
 						ed.focus();
 					},
-					onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
-					onResolveComment: (id) => onResolveCommentRef.current?.(id),
-					onUpdateComment: (id, content) =>
-						onUpdateCommentRef.current?.(id, content),
-					onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
+					onDeleteThread: (threadId) => onDeleteThreadRef.current?.(threadId),
+					onResolveThread: (threadId) => onResolveThreadRef.current?.(threadId),
+					onImplementThread: (threadId) =>
+						onImplementThreadRef.current?.(threadId),
+					onPostToPr: (threadId) => onPostToPrRef.current?.(threadId),
+					aiRunningThreadIds: aiRunningThreadIdsRef.current,
+					aiTaskThreadIds: aiTaskThreadIdsRef.current,
+					onOpenThreadAIModal: (tid) => onOpenThreadAIModalRef.current?.(tid),
+					onUpdateEntry: (threadId, entryId, content) =>
+						onUpdateEntryRef.current?.(threadId, entryId, content),
+					onCopyThread: (t) => onCopyThreadRef.current?.(t),
 				});
 				commentInputWidgetRef.current = zone;
+				openWidgetInfoRef.current = {
+					threadId: thread.id,
+					lineNumber: lineNum,
+				};
 			};
 
 			modifiedEditor.onMouseDown((e: Monaco.editor.IEditorMouseEvent) => {
@@ -540,6 +604,7 @@ export function useMonacoDiffEditor(
 			pendingRevealRef.current = null;
 			commentInputWidgetRef.current?.dispose();
 			commentInputWidgetRef.current = null;
+			openWidgetInfoRef.current = null;
 			intersectionObserverRef.current?.disconnect();
 			intersectionObserverRef.current = null;
 			contentChangeListenerRef.current?.dispose();
@@ -691,34 +756,46 @@ export function useMonacoDiffEditor(
 				if (commentInputWidgetRef.current) {
 					commentInputWidgetRef.current.dispose();
 					commentInputWidgetRef.current = null;
+					openWidgetInfoRef.current = null;
 				}
-				const existing = getCommentsForLineRef.current?.(revealLine.line) ?? [];
-				if (existing.length > 0) {
-					const range = commentRangesRef.current?.find(
-						(r) => r.start === revealLine.line,
-					);
+				const existingThreads =
+					getThreadsForLineRef.current?.(revealLine.line) ?? [];
+				if (existingThreads.length > 0) {
+					const thread = existingThreads[0];
 					const zone = createCommentThread(modifiedEditor, {
-						lineNumber: revealLine.line,
-						endLine: range?.end,
-						comments: existing,
+						thread,
 						onSubmit: (content) => {
-							onAddCommentRef.current?.(revealLine.line, content, range?.end);
-							zone.dispose();
-							commentInputWidgetRef.current = null;
-							modifiedEditor.focus();
+							onAddEntryRef.current?.(thread.id, content);
+							onAskAIRef.current?.(thread.id);
+							const textarea = zone.domNode.querySelector<HTMLTextAreaElement>(
+								".comment-thread-textarea",
+							);
+							if (textarea) textarea.value = "";
 						},
 						onCancel: () => {
 							zone.dispose();
 							commentInputWidgetRef.current = null;
+							openWidgetInfoRef.current = null;
 							modifiedEditor.focus();
 						},
-						onDeleteComment: (id) => onDeleteCommentRef.current?.(id),
-						onResolveComment: (id) => onResolveCommentRef.current?.(id),
-						onUpdateComment: (id, content) =>
-							onUpdateCommentRef.current?.(id, content),
-						onCopyComment: (comment) => onCopyCommentRef.current?.(comment),
+						onDeleteThread: (threadId) => onDeleteThreadRef.current?.(threadId),
+						onResolveThread: (threadId) =>
+							onResolveThreadRef.current?.(threadId),
+						onImplementThread: (threadId) =>
+							onImplementThreadRef.current?.(threadId),
+						onPostToPr: (threadId) => onPostToPrRef.current?.(threadId),
+						aiRunningThreadIds: aiRunningThreadIdsRef.current,
+						aiTaskThreadIds: aiTaskThreadIdsRef.current,
+						onOpenThreadAIModal: (tid) => onOpenThreadAIModalRef.current?.(tid),
+						onUpdateEntry: (threadId, entryId, content) =>
+							onUpdateEntryRef.current?.(threadId, entryId, content),
+						onCopyThread: (t) => onCopyThreadRef.current?.(t),
 					});
 					commentInputWidgetRef.current = zone;
+					openWidgetInfoRef.current = {
+						threadId: thread.id,
+						lineNumber: revealLine.line,
+					};
 				}
 			}
 		};
@@ -736,6 +813,27 @@ export function useMonacoDiffEditor(
 		if (!monaco || !theme) return;
 		monaco.editor.setTheme(getMonacoThemeName(theme));
 	}, [theme]);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: getThreadsForLine identity changes when threads update; used intentionally as a trigger to re-render the open widget
+	useEffect(() => {
+		const widget = commentInputWidgetRef.current;
+		const info = openWidgetInfoRef.current;
+		if (!widget || !info) return;
+		const threads = getThreadsForLineRef.current?.(info.lineNumber) ?? [];
+		const thread = threads.find((t) => t.id === info.threadId);
+		if (thread) {
+			widget.update({ thread });
+		}
+	}, [getThreadsForLine]);
+
+	// Update open widget when aiRunningThreadIds / aiTaskThreadIds changes
+	useEffect(() => {
+		commentInputWidgetRef.current?.update({
+			aiRunningThreadIds,
+			aiTaskThreadIds,
+			onOpenThreadAIModal,
+		});
+	}, [aiRunningThreadIds, aiTaskThreadIds, onOpenThreadAIModal]);
 
 	return {
 		diffEditorRef,

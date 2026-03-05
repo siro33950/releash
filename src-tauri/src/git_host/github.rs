@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::types::{GitHostProvider, IssueInfo, PrDetail, PrInfo};
+use super::types::{
+    GitHostProvider, IssueInfo, PostedComment, PrDetail, PrFile, PrInfo, PrReviewComment,
+};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -62,6 +64,81 @@ impl GitHostProvider for GitHubProvider {
             repo_path,
         )?;
         parse_gh_pr_detail(&output)
+    }
+
+    fn get_pr_files(&self, repo_path: &str, pr_number: u64) -> Vec<PrFile> {
+        let number_str = pr_number.to_string();
+        let output = run_gh_with_timeout(
+            &[
+                "api",
+                &format!("repos/{{owner}}/{{repo}}/pulls/{number_str}/files"),
+                "--paginate",
+                "--jq",
+                "[.[] | {filename, status, additions, deletions}]",
+            ],
+            repo_path,
+        );
+        match output {
+            Some(stdout) => serde_json::from_str(&stdout).unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+
+    fn get_pr_review_comments(&self, repo_path: &str, pr_number: u64) -> Vec<PrReviewComment> {
+        let number_str = pr_number.to_string();
+        let output = run_gh_with_timeout(
+            &[
+                "api",
+                &format!("repos/{{owner}}/{{repo}}/pulls/{number_str}/comments"),
+                "--paginate",
+                "--jq",
+                "[.[] | {id, path, line, original_line, body, user: {login: .user.login, avatar_url: .user.avatar_url}, in_reply_to_id, created_at}]",
+            ],
+            repo_path,
+        );
+        match output {
+            Some(stdout) => parse_pr_review_comments(&stdout),
+            None => Vec::new(),
+        }
+    }
+
+    fn reply_to_pr_review_comment(
+        &self,
+        repo_path: &str,
+        pr_number: u64,
+        comment_id: u64,
+        body: &str,
+    ) -> Option<PostedComment> {
+        let output = run_gh_with_timeout(
+            &[
+                "api",
+                &format!(
+                    "repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies"
+                ),
+                "-f",
+                &format!("body={body}"),
+            ],
+            repo_path,
+        )?;
+        parse_posted_comment(&output)
+    }
+
+    fn post_pr_comment(
+        &self,
+        repo_path: &str,
+        pr_number: u64,
+        body: &str,
+    ) -> Option<PostedComment> {
+        let output = run_gh_with_timeout(
+            &[
+                "api",
+                &format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments"),
+                "-f",
+                &format!("body={body}"),
+            ],
+            repo_path,
+        )?;
+        parse_posted_comment(&output)
     }
 
     fn list_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
@@ -192,6 +269,32 @@ fn parse_gh_pr_detail(json_str: &str) -> Option<PrDetail> {
 
 fn parse_gh_issue_list_output(json_str: &str) -> Vec<IssueInfo> {
     serde_json::from_str(json_str).unwrap_or_default()
+}
+
+fn parse_pr_review_comments(json_str: &str) -> Vec<PrReviewComment> {
+    // gh api --paginate with --jq outputs one JSON array per page, concatenated.
+    // We try to parse as a single array first, then fall back to parsing line-by-line.
+    if let Ok(comments) = serde_json::from_str::<Vec<PrReviewComment>>(json_str) {
+        return comments;
+    }
+    // Paginated output: each line is a JSON array
+    let mut all = Vec::new();
+    for line in json_str.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(page) = serde_json::from_str::<Vec<PrReviewComment>>(line) {
+            all.extend(page);
+        }
+    }
+    all
+}
+
+fn parse_posted_comment(json_str: &str) -> Option<PostedComment> {
+    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let id = value.get("id")?.as_u64()?;
+    Some(PostedComment { id })
 }
 
 fn parse_gh_merged_pr_output(json_str: &str) -> Vec<String> {
@@ -450,6 +553,26 @@ mod tests {
         assert_eq!(issues[1].labels.len(), 1);
     }
 
+    #[test]
+    fn parse_pr_files_valid_json() {
+        let json = serde_json::json!([
+            {"filename": "src/main.rs", "status": "modified", "additions": 10, "deletions": 3},
+            {"filename": "src/new.rs", "status": "added", "additions": 50, "deletions": 0}
+        ])
+        .to_string();
+        let files: Vec<PrFile> = serde_json::from_str(&json).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].filename, "src/main.rs");
+        assert_eq!(files[0].status, "modified");
+        assert_eq!(files[1].status, "added");
+    }
+
+    #[test]
+    fn parse_pr_files_empty() {
+        let files: Vec<PrFile> = serde_json::from_str("[]").unwrap();
+        assert!(files.is_empty());
+    }
+
     /// run_gh_with_timeout と同じパターン（try_wait ポーリング + 後から stdout 読み取り）で
     /// 64KB超の出力がパイプバッファ溢れによりデッドロックすることを再現するテスト。
     ///
@@ -525,6 +648,71 @@ mod tests {
         assert!(!timed_out, "should not deadlock with <64KB output");
     }
 
+    #[test]
+    fn parse_review_comments_valid_json() {
+        let json = serde_json::json!([
+            {
+                "id": 100,
+                "path": "src/main.rs",
+                "line": 42,
+                "original_line": 40,
+                "body": "Consider using a match statement here",
+                "user": {"login": "reviewer1", "avatar_url": "https://avatars.example.com/1"},
+                "in_reply_to_id": null,
+                "created_at": "2024-01-01T00:00:00Z"
+            },
+            {
+                "id": 101,
+                "path": "src/main.rs",
+                "line": null,
+                "original_line": null,
+                "body": "Good point, I'll fix it",
+                "user": {"login": "author1", "avatar_url": "https://avatars.example.com/2"},
+                "in_reply_to_id": 100,
+                "created_at": "2024-01-01T01:00:00Z"
+            }
+        ])
+        .to_string();
+        let comments = parse_pr_review_comments(&json);
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].id, 100);
+        assert_eq!(comments[0].path, "src/main.rs");
+        assert_eq!(comments[0].line, Some(42));
+        assert_eq!(comments[0].author.login, "reviewer1");
+        assert!(comments[0].in_reply_to_id.is_none());
+        assert_eq!(comments[1].id, 101);
+        assert_eq!(comments[1].in_reply_to_id, Some(100));
+    }
+
+    #[test]
+    fn parse_review_comments_empty() {
+        let comments = parse_pr_review_comments("[]");
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn parse_review_comments_invalid_json() {
+        let comments = parse_pr_review_comments("not json");
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn parse_review_comments_paginated_output() {
+        let page1 = serde_json::json!([
+            {"id": 1, "path": "a.rs", "line": 1, "original_line": null, "body": "p1",
+             "user": {"login": "u1", "avatar_url": null}, "in_reply_to_id": null, "created_at": "2024-01-01T00:00:00Z"}
+        ]);
+        let page2 = serde_json::json!([
+            {"id": 2, "path": "b.rs", "line": 2, "original_line": null, "body": "p2",
+             "user": {"login": "u2", "avatar_url": null}, "in_reply_to_id": null, "created_at": "2024-01-01T01:00:00Z"}
+        ]);
+        let paginated = format!("{}\n{}", page1, page2);
+        let comments = parse_pr_review_comments(&paginated);
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].id, 1);
+        assert_eq!(comments[1].id, 2);
+    }
+
     /// stdout を別スレッドで並行読み取りすれば 64KB超でもデッドロックしないことを検証。
     #[cfg(unix)]
     #[test]
@@ -570,5 +758,23 @@ mod tests {
         assert!(!timed_out, "concurrent read should prevent deadlock");
         let buf = reader.join().unwrap();
         assert_eq!(buf.len(), 70 * 1024);
+    }
+
+    #[test]
+    fn parse_posted_comment_valid_json() {
+        let json = r#"{"id": 12345, "body": "reply content", "user": {"login": "user1"}}"#;
+        let result = parse_posted_comment(json).unwrap();
+        assert_eq!(result.id, 12345);
+    }
+
+    #[test]
+    fn parse_posted_comment_missing_id() {
+        let json = r#"{"body": "no id"}"#;
+        assert!(parse_posted_comment(json).is_none());
+    }
+
+    #[test]
+    fn parse_posted_comment_invalid_json() {
+        assert!(parse_posted_comment("not json").is_none());
     }
 }

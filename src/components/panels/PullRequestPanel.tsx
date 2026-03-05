@@ -1,16 +1,23 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink, GitPullRequest, Loader2, RefreshCw } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { MarkdownPreview } from "@/components/panels/MarkdownPreview";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Message } from "@/components/ui/message";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useBranchPr } from "@/hooks/useBranchPr";
 import { usePrDetail } from "@/hooks/usePrDetail";
+import { type PrFile, usePrDiff } from "@/hooks/usePrDiff";
 import { cn } from "@/lib/utils";
 
 interface PullRequestPanelProps {
 	rootPath: string;
 	branch: string | null;
+	onFileSelect?: (
+		filename: string,
+		originalContent: string,
+		modifiedContent: string,
+	) => void;
 }
 
 function StateBadge({ state }: { state: string }) {
@@ -82,9 +89,108 @@ function SectionHeader({ title, count }: { title: string; count?: number }) {
 	);
 }
 
-export function PullRequestPanel({ rootPath, branch }: PullRequestPanelProps) {
+function FileStatusBadge({ status }: { status: string }) {
+	const map: Record<string, { label: string; color: string }> = {
+		added: { label: "A", color: "text-success" },
+		modified: { label: "M", color: "text-info" },
+		removed: { label: "D", color: "text-destructive" },
+		renamed: { label: "R", color: "text-warning" },
+	};
+	const info = map[status] ?? {
+		label: status[0]?.toUpperCase() ?? "?",
+		color: "text-muted-foreground",
+	};
+	return (
+		<span
+			className={cn(
+				"text-xs font-mono font-medium w-4 text-center shrink-0",
+				info.color,
+			)}
+		>
+			{info.label}
+		</span>
+	);
+}
+
+function PrFileList({
+	files,
+	loading,
+	selectedFile,
+	onSelect,
+}: {
+	files: PrFile[];
+	loading: boolean;
+	selectedFile: string | null;
+	onSelect: (filename: string) => void;
+}) {
+	if (loading) {
+		return (
+			<div className="flex items-center justify-center py-4">
+				<Loader2 className="size-4 text-muted-foreground animate-spin" />
+			</div>
+		);
+	}
+
+	if (files.length === 0) return null;
+
+	return (
+		<div className="space-y-0.5">
+			{files.map((file) => (
+				<button
+					key={file.filename}
+					type="button"
+					className={cn(
+						"w-full flex items-center gap-2 px-2 py-1 rounded text-xs hover:bg-accent/50 transition-colors text-left",
+						selectedFile === file.filename && "bg-accent",
+					)}
+					onClick={() => onSelect(file.filename)}
+				>
+					<FileStatusBadge status={file.status} />
+					<span className="truncate flex-1 font-mono">{file.filename}</span>
+					<span className="text-success shrink-0">+{file.additions}</span>
+					<span className="text-destructive shrink-0">-{file.deletions}</span>
+				</button>
+			))}
+		</div>
+	);
+}
+
+export function PullRequestPanel({
+	rootPath,
+	branch,
+	onFileSelect,
+}: PullRequestPanelProps) {
 	const { prNumber, prUrl, loading: prLoading } = useBranchPr(rootPath, branch);
 	const { detail, loading, error, refresh } = usePrDetail(rootPath, prNumber);
+	const {
+		files: prFiles,
+		loading: filesLoading,
+		selectedFile,
+		selectFile,
+		fileDiff,
+	} = usePrDiff(
+		rootPath,
+		prNumber,
+		detail?.base_ref_name ?? null,
+		detail?.head_ref_name ?? null,
+	);
+
+	const handleFileSelect = (filename: string) => {
+		selectFile(filename);
+	};
+
+	// When fileDiff is available, notify parent
+	const onFileSelectRef = useRef(onFileSelect);
+	onFileSelectRef.current = onFileSelect;
+	useEffect(() => {
+		if (fileDiff && onFileSelectRef.current) {
+			onFileSelectRef.current(
+				fileDiff.filename,
+				fileDiff.originalContent,
+				fileDiff.modifiedContent,
+			);
+		}
+	}, [fileDiff]);
 
 	if (prLoading) {
 		return (
@@ -198,6 +304,20 @@ export function PullRequestPanel({ rootPath, branch }: PullRequestPanelProps) {
 							</div>
 						</div>
 					)}
+
+					{/* Changed Files */}
+					<div className="space-y-2">
+						<SectionHeader
+							title="Changed Files"
+							count={prFiles.length || undefined}
+						/>
+						<PrFileList
+							files={prFiles}
+							loading={filesLoading}
+							selectedFile={selectedFile}
+							onSelect={handleFileSelect}
+						/>
+					</div>
 
 					{/* Reviews */}
 					{detail.reviews.length > 0 && (

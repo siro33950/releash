@@ -1,9 +1,10 @@
-import type { LineComment } from "@/types/comment";
+import type { Thread } from "@/types/thread";
 
-export function formatCommentForClipboard(comment: LineComment): string {
+export function formatCommentForClipboard(thread: Thread): string {
 	const lineLabel =
-		comment.endLine != null
-			? `L${comment.lineNumber}-${comment.endLine}`
-			: `L${comment.lineNumber}`;
-	return `${comment.filePath}:${lineLabel}\n${comment.content}`;
+		thread.endLine != null
+			? `L${thread.lineNumber}-${thread.endLine}`
+			: `L${thread.lineNumber}`;
+	const firstContent = thread.entries[0]?.content ?? "";
+	return `${thread.filePath}:${lineLabel}\n${firstContent}`;
 }

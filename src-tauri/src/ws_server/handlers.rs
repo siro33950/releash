@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
+use crate::protocol::thread::{Thread, ThreadEntry, ThreadsSync};
 use crate::protocol::*;
+use crate::thread_store::ThreadsChangedPayload;
 use crate::ws_bridge::WsBroadcaster;
 
 use super::validation::{validate_patch_paths, validate_relative_path};
@@ -553,6 +555,45 @@ pub(super) async fn handle_worktree_select_request(
         }
     }
 
+    // Send initial threads for the selected worktree, merged with PR threads
+    let local_threads = state.thread_store.get_all(&requested_path);
+    let worktree_name = requested_path.clone();
+
+    // Fetch PR review comments and cache as threads
+    let pr_cache = state.pr_cache.clone();
+    let wt_for_pr = requested_path.clone();
+    let pr_threads = tokio::task::spawn_blocking(move || {
+        let branch = crate::git::get_current_branch(wt_for_pr.clone()).unwrap_or_default();
+        if branch.is_empty() {
+            return Vec::new();
+        }
+        let pr_status = crate::git_host::fetch_pr_status_with_cache(&pr_cache, &wt_for_pr);
+        let pr_number = match pr_status.open_prs.get(&branch) {
+            Some(pr) => pr.number,
+            None => return Vec::new(),
+        };
+        let comments = crate::git_host::fetch_pr_review_comments_inner(&wt_for_pr, pr_number);
+        crate::git_host::pr_review_comments_to_threads(comments)
+    })
+    .await
+    .unwrap_or_default();
+
+    // Cache and merge
+    {
+        let mut cache = state.pr_threads_cache.write();
+        cache.insert(worktree_name, pr_threads.clone());
+    }
+
+    let local_ids: std::collections::HashSet<String> =
+        local_threads.iter().map(|t| t.id.clone()).collect();
+    let mut merged = local_threads;
+    for t in pr_threads {
+        if !local_ids.contains(&t.id) {
+            merged.push(t);
+        }
+    }
+    broadcaster.try_send(WsMessage::ThreadsSync(ThreadsSync { threads: merged }));
+
     None
 }
 
@@ -615,6 +656,158 @@ pub(super) fn handle_update_comment(
     None
 }
 
+// --- Thread handlers ---
+
+fn thread_persist_emit_broadcast(state: &WsServerState, worktree_name: &str) {
+    if let Some(app) = &state.app_handle {
+        let data_dir = app.path().app_data_dir().ok();
+        if let Some(dir) = data_dir {
+            let _ = state.thread_store.save(&dir, worktree_name);
+        }
+        let local_threads = state.thread_store.get_all(worktree_name);
+        // Emit local-only threads to desktop (desktop merges PR threads on its own)
+        let _ = app.emit(
+            "threads-changed",
+            ThreadsChangedPayload {
+                worktree_name: worktree_name.to_string(),
+                source: "remote".to_string(),
+                threads: local_threads.clone(),
+            },
+        );
+        // Merge cached PR threads for WebSocket broadcast (remote needs them)
+        let mut merged = local_threads;
+        if let Some(pr_threads) = state.pr_threads_cache.read().get(worktree_name) {
+            let local_ids: std::collections::HashSet<String> =
+                merged.iter().map(|t| t.id.clone()).collect();
+            for t in pr_threads {
+                if !local_ids.contains(&t.id) {
+                    merged.push(t.clone());
+                }
+            }
+        }
+        state
+            .broadcaster
+            .try_send(WsMessage::ThreadsSync(ThreadsSync { threads: merged }));
+    }
+}
+
+pub(super) async fn handle_create_thread(
+    req: &CreateThread,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let wt = selected_worktree.lock().await;
+    let worktree_name = wt.as_deref()?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+        * 1000.0;
+
+    let thread = Thread {
+        id: uuid::Uuid::new_v4().to_string(),
+        file_path: req.file_path.clone(),
+        line_number: req.line_number,
+        end_line: req.end_line,
+        entries: vec![ThreadEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            content: req.content.clone(),
+            is_ai: req.is_ai,
+            action: None,
+            author_name: req.author_name.clone(),
+            author_avatar_url: None,
+            pr_comment_id: None,
+            created_at: now,
+        }],
+        resolved: false,
+        severity: req.severity.clone(),
+        anchor: None,
+        created_at: now,
+    };
+
+    state.thread_store.add_thread(worktree_name, thread);
+    thread_persist_emit_broadcast(state, worktree_name);
+    None
+}
+
+pub(super) async fn handle_add_thread_entry(
+    req: &AddThreadEntry,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let wt = selected_worktree.lock().await;
+    let worktree_name = wt.as_deref()?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+        * 1000.0;
+
+    let entry = ThreadEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        content: req.content.clone(),
+        is_ai: req.is_ai,
+        action: None,
+        author_name: req.author_name.clone(),
+        author_avatar_url: None,
+        pr_comment_id: None,
+        created_at: now,
+    };
+
+    state
+        .thread_store
+        .add_entry(worktree_name, &req.thread_id, entry);
+    thread_persist_emit_broadcast(state, worktree_name);
+    None
+}
+
+pub(super) async fn handle_resolve_thread(
+    req: &ResolveThread,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let wt = selected_worktree.lock().await;
+    let worktree_name = wt.as_deref()?;
+
+    state
+        .thread_store
+        .resolve_thread(worktree_name, &req.thread_id);
+    thread_persist_emit_broadcast(state, worktree_name);
+    None
+}
+
+pub(super) async fn handle_delete_thread(
+    req: &DeleteThread,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let wt = selected_worktree.lock().await;
+    let worktree_name = wt.as_deref()?;
+
+    state
+        .thread_store
+        .remove_thread(worktree_name, &req.thread_id);
+    thread_persist_emit_broadcast(state, worktree_name);
+    None
+}
+
+pub(super) async fn handle_update_thread_entry(
+    req: &UpdateThreadEntry,
+    state: &WsServerState,
+    selected_worktree: &Arc<Mutex<Option<String>>>,
+) -> Option<WsMessage> {
+    let wt = selected_worktree.lock().await;
+    let worktree_name = wt.as_deref()?;
+
+    state
+        .thread_store
+        .update_entry(worktree_name, &req.thread_id, &req.entry_id, &req.content);
+    thread_persist_emit_broadcast(state, worktree_name);
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +829,7 @@ mod tests {
             None,
             false,
             std::sync::Arc::new(crate::git_host::PrCache::new()),
+            std::sync::Arc::new(crate::thread_store::ThreadStore::default()),
         )
     }
 

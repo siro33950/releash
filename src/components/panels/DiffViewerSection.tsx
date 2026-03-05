@@ -1,7 +1,7 @@
 import { lazy, Suspense } from "react";
 import type { ChangeGroup } from "@/lib/computeHunks";
-import type { LineComment } from "@/types/comment";
 import type { DiffMode, Theme } from "@/types/settings";
+import type { Thread } from "@/types/thread";
 import { ImageDiffViewer } from "./ImageDiffViewer";
 import { MarkdownDiffViewer } from "./MarkdownDiffViewer";
 
@@ -30,11 +30,18 @@ export interface DiffViewerSectionProps {
 	onStageHunk: (groupIndex: number) => Promise<void>;
 	onUnstageHunk: ((groupIndex: number) => Promise<void>) | undefined;
 	onAddComment: (lineNumber: number, content: string, endLine?: number) => void;
-	onDeleteComment?: (id: string) => void;
-	onResolveComment?: (id: string) => void;
-	onUpdateComment?: (id: string, content: string) => void;
-	onCopyComment?: (comment: LineComment) => void;
-	getCommentsForLine: (lineNumber: number) => LineComment[];
+	onAddEntry?: (threadId: string, content: string) => void;
+	onDeleteThread?: (threadId: string) => void;
+	onResolveThread?: (threadId: string) => void;
+	onImplementThread?: (threadId: string) => void;
+	onPostToPr?: (threadId: string) => void;
+	aiRunningThreadIds?: Set<string>;
+	aiTaskThreadIds?: Set<string>;
+	onOpenThreadAIModal?: (threadId?: string) => void;
+	onAskAI?: (threadId: string) => void;
+	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
+	onCopyThread?: (thread: Thread) => void;
+	getThreadsForLine: (lineNumber: number) => Thread[];
 	revealLine: { line: number; key: number; openThread?: boolean } | undefined;
 	theme?: Theme;
 	onSearchOccurrences?: (text: string) => void;
@@ -57,11 +64,18 @@ export function DiffViewerSection({
 	onStageHunk,
 	onUnstageHunk,
 	onAddComment,
-	onDeleteComment,
-	onResolveComment,
-	onUpdateComment,
-	onCopyComment,
-	getCommentsForLine,
+	onAddEntry,
+	onDeleteThread,
+	onResolveThread,
+	onImplementThread,
+	onPostToPr,
+	aiRunningThreadIds,
+	aiTaskThreadIds,
+	onOpenThreadAIModal,
+	onAskAI,
+	onUpdateEntry,
+	onCopyThread,
+	getThreadsForLine,
 	revealLine,
 	theme,
 	onSearchOccurrences,
@@ -107,11 +121,18 @@ export function DiffViewerSection({
 				onStageHunk={onStageHunk}
 				onUnstageHunk={onUnstageHunk}
 				onAddComment={onAddComment}
-				onDeleteComment={onDeleteComment}
-				onResolveComment={onResolveComment}
-				onUpdateComment={onUpdateComment}
-				onCopyComment={onCopyComment}
-				getCommentsForLine={getCommentsForLine}
+				onAddEntry={onAddEntry}
+				onDeleteThread={onDeleteThread}
+				onResolveThread={onResolveThread}
+				onImplementThread={onImplementThread}
+				onPostToPr={onPostToPr}
+				aiRunningThreadIds={aiRunningThreadIds}
+				aiTaskThreadIds={aiTaskThreadIds}
+				onOpenThreadAIModal={onOpenThreadAIModal}
+				onAskAI={onAskAI}
+				onUpdateEntry={onUpdateEntry}
+				onCopyThread={onCopyThread}
+				getThreadsForLine={getThreadsForLine}
 				revealLine={revealLine}
 				theme={theme}
 				filePath={filePath}

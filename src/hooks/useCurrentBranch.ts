@@ -14,7 +14,8 @@ export function useCurrentBranch(rootPath: string | null) {
 				repoPath: rootPath,
 			});
 			setBranch(name);
-		} catch {
+		} catch (err) {
+			console.error("[useCurrentBranch] Failed to get branch:", err);
 			setBranch(null);
 		}
 	}, [rootPath]);

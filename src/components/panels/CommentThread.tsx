@@ -1,4 +1,14 @@
-import { Check, Copy, Pencil, Trash2, X } from "lucide-react";
+import {
+	Check,
+	Copy,
+	Loader2,
+	MessageSquareShare,
+	Pencil,
+	Play,
+	ScrollText,
+	Trash2,
+	X,
+} from "lucide-react";
 import {
 	type KeyboardEvent,
 	type MouseEvent,
@@ -9,18 +19,21 @@ import {
 } from "react";
 import { MarkdownPreview } from "@/components/panels/MarkdownPreview";
 import { formatRelativeTime } from "@/lib/formatRelativeTime";
-import type { LineComment } from "@/types/comment";
+import type { Thread, ThreadEntry } from "@/types/thread";
 
 export interface CommentThreadProps {
-	lineNumber: number;
-	endLine?: number;
-	comments: LineComment[];
+	thread: Thread;
 	onSubmit: (content: string) => void;
 	onCancel: () => void;
-	onDeleteComment?: (id: string) => void;
-	onUpdateComment?: (id: string, content: string) => void;
-	onCopyComment?: (comment: LineComment) => void;
-	onResolveComment?: (id: string) => void;
+	onDeleteThread?: (threadId: string) => void;
+	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
+	onCopyThread?: (thread: Thread) => void;
+	onResolveThread?: (threadId: string) => void;
+	onImplementThread?: (threadId: string) => void;
+	onPostToPr?: (threadId: string) => void;
+	aiRunningThreadIds?: Set<string>;
+	aiTaskThreadIds?: Set<string>;
+	onOpenThreadAIModal?: (threadId?: string) => void;
 }
 
 function SeverityBadge({ severity }: { severity: string }) {
@@ -31,22 +44,30 @@ function SeverityBadge({ severity }: { severity: string }) {
 	);
 }
 
-function CommentItem({
-	comment,
+function EntryItem({
+	entry,
+	threadId,
+	isFirstEntry,
+	severity,
+	thread,
 	onDelete,
 	onUpdate,
 	onCopy,
 	onResolve,
 }: {
-	comment: LineComment;
-	onDelete?: (id: string) => void;
-	onUpdate?: (id: string, content: string) => void;
-	onCopy?: (comment: LineComment) => void;
-	onResolve?: (id: string) => void;
+	entry: ThreadEntry;
+	threadId: string;
+	isFirstEntry: boolean;
+	severity?: string;
+	thread: Thread;
+	onDelete?: (threadId: string) => void;
+	onUpdate?: (threadId: string, entryId: string, content: string) => void;
+	onCopy?: (thread: Thread) => void;
+	onResolve?: (threadId: string) => void;
 }) {
 	const [editing, setEditing] = useState(false);
-	const [editValue, setEditValue] = useState(comment.content);
-	const [content, setContent] = useState(comment.content);
+	const [editValue, setEditValue] = useState(entry.content);
+	const [content, setContent] = useState(entry.content);
 	const [removed, setRemoved] = useState(false);
 	const editRef = useRef<HTMLTextAreaElement>(null);
 
@@ -62,7 +83,7 @@ function CommentItem({
 		e.stopPropagation();
 		const trimmed = editValue.trim();
 		if (trimmed && trimmed !== content) {
-			onUpdate?.(comment.id, trimmed);
+			onUpdate?.(threadId, entry.id, trimmed);
 			setContent(trimmed);
 		}
 		setEditing(false);
@@ -80,7 +101,7 @@ function CommentItem({
 			e.preventDefault();
 			const trimmed = editValue.trim();
 			if (trimmed && trimmed !== content) {
-				onUpdate?.(comment.id, trimmed);
+				onUpdate?.(threadId, entry.id, trimmed);
 				setContent(trimmed);
 			}
 			setEditing(false);
@@ -91,18 +112,27 @@ function CommentItem({
 		}
 	};
 
+	const isAction = entry.action != null;
+	const label = entry.isAi
+		? (entry.authorName ?? "AI")
+		: (entry.authorName ?? undefined);
+
 	return (
-		<div className="comment-thread-item">
+		<div
+			className={`comment-thread-item${isAction ? " comment-thread-action-entry" : ""}`}
+		>
 			{!editing && (
 				<div className="comment-thread-item-meta">
 					<div className="comment-thread-item-meta-left">
-						{comment.severity && <SeverityBadge severity={comment.severity} />}
+						{isFirstEntry && severity && <SeverityBadge severity={severity} />}
+						{entry.isAi && <span className="comment-thread-ai-badge">AI</span>}
+						{label && <span className="comment-thread-author">{label}</span>}
 						<span className="comment-thread-time">
-							{formatRelativeTime(comment.createdAt)}
+							{formatRelativeTime(entry.createdAt)}
 						</span>
 					</div>
 					<div className="comment-thread-item-actions">
-						{onUpdate && (
+						{onUpdate && !isAction && (
 							<button
 								type="button"
 								className="comment-thread-action-btn"
@@ -116,41 +146,41 @@ function CommentItem({
 								<Pencil className="h-3.5 w-3.5" />
 							</button>
 						)}
-						{onCopy && (
+						{isFirstEntry && onCopy && (
 							<button
 								type="button"
 								className="comment-thread-action-btn"
 								title="Copy"
 								onClick={(e) => {
 									e.stopPropagation();
-									onCopy(comment);
+									onCopy(thread);
 								}}
 							>
 								<Copy className="h-3.5 w-3.5" />
 							</button>
 						)}
-						{onResolve && (
+						{isFirstEntry && onResolve && (
 							<button
 								type="button"
 								className="comment-thread-action-btn comment-thread-action-resolve"
 								title="Resolve"
 								onClick={(e) => {
 									e.stopPropagation();
-									onResolve(comment.id);
+									onResolve(threadId);
 									setRemoved(true);
 								}}
 							>
 								<Check className="h-3.5 w-3.5" />
 							</button>
 						)}
-						{onDelete && (
+						{isFirstEntry && onDelete && (
 							<button
 								type="button"
 								className="comment-thread-action-btn comment-thread-action-delete"
 								title="Delete"
 								onClick={(e) => {
 									e.stopPropagation();
-									onDelete(comment.id);
+									onDelete(threadId);
 									setRemoved(true);
 								}}
 							>
@@ -202,15 +232,18 @@ function CommentItem({
 }
 
 export function CommentThread({
-	lineNumber,
-	endLine,
-	comments,
+	thread,
 	onSubmit,
 	onCancel,
-	onDeleteComment,
-	onUpdateComment,
-	onCopyComment,
-	onResolveComment,
+	onDeleteThread,
+	onUpdateEntry,
+	onCopyThread,
+	onResolveThread,
+	onImplementThread,
+	onPostToPr,
+	aiRunningThreadIds,
+	aiTaskThreadIds,
+	onOpenThreadAIModal,
 }: CommentThreadProps) {
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -218,7 +251,7 @@ export function CommentThread({
 		textareaRef.current?.focus();
 	}, []);
 
-	const handleSubmitClick = useCallback(
+	const handleSend = useCallback(
 		(e: MouseEvent) => {
 			e.stopPropagation();
 			const content = textareaRef.current?.value.trim();
@@ -240,7 +273,15 @@ export function CommentThread({
 	);
 
 	const title =
-		endLine != null ? `L${lineNumber}-${endLine}` : `L${lineNumber}`;
+		thread.endLine != null
+			? `L${thread.lineNumber}-${thread.endLine}`
+			: `L${thread.lineNumber}`;
+
+	const sortedEntries = [...thread.entries].sort(
+		(a, b) => a.createdAt - b.createdAt,
+	);
+
+	const isRunning = aiRunningThreadIds?.has(thread.id) ?? false;
 
 	return (
 		<>
@@ -257,19 +298,49 @@ export function CommentThread({
 					&times;
 				</button>
 			</div>
-			{comments.length > 0 && (
+			{sortedEntries.length > 0 && (
 				<div className="comment-thread-items">
-					{comments.map((comment) => (
-						<CommentItem
-							key={comment.id}
-							comment={comment}
-							onDelete={onDeleteComment}
-							onUpdate={onUpdateComment}
-							onCopy={onCopyComment}
-							onResolve={onResolveComment}
+					{sortedEntries.map((entry, index) => (
+						<EntryItem
+							key={entry.id}
+							entry={entry}
+							threadId={thread.id}
+							isFirstEntry={index === 0}
+							severity={index === 0 ? thread.severity : undefined}
+							thread={thread}
+							onDelete={onDeleteThread}
+							onUpdate={onUpdateEntry}
+							onCopy={onCopyThread}
+							onResolve={onResolveThread}
 						/>
 					))}
 				</div>
+			)}
+			{isRunning && (
+				<button
+					type="button"
+					className="comment-thread-ai-thinking"
+					onClick={(e) => {
+						e.stopPropagation();
+						onOpenThreadAIModal?.(thread.id);
+					}}
+				>
+					<Loader2 className="h-3 w-3 animate-spin" />
+					AI is thinking...
+				</button>
+			)}
+			{!isRunning && aiTaskThreadIds?.has(thread.id) && (
+				<button
+					type="button"
+					className="comment-thread-ai-log"
+					onClick={(e) => {
+						e.stopPropagation();
+						onOpenThreadAIModal?.(thread.id);
+					}}
+				>
+					<ScrollText className="h-3 w-3" />
+					View AI Log
+				</button>
 			)}
 			<div className="comment-thread-reply">
 				<textarea
@@ -289,12 +360,42 @@ export function CommentThread({
 					<button
 						type="button"
 						className="comment-thread-submit-btn"
-						onClick={handleSubmitClick}
+						onClick={handleSend}
 					>
-						Add
+						Send
 					</button>
 				</div>
 			</div>
+			{(onImplementThread || onPostToPr) && (
+				<div className="comment-thread-conclusion">
+					{onImplementThread && (
+						<button
+							type="button"
+							className="comment-thread-conclusion-btn"
+							onClick={(e) => {
+								e.stopPropagation();
+								onImplementThread(thread.id);
+							}}
+						>
+							<Play className="h-3.5 w-3.5" />
+							Implement
+						</button>
+					)}
+					{onPostToPr && (
+						<button
+							type="button"
+							className="comment-thread-conclusion-btn"
+							onClick={(e) => {
+								e.stopPropagation();
+								onPostToPr(thread.id);
+							}}
+						>
+							<MessageSquareShare className="h-3.5 w-3.5" />
+							Post to PR
+						</button>
+					)}
+				</div>
+			)}
 		</>
 	);
 }
