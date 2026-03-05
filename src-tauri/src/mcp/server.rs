@@ -392,29 +392,7 @@ impl ReleashMcpServer {
 
         self.state.thread_store.add_thread(&worktree_path, thread);
 
-        // Persist and notify desktop UI
-        if let (Some(app), Some(data_dir)) = (
-            self.state.app_handle.as_ref(),
-            self.state.app_data_dir.as_ref(),
-        ) {
-            self.state
-                .thread_store
-                .save(data_dir, &worktree_path)
-                .map_err(|e| {
-                    McpError::internal_error(format!("Failed to save threads: {e}"), None)
-                })?;
-            app.emit(
-                "threads-changed",
-                crate::thread_store::ThreadsChangedPayload {
-                    worktree_name: worktree_path.clone(),
-                    source: "mcp".to_string(),
-                    threads: self.state.thread_store.get_all(&worktree_path),
-                },
-            )
-            .map_err(|e| {
-                McpError::internal_error(format!("Failed to emit threads-changed: {e}"), None)
-            })?;
-        }
+        self.persist_and_emit_threads_changed(&worktree_path)?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Comment posted: {thread_id}"
@@ -458,29 +436,7 @@ impl ReleashMcpServer {
                 McpError::invalid_params(format!("Thread not found: {}", params.comment_id), None)
             })?;
 
-        // Persist and notify desktop UI
-        if let (Some(app), Some(data_dir)) = (
-            self.state.app_handle.as_ref(),
-            self.state.app_data_dir.as_ref(),
-        ) {
-            self.state
-                .thread_store
-                .save(data_dir, &worktree_path)
-                .map_err(|e| {
-                    McpError::internal_error(format!("Failed to save threads: {e}"), None)
-                })?;
-            app.emit(
-                "threads-changed",
-                crate::thread_store::ThreadsChangedPayload {
-                    worktree_name: worktree_path.clone(),
-                    source: "mcp".to_string(),
-                    threads: self.state.thread_store.get_all(&worktree_path),
-                },
-            )
-            .map_err(|e| {
-                McpError::internal_error(format!("Failed to emit threads-changed: {e}"), None)
-            })?;
-        }
+        self.persist_and_emit_threads_changed(&worktree_path)?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Thread {} {}",
@@ -577,29 +533,7 @@ impl ReleashMcpServer {
             ));
         }
 
-        // Persist and notify desktop UI
-        if let (Some(app), Some(data_dir)) = (
-            self.state.app_handle.as_ref(),
-            self.state.app_data_dir.as_ref(),
-        ) {
-            self.state
-                .thread_store
-                .save(data_dir, &worktree_path)
-                .map_err(|e| {
-                    McpError::internal_error(format!("Failed to save threads: {e}"), None)
-                })?;
-            app.emit(
-                "threads-changed",
-                crate::thread_store::ThreadsChangedPayload {
-                    worktree_name: worktree_path.clone(),
-                    source: "mcp".to_string(),
-                    threads: self.state.thread_store.get_all(&worktree_path),
-                },
-            )
-            .map_err(|e| {
-                McpError::internal_error(format!("Failed to emit threads-changed: {e}"), None)
-            })?;
-        }
+        self.persist_and_emit_threads_changed(&worktree_path)?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Entry added: {entry_id}"
@@ -982,6 +916,32 @@ impl ReleashMcpServer {
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
+
+    fn persist_and_emit_threads_changed(&self, worktree_path: &str) -> Result<(), McpError> {
+        if let (Some(app), Some(data_dir)) = (
+            self.state.app_handle.as_ref(),
+            self.state.app_data_dir.as_ref(),
+        ) {
+            self.state
+                .thread_store
+                .save(data_dir, worktree_path)
+                .map_err(|e| {
+                    McpError::internal_error(format!("Failed to save threads: {e}"), None)
+                })?;
+            app.emit(
+                "threads-changed",
+                crate::thread_store::ThreadsChangedPayload {
+                    worktree_name: worktree_path.to_string(),
+                    source: "mcp".to_string(),
+                    threads: self.state.thread_store.get_all(worktree_path),
+                },
+            )
+            .map_err(|e| {
+                McpError::internal_error(format!("Failed to emit threads-changed: {e}"), None)
+            })?;
+        }
+        Ok(())
+    }
 
     fn get_lsp_and_app(&self) -> Result<(Arc<crate::lsp::LspManager>, tauri::AppHandle), McpError> {
         let app = self

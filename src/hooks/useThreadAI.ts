@@ -223,10 +223,16 @@ export function useThreadAI(
 					timeoutSecs: 120,
 				});
 
+				// Check if task was cancelled/removed during await
+				const currentTask = taskMapRef.current.get(threadId);
+				if (!currentTask || currentTask.status !== "running") {
+					invoke("cancel_oneshot_pty", { ptyId: info.pty_id }).catch(() => {});
+					return;
+				}
+
 				ptyThreadMapRef.current.set(info.pty_id, threadId);
 
 				// Update task with ptyId
-				const currentTask = taskMapRef.current.get(threadId);
 				if (currentTask) {
 					const updated: ThreadAITask = {
 						...currentTask,

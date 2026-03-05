@@ -68,6 +68,7 @@ mod tests {
         assert!(Arc::ptr_eq(&state.broadcaster, &cloned.broadcaster));
         assert!(Arc::ptr_eq(&state.agent_states, &cloned.agent_states));
         assert!(Arc::ptr_eq(&state.comment_store, &cloned.comment_store));
+        assert!(Arc::ptr_eq(&state.thread_store, &cloned.thread_store));
     }
 
     #[test]

@@ -151,18 +151,15 @@ export function useWorktreeState({
 		string | null
 	>(null);
 
-	const handleAICompleted = useCallback((threadId: string, _output: string) => {
+	const handleAICompleted = useCallback((threadId: string, output: string) => {
 		// AI posts its response via MCP add_thread_entry tool.
 		// UI updates automatically via threads-changed event.
 		if (summarizeThreadIdsRef.current.has(threadId)) {
 			summarizeThreadIdsRef.current.delete(threadId);
 			// For summarize, show the post-to-PR preview.
-			const thread = threadsRef.current.find((t) => t.id === threadId);
-			const lastAiEntry = thread?.entries
-				.filter((e) => e.isAi)
-				.sort((a, b) => b.createdAt - a.createdAt)[0];
-			if (lastAiEntry) {
-				setPendingPostToPr({ threadId, summary: lastAiEntry.content });
+			const summary = output.trim();
+			if (summary) {
+				setPendingPostToPr({ threadId, summary });
 			}
 		}
 	}, []);
@@ -230,11 +227,11 @@ export function useWorktreeState({
 					"posted-to-pr",
 					postedComment?.id,
 				);
+				setPendingPostToPr(null);
 			} catch (e) {
 				console.error("Failed to post to PR:", e);
 			} finally {
 				setPostToPrLoading(false);
-				setPendingPostToPr(null);
 			}
 		},
 		[pendingPostToPr, mergedThreads, prDiff, addEntry],
