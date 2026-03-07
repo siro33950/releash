@@ -1,6 +1,6 @@
 import { FileIcon } from "@react-symbols/icons/utils";
 import { PanelLeft, PanelRight, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
 	Group,
 	Panel,
@@ -105,6 +105,7 @@ function WorktreeContent({
 		onSettingsSave,
 		isActive: true,
 		centerTabRef,
+		onSwitchToEditor,
 	});
 
 	const {
@@ -134,9 +135,8 @@ function WorktreeContent({
 		(filename: string, _orig: string, _mod: string) => {
 			const absolutePath = `${rootPath}/${filename}`;
 			s.handleOpenFile(absolutePath);
-			setCenterTab("editor");
 		},
-		[rootPath, s.handleOpenFile, setCenterTab],
+		[rootPath, s.handleOpenFile],
 	);
 
 	const handleTabSelect = useCallback(
@@ -145,13 +145,6 @@ function WorktreeContent({
 		},
 		[s.editorLayout],
 	);
-
-	// ファイルタブが開かれたら自動でEditorビューに切り替え
-	useEffect(() => {
-		if (s.editorLayout.activeTabId !== "") {
-			onSwitchToEditor();
-		}
-	}, [s.editorLayout.activeTabId, onSwitchToEditor]);
 
 	return (
 		<GitStatusProvider rootPath={rootPath} externalRefreshKey={s.gitRefreshKey}>
