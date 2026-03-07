@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WorkspaceList } from "@/components/workspace/WorkspaceList";
+import { useBatchSpawnAgents } from "@/hooks/useBatchSpawnAgents";
 import { type MenuHandlers, useMenuEvents } from "@/hooks/useMenuEvents";
 import { useRemoteAutoStart } from "@/hooks/useRemoteAutoStart";
 import { useRepoList } from "@/hooks/useRepoList";
@@ -101,6 +102,13 @@ function App() {
 			cancelled = true;
 		};
 	}, [repoPaths]);
+
+	useBatchSpawnAgents(
+		repoPaths,
+		settings.agent,
+		buildTerminalCommand(settings),
+		settings.agentMaxConcurrent,
+	);
 
 	const handleAddRepo = useCallback(async () => {
 		const selected = await open({ directory: true, multiple: false });

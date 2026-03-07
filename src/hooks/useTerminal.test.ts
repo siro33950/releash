@@ -238,6 +238,41 @@ describe("useTerminal", () => {
 		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
+	it("既存セッションのbuffered_outputがターミナルに書き込まれる", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_or_spawn_pty") {
+				return Promise.resolve({
+					pty_id: 1,
+					session_key: "pre-spawned-key",
+					buffered_output: "previously buffered text\r\n$ ",
+					is_new: false,
+					is_exited: false,
+					exit_code: null,
+				});
+			}
+			return Promise.resolve();
+		});
+
+		renderHook(() => useTerminal(containerRef));
+
+		await waitFor(() => {
+			expect(mockTerminalInstance.write).toHaveBeenCalledWith(
+				"previously buffered text\r\n$ ",
+			);
+		});
+	});
+
+	it("新規セッション（is_new: true）のとき起動コマンドが送信される", async () => {
+		renderHook(() => useTerminal(containerRef, null, undefined, "startup-cmd"));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("write_pty", {
+				ptyId: 1,
+				data: "startup-cmd\n",
+			});
+		});
+	});
+
 	it("既存セッション（is_new: false）のとき起動コマンドが送信されない", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_or_spawn_pty") {

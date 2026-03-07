@@ -548,6 +548,31 @@ function AgentSection({
 				</div>
 			)}
 
+			{draft.agent !== "none" && (
+				<div className="flex flex-col gap-1.5">
+					<label htmlFor="agent-max-concurrent" className={labelClass}>
+						Max concurrent agent PTYs
+					</label>
+					<input
+						id="agent-max-concurrent"
+						type="number"
+						min={0}
+						value={draft.agentMaxConcurrent}
+						onChange={(e) =>
+							updateDraft((d) => ({
+								...d,
+								agentMaxConcurrent: Math.max(0, Number(e.target.value) || 0),
+							}))
+						}
+						className="w-24 bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+					/>
+					<p className="text-[10px] text-muted-foreground">
+						Limits how many agent sessions are pre-spawned at startup. 0 =
+						unlimited.
+					</p>
+				</div>
+			)}
+
 			{draft.agent === "custom" && (
 				<div className="flex flex-col gap-1.5">
 					<label htmlFor="terminal-startup-cmd" className={labelClass}>
