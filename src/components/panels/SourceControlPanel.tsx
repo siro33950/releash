@@ -1,15 +1,33 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { ArrowDown, ArrowUp, RefreshCw } from "lucide-react";
 import { useCallback, useReducer } from "react";
-import { FileStatusItem } from "@/components/panels/FileStatusItem";
+import {
+	FileStatusItem,
+	formatPath,
+	StatusIcon,
+} from "@/components/panels/FileStatusItem";
 import { SourceControlContextMenu } from "@/components/panels/SourceControlContextMenu";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { useEditorContext } from "@/contexts/EditorContext";
 import { useGitStatusContext } from "@/contexts/GitStatusContext";
 import { useAheadBehind } from "@/hooks/useAheadBehind";
+import { useBaseBranch } from "@/hooks/useBaseBranch";
+import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useGitActions } from "@/hooks/useGitActions";
+import {
+	type ReviewChangedFile,
+	useReviewDiffFiles,
+} from "@/hooks/useReviewDiffFiles";
 import { formatGitError } from "@/lib/errorHandler";
+import type { DiffBase } from "@/types/settings";
 import { EmptyState } from "./EmptyState";
 import { CommitForm, DiscardConfirmDialog } from "./SourceControlCommitForm";
 
@@ -107,8 +125,16 @@ export function SourceControlPanel({
 		refresh: refreshStatus,
 	} = useGitStatusContext();
 	const { stage, unstage, discard, commit, push } = useGitActions();
-	const { gitRefreshKey } = useEditorContext();
+	const { gitRefreshKey, diffBase, setDiffBase } = useEditorContext();
 	const aheadBehind = useAheadBehind(rootPath, gitRefreshKey);
+	const { branch } = useCurrentBranch(rootPath);
+	const { baseBranch } = useBaseBranch(rootPath, branch);
+	const isBranchBase = diffBase === "branch-base";
+	const {
+		files: reviewFiles,
+		loading: reviewLoading,
+		error: reviewError,
+	} = useReviewDiffFiles(rootPath, isBranchBase, baseBranch);
 
 	const [form, dispatch] = useReducer(commitFormReducer, initialCommitForm);
 	const {
@@ -121,7 +147,9 @@ export function SourceControlPanel({
 		discardTarget,
 	} = form;
 
-	const totalChanges = stagedFiles.length + changedFiles.length;
+	const totalChanges = isBranchBase
+		? reviewFiles.length
+		: stagedFiles.length + changedFiles.length;
 
 	const handleStage = useCallback(
 		async (paths: string[]) => {
@@ -222,6 +250,23 @@ export function SourceControlPanel({
 				<span className="text-xs font-semibold uppercase tracking-wide truncate flex-1">
 					{totalChanges} file changes
 				</span>
+				<Select
+					value={diffBase}
+					onValueChange={(v) => setDiffBase(v as DiffBase)}
+				>
+					<SelectTrigger
+						size="sm"
+						className="h-5 border-none bg-transparent shadow-none px-1 text-[10px] font-mono min-w-0 w-auto gap-0.5"
+					>
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="staged">Staged</SelectItem>
+						<SelectItem value="branch-base" disabled={baseBranch == null}>
+							Branch Base
+						</SelectItem>
+					</SelectContent>
+				</Select>
 				<button
 					type="button"
 					className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
@@ -234,121 +279,137 @@ export function SourceControlPanel({
 
 			{/* File Lists */}
 			<ScrollArea className="flex-1 min-h-0 [&>[data-slot=scroll-area-viewport]>div]:block!">
-				<CollapsibleSection
-					title="Unstaged Files"
-					count={changedFiles.length}
-					headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide"
-					chevronClassName="h-3.5 w-3.5"
-					actions={
-						<button
-							type="button"
-							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
-							onClick={() => handleStage([])}
-							title="Stage All Changes"
-						>
-							<ArrowDown className="h-3.5 w-3.5" />
-						</button>
-					}
-				>
-					{changedFiles.length === 0 && (
-						<EmptyState
-							compact
-							title="No unstaged changes"
-							className="px-4 py-1.5"
-						/>
-					)}
-					{changedFiles.map((entry) => (
-						<SourceControlContextMenu
-							key={`changed-${entry.path}`}
-							variant="unstaged"
-							onOpenChanges={() => onSelectFile?.(`${rootPath}/${entry.path}`)}
-							onStage={() => handleStage([entry.path])}
-							onDiscard={() =>
-								dispatch({
-									type: "SET_DISCARD_TARGET",
-									target: {
-										path: entry.path,
-										paths: [entry.path],
-									},
-								})
-							}
-							onCopyPath={() =>
-								navigator.clipboard.writeText(`${rootPath}/${entry.path}`)
-							}
-							onCopyRelativePath={() =>
-								navigator.clipboard.writeText(entry.path)
-							}
-							onRevealInFinder={() =>
-								revealItemInDir(`${rootPath}/${entry.path}`)
-							}
-						>
-							<FileStatusItem
-								entry={entry}
-								statusField="worktree_status"
-								onSelect={(e) => onSelectFile?.(`${rootPath}/${e.path}`)}
-								actionLabel="Stage"
-								onAction={() => handleStage([entry.path])}
-							/>
-						</SourceControlContextMenu>
-					))}
-				</CollapsibleSection>
-
-				<CollapsibleSection
-					title="Staged Files"
-					count={stagedFiles.length}
-					headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide"
-					chevronClassName="h-3.5 w-3.5"
-					actions={
-						<button
-							type="button"
-							className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
-							onClick={() => handleUnstage([])}
-							title="Unstage All Changes"
-						>
-							<ArrowUp className="h-3.5 w-3.5" />
-						</button>
-					}
-				>
-					{stagedFiles.length === 0 && (
-						<EmptyState
-							compact
-							title="No staged changes"
-							className="px-4 py-1.5"
-						/>
-					)}
-					{stagedFiles.map((entry) => (
-						<SourceControlContextMenu
-							key={`staged-${entry.path}`}
-							variant="staged"
-							onOpenChanges={() => onSelectFile?.(`${rootPath}/${entry.path}`)}
-							onUnstage={() => handleUnstage([entry.path])}
-							onCopyPath={() =>
-								navigator.clipboard.writeText(`${rootPath}/${entry.path}`)
-							}
-							onCopyRelativePath={() =>
-								navigator.clipboard.writeText(entry.path)
-							}
-							onRevealInFinder={() =>
-								revealItemInDir(`${rootPath}/${entry.path}`)
-							}
-						>
-							<FileStatusItem
-								entry={entry}
-								statusField="index_status"
-								onSelect={(e) => onSelectFile?.(`${rootPath}/${e.path}`)}
-								actionLabel="Unstage"
-								onAction={() => handleUnstage([entry.path])}
-							/>
-						</SourceControlContextMenu>
-					))}
-				</CollapsibleSection>
-
-				{totalChanges === 0 && (
-					<EmptyState
-						compact
-						title="No changes"
-						className="px-3 py-4 text-sm"
+				{isBranchBase ? (
+					<BranchBaseFileList
+						files={reviewFiles}
+						loading={reviewLoading}
+						error={reviewError}
+						rootPath={rootPath}
+						onSelectFile={onSelectFile}
 					/>
+				) : (
+					<>
+						<CollapsibleSection
+							title="Unstaged Files"
+							count={changedFiles.length}
+							headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide"
+							chevronClassName="h-3.5 w-3.5"
+							actions={
+								<button
+									type="button"
+									className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
+									onClick={() => handleStage([])}
+									title="Stage All Changes"
+								>
+									<ArrowDown className="h-3.5 w-3.5" />
+								</button>
+							}
+						>
+							{changedFiles.length === 0 && (
+								<EmptyState
+									compact
+									title="No unstaged changes"
+									className="px-4 py-1.5"
+								/>
+							)}
+							{changedFiles.map((entry) => (
+								<SourceControlContextMenu
+									key={`changed-${entry.path}`}
+									variant="unstaged"
+									onOpenChanges={() =>
+										onSelectFile?.(`${rootPath}/${entry.path}`)
+									}
+									onStage={() => handleStage([entry.path])}
+									onDiscard={() =>
+										dispatch({
+											type: "SET_DISCARD_TARGET",
+											target: {
+												path: entry.path,
+												paths: [entry.path],
+											},
+										})
+									}
+									onCopyPath={() =>
+										navigator.clipboard.writeText(`${rootPath}/${entry.path}`)
+									}
+									onCopyRelativePath={() =>
+										navigator.clipboard.writeText(entry.path)
+									}
+									onRevealInFinder={() =>
+										revealItemInDir(`${rootPath}/${entry.path}`)
+									}
+								>
+									<FileStatusItem
+										entry={entry}
+										statusField="worktree_status"
+										onSelect={(e) => onSelectFile?.(`${rootPath}/${e.path}`)}
+										actionLabel="Stage"
+										onAction={() => handleStage([entry.path])}
+									/>
+								</SourceControlContextMenu>
+							))}
+						</CollapsibleSection>
+
+						<CollapsibleSection
+							title="Staged Files"
+							count={stagedFiles.length}
+							headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide"
+							chevronClassName="h-3.5 w-3.5"
+							actions={
+								<button
+									type="button"
+									className="inline-flex items-center justify-center h-5 w-5 min-w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
+									onClick={() => handleUnstage([])}
+									title="Unstage All Changes"
+								>
+									<ArrowUp className="h-3.5 w-3.5" />
+								</button>
+							}
+						>
+							{stagedFiles.length === 0 && (
+								<EmptyState
+									compact
+									title="No staged changes"
+									className="px-4 py-1.5"
+								/>
+							)}
+							{stagedFiles.map((entry) => (
+								<SourceControlContextMenu
+									key={`staged-${entry.path}`}
+									variant="staged"
+									onOpenChanges={() =>
+										onSelectFile?.(`${rootPath}/${entry.path}`)
+									}
+									onUnstage={() => handleUnstage([entry.path])}
+									onCopyPath={() =>
+										navigator.clipboard.writeText(`${rootPath}/${entry.path}`)
+									}
+									onCopyRelativePath={() =>
+										navigator.clipboard.writeText(entry.path)
+									}
+									onRevealInFinder={() =>
+										revealItemInDir(`${rootPath}/${entry.path}`)
+									}
+								>
+									<FileStatusItem
+										entry={entry}
+										statusField="index_status"
+										onSelect={(e) => onSelectFile?.(`${rootPath}/${e.path}`)}
+										actionLabel="Unstage"
+										onAction={() => handleUnstage([entry.path])}
+									/>
+								</SourceControlContextMenu>
+							))}
+						</CollapsibleSection>
+
+						{totalChanges === 0 && (
+							<EmptyState
+								compact
+								title="No changes"
+								className="px-3 py-4 text-sm"
+							/>
+						)}
+					</>
 				)}
 			</ScrollArea>
 
@@ -381,5 +442,81 @@ export function SourceControlPanel({
 				onCancel={() => dispatch({ type: "CLEAR_DISCARD" })}
 			/>
 		</div>
+	);
+}
+
+function mapReviewStatus(status: string): string {
+	if (status === "added") return "new";
+	return status;
+}
+
+function BranchBaseFileList({
+	files,
+	loading,
+	error,
+	rootPath,
+	onSelectFile,
+}: {
+	files: ReviewChangedFile[];
+	loading: boolean;
+	error: string | null;
+	rootPath: string;
+	onSelectFile?: (path: string) => void;
+}) {
+	if (loading && files.length === 0) {
+		return (
+			<EmptyState compact title="Loading..." className="px-3 py-4 text-sm" />
+		);
+	}
+
+	if (error) {
+		return (
+			<EmptyState
+				compact
+				title="Failed to load changes"
+				className="px-3 py-4 text-sm"
+			/>
+		);
+	}
+
+	if (files.length === 0) {
+		return (
+			<EmptyState
+				compact
+				title="No changes from base branch"
+				className="px-3 py-4 text-sm"
+			/>
+		);
+	}
+
+	return (
+		<CollapsibleSection
+			title="Changed Files"
+			count={files.length}
+			headerClassName="gap-1 px-2 py-1 font-semibold uppercase tracking-wide"
+			chevronClassName="h-3.5 w-3.5"
+		>
+			{files.map((file) => {
+				const displayStatus = mapReviewStatus(file.status);
+				const { dir, name } = formatPath(file.path);
+				return (
+					<button
+						type="button"
+						key={file.path}
+						className="group flex w-full items-center gap-1.5 px-4 py-1 text-sm transition-colors hover:bg-foreground/5"
+						onClick={() => onSelectFile?.(`${rootPath}/${file.path}`)}
+					>
+						<StatusIcon status={displayStatus} />
+						<span className="truncate flex-1 text-left">
+							<span className="text-muted-foreground">{dir}</span>
+							<span className="font-semibold">{name}</span>
+						</span>
+						<span className="text-[10px] text-muted-foreground font-mono shrink-0">
+							+{file.stats.additions} -{file.stats.deletions}
+						</span>
+					</button>
+				);
+			})}
+		</CollapsibleSection>
 	);
 }

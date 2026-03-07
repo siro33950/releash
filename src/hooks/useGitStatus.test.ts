@@ -262,9 +262,16 @@ describe("useGitStatus", () => {
 		vi.useRealTimers();
 	});
 
-	it("should cancel pending debounce when externalRefreshKey changes", async () => {
+	it("should deduplicate when debounce fires after externalRefreshKey fetch", async () => {
 		vi.useFakeTimers();
-		mockInvoke.mockResolvedValue([]);
+		const mockEntries: GitFileStatus[] = [
+			{
+				path: "src/main.ts",
+				index_status: "none",
+				worktree_status: "modified",
+			},
+		];
+		mockInvoke.mockResolvedValue(mockEntries);
 
 		type ListenCallback = (event: { payload: { path: string } }) => void;
 		let fileChangeCallback: ListenCallback | null = null;
@@ -275,7 +282,7 @@ describe("useGitStatus", () => {
 			return Promise.resolve(vi.fn());
 		});
 
-		const { rerender } = renderHook(
+		const { result, rerender } = renderHook(
 			({ refreshKey }: { refreshKey: number }) =>
 				useGitStatus("/test/repo", refreshKey),
 			{ initialProps: { refreshKey: 0 } },
@@ -299,7 +306,10 @@ describe("useGitStatus", () => {
 			vi.advanceTimersByTime(300);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledTimes(2);
+		// Debounce fires (3rd invoke call), but prevEntriesRef dedup prevents state update
+		expect(mockInvoke).toHaveBeenCalledTimes(3);
+		// State remains the same (only 1 entry)
+		expect(result.current.statusMap.size).toBe(1);
 
 		vi.useRealTimers();
 	});

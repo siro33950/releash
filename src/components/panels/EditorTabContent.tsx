@@ -38,7 +38,6 @@ export function EditorTabContent({
 		updateContent,
 		diffBase,
 		diffMode,
-		setDiffBase,
 		setDiffMode,
 		threads,
 		createThread,
@@ -303,7 +302,6 @@ export function EditorTabContent({
 					diffMode={diffMode}
 					currentIndex={currentIndex}
 					total={total}
-					onDiffBaseChange={setDiffBase}
 					onDiffModeChange={setDiffMode}
 					onGoToPrev={handleGoToPrev}
 					onGoToNext={handleGoToNext}

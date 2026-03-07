@@ -250,6 +250,8 @@ pub fn run() {
             git::commands::list_branches_with_status,
             git::commands::create_worktree,
             git::commands::remove_worktree,
+            // Git: レビュー差分
+            git::commands::get_review_diff_summary,
             // Git: 設定・ユーティリティ
             git::commands::get_cwd,
             git::commands::get_repo_git_dir,
