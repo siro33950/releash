@@ -32,7 +32,7 @@ export const monacoTheme: Monaco.editor.IStandaloneThemeData = {
 };
 
 export const DIFF_ADDED_COLOR = "#9ccc2c";
-export const DIFF_MODIFIED_COLOR = "#9ccc2c";
+export const DIFF_DELETED_COLOR = "#ff0000";
 
 export const monacoLightTheme: Monaco.editor.IStandaloneThemeData = {
 	base: "vs",
