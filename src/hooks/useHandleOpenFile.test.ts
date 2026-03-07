@@ -141,7 +141,7 @@ describe("useHandleOpenFile", () => {
 		);
 	});
 
-	it("should extract filename correctly from Windows paths", async () => {
+	it("should normalize Windows paths to forward slashes", async () => {
 		const openFile = vi.fn().mockResolvedValue(undefined);
 		const getFileContent = vi.fn().mockReturnValue(undefined);
 		const addTab = vi.fn();
@@ -152,10 +152,38 @@ describe("useHandleOpenFile", () => {
 
 		await act(() => result.current("src\\components\\Button.tsx"));
 
+		expect(openFile).toHaveBeenCalledWith("src/components/Button.tsx");
 		expect(addTab).toHaveBeenCalledWith(
-			"src\\components\\Button.tsx",
+			"src/components/Button.tsx",
 			"Button.tsx",
 			false,
 		);
+	});
+
+	it("should use the latest onSwitchToEditor after rerender", async () => {
+		const openFile = vi.fn().mockResolvedValue(undefined);
+		const getFileContent = vi.fn().mockReturnValue(undefined);
+		const addTab = vi.fn();
+		const firstOnSwitchToEditor = vi.fn();
+		const secondOnSwitchToEditor = vi.fn();
+
+		const { result, rerender } = renderHook(
+			({ onSwitchToEditor }: { onSwitchToEditor?: () => void }) =>
+				useHandleOpenFile({
+					openFile,
+					getFileContent,
+					addTab,
+					onSwitchToEditor,
+				}),
+			{
+				initialProps: { onSwitchToEditor: firstOnSwitchToEditor },
+			},
+		);
+
+		rerender({ onSwitchToEditor: secondOnSwitchToEditor });
+		await act(() => result.current("src/main.ts"));
+
+		expect(firstOnSwitchToEditor).not.toHaveBeenCalled();
+		expect(secondOnSwitchToEditor).toHaveBeenCalledOnce();
 	});
 });
