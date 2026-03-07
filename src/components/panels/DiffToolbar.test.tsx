@@ -96,9 +96,7 @@ describe("DiffToolbar", () => {
 			expect(
 				screen.getByRole("button", { name: "Inline" }),
 			).toBeInTheDocument();
-			expect(
-				screen.getByRole("button", { name: "Split" }),
-			).toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "Split" })).toBeInTheDocument();
 		});
 
 		it("should mark current diff mode as pressed", () => {
