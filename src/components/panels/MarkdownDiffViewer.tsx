@@ -84,8 +84,9 @@ function SplitView({
 			className="md-split-container scrollbar-thin"
 			data-testid="md-split-grid"
 		>
-			{rows.map((row, i) => (
-				<div key={`${i}-${row.type}`} className="md-split-row">
+			{rows.map((row, rowIndex) => (
+				// biome-ignore lint/suspicious/noArrayIndexKey: rows are positional diff output, order is fixed
+				<div key={rowIndex} className="md-split-row">
 					<div className={splitCellClass(row.type, "left")}>
 						{row.left != null && (
 							<div className="markdown-preview">
@@ -131,7 +132,7 @@ function InlineView({
 	const rehypePlugins = useMemo(() => [rehypeHighlight], []);
 	return (
 		<div className="markdown-preview h-full overflow-auto p-6 scrollbar-thin">
-			{chunks.map((chunk, i) => {
+			{chunks.map((chunk, chunkIndex) => {
 				const className =
 					chunk.type === "added"
 						? "md-diff-inline-added"
@@ -139,7 +140,8 @@ function InlineView({
 							? "md-diff-inline-removed"
 							: undefined;
 				return (
-					<div key={`${i}-${chunk.type}`} className={className}>
+					// biome-ignore lint/suspicious/noArrayIndexKey: chunks are positional diff output, order is fixed
+					<div key={chunkIndex} className={className}>
 						<Markdown
 							remarkPlugins={remarkPlugins}
 							rehypePlugins={rehypePlugins}
