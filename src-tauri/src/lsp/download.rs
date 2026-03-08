@@ -110,7 +110,10 @@ async fn install_rust_analyzer(
 
     log::info!("Downloading rust-analyzer from {url}");
 
-    let response = reqwest::get(&url)
+    let client = download_client()?;
+    let response = client
+        .get(&url)
+        .send()
         .await
         .map_err(|e| LspDownloadError::Download(format!("{url}: {e}")))?;
 
@@ -260,10 +263,21 @@ async fn install_gopls(
     })
 }
 
+/// Build a shared HTTP client with sensible timeouts.
+fn download_client() -> Result<reqwest::Client, LspDownloadError> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| LspDownloadError::Download(e.to_string()))
+}
+
 /// Fetch the latest release tag of rust-analyzer from GitHub.
 async fn fetch_latest_rust_analyzer_version() -> Result<String, LspDownloadError> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| LspDownloadError::Download(e.to_string()))?;
 
@@ -315,12 +329,13 @@ fn rust_analyzer_target() -> &'static str {
 }
 
 /// Check that Java 17+ is available on PATH.
-fn check_java_version() -> Result<(), LspDownloadError> {
-    let output = std::process::Command::new("java")
+async fn check_java_version() -> Result<(), LspDownloadError> {
+    let output = tokio::process::Command::new("java")
         .arg("-version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
+        .await
         .map_err(|_| {
             LspDownloadError::MissingPrerequisite("java が PATH に必要です (JDK 17+)".to_string())
         })?;
@@ -366,7 +381,7 @@ async fn install_jdtls(
     app: &AppHandle,
     cache_dir: &Path,
 ) -> Result<LspServerConfig, LspDownloadError> {
-    check_java_version()?;
+    check_java_version().await?;
 
     emit_progress(app, "java", "fetching version", 0.0);
 
@@ -375,7 +390,7 @@ async fn install_jdtls(
     log::info!("Downloading Eclipse JDT LS {version} from {download_url}");
     emit_progress(app, "java", "downloading", 0.1);
 
-    let client = reqwest::Client::new();
+    let client = download_client()?;
     let response = client
         .get(&download_url)
         .header("User-Agent", "releash")
@@ -406,6 +421,9 @@ async fn install_jdtls(
     }
     std::fs::create_dir_all(&staging_dir)?;
 
+    // RAII guard: always remove staging_dir on error
+    let mut staging_guard = StagingGuard::new(staging_dir.clone());
+
     extract_tar_gz(&bytes, &staging_dir)?;
 
     let launcher = if cfg!(windows) { "jdtls.bat" } else { "jdtls" };
@@ -421,7 +439,6 @@ async fn install_jdtls(
     }
 
     if !staged_bin.exists() {
-        let _ = std::fs::remove_dir_all(&staging_dir);
         return Err(LspDownloadError::Install(format!(
             "展開されたアーカイブに bin/{launcher} が見つかりません"
         )));
@@ -432,6 +449,9 @@ async fn install_jdtls(
         std::fs::remove_dir_all(&jdtls_dir)?;
     }
     std::fs::rename(&staging_dir, &jdtls_dir)?;
+
+    // Rename succeeded — disarm the guard so it won't delete the moved directory
+    staging_guard.disarm();
 
     let bin_path = jdtls_dir.join("bin").join(launcher);
 
@@ -459,7 +479,7 @@ async fn install_jdtls(
 ///
 /// Returns (download_url, version).
 async fn fetch_latest_jdtls_release() -> Result<(String, String), LspDownloadError> {
-    let client = reqwest::Client::new();
+    let client = download_client()?;
 
     // 1. GitHub Tags API で最新バージョンを取得
     let tags_resp = client
@@ -516,6 +536,29 @@ async fn fetch_latest_jdtls_release() -> Result<(String, String), LspDownloadErr
         format!("https://download.eclipse.org/jdtls/milestones/{version}/{filename}");
 
     Ok((download_url, version.to_string()))
+}
+
+/// RAII guard that removes a staging directory on drop unless disarmed.
+struct StagingGuard {
+    path: Option<PathBuf>,
+}
+
+impl StagingGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn disarm(&mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        if let Some(ref path) = self.path {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
 }
 
 /// Extract a tar.gz archive into the given directory.
