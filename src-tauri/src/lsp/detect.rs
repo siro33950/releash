@@ -319,7 +319,11 @@ mod tests {
             "java".to_string(),
             LspServerEntry {
                 command: "/opt/jdtls/bin/jdtls".to_string(),
-                args: vec!["--stdio".to_string(), "-data".to_string(), "/tmp/jdtls-ws".to_string()],
+                args: vec![
+                    "--stdio".to_string(),
+                    "-data".to_string(),
+                    "/tmp/jdtls-ws".to_string(),
+                ],
                 enabled: true,
             },
         );

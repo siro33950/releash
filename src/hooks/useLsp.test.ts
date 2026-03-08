@@ -168,6 +168,7 @@ describe("useLsp", () => {
 			expect(result.current.status).toBe("downloading");
 		});
 
+		// biome-ignore lint/style/noNonNullAssertion: resolveInstall is assigned in Promise constructor
 		resolveInstall!(defaultConfig);
 
 		await vi.waitFor(() => {
