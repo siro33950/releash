@@ -447,6 +447,7 @@ export function SourceControlPanel({
 
 function mapReviewStatus(status: string): string {
 	if (status === "added") return "new";
+	if (status === "copied") return "modified";
 	return status;
 }
 

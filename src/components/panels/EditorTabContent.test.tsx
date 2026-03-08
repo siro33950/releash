@@ -118,41 +118,72 @@ describe("EditorTabContent - diffBase propagation to useGitOriginalContent", () 
 		currentEditorContext.diffBase = "staged";
 		render(<EditorTabContent filePath="/test/repo/src/file.ts" />);
 
-		const calls = mockUseGitOriginalContent.mock.calls;
-		// First call: originalContent with diffBase
-		expect(calls[0][0]).toBe("/test/repo/src/file.ts");
-		expect(calls[0][1]).toBe("staged");
+		expect(mockUseGitOriginalContent).toHaveBeenCalledTimes(2);
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			1,
+			"/test/repo/src/file.ts",
+			"staged",
+			"original content",
+			0,
+		);
+		// Second call: stagedContent with null filePath (not branch-base mode)
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			2,
+			null,
+			"staged",
+			"",
+			0,
+		);
 	});
 
 	it("should call useGitOriginalContent with diffBase='branch-base' when diffBase is branch-base", () => {
 		currentEditorContext.diffBase = "branch-base";
 		render(<EditorTabContent filePath="/test/repo/src/file.ts" />);
 
-		const calls = mockUseGitOriginalContent.mock.calls;
-		// First call: originalContent with diffBase="branch-base"
-		expect(calls[0][0]).toBe("/test/repo/src/file.ts");
-		expect(calls[0][1]).toBe("branch-base");
+		expect(mockUseGitOriginalContent).toHaveBeenCalledTimes(2);
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			1,
+			"/test/repo/src/file.ts",
+			"branch-base",
+			"original content",
+			0,
+		);
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			2,
+			"/test/repo/src/file.ts",
+			"staged",
+			"",
+			0,
+		);
 	});
 
 	it("should make a second useGitOriginalContent call for staged content when diffBase is branch-base", () => {
 		currentEditorContext.diffBase = "branch-base";
 		render(<EditorTabContent filePath="/test/repo/src/file.ts" />);
 
-		const calls = mockUseGitOriginalContent.mock.calls;
-		// Should have at least 2 calls
-		expect(calls.length).toBeGreaterThanOrEqual(2);
-		// Second call: stagedContent with diffBase="staged" and filePath (not null)
-		expect(calls[1][0]).toBe("/test/repo/src/file.ts");
-		expect(calls[1][1]).toBe("staged");
+		expect(mockUseGitOriginalContent).toHaveBeenCalledTimes(2);
+		// Second call: stagedContent with filePath (branch-base mode)
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			2,
+			"/test/repo/src/file.ts",
+			"staged",
+			"",
+			0,
+		);
 	});
 
 	it("should pass null filePath for stagedContent call when diffBase is staged", () => {
 		currentEditorContext.diffBase = "staged";
 		render(<EditorTabContent filePath="/test/repo/src/file.ts" />);
 
-		const calls = mockUseGitOriginalContent.mock.calls;
-		expect(calls.length).toBeGreaterThanOrEqual(2);
+		expect(mockUseGitOriginalContent).toHaveBeenCalledTimes(2);
 		// Second call: stagedContent should receive null filePath when diffBase != "branch-base"
-		expect(calls[1][0]).toBeNull();
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			2,
+			null,
+			"staged",
+			"",
+			0,
+		);
 	});
 });

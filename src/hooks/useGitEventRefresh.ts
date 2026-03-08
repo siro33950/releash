@@ -20,23 +20,28 @@ export function useGitEventRefresh(
 		if (!enabled || !rootPath) return;
 
 		let unlisten: UnlistenFn | null = null;
-		let mounted = true;
+		let disposed = false;
 
 		const setup = async () => {
-			unlisten = await listen<FileChangeEvent>("file-change", (event) => {
+			const off = await listen<FileChangeEvent>("file-change", (event) => {
 				if (
-					mounted &&
+					!disposed &&
 					(event.payload.path === rootPath ||
 						event.payload.path.startsWith(`${rootPath}/`))
 				) {
 					debouncedRefresh();
 				}
 			});
+			if (disposed) {
+				off();
+				return;
+			}
+			unlisten = off;
 		};
-		setup();
+		void setup();
 
 		return () => {
-			mounted = false;
+			disposed = true;
 			unlisten?.();
 			if (timerRef.current) clearTimeout(timerRef.current);
 		};
