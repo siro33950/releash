@@ -97,13 +97,21 @@ export interface EditorState {
 	newFolderKey: number;
 }
 
-export const initialEditorState: EditorState = {
+const defaultEditorState: EditorState = {
 	activeView: "git",
 	searchFocusKey: 0,
 	searchInitialQuery: "",
 	pendingReveal: null,
 	newFolderKey: 0,
 };
+
+export const initialEditorState: EditorState = defaultEditorState;
+
+export function createEditorState(
+	overrides?: Partial<Pick<EditorState, "activeView">>,
+): EditorState {
+	return { ...defaultEditorState, ...overrides };
+}
 
 export function editorReducer(
 	state: EditorState,

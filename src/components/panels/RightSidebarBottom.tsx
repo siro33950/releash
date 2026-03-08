@@ -21,7 +21,7 @@ import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import type { AppSettings, Theme } from "@/types/settings";
 import type { Thread } from "@/types/thread";
 
-type RightBottomTab = "terminal" | "review";
+export type RightBottomTab = "terminal" | "review";
 
 interface RightSidebarBottomProps {
 	rootPath: string;
@@ -38,6 +38,8 @@ interface RightSidebarBottomProps {
 	collapsed?: boolean;
 	aiTaskThreadIds?: Set<string>;
 	onOpenThreadAILog?: (threadId: string) => void;
+	initialActiveTab?: RightBottomTab;
+	onActiveTabChange?: (tab: RightBottomTab) => void;
 }
 
 export function RightSidebarBottom({
@@ -55,8 +57,12 @@ export function RightSidebarBottom({
 	collapsed,
 	aiTaskThreadIds,
 	onOpenThreadAILog,
+	initialActiveTab,
+	onActiveTabChange,
 }: RightSidebarBottomProps) {
-	const [activeTab, setActiveTab] = useState<RightBottomTab>("terminal");
+	const [activeTab, setActiveTab] = useState<RightBottomTab>(
+		initialActiveTab ?? "terminal",
+	);
 	const [reviewModalOpen, setReviewModalOpen] = useState(false);
 
 	const {
@@ -101,7 +107,11 @@ export function RightSidebarBottom({
 		<div className="flex flex-col h-full">
 			<Tabs
 				value={activeTab}
-				onValueChange={(val) => setActiveTab(val as RightBottomTab)}
+				onValueChange={(val) => {
+					const tab = val as RightBottomTab;
+					setActiveTab(tab);
+					onActiveTabChange?.(tab);
+				}}
 				className="flex flex-col h-full"
 			>
 				<div className="flex items-center gap-2 shrink-0 px-0 pt-0 bg-background">

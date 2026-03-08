@@ -118,8 +118,12 @@ export interface UseEditorLayoutReturn {
 
 export function useEditorLayout(
 	onTabClose?: (path: string) => boolean,
+	initialState?: EditorLayoutState,
 ): UseEditorLayoutReturn {
-	const [state, dispatch] = useReducer(reducer, undefined, createInitialState);
+	const [state, dispatch] = useReducer(
+		reducer,
+		initialState ?? createInitialState(),
+	);
 	const stateRef = useRef(state);
 	stateRef.current = state;
 
