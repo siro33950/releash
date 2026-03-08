@@ -323,9 +323,10 @@ export function PullRequestPanel({
 					{detail.reviews.length > 0 && (
 						<div className="space-y-3">
 							<SectionHeader title="Reviews" count={detail.reviews.length} />
-							{detail.reviews.map((review) => (
+							{detail.reviews.map((review, index) => (
 								<div
-									key={`review-${review.author.login}-${review.submitted_at}`}
+									// biome-ignore lint/suspicious/noArrayIndexKey: PrReview lacks a unique ID field; index suffix prevents key collision
+									key={`review-${review.author.login}-${review.submitted_at}-${index}`}
 									className="border border-border rounded-md p-3 space-y-2"
 								>
 									<div className="flex items-center gap-2 flex-wrap">
@@ -351,9 +352,10 @@ export function PullRequestPanel({
 					{detail.comments.length > 0 && (
 						<div className="space-y-3">
 							<SectionHeader title="Comments" count={detail.comments.length} />
-							{detail.comments.map((comment) => (
+							{detail.comments.map((comment, index) => (
 								<div
-									key={`comment-${comment.author.login}-${comment.created_at}`}
+									// biome-ignore lint/suspicious/noArrayIndexKey: PrComment lacks a unique ID field; index suffix prevents key collision
+									key={`comment-${comment.author.login}-${comment.created_at}-${index}`}
 									className="border border-border rounded-md p-3 space-y-2"
 								>
 									<div className="flex items-center gap-2">
