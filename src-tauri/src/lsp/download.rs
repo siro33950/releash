@@ -70,7 +70,10 @@ pub fn get_cached_server(language: &str, lsp_cache_dir: &Path) -> Option<LspServ
             }
         }
         "go" => cached_binary_config(lsp_cache_dir.join("gopls")),
-        "java" => cached_binary_config(lsp_cache_dir.join("jdtls").join("bin").join("jdtls")),
+        "java" => {
+            let launcher = if cfg!(windows) { "jdtls.bat" } else { "jdtls" };
+            cached_binary_config(lsp_cache_dir.join("jdtls").join("bin").join(launcher))
+        }
         _ => None,
     }
 }
@@ -311,16 +314,59 @@ fn rust_analyzer_target() -> &'static str {
     }
 }
 
+/// Check that Java 17+ is available on PATH.
+fn check_java_version() -> Result<(), LspDownloadError> {
+    let output = std::process::Command::new("java")
+        .arg("-version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|_| {
+            LspDownloadError::MissingPrerequisite("java が PATH に必要です (JDK 17+)".to_string())
+        })?;
+
+    // java -version outputs to stderr
+    let version_str = String::from_utf8_lossy(&output.stderr);
+    if version_str.is_empty() {
+        let version_str = String::from_utf8_lossy(&output.stdout);
+        return parse_java_version(&version_str);
+    }
+    parse_java_version(&version_str)
+}
+
+fn parse_java_version(version_str: &str) -> Result<(), LspDownloadError> {
+    // Patterns: "openjdk version \"17.0.1\"", "java version \"1.8.0_291\""
+    let major = version_str.lines().find_map(|line| {
+        let start = line.find('"')?;
+        let end = line[start + 1..].find('"')? + start + 1;
+        let ver = &line[start + 1..end];
+        let first_segment = ver.split('.').next()?;
+        let num: u32 = first_segment.parse().ok()?;
+        // "1.8.x" style → major is the second segment
+        if num == 1 {
+            ver.split('.').nth(1)?.parse().ok()
+        } else {
+            Some(num)
+        }
+    });
+
+    match major {
+        Some(v) if v >= 17 => Ok(()),
+        Some(v) => Err(LspDownloadError::MissingPrerequisite(format!(
+            "JDK 17+ が必要です (検出: Java {v})"
+        ))),
+        None => Err(LspDownloadError::MissingPrerequisite(
+            "Java バージョンを検出できません。JDK 17+ をインストールしてください".to_string(),
+        )),
+    }
+}
+
 /// Download and install Eclipse JDT LS from GitHub Releases.
 async fn install_jdtls(
     app: &AppHandle,
     cache_dir: &Path,
 ) -> Result<LspServerConfig, LspDownloadError> {
-    if !is_command_available("java") {
-        return Err(LspDownloadError::MissingPrerequisite(
-            "java が PATH に必要です (JDK 17+ 推奨)".to_string(),
-        ));
-    }
+    check_java_version()?;
 
     emit_progress(app, "java", "fetching version", 0.0);
 
@@ -358,7 +404,8 @@ async fn install_jdtls(
 
     extract_tar_gz(&bytes, &jdtls_dir)?;
 
-    let bin_path = jdtls_dir.join("bin").join("jdtls");
+    let launcher = if cfg!(windows) { "jdtls.bat" } else { "jdtls" };
+    let bin_path = jdtls_dir.join("bin").join(launcher);
 
     // chmod +x on the launcher script
     #[cfg(unix)]
@@ -370,9 +417,9 @@ async fn install_jdtls(
     }
 
     if !bin_path.exists() {
-        return Err(LspDownloadError::Install(
-            "展開されたアーカイブに bin/jdtls が見つかりません".to_string(),
-        ));
+        return Err(LspDownloadError::Install(format!(
+            "展開されたアーカイブに bin/{launcher} が見つかりません"
+        )));
     }
 
     // Save version file (after confirming bin/jdtls exists)

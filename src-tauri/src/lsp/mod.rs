@@ -45,14 +45,23 @@ fn find_lombok_jar() -> Option<PathBuf> {
         }
     }
 
-    // Sort descending by file name so the newest version comes first
+    // Sort descending by version number so the newest version comes first
     candidates.sort_by(|a, b| {
-        let a_name = a.file_name().unwrap_or_default().to_string_lossy();
-        let b_name = b.file_name().unwrap_or_default().to_string_lossy();
-        b_name.cmp(&a_name)
+        let a_ver = parse_lombok_version(&a.file_name().unwrap_or_default().to_string_lossy());
+        let b_ver = parse_lombok_version(&b.file_name().unwrap_or_default().to_string_lossy());
+        b_ver.cmp(&a_ver)
     });
 
     candidates.into_iter().next()
+}
+
+/// Parse version segments from a lombok jar filename (e.g. "lombok-1.18.38.jar" → [1, 18, 38]).
+fn parse_lombok_version(filename: &str) -> Vec<u32> {
+    let name = filename.strip_prefix("lombok-").unwrap_or(filename);
+    let name = name.strip_suffix(".jar").unwrap_or(name);
+    name.split('.')
+        .filter_map(|s| s.parse::<u32>().ok())
+        .collect()
 }
 
 /// Walk a directory tree to find lombok-*.jar files (excluding sources/javadoc jars).
@@ -150,7 +159,8 @@ impl LspManager {
         }
 
         let mut final_args = args;
-        if language == "java" {
+        let is_jdtls = language == "java" && command.contains("jdtls");
+        if is_jdtls {
             if !final_args.iter().any(|a| a == "-data") {
                 let data_dir = Self::jdtls_data_dir(app, &worktree_path)?;
                 final_args.push("-data".to_string());
