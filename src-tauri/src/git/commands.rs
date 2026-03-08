@@ -231,3 +231,14 @@ pub async fn get_file_at_branch_base(file_path: String) -> Result<String, GitErr
 pub async fn get_binary_file_at_branch_base(file_path: String) -> Result<String, GitError> {
     blocking(move || super::diff::get_binary_file_at_branch_base(file_path)).await
 }
+
+// ── review ──
+
+#[tauri::command]
+pub async fn get_review_diff_summary(
+    repo_path: String,
+    base_branch: Option<String>,
+) -> Result<super::review::ReviewDiff, GitError> {
+    blocking(move || super::review::get_review_diff(&repo_path, base_branch.as_deref(), None, None))
+        .await
+}

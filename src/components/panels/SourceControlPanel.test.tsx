@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useBaseBranch } from "@/hooks/useBaseBranch";
+import type { ReviewChangedFile } from "@/hooks/useReviewDiffFiles";
 import type { GitFileStatus } from "@/types/git";
 import { SourceControlPanel } from "./SourceControlPanel";
 
@@ -21,32 +23,84 @@ const mockGitActions = {
 	switchBranch: vi.fn().mockResolvedValue(undefined),
 };
 
+const mockEditorContext = {
+	gitRefreshKey: 0,
+	diffBase: "staged" as string,
+	setDiffBase: vi.fn(),
+};
+
+const mockReviewDiffFiles = {
+	files: [] as ReviewChangedFile[],
+	loading: false,
+	error: null as string | null,
+	refresh: vi.fn(),
+};
+
 vi.mock("@/contexts/GitStatusContext", () => ({
 	useGitStatusContext: () => mockGitStatus,
 }));
 
 vi.mock("@/contexts/EditorContext", () => ({
-	useEditorContext: () => ({ gitRefreshKey: 0 }),
+	useEditorContext: () => mockEditorContext,
 }));
 
 vi.mock("@/hooks/useGitActions", () => ({
 	useGitActions: () => mockGitActions,
 }));
 
+vi.mock("@/hooks/useCurrentBranch", () => ({
+	useCurrentBranch: () => ({ branch: "feature/test", refresh: vi.fn() }),
+}));
+
+vi.mock("@/hooks/useBaseBranch", () => ({
+	useBaseBranch: vi.fn().mockReturnValue({
+		baseBranch: "main",
+		setBaseBranch: vi.fn(),
+		localBranches: ["main", "develop"],
+	}),
+}));
+
+vi.mock("@/hooks/useReviewDiffFiles", () => ({
+	useReviewDiffFiles: () => mockReviewDiffFiles,
+}));
+
 vi.mock("@tauri-apps/plugin-opener", () => ({
 	revealItemInDir: vi.fn().mockResolvedValue(undefined),
 }));
+
+// Radix UI Select requires pointer capture APIs not available in jsdom
+if (typeof Element.prototype.hasPointerCapture !== "function") {
+	Element.prototype.hasPointerCapture = () => false;
+}
+if (typeof Element.prototype.setPointerCapture !== "function") {
+	Element.prototype.setPointerCapture = () => {};
+}
+if (typeof Element.prototype.releasePointerCapture !== "function") {
+	Element.prototype.releasePointerCapture = () => {};
+}
+if (typeof Element.prototype.scrollIntoView !== "function") {
+	Element.prototype.scrollIntoView = () => {};
+}
 
 describe("SourceControlPanel", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockGitStatus.stagedFiles = [];
 		mockGitStatus.changedFiles = [];
+		mockEditorContext.diffBase = "staged";
+		mockReviewDiffFiles.files = [];
+		mockReviewDiffFiles.loading = false;
+		mockReviewDiffFiles.error = null;
 		mockGitActions.stage.mockResolvedValue(undefined);
 		mockGitActions.unstage.mockResolvedValue(undefined);
 		mockGitActions.discard.mockResolvedValue(undefined);
 		mockGitActions.commit.mockResolvedValue("abc123");
 		mockGitActions.push.mockResolvedValue("ok");
+		vi.mocked(useBaseBranch).mockReturnValue({
+			baseBranch: "main",
+			setBaseBranch: vi.fn(),
+			localBranches: ["main", "develop"],
+		});
 	});
 
 	it("should show message when no folder is opened", () => {
@@ -285,6 +339,184 @@ describe("SourceControlPanel", () => {
 
 		await waitFor(() => {
 			expect(screen.getByText("Pushed successfully")).toBeInTheDocument();
+		});
+	});
+
+	describe("branch-base mode", () => {
+		it("should show flat file list in branch-base mode", () => {
+			mockEditorContext.diffBase = "branch-base";
+			mockReviewDiffFiles.files = [
+				{
+					path: "src/app.tsx",
+					old_path: null,
+					status: "modified",
+					binary: false,
+					stats: { additions: 10, deletions: 3 },
+				},
+				{
+					path: "src/new-file.ts",
+					old_path: null,
+					status: "added",
+					binary: false,
+					stats: { additions: 20, deletions: 0 },
+				},
+			];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			expect(screen.getByText("2 file changes")).toBeInTheDocument();
+			expect(screen.getByText(/Changed Files/)).toBeInTheDocument();
+			expect(screen.getByText("app.tsx")).toBeInTheDocument();
+			expect(screen.getByText("new-file.ts")).toBeInTheDocument();
+			expect(screen.queryByText(/Unstaged Files/)).not.toBeInTheDocument();
+			expect(screen.queryByText(/Staged Files/)).not.toBeInTheDocument();
+		});
+
+		it("should show error state when review diff fails", () => {
+			mockEditorContext.diffBase = "branch-base";
+			mockReviewDiffFiles.files = [];
+			mockReviewDiffFiles.error = "failed to resolve base branch";
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			expect(screen.getByText("Failed to load changes")).toBeInTheDocument();
+			expect(
+				screen.queryByText("No changes from base branch"),
+			).not.toBeInTheDocument();
+		});
+
+		it("should show empty state when no changes from base branch", () => {
+			mockEditorContext.diffBase = "branch-base";
+			mockReviewDiffFiles.files = [];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			expect(
+				screen.getByText("No changes from base branch"),
+			).toBeInTheDocument();
+		});
+
+		it("should show staged mode when diffBase is staged", () => {
+			mockEditorContext.diffBase = "staged";
+			mockGitStatus.changedFiles = [
+				{
+					path: "file.txt",
+					index_status: "none",
+					worktree_status: "modified",
+				},
+			];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			expect(screen.getByText(/Unstaged Files/)).toBeInTheDocument();
+			expect(
+				screen.queryByText("No changes from base branch"),
+			).not.toBeInTheDocument();
+		});
+
+		it("should call onSelectFile when clicking a branch-base file", () => {
+			mockEditorContext.diffBase = "branch-base";
+			mockReviewDiffFiles.files = [
+				{
+					path: "src/app.tsx",
+					old_path: null,
+					status: "modified",
+					binary: false,
+					stats: { additions: 5, deletions: 2 },
+				},
+			];
+			const onSelectFile = vi.fn();
+			render(
+				<SourceControlPanel
+					rootPath="/test/repo"
+					onSelectFile={onSelectFile}
+				/>,
+			);
+
+			fireEvent.click(screen.getByText("app.tsx"));
+
+			expect(onSelectFile).toHaveBeenCalledWith("/test/repo/src/app.tsx");
+		});
+
+		it("should show file stats in branch-base mode", () => {
+			mockEditorContext.diffBase = "branch-base";
+			mockReviewDiffFiles.files = [
+				{
+					path: "file.txt",
+					old_path: null,
+					status: "modified",
+					binary: false,
+					stats: { additions: 15, deletions: 7 },
+				},
+			];
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			expect(screen.getByText("+15 -7")).toBeInTheDocument();
+		});
+
+		it("should render diffBase select with Staged and Branch Base options", async () => {
+			const user = userEvent.setup();
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			const trigger = screen.getByRole("combobox");
+			expect(trigger).toBeInTheDocument();
+
+			await user.click(trigger);
+
+			await waitFor(() => {
+				expect(
+					screen.getByRole("option", { name: "Staged" }),
+				).toBeInTheDocument();
+				expect(
+					screen.getByRole("option", { name: "Branch Base" }),
+				).toBeInTheDocument();
+			});
+
+			await user.click(screen.getByRole("option", { name: "Branch Base" }));
+
+			expect(mockEditorContext.setDiffBase).toHaveBeenCalledWith("branch-base");
+		});
+
+		it("should disable branch-base option when baseBranch is null", async () => {
+			vi.mocked(useBaseBranch).mockReturnValue({
+				baseBranch: null,
+				setBaseBranch: vi.fn(),
+				localBranches: [],
+			});
+			const user = userEvent.setup();
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			const trigger = screen.getByRole("combobox");
+			await user.click(trigger);
+
+			await waitFor(() => {
+				const branchBaseOption = screen.getByRole("option", {
+					name: "Branch Base",
+				});
+				expect(branchBaseOption).toHaveAttribute("aria-disabled", "true");
+			});
+		});
+
+		it("should disable branch-base option before initial commit (baseBranch=null)", async () => {
+			vi.mocked(useBaseBranch).mockReturnValue({
+				baseBranch: null,
+				setBaseBranch: vi.fn(),
+				localBranches: [],
+			});
+			mockGitStatus.changedFiles = [];
+			mockGitStatus.stagedFiles = [];
+
+			const user = userEvent.setup();
+			render(<SourceControlPanel rootPath="/test/repo" />);
+
+			const trigger = screen.getByRole("combobox");
+			await user.click(trigger);
+
+			await waitFor(() => {
+				const branchBaseOption = screen.getByRole("option", {
+					name: "Branch Base",
+				});
+				expect(branchBaseOption).toHaveAttribute("aria-disabled", "true");
+			});
+
+			const stagedOption = screen.getByRole("option", { name: "Staged" });
+			expect(stagedOption).not.toHaveAttribute("aria-disabled");
 		});
 	});
 

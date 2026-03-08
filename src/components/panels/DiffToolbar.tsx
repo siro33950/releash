@@ -14,13 +14,6 @@ import {
 	PopoverTrigger,
 } from "@/components/ui/popover";
 import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select";
-import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
@@ -35,7 +28,6 @@ export interface DiffToolbarProps {
 	diffMode: DiffMode;
 	currentIndex: number;
 	total: number;
-	onDiffBaseChange: (base: DiffBase) => void;
 	onDiffModeChange: (mode: DiffMode) => void;
 	onGoToPrev: () => void;
 	onGoToNext: () => void;
@@ -147,7 +139,6 @@ export function DiffToolbar({
 	diffMode,
 	currentIndex,
 	total,
-	onDiffBaseChange,
 	onDiffModeChange,
 	onGoToPrev,
 	onGoToNext,
@@ -213,24 +204,8 @@ export function DiffToolbar({
 				</div>
 			)}
 
-			{/* Right: Base selector + Diff mode icons */}
+			{/* Right: Diff mode icons */}
 			<div className="flex items-center gap-1">
-				<Select
-					value={diffBase}
-					onValueChange={(v) => onDiffBaseChange(v as DiffBase)}
-				>
-					<SelectTrigger
-						size="sm"
-						className="h-6 border-none bg-transparent shadow-none px-1 text-xs font-mono"
-					>
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="branch-base">Branch Base</SelectItem>
-						<SelectItem value="staged">Staged</SelectItem>
-					</SelectContent>
-				</Select>
-
 				<div className="flex items-center gap-0.5 bg-muted rounded p-0.5">
 					{diffModes.map(({ mode, icon: Icon, label }) => (
 						<Tooltip key={mode}>

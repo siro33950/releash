@@ -1,9 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileStatus } from "@/types/file-tree";
 import type { GitFileStatus } from "@/types/git";
-import type { FileChangeEvent } from "./useFileWatcher";
+import { useGitEventRefresh } from "./useGitEventRefresh";
 
 function toFileStatus(entry: GitFileStatus): FileStatus {
 	if (entry.worktree_status === "ignored") return "ignored";
@@ -26,7 +25,6 @@ export function useGitStatus(
 	);
 	const [stagedFiles, setStagedFiles] = useState<GitFileStatus[]>([]);
 	const [changedFiles, setChangedFiles] = useState<GitFileStatus[]>([]);
-	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const prevEntriesRef = useRef<string>("");
 
 	const fetchStatus = useCallback(async () => {
@@ -76,74 +74,17 @@ export function useGitStatus(
 		fetchStatus();
 	}, [fetchStatus]);
 
-	const debouncedRefresh = useCallback(() => {
-		if (timerRef.current) clearTimeout(timerRef.current);
-		timerRef.current = setTimeout(() => {
-			fetchStatus();
-		}, 300);
-	}, [fetchStatus]);
-
 	useEffect(() => {
 		fetchStatus();
 	}, [fetchStatus]);
 
 	useEffect(() => {
 		if (externalRefreshKey != null && externalRefreshKey > 0) {
-			if (timerRef.current) clearTimeout(timerRef.current);
-			timerRef.current = null;
 			fetchStatus();
 		}
 	}, [externalRefreshKey, fetchStatus]);
 
-	useEffect(() => {
-		let unlisten: UnlistenFn | null = null;
-		let mounted = true;
-
-		const setup = async () => {
-			unlisten = await listen<FileChangeEvent>("file-change", (event) => {
-				if (
-					mounted &&
-					rootPath &&
-					(event.payload.path === rootPath ||
-						event.payload.path.startsWith(`${rootPath}/`))
-				) {
-					debouncedRefresh();
-				}
-			});
-		};
-		setup();
-
-		return () => {
-			mounted = false;
-			unlisten?.();
-			if (timerRef.current) clearTimeout(timerRef.current);
-		};
-	}, [debouncedRefresh, rootPath]);
-
-	useEffect(() => {
-		let unlisten: UnlistenFn | null = null;
-		let disposed = false;
-		const setup = async () => {
-			const off = await listen<{ repo_path: string }>(
-				"git-status-changed",
-				(event) => {
-					if (!disposed && rootPath && event.payload.repo_path === rootPath) {
-						debouncedRefresh();
-					}
-				},
-			);
-			if (disposed) {
-				off();
-				return;
-			}
-			unlisten = off;
-		};
-		setup();
-		return () => {
-			disposed = true;
-			unlisten?.();
-		};
-	}, [debouncedRefresh, rootPath]);
+	useGitEventRefresh(rootPath, fetchStatus);
 
 	return { statusMap, stagedFiles, changedFiles, refresh };
 }
