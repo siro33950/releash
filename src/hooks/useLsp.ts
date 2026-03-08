@@ -94,6 +94,18 @@ export function useLsp(
 				return;
 			}
 
+			// If server is explicitly disabled by user config, stay idle
+			if (config && !config.enabled) {
+				setState((prev) => ({
+					...prev,
+					sessionId: null,
+					status: "idle",
+					error: null,
+				}));
+				startingRef.current = false;
+				return;
+			}
+
 			// If no server found, check if it's a supported language and auto-install
 			if (!config) {
 				const supported = await invoke<string[]>("get_supported_lsp_languages");

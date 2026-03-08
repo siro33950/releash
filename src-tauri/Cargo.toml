@@ -69,6 +69,7 @@ tokio-util = "0.7"
 lsp-types = "0.97"
 bytes = "1"
 flate2 = "1"
+tar = "0.4"
 url = "2"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]

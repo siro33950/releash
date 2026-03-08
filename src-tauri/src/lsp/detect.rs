@@ -60,6 +60,14 @@ static DEFAULT_SERVERS: &[(&str, DefaultServer)] = &[
             extensions: &["go"],
         },
     ),
+    (
+        "java",
+        DefaultServer {
+            command: "jdtls",
+            args: &[],
+            extensions: &["java"],
+        },
+    ),
 ];
 
 /// Cache of detected servers (command → is_available).
@@ -70,7 +78,7 @@ fn which_cache() -> &'static std::sync::Mutex<HashMap<String, bool>> {
 }
 
 /// Check if a command is available on PATH.
-fn is_command_available(command: &str) -> bool {
+pub fn is_command_available(command: &str) -> bool {
     let mut cache = which_cache().lock().unwrap();
     if let Some(&available) = cache.get(command) {
         return available;
@@ -109,7 +117,11 @@ pub fn detect_server(
     // 1. Check user config first
     if let Some(entry) = user_config.get(language) {
         if !entry.enabled {
-            return None;
+            return Some(LspServerConfig {
+                command: String::new(),
+                args: vec![],
+                enabled: false,
+            });
         }
         if !entry.command.is_empty() {
             return Some(LspServerConfig {
@@ -211,6 +223,11 @@ mod tests {
     }
 
     #[test]
+    fn language_for_extension_java() {
+        assert_eq!(language_for_extension("java"), Some("java"));
+    }
+
+    #[test]
     fn lsp_language_id_distinguishes_jsx() {
         assert_eq!(lsp_language_id("tsx"), Some("typescriptreact"));
         assert_eq!(lsp_language_id("jsx"), Some("javascriptreact"));
@@ -222,6 +239,7 @@ mod tests {
         assert_eq!(lsp_language_id("cjs"), Some("javascript"));
         assert_eq!(lsp_language_id("rs"), Some("rust"));
         assert_eq!(lsp_language_id("go"), Some("go"));
+        assert_eq!(lsp_language_id("java"), Some("java"));
         assert_eq!(lsp_language_id("xyz"), None);
     }
 
@@ -236,6 +254,7 @@ mod tests {
         assert!(langs.contains(&"typescript"));
         assert!(langs.contains(&"rust"));
         assert!(langs.contains(&"go"));
+        assert!(langs.contains(&"java"));
     }
 
     #[test]
@@ -249,7 +268,30 @@ mod tests {
                 enabled: false,
             },
         );
-        assert!(detect_server("typescript", &config, None, None).is_none());
+        let result = detect_server("typescript", &config, None, None);
+        assert!(result.is_some());
+        let server = result.unwrap();
+        assert!(!server.enabled);
+        assert!(server.command.is_empty());
+    }
+
+    #[test]
+    fn detect_server_disabled_returns_config_with_enabled_false() {
+        let mut config = HashMap::new();
+        config.insert(
+            "java".to_string(),
+            LspServerEntry {
+                command: "custom-jdtls".to_string(),
+                args: vec!["--stdio".to_string()],
+                enabled: false,
+            },
+        );
+        let result = detect_server("java", &config, None, None);
+        assert!(result.is_some());
+        let server = result.unwrap();
+        assert!(!server.enabled);
+        assert!(server.command.is_empty());
+        assert!(server.args.is_empty());
     }
 
     #[test]
@@ -271,6 +313,29 @@ mod tests {
     }
 
     #[test]
+    fn detect_server_uses_custom_command_java() {
+        let mut config = HashMap::new();
+        config.insert(
+            "java".to_string(),
+            LspServerEntry {
+                command: "/opt/jdtls/bin/jdtls".to_string(),
+                args: vec![
+                    "--stdio".to_string(),
+                    "-data".to_string(),
+                    "/tmp/jdtls-ws".to_string(),
+                ],
+                enabled: true,
+            },
+        );
+        let result = detect_server("java", &config, None, None);
+        assert!(result.is_some());
+        let server = result.unwrap();
+        assert!(server.enabled);
+        assert_eq!(server.command, "/opt/jdtls/bin/jdtls");
+        assert_eq!(server.args, vec!["--stdio", "-data", "/tmp/jdtls-ws"]);
+    }
+
+    #[test]
     fn detect_server_unknown_language_returns_none() {
         let config = HashMap::new();
         assert!(detect_server("brainfuck", &config, None, None).is_none());
@@ -287,6 +352,21 @@ mod tests {
         assert!(result.is_some());
         let server = result.unwrap();
         assert!(server.command.contains("rust-analyzer"));
+    }
+
+    #[test]
+    fn detect_server_finds_cached_jdtls_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let jdtls_dir = dir.path().join("jdtls").join("bin");
+        std::fs::create_dir_all(&jdtls_dir).unwrap();
+        let bin = jdtls_dir.join("jdtls");
+        std::fs::write(&bin, b"fake").unwrap();
+
+        let config = HashMap::new();
+        let result = detect_server("java", &config, Some(dir.path()), None);
+        assert!(result.is_some());
+        let server = result.unwrap();
+        assert!(server.command.contains("jdtls"));
     }
 
     #[test]
