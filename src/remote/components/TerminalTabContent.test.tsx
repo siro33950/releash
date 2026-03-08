@@ -128,7 +128,10 @@ describe("TerminalTabContent", () => {
 		expect(screen.getByText("my-agent")).toBeInTheDocument();
 		expect(screen.getByLabelText("Close Agent 1")).toBeInTheDocument();
 		expect(screen.getByLabelText("Close my-agent")).toBeInTheDocument();
-		expect(screen.getByRole("tablist")).toHaveAttribute("aria-label", "Agent Tabs");
+		expect(screen.getByRole("tablist")).toHaveAttribute(
+			"aria-label",
+			"Agent Tabs",
+		);
 	});
 
 	it("agentStates が渡された場合に AgentStateIcon が表示される", () => {

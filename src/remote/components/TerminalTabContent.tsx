@@ -105,7 +105,10 @@ export function TerminalTabContent({
 									}
 								/>
 							)}
-							<span>{s.label ?? `${mode === "agent" ? "Agent" : "Terminal"} ${s.ptyId}`}</span>
+							<span>
+								{s.label ??
+									`${mode === "agent" ? "Agent" : "Terminal"} ${s.ptyId}`}
+							</span>
 							<button
 								type="button"
 								className={`ml-0.5 rounded-sm hover:bg-black/20 inline-flex items-center ${
