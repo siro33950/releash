@@ -202,4 +202,179 @@ describe("usePtyManagement", () => {
 			payload: { cols: 80, rows: 24, label: undefined },
 		});
 	});
+
+	it("kind 付き pty_ready でセッションに kind が設定される", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 1, cols: 80, rows: 24, kind: "agent" },
+			});
+		});
+
+		expect(result.current.ptySessions[0].kind).toBe("agent");
+	});
+
+	it("kind 未設定で terminal がデフォルトになる", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 1, cols: 80, rows: 24 },
+			});
+		});
+
+		expect(result.current.ptySessions[0].kind).toBe("terminal");
+	});
+
+	it("agent セッションで activePtyId が自動設定されない", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 1, cols: 80, rows: 24, kind: "agent" },
+			});
+		});
+
+		expect(result.current.activePtyId).toBeNull();
+		expect(result.current.activeAgentPtyId).toBe(1);
+	});
+
+	it("agent セッションで activeAgentPtyId が自動設定される", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 10, cols: 80, rows: 24, kind: "agent" },
+			});
+		});
+
+		expect(result.current.activeAgentPtyId).toBe(10);
+	});
+
+	it("terminalSessions と agentSessions がフィルタされる", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 1, cols: 80, rows: 24, kind: "terminal" },
+			});
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 2, cols: 80, rows: 24, kind: "agent" },
+			});
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 3, cols: 80, rows: 24 },
+			});
+		});
+
+		expect(result.current.terminalSessions).toHaveLength(2);
+		expect(result.current.agentSessions).toHaveLength(1);
+		expect(result.current.agentSessions[0].ptyId).toBe(2);
+	});
+
+	it("pty_exit で activeAgentPtyId もクリアされる", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 5, cols: 80, rows: 24, kind: "agent" },
+			});
+		});
+
+		expect(result.current.activeAgentPtyId).toBe(5);
+
+		act(() => {
+			emit({ type: "pty_exit", payload: { pty_id: 5, exit_code: 0 } });
+		});
+
+		expect(result.current.activeAgentPtyId).toBeNull();
+	});
+
+	it("複数の Agent pty_ready で agentSessions に全て含まれる", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 10, cols: 80, rows: 24, kind: "agent" },
+			});
+		});
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: {
+					pty_id: 11,
+					cols: 80,
+					rows: 24,
+					kind: "agent",
+					label: "claude",
+				},
+			});
+		});
+
+		expect(result.current.agentSessions).toHaveLength(2);
+		expect(result.current.agentSessions[0].ptyId).toBe(10);
+		expect(result.current.agentSessions[1].ptyId).toBe(11);
+		expect(result.current.agentSessions[1].label).toBe("claude");
+	});
+
+	it("Agent セッションが追加されると agentSessions がリアルタイムで増加する", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 20, cols: 80, rows: 24, kind: "agent" },
+			});
+		});
+
+		expect(result.current.agentSessions).toHaveLength(1);
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: {
+					pty_id: 21,
+					cols: 80,
+					rows: 24,
+					kind: "agent",
+					label: "new-agent",
+				},
+			});
+		});
+
+		expect(result.current.agentSessions).toHaveLength(2);
+		expect(result.current.agentSessions[1].ptyId).toBe(21);
+		expect(result.current.agentSessions[1].label).toBe("new-agent");
+	});
+
+	it("worktree_select_response で activeAgentPtyId もリセットされる", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 1, cols: 80, rows: 24, kind: "agent" },
+			});
+		});
+
+		expect(result.current.activeAgentPtyId).toBe(1);
+
+		act(() => {
+			emit({
+				type: "worktree_select_response",
+				payload: { success: true, path: "/new-repo" },
+			});
+		});
+
+		expect(result.current.activeAgentPtyId).toBeNull();
+	});
 });

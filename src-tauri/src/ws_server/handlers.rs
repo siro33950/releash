@@ -316,6 +316,7 @@ pub(super) async fn handle_pty_spawn_request(
                 rows,
                 label: label_for_ready,
                 worktree_path: Some(wt_path_for_ready),
+                kind: Some(crate::pty::PtyKind::Terminal),
             }));
             let startup_cmd = state.get_terminal_startup_command();
             let trimmed_cmd = startup_cmd.trim();
@@ -550,6 +551,7 @@ pub(super) async fn handle_worktree_select_request(
                     rows,
                     label: session.label.clone(),
                     worktree_path: session.worktree_path.clone(),
+                    kind: Some(session.kind),
                 }));
             }
         }

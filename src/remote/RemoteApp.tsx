@@ -1,4 +1,5 @@
 import {
+	Bot,
 	FileDiff,
 	GitBranch,
 	MessageSquare,
@@ -30,6 +31,7 @@ import { useRemoteWorktrees } from "./hooks/useRemoteWorktrees";
 import { useWebSocket } from "./hooks/useWebSocket";
 
 const tabs: { id: Tab; label: string; icon: typeof GitBranch }[] = [
+	{ id: "agent", label: "Agent", icon: Bot },
 	{ id: "terminal", label: "Terminal", icon: Terminal },
 	{ id: "changes", label: "Changes", icon: GitBranch },
 	{ id: "diff", label: "Diff", icon: FileDiff },
@@ -65,12 +67,15 @@ export function RemoteApp() {
 	} = useRemoteNavigation({ subscribe });
 
 	const {
-		ptySessions,
+		terminalSessions,
+		agentSessions,
 		activePtyId,
+		activeAgentPtyId,
 		ptySpawning,
 		ptySpawnError,
 		terminalMounted,
 		setActivePtyId,
+		setActiveAgentPtyId,
 		setTerminalMounted,
 		spawnPty,
 		killPty,
@@ -286,7 +291,7 @@ export function RemoteApp() {
 						>
 							<TerminalTabContent
 								status={status}
-								ptySessions={ptySessions}
+								ptySessions={terminalSessions}
 								activePtyId={activePtyId}
 								ptySpawning={ptySpawning}
 								ptySpawnError={ptySpawnError}
@@ -298,6 +303,30 @@ export function RemoteApp() {
 								setActivePtyId={setActivePtyId}
 								spawnPty={spawnPty}
 								killPty={killPty}
+							/>
+						</div>
+
+						<div
+							className="absolute inset-0 flex flex-col"
+							style={{
+								visibility: activeTab === "agent" ? "visible" : "hidden",
+								pointerEvents: activeTab === "agent" ? "auto" : "none",
+							}}
+						>
+							<TerminalTabContent
+								status={status}
+								ptySessions={agentSessions}
+								activePtyId={activeAgentPtyId}
+								terminalMounted={terminalMounted}
+								selectedWorktree={selectedWorktree}
+								activeTab={activeTab}
+								send={send}
+								subscribe={subscribe}
+								setActivePtyId={setActiveAgentPtyId}
+								spawnPty={spawnPty}
+								killPty={killPty}
+								mode="agent"
+								agentStates={agentStates}
 							/>
 						</div>
 					</main>
