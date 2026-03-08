@@ -338,6 +338,54 @@ describe("useWorktreeList", () => {
 		expect(result.current.branches[0].name).toBe("feat/b");
 	});
 
+	it("should update agent_state from agent-state-changed event", async () => {
+		const branch = makeBranch({ worktree_path: "/tmp/wt" });
+		setupMockInvoke([branch]);
+
+		type AgentStateCallback = (event: {
+			payload: {
+				worktree_path: string;
+				state: string;
+				pty_id: string;
+				exit_code: null;
+				timestamp: number;
+				session_id: null;
+			};
+		}) => void;
+		let agentStateCallback: AgentStateCallback | null = null;
+		mockListen.mockImplementation((event: string, cb: AgentStateCallback) => {
+			if (event === "agent-state-changed") {
+				agentStateCallback = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.branches).toHaveLength(1);
+		});
+
+		expect(agentStateCallback).not.toBeNull();
+
+		await act(async () => {
+			agentStateCallback?.({
+				payload: {
+					worktree_path: "/tmp/wt",
+					state: "running",
+					pty_id: "pty-1",
+					exit_code: null,
+					timestamp: Date.now(),
+					session_id: null,
+				},
+			});
+		});
+
+		await waitFor(() => {
+			expect(result.current.branches[0].agent_state).toBe("running");
+		});
+	});
+
 	it("should call refresh with silent: true from branch-list-sync event", async () => {
 		setupMockInvoke([makeBranch()]);
 

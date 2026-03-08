@@ -60,6 +60,7 @@ pub struct FoundSession {
 pub struct PtyManager {
     sessions: Mutex<HashMap<u64, PtySession>>,
     backend: Box<dyn PtyBackend>,
+    pre_spawned: Mutex<HashMap<String, String>>,
 }
 
 impl Default for PtyManager {
@@ -67,6 +68,7 @@ impl Default for PtyManager {
         Self {
             sessions: Mutex::new(HashMap::new()),
             backend: Box::new(DirectPtyBackend::new()),
+            pre_spawned: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -204,12 +206,25 @@ impl PtyManager {
         Self {
             sessions: Mutex::new(HashMap::new()),
             backend,
+            pre_spawned: Mutex::new(HashMap::new()),
         }
     }
 
     #[allow(dead_code)]
     pub fn backend_name(&self) -> &'static str {
         self.backend.backend_name()
+    }
+
+    pub fn register_pre_spawned(&self, worktree_path: &str, kind: PtyKind, session_key: &str) {
+        let map_key = format!("{}::{:?}", worktree_path, kind);
+        self.pre_spawned
+            .lock()
+            .insert(map_key, session_key.to_string());
+    }
+
+    pub fn claim_pre_spawned(&self, worktree_path: &str, kind: PtyKind) -> Option<String> {
+        let map_key = format!("{}::{:?}", worktree_path, kind);
+        self.pre_spawned.lock().remove(&map_key)
     }
 
     pub fn write(&self, pty_id: u64, data: &str) -> Result<(), String> {
@@ -669,6 +684,26 @@ pub fn get_or_spawn_pty(
         }
     }
 
+    // Pre-spawned Agent fallback
+    if session_key.is_none() && pty_kind == PtyKind::Agent && !worktree_path.is_empty() {
+        if let Some(claimed_key) = state.claim_pre_spawned(&worktree_path, PtyKind::Agent) {
+            if let Some(found) = state.find_session(&claimed_key) {
+                if !found.is_exited {
+                    return Ok(GetOrSpawnPtyResult {
+                        pty_id: found.pty_id,
+                        session_key: found.session_key,
+                        buffered_output: found.buffered_output,
+                        is_new: false,
+                        is_exited: false,
+                        exit_code: found.exit_code,
+                        label: found.label,
+                        kind: found.kind,
+                    });
+                }
+            }
+        }
+    }
+
     // No existing session — spawn a new one
     let (pty_id, new_session_key) = state.spawn(
         &app,
@@ -722,6 +757,121 @@ pub fn gc_ptys_for_worktree(
         }
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+pub struct BatchSpawnResult {
+    spawned: u32,
+    failed: u32,
+    errors: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn batch_spawn_agent_ptys(
+    app: AppHandle,
+    state: State<'_, Arc<PtyManager>>,
+    worktree_paths: Vec<String>,
+    startup_command: Option<String>,
+    max_concurrent: Option<u32>,
+) -> Result<BatchSpawnResult, String> {
+    let state = Arc::clone(&state);
+    let app_clone = app.clone();
+
+    let concurrency = max_concurrent
+        .filter(|&n| n > 0)
+        .map(|n| n as usize)
+        .unwrap_or(worktree_paths.len());
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
+
+    let mut handles = Vec::new();
+
+    for wt_path in worktree_paths {
+        let state = Arc::clone(&state);
+        let app = app_clone.clone();
+        let cmd = startup_command.clone();
+        let sem = std::sync::Arc::clone(&semaphore);
+
+        handles.push(tokio::spawn(async move {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|e| format!("semaphore error: {}", e))?;
+
+            tokio::task::spawn_blocking(move || {
+                // Skip if an Agent PTY already exists for this worktree
+                let already_exists = {
+                    let sessions = state.sessions.lock();
+                    sessions.values().any(|s| {
+                        s.kind == PtyKind::Agent
+                            && s.worktree_path.as_deref() == Some(wt_path.as_str())
+                            && !s.exited.load(Ordering::SeqCst)
+                    })
+                };
+                if already_exists {
+                    return Ok::<Option<()>, String>(None);
+                }
+
+                match state.spawn(
+                    &app,
+                    24,
+                    80,
+                    Some(wt_path.clone()),
+                    Some(wt_path.clone()),
+                    None,
+                    PtyKind::Agent,
+                ) {
+                    Ok((pty_id, session_key)) => {
+                        state.register_pre_spawned(&wt_path, PtyKind::Agent, &session_key);
+                        if let Some(cmd) = &cmd {
+                            if let Err(e) = state.write(pty_id, &format!("{}\n", cmd)) {
+                                log::warn!(
+                                    "batch_spawn: failed to write startup command to PTY {}: {}",
+                                    pty_id,
+                                    e
+                                );
+                            }
+                        }
+                        Ok(Some(()))
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "batch_spawn: failed to spawn Agent PTY for {}: {}",
+                            wt_path,
+                            e
+                        );
+                        Err(format!("{}: {}", wt_path, e))
+                    }
+                }
+            })
+            .await
+            .map_err(|e| format!("spawn task failed: {}", e))?
+        }));
+    }
+
+    let mut spawned = 0u32;
+    let mut failed = 0u32;
+    let mut errors = Vec::new();
+
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(Some(()))) => spawned += 1,
+            Ok(Ok(None)) => {} // skipped (already exists)
+            Ok(Err(e)) => {
+                errors.push(e);
+                failed += 1;
+            }
+            Err(e) => {
+                errors.push(format!("task join failed: {}", e));
+                failed += 1;
+            }
+        }
+    }
+
+    Ok(BatchSpawnResult {
+        spawned,
+        failed,
+        errors,
+    })
 }
 
 #[cfg(test)]
@@ -1382,5 +1532,115 @@ mod tests {
         assert_eq!(parse_pty_kind(Some("terminal")), PtyKind::Terminal);
         assert_eq!(parse_pty_kind(Some("unknown")), PtyKind::Terminal);
         assert_eq!(parse_pty_kind(None), PtyKind::Terminal);
+    }
+
+    // ---- pre_spawned tests ----
+
+    #[test]
+    fn test_register_and_claim_pre_spawned() {
+        let pm = PtyManager::default();
+        pm.register_pre_spawned("/repo", PtyKind::Agent, "session-123");
+        let claimed = pm.claim_pre_spawned("/repo", PtyKind::Agent);
+        assert_eq!(claimed, Some("session-123".to_string()));
+        // Second claim returns None (already consumed)
+        let claimed2 = pm.claim_pre_spawned("/repo", PtyKind::Agent);
+        assert!(claimed2.is_none());
+    }
+
+    #[test]
+    fn test_claim_pre_spawned_not_found() {
+        let pm = PtyManager::default();
+        let claimed = pm.claim_pre_spawned("/nonexistent", PtyKind::Agent);
+        assert!(claimed.is_none());
+    }
+
+    #[test]
+    fn test_register_pre_spawned_overwrite() {
+        let pm = PtyManager::default();
+        pm.register_pre_spawned("/repo", PtyKind::Agent, "old-key");
+        pm.register_pre_spawned("/repo", PtyKind::Agent, "new-key");
+        let claimed = pm.claim_pre_spawned("/repo", PtyKind::Agent);
+        assert_eq!(claimed, Some("new-key".to_string()));
+    }
+
+    #[test]
+    fn test_batch_spawn_result_serialization() {
+        let result = BatchSpawnResult {
+            spawned: 3,
+            failed: 1,
+            errors: vec!["error1".to_string()],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"spawned\":3"));
+        assert!(json.contains("\"failed\":1"));
+        assert!(json.contains("\"errors\":[\"error1\"]"));
+    }
+
+    // ---- pre_spawned integration tests (S2) ----
+
+    #[test]
+    fn test_claim_pre_spawned_finds_active_session() {
+        let pm = PtyManager::default();
+        let sk = "pre-spawned-key-1";
+        insert_test_session_with_key(&pm, 100, sk, Some("/wt1"), None, PtyKind::Agent);
+        pm.register_pre_spawned("/wt1", PtyKind::Agent, sk);
+
+        let claimed = pm.claim_pre_spawned("/wt1", PtyKind::Agent);
+        assert_eq!(claimed, Some(sk.to_string()));
+        let found = pm.find_session(sk);
+        assert!(found.is_some());
+        let found = found.unwrap();
+        assert_eq!(found.pty_id, 100);
+        assert!(!found.is_exited);
+    }
+
+    #[test]
+    fn test_claim_pre_spawned_skips_exited_session() {
+        let pm = PtyManager::default();
+        let sk = "pre-spawned-exited";
+        insert_test_session_with_key(&pm, 101, sk, Some("/wt2"), None, PtyKind::Agent);
+        pm.sessions
+            .lock()
+            .get(&101)
+            .unwrap()
+            .exited
+            .store(true, Ordering::SeqCst);
+        pm.register_pre_spawned("/wt2", PtyKind::Agent, sk);
+
+        let claimed = pm.claim_pre_spawned("/wt2", PtyKind::Agent);
+        assert!(claimed.is_some());
+        let found = pm.find_session(&claimed.unwrap()).unwrap();
+        assert!(found.is_exited);
+    }
+
+    // ---- max_concurrent limit test (S6) ----
+
+    #[test]
+    fn test_pre_spawned_only_registered_for_spawned_worktrees() {
+        let pm = PtyManager::default();
+        let worktrees = vec!["/wt1", "/wt2", "/wt3"];
+        let max = 2u32;
+        let mut spawned = 0u32;
+
+        for wt in &worktrees {
+            if spawned >= max {
+                break;
+            }
+            let sk = format!("session-{}", wt);
+            insert_test_session_with_key(
+                &pm,
+                spawned as u64 + 1,
+                &sk,
+                Some(wt),
+                None,
+                PtyKind::Agent,
+            );
+            pm.register_pre_spawned(wt, PtyKind::Agent, &sk);
+            spawned += 1;
+        }
+
+        assert!(pm.claim_pre_spawned("/wt1", PtyKind::Agent).is_some());
+        assert!(pm.claim_pre_spawned("/wt2", PtyKind::Agent).is_some());
+        assert!(pm.claim_pre_spawned("/wt3", PtyKind::Agent).is_none());
     }
 }
