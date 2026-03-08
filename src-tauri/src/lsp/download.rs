@@ -1,7 +1,12 @@
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
+
+/// Serialize concurrent jdtls installs to prevent race on cache_dir/jdtls.
+static JDTLS_INSTALL_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 use super::detect::{is_command_available, LspServerConfig};
 
@@ -38,7 +43,7 @@ fn emit_progress(app: &AppHandle, language: &str, status: &str, progress: f64) {
 }
 
 fn cached_binary_config(bin_path: PathBuf) -> Option<LspServerConfig> {
-    if bin_path.exists() {
+    if bin_path.is_file() {
         Some(LspServerConfig {
             command: bin_path.to_string_lossy().to_string(),
             args: vec![],
@@ -383,6 +388,20 @@ async fn install_jdtls(
 ) -> Result<LspServerConfig, LspDownloadError> {
     check_java_version().await?;
 
+    // Serialize concurrent installs to prevent races on cache_dir/jdtls.
+    let _lock = JDTLS_INSTALL_LOCK.lock().await;
+
+    // Another concurrent call may have already completed the install.
+    let launcher = if cfg!(windows) { "jdtls.bat" } else { "jdtls" };
+    let existing_bin = cache_dir.join("jdtls").join("bin").join(launcher);
+    if existing_bin.is_file() {
+        return Ok(LspServerConfig {
+            command: existing_bin.to_string_lossy().to_string(),
+            args: vec![],
+            enabled: true,
+        });
+    }
+
     emit_progress(app, "java", "fetching version", 0.0);
 
     let (download_url, version) = fetch_latest_jdtls_release().await?;
@@ -426,7 +445,6 @@ async fn install_jdtls(
 
     extract_tar_gz(&bytes, &staging_dir)?;
 
-    let launcher = if cfg!(windows) { "jdtls.bat" } else { "jdtls" };
     let staged_bin = staging_dir.join("bin").join(launcher);
 
     // chmod +x on the launcher script
