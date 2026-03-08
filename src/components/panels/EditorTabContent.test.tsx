@@ -41,8 +41,12 @@ vi.mock("./Breadcrumb", () => ({
 	),
 }));
 
+const mockDiffToolbar = vi.fn((_props: Record<string, unknown>) => (
+	<div data-testid="diff-toolbar" />
+));
+
 vi.mock("./DiffToolbar", () => ({
-	DiffToolbar: () => <div data-testid="diff-toolbar" />,
+	DiffToolbar: (props: Record<string, unknown>) => mockDiffToolbar(props),
 }));
 
 vi.mock("./EmptyState", () => ({
@@ -181,6 +185,44 @@ describe("EditorTabContent - diffBase propagation to useGitOriginalContent", () 
 		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
 			2,
 			null,
+			"staged",
+			"",
+			0,
+		);
+	});
+
+	it("should not pass onDiffBaseChange to DiffToolbar", () => {
+		render(<EditorTabContent filePath="/test/repo/src/file.ts" />);
+
+		const toolbarProps = mockDiffToolbar.mock.lastCall?.[0];
+		expect(toolbarProps).not.toHaveProperty("onDiffBaseChange");
+	});
+
+	it("should update useGitOriginalContent calls when diffBase changes after mount", () => {
+		currentEditorContext.diffBase = "staged";
+		const { rerender } = render(
+			<EditorTabContent filePath="/test/repo/src/file.ts" />,
+		);
+
+		mockUseGitOriginalContent.mockClear();
+		currentEditorContext = {
+			...mockEditorContextBase,
+			diffBase: "branch-base",
+		};
+
+		rerender(<EditorTabContent filePath="/test/repo/src/file.ts" />);
+
+		expect(mockUseGitOriginalContent).toHaveBeenCalledTimes(2);
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			1,
+			"/test/repo/src/file.ts",
+			"branch-base",
+			"original content",
+			0,
+		);
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			2,
+			"/test/repo/src/file.ts",
 			"staged",
 			"",
 			0,
