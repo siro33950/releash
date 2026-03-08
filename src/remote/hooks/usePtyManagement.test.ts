@@ -229,6 +229,52 @@ describe("usePtyManagement", () => {
 		expect(result.current.ptySessions[0].kind).toBe("terminal");
 	});
 
+	it("kind 未設定で label が Agent プレフィックスなら agent と推定される", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 1, cols: 80, rows: 24, label: "Agent 1" },
+			});
+		});
+
+		expect(result.current.ptySessions[0].kind).toBe("agent");
+		expect(result.current.agentSessions).toHaveLength(1);
+		expect(result.current.activeAgentPtyId).toBe(1);
+		expect(result.current.activePtyId).toBeNull();
+	});
+
+	it("kind 未設定で label が agent (小文字) なら agent と推定される", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 1, cols: 80, rows: 24, label: "agent" },
+			});
+		});
+
+		expect(result.current.ptySessions[0].kind).toBe("agent");
+		expect(result.current.agentSessions).toHaveLength(1);
+	});
+
+	it("kind 未設定で label が非 Agent プレフィックスなら terminal になる", () => {
+		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
+
+		act(() => {
+			emit({
+				type: "pty_ready",
+				payload: { pty_id: 1, cols: 80, rows: 24, label: "Terminal 1" },
+			});
+		});
+
+		expect(result.current.ptySessions[0].kind).toBe("terminal");
+		expect(result.current.terminalSessions).toHaveLength(1);
+		expect(result.current.activePtyId).toBe(1);
+		expect(result.current.activeAgentPtyId).toBeNull();
+	});
+
 	it("agent セッションで activePtyId が自動設定されない", () => {
 		const { result } = renderHook(() => usePtyManagement({ subscribe, send }));
 

@@ -15,6 +15,11 @@ interface UsePtyManagementOptions {
 	send: (msg: WsMessage) => void;
 }
 
+function inferKindFromLabel(label?: string): PtySession["kind"] {
+	if (label && /^agent\b/i.test(label)) return "agent";
+	return "terminal";
+}
+
 export function usePtyManagement({ subscribe, send }: UsePtyManagementOptions) {
 	const [ptySessions, setPtySessions] = useState<PtySession[]>([]);
 	const [activePtyId, setActivePtyId] = useState<number | null>(null);
@@ -33,7 +38,7 @@ export function usePtyManagement({ subscribe, send }: UsePtyManagementOptions) {
 			}
 			if (msg.type === "pty_ready") {
 				const { pty_id, cols, label, worktree_path, kind } = msg.payload;
-				const sessionKind = kind ?? "terminal";
+				const sessionKind = kind ?? inferKindFromLabel(label);
 				setPtySessions((prev) => {
 					if (prev.some((s) => s.ptyId === pty_id)) return prev;
 					return [
