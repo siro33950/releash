@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::detect::LspServerConfig;
+use super::detect::{is_command_available, LspServerConfig};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LspDownloadError {
@@ -37,21 +37,22 @@ fn emit_progress(app: &AppHandle, language: &str, status: &str, progress: f64) {
     );
 }
 
+fn cached_binary_config(bin_path: PathBuf) -> Option<LspServerConfig> {
+    if bin_path.exists() {
+        Some(LspServerConfig {
+            command: bin_path.to_string_lossy().to_string(),
+            args: vec![],
+            enabled: true,
+        })
+    } else {
+        None
+    }
+}
+
 /// Check if a cached LSP server binary exists and return its config.
 pub fn get_cached_server(language: &str, lsp_cache_dir: &Path) -> Option<LspServerConfig> {
     match language {
-        "rust" => {
-            let bin = lsp_cache_dir.join("rust-analyzer");
-            if bin.exists() {
-                Some(LspServerConfig {
-                    command: bin.to_string_lossy().to_string(),
-                    args: vec![],
-                    enabled: true,
-                })
-            } else {
-                None
-            }
-        }
+        "rust" => cached_binary_config(lsp_cache_dir.join("rust-analyzer")),
         "typescript" => {
             let bin = lsp_cache_dir
                 .join("typescript")
@@ -68,18 +69,8 @@ pub fn get_cached_server(language: &str, lsp_cache_dir: &Path) -> Option<LspServ
                 None
             }
         }
-        "go" => {
-            let bin = lsp_cache_dir.join("gopls");
-            if bin.exists() {
-                Some(LspServerConfig {
-                    command: bin.to_string_lossy().to_string(),
-                    args: vec![],
-                    enabled: true,
-                })
-            } else {
-                None
-            }
-        }
+        "go" => cached_binary_config(lsp_cache_dir.join("gopls")),
+        "java" => cached_binary_config(lsp_cache_dir.join("jdtls").join("bin").join("jdtls")),
         _ => None,
     }
 }
@@ -96,6 +87,7 @@ pub async fn install_lsp_server(
         "rust" => install_rust_analyzer(app, lsp_cache_dir).await,
         "typescript" => install_typescript_lsp(app, lsp_cache_dir).await,
         "go" => install_gopls(app, lsp_cache_dir).await,
+        "java" => install_jdtls(app, lsp_cache_dir).await,
         _ => Err(LspDownloadError::UnsupportedLanguage(language.to_string())),
     }
 }
@@ -319,19 +311,162 @@ fn rust_analyzer_target() -> &'static str {
     }
 }
 
-fn is_command_available(command: &str) -> bool {
-    #[cfg(unix)]
-    let check = "which";
-    #[cfg(windows)]
-    let check = "where";
+/// Download and install Eclipse JDT LS from GitHub Releases.
+async fn install_jdtls(
+    app: &AppHandle,
+    cache_dir: &Path,
+) -> Result<LspServerConfig, LspDownloadError> {
+    if !is_command_available("java") {
+        return Err(LspDownloadError::MissingPrerequisite(
+            "java が PATH に必要です (JDK 17+ 推奨)".to_string(),
+        ));
+    }
 
-    std::process::Command::new(check)
-        .arg(command)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    emit_progress(app, "java", "fetching version", 0.0);
+
+    let (download_url, version) = fetch_latest_jdtls_release().await?;
+
+    log::info!("Downloading Eclipse JDT LS {version} from {download_url}");
+    emit_progress(app, "java", "downloading", 0.1);
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&download_url)
+        .header("User-Agent", "releash")
+        .send()
+        .await
+        .map_err(|e| LspDownloadError::Download(format!("{download_url}: {e}")))?;
+
+    if !response.status().is_success() {
+        return Err(LspDownloadError::Download(format!(
+            "HTTP {}: {download_url}",
+            response.status()
+        )));
+    }
+
+    emit_progress(app, "java", "downloading", 0.5);
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| LspDownloadError::Download(e.to_string()))?;
+
+    emit_progress(app, "java", "extracting", 0.7);
+
+    let jdtls_dir = cache_dir.join("jdtls");
+    std::fs::create_dir_all(&jdtls_dir)?;
+
+    extract_tar_gz(&bytes, &jdtls_dir)?;
+
+    let bin_path = jdtls_dir.join("bin").join("jdtls");
+
+    // chmod +x on the launcher script
+    #[cfg(unix)]
+    {
+        if bin_path.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+
+    if !bin_path.exists() {
+        return Err(LspDownloadError::Install(
+            "展開されたアーカイブに bin/jdtls が見つかりません".to_string(),
+        ));
+    }
+
+    // Save version file (after confirming bin/jdtls exists)
+    std::fs::write(cache_dir.join("jdtls.version"), &version)?;
+
+    log::info!(
+        "Eclipse JDT LS {version} installed to {}",
+        bin_path.display()
+    );
+    emit_progress(app, "java", "done", 1.0);
+
+    Ok(LspServerConfig {
+        command: bin_path.to_string_lossy().to_string(),
+        args: vec![],
+        enabled: true,
+    })
+}
+
+/// Fetch the latest Eclipse JDT LS release info.
+///
+/// JDT LS はGitHub Releasesではなく Eclipse ダウンロードサーバーで配布されている。
+/// 1. GitHub Tags API で最新バージョンを取得
+/// 2. Eclipse サーバーの latest.txt からtar.gzファイル名を解決
+///
+/// Returns (download_url, version).
+async fn fetch_latest_jdtls_release() -> Result<(String, String), LspDownloadError> {
+    let client = reqwest::Client::new();
+
+    // 1. GitHub Tags API で最新バージョンを取得
+    let tags_resp = client
+        .get("https://api.github.com/repos/eclipse-jdtls/eclipse.jdt.ls/tags?per_page=1")
+        .header("User-Agent", "releash")
+        .send()
+        .await
+        .map_err(|e| LspDownloadError::Download(format!("JDT LS タグ取得失敗: {e}")))?;
+
+    if !tags_resp.status().is_success() {
+        return Err(LspDownloadError::Download(format!(
+            "GitHub API HTTP {}: JDT LS タグ取得",
+            tags_resp.status()
+        )));
+    }
+
+    let tags: serde_json::Value = tags_resp
+        .json()
+        .await
+        .map_err(|e| LspDownloadError::Download(format!("JSON パース失敗: {e}")))?;
+
+    let tag = tags
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|t| t["name"].as_str())
+        .ok_or_else(|| LspDownloadError::Download("JDT LS タグが見つかりません".to_string()))?;
+
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+
+    // 2. Eclipse ダウンロードサーバーの latest.txt からファイル名を取得
+    let latest_txt_url =
+        format!("https://download.eclipse.org/jdtls/milestones/{version}/latest.txt");
+    let latest_resp = client
+        .get(&latest_txt_url)
+        .send()
+        .await
+        .map_err(|e| LspDownloadError::Download(format!("latest.txt 取得失敗: {e}")))?;
+
+    if !latest_resp.status().is_success() {
+        return Err(LspDownloadError::Download(format!(
+            "HTTP {}: {latest_txt_url}",
+            latest_resp.status()
+        )));
+    }
+
+    let filename = latest_resp
+        .text()
+        .await
+        .map_err(|e| LspDownloadError::Download(format!("latest.txt 読み取り失敗: {e}")))?
+        .trim()
+        .to_string();
+
+    let download_url =
+        format!("https://download.eclipse.org/jdtls/milestones/{version}/{filename}");
+
+    Ok((download_url, version.to_string()))
+}
+
+/// Extract a tar.gz archive into the given directory.
+fn extract_tar_gz(data: &[u8], dest: &Path) -> Result<(), LspDownloadError> {
+    use flate2::read::GzDecoder;
+    let decoder = GzDecoder::new(data);
+    let mut archive = tar::Archive::new(decoder);
+    archive
+        .unpack(dest)
+        .map_err(|e| LspDownloadError::Install(format!("tar.gz 展開失敗: {e}")))?;
+    Ok(())
 }
 
 /// Return the LSP cache directory for the given app.
@@ -353,6 +488,7 @@ mod tests {
         assert!(get_cached_server("rust", dir.path()).is_none());
         assert!(get_cached_server("typescript", dir.path()).is_none());
         assert!(get_cached_server("go", dir.path()).is_none());
+        assert!(get_cached_server("java", dir.path()).is_none());
         assert!(get_cached_server("unknown", dir.path()).is_none());
     }
 
@@ -396,6 +532,46 @@ mod tests {
         let config = get_cached_server("go", dir.path()).unwrap();
         assert_eq!(config.command, bin.to_string_lossy());
         assert!(config.args.is_empty());
+    }
+
+    #[test]
+    fn get_cached_server_java_returns_config_when_binary_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("jdtls").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bin = bin_dir.join("jdtls");
+        std::fs::write(&bin, b"fake").unwrap();
+
+        let config = get_cached_server("java", dir.path()).unwrap();
+        assert!(config.command.contains("jdtls"));
+        assert!(config.args.is_empty());
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn extract_tar_gz_unpacks_archive() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a small tar.gz in memory
+        let buf = Vec::new();
+        let encoder = flate2::write::GzEncoder::new(buf, flate2::Compression::default());
+        let mut tar_builder = tar::Builder::new(encoder);
+
+        let content = b"hello world";
+        let mut header = tar::Header::new_gnu();
+        header.set_path("test.txt").unwrap();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar_builder.append(&header, &content[..]).unwrap();
+
+        let encoder = tar_builder.into_inner().unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        extract_tar_gz(&compressed, dir.path()).unwrap();
+
+        let extracted = std::fs::read_to_string(dir.path().join("test.txt")).unwrap();
+        assert_eq!(extracted, "hello world");
     }
 
     #[test]

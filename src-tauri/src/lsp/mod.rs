@@ -3,6 +3,7 @@ pub mod detect;
 pub mod download;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -10,6 +11,72 @@ use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::Mutex;
+
+fn fnv1a_hash(input: &str) -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001B3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in input.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+/// Search Gradle and Maven caches for lombok.jar (excluding sources jars).
+/// Returns the path to the newest version found, or None.
+fn find_lombok_jar() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+
+    let search_dirs = [
+        home.join(".gradle/caches/modules-2/files-2.1/org.projectlombok/lombok"),
+        home.join(".m2/repository/org/projectlombok/lombok"),
+    ];
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    for dir in &search_dirs {
+        if !dir.exists() {
+            continue;
+        }
+        if let Ok(walker) = walkdir(dir) {
+            candidates.extend(walker);
+        }
+    }
+
+    // Sort descending by file name so the newest version comes first
+    candidates.sort_by(|a, b| {
+        let a_name = a.file_name().unwrap_or_default().to_string_lossy();
+        let b_name = b.file_name().unwrap_or_default().to_string_lossy();
+        b_name.cmp(&a_name)
+    });
+
+    candidates.into_iter().next()
+}
+
+/// Walk a directory tree to find lombok-*.jar files (excluding sources/javadoc jars).
+fn walkdir(dir: &std::path::Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut results = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            if let Ok(sub) = walkdir(&path) {
+                results.extend(sub);
+            }
+        } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with("lombok-")
+                && name.ends_with(".jar")
+                && !name.contains("-sources")
+                && !name.contains("-javadoc")
+            {
+                results.push(path);
+            }
+        }
+    }
+    Ok(results)
+}
 
 use bridge::spawn_stdout_reader;
 
@@ -82,8 +149,28 @@ impl LspManager {
             return Ok(session.id);
         }
 
+        let mut final_args = args;
+        if language == "java" {
+            if !final_args.iter().any(|a| a == "-data") {
+                let data_dir = Self::jdtls_data_dir(app, &worktree_path)?;
+                final_args.push("-data".to_string());
+                final_args.push(data_dir.to_string_lossy().to_string());
+            }
+            // Auto-detect Lombok and inject as javaagent
+            let has_lombok_arg = final_args
+                .iter()
+                .any(|a| a.contains("-javaagent") && a.contains("lombok"));
+            if !has_lombok_arg {
+                if let Some(lombok_path) = find_lombok_jar() {
+                    log::info!("Lombok detected: {}", lombok_path.display());
+                    final_args.push(format!("--jvm-arg=-javaagent:{}", lombok_path.display()));
+                }
+            }
+        }
+
         let mut cmd = tokio::process::Command::new(&command);
-        cmd.args(&args)
+        cmd.args(&final_args)
+            .current_dir(&worktree_path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -447,6 +534,9 @@ impl LspManager {
             detect::detect_server(language, &cfg.lsp, Some(&cache_dir), Some(worktree_path));
 
         let server_config = match server_config {
+            Some(config) if !config.enabled => {
+                return Err("LSPサーバーがユーザー設定で無効化されています".to_string());
+            }
             Some(config) => config,
             None => download::install_lsp_server(app, language, &cache_dir)
                 .await
@@ -524,6 +614,18 @@ impl LspManager {
         while let Ok(Some(line)) = lines.next_line().await {
             log::debug!("LSP[{session_id}] stderr: {line}");
         }
+    }
+
+    fn jdtls_data_dir(app: &AppHandle, worktree_path: &str) -> Result<PathBuf, String> {
+        let base = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("app_data_dir 取得失敗: {e}"))?;
+        let hash = fnv1a_hash(worktree_path);
+        let dir = base.join("lsp").join("jdtls-workspaces").join(hash);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("JDT LSワークスペースディレクトリ作成失敗: {e}"))?;
+        Ok(dir)
     }
 
     async fn monitor_exit(session_id: u64, manager: Arc<LspManager>, app_handle: AppHandle) {
@@ -746,6 +848,59 @@ mod tests {
     async fn wait_for_diagnostics_returns_error_for_nonexistent_session() {
         let manager = LspManager::default();
         let result = manager.wait_for_diagnostics(999, "file:///test", 100).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fnv1a_hash_is_deterministic() {
+        let input = "/home/user/project";
+        assert_eq!(fnv1a_hash(input), fnv1a_hash(input));
+    }
+
+    #[test]
+    fn fnv1a_hash_differs_for_different_inputs() {
+        let hash1 = fnv1a_hash("/home/user/project-a");
+        let hash2 = fnv1a_hash("/home/user/project-b");
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn fnv1a_hash_length_is_16() {
+        let hash = fnv1a_hash("/some/path");
+        assert_eq!(hash.len(), 16);
+    }
+
+    #[test]
+    fn walkdir_finds_lombok_jar() {
+        let dir = tempfile::tempdir().unwrap();
+        let version_dir = dir.path().join("1.18.38").join("abc123");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(version_dir.join("lombok-1.18.38.jar"), b"fake").unwrap();
+        std::fs::write(version_dir.join("lombok-1.18.38-sources.jar"), b"fake").unwrap();
+
+        let results = walkdir(dir.path()).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0]
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("lombok-1.18.38.jar"));
+    }
+
+    #[test]
+    fn walkdir_excludes_sources_and_javadoc() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lombok-1.18.38-sources.jar"), b"fake").unwrap();
+        std::fs::write(dir.path().join("lombok-1.18.38-javadoc.jar"), b"fake").unwrap();
+
+        let results = walkdir(dir.path()).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn walkdir_returns_empty_for_nonexistent_dir() {
+        let result = walkdir(std::path::Path::new("/nonexistent/dir/12345"));
         assert!(result.is_err());
     }
 }
