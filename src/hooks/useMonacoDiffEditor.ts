@@ -8,7 +8,7 @@ import {
 import type { ChangeGroup } from "@/lib/computeHunks";
 import {
 	DIFF_ADDED_COLOR,
-	DIFF_MODIFIED_COLOR,
+	DIFF_DELETED_COLOR,
 	defaultDiffEditorOptions,
 	disableBuiltinDiagnostics,
 	getMonacoThemeName,
@@ -363,10 +363,22 @@ export function useMonacoDiffEditor(
 							),
 							options: {
 								overviewRuler: {
-									color:
-										change.originalEndLineNumber === 0
-											? DIFF_ADDED_COLOR
-											: DIFF_MODIFIED_COLOR,
+									color: DIFF_ADDED_COLOR,
+									position: monaco.editor.OverviewRulerLane.Full,
+								},
+							},
+						});
+					} else if (change.modifiedEndLineNumber === 0) {
+						decorations.push({
+							range: new monaco.Range(
+								change.modifiedStartLineNumber,
+								1,
+								change.modifiedStartLineNumber,
+								1,
+							),
+							options: {
+								overviewRuler: {
+									color: DIFF_DELETED_COLOR,
 									position: monaco.editor.OverviewRulerLane.Full,
 								},
 							},

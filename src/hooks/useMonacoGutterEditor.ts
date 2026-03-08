@@ -9,7 +9,7 @@ import {
 import type { ChangeGroup } from "@/lib/computeHunks";
 import {
 	DIFF_ADDED_COLOR,
-	DIFF_MODIFIED_COLOR,
+	DIFF_DELETED_COLOR,
 	defaultEditorOptions,
 	disableBuiltinDiagnostics,
 	getMonacoThemeName,
@@ -63,13 +63,13 @@ interface UseMonacoGutterEditorOptions {
 
 interface DiffResult {
 	added: number[];
-	modified: number[];
+	deleted: number[];
 }
 
 export function computeDiff(original: string, modified: string): DiffResult {
 	const changes = diffLines(original, modified);
 	const added: number[] = [];
-	const modified_lines: number[] = [];
+	const deletedLines: number[] = [];
 
 	const modifiedLineCount =
 		modified === ""
@@ -87,15 +87,54 @@ export function computeDiff(original: string, modified: string): DiffResult {
 			}
 			lineNumber += lines;
 		} else if (change.removed) {
-			if (lines > 0 && lineNumber <= modifiedLineCount) {
-				modified_lines.push(lineNumber);
+			const deletedMarkerLine =
+				lineNumber <= modifiedLineCount ? lineNumber : modifiedLineCount;
+			if (deletedMarkerLine > 0) {
+				deletedLines.push(deletedMarkerLine);
 			}
 		} else {
 			lineNumber += lines;
 		}
 	}
 
-	return { added, modified: modified_lines };
+	const addedSet = new Set(added);
+	const filteredDeleted = deletedLines.filter((l) => !addedSet.has(l));
+
+	return { added, deleted: filteredDeleted };
+}
+
+export function createDiffDecorations(
+	diff: DiffResult,
+	monaco: typeof Monaco,
+): Monaco.editor.IModelDeltaDecoration[] {
+	const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
+	for (const line of diff.added) {
+		decorations.push({
+			range: new monaco.Range(line, 1, line, 1),
+			options: {
+				isWholeLine: true,
+				glyphMarginClassName: "gutter-added",
+				overviewRuler: {
+					color: DIFF_ADDED_COLOR,
+					position: monaco.editor.OverviewRulerLane.Full,
+				},
+			},
+		});
+	}
+	for (const line of diff.deleted) {
+		decorations.push({
+			range: new monaco.Range(line, 1, line, 1),
+			options: {
+				isWholeLine: true,
+				glyphMarginClassName: "gutter-deleted",
+				overviewRuler: {
+					color: DIFF_DELETED_COLOR,
+					position: monaco.editor.OverviewRulerLane.Full,
+				},
+			},
+		});
+	}
+	return decorations;
 }
 
 export function useMonacoGutterEditor(
@@ -257,36 +296,7 @@ export function useMonacoGutterEditor(
 			const updateDecorations = () => {
 				const currentValue = editor.getValue();
 				const diff = computeDiff(originalValueRef.current, currentValue);
-				const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
-
-				for (const line of diff.added) {
-					decorations.push({
-						range: new monaco.Range(line, 1, line, 1),
-						options: {
-							isWholeLine: true,
-							glyphMarginClassName: "gutter-added",
-							overviewRuler: {
-								color: DIFF_ADDED_COLOR,
-								position: monaco.editor.OverviewRulerLane.Full,
-							},
-						},
-					});
-				}
-
-				for (const line of diff.modified) {
-					decorations.push({
-						range: new monaco.Range(line, 1, line, 1),
-						options: {
-							isWholeLine: true,
-							glyphMarginClassName: "gutter-modified",
-							overviewRuler: {
-								color: DIFF_MODIFIED_COLOR,
-								position: monaco.editor.OverviewRulerLane.Full,
-							},
-						},
-					});
-				}
-
+				const decorations = createDiffDecorations(diff, monaco);
 				decorationsRef.current = editor.deltaDecorations(
 					decorationsRef.current,
 					decorations,
@@ -565,36 +575,7 @@ export function useMonacoGutterEditor(
 
 		const currentValue = editor.getValue();
 		const diff = computeDiff(originalValue, currentValue);
-		const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
-
-		for (const line of diff.added) {
-			decorations.push({
-				range: new monaco.Range(line, 1, line, 1),
-				options: {
-					isWholeLine: true,
-					glyphMarginClassName: "gutter-added",
-					overviewRuler: {
-						color: "rgba(80, 200, 80, 0.8)",
-						position: monaco.editor.OverviewRulerLane.Full,
-					},
-				},
-			});
-		}
-
-		for (const line of diff.modified) {
-			decorations.push({
-				range: new monaco.Range(line, 1, line, 1),
-				options: {
-					isWholeLine: true,
-					glyphMarginClassName: "gutter-modified",
-					overviewRuler: {
-						color: "rgba(80, 160, 240, 0.8)",
-						position: monaco.editor.OverviewRulerLane.Full,
-					},
-				},
-			});
-		}
-
+		const decorations = createDiffDecorations(diff, monaco);
 		decorationsRef.current = editor.deltaDecorations(
 			decorationsRef.current,
 			decorations,

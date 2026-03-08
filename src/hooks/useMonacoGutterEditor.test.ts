@@ -1,58 +1,146 @@
 import { loader } from "@monaco-editor/react";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { computeDiff, useMonacoGutterEditor } from "./useMonacoGutterEditor";
+import {
+	computeDiff,
+	createDiffDecorations,
+	useMonacoGutterEditor,
+} from "./useMonacoGutterEditor";
 
 describe("computeDiff", () => {
 	it("should return empty arrays when texts are identical", () => {
 		const result = computeDiff("line1\nline2\n", "line1\nline2\n");
 		expect(result.added).toEqual([]);
-		expect(result.modified).toEqual([]);
+		expect(result.deleted).toEqual([]);
 	});
 
 	it("should detect added lines", () => {
 		const result = computeDiff("line1\nline2\n", "line1\nline2\nline3\n");
 		expect(result.added).toEqual([3]);
-		expect(result.modified).toEqual([]);
+		expect(result.deleted).toEqual([]);
 	});
 
-	it("should detect modified lines", () => {
+	it("should detect replacement as added lines", () => {
 		const result = computeDiff(
 			"line1\nline2\nline3\n",
 			"line1\nmodified\nline3\n",
 		);
 		expect(result.added).toEqual([2]);
-		expect(result.modified).toEqual([2]);
+		expect(result.deleted).toEqual([]);
 	});
 
 	it("should not add out-of-range line numbers when deleting trailing lines", () => {
 		const result = computeDiff("line1\nline2\nline3\n", "line1\nline2\n");
 		expect(result.added).toEqual([]);
-		expect(result.modified).toEqual([]);
+		expect(result.deleted).toEqual([2]);
 	});
 
-	it("should mark modified when deleting middle lines", () => {
+	it("should mark deleted when deleting middle lines", () => {
 		const result = computeDiff("line1\nline2\nline3\n", "line1\nline3\n");
 		expect(result.added).toEqual([]);
-		expect(result.modified).toEqual([2]);
+		expect(result.deleted).toEqual([2]);
 	});
 
 	it("should handle empty modified text", () => {
 		const result = computeDiff("line1\nline2\n", "");
 		expect(result.added).toEqual([]);
-		expect(result.modified).toEqual([]);
+		expect(result.deleted).toEqual([]);
 	});
 
 	it("should handle empty original text", () => {
 		const result = computeDiff("", "line1\nline2\n");
 		expect(result.added).toEqual([1, 2]);
-		expect(result.modified).toEqual([]);
+		expect(result.deleted).toEqual([]);
 	});
 
 	it("should handle deleting all lines except first", () => {
 		const result = computeDiff("line1\nline2\nline3\n", "line1\n");
 		expect(result.added).toEqual([]);
-		expect(result.modified).toEqual([]);
+		expect(result.deleted).toEqual([1]);
+	});
+
+	it("should detect deleted lines at end of file", () => {
+		const result = computeDiff(
+			"line1\nline2\nline3\nline4\n",
+			"line1\nline2\n",
+		);
+		expect(result.added).toEqual([]);
+		expect(result.deleted).toEqual([2]);
+	});
+
+	it("should detect replacement with deletion as added only", () => {
+		const result = computeDiff("line1\nline2\nline3\n", "line1\nchanged\n");
+		expect(result.added).toContain(2);
+		expect(result.deleted).toEqual([]);
+	});
+
+	it("should handle multi-line replacement as added only", () => {
+		const result = computeDiff("aaa\nbbb\nccc\n", "aaa\nxxx\nyyy\nccc\n");
+		expect(result.added.length).toBeGreaterThan(0);
+		expect(result.deleted).toEqual([]);
+	});
+
+	it("pure deletion produces deleted only", () => {
+		const result = computeDiff("line1\nline2\nline3\n", "line1\nline3\n");
+		expect(result.deleted).toEqual([2]);
+		expect(result.added).toEqual([]);
+	});
+
+	it("should detect both added and deleted lines in mixed diff", () => {
+		const result = computeDiff("a\nb\nc\nd\ne\n", "a\nX\nd\n");
+		expect(result.added).toContain(2);
+		expect(result.deleted.length).toBeGreaterThan(0);
+	});
+});
+
+describe("createDiffDecorations", () => {
+	let mockMonaco: Awaited<ReturnType<typeof loader.init>>;
+
+	beforeEach(async () => {
+		mockMonaco = await loader.init();
+		(mockMonaco.editor as Record<string, unknown>).OverviewRulerLane = {
+			Full: 7,
+		};
+	});
+
+	it("should create gutter-added decorations for added lines", () => {
+		const diff = { added: [1, 3], deleted: [] };
+		const result = createDiffDecorations(diff, mockMonaco);
+
+		expect(result).toHaveLength(2);
+		for (const d of result) {
+			expect(d.options.glyphMarginClassName).toBe("gutter-added");
+			expect(d.options.overviewRuler?.color).toBe("#9ccc2c");
+			expect(d.options.overviewRuler?.position).toBe(7);
+		}
+	});
+
+	it("should create gutter-deleted decorations for deleted lines", () => {
+		const diff = { added: [], deleted: [2, 4] };
+		const result = createDiffDecorations(diff, mockMonaco);
+
+		expect(result).toHaveLength(2);
+		for (const d of result) {
+			expect(d.options.glyphMarginClassName).toBe("gutter-deleted");
+			expect(d.options.overviewRuler?.color).toBe("#ff0000");
+			expect(d.options.overviewRuler?.position).toBe(7);
+		}
+	});
+
+	it("should return empty array for empty diff", () => {
+		const diff = { added: [], deleted: [] };
+		const result = createDiffDecorations(diff, mockMonaco);
+
+		expect(result).toEqual([]);
+	});
+
+	it("should create both added and deleted decorations for mixed diff", () => {
+		const diff = { added: [2], deleted: [5] };
+		const result = createDiffDecorations(diff, mockMonaco);
+
+		expect(result).toHaveLength(2);
+		expect(result[0].options.glyphMarginClassName).toBe("gutter-added");
+		expect(result[1].options.glyphMarginClassName).toBe("gutter-deleted");
 	});
 });
 

@@ -248,12 +248,6 @@
 	margin-left: 3px;
 }
 
-.gutter-modified {
-	background-color: var(--status-modified);
-	width: 4px !important;
-	margin-left: 3px;
-}
-
 .gutter-deleted {
 	background-color: var(--status-deleted);
 	width: 4px !important;
@@ -262,10 +256,6 @@
 
 .line-added {
 	background-color: color-mix(in oklch, var(--status-added) 15%, transparent);
-}
-
-.line-modified {
-	background-color: color-mix(in oklch, var(--status-modified) 15%, transparent);
 }
 
 .line-deleted {
