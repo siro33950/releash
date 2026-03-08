@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TauriTransport } from "../lib/lsp/tauri-transport";
 import { useLsp } from "./useLsp";
 
@@ -74,6 +74,10 @@ describe("useLsp", () => {
 		fakeSessionIdCounter = 0;
 	});
 
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("detect_lsp_server が設定を返す → running に遷移", async () => {
 		const fakeTransport = createFakeTransport();
 		mockInvoke.mockImplementation((cmd: string) => {
@@ -116,9 +120,8 @@ describe("useLsp", () => {
 		});
 
 		expect(result.current.sessionId).toBeNull();
-		expect(mockInvoke).not.toHaveBeenCalledWith(
+		expect(mockInvoke.mock.calls.map((c: unknown[]) => c[0])).not.toContain(
 			"install_lsp_server",
-			expect.anything(),
 		);
 		expect(mockCreateTauriTransport).not.toHaveBeenCalled();
 	});
@@ -299,8 +302,6 @@ describe("useLsp", () => {
 
 		expect(result.current.status).toBe("stopped");
 		expect(result.current.crashCount).toBe(5);
-
-		vi.useRealTimers();
 	});
 
 	it("retryManually → クラッシュカウントリセット + 再起動", async () => {
@@ -355,7 +356,5 @@ describe("useLsp", () => {
 		await vi.waitFor(() => {
 			expect(result.current.status).toBe("running");
 		});
-
-		vi.useRealTimers();
 	});
 });

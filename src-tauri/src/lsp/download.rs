@@ -400,27 +400,40 @@ async fn install_jdtls(
     emit_progress(app, "java", "extracting", 0.7);
 
     let jdtls_dir = cache_dir.join("jdtls");
-    std::fs::create_dir_all(&jdtls_dir)?;
+    let staging_dir = cache_dir.join(format!(".jdtls.tmp.{}", std::process::id()));
+    if staging_dir.exists() {
+        std::fs::remove_dir_all(&staging_dir)?;
+    }
+    std::fs::create_dir_all(&staging_dir)?;
 
-    extract_tar_gz(&bytes, &jdtls_dir)?;
+    extract_tar_gz(&bytes, &staging_dir)?;
 
     let launcher = if cfg!(windows) { "jdtls.bat" } else { "jdtls" };
-    let bin_path = jdtls_dir.join("bin").join(launcher);
+    let staged_bin = staging_dir.join("bin").join(launcher);
 
     // chmod +x on the launcher script
     #[cfg(unix)]
     {
-        if bin_path.exists() {
+        if staged_bin.exists() {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::set_permissions(&staged_bin, std::fs::Permissions::from_mode(0o755))?;
         }
     }
 
-    if !bin_path.exists() {
+    if !staged_bin.exists() {
+        let _ = std::fs::remove_dir_all(&staging_dir);
         return Err(LspDownloadError::Install(format!(
             "展開されたアーカイブに bin/{launcher} が見つかりません"
         )));
     }
+
+    // Atomically replace the live directory
+    if jdtls_dir.exists() {
+        std::fs::remove_dir_all(&jdtls_dir)?;
+    }
+    std::fs::rename(&staging_dir, &jdtls_dir)?;
+
+    let bin_path = jdtls_dir.join("bin").join(launcher);
 
     // Save version file (after confirming bin/jdtls exists)
     std::fs::write(cache_dir.join("jdtls.version"), &version)?;

@@ -171,7 +171,10 @@ impl LspManager {
                 .iter()
                 .any(|a| a.contains("-javaagent") && a.contains("lombok"));
             if !has_lombok_arg {
-                if let Some(lombok_path) = find_lombok_jar() {
+                let lombok_path = tokio::task::spawn_blocking(find_lombok_jar)
+                    .await
+                    .map_err(|e| format!("Lombok 検出失敗: {e}"))?;
+                if let Some(lombok_path) = lombok_path {
                     log::info!("Lombok detected: {}", lombok_path.display());
                     final_args.push(format!("--jvm-arg=-javaagent:{}", lombok_path.display()));
                 }
