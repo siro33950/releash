@@ -56,8 +56,8 @@ export function Breadcrumb({
 					</span>
 				);
 			})}
-			{symbolPath?.map((sym, i) => (
-				<span key={`sym-${i}-${sym}`} className="flex items-center shrink-0">
+			{symbolPath?.map((sym) => (
+				<span key={`sym-${sym}`} className="flex items-center shrink-0">
 					<ChevronRight className="h-3 w-3 mx-0.5 text-muted-foreground/50" />
 					<span className="text-foreground/80">{sym}</span>
 				</span>

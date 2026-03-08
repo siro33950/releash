@@ -1038,18 +1038,12 @@ fn collect_all_files(worktree_path: &str) -> Vec<String> {
 #[tool_handler]
 impl ServerHandler for ReleashMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation {
-                name: "releash-mcp".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                ..Default::default()
-            },
-            instructions: Some(
-                "Releash MCP Server: Git worktree management for AI coding agents.".to_string(),
-            ),
-        }
+        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        info.protocol_version = ProtocolVersion::V_2024_11_05;
+        info.server_info = Implementation::new("releash-mcp", env!("CARGO_PKG_VERSION"));
+        info.instructions =
+            Some("Releash MCP Server: Git worktree management for AI coding agents.".to_string());
+        info
     }
 }
 
