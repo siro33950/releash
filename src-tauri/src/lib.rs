@@ -24,6 +24,7 @@ mod tray;
 mod vpn_detect;
 mod watcher;
 mod webhook;
+mod workspace_state_store;
 mod ws_bridge;
 mod ws_server;
 
@@ -62,6 +63,9 @@ pub fn run() {
         ))
         .manage(Arc::new(comment_store::CommentStore::default()))
         .manage(Arc::new(thread_store::ThreadStore::default()))
+        .manage(Arc::new(
+            workspace_state_store::WorkspaceStateStore::default(),
+        ))
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(Arc::new(lsp::LspManager::default()))
         .manage(watcher::FileWatcherManager::default())
@@ -351,6 +355,9 @@ pub fn run() {
             thread_store::update_thread_entry_content,
             thread_store::update_thread,
             thread_store::toggle_resolve_thread,
+            // Workspace state
+            workspace_state_store::load_workspace_state,
+            workspace_state_store::save_workspace_state,
             // Review prompt
             review_prompt::get_review_prompt,
             review_prompt::get_per_file_review_tasks,

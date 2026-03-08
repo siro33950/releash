@@ -1,6 +1,6 @@
 import { FileIcon } from "@react-symbols/icons/utils";
 import { PanelLeft, PanelRight, X } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	Group,
 	Panel,
@@ -17,7 +17,10 @@ import { EditorTabContent } from "@/components/panels/EditorTabContent";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { PostToPrPreview } from "@/components/panels/PostToPrPreview";
 import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
-import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
+import {
+	type RightBottomTab,
+	RightSidebarBottom,
+} from "@/components/panels/RightSidebarBottom";
 import {
 	RightSidebarTop,
 	type RightTopTab,
@@ -43,8 +46,12 @@ import { EditorContext } from "@/contexts/EditorContext";
 import { GitStatusProvider } from "@/contexts/GitStatusContext";
 import { useBaseBranch } from "@/hooks/useBaseBranch";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
+import { useWorkspacePersistence } from "@/hooks/useWorkspacePersistence";
 import { cn } from "@/lib/utils";
-import { useWorktreeState } from "@/screens/useWorktreeState";
+import {
+	type InternalWorktreeState,
+	useWorktreeState,
+} from "@/screens/useWorktreeState";
 import {
 	CreateBranchDialog,
 	DiscardAllDialog,
@@ -54,6 +61,7 @@ import {
 import type { AppSettings } from "@/types/settings";
 import { buildTerminalCommand } from "@/types/settings";
 import type { Thread } from "@/types/thread";
+import type { WorkspaceState } from "@/types/workspace-state";
 
 interface MainLayoutProps {
 	selectedRootPath: string | null;
@@ -74,6 +82,8 @@ function WorktreeContent({
 	leftPanels,
 	branchSelector,
 	togglePanels,
+	initialWorkspaceState,
+	internalStateMapRef,
 }: {
 	rootPath: string;
 	settings: AppSettings;
@@ -86,18 +96,33 @@ function WorktreeContent({
 	leftPanels?: TogglePanel[];
 	branchSelector: React.ReactNode;
 	togglePanels: TogglePanel[];
+	initialWorkspaceState?: WorkspaceState;
+	internalStateMapRef: React.MutableRefObject<
+		Map<string, InternalWorktreeState>
+	>;
 }) {
 	const centerTabRef = useRef(centerTab);
 	centerTabRef.current = centerTab;
 
 	const rightBottomRef = useRef<PanelImperativeHandle>(null);
-	const [rightBottomCollapsed, setRightBottomCollapsed] = useState(false);
 
 	const handleToggleRightBottom = useCallback(() => {
 		const panel = rightBottomRef.current;
 		if (!panel) return;
 		panel.isCollapsed() ? panel.expand() : panel.collapse();
 	}, []);
+
+	// Restore rightBottom collapsed state from initialWorkspaceState
+	const initialRightBottomCollapsed =
+		initialWorkspaceState?.layout.rightBottomCollapsed ?? false;
+	useEffect(() => {
+		if (!initialRightBottomCollapsed) return;
+		const panel = rightBottomRef.current;
+		if (!panel) return;
+		requestAnimationFrame(() => {
+			panel.collapse();
+		});
+	}, [initialRightBottomCollapsed]);
 
 	const s = useWorktreeState({
 		rootPath,
@@ -106,6 +131,8 @@ function WorktreeContent({
 		isActive: true,
 		centerTabRef,
 		onSwitchToEditor,
+		initialWorkspaceState,
+		internalStateMapRef,
 	});
 
 	const {
@@ -145,6 +172,19 @@ function WorktreeContent({
 		},
 		[s.editorLayout],
 	);
+
+	// ファイルタブが開かれたら自動でEditorビューに切り替え
+	// 初回マウント時はスキップ（復元されたcenterTabを上書きしないため）
+	const initialMountRef = useRef(true);
+	useEffect(() => {
+		if (initialMountRef.current) {
+			initialMountRef.current = false;
+			return;
+		}
+		if (s.editorLayout.activeTabId !== "") {
+			onSwitchToEditor();
+		}
+	}, [s.editorLayout.activeTabId, onSwitchToEditor]);
 
 	return (
 		<GitStatusProvider rootPath={rootPath} externalRefreshKey={s.gitRefreshKey}>
@@ -365,7 +405,7 @@ function WorktreeContent({
 									collapsible
 									collapsedSize={31}
 									onResize={(size) =>
-										setRightBottomCollapsed(size.inPixels <= 31)
+										s.setRightBottomCollapsed(size.inPixels <= 31)
 									}
 								>
 									<div
@@ -384,9 +424,13 @@ function WorktreeContent({
 											showResolvedThreads={s.showResolvedThreads}
 											onToggleShowResolved={s.toggleShowResolvedThreads}
 											onToggleCollapse={handleToggleRightBottom}
-											collapsed={rightBottomCollapsed}
+											collapsed={s.rightBottomCollapsed}
 											aiTaskThreadIds={s.aiTaskThreadIds}
 											onOpenThreadAILog={s.handleOpenThreadAIModal}
+											initialActiveTab={
+												s.rightBottomActiveTab as RightBottomTab
+											}
+											onActiveTabChange={s.setRightBottomActiveTab}
 										/>
 									</div>
 								</Panel>
@@ -484,6 +528,17 @@ export function MainLayout({
 	const [rightVisible, setRightVisible] = useState(true);
 	const [centerTab, setCenterTab] = useState("agent");
 	const switchToEditor = useCallback(() => setCenterTab("editor"), []);
+
+	// --- Workspace state persistence ---
+	const { internalStateMapRef, getInitialState } = useWorkspacePersistence({
+		selectedRootPath,
+		centerTab,
+		leftNavVisible,
+		rightVisible,
+		setCenterTab,
+		leftNavRef,
+		rightPanelRef,
+	});
 
 	const { branch } = useCurrentBranch(selectedRootPath);
 	const { baseBranch, setBaseBranch, localBranches } = useBaseBranch(
@@ -637,6 +692,8 @@ export function MainLayout({
 									leftPanels={leftNavVisible ? undefined : [leftToggle]}
 									branchSelector={rightSlotContent}
 									togglePanels={togglePanels}
+									initialWorkspaceState={getInitialState(selectedRootPath)}
+									internalStateMapRef={internalStateMapRef}
 								/>
 							) : (
 								<Panel id="center" minSize="30%">

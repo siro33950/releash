@@ -12,7 +12,7 @@ import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPane
 import type { EditorContextValue } from "@/contexts/EditorContext";
 import { useBranchPr } from "@/hooks/useBranchPr";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
-import { useEditorLayout } from "@/hooks/useEditorLayout";
+import { pathFromTabId, useEditorLayout } from "@/hooks/useEditorLayout";
 import { useFileContents } from "@/hooks/useFileContents";
 import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
@@ -33,9 +33,9 @@ import {
 import { normalizePath } from "@/lib/normalizePath";
 import { useWorktreeThreads } from "@/screens/useWorktreeComments";
 import {
+	createEditorState,
 	editorReducer,
 	gitReducer,
-	initialEditorState,
 	initialUIState,
 	uiReducer,
 	useWorktreeGitActions,
@@ -44,6 +44,12 @@ import { useWorktreeMenuHandlers } from "@/screens/useWorktreeMenuHandlers";
 import type { AgentStateSync } from "@/types/protocol";
 import type { AppSettings, DiffBase, DiffMode } from "@/types/settings";
 import { getThreadOrigin } from "@/types/thread";
+import type {
+	InternalWorktreeState,
+	WorkspaceState,
+} from "@/types/workspace-state";
+
+export type { InternalWorktreeState } from "@/types/workspace-state";
 
 interface UseWorktreeStateParams {
 	rootPath: string;
@@ -52,6 +58,10 @@ interface UseWorktreeStateParams {
 	isActive: boolean;
 	centerTabRef?: React.RefObject<string>;
 	onSwitchToEditor?: () => void;
+	initialWorkspaceState?: WorkspaceState;
+	internalStateMapRef?: React.MutableRefObject<
+		Map<string, InternalWorktreeState>
+	>;
 }
 
 export function useWorktreeState({
@@ -61,6 +71,8 @@ export function useWorktreeState({
 	isActive,
 	centerTabRef,
 	onSwitchToEditor,
+	initialWorkspaceState,
+	internalStateMapRef,
 }: UseWorktreeStateParams) {
 	const {
 		files,
@@ -81,7 +93,11 @@ export function useWorktreeState({
 
 	const [editor, dispatchEditor] = useReducer(
 		editorReducer,
-		initialEditorState,
+		createEditorState(
+			initialWorkspaceState
+				? { activeView: initialWorkspaceState.layout.activeView }
+				: undefined,
+		),
 	);
 	const {
 		activeView,
@@ -90,6 +106,14 @@ export function useWorktreeState({
 		pendingReveal,
 		newFolderKey,
 	} = editor;
+
+	const [rightBottomCollapsed, setRightBottomCollapsed] = useState(
+		initialWorkspaceState?.layout.rightBottomCollapsed ?? false,
+	);
+
+	const [rightBottomActiveTab, setRightBottomActiveTab] = useState(
+		initialWorkspaceState?.layout.rightBottomActiveTab ?? "terminal",
+	);
 
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
@@ -288,7 +312,24 @@ export function useWorktreeState({
 		[getFileContent, closeFile],
 	);
 
-	const editorLayout = useEditorLayout(handleTabClose);
+	const editorLayout = useEditorLayout(
+		handleTabClose,
+		initialWorkspaceState
+			? {
+					tabs: initialWorkspaceState.tabs.editors.map((e) => ({
+						id: `editor:${e.path}`,
+						path: e.path,
+						name: e.name,
+						isDirty: false,
+						closable: true,
+						draggable: true,
+					})),
+					activeTabId: initialWorkspaceState.tabs.activeEditorPath
+						? `editor:${initialWorkspaceState.tabs.activeEditorPath}`
+						: "",
+				}
+			: undefined,
+	);
 	const activeTabPath = editorLayout.getActiveTabPath();
 	const activeTab = activeTabPath ? getFileContent(activeTabPath) : null;
 
@@ -350,6 +391,18 @@ export function useWorktreeState({
 
 	// --- Git dir watcher (index / refs / HEAD) ---
 	useGitDirWatcher(rootPath);
+
+	// --- Restore workspace state ---
+	const initialWorkspaceStateRef = useRef(initialWorkspaceState);
+	const openFileRef = useRef(openFile);
+	openFileRef.current = openFile;
+	useEffect(() => {
+		const ws = initialWorkspaceStateRef.current;
+		if (!ws) return;
+		for (const tab of ws.tabs.editors) {
+			openFileRef.current(tab.path);
+		}
+	}, []);
 
 	// --- Lifecycle effects ---
 	useEffect(() => {
@@ -738,6 +791,31 @@ export function useWorktreeState({
 		],
 	);
 
+	// --- Sync internal state for workspace state persistence ---
+	useEffect(() => {
+		if (!internalStateMapRef) return;
+		internalStateMapRef.current.set(rootPath, {
+			tabs: editorLayout.tabs
+				.filter((t) => t.path != null)
+				.map((t) => ({
+					path: t.path as string,
+					name: t.name,
+				})),
+			activeEditorPath: pathFromTabId(editorLayout.activeTabId),
+			activeView,
+			rightBottomCollapsed,
+			rightBottomActiveTab,
+		});
+	}, [
+		internalStateMapRef,
+		rootPath,
+		editorLayout.tabs,
+		editorLayout.activeTabId,
+		activeView,
+		rightBottomCollapsed,
+		rightBottomActiveTab,
+	]);
+
 	// --- Sidebar content ---
 	const sidebarContent = useMemo(
 		() => (
@@ -828,5 +906,9 @@ export function useWorktreeState({
 		postToPrLoading,
 		handlePostToPrConfirm,
 		handlePostToPrCancel,
+		rightBottomCollapsed,
+		setRightBottomCollapsed,
+		rightBottomActiveTab,
+		setRightBottomActiveTab,
 	};
 }
