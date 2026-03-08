@@ -46,7 +46,7 @@
 		"dompurify": "^3.3.1",
 		"highlight.js": "^11.11.1",
 		"html5-qrcode": "^2.3.8",
-		"lucide-react": "^0.575.0",
+		"lucide-react": "^0.577.0",
 		"monaco-editor": "0.55.1",
 		"radix-ui": "^1.4.3",
 		"react": "^19.1.0",
