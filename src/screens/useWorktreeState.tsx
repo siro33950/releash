@@ -17,6 +17,7 @@ import { useFileContents } from "@/hooks/useFileContents";
 import { type FileChangeEvent, useFileWatcher } from "@/hooks/useFileWatcher";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
+import { useHandleOpenFile } from "@/hooks/useHandleOpenFile";
 import { useLsp } from "@/hooks/useLsp";
 import { useLspMonaco } from "@/hooks/useLspMonaco";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
@@ -50,6 +51,7 @@ interface UseWorktreeStateParams {
 	onSettingsSave: (settings: AppSettings) => void;
 	isActive: boolean;
 	centerTabRef?: React.RefObject<string>;
+	onSwitchToEditor?: () => void;
 }
 
 export function useWorktreeState({
@@ -58,6 +60,7 @@ export function useWorktreeState({
 	onSettingsSave,
 	isActive,
 	centerTabRef,
+	onSwitchToEditor,
 }: UseWorktreeStateParams) {
 	const {
 		files,
@@ -397,15 +400,12 @@ export function useWorktreeState({
 	onSettingsSaveRef.current = onSettingsSave;
 
 	// --- File open sync ---
-	const handleOpenFile = useCallback(
-		async (path: string) => {
-			await openFile(path);
-			const file = getFileContent(path);
-			const name = path.split(/[/\\]/).pop() ?? path;
-			editorLayout.addTab(path, name, file?.isDirty ?? false);
-		},
-		[openFile, getFileContent, editorLayout],
-	);
+	const handleOpenFile = useHandleOpenFile({
+		openFile,
+		getFileContent,
+		addTab: editorLayout.addTab,
+		onSwitchToEditor,
+	});
 	const handleOpenFileRef = useRef(handleOpenFile);
 	handleOpenFileRef.current = handleOpenFile;
 
