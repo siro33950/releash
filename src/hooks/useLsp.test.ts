@@ -107,18 +107,23 @@ describe("useLsp", () => {
 			args: [],
 			enabled: false,
 		};
+		let resolveDetect: (config: typeof disabledConfig) => void;
+		const detectPromise = new Promise<typeof disabledConfig>((resolve) => {
+			resolveDetect = resolve;
+		});
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "detect_lsp_server") return Promise.resolve(disabledConfig);
+			if (cmd === "detect_lsp_server") return detectPromise;
 			return Promise.resolve(null);
 		});
 
 		const { result } = renderHook(() => useLsp("/workspace", "java"));
 
-		// Wait for async operations to settle
-		await vi.waitFor(() => {
-			expect(result.current.status).toBe("idle");
+		await act(async () => {
+			// biome-ignore lint/style/noNonNullAssertion: resolveDetect is assigned in Promise constructor
+			resolveDetect!(disabledConfig);
 		});
 
+		expect(result.current.status).toBe("idle");
 		expect(result.current.sessionId).toBeNull();
 		expect(mockInvoke.mock.calls.map((c: unknown[]) => c[0])).not.toContain(
 			"install_lsp_server",

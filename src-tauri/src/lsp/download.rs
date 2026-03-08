@@ -400,7 +400,7 @@ async fn install_jdtls(
     emit_progress(app, "java", "extracting", 0.7);
 
     let jdtls_dir = cache_dir.join("jdtls");
-    let staging_dir = cache_dir.join(format!(".jdtls.tmp.{}", std::process::id()));
+    let staging_dir = cache_dir.join(format!(".jdtls.tmp.{}", uuid::Uuid::new_v4()));
     if staging_dir.exists() {
         std::fs::remove_dir_all(&staging_dir)?;
     }
@@ -599,7 +599,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin_dir = dir.path().join("jdtls").join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
-        let bin = bin_dir.join("jdtls");
+        let launcher = if cfg!(windows) { "jdtls.bat" } else { "jdtls" };
+        let bin = bin_dir.join(launcher);
         std::fs::write(&bin, b"fake").unwrap();
 
         let config = get_cached_server("java", dir.path()).unwrap();
