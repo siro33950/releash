@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { WsMessage } from "@/types/protocol";
 import type { Subscribe } from "./useMessageBus";
 
-interface PtySession {
+export interface PtySession {
 	ptyId: number;
 	cols: number;
 	label?: string;
 	worktreePath?: string;
+	kind: "agent" | "terminal" | "one_shot";
 }
 
 interface UsePtyManagementOptions {
@@ -14,9 +15,15 @@ interface UsePtyManagementOptions {
 	send: (msg: WsMessage) => void;
 }
 
+function inferKindFromLabel(label?: string): PtySession["kind"] {
+	if (label && /^agent\b/i.test(label)) return "agent";
+	return "terminal";
+}
+
 export function usePtyManagement({ subscribe, send }: UsePtyManagementOptions) {
 	const [ptySessions, setPtySessions] = useState<PtySession[]>([]);
 	const [activePtyId, setActivePtyId] = useState<number | null>(null);
+	const [activeAgentPtyId, setActiveAgentPtyId] = useState<number | null>(null);
 	const [ptySpawning, setPtySpawning] = useState(false);
 	const [ptySpawnError, setPtySpawnError] = useState<string | null>(null);
 	const [terminalMounted, setTerminalMounted] = useState(false);
@@ -30,7 +37,8 @@ export function usePtyManagement({ subscribe, send }: UsePtyManagementOptions) {
 				}
 			}
 			if (msg.type === "pty_ready") {
-				const { pty_id, cols, label, worktree_path } = msg.payload;
+				const { pty_id, cols, label, worktree_path, kind } = msg.payload;
+				const sessionKind = kind ?? inferKindFromLabel(label);
 				setPtySessions((prev) => {
 					if (prev.some((s) => s.ptyId === pty_id)) return prev;
 					return [
@@ -40,24 +48,40 @@ export function usePtyManagement({ subscribe, send }: UsePtyManagementOptions) {
 							cols,
 							label,
 							worktreePath: worktree_path,
+							kind: sessionKind,
 						},
 					];
 				});
-				setActivePtyId((prev) => prev ?? pty_id);
+				if (sessionKind === "agent") {
+					setActiveAgentPtyId((prev) => prev ?? pty_id);
+				} else {
+					setActivePtyId((prev) => prev ?? pty_id);
+				}
 				setPtySpawnError(null);
 			}
 			if (msg.type === "pty_exit") {
 				const { pty_id } = msg.payload;
 				setPtySessions((prev) => prev.filter((s) => s.ptyId !== pty_id));
 				setActivePtyId((prev) => (prev === pty_id ? null : prev));
+				setActiveAgentPtyId((prev) => (prev === pty_id ? null : prev));
 			}
 			if (msg.type === "worktree_select_response" && msg.payload.success) {
-				// worktree切り替え: セッション一覧をリセット（直後にPtyReadyで新worktreeのセッションが復元される）
 				setPtySessions([]);
 				setActivePtyId(null);
+				setActiveAgentPtyId(null);
 			}
 		});
 	}, [subscribe]);
+
+	const terminalSessions = useMemo(
+		() => ptySessions.filter((s) => s.kind !== "agent"),
+		[ptySessions],
+	);
+
+	const agentSessions = useMemo(
+		() => ptySessions.filter((s) => s.kind === "agent"),
+		[ptySessions],
+	);
 
 	const spawnPty = useCallback(
 		(label?: string) => {
@@ -84,17 +108,22 @@ export function usePtyManagement({ subscribe, send }: UsePtyManagementOptions) {
 	const resetPty = useCallback(() => {
 		setPtySessions([]);
 		setActivePtyId(null);
+		setActiveAgentPtyId(null);
 		setPtySpawnError(null);
 		setPtySpawning(false);
 	}, []);
 
 	return {
 		ptySessions,
+		terminalSessions,
+		agentSessions,
 		activePtyId,
+		activeAgentPtyId,
 		ptySpawning,
 		ptySpawnError,
 		terminalMounted,
 		setActivePtyId,
+		setActiveAgentPtyId,
 		setTerminalMounted,
 		spawnPty,
 		killPty,

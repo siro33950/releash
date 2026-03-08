@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::pty::PtyKind;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyOutputMsg {
     pub pty_id: u64,
@@ -34,6 +36,8 @@ pub struct PtyReady {
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<PtyKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,10 +146,12 @@ mod tests {
             rows: 24,
             label: None,
             worktree_path: None,
+            kind: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("label"));
         assert!(!json.contains("worktree_path"));
+        assert!(!json.contains("kind"));
     }
 
     #[test]
@@ -156,12 +162,39 @@ mod tests {
             rows: 24,
             label: Some("dev".to_string()),
             worktree_path: Some("/repo".to_string()),
+            kind: Some(PtyKind::Terminal),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"label\":\"dev\""));
         assert!(json.contains("\"worktree_path\":\"/repo\""));
+        assert!(json.contains("\"kind\":\"terminal\""));
         let deserialized: PtyReady = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.label, Some("dev".to_string()));
+        assert_eq!(deserialized.kind, Some(PtyKind::Terminal));
+    }
+
+    #[test]
+    fn test_pty_ready_with_agent_kind() {
+        let msg = PtyReady {
+            pty_id: 2,
+            cols: 120,
+            rows: 40,
+            label: Some("agent".to_string()),
+            worktree_path: Some("/repo".to_string()),
+            kind: Some(PtyKind::Agent),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"kind\":\"agent\""));
+        let deserialized: PtyReady = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.kind, Some(PtyKind::Agent));
+    }
+
+    #[test]
+    fn test_pty_ready_backward_compat_without_kind() {
+        let json = r#"{"pty_id":1,"cols":80,"rows":24}"#;
+        let deserialized: PtyReady = serde_json::from_str(json).unwrap();
+        assert_eq!(deserialized.pty_id, 1);
+        assert!(deserialized.kind.is_none());
     }
 
     #[test]
