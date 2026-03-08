@@ -14,6 +14,11 @@ export function useBatchSpawnAgents(
 		if (agentType === "none") return;
 		if (!startupCommand) return;
 
+		const normalizedMaxConcurrent =
+			Number.isInteger(maxConcurrent) && maxConcurrent > 0
+				? maxConcurrent
+				: null;
+
 		let cancelled = false;
 
 		const batchSpawn = async () => {
@@ -45,7 +50,7 @@ export function useBatchSpawnAgents(
 				}>("batch_spawn_agent_ptys", {
 					worktreePaths: allWorktreePaths,
 					startupCommand,
-					maxConcurrent: maxConcurrent || null,
+					maxConcurrent: normalizedMaxConcurrent,
 				});
 				if (result.failed > 0) {
 					console.warn(

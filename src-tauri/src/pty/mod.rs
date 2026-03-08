@@ -777,74 +777,101 @@ pub async fn batch_spawn_agent_ptys(
     let state = Arc::clone(&state);
     let app_clone = app.clone();
 
-    tokio::task::spawn_blocking(move || {
-        let mut spawned = 0u32;
-        let mut failed = 0u32;
-        let mut errors = Vec::new();
-        let limit = max_concurrent.filter(|&n| n > 0);
+    let concurrency = max_concurrent
+        .filter(|&n| n > 0)
+        .map(|n| n as usize)
+        .unwrap_or(worktree_paths.len());
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
 
-        for wt_path in &worktree_paths {
-            if let Some(max) = limit {
-                if spawned >= max {
-                    break;
+    let mut handles = Vec::new();
+
+    for wt_path in worktree_paths {
+        let state = Arc::clone(&state);
+        let app = app_clone.clone();
+        let cmd = startup_command.clone();
+        let sem = std::sync::Arc::clone(&semaphore);
+
+        handles.push(tokio::spawn(async move {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|e| format!("semaphore error: {}", e))?;
+
+            tokio::task::spawn_blocking(move || {
+                // Skip if an Agent PTY already exists for this worktree
+                let already_exists = {
+                    let sessions = state.sessions.lock();
+                    sessions.values().any(|s| {
+                        s.kind == PtyKind::Agent
+                            && s.worktree_path.as_deref() == Some(wt_path.as_str())
+                            && !s.exited.load(Ordering::SeqCst)
+                    })
+                };
+                if already_exists {
+                    return Ok::<Option<()>, String>(None);
                 }
-            }
 
-            // Skip if an Agent PTY already exists for this worktree
-            let already_exists = {
-                let sessions = state.sessions.lock();
-                sessions.values().any(|s| {
-                    s.kind == PtyKind::Agent
-                        && s.worktree_path.as_deref() == Some(wt_path.as_str())
-                        && !s.exited.load(Ordering::SeqCst)
-                })
-            };
-            if already_exists {
-                continue;
-            }
-
-            match state.spawn(
-                &app_clone,
-                24,
-                80,
-                Some(wt_path.clone()),
-                Some(wt_path.clone()),
-                None,
-                PtyKind::Agent,
-            ) {
-                Ok((pty_id, session_key)) => {
-                    state.register_pre_spawned(wt_path, PtyKind::Agent, &session_key);
-                    if let Some(cmd) = &startup_command {
-                        if let Err(e) = state.write(pty_id, &format!("{}\n", cmd)) {
-                            log::warn!(
-                                "batch_spawn: failed to write startup command to PTY {}: {}",
-                                pty_id,
-                                e
-                            );
+                match state.spawn(
+                    &app,
+                    24,
+                    80,
+                    Some(wt_path.clone()),
+                    Some(wt_path.clone()),
+                    None,
+                    PtyKind::Agent,
+                ) {
+                    Ok((pty_id, session_key)) => {
+                        state.register_pre_spawned(&wt_path, PtyKind::Agent, &session_key);
+                        if let Some(cmd) = &cmd {
+                            if let Err(e) = state.write(pty_id, &format!("{}\n", cmd)) {
+                                log::warn!(
+                                    "batch_spawn: failed to write startup command to PTY {}: {}",
+                                    pty_id,
+                                    e
+                                );
+                            }
                         }
+                        Ok(Some(()))
                     }
-                    spawned += 1;
+                    Err(e) => {
+                        log::warn!(
+                            "batch_spawn: failed to spawn Agent PTY for {}: {}",
+                            wt_path,
+                            e
+                        );
+                        Err(format!("{}: {}", wt_path, e))
+                    }
                 }
-                Err(e) => {
-                    log::warn!(
-                        "batch_spawn: failed to spawn Agent PTY for {}: {}",
-                        wt_path,
-                        e
-                    );
-                    errors.push(format!("{}: {}", wt_path, e));
-                    failed += 1;
-                }
+            })
+            .await
+            .map_err(|e| format!("spawn task failed: {}", e))?
+        }));
+    }
+
+    let mut spawned = 0u32;
+    let mut failed = 0u32;
+    let mut errors = Vec::new();
+
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(Some(()))) => spawned += 1,
+            Ok(Ok(None)) => {} // skipped (already exists)
+            Ok(Err(e)) => {
+                errors.push(e);
+                failed += 1;
+            }
+            Err(e) => {
+                errors.push(format!("task join failed: {}", e));
+                failed += 1;
             }
         }
+    }
 
-        Ok(BatchSpawnResult {
-            spawned,
-            failed,
-            errors,
-        })
+    Ok(BatchSpawnResult {
+        spawned,
+        failed,
+        errors,
     })
-    .await
-    .map_err(|e| format!("batch_spawn task failed: {}", e))?
 }
 
 #[cfg(test)]
