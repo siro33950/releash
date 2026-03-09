@@ -2,19 +2,34 @@ import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { TimelineEntry, TimelineEntryStatus } from "@/types/workflow";
 
+const STATUS_LABELS: Record<TimelineEntryStatus, string> = {
+	pending: "Pending",
+	in_progress: "In progress",
+	completed: "Completed",
+	failed: "Failed",
+};
+
 function StatusIcon({ status }: { status: TimelineEntryStatus }) {
-	switch (status) {
-		case "completed":
-			return <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />;
-		case "in_progress":
-			return (
-				<Loader2 className="h-4 w-4 shrink-0 text-blue-500 animate-spin" />
-			);
-		case "failed":
-			return <XCircle className="h-4 w-4 shrink-0 text-destructive" />;
-		default:
-			return <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />;
-	}
+	const icon = (() => {
+		switch (status) {
+			case "completed":
+				return <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />;
+			case "in_progress":
+				return (
+					<Loader2 className="h-4 w-4 shrink-0 text-blue-500 animate-spin" />
+				);
+			case "failed":
+				return <XCircle className="h-4 w-4 shrink-0 text-destructive" />;
+			default:
+				return <Circle className="h-4 w-4 shrink-0 text-muted-foreground" />;
+		}
+	})();
+	return (
+		<>
+			{icon}
+			<span className="sr-only">{STATUS_LABELS[status]}</span>
+		</>
+	);
 }
 
 function formatTime(timestamp: number): string {

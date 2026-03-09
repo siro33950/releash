@@ -86,7 +86,7 @@ describe("TerminalTabPanel", () => {
 
 	it("最後のタブは閉じられない", () => {
 		render(<TerminalTabPanel />);
-		expect(screen.queryByLabelText("Close Terminal 1")).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("Close Terminal")).not.toBeInTheDocument();
 	});
 
 	it("StrictMode: 削除後の追加で連番が崩れない", async () => {

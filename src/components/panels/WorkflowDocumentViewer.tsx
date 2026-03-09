@@ -5,6 +5,7 @@ import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { Button } from "@/components/ui/button";
 import { rehypeLineAnnotation } from "@/lib/rehypeLineAnnotation";
 import { cn } from "@/lib/utils";
 
@@ -40,14 +41,15 @@ function BlockWrapper({
 		<div className="relative group" data-source-line={line}>
 			{children}
 			{onCreateThread && (
-				<button
-					type="button"
-					className="absolute -left-6 top-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					className="absolute -left-6 top-0.5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
 					onClick={handleClick}
 					aria-label={`Comment on line ${line}`}
 				>
 					<MessageSquarePlus className="h-4 w-4" />
-				</button>
+				</Button>
 			)}
 		</div>
 	);

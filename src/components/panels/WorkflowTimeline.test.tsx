@@ -33,19 +33,19 @@ describe("WorkflowTimeline", () => {
 
 	it("renders status icons for different statuses", () => {
 		const entries = [
-			makeEntry({ label: "Pending", status: "pending" }),
-			makeEntry({ label: "Running", status: "in_progress" }),
-			makeEntry({ label: "Done", status: "completed" }),
-			makeEntry({ label: "Error", status: "failed" }),
+			makeEntry({ label: "Waiting for input", status: "pending" }),
+			makeEntry({ label: "Building module", status: "in_progress" }),
+			makeEntry({ label: "Tests passed", status: "completed" }),
+			makeEntry({ label: "Build failed", status: "failed" }),
 		];
 
 		const { container } = render(<WorkflowTimeline entries={entries} />);
 
 		// Check that all entries are rendered
-		expect(screen.getByText("Pending")).toBeInTheDocument();
-		expect(screen.getByText("Running")).toBeInTheDocument();
-		expect(screen.getByText("Done")).toBeInTheDocument();
-		expect(screen.getByText("Error")).toBeInTheDocument();
+		expect(screen.getByText("Waiting for input")).toBeInTheDocument();
+		expect(screen.getByText("Building module")).toBeInTheDocument();
+		expect(screen.getByText("Tests passed")).toBeInTheDocument();
+		expect(screen.getByText("Build failed")).toBeInTheDocument();
 
 		// Verify SVG icons are present (one per entry)
 		const svgs = container.querySelectorAll("svg");

@@ -35,14 +35,13 @@ describe("WorkflowDocumentViewer", () => {
 			/>,
 		);
 
-		const buttons = screen.getAllByRole("button", {
-			name: /Comment on line/,
+		const button = screen.getByRole("button", {
+			name: "Comment on line 1",
 		});
-		expect(buttons.length).toBeGreaterThan(0);
 
-		await user.click(buttons[0]);
+		await user.click(button);
 		expect(onCreateThread).toHaveBeenCalledOnce();
-		expect(onCreateThread).toHaveBeenCalledWith(expect.any(Number));
+		expect(onCreateThread).toHaveBeenCalledWith(1);
 	});
 
 	it("does not render comment buttons when onCreateThread is not provided", () => {
