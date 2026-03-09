@@ -31,9 +31,9 @@ describe("TerminalTabPanel", () => {
 		_resetContainerIdCounter();
 	});
 
-	it("初回レンダリングで Terminal 1 タブが表示される", () => {
+	it("初回レンダリングで Terminal タブが表示される", () => {
 		render(<TerminalTabPanel />);
-		expect(screen.getByText("Terminal 1")).toBeInTheDocument();
+		expect(screen.getByText("Terminal")).toBeInTheDocument();
 	});
 
 	it("+ ボタンでタブが追加される", async () => {
@@ -53,7 +53,7 @@ describe("TerminalTabPanel", () => {
 		const addButton = screen.getByLabelText("Add terminal tab");
 		await user.click(addButton);
 
-		const tab1 = screen.getByText("Terminal 1");
+		const tab1 = screen.getByText("Terminal");
 		const tab2 = screen.getByText("Terminal 2");
 
 		await user.click(tab1);
@@ -99,10 +99,10 @@ describe("TerminalTabPanel", () => {
 
 		const addButton = screen.getByLabelText("Add terminal tab");
 		await user.click(addButton);
-		expect(screen.getByText("Terminal 1")).toBeInTheDocument();
+		expect(screen.getByText("Terminal")).toBeInTheDocument();
 		expect(screen.getByText("Terminal 2")).toBeInTheDocument();
 
-		await user.click(screen.getByLabelText("Close Terminal 1"));
+		await user.click(screen.getByLabelText("Close Terminal"));
 
 		await user.click(addButton);
 		const tabLabels = screen

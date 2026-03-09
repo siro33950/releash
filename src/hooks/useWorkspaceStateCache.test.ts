@@ -60,7 +60,7 @@ describe("useWorkspaceStateCache", () => {
 		const state2 = makeState({
 			layout: {
 				...makeState().layout,
-				centerTab: "agent",
+				centerTab: "workflow",
 			},
 		});
 
@@ -141,5 +141,25 @@ describe("useWorkspaceStateCache", () => {
 
 		expect(loaded).toBeUndefined();
 		expect(result.current.getState("/repo")).toBeUndefined();
+	});
+
+	it("loadState migrates agent to workflow", async () => {
+		const state = makeState({
+			layout: {
+				...makeState().layout,
+				centerTab: "agent" as "editor" | "workflow",
+			},
+		});
+		mockInvoke.mockResolvedValue(state);
+
+		const { result } = renderHook(() => useWorkspaceStateCache());
+
+		let loaded: WorkspaceState | undefined;
+		await act(async () => {
+			loaded = await result.current.loadState("/repo");
+		});
+
+		expect(loaded?.layout.centerTab).toBe("workflow");
+		expect(result.current.getState("/repo")?.layout.centerTab).toBe("workflow");
 	});
 });

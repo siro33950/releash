@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildWorkspaceState, worktreeNameFromPath } from "./workspace-state";
+import {
+	buildWorkspaceState,
+	migrateWorkspaceState,
+	type WorkspaceState,
+	worktreeNameFromPath,
+} from "./workspace-state";
 
 describe("worktreeNameFromPath", () => {
 	it("通常パスから末尾のディレクトリ名を返す", () => {
@@ -47,6 +52,7 @@ describe("buildWorkspaceState", () => {
 				rightCollapsed: false,
 				rightBottomCollapsed: false,
 				rightBottomActiveTab: "terminal",
+				workflowPanelRatios: undefined,
 			},
 		});
 	});
@@ -99,9 +105,9 @@ describe("buildWorkspaceState", () => {
 			rightBottomActiveTab: "terminal",
 		};
 
-		const result = buildWorkspaceState(internal, "agent", true, true);
+		const result = buildWorkspaceState(internal, "workflow", true, true);
 		expect(result.layout.rightBottomCollapsed).toBe(true);
-		expect(result.layout.centerTab).toBe("agent");
+		expect(result.layout.centerTab).toBe("workflow");
 	});
 
 	it("rightBottomActiveTabが保持される", () => {
@@ -115,5 +121,73 @@ describe("buildWorkspaceState", () => {
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
 		expect(result.layout.rightBottomActiveTab).toBe("review");
+	});
+
+	it("workflowPanelRatios を含める", () => {
+		const internal = {
+			tabs: [],
+			activeEditorPath: null,
+			activeView: "git",
+			rightBottomCollapsed: false,
+			rightBottomActiveTab: "terminal",
+			workflowPanelRatios: [60, 40] as [number, number],
+		};
+
+		const result = buildWorkspaceState(internal, "workflow", true, true);
+		expect(result.layout.workflowPanelRatios).toEqual([60, 40]);
+	});
+
+	it("workflowPanelRatios が未設定の場合 undefined", () => {
+		const internal = {
+			tabs: [],
+			activeEditorPath: null,
+			activeView: "git",
+			rightBottomCollapsed: false,
+			rightBottomActiveTab: "terminal",
+		};
+
+		const result = buildWorkspaceState(internal, "editor", true, true);
+		expect(result.layout.workflowPanelRatios).toBeUndefined();
+	});
+});
+
+describe("migrateWorkspaceState", () => {
+	function makeState(centerTab: string): WorkspaceState {
+		return {
+			version: 1,
+			tabs: { editors: [], activeEditorPath: null },
+			layout: {
+				centerTab: centerTab as "editor" | "workflow",
+				activeView: "git",
+				leftNavCollapsed: false,
+				rightCollapsed: false,
+				rightBottomCollapsed: false,
+			},
+		};
+	}
+
+	it('"agent" → "workflow" に変換する', () => {
+		const state = makeState("agent");
+		const migrated = migrateWorkspaceState(state);
+		expect(migrated.layout.centerTab).toBe("workflow");
+	});
+
+	it('"editor" はそのまま維持する', () => {
+		const state = makeState("editor");
+		const migrated = migrateWorkspaceState(state);
+		expect(migrated.layout.centerTab).toBe("editor");
+	});
+
+	it('"workflow" はそのまま維持する', () => {
+		const state = makeState("workflow");
+		const migrated = migrateWorkspaceState(state);
+		expect(migrated.layout.centerTab).toBe("workflow");
+	});
+
+	it("元のオブジェクトを変更しない", () => {
+		const state = makeState("agent");
+		const migrated = migrateWorkspaceState(state);
+		expect(migrated).not.toBe(state);
+		expect(state.layout.centerTab as string).toBe("agent");
 	});
 });

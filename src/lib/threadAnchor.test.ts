@@ -205,4 +205,38 @@ describe("recalculateThreadAnchors", () => {
 		const result = recalculateThreadAnchors(threads, "file.ts", original);
 		expect(result[0]).toBe(threads[0]);
 	});
+
+	it("recalculates line numbers when lines are inserted before anchored threads", () => {
+		const original = [
+			"# Plan",
+			"",
+			"## Step 1",
+			"Do something",
+			"",
+			"## Step 2",
+		].join("\n");
+		const anchor3 = createLineAnchor(original, 3);
+		const anchor6 = createLineAnchor(original, 6);
+		const threads = [
+			makeThread("t1", "workflow://plan", 3, anchor3),
+			makeThread("t2", "workflow://plan", 6, anchor6),
+		];
+		const updated = [
+			"# Plan",
+			"",
+			"Added line A",
+			"Added line B",
+			"## Step 1",
+			"Do something",
+			"",
+			"## Step 2",
+		].join("\n");
+		const result = recalculateThreadAnchors(
+			threads,
+			"workflow://plan",
+			updated,
+		);
+		expect(result[0].lineNumber).toBe(5);
+		expect(result[1].lineNumber).toBe(8);
+	});
 });

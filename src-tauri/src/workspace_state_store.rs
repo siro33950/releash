@@ -26,6 +26,8 @@ pub struct WorkspaceLayoutState {
     pub right_bottom_collapsed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub right_bottom_active_tab: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_panel_ratios: Option<[f64; 2]>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -73,6 +75,11 @@ impl WorkspaceStateStore {
 
         let data = std::fs::read_to_string(&file_path).ok()?;
         let mut state: WorkspaceState = serde_json::from_str(&data).ok()?;
+
+        // Migrate "agent" → "workflow"
+        if state.layout.center_tab == "agent" {
+            state.layout.center_tab = "workflow".to_string();
+        }
 
         // Filter out tabs whose files no longer exist
         state.tabs.editors.retain(|tab| {
@@ -190,6 +197,7 @@ mod tests {
                 right_collapsed: false,
                 right_bottom_collapsed: false,
                 right_bottom_active_tab: None,
+                workflow_panel_ratios: None,
             },
         }
     }
@@ -300,5 +308,68 @@ mod tests {
         store.set("wt1", make_state());
         let got = store.get("wt1").unwrap();
         assert_eq!(got.tabs.editors.len(), 2);
+    }
+
+    #[test]
+    fn load_migrates_agent_to_workflow() {
+        let dir = TempDir::new().unwrap();
+        let worktree_dir = dir.path().join("worktree");
+        std::fs::create_dir_all(worktree_dir.join("src")).unwrap();
+        std::fs::write(worktree_dir.join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(worktree_dir.join("src/lib.rs"), "// lib").unwrap();
+
+        let mut state = make_state();
+        state.layout.center_tab = "agent".to_string();
+
+        let store = WorkspaceStateStore::default();
+        store.set("wt1", state);
+        store.save(dir.path(), "wt1").unwrap();
+
+        let store2 = WorkspaceStateStore::default();
+        let loaded = store2
+            .load(dir.path(), "wt1", worktree_dir.to_str().unwrap())
+            .unwrap();
+        assert_eq!(loaded.layout.center_tab, "workflow");
+    }
+
+    #[test]
+    fn workflow_panel_ratios_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let worktree_dir = dir.path().join("worktree");
+        std::fs::create_dir_all(worktree_dir.join("src")).unwrap();
+        std::fs::write(worktree_dir.join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(worktree_dir.join("src/lib.rs"), "// lib").unwrap();
+
+        let mut state = make_state();
+        state.layout.workflow_panel_ratios = Some([60.0, 40.0]);
+
+        let store = WorkspaceStateStore::default();
+        store.set("wt1", state);
+        store.save(dir.path(), "wt1").unwrap();
+
+        let store2 = WorkspaceStateStore::default();
+        let loaded = store2
+            .load(dir.path(), "wt1", worktree_dir.to_str().unwrap())
+            .unwrap();
+        assert_eq!(loaded.layout.workflow_panel_ratios, Some([60.0, 40.0]));
+    }
+
+    #[test]
+    fn workflow_panel_ratios_defaults_to_none() {
+        let dir = TempDir::new().unwrap();
+        let worktree_dir = dir.path().join("worktree");
+        std::fs::create_dir_all(worktree_dir.join("src")).unwrap();
+        std::fs::write(worktree_dir.join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(worktree_dir.join("src/lib.rs"), "// lib").unwrap();
+
+        let store = WorkspaceStateStore::default();
+        store.set("wt1", make_state());
+        store.save(dir.path(), "wt1").unwrap();
+
+        let store2 = WorkspaceStateStore::default();
+        let loaded = store2
+            .load(dir.path(), "wt1", worktree_dir.to_str().unwrap())
+            .unwrap();
+        assert_eq!(loaded.layout.workflow_panel_ratios, None);
     }
 }

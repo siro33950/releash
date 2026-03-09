@@ -146,7 +146,7 @@ describe("useWorkspacePersistence", () => {
 	it("シナリオ2: 切替先のWorktreeの状態が復元される", () => {
 		const cachedState = makeState({
 			layout: {
-				centerTab: "agent",
+				centerTab: "workflow",
 				activeView: "git",
 				leftNavCollapsed: true,
 				rightCollapsed: false,
@@ -185,7 +185,7 @@ describe("useWorkspacePersistence", () => {
 		rerender({ selectedRootPath: "/repoB" });
 
 		// centerTabが同期的に復元される
-		expect(setCenterTab).toHaveBeenCalledWith("agent");
+		expect(setCenterTab).toHaveBeenCalledWith("workflow");
 
 		flushRAF();
 
@@ -339,8 +339,8 @@ describe("useWorkspacePersistence", () => {
 		// Switch to a new worktree with no saved state
 		rerender({ selectedRootPath: "/newRepo" });
 
-		// centerTabがデフォルトの"agent"にリセットされる
-		expect(setCenterTab).toHaveBeenCalledWith("agent");
+		// centerTabがデフォルトの"workflow"にリセットされる
+		expect(setCenterTab).toHaveBeenCalledWith("workflow");
 
 		flushRAF();
 
@@ -361,7 +361,7 @@ describe("useWorkspacePersistence", () => {
 		});
 		const stateB = makeState({
 			layout: {
-				centerTab: "agent",
+				centerTab: "workflow",
 				activeView: "explorer",
 				leftNavCollapsed: true,
 				rightCollapsed: false,
@@ -403,7 +403,7 @@ describe("useWorkspacePersistence", () => {
 
 		// A → B
 		rerender({ selectedRootPath: "/repoB" });
-		expect(setCenterTab).toHaveBeenCalledWith("agent");
+		expect(setCenterTab).toHaveBeenCalledWith("workflow");
 		// A's internal state should be cleaned up
 		expect(result.current.internalStateMapRef.current.has("/repoA")).toBe(
 			false,

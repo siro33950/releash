@@ -18,7 +18,7 @@ describe("useTerminalPanes", () => {
 		const { result } = renderHook(() => useTerminalPanes("Terminal"));
 		expect(result.current.tabs).toHaveLength(1);
 		expect(result.current.tabs[0].paneTree.type).toBe("leaf");
-		expect(result.current.tabs[0].label).toBe("Terminal 1");
+		expect(result.current.tabs[0].label).toBe("Terminal");
 	});
 
 	it("タブ追加", () => {
@@ -63,7 +63,7 @@ describe("useTerminalPanes", () => {
 		const firstLabel = result.current.tabs[0].paneTree;
 		expect(firstLabel.type).toBe("leaf");
 		if (firstLabel.type === "leaf") {
-			expect(firstLabel.label).toBe("Terminal 1");
+			expect(firstLabel.label).toBe("Terminal");
 		}
 		unmount();
 
@@ -73,7 +73,7 @@ describe("useTerminalPanes", () => {
 		const secondLabel = result2.current.tabs[0].paneTree;
 		expect(secondLabel.type).toBe("leaf");
 		if (secondLabel.type === "leaf") {
-			expect(secondLabel.label).toBe("Terminal 1");
+			expect(secondLabel.label).toBe("Terminal");
 		}
 	});
 

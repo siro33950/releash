@@ -72,7 +72,7 @@ export function useWorkspacePersistence({
 		const cached = selectedRootPath
 			? workspaceCache.getState(selectedRootPath)
 			: undefined;
-		setCenterTab(cached?.layout.centerTab ?? "agent");
+		setCenterTab(cached?.layout.centerTab ?? "workflow");
 	}
 
 	// Restore panel expand/collapse (DOM操作のためuseEffect + rAF)

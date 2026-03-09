@@ -115,6 +115,10 @@ export function useWorktreeState({
 		initialWorkspaceState?.layout.rightBottomActiveTab ?? "terminal",
 	);
 
+	const [workflowPanelRatios, setWorkflowPanelRatios] = useState<
+		[number, number] | undefined
+	>(initialWorkspaceState?.layout.workflowPanelRatios);
+
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
 	const [agentStatesMap, setAgentStatesMap] = useState<
@@ -539,7 +543,7 @@ export function useWorktreeState({
 		onDropToEditor: useCallback(
 			(paths: string[]) => {
 				dispatchUI({ type: "SET_EDITOR_DRAG_OVER", value: false });
-				if (centerTabRefInternal?.current === "agent") return;
+				if (centerTabRefInternal?.current === "workflow") return;
 				for (const path of paths) {
 					handleOpenFileRef.current(path);
 				}
@@ -805,6 +809,7 @@ export function useWorktreeState({
 			activeView,
 			rightBottomCollapsed,
 			rightBottomActiveTab,
+			workflowPanelRatios,
 		});
 	}, [
 		internalStateMapRef,
@@ -814,6 +819,7 @@ export function useWorktreeState({
 		activeView,
 		rightBottomCollapsed,
 		rightBottomActiveTab,
+		workflowPanelRatios,
 	]);
 
 	// --- Sidebar content ---
@@ -841,6 +847,7 @@ export function useWorktreeState({
 	);
 
 	return {
+		createThread,
 		ready,
 		activeView,
 		editorDragOver,
@@ -910,5 +917,8 @@ export function useWorktreeState({
 		setRightBottomCollapsed,
 		rightBottomActiveTab,
 		setRightBottomActiveTab,
+		workflowPanelRatios,
+		setWorkflowPanelRatios,
+		recalculateAnchorsForFile,
 	};
 }

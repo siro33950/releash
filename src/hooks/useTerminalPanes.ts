@@ -109,14 +109,14 @@ export function useTerminalPanes(
 		const pane: PaneLeaf = {
 			type: "leaf",
 			id: nextPaneId(),
-			label: `${tabPrefix} 1`,
+			label: tabPrefix,
 			ptyId: null,
 			sessionKey: null,
 		};
 		return [
 			{
 				id: nextTabId(),
-				label: `${tabPrefix} 1`,
+				label: tabPrefix,
 				paneTree: pane,
 				focusedPaneId: pane.id,
 			},

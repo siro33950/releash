@@ -18,10 +18,15 @@ export interface TogglePanel {
 
 interface ViewToolbarProps {
 	leftPanels?: TogglePanel[];
+	rightPanels?: TogglePanel[];
 	rightSlot?: React.ReactNode;
 }
 
-export function ViewToolbar({ leftPanels, rightSlot }: ViewToolbarProps) {
+export function ViewToolbar({
+	leftPanels,
+	rightPanels,
+	rightSlot,
+}: ViewToolbarProps) {
 	return (
 		<div
 			data-tauri-drag-region
@@ -50,8 +55,8 @@ export function ViewToolbar({ leftPanels, rightSlot }: ViewToolbarProps) {
 				</Tooltip>
 			))}
 			<TabsList variant="line" className="h-[30px] px-0">
-				<TabsTrigger value="agent" className="text-xs px-[10px] py-1">
-					Agent
+				<TabsTrigger value="workflow" className="text-xs px-[10px] py-1">
+					Workflow
 				</TabsTrigger>
 				<TabsTrigger value="editor" className="text-xs px-[10px] py-1">
 					Editor
@@ -59,6 +64,25 @@ export function ViewToolbar({ leftPanels, rightSlot }: ViewToolbarProps) {
 			</TabsList>
 			<div data-tauri-drag-region className="flex-1" />
 			{rightSlot}
+			{rightPanels?.map((panel) => (
+				<Tooltip key={panel.id}>
+					<TooltipTrigger asChild>
+						<Button
+							variant="ghost"
+							size="icon"
+							className={cn(
+								"h-6 w-6",
+								panel.visible ? "text-foreground" : "text-muted-foreground",
+							)}
+							onClick={panel.onToggle}
+							aria-label={`Toggle ${panel.label}`}
+						>
+							<panel.icon className="size-4" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{panel.label}</TooltipContent>
+				</Tooltip>
+			))}
 		</div>
 	);
 }

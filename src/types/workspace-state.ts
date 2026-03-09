@@ -9,12 +9,13 @@ export interface WorkspaceState {
 		activeEditorPath: string | null;
 	};
 	layout: {
-		centerTab: "editor" | "agent";
+		centerTab: "editor" | "workflow";
 		activeView: string;
 		leftNavCollapsed: boolean;
 		rightCollapsed: boolean;
 		rightBottomCollapsed: boolean;
 		rightBottomActiveTab?: "terminal" | "review";
+		workflowPanelRatios?: [number, number];
 	};
 }
 
@@ -24,6 +25,7 @@ export interface InternalWorktreeState {
 	activeView: string;
 	rightBottomCollapsed: boolean;
 	rightBottomActiveTab: string;
+	workflowPanelRatios?: [number, number];
 }
 
 export function buildWorkspaceState(
@@ -39,7 +41,7 @@ export function buildWorkspaceState(
 			activeEditorPath: internal.activeEditorPath,
 		},
 		layout: {
-			centerTab: centerTab as "editor" | "agent",
+			centerTab: centerTab as "editor" | "workflow",
 			activeView: internal.activeView,
 			leftNavCollapsed: !leftNavVisible,
 			rightCollapsed: !rightVisible,
@@ -47,6 +49,20 @@ export function buildWorkspaceState(
 			rightBottomActiveTab: internal.rightBottomActiveTab as
 				| "terminal"
 				| "review",
+			workflowPanelRatios: internal.workflowPanelRatios,
 		},
 	};
+}
+
+export function migrateWorkspaceState(state: WorkspaceState): WorkspaceState {
+	if ((state.layout.centerTab as string) === "agent") {
+		return {
+			...state,
+			layout: {
+				...state.layout,
+				centerTab: "workflow",
+			},
+		};
+	}
+	return state;
 }

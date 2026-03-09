@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef } from "react";
 import {
+	migrateWorkspaceState,
 	type WorkspaceState,
 	worktreeNameFromPath,
 } from "@/types/workspace-state";
@@ -38,14 +39,15 @@ export function useWorkspaceStateCache(): UseWorkspaceStateCacheReturn {
 	const loadState = useCallback(
 		async (rootPath: string): Promise<WorkspaceState | undefined> => {
 			try {
-				const state = await invoke<WorkspaceState | null>(
+				const raw = await invoke<WorkspaceState | null>(
 					"load_workspace_state",
 					{
 						worktreeName: worktreeNameFromPath(rootPath),
 						worktreeRoot: rootPath,
 					},
 				);
-				if (state) {
+				if (raw) {
+					const state = migrateWorkspaceState(raw);
 					cacheRef.current.set(rootPath, state);
 					return state;
 				}

@@ -1,18 +1,25 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { PanelLeft } from "lucide-react";
+import { PanelLeft, PanelRight } from "lucide-react";
 import { describe, expect, it, vi } from "vitest";
 import { Tabs } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { type TogglePanel, ViewToolbar } from "./ViewToolbar";
 
-function renderToolbar(props: {
-	leftPanels?: TogglePanel[];
-	rightSlot?: React.ReactNode;
-}) {
+function renderToolbar(
+	props: {
+		leftPanels?: TogglePanel[];
+		rightPanels?: TogglePanel[];
+		rightSlot?: React.ReactNode;
+	},
+	tabsProps?: { value?: string; onValueChange?: (v: string) => void },
+) {
 	return render(
 		<TooltipProvider>
-			<Tabs value="editor">
+			<Tabs
+				value={tabsProps?.value ?? "editor"}
+				onValueChange={tabsProps?.onValueChange}
+			>
 				<ViewToolbar {...props} />
 			</Tabs>
 		</TooltipProvider>,
@@ -20,10 +27,10 @@ function renderToolbar(props: {
 }
 
 describe("ViewToolbar", () => {
-	it("renders TabsList with Agent and Editor triggers", () => {
+	it("renders TabsList with Workflow and Editor triggers", () => {
 		renderToolbar({});
 
-		expect(screen.getByRole("tab", { name: "Agent" })).toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Workflow" })).toBeInTheDocument();
 		expect(screen.getByRole("tab", { name: "Editor" })).toBeInTheDocument();
 	});
 
@@ -86,5 +93,66 @@ describe("ViewToolbar", () => {
 		});
 
 		expect(screen.getByTestId("branch")).toBeInTheDocument();
+	});
+
+	it("renders rightPanels toggle buttons", async () => {
+		const user = userEvent.setup();
+		const onToggle = vi.fn();
+		const rightPanels: TogglePanel[] = [
+			{
+				id: "right",
+				icon: PanelRight,
+				label: "Right Sidebar",
+				visible: true,
+				onToggle,
+			},
+		];
+
+		renderToolbar({ rightPanels });
+
+		const btn = screen.getByLabelText("Toggle Right Sidebar");
+		expect(btn).toBeInTheDocument();
+		expect(btn).toHaveClass("text-foreground");
+
+		await user.click(btn);
+		expect(onToggle).toHaveBeenCalledOnce();
+	});
+
+	it("renders rightPanels with muted color when not visible", () => {
+		const rightPanels: TogglePanel[] = [
+			{
+				id: "right",
+				icon: PanelRight,
+				label: "Right Sidebar",
+				visible: false,
+				onToggle: vi.fn(),
+			},
+		];
+
+		renderToolbar({ rightPanels });
+
+		const btn = screen.getByLabelText("Toggle Right Sidebar");
+		expect(btn).toHaveClass("text-muted-foreground");
+		expect(btn).not.toHaveClass("text-foreground");
+	});
+
+	it("calls onValueChange with 'workflow' when Workflow tab is clicked", async () => {
+		const user = userEvent.setup();
+		const onValueChange = vi.fn();
+
+		renderToolbar({}, { value: "editor", onValueChange });
+
+		await user.click(screen.getByRole("tab", { name: "Workflow" }));
+		expect(onValueChange).toHaveBeenCalledWith("workflow");
+	});
+
+	it("calls onValueChange with 'editor' when Editor tab is clicked", async () => {
+		const user = userEvent.setup();
+		const onValueChange = vi.fn();
+
+		renderToolbar({}, { value: "workflow", onValueChange });
+
+		await user.click(screen.getByRole("tab", { name: "Editor" }));
+		expect(onValueChange).toHaveBeenCalledWith("editor");
 	});
 });
