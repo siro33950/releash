@@ -31,6 +31,7 @@ import {
 	setLspActive,
 } from "@/lib/monaco-definition-provider";
 import { normalizePath } from "@/lib/normalizePath";
+import { useWorkflowState } from "@/screens/useWorkflowState";
 import { useWorktreeThreads } from "@/screens/useWorktreeComments";
 import {
 	createEditorState,
@@ -89,6 +90,7 @@ export function useWorktreeState({
 		closeAllFiles,
 		saveAllDirtyFiles,
 		createUntitledFile,
+		registerVirtualFile,
 	} = useFileContents();
 
 	const [editor, dispatchEditor] = useReducer(
@@ -114,10 +116,6 @@ export function useWorktreeState({
 	const [rightBottomActiveTab, setRightBottomActiveTab] = useState(
 		initialWorkspaceState?.layout.rightBottomActiveTab ?? "terminal",
 	);
-
-	const [workflowPanelRatios, setWorkflowPanelRatios] = useState<
-		[number, number] | undefined
-	>(initialWorkspaceState?.layout.workflowPanelRatios);
 
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
@@ -795,6 +793,25 @@ export function useWorktreeState({
 		],
 	);
 
+	// --- Workflow state (plan threads, workflow panel) ---
+	const {
+		planThreads,
+		removePlanThread,
+		resolvePlanThread,
+		planEditorContextValue,
+		workflowPanelRatios,
+		setWorkflowPanelRatios,
+	} = useWorkflowState({
+		rootPath,
+		getFileContent,
+		updateContent,
+		saveFile,
+		registerVirtualFile,
+		theme: settings.theme,
+		fontSize: settings.fontSize,
+		initialPanelRatios: initialWorkspaceState?.layout.workflowPanelRatios,
+	});
+
 	// --- Sync internal state for workspace state persistence ---
 	useEffect(() => {
 		if (!internalStateMapRef) return;
@@ -920,5 +937,10 @@ export function useWorktreeState({
 		workflowPanelRatios,
 		setWorkflowPanelRatios,
 		recalculateAnchorsForFile,
+		registerVirtualFile,
+		planEditorContextValue,
+		planThreads,
+		removePlanThread,
+		resolvePlanThread,
 	};
 }

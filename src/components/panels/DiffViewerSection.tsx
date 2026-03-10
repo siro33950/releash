@@ -45,6 +45,7 @@ export interface DiffViewerSectionProps {
 	revealLine: { line: number; key: number; openThread?: boolean } | undefined;
 	theme?: Theme;
 	onSearchOccurrences?: (text: string) => void;
+	readOnly?: boolean;
 }
 
 export function DiffViewerSection({
@@ -79,6 +80,7 @@ export function DiffViewerSection({
 	revealLine,
 	theme,
 	onSearchOccurrences,
+	readOnly,
 }: DiffViewerSectionProps) {
 	if (isImage) {
 		return (
@@ -137,6 +139,7 @@ export function DiffViewerSection({
 				theme={theme}
 				filePath={filePath}
 				onSearchOccurrences={onSearchOccurrences}
+				readOnly={readOnly}
 			/>
 		</Suspense>
 	);

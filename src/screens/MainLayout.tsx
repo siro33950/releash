@@ -11,22 +11,20 @@ import {
 import { BranchSelector } from "@/components/layout/BranchSelector";
 
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
+import { CommentList } from "@/components/panels/CommentList";
 import { EditorTabContent } from "@/components/panels/EditorTabContent";
 import { EmptyState } from "@/components/panels/EmptyState";
+import { ImplementationPanel } from "@/components/panels/ImplementationPanel";
+import { PlanPanel } from "@/components/panels/PlanPanel";
 import { PostToPrPreview } from "@/components/panels/PostToPrPreview";
 import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
-import {
-	type RightBottomTab,
-	RightSidebarBottom,
-} from "@/components/panels/RightSidebarBottom";
-import {
-	RightSidebarTop,
-	type RightTopTab,
-} from "@/components/panels/RightSidebarTop";
+import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
+import { RightSidebarTop } from "@/components/panels/RightSidebarTop";
 import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
 import { SymbolOutlinePanel } from "@/components/panels/SymbolOutlinePanel";
+import { TerminalTabPanel } from "@/components/panels/TerminalTabPanel";
 import { ThreadAIModal } from "@/components/panels/ThreadAIModal";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
 import { WorkflowView } from "@/components/panels/WorkflowView";
@@ -45,6 +43,7 @@ import { EditorContext } from "@/contexts/EditorContext";
 import { GitStatusProvider } from "@/contexts/GitStatusContext";
 import { useBaseBranch } from "@/hooks/useBaseBranch";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
+import { useRightSidebarTabs } from "@/hooks/useRightSidebarTabs";
 import { useWorkspacePersistence } from "@/hooks/useWorkspacePersistence";
 import { cn } from "@/lib/utils";
 import {
@@ -100,27 +99,21 @@ function WorktreeContent({
 		Map<string, InternalWorktreeState>
 	>;
 }) {
+	const noop = () => {};
 	const centerTabRef = useRef(centerTab);
 	centerTabRef.current = centerTab;
 
-	const workflowRightRef = useRef<PanelImperativeHandle>(null);
-
-	// rightVisible（togglePanels[0].visible）を状態源として両パネルを同期
-	// biome-ignore lint/correctness/useExhaustiveDependencies: centerTab 変更時にも再実行し、display:none から復帰したパネルを同期する
+	// 右パネルの visibility を rightPanelRef で制御
 	useEffect(() => {
 		const shouldBeVisible = togglePanels[0]?.visible ?? true;
-		const panels = [
-			typeof rightPanelRef === "object" ? rightPanelRef?.current : null,
-			workflowRightRef.current,
-		];
+		const panel =
+			typeof rightPanelRef === "object" ? rightPanelRef?.current : null;
+		if (!panel) return;
 		requestAnimationFrame(() => {
-			for (const panel of panels) {
-				if (!panel) continue;
-				if (shouldBeVisible && panel.isCollapsed()) panel.expand();
-				else if (!shouldBeVisible && !panel.isCollapsed()) panel.collapse();
-			}
+			if (shouldBeVisible && panel.isCollapsed()) panel.expand();
+			else if (!shouldBeVisible && !panel.isCollapsed()) panel.collapse();
 		});
-	}, [togglePanels, rightPanelRef, centerTab]);
+	}, [togglePanels, rightPanelRef]);
 
 	const rightBottomRef = useRef<PanelImperativeHandle>(null);
 
@@ -154,6 +147,19 @@ function WorktreeContent({
 	});
 
 	const {
+		mode,
+		activeTopTab,
+		activeBottomTab,
+		handleTopTabChange,
+		handleBottomTabChange,
+	} = useRightSidebarTabs({
+		centerTab,
+		activeView: s.activeView,
+		onActiveViewChange: (view) =>
+			s.dispatchEditor({ type: "SET_ACTIVE_VIEW", view }),
+	});
+
+	const {
 		handleThreadClick: baseThreadClick,
 		handleSendToTerminal: baseSendToTerminal,
 	} = s;
@@ -175,34 +181,6 @@ function WorktreeContent({
 		},
 		[setCenterTab, baseSendToTerminal],
 	);
-
-	// TODO: planDocument will become dynamic state when workflow execution is implemented.
-	// When it does, add planDocument to the deps of handleCreateDocumentThread and
-	// the recalculation effect below.
-	const planDocument = "";
-
-	const handleCreateDocumentThread = useCallback(
-		(line: number) => {
-			s.createThread(
-				"workflow://plan",
-				line,
-				"",
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				planDocument || undefined,
-			);
-		},
-		[s.createThread],
-	);
-
-	// Recalculate thread anchors when the plan document content changes
-	useEffect(() => {
-		if (planDocument) {
-			s.recalculateAnchorsForFile("workflow://plan", planDocument);
-		}
-	}, [s.recalculateAnchorsForFile]);
 
 	const handlePrFileSelect = useCallback(
 		(filename: string, _orig: string, _mod: string) => {
@@ -242,272 +220,311 @@ function WorktreeContent({
 						rightSlot={branchSelector}
 					/>
 					<div className="flex-1 overflow-hidden">
-						{/* Workflow view */}
-						<TabsContent
-							value="workflow"
-							forceMount
-							className="h-full m-0 data-[state=inactive]:hidden"
-						>
-							<WorkflowView
-								ref={s.terminalRef}
-								rootPath={rootPath}
-								theme={settings.theme}
-								terminalStartupCommand={buildTerminalCommand(settings)}
-								agentType={settings.agent}
-								planDocument={planDocument}
-								phase="requirements"
-								planTimeline={[]}
-								implTimeline={[]}
-								threads={s.threads}
-								onThreadClick={handleThreadClick}
-								rightPanelRef={workflowRightRef}
-								onRightPanelResize={onRightResize}
-								onDeleteThread={s.removeThread}
-								onResolveThread={s.resolveThread}
-								onCreateDocumentThread={handleCreateDocumentThread}
-								initialDocTerminalRatio={s.workflowPanelRatios}
-								onDocTerminalResize={s.setWorkflowPanelRatios}
-							/>
-						</TabsContent>
-						{/* Editor view */}
-						<TabsContent
-							value="editor"
-							forceMount
-							className="h-full m-0 data-[state=inactive]:hidden"
-						>
-							<Group orientation="horizontal" className="h-full">
-								<Panel id="center" minSize="30%">
-									<div
-										ref={s.editorDropZoneRef}
-										role="application"
-										className="h-full relative overflow-hidden flex flex-col"
-										onDragOver={s.handleEditorDragOver}
-										onDragLeave={s.handleEditorDragLeave}
-										onDrop={s.handleEditorDrop}
+						<Group orientation="horizontal" className="h-full">
+							{/* Center area: top (workflow/editor) + bottom (terminal) */}
+							<Panel id="center-area" minSize="30%">
+								<Group orientation="vertical" className="h-full">
+									{/* Center top: workflow / editor tabs */}
+									<Panel
+										id="center-top"
+										defaultSize={
+											s.workflowPanelRatios
+												? `${s.workflowPanelRatios[0]}%`
+												: "60%"
+										}
+										minSize="20%"
+										onResize={(size) =>
+											s.setWorkflowPanelRatios([
+												size.asPercentage,
+												100 - size.asPercentage,
+											])
+										}
 									>
-										<Tabs
-											value={s.editorLayout.activeTabId}
-											onValueChange={(val) => {
-												handleTabSelect(val);
-											}}
-											className="flex flex-col h-full gap-0"
+										{/* Workflow view */}
+										<TabsContent
+											value="workflow"
+											forceMount
+											className="h-full m-0 data-[state=inactive]:hidden"
 										>
-											<DraggableTabs
-												items={s.editorLayout.tabs}
-												onReorder={s.editorLayout.reorderTabs}
+											<WorkflowView
+												planEditorContextValue={s.planEditorContextValue}
+											/>
+										</TabsContent>
+										{/* Editor view */}
+										<TabsContent
+											value="editor"
+											forceMount
+											className="h-full m-0 data-[state=inactive]:hidden"
+										>
+											<div
+												ref={s.editorDropZoneRef}
+												role="application"
+												className="h-full relative overflow-hidden flex flex-col"
+												onDragOver={s.handleEditorDragOver}
+												onDragLeave={s.handleEditorDragLeave}
+												onDrop={s.handleEditorDrop}
 											>
-												<TabsList
-													variant="line"
-													className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
+												<Tabs
+													value={s.editorLayout.activeTabId}
+													onValueChange={(val) => {
+														handleTabSelect(val);
+													}}
+													className="flex flex-col h-full gap-0"
 												>
-													{s.editorLayout.tabs.map((tab) => (
-														<SortableTabTrigger
-															key={tab.id}
-															id={tab.id}
-															value={tab.id}
-															disabled={!tab.draggable}
-															className="gap-2 flex-none"
+													<DraggableTabs
+														items={s.editorLayout.tabs}
+														onReorder={s.editorLayout.reorderTabs}
+													>
+														<TabsList
+															variant="line"
+															className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
 														>
-															<FileIcon
-																fileName={tab.name}
-																className="h-4 w-4"
-															/>
-															<span>{tab.name}</span>
-															{tab.isDirty && (
-																<span className="w-2 h-2 rounded-full bg-foreground shrink-0" />
-															)}
-															{tab.closable && (
-																// biome-ignore lint/a11y/useSemanticElements: nested inside TabsTrigger <button>, cannot use <button>
-																<span
-																	role="button"
-																	tabIndex={0}
-																	className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
-																	aria-label={`Close ${tab.name}`}
-																	onPointerDown={(e) => {
-																		e.stopPropagation();
-																	}}
-																	onMouseDown={(e) => {
-																		e.stopPropagation();
-																	}}
-																	onClick={(e) => {
-																		e.stopPropagation();
-																		if (tab.path)
-																			s.editorLayout.closeTab(tab.path);
-																	}}
-																	onKeyDown={(e) => {
-																		if (e.key === "Enter" || e.key === " ") {
-																			e.preventDefault();
-																			e.stopPropagation();
-																			if (tab.path)
-																				s.editorLayout.closeTab(tab.path);
-																		}
-																	}}
+															{s.editorLayout.tabs.map((tab) => (
+																<SortableTabTrigger
+																	key={tab.id}
+																	id={tab.id}
+																	value={tab.id}
+																	disabled={!tab.draggable}
+																	className="gap-2 flex-none"
 																>
-																	<X className="size-3.5" />
-																</span>
-															)}
-														</SortableTabTrigger>
-													))}
-												</TabsList>
-											</DraggableTabs>
-											<div className="flex-1 relative" style={{ minHeight: 0 }}>
-												{s.editorLayout.tabs.map((tab) =>
-													tab.path ? (
-														<TabsContent
-															key={tab.id}
-															value={tab.id}
-															forceMount
-															className="absolute inset-0 isolate m-0 data-[state=inactive]:hidden"
-														>
-															<EditorTabContent
-																key={tab.path}
-																filePath={tab.path}
-																externalRevealLine={s.pendingReveal}
-																onExternalRevealConsumed={() =>
-																	s.dispatchEditor({
-																		type: "SET_PENDING_REVEAL",
-																		reveal: null,
-																	})
-																}
-															/>
-														</TabsContent>
-													) : null,
-												)}
-											</div>
-										</Tabs>
-										{s.editorDragOver && (
-											<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none">
-												<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
-													Drop to open file
-												</span>
-											</div>
-										)}
-									</div>
-								</Panel>
-								<Separator />
-								{/* Right Sidebar */}
-								<Panel
-									id="right"
-									panelRef={rightPanelRef}
-									defaultSize={280}
-									minSize={280}
-									collapsible
-									collapsedSize="0%"
-									onResize={onRightResize}
-								>
-									<div className="flex flex-col h-full border-l border-border">
-										<div className="flex-1 overflow-hidden">
-											<Group orientation="vertical">
-												<Panel id="right-top" defaultSize="50%" minSize="20%">
-													<div className="h-full overflow-hidden">
-														<RightSidebarTop
-															activeTab={
-																s.activeView === "git"
-																	? "changes"
-																	: s.activeView === "search"
-																		? "search"
-																		: s.activeView === "pr"
-																			? "pr"
-																			: s.activeView === "symbols"
-																				? "symbols"
-																				: "explorer"
-															}
-															onTabChange={(tab: RightTopTab) => {
-																const view = tab === "changes" ? "git" : tab;
-																s.dispatchEditor({
-																	type: "SET_ACTIVE_VIEW",
-																	view,
-																});
-															}}
-															explorerContent={s.sidebarContent}
-															changesContent={
-																<SourceControlPanel
-																	rootPath={rootPath}
-																	onSelectFile={s.handleOpenFile}
-																	onGitChanged={s.refreshGit}
-																/>
-															}
-															searchContent={
-																<SearchPanel
-																	rootPath={rootPath}
-																	onSelectFileAtLine={s.handleSearchResultClick}
-																	focusKey={s.searchFocusKey}
-																	initialQuery={s.searchInitialQuery}
-																/>
-															}
-															prContent={
-																<PullRequestPanel
-																	rootPath={rootPath}
-																	branch={s.branch}
-																	onFileSelect={handlePrFileSelect}
-																/>
-															}
-															symbolsContent={
-																<SymbolOutlinePanel
-																	filePath={s.activeTab?.path ?? null}
-																	language={s.activeTab?.language ?? null}
-																	rootPath={rootPath}
-																	onSelectSymbol={(line) => {
-																		if (s.activeTab?.path) {
-																			setCenterTab("editor");
+																	<FileIcon
+																		fileName={tab.name}
+																		className="h-4 w-4"
+																	/>
+																	<span>{tab.name}</span>
+																	{tab.isDirty && (
+																		<span className="w-2 h-2 rounded-full bg-foreground shrink-0" />
+																	)}
+																	{tab.closable && (
+																		// biome-ignore lint/a11y/useSemanticElements: nested inside TabsTrigger <button>, cannot use <button>
+																		<span
+																			role="button"
+																			tabIndex={0}
+																			className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
+																			aria-label={`Close ${tab.name}`}
+																			onPointerDown={(e) => {
+																				e.stopPropagation();
+																			}}
+																			onMouseDown={(e) => {
+																				e.stopPropagation();
+																			}}
+																			onClick={(e) => {
+																				e.stopPropagation();
+																				if (tab.path)
+																					s.editorLayout.closeTab(tab.path);
+																			}}
+																			onKeyDown={(e) => {
+																				if (
+																					e.key === "Enter" ||
+																					e.key === " "
+																				) {
+																					e.preventDefault();
+																					e.stopPropagation();
+																					if (tab.path)
+																						s.editorLayout.closeTab(tab.path);
+																				}
+																			}}
+																		>
+																			<X className="size-3.5" />
+																		</span>
+																	)}
+																</SortableTabTrigger>
+															))}
+														</TabsList>
+													</DraggableTabs>
+													<div
+														className="flex-1 relative"
+														style={{ minHeight: 0 }}
+													>
+														{s.editorLayout.tabs.map((tab) =>
+															tab.path ? (
+																<TabsContent
+																	key={tab.id}
+																	value={tab.id}
+																	forceMount
+																	className="absolute inset-0 isolate m-0 data-[state=inactive]:hidden"
+																>
+																	<EditorTabContent
+																		key={tab.path}
+																		filePath={tab.path}
+																		externalRevealLine={s.pendingReveal}
+																		onExternalRevealConsumed={() =>
 																			s.dispatchEditor({
 																				type: "SET_PENDING_REVEAL",
-																				reveal: {
-																					path: s.activeTab.path,
-																					line,
-																				},
-																			});
+																				reveal: null,
+																			})
 																		}
-																	}}
-																/>
-															}
-														/>
+																	/>
+																</TabsContent>
+															) : null,
+														)}
 													</div>
-												</Panel>
-												<Separator />
-												<Panel
-													id="right-bottom"
-													panelRef={rightBottomRef}
-													defaultSize="50%"
-													minSize="20%"
-													collapsible
-													collapsedSize={31}
-													onResize={(size) =>
-														s.setRightBottomCollapsed(size.inPixels <= 31)
-													}
-												>
-													<div
-														data-testid="review"
-														className="h-full overflow-hidden border-t border-border"
-													>
-														<RightSidebarBottom
-															rootPath={rootPath}
-															theme={settings.theme}
-															settings={settings}
-															threads={s.threads}
-															onThreadClick={handleThreadClick}
-															onDeleteThread={s.removeThread}
-															onResolveThread={s.resolveThread}
-															onSendToTerminal={handleThreadsSent}
-															showResolvedThreads={s.showResolvedThreads}
-															onToggleShowResolved={s.toggleShowResolvedThreads}
-															onToggleCollapse={handleToggleRightBottom}
-															collapsed={s.rightBottomCollapsed}
-															aiTaskThreadIds={s.aiTaskThreadIds}
-															onOpenThreadAILog={s.handleOpenThreadAIModal}
-															initialActiveTab={
-																s.rightBottomActiveTab as RightBottomTab
-															}
-															onActiveTabChange={s.setRightBottomActiveTab}
-														/>
+												</Tabs>
+												{s.editorDragOver && (
+													<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none">
+														<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
+															Drop to open file
+														</span>
 													</div>
-												</Panel>
-											</Group>
+												)}
+											</div>
+										</TabsContent>
+									</Panel>
+									<Separator />
+									{/* Center bottom: shared terminal */}
+									<Panel
+										id="center-bottom"
+										defaultSize={
+											s.workflowPanelRatios
+												? `${s.workflowPanelRatios[1]}%`
+												: "40%"
+										}
+										minSize="15%"
+									>
+										<div className="h-full border-t border-border">
+											<TerminalTabPanel
+												ref={s.terminalRef}
+												cwd={rootPath}
+												theme={settings.theme}
+												terminalStartupCommand={buildTerminalCommand(settings)}
+												agentType={settings.agent}
+												tabPrefix="MainAgent"
+											/>
 										</div>
+									</Panel>
+								</Group>
+							</Panel>
+							<Separator />
+							{/* Shared Right Sidebar */}
+							<Panel
+								id="right"
+								panelRef={rightPanelRef}
+								defaultSize={280}
+								minSize={280}
+								collapsible
+								collapsedSize="0%"
+								onResize={onRightResize}
+							>
+								<div className="flex flex-col h-full border-l border-border">
+									<div className="flex-1 overflow-hidden">
+										<Group orientation="vertical">
+											<Panel id="right-top" defaultSize="50%" minSize="20%">
+												<div className="h-full overflow-hidden">
+													<RightSidebarTop
+														activeTab={activeTopTab}
+														onTabChange={handleTopTabChange}
+														mode={mode}
+														explorerContent={s.sidebarContent}
+														changesContent={
+															<SourceControlPanel
+																rootPath={rootPath}
+																onSelectFile={s.handleOpenFile}
+																onGitChanged={s.refreshGit}
+															/>
+														}
+														searchContent={
+															<SearchPanel
+																rootPath={rootPath}
+																onSelectFileAtLine={s.handleSearchResultClick}
+																focusKey={s.searchFocusKey}
+																initialQuery={s.searchInitialQuery}
+															/>
+														}
+														prContent={
+															<PullRequestPanel
+																rootPath={rootPath}
+																branch={s.branch}
+																onFileSelect={handlePrFileSelect}
+															/>
+														}
+														symbolsContent={
+															<SymbolOutlinePanel
+																filePath={s.activeTab?.path ?? null}
+																language={s.activeTab?.language ?? null}
+																rootPath={rootPath}
+																onSelectSymbol={(line) => {
+																	if (s.activeTab?.path) {
+																		setCenterTab("editor");
+																		s.dispatchEditor({
+																			type: "SET_PENDING_REVEAL",
+																			reveal: {
+																				path: s.activeTab.path,
+																				line,
+																			},
+																		});
+																	}
+																}}
+															/>
+														}
+														planTimelineContent={
+															<PlanPanel
+																timelineEntries={[]}
+																onRequirementsComplete={noop}
+																onRequestRevision={noop}
+															/>
+														}
+														planCommentContent={
+															<CommentList
+																threads={s.planThreads}
+																onThreadClick={handleThreadClick}
+																onDeleteThread={s.removePlanThread}
+																onResolveThread={s.resolvePlanThread}
+															/>
+														}
+													/>
+												</div>
+											</Panel>
+											<Separator />
+											<Panel
+												id="right-bottom"
+												panelRef={rightBottomRef}
+												defaultSize="50%"
+												minSize="20%"
+												collapsible
+												collapsedSize={31}
+												onResize={(size) =>
+													s.setRightBottomCollapsed(size.inPixels <= 31)
+												}
+											>
+												<div
+													data-testid="review"
+													className="h-full overflow-hidden border-t border-border"
+												>
+													<RightSidebarBottom
+														rootPath={rootPath}
+														theme={settings.theme}
+														settings={settings}
+														mode={mode}
+														threads={s.threads}
+														onThreadClick={handleThreadClick}
+														onDeleteThread={s.removeThread}
+														onResolveThread={s.resolveThread}
+														onSendToTerminal={handleThreadsSent}
+														showResolvedThreads={s.showResolvedThreads}
+														onToggleShowResolved={s.toggleShowResolvedThreads}
+														onToggleCollapse={handleToggleRightBottom}
+														collapsed={s.rightBottomCollapsed}
+														aiTaskThreadIds={s.aiTaskThreadIds}
+														onOpenThreadAILog={s.handleOpenThreadAIModal}
+														activeTab={activeBottomTab}
+														onActiveTabChange={handleBottomTabChange}
+														implTimelineContent={
+															<ImplementationPanel
+																timelineEntries={[]}
+																started={false}
+																onApprovePlan={noop}
+																onRequestRevision={noop}
+																onApprove={noop}
+															/>
+														}
+													/>
+												</div>
+											</Panel>
+										</Group>
 									</div>
-								</Panel>
-							</Group>
-						</TabsContent>
+								</div>
+							</Panel>
+						</Group>
 					</div>
 				</div>
 

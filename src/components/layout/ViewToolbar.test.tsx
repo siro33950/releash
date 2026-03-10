@@ -155,4 +155,20 @@ describe("ViewToolbar", () => {
 		await user.click(screen.getByRole("tab", { name: "Editor" }));
 		expect(onValueChange).toHaveBeenCalledWith("editor");
 	});
+
+	it("Workflow tab is selected by default when value is 'workflow'", () => {
+		renderToolbar({}, { value: "workflow" });
+		const workflowTab = screen.getByRole("tab", { name: "Workflow" });
+		expect(workflowTab).toHaveAttribute("aria-selected", "true");
+
+		const editorTab = screen.getByRole("tab", { name: "Editor" });
+		expect(editorTab).toHaveAttribute("aria-selected", "false");
+	});
+
+	it("does not render Agent tab", () => {
+		renderToolbar({});
+		expect(
+			screen.queryByRole("tab", { name: "Agent" }),
+		).not.toBeInTheDocument();
+	});
 });

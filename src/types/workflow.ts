@@ -17,9 +17,3 @@ export interface TimelineEntry {
 	status: TimelineEntryStatus;
 	timestamp: number;
 }
-
-export interface WorkflowState {
-	phase: WorkflowPhase;
-	timeline: TimelineEntry[];
-	planDocument: string | null;
-}

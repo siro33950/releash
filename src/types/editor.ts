@@ -7,5 +7,6 @@ export interface TabInfo {
 	language: string;
 	eol: "LF" | "CRLF";
 	isUntitled?: boolean;
+	isVirtual?: boolean;
 	hasExternalChange?: boolean;
 }

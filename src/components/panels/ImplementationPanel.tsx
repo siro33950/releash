@@ -1,17 +1,11 @@
 import { CheckCircle2, PlayCircle, RotateCcw } from "lucide-react";
-import { WorkflowPanel } from "@/components/panels/WorkflowPanel";
 import { WorkflowTimeline } from "@/components/panels/WorkflowTimeline";
 import { Button } from "@/components/ui/button";
-import type { Thread } from "@/types/thread";
 import type { TimelineEntry } from "@/types/workflow";
 
 interface ImplementationPanelProps {
 	timelineEntries: TimelineEntry[];
-	threads: Thread[];
 	started: boolean;
-	onThreadClick?: (filePath: string, lineNumber: number) => void;
-	onDeleteThread?: (threadId: string) => void;
-	onResolveThread?: (threadId: string) => void;
 	onApprovePlan?: () => void;
 	onRequestRevision?: () => void;
 	onApprove?: () => void;
@@ -19,28 +13,15 @@ interface ImplementationPanelProps {
 
 export function ImplementationPanel({
 	timelineEntries,
-	threads,
 	started,
-	onThreadClick,
-	onDeleteThread,
-	onResolveThread,
 	onApprovePlan,
 	onRequestRevision,
 	onApprove,
 }: ImplementationPanelProps) {
 	return (
-		<WorkflowPanel
-			timelineContent={
-				started ? (
-					<WorkflowTimeline entries={timelineEntries} />
-				) : (
-					<div className="flex items-center justify-center h-full text-sm text-muted-foreground">
-						Implementation has not started yet
-					</div>
-				)
-			}
-			actions={
-				<>
+		<div className="flex flex-col h-full">
+			<div className="flex items-center justify-end px-2 py-1 border-b border-border shrink-0">
+				<div className="flex items-center gap-1">
 					{onApprovePlan && (
 						<Button
 							variant="ghost"
@@ -74,12 +55,17 @@ export function ImplementationPanel({
 							Approve
 						</Button>
 					)}
-				</>
-			}
-			threads={threads}
-			onThreadClick={onThreadClick}
-			onDeleteThread={onDeleteThread}
-			onResolveThread={onResolveThread}
-		/>
+				</div>
+			</div>
+			<div className="flex-1 overflow-hidden">
+				{started ? (
+					<WorkflowTimeline entries={timelineEntries} />
+				) : (
+					<div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+						Implementation has not started yet
+					</div>
+				)}
+			</div>
+		</div>
 	);
 }

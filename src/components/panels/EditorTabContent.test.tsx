@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorTabContent } from "./EditorTabContent";
 
@@ -31,8 +31,13 @@ vi.mock("./useDiffOperations", () => ({
 	}),
 }));
 
+const mockDiffViewerSection = vi.fn((_props: Record<string, unknown>) => (
+	<div data-testid="diff-viewer-section" />
+));
+
 vi.mock("./DiffViewerSection", () => ({
-	DiffViewerSection: () => <div data-testid="diff-viewer-section" />,
+	DiffViewerSection: (props: Record<string, unknown>) =>
+		mockDiffViewerSection(props),
 }));
 
 vi.mock("./Breadcrumb", () => ({
@@ -227,5 +232,81 @@ describe("EditorTabContent - diffBase propagation to useGitOriginalContent", () 
 			"",
 			0,
 		);
+	});
+});
+
+describe("EditorTabContent - virtual file support", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		currentEditorContext = {
+			...mockEditorContextBase,
+			getFileContent: vi.fn().mockReturnValue({
+				content: "# Plan\nSome content",
+				originalContent: "# Plan\nSome content",
+				language: "markdown",
+				name: "plan",
+				isVirtual: true,
+			}),
+		};
+	});
+
+	it("should pass null to useGitOriginalContent for virtual files", () => {
+		render(<EditorTabContent filePath="workflow://plan" />);
+
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			1,
+			null,
+			"staged",
+			"# Plan\nSome content",
+			0,
+		);
+		expect(mockUseGitOriginalContent).toHaveBeenNthCalledWith(
+			2,
+			null,
+			"staged",
+			"",
+			0,
+		);
+	});
+
+	it("should not render DiffToolbar for virtual files", () => {
+		render(<EditorTabContent filePath="workflow://plan" />);
+
+		expect(screen.queryByTestId("diff-toolbar")).not.toBeInTheDocument();
+	});
+
+	it("should not render Breadcrumb for virtual files", () => {
+		render(<EditorTabContent filePath="workflow://plan" />);
+
+		expect(screen.queryByTestId("breadcrumb")).not.toBeInTheDocument();
+	});
+
+	it("should pass readOnly=true to DiffViewerSection for virtual files", () => {
+		render(<EditorTabContent filePath="workflow://plan" />);
+
+		const props = mockDiffViewerSection.mock.lastCall?.[0];
+		expect(props?.readOnly).toBe(true);
+	});
+
+	it("should use filePath as relativeFilePath for virtual files", () => {
+		render(<EditorTabContent filePath="workflow://plan" />);
+
+		const props = mockDiffViewerSection.mock.lastCall?.[0];
+		expect(props?.filePath).toBe("workflow://plan");
+	});
+
+	it("should render DiffViewerSection for virtual files with empty content", () => {
+		currentEditorContext = {
+			...mockEditorContextBase,
+			getFileContent: vi.fn().mockReturnValue({
+				content: "",
+				originalContent: "",
+				language: "markdown",
+				name: "plan",
+				isVirtual: true,
+			}),
+		};
+		render(<EditorTabContent filePath="workflow://plan" />);
+		expect(screen.getByTestId("diff-viewer-section")).toBeInTheDocument();
 	});
 });

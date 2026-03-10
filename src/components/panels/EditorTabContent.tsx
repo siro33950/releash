@@ -63,8 +63,10 @@ export function EditorTabContent({
 		onSearchOccurrences,
 	} = useEditorContext();
 	const fileContent = getFileContent(filePath);
+	const isVirtual = fileContent?.isVirtual ?? false;
 	const isImage = isImageFile(filePath);
-	const isMarkdown = isMarkdownFile(filePath);
+	const isMarkdown =
+		isMarkdownFile(filePath) || fileContent?.language === "markdown";
 	const [showPreview, setShowPreview] = useState(false);
 
 	const [revealLine, setRevealLine] = useState<
@@ -73,14 +75,14 @@ export function EditorTabContent({
 	const revealKeyRef = useRef(0);
 
 	const originalContent = useGitOriginalContent(
-		isImage ? null : filePath,
+		isImage || isVirtual ? null : filePath,
 		diffBase,
 		fileContent?.originalContent ?? "",
 		gitRefreshKey,
 	);
 
 	const stagedContent = useGitOriginalContent(
-		!isImage && diffBase === "branch-base" ? filePath : null,
+		!isImage && !isVirtual && diffBase === "branch-base" ? filePath : null,
 		"staged",
 		"",
 		gitRefreshKey,
@@ -117,11 +119,12 @@ export function EditorTabContent({
 	]);
 
 	const relativeFilePath = useMemo(() => {
+		if (isVirtual) return filePath;
 		if (rootPath && filePath.startsWith(`${rootPath}/`)) {
 			return filePath.slice(rootPath.length + 1);
 		}
 		return filePath;
-	}, [rootPath, filePath]);
+	}, [rootPath, filePath, isVirtual]);
 
 	const commentRanges = useMemo(() => {
 		return threads
@@ -251,14 +254,28 @@ export function EditorTabContent({
 
 	return (
 		<div className="absolute inset-0 flex flex-col">
-			<Breadcrumb rootPath={rootPath} filePath={filePath}>
-				{isMarkdown && (
-					<PreviewToggle
-						showPreview={showPreview}
-						onShowPreviewChange={setShowPreview}
-					/>
-				)}
-			</Breadcrumb>
+			{isVirtual ? (
+				<div className="flex items-center h-[26px] px-3 text-xs text-muted-foreground bg-background border-b border-border">
+					<span>{fileContent.name}</span>
+					{isMarkdown && (
+						<div className="ml-auto flex items-center">
+							<PreviewToggle
+								showPreview={showPreview}
+								onShowPreviewChange={setShowPreview}
+							/>
+						</div>
+					)}
+				</div>
+			) : (
+				<Breadcrumb rootPath={rootPath} filePath={filePath}>
+					{isMarkdown && (
+						<PreviewToggle
+							showPreview={showPreview}
+							onShowPreviewChange={setShowPreview}
+						/>
+					)}
+				</Breadcrumb>
+			)}
 			<div className="flex-1 min-h-0 relative overflow-hidden">
 				<DiffViewerSection
 					isImage={isImage}
@@ -294,9 +311,10 @@ export function EditorTabContent({
 					revealLine={revealLine}
 					theme={theme}
 					onSearchOccurrences={onSearchOccurrences}
+					readOnly={isVirtual}
 				/>
 			</div>
-			{!isImage && (
+			{!isImage && !isVirtual && (
 				<DiffToolbar
 					diffBase={diffBase}
 					diffMode={diffMode}

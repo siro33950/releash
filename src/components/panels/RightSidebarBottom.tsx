@@ -8,6 +8,7 @@ import {
 	Play,
 	Send,
 	Terminal,
+	Timer,
 	X,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
@@ -19,14 +20,23 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useReviewExecution } from "@/hooks/useReviewExecution";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
 import type { AppSettings, Theme } from "@/types/settings";
+import type { RightBottomTab } from "@/types/sidebar";
 import type { Thread } from "@/types/thread";
 
-export type RightBottomTab = "terminal" | "review";
+type TabMode = "editor" | "workflow" | "both";
+
+interface TabEntry {
+	key: RightBottomTab;
+	icon: React.ElementType;
+	label: string;
+	mode: TabMode;
+}
 
 interface RightSidebarBottomProps {
 	rootPath: string;
 	theme?: Theme;
 	settings: AppSettings;
+	mode: "editor" | "workflow";
 	threads: Thread[];
 	onThreadClick?: (filePath: string, lineNumber: number) => void;
 	onDeleteThread?: (id: string) => void;
@@ -38,14 +48,22 @@ interface RightSidebarBottomProps {
 	collapsed?: boolean;
 	aiTaskThreadIds?: Set<string>;
 	onOpenThreadAILog?: (threadId: string) => void;
-	initialActiveTab?: RightBottomTab;
+	activeTab?: RightBottomTab;
 	onActiveTabChange?: (tab: RightBottomTab) => void;
+	implTimelineContent?: React.ReactNode;
 }
+
+const tabEntries: TabEntry[] = [
+	{ key: "timeline", icon: Timer, label: "Timeline", mode: "workflow" },
+	{ key: "terminal", icon: Terminal, label: "Terminal", mode: "both" },
+	{ key: "comment", icon: MessageSquare, label: "Comments", mode: "both" },
+];
 
 export function RightSidebarBottom({
 	rootPath,
 	theme,
 	settings,
+	mode,
 	threads,
 	onThreadClick,
 	onDeleteThread,
@@ -57,12 +75,10 @@ export function RightSidebarBottom({
 	collapsed,
 	aiTaskThreadIds,
 	onOpenThreadAILog,
-	initialActiveTab,
+	activeTab = "terminal",
 	onActiveTabChange,
+	implTimelineContent,
 }: RightSidebarBottomProps) {
-	const [activeTab, setActiveTab] = useState<RightBottomTab>(
-		initialActiveTab ?? "terminal",
-	);
 	const [reviewModalOpen, setReviewModalOpen] = useState(false);
 
 	const {
@@ -103,14 +119,16 @@ export function RightSidebarBottom({
 		navigator.clipboard.writeText(text);
 	}, [unresolvedThreads]);
 
+	const visibleTabs = tabEntries.filter(
+		(t) => t.mode === "both" || t.mode === mode,
+	);
+
 	return (
 		<div className="flex flex-col h-full">
 			<Tabs
 				value={activeTab}
 				onValueChange={(val) => {
-					const tab = val as RightBottomTab;
-					setActiveTab(tab);
-					onActiveTabChange?.(tab);
+					onActiveTabChange?.(val as RightBottomTab);
 				}}
 				className="flex flex-col h-full"
 			>
@@ -130,26 +148,32 @@ export function RightSidebarBottom({
 						</button>
 					)}
 					<TabsList variant="line" aria-label="Bottom sidebar tabs">
-						<TabsTrigger value="terminal" aria-label="Terminal">
-							<span className="inline-flex items-center">
-								<Terminal className="size-3.5" />
-							</span>
-						</TabsTrigger>
-						<TabsTrigger value="review" aria-label="Review">
-							<span className="inline-flex items-center gap-1.5">
-								<MessageSquare className="size-3.5" />
-								{reviewDot && (
-									<span className={`size-1.5 rounded-full ${reviewDot}`} />
-								)}
-								{!reviewDot && unresolvedThreads.length > 0 && (
-									<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
-										{unresolvedThreads.length}
-									</span>
-								)}
-							</span>
-						</TabsTrigger>
+						{visibleTabs.map(({ key, icon: Icon, label }) => (
+							<TabsTrigger key={key} value={key} aria-label={label}>
+								<span className="inline-flex items-center gap-1.5">
+									<Icon className="size-3.5" />
+									{key === "comment" && (
+										<>
+											{reviewDot && (
+												<span
+													className={`size-1.5 rounded-full ${reviewDot}`}
+												/>
+											)}
+											{!reviewDot && unresolvedThreads.length > 0 && (
+												<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
+													{unresolvedThreads.length}
+												</span>
+											)}
+										</>
+									)}
+								</span>
+							</TabsTrigger>
+						))}
 					</TabsList>
 				</div>
+				<TabsContent value="timeline" className="flex-1 overflow-hidden">
+					{implTimelineContent}
+				</TabsContent>
 				<TabsContent
 					value="terminal"
 					forceMount
@@ -158,7 +182,7 @@ export function RightSidebarBottom({
 					<TerminalPanel cwd={rootPath} theme={theme} />
 				</TabsContent>
 				<TabsContent
-					value="review"
+					value="comment"
 					className="flex-1 overflow-hidden flex flex-col"
 				>
 					<div className="flex-1 min-h-0 overflow-hidden">

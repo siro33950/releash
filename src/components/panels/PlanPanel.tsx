@@ -1,34 +1,23 @@
 import { CheckCircle2, RotateCcw } from "lucide-react";
-import { WorkflowPanel } from "@/components/panels/WorkflowPanel";
 import { WorkflowTimeline } from "@/components/panels/WorkflowTimeline";
 import { Button } from "@/components/ui/button";
-import type { Thread } from "@/types/thread";
 import type { TimelineEntry } from "@/types/workflow";
 
 interface PlanPanelProps {
 	timelineEntries: TimelineEntry[];
-	threads: Thread[];
-	onThreadClick?: (filePath: string, lineNumber: number) => void;
-	onDeleteThread?: (threadId: string) => void;
-	onResolveThread?: (threadId: string) => void;
 	onRequirementsComplete?: () => void;
 	onRequestRevision?: () => void;
 }
 
 export function PlanPanel({
 	timelineEntries,
-	threads,
-	onThreadClick,
-	onDeleteThread,
-	onResolveThread,
 	onRequirementsComplete,
 	onRequestRevision,
 }: PlanPanelProps) {
 	return (
-		<WorkflowPanel
-			timelineContent={<WorkflowTimeline entries={timelineEntries} />}
-			actions={
-				<>
+		<div className="flex flex-col h-full">
+			<div className="flex items-center justify-end px-2 py-1 border-b border-border shrink-0">
+				<div className="flex items-center gap-1">
 					{onRequirementsComplete && (
 						<Button
 							variant="ghost"
@@ -51,12 +40,11 @@ export function PlanPanel({
 							Revise
 						</Button>
 					)}
-				</>
-			}
-			threads={threads}
-			onThreadClick={onThreadClick}
-			onDeleteThread={onDeleteThread}
-			onResolveThread={onResolveThread}
-		/>
+				</div>
+			</div>
+			<div className="flex-1 overflow-hidden">
+				<WorkflowTimeline entries={timelineEntries} />
+			</div>
+		</div>
 	);
 }

@@ -16,9 +16,7 @@ function makeEntry(overrides?: Partial<TimelineEntry>): TimelineEntry {
 
 describe("ImplementationPanel", () => {
 	it("shows empty state when not started", () => {
-		render(
-			<ImplementationPanel timelineEntries={[]} threads={[]} started={false} />,
-		);
+		render(<ImplementationPanel timelineEntries={[]} started={false} />);
 
 		expect(
 			screen.getByText("Implementation has not started yet"),
@@ -27,13 +25,7 @@ describe("ImplementationPanel", () => {
 
 	it("shows timeline when started", () => {
 		const entries = [makeEntry({ label: "Building..." })];
-		render(
-			<ImplementationPanel
-				timelineEntries={entries}
-				threads={[]}
-				started={true}
-			/>,
-		);
+		render(<ImplementationPanel timelineEntries={entries} started={true} />);
 
 		expect(screen.getByText("Building...")).toBeInTheDocument();
 	});
@@ -45,7 +37,6 @@ describe("ImplementationPanel", () => {
 		render(
 			<ImplementationPanel
 				timelineEntries={[]}
-				threads={[]}
 				started={false}
 				onApprovePlan={onApprove}
 			/>,
@@ -63,7 +54,6 @@ describe("ImplementationPanel", () => {
 		render(
 			<ImplementationPanel
 				timelineEntries={[]}
-				threads={[]}
 				started={true}
 				onApprove={onApprove}
 			/>,
@@ -81,7 +71,6 @@ describe("ImplementationPanel", () => {
 		render(
 			<ImplementationPanel
 				timelineEntries={[]}
-				threads={[]}
 				started={true}
 				onRequestRevision={onRevise}
 			/>,

@@ -111,6 +111,11 @@ describe("TerminalTabPanel", () => {
 		expect(tabLabels).toEqual(["Terminal 2", "Terminal 3"]);
 	});
 
+	it("tabPrefix が指定されたらタブ名に反映される", () => {
+		render(<TerminalTabPanel tabPrefix="MainAgent" />);
+		expect(screen.getByText("MainAgent")).toBeInTheDocument();
+	});
+
 	it("最大8タブまで追加可能", async () => {
 		const user = userEvent.setup();
 		render(<TerminalTabPanel />);

@@ -32,6 +32,12 @@ export interface Thread {
 	createdAt: number;
 }
 
+export interface ThreadCallbacks {
+	onThreadClick?: (filePath: string, lineNumber: number) => void;
+	onDeleteThread?: (threadId: string) => void;
+	onResolveThread?: (threadId: string) => void;
+}
+
 export function getThreadOrigin(thread: Thread): ThreadOrigin {
 	const first = thread.entries[0];
 	if (!first) return "local";

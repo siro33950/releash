@@ -1,3 +1,5 @@
+import type { RightBottomTab } from "@/types/sidebar";
+
 export function worktreeNameFromPath(rootPath: string): string {
 	return rootPath.split("/").pop() ?? rootPath;
 }
@@ -14,7 +16,7 @@ export interface WorkspaceState {
 		leftNavCollapsed: boolean;
 		rightCollapsed: boolean;
 		rightBottomCollapsed: boolean;
-		rightBottomActiveTab?: "terminal" | "review";
+		rightBottomActiveTab?: RightBottomTab;
 		workflowPanelRatios?: [number, number];
 	};
 }
@@ -24,7 +26,7 @@ export interface InternalWorktreeState {
 	activeEditorPath: string | null;
 	activeView: string;
 	rightBottomCollapsed: boolean;
-	rightBottomActiveTab: string;
+	rightBottomActiveTab: RightBottomTab;
 	workflowPanelRatios?: [number, number];
 }
 
@@ -46,23 +48,34 @@ export function buildWorkspaceState(
 			leftNavCollapsed: !leftNavVisible,
 			rightCollapsed: !rightVisible,
 			rightBottomCollapsed: internal.rightBottomCollapsed,
-			rightBottomActiveTab: internal.rightBottomActiveTab as
-				| "terminal"
-				| "review",
+			rightBottomActiveTab: internal.rightBottomActiveTab,
 			workflowPanelRatios: internal.workflowPanelRatios,
 		},
 	};
 }
 
 export function migrateWorkspaceState(state: WorkspaceState): WorkspaceState {
-	if ((state.layout.centerTab as string) === "agent") {
-		return {
-			...state,
+	let migrated = state;
+
+	if ((migrated.layout.centerTab as string) === "agent") {
+		migrated = {
+			...migrated,
 			layout: {
-				...state.layout,
+				...migrated.layout,
 				centerTab: "workflow",
 			},
 		};
 	}
-	return state;
+
+	if ((migrated.layout.rightBottomActiveTab as string) === "review") {
+		migrated = {
+			...migrated,
+			layout: {
+				...migrated.layout,
+				rightBottomActiveTab: "comment",
+			},
+		};
+	}
+
+	return migrated;
 }

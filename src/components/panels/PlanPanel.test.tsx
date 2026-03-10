@@ -1,9 +1,18 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { Thread } from "@/types/thread";
 import type { TimelineEntry } from "@/types/workflow";
 import { PlanPanel } from "./PlanPanel";
+
+vi.mock("@/components/panels/WorkflowTimeline", () => ({
+	WorkflowTimeline: ({ entries }: { entries: TimelineEntry[] }) => (
+		<div data-testid="workflow-timeline">
+			{entries.map((e) => (
+				<span key={e.id}>{e.label}</span>
+			))}
+		</div>
+	),
+}));
 
 function makeEntry(overrides?: Partial<TimelineEntry>): TimelineEntry {
 	return {
@@ -16,23 +25,11 @@ function makeEntry(overrides?: Partial<TimelineEntry>): TimelineEntry {
 }
 
 describe("PlanPanel", () => {
-	it("renders timeline tab by default", () => {
+	it("renders timeline entries", () => {
 		const entries = [makeEntry({ label: "Step 1" })];
-		render(<PlanPanel timelineEntries={entries} threads={[]} />);
+		render(<PlanPanel timelineEntries={entries} />);
 
 		expect(screen.getByText("Step 1")).toBeInTheDocument();
-	});
-
-	it("switches to comments tab", async () => {
-		const user = userEvent.setup();
-		render(<PlanPanel timelineEntries={[]} threads={[]} />);
-
-		await user.click(screen.getByRole("tab", { name: "Comments" }));
-		// CommentList renders empty state
-		expect(screen.getByRole("tab", { name: "Comments" })).toHaveAttribute(
-			"data-state",
-			"active",
-		);
 	});
 
 	it("renders Complete button when onRequirementsComplete is provided", async () => {
@@ -40,11 +37,7 @@ describe("PlanPanel", () => {
 		const onComplete = vi.fn();
 
 		render(
-			<PlanPanel
-				timelineEntries={[]}
-				threads={[]}
-				onRequirementsComplete={onComplete}
-			/>,
+			<PlanPanel timelineEntries={[]} onRequirementsComplete={onComplete} />,
 		);
 
 		const btn = screen.getByRole("button", { name: "Complete" });
@@ -57,13 +50,7 @@ describe("PlanPanel", () => {
 		const user = userEvent.setup();
 		const onRevise = vi.fn();
 
-		render(
-			<PlanPanel
-				timelineEntries={[]}
-				threads={[]}
-				onRequestRevision={onRevise}
-			/>,
-		);
+		render(<PlanPanel timelineEntries={[]} onRequestRevision={onRevise} />);
 
 		const btn = screen.getByRole("button", { name: "Revise" });
 		expect(btn).toBeInTheDocument();
@@ -72,7 +59,7 @@ describe("PlanPanel", () => {
 	});
 
 	it("does not render action buttons when handlers are not provided", () => {
-		render(<PlanPanel timelineEntries={[]} threads={[]} />);
+		render(<PlanPanel timelineEntries={[]} />);
 
 		expect(
 			screen.queryByRole("button", { name: "Complete" }),
@@ -80,64 +67,5 @@ describe("PlanPanel", () => {
 		expect(
 			screen.queryByRole("button", { name: "Revise" }),
 		).not.toBeInTheDocument();
-	});
-
-	it("displays thread content in Comments tab", async () => {
-		const user = userEvent.setup();
-		const thread: Thread = {
-			id: "t1",
-			filePath: "workflow://plan",
-			lineNumber: 5,
-			entries: [
-				{
-					id: "e1",
-					content: "This step needs clarification",
-					isAi: false,
-					createdAt: Date.now(),
-				},
-			],
-			resolved: false,
-			createdAt: Date.now(),
-		};
-
-		render(<PlanPanel timelineEntries={[]} threads={[thread]} />);
-
-		await user.click(screen.getByRole("tab", { name: "Comments" }));
-		expect(screen.getByText("L5")).toBeInTheDocument();
-		expect(
-			screen.getByText("This step needs clarification"),
-		).toBeInTheDocument();
-	});
-
-	it("calls onThreadClick when a thread is clicked", async () => {
-		const user = userEvent.setup();
-		const onThreadClick = vi.fn();
-		const thread: Thread = {
-			id: "t1",
-			filePath: "workflow://plan",
-			lineNumber: 5,
-			entries: [
-				{
-					id: "e1",
-					content: "Review this",
-					isAi: false,
-					createdAt: Date.now(),
-				},
-			],
-			resolved: false,
-			createdAt: Date.now(),
-		};
-
-		render(
-			<PlanPanel
-				timelineEntries={[]}
-				threads={[thread]}
-				onThreadClick={onThreadClick}
-			/>,
-		);
-
-		await user.click(screen.getByRole("tab", { name: "Comments" }));
-		await user.click(screen.getByText("Review this"));
-		expect(onThreadClick).toHaveBeenCalledWith("workflow://plan", 5);
 	});
 });

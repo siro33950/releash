@@ -506,14 +506,14 @@ describe("useWorkspacePersistence", () => {
 		act(() => {
 			result.current.internalStateMapRef.current.set(
 				"/repoA",
-				makeInternalState({ rightBottomActiveTab: "review" }),
+				makeInternalState({ rightBottomActiveTab: "comment" }),
 			);
 		});
 
 		rerender({ selectedRootPath: "/repoB" });
 
 		const savedState = mockUpdateState.mock.calls[0][1] as WorkspaceState;
-		expect(savedState.layout.rightBottomActiveTab).toBe("review");
+		expect(savedState.layout.rightBottomActiveTab).toBe("comment");
 	});
 
 	it("右下パネルのタブ選択がWorktreeごとに独立している", () => {
@@ -524,7 +524,7 @@ describe("useWorkspacePersistence", () => {
 				leftNavCollapsed: false,
 				rightCollapsed: false,
 				rightBottomCollapsed: false,
-				rightBottomActiveTab: "review",
+				rightBottomActiveTab: "comment",
 			},
 		});
 		const stateB = makeState({
@@ -566,13 +566,65 @@ describe("useWorkspacePersistence", () => {
 		act(() => {
 			result.current.internalStateMapRef.current.set(
 				"/repoA",
-				makeInternalState({ rightBottomActiveTab: "review" }),
+				makeInternalState({ rightBottomActiveTab: "comment" }),
 			);
 		});
 		rerender({ selectedRootPath: "/repoB" });
 
 		const initialB = result.current.getInitialState("/repoB");
 		expect(initialB?.layout.rightBottomActiveTab).toBe("terminal");
+	});
+
+	it("workflowPanelRatios が保存・復元される", () => {
+		const stateWithRatios = makeState({
+			layout: {
+				centerTab: "workflow",
+				activeView: "git",
+				leftNavCollapsed: false,
+				rightCollapsed: false,
+				rightBottomCollapsed: false,
+				workflowPanelRatios: [65, 35],
+			},
+		});
+		mockGetState.mockImplementation((path: string) =>
+			path === "/repoB" ? stateWithRatios : undefined,
+		);
+
+		const setCenterTab = vi.fn();
+		const leftNavRef = makePanelRef();
+		const rightPanelRef = makePanelRef();
+
+		const { result, rerender } = renderHook(
+			({ selectedRootPath }) =>
+				useWorkspacePersistence({
+					selectedRootPath,
+					centerTab: "editor",
+					leftNavVisible: true,
+					rightVisible: true,
+					setCenterTab,
+					leftNavRef,
+					rightPanelRef,
+				}),
+			{ initialProps: { selectedRootPath: "/repoA" as string | null } },
+		);
+
+		// Set internal state with workflowPanelRatios
+		act(() => {
+			result.current.internalStateMapRef.current.set(
+				"/repoA",
+				makeInternalState({ workflowPanelRatios: [70, 30] }),
+			);
+		});
+
+		// Switch worktree → save
+		rerender({ selectedRootPath: "/repoB" });
+
+		const savedState = mockUpdateState.mock.calls[0][1] as WorkspaceState;
+		expect(savedState.layout.workflowPanelRatios).toEqual([70, 30]);
+
+		// Restore from /repoB
+		const initialState = result.current.getInitialState("/repoB");
+		expect(initialState?.layout.workflowPanelRatios).toEqual([65, 35]);
 	});
 
 	it("保存された状態が存在しないWorktreeでは右下パネルがデフォルトタブで表示される", () => {

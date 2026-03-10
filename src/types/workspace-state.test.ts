@@ -116,11 +116,11 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: null,
 			activeView: "git",
 			rightBottomCollapsed: false,
-			rightBottomActiveTab: "review",
+			rightBottomActiveTab: "comment" as const,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
-		expect(result.layout.rightBottomActiveTab).toBe("review");
+		expect(result.layout.rightBottomActiveTab).toBe("comment");
 	});
 
 	it("workflowPanelRatios を含める", () => {
@@ -189,5 +189,30 @@ describe("migrateWorkspaceState", () => {
 		const migrated = migrateWorkspaceState(state);
 		expect(migrated).not.toBe(state);
 		expect(state.layout.centerTab as string).toBe("agent");
+	});
+
+	it('"review" → "comment" に変換する', () => {
+		const state: WorkspaceState = {
+			...makeState("editor"),
+			layout: {
+				...makeState("editor").layout,
+				rightBottomActiveTab:
+					"review" as unknown as WorkspaceState["layout"]["rightBottomActiveTab"],
+			},
+		};
+		const migrated = migrateWorkspaceState(state);
+		expect(migrated.layout.rightBottomActiveTab).toBe("comment");
+	});
+
+	it("既に comment のタブはそのまま維持する", () => {
+		const state: WorkspaceState = {
+			...makeState("editor"),
+			layout: {
+				...makeState("editor").layout,
+				rightBottomActiveTab: "comment",
+			},
+		};
+		const migrated = migrateWorkspaceState(state);
+		expect(migrated.layout.rightBottomActiveTab).toBe("comment");
 	});
 });

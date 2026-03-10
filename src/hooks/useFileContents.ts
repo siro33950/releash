@@ -19,6 +19,11 @@ export interface UseFileContentsReturn {
 	closeAllFiles: () => void;
 	saveAllDirtyFiles: () => Promise<void>;
 	createUntitledFile: () => string;
+	registerVirtualFile: (
+		path: string,
+		content: string,
+		language: string,
+	) => void;
 }
 
 function getLanguageFromPath(path: string): string {
@@ -131,6 +136,7 @@ export function useFileContents(): UseFileContentsReturn {
 		const file = filesRef.current.find((f) => f.path === path);
 		if (!file) return;
 		if (isImageFile(path)) return;
+		if (file.isVirtual) return;
 
 		try {
 			if (file.isUntitled) {
@@ -182,6 +188,7 @@ export function useFileContents(): UseFileContentsReturn {
 	const reloadFileIfClean = useCallback(async (path: string) => {
 		const existing = filesRef.current.find((f) => f.path === path);
 		if (!existing || existing.isDirty || isImageFile(path)) return;
+		if (existing.isVirtual) return;
 
 		try {
 			const content = await readTextFile(path);
@@ -270,6 +277,37 @@ export function useFileContents(): UseFileContentsReturn {
 		return path;
 	}, []);
 
+	const registerVirtualFile = useCallback(
+		(path: string, content: string, language: string) => {
+			const existing = filesRef.current.find((f) => f.path === path);
+			if (existing) {
+				if (existing.content === content) return;
+				const updated = filesRef.current.map((f) =>
+					f.path === path
+						? { ...f, content, originalContent: content, isDirty: false }
+						: f,
+				);
+				filesRef.current = updated;
+				setFiles(updated);
+				return;
+			}
+			const name = path.split(/[:/]/).pop() ?? path;
+			const newFile: TabInfo = {
+				path,
+				name,
+				content,
+				originalContent: content,
+				isDirty: false,
+				language,
+				eol: "LF",
+				isVirtual: true,
+			};
+			filesRef.current = [...filesRef.current, newFile];
+			setFiles((prev) => [...prev, newFile]);
+		},
+		[],
+	);
+
 	return {
 		files,
 		getFileContent,
@@ -285,5 +323,6 @@ export function useFileContents(): UseFileContentsReturn {
 		closeAllFiles,
 		saveAllDirtyFiles,
 		createUntitledFile,
+		registerVirtualFile,
 	};
 }

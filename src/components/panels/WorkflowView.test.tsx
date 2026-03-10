@@ -1,105 +1,68 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { useEditorContext } from "@/contexts/EditorContext";
 import { WorkflowView } from "./WorkflowView";
 
-vi.mock("react-resizable-panels", () => {
-	const Panel = ({ children }: { children?: React.ReactNode }) => (
-		<div data-testid="panel">{children}</div>
-	);
-	const Group = ({ children }: { children?: React.ReactNode }) => (
-		<div data-testid="panel-group">{children}</div>
-	);
-	const Separator = () => <div data-testid="separator" />;
-	return { Panel, Group, Separator };
-});
+let capturedContext: ReturnType<typeof useEditorContext> | null = null;
 
-vi.mock("@/components/panels/TerminalTabPanel", () => ({
-	TerminalTabPanel: vi.fn(() => (
-		<div data-testid="terminal-tab-panel">Terminal</div>
-	)),
+vi.mock("@/components/panels/EditorTabContent", () => ({
+	EditorTabContent: ({ filePath }: { filePath: string }) => {
+		// eslint-disable-next-line react-hooks/rules-of-hooks
+		capturedContext = useEditorContext();
+		return <div data-testid="editor-tab-content" data-file-path={filePath} />;
+	},
 }));
+
+const mockPlanEditorContextValue = {
+	getFileContent: vi.fn(),
+	updateContent: vi.fn(),
+	saveFile: vi.fn(),
+	diffBase: "staged" as const,
+	diffMode: "inline" as const,
+	setDiffBase: vi.fn(),
+	setDiffMode: vi.fn(),
+	threads: [],
+	createThread: vi.fn(),
+	addEntry: vi.fn(),
+	deleteThread: vi.fn(),
+	updateEntry: vi.fn(),
+	showResolvedThreads: false,
+	toggleShowResolvedThreads: vi.fn(),
+	rootPath: "/repo",
+	gitRefreshKey: 0,
+	lspStatus: "idle" as const,
+	lspError: null,
+	lspCrashCount: 0,
+	lspRetryManually: vi.fn(),
+};
 
 describe("WorkflowView", () => {
 	const defaultProps = {
-		rootPath: "/repo",
-		planDocument: "# Plan\nSome content",
-		phase: "planning" as const,
-		planTimeline: [],
-		implTimeline: [],
-		threads: [],
+		planEditorContextValue: mockPlanEditorContextValue,
 	};
 
-	it("renders document viewer", () => {
+	it("renders EditorTabContent with workflow://plan path", () => {
 		render(<WorkflowView {...defaultProps} />);
 
-		expect(screen.getByTestId("workflow-document-viewer")).toBeInTheDocument();
+		const editor = screen.getByTestId("editor-tab-content");
+		expect(editor).toBeInTheDocument();
+		expect(editor).toHaveAttribute("data-file-path", "workflow://plan");
 	});
 
-	it("renders terminal panel", () => {
+	it("EditorContext.Providerが正しいplanEditorContextValueでラップされている", () => {
+		capturedContext = null;
 		render(<WorkflowView {...defaultProps} />);
 
-		expect(screen.getByTestId("terminal-tab-panel")).toBeInTheDocument();
-	});
-
-	it("renders plan and implementation panels", () => {
-		render(<WorkflowView {...defaultProps} />);
-
-		// Timeline tabs from both PlanPanel and ImplementationPanel
-		const timelineTabs = screen.getAllByRole("tab", { name: "Timeline" });
-		expect(timelineTabs.length).toBe(2);
-	});
-
-	it("shows implementation not started when phase is planning", () => {
-		render(<WorkflowView {...defaultProps} phase="planning" />);
-
-		expect(
-			screen.getByText("Implementation has not started yet"),
-		).toBeInTheDocument();
-	});
-
-	it("shows implementation timeline when phase is implementation", () => {
-		render(
-			<WorkflowView
-				{...defaultProps}
-				phase="implementation"
-				implTimeline={[
-					{
-						id: "1",
-						label: "Building",
-						status: "in_progress",
-						timestamp: Date.now(),
-					},
-				]}
-			/>,
+		expect(capturedContext).not.toBeNull();
+		expect(capturedContext?.rootPath).toBe(mockPlanEditorContextValue.rootPath);
+		expect(capturedContext?.diffBase).toBe(mockPlanEditorContextValue.diffBase);
+		expect(capturedContext?.diffMode).toBe(mockPlanEditorContextValue.diffMode);
+		expect(capturedContext?.threads).toBe(mockPlanEditorContextValue.threads);
+		expect(capturedContext?.createThread).toBe(
+			mockPlanEditorContextValue.createThread,
 		);
-
-		expect(screen.getByText("Building")).toBeInTheDocument();
-	});
-
-	it("accepts initialDocTerminalRatio and onDocTerminalResize props", () => {
-		// Drag resize interaction is tested in Playwright integration tests.
-		// Here we verify the props are accepted and rendering succeeds.
-		const onDocTerminalResize = vi.fn();
-
-		render(
-			<WorkflowView
-				{...defaultProps}
-				initialDocTerminalRatio={[70, 30]}
-				onDocTerminalResize={onDocTerminalResize}
-			/>,
+		expect(capturedContext?.getFileContent).toBe(
+			mockPlanEditorContextValue.getFileContent,
 		);
-
-		expect(screen.getByTestId("workflow-document-viewer")).toBeInTheDocument();
-		expect(screen.getByTestId("terminal-tab-panel")).toBeInTheDocument();
-	});
-
-	it("renders center content independently of right panel props", () => {
-		// rightPanelRef and onRightPanelResize are omitted
-		render(<WorkflowView {...defaultProps} />);
-
-		expect(screen.getByTestId("workflow-document-viewer")).toBeInTheDocument();
-		expect(screen.getByTestId("terminal-tab-panel")).toBeInTheDocument();
-		const timelineTabs = screen.getAllByRole("tab", { name: "Timeline" });
-		expect(timelineTabs.length).toBe(2);
 	});
 });
