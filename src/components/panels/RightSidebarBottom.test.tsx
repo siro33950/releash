@@ -28,11 +28,21 @@ vi.mock("@/lib/formatCommentsForTerminal", () => ({
 }));
 
 const defaultSettings: AppSettings = {
+	theme: "dark",
+	fontSize: 14,
+	defaultDiffBase: "staged",
+	defaultDiffMode: "inline",
+	agent: "none",
+	agentAutoApprove: false,
+	terminalStartupCommand: "",
 	reviewAgent: "none",
-	aiModel: "gpt-4",
-	terminalFont: "monospace",
-	terminalFontSize: 14,
-	uiLanguage: "en",
+	reviewModel: "",
+	customReviewCommand: "",
+	autoUpdate: true,
+	telemetryEnabled: false,
+	enableCrashReporting: false,
+	reviewConcurrency: 1,
+	agentMaxConcurrent: 1,
 };
 
 const defaultProps = {
@@ -43,13 +53,13 @@ const defaultProps = {
 };
 
 describe("RightSidebarBottom", () => {
-	it("workflowモードでTimelineタブが表示される", () => {
+	it("shows Timeline tab in workflow mode", () => {
 		render(<RightSidebarBottom {...defaultProps} mode="workflow" />);
 
 		expect(screen.getByRole("tab", { name: "Timeline" })).toBeInTheDocument();
 	});
 
-	it("editorモードでTimelineタブが非表示", () => {
+	it("hides Timeline tab in editor mode", () => {
 		render(<RightSidebarBottom {...defaultProps} mode="editor" />);
 
 		expect(

@@ -41,7 +41,8 @@ test.describe("File Tree & Editor", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// Explorer ビューに切り替え（ActivityBar の Explorer ボタン）
+		// Editor モードに切り替え → Explorer ビューに切り替え
+		await page.getByRole("tab", { name: "Editor" }).click();
 		const explorerBtn = page.getByRole("tab", { name: "Explorer" });
 		await explorerBtn.click();
 
@@ -56,7 +57,8 @@ test.describe("File Tree & Editor", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// Explorer ビューに切り替え
+		// Editor モードに切り替え → Explorer ビューに切り替え
+		await page.getByRole("tab", { name: "Editor" }).click();
 		const explorerBtn = page.getByRole("tab", { name: "Explorer" });
 		await explorerBtn.click();
 
@@ -84,7 +86,8 @@ test.describe("File Tree & Editor", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// Explorer ビューに切り替え
+		// Editor モードに切り替え → Explorer ビューに切り替え
+		await page.getByRole("tab", { name: "Editor" }).click();
 		const explorerBtn = page.getByRole("tab", { name: "Explorer" });
 		await explorerBtn.click();
 
@@ -105,7 +108,8 @@ test.describe("File Tree & Editor", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// Explorer → ファイルクリック → タブ追加
+		// Editor → Explorer → ファイルクリック → タブ追加
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		const editorTab = page.locator('[data-slot="tabs-trigger"]').filter({ hasText: "README.md" });
@@ -129,7 +133,8 @@ test.describe("File Tree & Editor", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// Explorer → ファイルクリック
+		// Editor → Explorer → ファイルクリック
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		const editorTab = page.locator('[data-slot="tabs-trigger"]').filter({ hasText: "README.md" });

@@ -34,7 +34,7 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: "/repo/src/main.rs",
 			activeView: "git",
 			rightBottomCollapsed: false,
-			rightBottomActiveTab: "terminal",
+			rightBottomActiveTab: "terminal" as const,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -51,7 +51,7 @@ describe("buildWorkspaceState", () => {
 				leftNavCollapsed: false,
 				rightCollapsed: false,
 				rightBottomCollapsed: false,
-				rightBottomActiveTab: "terminal",
+				rightBottomActiveTab: "terminal" as const,
 				workflowPanelRatios: undefined,
 			},
 		});
@@ -63,7 +63,7 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: null,
 			activeView: "git",
 			rightBottomCollapsed: false,
-			rightBottomActiveTab: "terminal",
+			rightBottomActiveTab: "terminal" as const,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -76,7 +76,7 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: null,
 			activeView: "git",
 			rightBottomCollapsed: false,
-			rightBottomActiveTab: "terminal",
+			rightBottomActiveTab: "terminal" as const,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", false, true);
@@ -89,7 +89,7 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: null,
 			activeView: "git",
 			rightBottomCollapsed: false,
-			rightBottomActiveTab: "terminal",
+			rightBottomActiveTab: "terminal" as const,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, false);
@@ -102,7 +102,7 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: null,
 			activeView: "git",
 			rightBottomCollapsed: true,
-			rightBottomActiveTab: "terminal",
+			rightBottomActiveTab: "terminal" as const,
 		};
 
 		const result = buildWorkspaceState(internal, "workflow", true, true);
@@ -129,7 +129,7 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: null,
 			activeView: "git",
 			rightBottomCollapsed: false,
-			rightBottomActiveTab: "terminal",
+			rightBottomActiveTab: "terminal" as const,
 			workflowPanelRatios: [60, 40] as [number, number],
 		};
 
@@ -143,7 +143,7 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: null,
 			activeView: "git",
 			rightBottomCollapsed: false,
-			rightBottomActiveTab: "terminal",
+			rightBottomActiveTab: "terminal" as const,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);

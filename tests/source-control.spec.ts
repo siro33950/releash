@@ -38,7 +38,10 @@ test.describe("Source Control", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// SourceControlPanel は activeView="git" がデフォルト
+		// Editor モードに切り替え → Changes タブを選択
+		await page.getByRole("tab", { name: "Editor" }).click();
+		await page.getByRole("tab", { name: "Changes" }).click();
+
 		// Unstaged Files セクションのファイル名が表示される
 		await expect(page.getByText("App.tsx").first()).toBeVisible();
 		await expect(page.getByText("README.md").first()).toBeVisible();
@@ -50,6 +53,10 @@ test.describe("Source Control", () => {
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
+
+		// Editor モードに切り替え → Changes タブを選択
+		await page.getByRole("tab", { name: "Editor" }).click();
+		await page.getByRole("tab", { name: "Changes" }).click();
 
 		// ヘッダーに合計変更数が表示される
 		await expect(page.getByText("3 file changes")).toBeVisible();
@@ -68,6 +75,10 @@ test.describe("Source Control", () => {
 		await setupTauriMock(page, config);
 		await trackInvocations(page);
 		await waitForApp(page);
+
+		// Editor モードに切り替え → Changes タブを選択
+		await page.getByRole("tab", { name: "Editor" }).click();
+		await page.getByRole("tab", { name: "Changes" }).click();
 
 		// Unstaged Files セクションの "Stage All Changes" ボタン（小さいアイコンボタン）
 		const stageAllBtn = page.getByRole("button", {
@@ -101,6 +112,10 @@ test.describe("Source Control", () => {
 		await trackInvocations(page);
 		await waitForApp(page);
 
+		// Editor モードに切り替え → Changes タブを選択
+		await page.getByRole("tab", { name: "Editor" }).click();
+		await page.getByRole("tab", { name: "Changes" }).click();
+
 		// Staged Files セクションの "Unstage All Changes" ボタン
 		const unstageAllBtn = page.getByTitle("Unstage All Changes");
 		await unstageAllBtn.click();
@@ -128,6 +143,10 @@ test.describe("Source Control", () => {
 		await setupTauriMock(page, config);
 		await trackInvocations(page);
 		await waitForApp(page);
+
+		// Editor モードに切り替え → Changes タブを選択
+		await page.getByRole("tab", { name: "Editor" }).click();
+		await page.getByRole("tab", { name: "Changes" }).click();
 
 		// コミットメッセージ入力
 		const summaryInput = page.getByPlaceholder("Commit summary");
@@ -160,6 +179,10 @@ test.describe("Source Control", () => {
 		await setupTauriMock(page, config);
 		await trackInvocations(page);
 		await waitForApp(page);
+
+		// Editor モードに切り替え → Changes タブを選択
+		await page.getByRole("tab", { name: "Editor" }).click();
+		await page.getByRole("tab", { name: "Changes" }).click();
 
 		// Push ボタンをクリック
 		const pushBtn = page.getByRole("button", { name: "Push" });

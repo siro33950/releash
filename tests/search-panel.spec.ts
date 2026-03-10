@@ -34,7 +34,8 @@ test.describe("Search Panel", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// ActivityBar の Search ボタンをクリック
+		// Editor モードに切り替え → Search ビューに切り替え
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Search" }).click();
 
 		// 検索入力欄が表示される
@@ -50,7 +51,8 @@ test.describe("Search Panel", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// Search ビューに切り替え
+		// Editor モードに切り替え → Search ビューに切り替え
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Search" }).click();
 
 		// 検索クエリを入力
@@ -72,6 +74,7 @@ test.describe("Search Panel", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Search" }).click();
 
 		// Match Case ボタン（data-testid="toggle-case"）
@@ -90,6 +93,7 @@ test.describe("Search Panel", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Search" }).click();
 
 		// Regex ボタン（data-testid="toggle-regex"）
@@ -110,6 +114,7 @@ test.describe("Search Panel", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Search" }).click();
 
 		// 検索入力

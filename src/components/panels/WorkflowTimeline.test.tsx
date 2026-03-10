@@ -39,7 +39,7 @@ describe("WorkflowTimeline", () => {
 			makeEntry({ label: "Build failed", status: "failed" }),
 		];
 
-		const { container } = render(<WorkflowTimeline entries={entries} />);
+		render(<WorkflowTimeline entries={entries} />);
 
 		// Check that all entries are rendered
 		expect(screen.getByText("Waiting for input")).toBeInTheDocument();
@@ -47,8 +47,10 @@ describe("WorkflowTimeline", () => {
 		expect(screen.getByText("Tests passed")).toBeInTheDocument();
 		expect(screen.getByText("Build failed")).toBeInTheDocument();
 
-		// Verify SVG icons are present (one per entry)
-		const svgs = container.querySelectorAll("svg");
-		expect(svgs.length).toBe(4);
+		// Verify each status renders its corresponding label (sr-only text)
+		expect(screen.getByText("Pending")).toBeInTheDocument();
+		expect(screen.getByText("In progress")).toBeInTheDocument();
+		expect(screen.getByText("Completed")).toBeInTheDocument();
+		expect(screen.getByText("Failed")).toBeInTheDocument();
 	});
 });

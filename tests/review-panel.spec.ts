@@ -38,6 +38,7 @@ test.describe("Review Panel", () => {
 		await waitForApp(page);
 
 		// ファイルを開いて ReviewPanel を表示させる
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		await expect(
@@ -47,7 +48,7 @@ test.describe("Review Panel", () => {
 		// ReviewPanel の Terminal / Review タブが表示される
 		const reviewPanel = page.getByTestId("review");
 		const terminalTab = reviewPanel.getByRole("tab", { name: "Terminal" });
-		const reviewTab = reviewPanel.getByRole("tab", { name: "Review" });
+		const reviewTab = reviewPanel.getByRole("tab", { name: "Comments" });
 
 		await expect(terminalTab).toBeVisible();
 		await expect(reviewTab).toBeVisible();
@@ -61,15 +62,16 @@ test.describe("Review Panel", () => {
 		await waitForApp(page);
 
 		// ファイルを開く
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		await expect(
 			page.locator('[data-slot="tabs-trigger"]').filter({ hasText: "README.md" }),
 		).toBeVisible({ timeout: 5000 });
 
-		// Review タブをクリック
+		// Comments タブをクリック
 		const reviewPanel = page.getByTestId("review");
-		await reviewPanel.getByRole("tab", { name: "Review" }).click();
+		await reviewPanel.getByRole("tab", { name: "Comments" }).click();
 
 		// 空メッセージ "No comments" が表示される
 		await expect(page.getByText("No comments")).toBeVisible();
@@ -81,6 +83,7 @@ test.describe("Review Panel", () => {
 		await waitForApp(page);
 
 		// ファイルを開く
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 		await page.getByText("README.md").first().click();
 		await expect(

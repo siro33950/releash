@@ -40,7 +40,8 @@ test.describe("File Operations", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// Explorer ビューに切り替え
+		// Editor モードに切り替え → Explorer ビューに切り替え
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 
 		// ファイルツリーが表示されるまで待機
@@ -63,6 +64,7 @@ test.describe("File Operations", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 		await expect(page.getByText("src").first()).toBeVisible();
 
@@ -84,6 +86,7 @@ test.describe("File Operations", () => {
 		await trackInvocations(page);
 		await waitForApp(page);
 
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 		await expect(page.getByText("src").first()).toBeVisible();
 
@@ -115,6 +118,7 @@ test.describe("File Operations", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 		await expect(page.getByText("src").first()).toBeVisible();
 
@@ -131,6 +135,7 @@ test.describe("File Operations", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
+		await page.getByRole("tab", { name: "Editor" }).click();
 		await page.getByRole("tab", { name: "Explorer" }).click();
 		await expect(page.getByText("src").first()).toBeVisible();
 

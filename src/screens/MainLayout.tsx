@@ -679,7 +679,9 @@ export function MainLayout({
 				label: "Right Sidebar",
 				visible: rightVisible,
 				onToggle: () => {
-					setRightVisible((prev) => !prev);
+					const panel = rightPanelRef.current;
+					if (!panel) return;
+					panel.isCollapsed() ? panel.expand() : panel.collapse();
 				},
 			},
 		],

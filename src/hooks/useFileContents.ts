@@ -281,6 +281,7 @@ export function useFileContents(): UseFileContentsReturn {
 		(path: string, content: string, language: string) => {
 			const existing = filesRef.current.find((f) => f.path === path);
 			if (existing) {
+				if (!existing.isVirtual) return;
 				if (existing.content === content) return;
 				const updated = filesRef.current.map((f) =>
 					f.path === path

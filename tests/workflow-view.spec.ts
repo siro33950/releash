@@ -109,9 +109,6 @@ test.describe("Workflow View", () => {
 			.getByRole("button", { name: "Toggle Right Sidebar" })
 			.click();
 
-		// 折りたたみアニメーション待機
-		await page.waitForTimeout(500);
-
 		// Workflowのドキュメントビューア（Editor/Preview）が引き続き表示される
 		await expect(page.getByRole("tab", { name: "Editor" })).toBeVisible();
 		await expect(page.getByText("MainAgent")).toBeVisible();
@@ -120,9 +117,6 @@ test.describe("Workflow View", () => {
 		await page
 			.getByRole("button", { name: "Toggle Right Sidebar" })
 			.click();
-
-		// 折りたたみアニメーション待機
-		await page.waitForTimeout(500);
 
 		// タブ状態が復元される（Plan Timelineが表示される）
 		await expect(
