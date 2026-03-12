@@ -7,8 +7,8 @@ import {
 } from "../lib/lsp/tauri-transport";
 
 function shutdownOrKill(sessionId: number): Promise<void> {
-	return invoke("shutdown_lsp", { sessionId })
-		.catch(() => invoke("kill_lsp", { sessionId }))
+	return invoke<void>("shutdown_lsp", { sessionId })
+		.catch(() => invoke<void>("kill_lsp", { sessionId }))
 		.catch((err) => {
 			console.error(`Failed to shutdown/kill LSP session ${sessionId}:`, err);
 		});
