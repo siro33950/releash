@@ -6,6 +6,7 @@ use tauri::ipc::Channel;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use super::LspMessage;
 
@@ -75,18 +76,24 @@ pub fn spawn_stdout_reader(
     channel: Option<Channel<LspMessage>>,
     pending_requests: PendingRequests,
     diagnostics_cache: DiagnosticsCache,
+    cancel_token: CancellationToken,
 ) {
     tokio::spawn(async move {
-        if let Err(e) = read_stdout_loop(
-            session_id,
-            stdout,
-            channel,
-            pending_requests,
-            diagnostics_cache,
-        )
-        .await
-        {
-            log::debug!("LSP[{session_id}] stdout reader ended: {e}");
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                log::debug!("LSP[{session_id}] stdout reader cancelled");
+            },
+            result = read_stdout_loop(
+                session_id,
+                stdout,
+                channel,
+                pending_requests,
+                diagnostics_cache,
+            ) => {
+                if let Err(e) = result {
+                    log::debug!("LSP[{session_id}] stdout reader ended: {e}");
+                }
+            },
         }
     });
 }

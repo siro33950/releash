@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 fn fnv1a_hash(input: &str) -> String {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
@@ -114,6 +115,15 @@ struct LspSession {
     pending_requests: bridge::PendingRequests,
     diagnostics_cache: bridge::DiagnosticsCache,
     request_id_counter: Arc<AtomicI64>,
+    cancel_token: CancellationToken,
+}
+
+impl LspSession {
+    async fn cleanup(&mut self) {
+        self.cancel_token.cancel();
+        self.diagnostics_cache.lock().await.clear();
+        self.pending_requests.lock().await.clear();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +216,7 @@ impl LspManager {
         let stderr = child.stderr.take();
 
         let id = generate_session_id();
+        let cancel_token = CancellationToken::new();
 
         let pending_requests: bridge::PendingRequests = Arc::new(Mutex::new(HashMap::new()));
         let diagnostics_cache: bridge::DiagnosticsCache = Arc::new(Mutex::new(HashMap::new()));
@@ -218,14 +229,19 @@ impl LspManager {
             on_message,
             pending_requests.clone(),
             diagnostics_cache.clone(),
+            cancel_token.clone(),
         );
 
         // Spawn stderr logger
         if let Some(stderr) = stderr {
             let session_id = id;
             let app_handle = app.clone();
+            let ct = cancel_token.clone();
             tokio::spawn(async move {
-                Self::stderr_logger(session_id, stderr, app_handle).await;
+                tokio::select! {
+                    _ = ct.cancelled() => {},
+                    _ = Self::stderr_logger(session_id, stderr, app_handle) => {},
+                }
             });
         }
 
@@ -233,8 +249,12 @@ impl LspManager {
         let app_handle = app.clone();
         let manager = app.state::<Arc<LspManager>>().inner().clone();
         let session_id = id;
+        let ct = cancel_token.clone();
         tokio::spawn(async move {
-            Self::monitor_exit(session_id, manager, app_handle).await;
+            tokio::select! {
+                _ = ct.cancelled() => {},
+                _ = Self::monitor_exit(session_id, manager, app_handle) => {},
+            }
         });
 
         // Double-check: another task may have inserted a session while we were spawning
@@ -248,6 +268,7 @@ impl LspManager {
                 let existing_id = existing.id;
                 drop(sessions);
                 // Kill the newly spawned process since we already have one
+                cancel_token.cancel();
                 let mut child = child;
                 let _ = child.kill().await;
                 return Ok(existing_id);
@@ -265,6 +286,7 @@ impl LspManager {
             pending_requests,
             diagnostics_cache,
             request_id_counter,
+            cancel_token,
         };
 
         self.sessions.lock().await.insert(id, session);
@@ -287,6 +309,7 @@ impl LspManager {
         };
 
         session.status = LspStatus::ShuttingDown;
+        session.cleanup().await;
 
         // Send LSP shutdown request
         let shutdown_request = r#"{"jsonrpc":"2.0","id":99999,"method":"shutdown","params":null}"#;
@@ -320,6 +343,7 @@ impl LspManager {
             sessions.remove(&session_id)
         };
         if let Some(mut session) = removed {
+            session.cleanup().await;
             let _ = session.child.kill().await;
         }
         Ok(())
@@ -377,6 +401,7 @@ impl LspManager {
                 .collect()
         };
         for mut session in removed {
+            session.cleanup().await;
             let _ = session.child.kill().await;
         }
     }

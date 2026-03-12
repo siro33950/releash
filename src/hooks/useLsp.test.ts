@@ -362,4 +362,68 @@ describe("useLsp", () => {
 			expect(result.current.status).toBe("running");
 		});
 	});
+
+	it("shutdown_lsp 失敗時に kill_lsp がフォールバック呼び出しされる（クリーンアップ）", async () => {
+		const fakeTransport = createFakeTransport();
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "detect_lsp_server") return Promise.resolve(defaultConfig);
+			if (cmd === "shutdown_lsp")
+				return Promise.reject(new Error("shutdown failed"));
+			if (cmd === "kill_lsp") return Promise.resolve(null);
+			return Promise.resolve(null);
+		});
+		mockCreateTauriTransport.mockResolvedValue(fakeTransport);
+
+		const { result, unmount } = renderHook(() => useLsp("/workspace", "java"));
+
+		await vi.waitFor(() => {
+			expect(result.current.status).toBe("running");
+		});
+
+		// Unmount triggers cleanup → shutdown_lsp fails → kill_lsp called
+		unmount();
+
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("kill_lsp", {
+				sessionId: fakeTransport.sessionId,
+			});
+		});
+		expect(fakeTransport.dispose).toHaveBeenCalled();
+	});
+
+	it("shutdown_lsp 失敗時に kill_lsp がフォールバック呼び出しされる（retryManually）", async () => {
+		const fakeTransport1 = createFakeTransport();
+		const fakeTransport2 = createFakeTransport();
+		let transportCallCount = 0;
+
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "detect_lsp_server") return Promise.resolve(defaultConfig);
+			if (cmd === "shutdown_lsp")
+				return Promise.reject(new Error("shutdown failed"));
+			if (cmd === "kill_lsp") return Promise.resolve(null);
+			return Promise.resolve(null);
+		});
+		mockCreateTauriTransport.mockImplementation(() => {
+			transportCallCount++;
+			if (transportCallCount === 1) return Promise.resolve(fakeTransport1);
+			return Promise.resolve(fakeTransport2);
+		});
+
+		const { result } = renderHook(() => useLsp("/workspace", "java"));
+
+		await vi.waitFor(() => {
+			expect(result.current.status).toBe("running");
+		});
+
+		// retryManually → shutdown_lsp fails → kill_lsp called
+		act(() => {
+			result.current.retryManually();
+		});
+
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("kill_lsp", {
+				sessionId: fakeTransport1.sessionId,
+			});
+		});
+	});
 });

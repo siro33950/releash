@@ -214,6 +214,7 @@ pub(crate) fn fetch_pr_status_with_cache(cache: &PrCache, repo_path: &str) -> Pr
     }
     let status = fetch_pr_status_inner(repo_path);
     if let Ok(mut map) = cache.entries.lock() {
+        map.retain(|_, entry| entry.fetched_at.elapsed() < PR_CACHE_TTL);
         map.insert(
             repo_path.to_string(),
             CacheEntry {
@@ -252,6 +253,7 @@ fn fetch_pr_detail_with_cache(
     }
     let detail = fetch_pr_detail_inner(repo_path, pr_number)?;
     if let Ok(mut map) = cache.entries.lock() {
+        map.retain(|_, entry| entry.fetched_at.elapsed() < PR_DETAIL_CACHE_TTL);
         map.insert(
             key,
             PrDetailCacheEntry {
@@ -306,6 +308,7 @@ fn fetch_issues_with_cache(cache: &IssueCache, repo_path: &str) -> Vec<IssueInfo
     }
     let issues = fetch_issues_inner(repo_path);
     if let Ok(mut map) = cache.entries.lock() {
+        map.retain(|_, entry| entry.fetched_at.elapsed() < ISSUE_CACHE_TTL);
         map.insert(
             repo_path.to_string(),
             IssueCacheEntry {

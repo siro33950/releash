@@ -6,6 +6,12 @@ import {
 	type TauriTransport,
 } from "../lib/lsp/tauri-transport";
 
+function shutdownOrKill(sessionId: number): Promise<void> {
+	return invoke("shutdown_lsp", { sessionId })
+		.catch(() => invoke("kill_lsp", { sessionId }))
+		.catch(() => {});
+}
+
 interface LspServerConfig {
 	command: string;
 	args: string[];
@@ -168,9 +174,7 @@ export function useLsp(
 			);
 
 			if (unmountedRef.current) {
-				await invoke("shutdown_lsp", {
-					sessionId: transport.sessionId,
-				});
+				await shutdownOrKill(transport.sessionId);
 				transport.dispose();
 				startingRef.current = false;
 				return;
@@ -181,9 +185,7 @@ export function useLsp(
 				argsRef.current.rootPath !== rp ||
 				argsRef.current.language !== lang
 			) {
-				await invoke("shutdown_lsp", {
-					sessionId: transport.sessionId,
-				});
+				await shutdownOrKill(transport.sessionId);
 				transport.dispose();
 				startingRef.current = false;
 				return;
@@ -235,9 +237,7 @@ export function useLsp(
 			const transport = transportRef.current;
 			if (transport) {
 				transportRef.current = null;
-				invoke("shutdown_lsp", { sessionId: transport.sessionId }).catch(
-					() => {},
-				);
+				shutdownOrKill(transport.sessionId);
 				transport.dispose();
 			}
 			setState({ sessionId: null, status: "idle", error: null, crashCount: 0 });
@@ -333,7 +333,7 @@ export function useLsp(
 		const existing = transportRef.current;
 		if (existing) {
 			transportRef.current = null;
-			invoke("shutdown_lsp", { sessionId: existing.sessionId }).catch(() => {});
+			shutdownOrKill(existing.sessionId);
 			existing.dispose();
 		}
 
