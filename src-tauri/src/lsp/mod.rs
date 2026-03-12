@@ -116,11 +116,15 @@ struct LspSession {
     diagnostics_cache: bridge::DiagnosticsCache,
     request_id_counter: Arc<AtomicI64>,
     cancel_token: CancellationToken,
+    task_handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl LspSession {
     async fn cleanup(&mut self) {
         self.cancel_token.cancel();
+        for handle in self.task_handles.drain(..) {
+            let _ = handle.await;
+        }
         self.diagnostics_cache.lock().await.clear();
         self.pending_requests.lock().await.clear();
     }
@@ -223,26 +227,27 @@ impl LspManager {
         let request_id_counter = Arc::new(AtomicI64::new(1));
 
         // Spawn stdout reader task
-        spawn_stdout_reader(
+        let mut task_handles = Vec::new();
+        task_handles.push(spawn_stdout_reader(
             id,
             stdout,
             on_message,
             pending_requests.clone(),
             diagnostics_cache.clone(),
             cancel_token.clone(),
-        );
+        ));
 
         // Spawn stderr logger
         if let Some(stderr) = stderr {
             let session_id = id;
             let app_handle = app.clone();
             let ct = cancel_token.clone();
-            tokio::spawn(async move {
+            task_handles.push(tokio::spawn(async move {
                 tokio::select! {
                     _ = ct.cancelled() => {},
                     _ = Self::stderr_logger(session_id, stderr, app_handle) => {},
                 }
-            });
+            }));
         }
 
         // Monitor process exit
@@ -250,12 +255,12 @@ impl LspManager {
         let manager = app.state::<Arc<LspManager>>().inner().clone();
         let session_id = id;
         let ct = cancel_token.clone();
-        tokio::spawn(async move {
+        task_handles.push(tokio::spawn(async move {
             tokio::select! {
                 _ = ct.cancelled() => {},
                 _ = Self::monitor_exit(session_id, manager, app_handle) => {},
             }
-        });
+        }));
 
         // Double-check: another task may have inserted a session while we were spawning
         {
@@ -287,6 +292,7 @@ impl LspManager {
             diagnostics_cache,
             request_id_counter,
             cancel_token,
+            task_handles,
         };
 
         self.sessions.lock().await.insert(id, session);

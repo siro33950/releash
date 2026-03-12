@@ -77,7 +77,7 @@ pub fn spawn_stdout_reader(
     pending_requests: PendingRequests,
     diagnostics_cache: DiagnosticsCache,
     cancel_token: CancellationToken,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         tokio::select! {
             _ = cancel_token.cancelled() => {
@@ -95,7 +95,7 @@ pub fn spawn_stdout_reader(
                 }
             },
         }
-    });
+    })
 }
 
 async fn read_stdout_loop(
