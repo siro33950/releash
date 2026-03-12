@@ -148,6 +148,7 @@ fn spawn_output_reader(
     exited: Arc<AtomicBool>,
     exit_code_holder: Arc<Mutex<Option<i32>>>,
 ) {
+    let rt = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
         let ws = app.try_state::<Arc<WsBroadcaster>>();
         let mut buf = [0u8; 4096];
@@ -191,8 +192,8 @@ fn spawn_output_reader(
 
         // Delayed cleanup: remove exited session after 5 minutes
         let app_cleanup = app.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(300));
+        rt.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
             if let Some(mgr) = app_cleanup.try_state::<Arc<PtyManager>>() {
                 mgr.remove_if_exited(pty_id);
             }

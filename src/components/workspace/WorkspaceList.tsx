@@ -128,6 +128,9 @@ function RepoWorktreeSectionView({
 					await invoke("kill_ptys_by_worktree", {
 						worktreePath: branch.worktree_path,
 					}).catch(() => {});
+					await invoke("kill_lsp_by_worktree", {
+						worktreePath: branch.worktree_path,
+					}).catch(() => {});
 					await invoke("remove_worktree", {
 						repoPath,
 						worktreePath: branch.worktree_path,
