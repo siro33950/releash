@@ -1,24 +1,7 @@
 import { useDeferredValue, useMemo } from "react";
-import Markdown, { type Options } from "react-markdown";
-import rehypeHighlight from "rehype-highlight";
-import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
-import remarkGfm from "remark-gfm";
+import Markdown from "react-markdown";
+import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import { cn } from "@/lib/utils";
-
-const sanitizeSchema = {
-	...defaultSchema,
-	attributes: {
-		...defaultSchema.attributes,
-		code: [...(defaultSchema.attributes?.code ?? []), "className"],
-	},
-};
-
-const rehypePluginList = [
-	rehypeRaw,
-	[rehypeSanitize, sanitizeSchema],
-	rehypeHighlight,
-] as Options["rehypePlugins"];
 
 export interface MarkdownPreviewProps {
 	content: string;
@@ -27,7 +10,7 @@ export interface MarkdownPreviewProps {
 
 export function MarkdownPreview({ content, className }: MarkdownPreviewProps) {
 	const deferredContent = useDeferredValue(content);
-	const plugins = useMemo(() => [remarkGfm], []);
+	const plugins = useMemo(() => remarkPluginList, []);
 
 	return (
 		<div

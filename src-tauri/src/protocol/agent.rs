@@ -236,6 +236,27 @@ mod tests {
     }
 
     #[test]
+    fn session_id_empty_string_deserializes_to_some_empty() {
+        let json = r#"{"worktree_path":"/repo","event":"stop","session_id":""}"#;
+        let payload: AgentHookPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.session_id, Some("".to_string()));
+    }
+
+    #[test]
+    fn session_id_absent_deserializes_to_none() {
+        let json = r#"{"worktree_path":"/repo","event":"stop"}"#;
+        let payload: AgentHookPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.session_id, None);
+    }
+
+    #[test]
+    fn session_id_present_deserializes_correctly() {
+        let json = r#"{"worktree_path":"/repo","event":"stop","session_id":"sess-123"}"#;
+        let payload: AgentHookPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.session_id, Some("sess-123".to_string()));
+    }
+
+    #[test]
     fn pty_id_some_is_serialized() {
         let sync = AgentStateSync {
             worktree_path: "/repo".to_string(),

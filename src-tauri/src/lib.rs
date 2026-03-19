@@ -1,3 +1,4 @@
+mod agent_sdk;
 mod comment_store;
 mod config;
 mod focus_tracker;
@@ -16,6 +17,7 @@ mod repo_registry;
 mod review_prompt;
 mod search;
 mod sentry_integration;
+mod session;
 mod shell_integration;
 mod thread_ai;
 mod thread_store;
@@ -66,10 +68,14 @@ pub fn run() {
         .manage(Arc::new(
             workspace_state_store::WorkspaceStateStore::default(),
         ))
+        .manage(Arc::new(session::SessionStore::default()))
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(Arc::new(lsp::LspManager::default()))
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))
+        .manage(Arc::new(tokio::sync::Mutex::new(
+            agent_sdk::AgentProcessHandle::default(),
+        )))
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::PrDetailCache::new()))
@@ -381,6 +387,18 @@ pub fn run() {
             lsp::install_lsp_server,
             lsp::get_language_for_extension,
             lsp::get_supported_lsp_languages,
+            // Agent SDK
+            agent_sdk::execute_agent_query,
+            agent_sdk::interrupt_agent_query,
+            agent_sdk::respond_agent_permission,
+            // Session
+            session::list_sessions,
+            session::get_session,
+            session::create_session,
+            session::add_message,
+            session::update_session_state,
+            session::update_message_content,
+            session::update_session_agent_info,
             // Menu
             menu::set_menu_items_enabled,
         ])
