@@ -24,11 +24,15 @@ vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("./useSessionStore", () => ({
-	updateMessageContent: vi.fn().mockResolvedValue(undefined),
-	updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
-	updateSessionState: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("./useSessionStore", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./useSessionStore")>();
+	return {
+		...actual,
+		updateMessageContent: vi.fn().mockResolvedValue(undefined),
+		updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
+		updateSessionState: vi.fn().mockResolvedValue(undefined),
+	};
+});
 
 const {
 	useAgentPtyListeners,
@@ -37,14 +41,20 @@ const {
 	shouldRetry,
 } = await import("./useAgentPtyListeners");
 
+import type { StreamingBuffer } from "./useAgentPtyListeners";
+
 function makeRefs() {
 	return {
 		dispatch: vi.fn(),
-		streamingMessageIdRef: { current: null as string | null },
+		streamingMessageIdsRef: { current: new Map<string, string>() },
 		activeSessionRef: { current: null },
+		streamingBuffersRef: {
+			current: new Map<string, StreamingBuffer>(),
+		},
+		lastPromptsRef: { current: new Map<string, string>() },
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
 		handleRetry: vi.fn().mockResolvedValue(undefined),
-		isRetryingRef: { current: false },
+		isRetryingRef: { current: new Set<string>() },
 	};
 }
 
@@ -189,7 +199,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdRef.current = "msg-001";
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentPtyListeners(refs));
 
@@ -206,6 +216,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 			payload: {
 				type: "stream_event",
 				session_id: "sid-123",
+				chat_session_id: "session-1",
 				event: {
 					type: "content_block_delta",
 					delta: { type: "text_delta", text: "Hello" },
@@ -247,6 +258,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 				type: "system",
 				subtype: "init",
 				session_id: "sdk-session-abc",
+				chat_session_id: "session-1",
 			},
 		});
 
@@ -256,16 +268,19 @@ describe("useAgentPtyListeners callback behavior", () => {
 		});
 	});
 
-	it("dispatches SET_STREAMING false when agent-query-completed is received", () => {
+	it("dispatches STOP_STREAMING when agent-query-completed is received", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdRef.current = "msg-002";
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-002");
+		refs.streamingBuffersRef.current.set("session-1", {
+			parts: [{ type: "text", content: "response text" }],
+		});
 		refs.activeSessionRef.current = {
 			id: "session-1",
 			worktreePath: "/repo",
 			state: "idle",
-			messages: [{ id: "msg-002", role: "agent", content: "response text" }],
+			messages: [{ id: "msg-002", role: "agent", parts: [] }],
 			createdAt: Date.now(),
 			agentSessionId: null,
 		} as never;
@@ -283,12 +298,13 @@ describe("useAgentPtyListeners callback behavior", () => {
 			payload: {
 				exit_code: 0,
 				stderr: "",
+				chat_session_id: "session-1",
 			},
 		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "SET_STREAMING",
-			streaming: false,
+			type: "STOP_STREAMING",
+			sessionId: "session-1",
 		});
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "UPDATE_SESSION_STATE",
@@ -300,7 +316,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdRef.current = "msg-001";
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentPtyListeners(refs));
 
@@ -315,6 +331,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 			payload: {
 				type: "stream_event",
 				session_id: "sid-123",
+				chat_session_id: "session-1",
 				event: {
 					type: "content_block_delta",
 					delta: { type: "thinking_delta", thinking: "Let me think..." },
@@ -333,7 +350,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdRef.current = "msg-001";
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentPtyListeners(refs));
 
@@ -348,6 +365,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 			payload: {
 				type: "assistant",
 				session_id: "sid-123",
+				chat_session_id: "session-1",
 				message: {
 					content: [
 						{
@@ -374,7 +392,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdRef.current = "msg-001";
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentPtyListeners(refs));
 
@@ -389,6 +407,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 			payload: {
 				type: "user",
 				session_id: "sid-123",
+				chat_session_id: "session-1",
 				message: {
 					content: [
 						{
@@ -414,7 +433,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdRef.current = "msg-001";
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentPtyListeners(refs));
 
@@ -429,6 +448,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 			payload: {
 				type: "user",
 				session_id: "sid-123",
+				chat_session_id: "session-1",
 				message: {
 					content: [
 						{
@@ -466,6 +486,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 
 		const request = {
 			type: "permission_request",
+			chat_session_id: "session-1",
 			request_id: "req-001",
 			tool_name: "Edit",
 			input: { file_path: "/src/index.ts" },
@@ -477,6 +498,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_PENDING_PERMISSION",
+			sessionId: "session-1",
 			request,
 		});
 	});
@@ -485,12 +507,15 @@ describe("useAgentPtyListeners callback behavior", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdRef.current = "msg-002";
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-002");
+		refs.streamingBuffersRef.current.set("session-1", {
+			parts: [{ type: "text", content: "response text" }],
+		});
 		refs.activeSessionRef.current = {
 			id: "session-1",
 			worktreePath: "/repo",
 			state: "idle",
-			messages: [{ id: "msg-002", role: "agent", content: "response text" }],
+			messages: [{ id: "msg-002", role: "agent", parts: [] }],
 			createdAt: Date.now(),
 			agentSessionId: null,
 		} as never;
@@ -504,19 +529,22 @@ describe("useAgentPtyListeners callback behavior", () => {
 		const cb = listenCallbacks.get("agent-query-completed");
 		expect(cb).toBeDefined();
 
-		cb?.({ payload: { exit_code: 0, stderr: "" } });
+		cb?.({
+			payload: { exit_code: 0, stderr: "", chat_session_id: "session-1" },
+		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_PENDING_PERMISSION",
+			sessionId: "session-1",
 			request: null,
 		});
 	});
 
-	it("does NOT dispatch APPEND_STREAMING when streamingMessageIdRef is null", () => {
+	it("does NOT dispatch APPEND_STREAMING when no streaming entry for session", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdRef.current = null; // No active streaming
+		// No entry in streamingMessageIdsRef for "session-1"
 
 		renderHook(() => useAgentPtyListeners(refs));
 
@@ -530,6 +558,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		cb?.({
 			payload: {
 				type: "stream_event",
+				chat_session_id: "session-1",
 				event: {
 					type: "content_block_delta",
 					delta: { type: "text_delta", text: "Hello" },
@@ -619,11 +648,130 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		expect(syncCalls).toHaveLength(0);
 	});
 
+	it("dispatches ADD_MESSAGE for system message with message field", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				chat_session_id: "session-1",
+				message: "Not logged in. Please run 'claude login'.",
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(1);
+		const msg = (
+			addMsgCalls[0][0] as {
+				message: {
+					role: string;
+					parts: Array<{ type: string; content: string }>;
+				};
+			}
+		).message;
+		expect(msg.role).toBe("system");
+		expect(msg.parts[0].content).toBe(
+			"Not logged in. Please run 'claude login'.",
+		);
+	});
+
+	it("dispatches ADD_MESSAGE for system message with content field", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				chat_session_id: "session-1",
+				content: "API key expired",
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(1);
+		const msg = (
+			addMsgCalls[0][0] as {
+				message: {
+					role: string;
+					parts: Array<{ type: string; content: string }>;
+				};
+			}
+		).message;
+		expect(msg.role).toBe("system");
+		expect(msg.parts[0].content).toBe("API key expired");
+	});
+
+	it("does not dispatch ADD_MESSAGE for system message without text content", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				subtype: "init",
+				chat_session_id: "session-1",
+				session_id: "sdk-session-abc",
+				permissionMode: "plan",
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(0);
+	});
+
+	it("does not dispatch ADD_MESSAGE for system message without chat_session_id", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				message: "Some system message",
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(0);
+	});
+
 	it("does not dispatch SET_PLAN_MODE_ACTIVE for EnterPlanMode tool_use (removed)", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdRef.current = "msg-001";
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentPtyListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -633,6 +781,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		cb?.({
 			payload: {
 				type: "assistant",
+				chat_session_id: "session-1",
 				message: {
 					content: [
 						{
@@ -660,8 +809,13 @@ describe("shouldRetry", () => {
 			id: "s1",
 			worktreePath: "/repo",
 			messages: [
-				{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
-				{ id: "m2", role: "agent", content: "", timestamp: 1001 },
+				{
+					id: "m1",
+					role: "human",
+					parts: [{ type: "text", content: "hello" }],
+					timestamp: 1000,
+				},
+				{ id: "m2", role: "agent", parts: [], timestamp: 1001 },
 			],
 			state: "active",
 			createdAt: 1000,
@@ -676,8 +830,13 @@ describe("shouldRetry", () => {
 			id: "s1",
 			worktreePath: "/repo",
 			messages: [
-				{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
-				{ id: "m2", role: "agent", content: "", timestamp: 1001 },
+				{
+					id: "m1",
+					role: "human",
+					parts: [{ type: "text", content: "hello" }],
+					timestamp: 1000,
+				},
+				{ id: "m2", role: "agent", parts: [], timestamp: 1001 },
 			],
 			state: "active",
 			createdAt: 1000,
@@ -692,8 +851,13 @@ describe("shouldRetry", () => {
 			id: "s1",
 			worktreePath: "/repo",
 			messages: [
-				{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
-				{ id: "m2", role: "agent", content: "", timestamp: 1001 },
+				{
+					id: "m1",
+					role: "human",
+					parts: [{ type: "text", content: "hello" }],
+					timestamp: 1000,
+				},
+				{ id: "m2", role: "agent", parts: [], timestamp: 1001 },
 			],
 			state: "active",
 			createdAt: 1000,
@@ -708,8 +872,18 @@ describe("shouldRetry", () => {
 			id: "s1",
 			worktreePath: "/repo",
 			messages: [
-				{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
-				{ id: "m2", role: "agent", content: "response", timestamp: 1001 },
+				{
+					id: "m1",
+					role: "human",
+					parts: [{ type: "text", content: "hello" }],
+					timestamp: 1000,
+				},
+				{
+					id: "m2",
+					role: "agent",
+					parts: [{ type: "text", content: "response" }],
+					timestamp: 1001,
+				},
 			],
 			state: "active",
 			createdAt: 1000,
@@ -724,8 +898,13 @@ describe("shouldRetry", () => {
 			id: "s1",
 			worktreePath: "/repo",
 			messages: [
-				{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
-				{ id: "m2", role: "agent", content: "", timestamp: 1001 },
+				{
+					id: "m1",
+					role: "human",
+					parts: [{ type: "text", content: "hello" }],
+					timestamp: 1000,
+				},
+				{ id: "m2", role: "agent", parts: [], timestamp: 1001 },
 			],
 			state: "active",
 			createdAt: 1000,
@@ -737,5 +916,405 @@ describe("shouldRetry", () => {
 
 	it("returns null when session is null", () => {
 		expect(shouldRetry(1, false, null)).toBeNull();
+	});
+});
+
+describe("streaming buffer accumulation", () => {
+	it("accumulates text delta into streamingBuffersRef", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+		refs.streamingBuffersRef.current.set("session-1", {
+			parts: [],
+		});
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "stream_event",
+				chat_session_id: "session-1",
+				event: {
+					type: "content_block_delta",
+					delta: { type: "text_delta", text: "Hello" },
+				},
+			},
+		});
+		cb?.({
+			payload: {
+				type: "stream_event",
+				chat_session_id: "session-1",
+				event: {
+					type: "content_block_delta",
+					delta: { type: "text_delta", text: " World" },
+				},
+			},
+		});
+
+		const buf = refs.streamingBuffersRef.current.get("session-1");
+		const textParts = buf?.parts.filter((p) => p.type === "text");
+		expect(textParts).toHaveLength(1);
+		expect((textParts?.[0] as { content: string })?.content).toBe(
+			"Hello World",
+		);
+	});
+
+	it("accumulates thinking delta into streamingBuffersRef", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+		refs.streamingBuffersRef.current.set("session-1", {
+			parts: [],
+		});
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "stream_event",
+				chat_session_id: "session-1",
+				event: {
+					type: "content_block_delta",
+					delta: { type: "thinking_delta", thinking: "Let me " },
+				},
+			},
+		});
+		cb?.({
+			payload: {
+				type: "stream_event",
+				chat_session_id: "session-1",
+				event: {
+					type: "content_block_delta",
+					delta: { type: "thinking_delta", thinking: "think..." },
+				},
+			},
+		});
+
+		const buf = refs.streamingBuffersRef.current.get("session-1");
+		const thinkingParts = buf?.parts.filter((p) => p.type === "thinking");
+		expect(thinkingParts).toHaveLength(1);
+		expect((thinkingParts?.[0] as { content: string })?.content).toBe(
+			"Let me think...",
+		);
+	});
+
+	it("accumulates tool_use and tool_result activities into buffer", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+		refs.streamingBuffersRef.current.set("session-1", {
+			parts: [],
+		});
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "assistant",
+				chat_session_id: "session-1",
+				message: {
+					content: [
+						{
+							type: "tool_use",
+							id: "toolu_abc",
+							name: "Read",
+							input: { file_path: "/src/main.ts" },
+						},
+					],
+				},
+			},
+		});
+
+		cb?.({
+			payload: {
+				type: "user",
+				chat_session_id: "session-1",
+				message: {
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "toolu_abc",
+							content: "file content",
+							is_error: false,
+						},
+					],
+				},
+			},
+		});
+
+		const buf = refs.streamingBuffersRef.current.get("session-1");
+		const toolParts = buf?.parts.filter(
+			(p) => p.type === "tool_use" || p.type === "tool_result",
+		);
+		expect(toolParts).toHaveLength(2);
+		expect(toolParts?.[0]).toEqual({
+			type: "tool_use",
+			tool: "Read",
+			input: { file_path: "/src/main.ts" },
+			id: "toolu_abc",
+		});
+		expect(toolParts?.[1]).toEqual({
+			type: "tool_result",
+			content: "file content",
+			isError: false,
+		});
+	});
+});
+
+describe("non-active session persistence", () => {
+	it("persists message content from buffer for non-active session on completion", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-2", "msg-002");
+		refs.streamingBuffersRef.current.set("session-2", {
+			parts: [
+				{ type: "thinking", content: "some thinking" },
+				{ type: "text", content: "background response" },
+			],
+		});
+		// Active session is session-1, not session-2
+		refs.activeSessionRef.current = {
+			id: "session-1",
+			worktreePath: "/repo",
+			state: "idle",
+			messages: [],
+			createdAt: Date.now(),
+			agentSessionId: null,
+		} as never;
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-query-completed");
+
+		cb?.({
+			payload: {
+				exit_code: 0,
+				stderr: "",
+				chat_session_id: "session-2",
+			},
+		});
+
+		const { updateMessageContent } = await import("./useSessionStore");
+		const calls = vi.mocked(updateMessageContent).mock.calls;
+		const call = calls.find((c) => c[0] === "session-2");
+		expect(call).toBeDefined();
+		expect(call).toEqual([
+			"session-2",
+			"msg-002",
+			"background response",
+			"some thinking",
+			undefined,
+		]);
+	});
+
+	it("persists agentSessionId for non-active session", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		// Active session is session-1
+		refs.activeSessionRef.current = {
+			id: "session-1",
+			worktreePath: "/repo",
+			state: "idle",
+			messages: [],
+			createdAt: Date.now(),
+			agentSessionId: "sdk-1",
+		} as never;
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		// session-2 (non-active) receives session_id
+		cb?.({
+			payload: {
+				type: "system",
+				subtype: "init",
+				session_id: "sdk-session-2",
+				chat_session_id: "session-2",
+			},
+		});
+
+		const { updateSessionAgentInfo } = await import("./useSessionStore");
+		expect(updateSessionAgentInfo).toHaveBeenCalledWith(
+			"session-2",
+			"sdk-session-2",
+		);
+
+		// Should NOT dispatch SET_AGENT_SESSION_ID since session-2 is not active
+		const setAgentCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) =>
+				(call[0] as { type: string }).type === "SET_AGENT_SESSION_ID",
+		);
+		expect(setAgentCalls).toHaveLength(0);
+	});
+
+	it("retries for non-active session with empty buffer content", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-2", "msg-002");
+		refs.streamingBuffersRef.current.set("session-2", {
+			parts: [],
+		});
+		refs.lastPromptsRef.current.set("session-2", "hello");
+		// Active session is session-1
+		refs.activeSessionRef.current = {
+			id: "session-1",
+			worktreePath: "/repo",
+			state: "idle",
+			messages: [],
+			createdAt: Date.now(),
+			agentSessionId: null,
+		} as never;
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-query-completed");
+
+		cb?.({
+			payload: {
+				exit_code: 1,
+				stderr: "error",
+				chat_session_id: "session-2",
+			},
+		});
+
+		expect(refs.handleRetry).toHaveBeenCalledWith("hello", "session-2");
+	});
+
+	it("cleans up buffer after completion", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+		refs.streamingBuffersRef.current.set("session-1", {
+			parts: [{ type: "text", content: "done" }],
+		});
+		refs.activeSessionRef.current = {
+			id: "session-1",
+			worktreePath: "/repo",
+			state: "idle",
+			messages: [{ id: "msg-001", role: "agent", parts: [] }],
+			createdAt: Date.now(),
+			agentSessionId: null,
+		} as never;
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-query-completed");
+
+		cb?.({
+			payload: {
+				exit_code: 0,
+				stderr: "",
+				chat_session_id: "session-1",
+			},
+		});
+
+		expect(refs.streamingBuffersRef.current.has("session-1")).toBe(false);
+	});
+});
+
+describe("result error display", () => {
+	it("dispatches ADD_MESSAGE when result message has errors", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "result",
+				subtype: "error_during_execution",
+				chat_session_id: "session-1",
+				errors: ["Authentication failed", "Please log in"],
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(1);
+		const msg = (
+			addMsgCalls[0][0] as {
+				message: {
+					role: string;
+					parts: Array<{ type: string; content: string }>;
+				};
+			}
+		).message;
+		expect(msg.role).toBe("system");
+		expect(msg.parts[0].content).toBe("Authentication failed\nPlease log in");
+	});
+
+	it("does not dispatch ADD_MESSAGE when result has no errors", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "result",
+				subtype: "success",
+				chat_session_id: "session-1",
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(0);
+	});
+
+	it("does not dispatch ADD_MESSAGE when result errors is empty array", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentPtyListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "result",
+				subtype: "error_during_execution",
+				chat_session_id: "session-1",
+				errors: [],
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(0);
 	});
 });

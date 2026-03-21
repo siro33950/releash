@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ModeSelector } from "./ModeSelector";
 
 describe("ModeSelector", () => {
-	it("renders all mode buttons", () => {
+	it("shows current mode label on trigger", () => {
 		render(
 			<ModeSelector
 				mode="acceptEdits"
@@ -12,13 +12,22 @@ describe("ModeSelector", () => {
 				disabled={false}
 			/>,
 		);
-		expect(screen.getByText("Code")).toBeInTheDocument();
-		expect(screen.getByText("Ask")).toBeInTheDocument();
-		expect(screen.getByText("Plan")).toBeInTheDocument();
-		expect(screen.getByText("Bypass")).toBeInTheDocument();
+		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent(
+			"Code",
+		);
 	});
 
-	it("calls onModeChange when a different mode is clicked", async () => {
+	it("shows Plan label when mode is plan", () => {
+		render(
+			<ModeSelector mode="plan" onModeChange={vi.fn()} disabled={false} />,
+		);
+		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent(
+			"Plan",
+		);
+	});
+
+	it("calls onModeChange when a different mode is selected from dropdown", async () => {
+		const user = userEvent.setup();
 		const onModeChange = vi.fn();
 		render(
 			<ModeSelector
@@ -28,32 +37,19 @@ describe("ModeSelector", () => {
 			/>,
 		);
 
-		await userEvent.click(screen.getByText("Ask"));
+		await user.click(screen.getByTestId("mode-selector-trigger"));
+		await user.click(screen.getByText("Ask"));
 		expect(onModeChange).toHaveBeenCalledWith("default");
 	});
 
-	it("keeps buttons enabled even when disabled is false (streaming)", () => {
+	it("disables trigger when disabled is true", () => {
 		render(
 			<ModeSelector
 				mode="acceptEdits"
 				onModeChange={vi.fn()}
-				disabled={false}
+				disabled={true}
 			/>,
 		);
-
-		for (const btn of screen.getAllByRole("button")) {
-			expect(btn).not.toBeDisabled();
-		}
-	});
-
-	it("highlights Plan when mode is plan (synced from SDK)", () => {
-		render(
-			<ModeSelector mode="plan" onModeChange={vi.fn()} disabled={false} />,
-		);
-
-		const planButton = screen.getByText("Plan");
-		const codeButton = screen.getByText("Code");
-		expect(planButton).toHaveAttribute("data-active", "true");
-		expect(codeButton).not.toHaveAttribute("data-active", "true");
+		expect(screen.getByTestId("mode-selector-trigger")).toBeDisabled();
 	});
 });

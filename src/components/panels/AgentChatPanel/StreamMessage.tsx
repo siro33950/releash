@@ -1,28 +1,42 @@
 import { useDeferredValue, useMemo } from "react";
 import Markdown from "react-markdown";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
-import type { ChatMessage } from "@/types/session";
+import type { MessageRole } from "@/types/session";
 
 interface StreamMessageProps {
-	message: ChatMessage;
+	content: string;
+	role: MessageRole;
 	isStreaming: boolean;
 }
 
-export function StreamMessage({ message, isStreaming }: StreamMessageProps) {
-	const isHuman = message.role === "human";
-	const deferredContent = useDeferredValue(message.content);
+export function StreamMessage({
+	content,
+	role,
+	isStreaming,
+}: StreamMessageProps) {
+	const isHuman = role === "human";
+	const deferredContent = useDeferredValue(content);
 	const plugins = useMemo(() => remarkPluginList, []);
 
-	return (
-		<div data-testid={`stream-message-${message.role}`} className="px-4 py-3">
-			{isHuman && <div className="border-t border-border/50 -mx-4 mb-3" />}
-			<div className="text-xs text-muted-foreground mb-1">
-				{isHuman ? "User" : "Agent"}
+	if (role === "system") {
+		return (
+			<div data-testid="stream-message-system" className="px-4 py-2">
+				<div className="bg-muted/60 border border-border/50 text-muted-foreground rounded-md px-3 py-2 text-sm">
+					{content}
+				</div>
 			</div>
+		);
+	}
+
+	return (
+		<div
+			data-testid={`stream-message-${role}`}
+			className={`${isHuman ? "px-2" : "pt-1 pb-2 px-5"}`}
+		>
 			{isHuman ? (
-				<p className="text-sm whitespace-pre-wrap break-words">
-					{message.content}
-				</p>
+				<div className="bg-muted rounded-lg px-3 py-2">
+					<p className="text-sm whitespace-pre-wrap break-words">{content}</p>
+				</div>
 			) : (
 				<div className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words">
 					<Markdown remarkPlugins={plugins} rehypePlugins={rehypePluginList}>

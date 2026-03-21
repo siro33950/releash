@@ -1,13 +1,15 @@
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 
-use super::{ChatSession, SessionSummary};
+use super::{ChatSession, SessionState, SessionSummary};
 
 pub struct SessionStore {
     cache: RwLock<HashMap<String, ChatSession>>,
     file_lock: parking_lot::Mutex<()>,
+    loaded: AtomicBool,
 }
 
 impl Default for SessionStore {
@@ -15,6 +17,7 @@ impl Default for SessionStore {
         Self {
             cache: RwLock::new(HashMap::new()),
             file_lock: parking_lot::Mutex::new(()),
+            loaded: AtomicBool::new(false),
         }
     }
 }
@@ -36,16 +39,17 @@ fn session_file(app_data_dir: &Path, session_id: &str) -> Result<PathBuf, String
 }
 
 impl SessionStore {
-    pub fn list_sessions(
+    fn list_sessions_filtered(
         &self,
         app_data_dir: &Path,
         worktree_path: &str,
+        predicate: impl Fn(&ChatSession) -> bool,
     ) -> Result<Vec<SessionSummary>, String> {
         self.ensure_loaded(app_data_dir)?;
         let cache = self.cache.read();
         let mut summaries: Vec<SessionSummary> = cache
             .values()
-            .filter(|s| s.worktree_path == worktree_path)
+            .filter(|s| s.worktree_path == worktree_path && predicate(s))
             .map(|s| s.to_summary())
             .collect();
         summaries.sort_by(|a, b| {
@@ -54,6 +58,26 @@ impl SessionStore {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(summaries)
+    }
+
+    pub fn list_sessions(
+        &self,
+        app_data_dir: &Path,
+        worktree_path: &str,
+    ) -> Result<Vec<SessionSummary>, String> {
+        self.list_sessions_filtered(app_data_dir, worktree_path, |s| {
+            s.state != SessionState::Closed
+        })
+    }
+
+    pub fn list_closed_sessions(
+        &self,
+        app_data_dir: &Path,
+        worktree_path: &str,
+    ) -> Result<Vec<SessionSummary>, String> {
+        self.list_sessions_filtered(app_data_dir, worktree_path, |s| {
+            s.state == SessionState::Closed
+        })
     }
 
     pub fn get_session(
@@ -81,22 +105,17 @@ impl SessionStore {
     }
 
     fn ensure_loaded(&self, app_data_dir: &Path) -> Result<(), String> {
-        {
-            let cache = self.cache.read();
-            if !cache.is_empty() {
-                return Ok(());
-            }
+        if self.loaded.load(Ordering::Acquire) {
+            return Ok(());
         }
         let _lock = self.file_lock.lock();
         // Double-check after acquiring lock
-        {
-            let cache = self.cache.read();
-            if !cache.is_empty() {
-                return Ok(());
-            }
+        if self.loaded.load(Ordering::Acquire) {
+            return Ok(());
         }
         let dir = sessions_dir(app_data_dir);
         if !dir.exists() {
+            self.loaded.store(true, Ordering::Release);
             return Ok(());
         }
         let entries =
@@ -121,6 +140,7 @@ impl SessionStore {
                 }
             }
         }
+        self.loaded.store(true, Ordering::Release);
         Ok(())
     }
 }
@@ -281,5 +301,45 @@ mod tests {
         let store = SessionStore::default();
         let session = make_session("bad-id", "/repo");
         assert!(store.save_session(tmp.path(), &session).is_err());
+    }
+
+    #[test]
+    fn list_sessions_excludes_closed() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+
+        store
+            .save_session(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+        let mut closed = make_session(UUID2, "/repo");
+        closed.state = SessionState::Closed;
+        store.save_session(tmp.path(), &closed).unwrap();
+
+        let sessions = store.list_sessions(tmp.path(), "/repo").unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, UUID1);
+    }
+
+    #[test]
+    fn list_closed_sessions_returns_only_closed() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+
+        store
+            .save_session(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+        let mut closed1 = make_session(UUID2, "/repo");
+        closed1.state = SessionState::Closed;
+        closed1.updated_at = 2000.0;
+        store.save_session(tmp.path(), &closed1).unwrap();
+        let mut closed2 = make_session(UUID3, "/repo");
+        closed2.state = SessionState::Closed;
+        closed2.updated_at = 3000.0;
+        store.save_session(tmp.path(), &closed2).unwrap();
+
+        let closed = store.list_closed_sessions(tmp.path(), "/repo").unwrap();
+        assert_eq!(closed.len(), 2);
+        assert_eq!(closed[0].id, UUID3);
+        assert_eq!(closed[1].id, UUID2);
     }
 }

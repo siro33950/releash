@@ -11,6 +11,7 @@ pub use store::SessionStore;
 pub enum MessageRole {
     Human,
     Agent,
+    System,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,6 +21,7 @@ pub enum SessionState {
     Idle,
     Done,
     Error,
+    Closed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,6 +36,12 @@ pub enum ActivityEntry {
         content: String,
         #[serde(rename = "isError")]
         is_error: bool,
+    },
+    PermissionResult {
+        #[serde(rename = "toolName")]
+        tool_name: String,
+        status: String,
+        summary: String,
     },
 }
 
@@ -230,6 +238,48 @@ pub fn update_message_content(
 }
 
 #[tauri::command]
+pub fn close_session(
+    state: State<'_, Arc<SessionStore>>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    let data_dir = resolve_data_dir(&app)?;
+    let mut session = state
+        .get_session(&data_dir, &session_id)?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    session.state = SessionState::Closed;
+    session.updated_at = now_timestamp();
+    state.save_session(&data_dir, &session)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restore_session(
+    state: State<'_, Arc<SessionStore>>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<(), String> {
+    let data_dir = resolve_data_dir(&app)?;
+    let mut session = state
+        .get_session(&data_dir, &session_id)?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    session.state = SessionState::Idle;
+    session.updated_at = now_timestamp();
+    state.save_session(&data_dir, &session)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_closed_sessions(
+    state: State<'_, Arc<SessionStore>>,
+    app: tauri::AppHandle,
+    worktree_path: String,
+) -> Result<Vec<SessionSummary>, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    state.list_closed_sessions(&data_dir, &worktree_path)
+}
+
+#[tauri::command]
 pub fn update_session_agent_info(
     state: State<'_, Arc<SessionStore>>,
     app: tauri::AppHandle,
@@ -351,6 +401,10 @@ mod tests {
             serde_json::to_string(&MessageRole::Agent).unwrap(),
             "\"agent\""
         );
+        assert_eq!(
+            serde_json::to_string(&MessageRole::System).unwrap(),
+            "\"system\""
+        );
     }
 
     #[test]
@@ -370,6 +424,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&SessionState::Error).unwrap(),
             "\"error\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionState::Closed).unwrap(),
+            "\"closed\""
         );
     }
 
@@ -471,6 +529,32 @@ mod tests {
         assert_eq!(v["type"], "tool_result");
         assert_eq!(v["content"], "file contents");
         assert_eq!(v["isError"], false);
+    }
+
+    #[test]
+    fn activity_entry_permission_result_serialization() {
+        let entry = ActivityEntry::PermissionResult {
+            tool_name: "Bash".to_string(),
+            status: "allowed".to_string(),
+            summary: "Bash: allowed".to_string(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "permission_result");
+        assert_eq!(v["toolName"], "Bash");
+        assert_eq!(v["status"], "allowed");
+        assert_eq!(v["summary"], "Bash: allowed");
+
+        let back: ActivityEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, entry);
+    }
+
+    #[test]
+    fn activity_entry_permission_result_backward_compat() {
+        // Existing session files without permission_result should still deserialize
+        let json = r#"{"type":"tool_use","tool":"Read","input":{},"id":"t1"}"#;
+        let entry: ActivityEntry = serde_json::from_str(json).unwrap();
+        matches!(entry, ActivityEntry::ToolUse { .. });
     }
 
     #[test]

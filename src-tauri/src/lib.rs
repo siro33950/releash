@@ -74,7 +74,7 @@ pub fn run() {
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))
         .manage(Arc::new(tokio::sync::Mutex::new(
-            agent_sdk::AgentProcessHandle::default(),
+            agent_sdk::AgentProcessMap::new(),
         )))
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
@@ -395,6 +395,9 @@ pub fn run() {
             session::list_sessions,
             session::get_session,
             session::create_session,
+            session::close_session,
+            session::restore_session,
+            session::list_closed_sessions,
             session::add_message,
             session::update_session_state,
             session::update_message_content,

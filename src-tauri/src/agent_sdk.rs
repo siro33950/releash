@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tauri::Manager;
@@ -5,10 +6,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-#[derive(Default)]
-pub struct AgentProcessHandle {
-    stdin: Option<tokio::process::ChildStdin>,
-}
+/// Per-session agent process map: chat_session_id → ChildStdin
+pub type AgentProcessMap = HashMap<String, tokio::process::ChildStdin>;
 
 fn dev_bridge_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -36,9 +35,10 @@ fn resolve_bridge_script(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
 #[tauri::command]
 pub async fn execute_agent_query(
     app: tauri::AppHandle,
-    handle: tauri::State<'_, Arc<Mutex<AgentProcessHandle>>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     prompt: String,
     session_id: Option<String>,
+    chat_session_id: String,
     cwd: String,
     permission_mode: Option<String>,
 ) -> Result<(), String> {
@@ -77,10 +77,9 @@ pub async fn execute_agent_query(
         .spawn()
         .map_err(|e| format!("Failed to spawn node process: {e}"))?;
 
-    let stdin = child.stdin.take();
-    {
-        let mut proc = handle.lock().await;
-        proc.stdin = stdin;
+    if let Some(stdin) = child.stdin.take() {
+        let mut map = handles.lock().await;
+        map.insert(chat_session_id.clone(), stdin);
     }
 
     let stdout = child
@@ -93,6 +92,7 @@ pub async fn execute_agent_query(
         .ok_or_else(|| "Failed to capture stderr".to_string())?;
 
     let app_stdout = app.clone();
+    let csid_stdout = chat_session_id.clone();
     let stdout_task = tokio::spawn(async move {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -100,8 +100,8 @@ pub async fn execute_agent_query(
             if line.is_empty() {
                 continue;
             }
-            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                // Emit the raw SDK message
+            if let Ok(mut msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                msg["chat_session_id"] = serde_json::Value::String(csid_stdout.clone());
                 use tauri::Emitter;
                 let _ = app_stdout.emit("agent-sdk-message", &msg);
             }
@@ -132,29 +132,33 @@ pub async fn execute_agent_query(
 
     // Clean up handle
     {
-        let mut proc = handle.lock().await;
-        proc.stdin = None;
+        let mut map = handles.lock().await;
+        map.remove(&chat_session_id);
     }
 
     let exit_code = status.code().unwrap_or(-1);
     use tauri::Emitter;
-    let _ = app.emit(
+    if let Err(e) = app.emit(
         "agent-query-completed",
         serde_json::json!({
             "exit_code": exit_code,
             "stderr": stderr_output,
+            "chat_session_id": chat_session_id,
         }),
-    );
+    ) {
+        log::error!("Failed to emit agent-query-completed: {e}");
+    }
 
     Ok(())
 }
 
 #[tauri::command]
 pub async fn interrupt_agent_query(
-    handle: tauri::State<'_, Arc<Mutex<AgentProcessHandle>>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    chat_session_id: String,
 ) -> Result<(), String> {
-    let mut proc = handle.lock().await;
-    if let Some(stdin) = proc.stdin.as_mut() {
+    let mut map = handles.lock().await;
+    if let Some(stdin) = map.get_mut(&chat_session_id) {
         stdin
             .write_all(b"{\"type\":\"interrupt\"}\n")
             .await
@@ -164,14 +168,17 @@ pub async fn interrupt_agent_query(
             .await
             .map_err(|e| format!("Failed to flush: {e}"))?;
     } else {
-        return Err("No active agent process".to_string());
+        return Err(format!(
+            "No active agent process for session {chat_session_id}"
+        ));
     }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn respond_agent_permission(
-    handle: tauri::State<'_, Arc<Mutex<AgentProcessHandle>>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    chat_session_id: String,
     request_id: String,
     behavior: String,
     message: Option<String>,
@@ -196,8 +203,8 @@ pub async fn respond_agent_permission(
     });
     let data = format!("{}\n", payload);
 
-    let mut proc = handle.lock().await;
-    if let Some(stdin) = proc.stdin.as_mut() {
+    let mut map = handles.lock().await;
+    if let Some(stdin) = map.get_mut(&chat_session_id) {
         stdin
             .write_all(data.as_bytes())
             .await
@@ -207,7 +214,9 @@ pub async fn respond_agent_permission(
             .await
             .map_err(|e| format!("Failed to flush: {e}"))?;
     } else {
-        return Err("No active agent process".to_string());
+        return Err(format!(
+            "No active agent process for session {chat_session_id}"
+        ));
     }
     Ok(())
 }
@@ -217,9 +226,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_process_handle_default_has_no_stdin() {
-        let handle = AgentProcessHandle::default();
-        assert!(handle.stdin.is_none());
+    fn agent_process_map_starts_empty() {
+        let map = AgentProcessMap::new();
+        assert!(map.is_empty());
     }
 
     #[test]
@@ -791,7 +800,7 @@ mod tests {
             .spawn()
             .expect("Failed to spawn");
 
-        // Take stdin and HOLD it (same as storing in AgentProcessHandle)
+        // Take stdin and HOLD it (same as storing in AgentProcessMap)
         let _stdin = child.stdin.take();
 
         let stdout = child.stdout.take().unwrap();

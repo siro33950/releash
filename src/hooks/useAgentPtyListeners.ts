@@ -3,16 +3,22 @@ import type { Dispatch, MutableRefObject } from "react";
 import { useEffect } from "react";
 import type {
 	ChatSession,
+	MessagePart,
 	PermissionMode,
 	PermissionRequest,
 	SessionState,
 } from "@/types/session";
 import type { AgentChatAction } from "./agentChatReducer";
 import {
+	partsToLegacy,
 	updateMessageContent,
 	updateSessionAgentInfo,
 	updateSessionState,
 } from "./useSessionStore";
+
+export interface StreamingBuffer {
+	parts: MessagePart[];
+}
 
 interface ContentBlockDelta {
 	type: "content_block_delta";
@@ -22,6 +28,7 @@ interface ContentBlockDelta {
 interface StreamEvent {
 	type: "stream_event";
 	session_id?: string;
+	chat_session_id?: string;
 	event: ContentBlockDelta | { type: string };
 }
 
@@ -47,6 +54,7 @@ type ContentBlock =
 interface AssistantMessage {
 	type: "assistant";
 	session_id?: string;
+	chat_session_id?: string;
 	message: {
 		content: ContentBlock[];
 	};
@@ -55,6 +63,7 @@ interface AssistantMessage {
 interface UserMessage {
 	type: "user";
 	session_id?: string;
+	chat_session_id?: string;
 	message: {
 		content: ContentBlock[];
 	};
@@ -63,7 +72,9 @@ interface UserMessage {
 interface ResultMessage {
 	type: "result";
 	session_id?: string;
+	chat_session_id?: string;
 	subtype?: string;
+	errors?: string[];
 }
 
 type SdkMessage =
@@ -74,21 +85,25 @@ type SdkMessage =
 	| {
 			type: string;
 			session_id?: string;
+			chat_session_id?: string;
 			[key: string]: unknown;
 	  };
 
 interface QueryCompleted {
 	exit_code: number;
 	stderr: string;
+	chat_session_id?: string;
 }
 
-interface AgentPtyListenerRefs {
+export interface AgentPtyListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
-	streamingMessageIdRef: MutableRefObject<string | null>;
+	streamingMessageIdsRef: MutableRefObject<Map<string, string>>;
 	activeSessionRef: MutableRefObject<ChatSession | null>;
+	streamingBuffersRef: MutableRefObject<Map<string, StreamingBuffer>>;
+	lastPromptsRef: MutableRefObject<Map<string, string>>;
 	refreshSessions: () => Promise<void>;
-	handleRetry: (content: string) => Promise<void>;
-	isRetryingRef: MutableRefObject<boolean>;
+	handleRetry: (content: string, chatSessionId: string) => Promise<void>;
+	isRetryingRef: MutableRefObject<Set<string>>;
 }
 
 type StreamDelta =
@@ -122,6 +137,31 @@ export function extractStreamingDelta(msg: SdkMessage): StreamDelta | null {
 	return null;
 }
 
+function bufferAppendText(buf: StreamingBuffer, chunk: string): void {
+	const last = buf.parts[buf.parts.length - 1];
+	if (last && last.type === "text") {
+		last.content += chunk;
+	} else {
+		buf.parts.push({ type: "text", content: chunk });
+	}
+}
+
+function bufferAppendThinking(buf: StreamingBuffer, chunk: string): void {
+	const last = buf.parts[buf.parts.length - 1];
+	if (last && last.type === "thinking") {
+		last.content += chunk;
+	} else {
+		buf.parts.push({ type: "thinking", content: chunk });
+	}
+}
+
+function getBufferTextContent(buf: StreamingBuffer): string {
+	return buf.parts
+		.filter((p) => p.type === "text")
+		.map((p) => (p as { content: string }).content)
+		.join("");
+}
+
 export function shouldRetry(
 	exitCode: number,
 	isRetrying: boolean,
@@ -130,17 +170,29 @@ export function shouldRetry(
 	if (exitCode === 0 || isRetrying || !session?.agentSessionId) return null;
 	const agentMsgs = session.messages.filter((m) => m.role === "agent");
 	const lastAgentMsg = agentMsgs[agentMsgs.length - 1];
-	if (!lastAgentMsg || lastAgentMsg.content.trim()) return null;
+	if (!lastAgentMsg) return null;
+	const textContent = lastAgentMsg.parts
+		.filter((p) => p.type === "text")
+		.map((p) => (p as { content: string }).content)
+		.join("");
+	if (textContent.trim()) return null;
 	const humanMsgs = session.messages.filter((m) => m.role === "human");
 	const lastHumanMsg = humanMsgs[humanMsgs.length - 1];
-	return lastHumanMsg?.content ?? null;
+	if (!lastHumanMsg) return null;
+	const humanText = lastHumanMsg.parts
+		.filter((p) => p.type === "text")
+		.map((p) => (p as { content: string }).content)
+		.join("");
+	return humanText || null;
 }
 
 export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 	const {
 		dispatch,
-		streamingMessageIdRef,
+		streamingMessageIdsRef,
 		activeSessionRef,
+		streamingBuffersRef,
+		lastPromptsRef,
 		refreshSessions,
 		handleRetry,
 		isRetryingRef,
@@ -153,17 +205,28 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 
 		listen<SdkMessage>("agent-sdk-message", (event) => {
 			const msg = event.payload;
-			const messageId = streamingMessageIdRef.current;
+			const chatSessionId = msg.chat_session_id;
+			const messageId = chatSessionId
+				? streamingMessageIdsRef.current.get(chatSessionId)
+				: null;
 
 			// Detect permission_request and dispatch
-			if (msg.type === "permission_request") {
+			if (msg.type === "permission_request" && chatSessionId) {
 				const req = msg as unknown as PermissionRequest & {
 					tool_name?: string;
 				};
 				dispatch({
 					type: "SET_PENDING_PERMISSION",
+					sessionId: chatSessionId,
 					request: req as PermissionRequest,
 				});
+				if (messageId) {
+					dispatch({
+						type: "ADD_PERMISSION_PART",
+						messageId,
+						request: req as PermissionRequest,
+					});
+				}
 			}
 
 			// Sync permissionMode from SDK system messages (init/status)
@@ -180,23 +243,53 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 				}
 			}
 
+			// Add system messages with text content to the chat
+			if (msg.type === "system" && chatSessionId) {
+				const text =
+					typeof (msg as Record<string, unknown>).message === "string"
+						? ((msg as Record<string, unknown>).message as string)
+						: typeof (msg as Record<string, unknown>).content === "string"
+							? ((msg as Record<string, unknown>).content as string)
+							: null;
+				if (text) {
+					dispatch({
+						type: "ADD_MESSAGE",
+						message: {
+							id: `system-${Date.now()}`,
+							role: "system",
+							parts: [{ type: "text", content: text }],
+							timestamp: Date.now(),
+						},
+					});
+				}
+			}
+
 			// Capture session_id from SDK messages
-			if ("session_id" in msg && msg.session_id) {
+			if ("session_id" in msg && msg.session_id && chatSessionId) {
+				updateSessionAgentInfo(chatSessionId, msg.session_id).catch((e) =>
+					console.error("Failed to persist agent session id:", e),
+				);
 				const session = activeSessionRef.current;
-				if (session && !session.agentSessionId) {
+				if (
+					session &&
+					session.id === chatSessionId &&
+					!session.agentSessionId
+				) {
 					dispatch({
 						type: "SET_AGENT_SESSION_ID",
 						agentSessionId: msg.session_id,
 					});
-					updateSessionAgentInfo(session.id, msg.session_id).catch((e) =>
-						console.error("Failed to persist agent session id:", e),
-					);
 				}
 			}
 
 			// Extract streaming delta from stream_event messages
 			if (messageId) {
+				const buf = chatSessionId
+					? streamingBuffersRef.current.get(chatSessionId)
+					: undefined;
 				const delta = extractStreamingDelta(msg);
+				// dispatch updates the active session's UI via reducer;
+				// buf accumulates for all sessions (used for persistence).
 				if (delta) {
 					if (delta.type === "text") {
 						dispatch({
@@ -204,12 +297,14 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 							messageId,
 							chunk: delta.text,
 						});
+						if (buf) bufferAppendText(buf, delta.text);
 					} else {
 						dispatch({
 							type: "APPEND_THINKING",
 							messageId,
 							chunk: delta.thinking,
 						});
+						if (buf) bufferAppendThinking(buf, delta.thinking);
 					}
 				}
 
@@ -226,6 +321,14 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 								input: toolBlock.input,
 								id: toolBlock.id,
 							});
+							if (buf) {
+								buf.parts.push({
+									type: "tool_use",
+									tool: toolBlock.name,
+									input: toolBlock.input,
+									id: toolBlock.id,
+								});
+							}
 						}
 					}
 				}
@@ -236,14 +339,39 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 					for (const block of userMsg.message.content) {
 						if (block.type === "tool_result") {
 							const resultBlock = block as ToolResultBlock;
+							const content = extractToolResultContent(resultBlock.content);
+							const isError = !!resultBlock.is_error;
 							dispatch({
 								type: "APPEND_TOOL_RESULT",
 								messageId,
-								content: extractToolResultContent(resultBlock.content),
-								isError: !!resultBlock.is_error,
+								content,
+								isError,
 							});
+							if (buf) {
+								buf.parts.push({
+									type: "tool_result",
+									content,
+									isError,
+								});
+							}
 						}
 					}
+				}
+			}
+
+			// Show errors from result messages
+			if (msg.type === "result" && chatSessionId) {
+				const resultMsg = msg as ResultMessage;
+				if (resultMsg.errors && resultMsg.errors.length > 0) {
+					dispatch({
+						type: "ADD_MESSAGE",
+						message: {
+							id: `system-error-${Date.now()}`,
+							role: "system",
+							parts: [{ type: "text", content: resultMsg.errors.join("\n") }],
+							timestamp: Date.now(),
+						},
+					});
 				}
 			}
 		}).then((fn) => {
@@ -258,7 +386,7 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, streamingMessageIdRef, activeSessionRef]);
+	}, [dispatch, streamingMessageIdsRef, activeSessionRef, streamingBuffersRef]);
 
 	// Listen to agent-query-completed for completion/error handling
 	useEffect(() => {
@@ -267,46 +395,72 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 
 		listen<QueryCompleted>("agent-query-completed", (event) => {
 			const info = event.payload;
+			const chatSessionId = info.chat_session_id;
 
-			dispatch({ type: "SET_STREAMING", streaming: false });
-			dispatch({ type: "SET_PENDING_PERMISSION", request: null });
+			if (chatSessionId) {
+				dispatch({
+					type: "STOP_STREAMING",
+					sessionId: chatSessionId,
+				});
+				dispatch({
+					type: "SET_PENDING_PERMISSION",
+					sessionId: chatSessionId,
+					request: null,
+				});
+			}
 
-			const msgId = streamingMessageIdRef.current;
-			streamingMessageIdRef.current = null;
+			const msgId = chatSessionId
+				? streamingMessageIdsRef.current.get(chatSessionId)
+				: null;
+			if (chatSessionId) {
+				streamingMessageIdsRef.current.delete(chatSessionId);
+			}
 
-			const session = activeSessionRef.current;
+			const buffer = chatSessionId
+				? streamingBuffersRef.current.get(chatSessionId)
+				: undefined;
 
-			// Persist final message content
-			if (msgId && session) {
-				const finalMsg = session.messages.find((m) => m.id === msgId);
-				if (finalMsg) {
-					updateMessageContent(
-						session.id,
-						msgId,
-						finalMsg.content,
-						finalMsg.thinking,
-						finalMsg.activities,
-					).catch((e) => console.error("Failed to persist agent message:", e));
-				}
+			// Persist final message content from buffer (works for all sessions)
+			if (msgId && chatSessionId && buffer) {
+				const legacy = partsToLegacy(buffer.parts);
+				updateMessageContent(
+					chatSessionId,
+					msgId,
+					legacy.content,
+					legacy.thinking,
+					legacy.activities,
+				).catch((e) => console.error("Failed to persist agent message:", e));
 			}
 
 			// Retry logic: if --resume failed (error + empty content), retry without session ID
-			const retryContent = shouldRetry(
-				info.exit_code,
-				isRetryingRef.current,
-				session,
-			);
-			if (retryContent !== null) {
-				handleRetry(retryContent);
-				return;
+			if (
+				chatSessionId &&
+				info.exit_code !== 0 &&
+				!isRetryingRef.current.has(chatSessionId)
+			) {
+				const lastPrompt = lastPromptsRef.current.get(chatSessionId);
+				if (buffer && !getBufferTextContent(buffer).trim() && lastPrompt) {
+					if (chatSessionId) {
+						streamingBuffersRef.current.delete(chatSessionId);
+					}
+					handleRetry(lastPrompt, chatSessionId);
+					return;
+				}
+			}
+
+			if (chatSessionId) {
+				streamingBuffersRef.current.delete(chatSessionId);
 			}
 
 			// Update session state
+			const session = activeSessionRef.current;
 			const newState: SessionState = info.exit_code === 0 ? "idle" : "error";
-			dispatch({ type: "UPDATE_SESSION_STATE", state: newState });
+			if (chatSessionId && session && session.id === chatSessionId) {
+				dispatch({ type: "UPDATE_SESSION_STATE", state: newState });
+			}
 
-			if (session) {
-				updateSessionState(session.id, newState).catch((e) =>
+			if (chatSessionId) {
+				updateSessionState(chatSessionId, newState).catch((e) =>
 					console.error("Failed to update session state:", e),
 				);
 			}
@@ -328,8 +482,10 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 		};
 	}, [
 		dispatch,
-		streamingMessageIdRef,
+		streamingMessageIdsRef,
 		activeSessionRef,
+		streamingBuffersRef,
+		lastPromptsRef,
 		refreshSessions,
 		handleRetry,
 		isRetryingRef,

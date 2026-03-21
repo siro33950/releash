@@ -19,15 +19,25 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@/hooks/useAgentChat", () => ({
 	useAgentChat: () => ({
 		sessions: [],
+		orderedSessions: [],
+		closedSessions: [],
 		activeSession: null,
 		agentState: null,
 		isStreaming: false,
 		error: null,
+		permissionMode: "acceptEdits",
+		pendingPermission: null,
 		sendMessage: vi.fn(),
 		interrupt: vi.fn(),
 		selectSession: vi.fn(),
 		refreshSessions: vi.fn(),
-		clearActiveSession: vi.fn(),
+		refreshClosedSessions: vi.fn(),
+		closeSession: vi.fn(),
+		restoreSession: vi.fn(),
+		createNewSession: vi.fn(),
+		reorderSessions: vi.fn(),
+		setPermissionMode: vi.fn(),
+		respondPermission: vi.fn(),
 	}),
 }));
 

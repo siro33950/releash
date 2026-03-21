@@ -37,7 +37,7 @@ function truncateResult(content: string, maxLines = 5): string {
 	return `${lines.slice(0, maxLines).join("\n")}\n… (${lines.length - maxLines} more lines)`;
 }
 
-function ActivityItem({
+export function ActivityItem({
 	entry,
 	index,
 }: {
@@ -52,6 +52,16 @@ function ActivityItem({
 				<span className="font-medium text-foreground/80">{entry.tool}</span>
 				<span className="ml-1.5 text-muted-foreground/70">
 					{summarizeToolInput(entry.tool, entry.input)}
+				</span>
+			</div>
+		);
+	}
+
+	if (entry.type === "permission_result") {
+		return (
+			<div data-testid={`activity-permission-result-${index}`} className="py-0.5">
+				<span className="text-muted-foreground/70">
+					{entry.status === "allowed" ? "✓" : "✗"} {entry.toolName}: {entry.summary}
 				</span>
 			</div>
 		);

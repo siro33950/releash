@@ -19,7 +19,7 @@ function makeMessage(overrides?: Partial<ChatMessage>): ChatMessage {
 	return {
 		id: "m1",
 		role: "human",
-		content: "hello",
+		parts: [{ type: "text", content: "hello" }],
 		timestamp: 1000,
 		...overrides,
 	};
@@ -29,17 +29,19 @@ describe("agentChatReducer", () => {
 	it("INITIAL_STATE has expected shape", () => {
 		expect(INITIAL_STATE).toEqual({
 			sessions: [],
+			sessionOrder: [],
+			closedSessions: [],
 			activeSession: null,
-			isStreaming: false,
+			streamingSessionIds: [],
 			error: null,
 			permissionMode: "acceptEdits",
 			userPermissionMode: "acceptEdits",
-			pendingPermission: null,
+			pendingPermissions: {},
 		});
 	});
 
 	describe("SET_SESSIONS", () => {
-		it("replaces sessions list", () => {
+		it("replaces sessions list and builds sessionOrder", () => {
 			const sessions = [
 				{
 					id: "s1",
@@ -56,6 +58,115 @@ describe("agentChatReducer", () => {
 				sessions,
 			});
 			expect(next.sessions).toBe(sessions);
+			expect(next.sessionOrder).toEqual(["s1"]);
+		});
+
+		it("preserves existing order and appends new sessions", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionOrder: ["s2", "s1"],
+				sessions: [
+					{
+						id: "s1",
+						worktreePath: "/repo",
+						state: "idle" as const,
+						createdAt: 1000,
+						updatedAt: 1000,
+						firstMessage: "first",
+						messageCount: 1,
+					},
+					{
+						id: "s2",
+						worktreePath: "/repo",
+						state: "idle" as const,
+						createdAt: 900,
+						updatedAt: 900,
+						firstMessage: "second",
+						messageCount: 1,
+					},
+				],
+			};
+			const newSessions = [
+				...state.sessions,
+				{
+					id: "s3",
+					worktreePath: "/repo",
+					state: "idle" as const,
+					createdAt: 1100,
+					updatedAt: 1100,
+					firstMessage: "third",
+					messageCount: 1,
+				},
+			];
+			const next = reducer(state, {
+				type: "SET_SESSIONS",
+				sessions: newSessions,
+			});
+			expect(next.sessionOrder).toEqual(["s2", "s1", "s3"]);
+		});
+
+		it("removes deleted session IDs from order", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionOrder: ["s1", "s2", "s3"],
+			};
+			const sessions = [
+				{
+					id: "s1",
+					worktreePath: "/repo",
+					state: "idle" as const,
+					createdAt: 1000,
+					updatedAt: 1000,
+					firstMessage: "first",
+					messageCount: 1,
+				},
+				{
+					id: "s3",
+					worktreePath: "/repo",
+					state: "idle" as const,
+					createdAt: 1100,
+					updatedAt: 1100,
+					firstMessage: "third",
+					messageCount: 1,
+				},
+			];
+			const next = reducer(state, { type: "SET_SESSIONS", sessions });
+			expect(next.sessionOrder).toEqual(["s1", "s3"]);
+		});
+	});
+
+	describe("REORDER_SESSIONS", () => {
+		it("replaces sessionOrder", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionOrder: ["s1", "s2", "s3"],
+			};
+			const next = reducer(state, {
+				type: "REORDER_SESSIONS",
+				sessionOrder: ["s3", "s1", "s2"],
+			});
+			expect(next.sessionOrder).toEqual(["s3", "s1", "s2"]);
+		});
+	});
+
+	describe("SET_CLOSED_SESSIONS", () => {
+		it("replaces closedSessions list", () => {
+			const sessions = [
+				{
+					id: "s1",
+					worktreePath: "/repo",
+					state: "closed" as const,
+					createdAt: 1000,
+					updatedAt: 1000,
+					firstMessage: "hello",
+					messageCount: 1,
+				},
+			];
+			const next = reducer(INITIAL_STATE, {
+				type: "SET_CLOSED_SESSIONS",
+				sessions,
+			});
+			expect(next.closedSessions).toBe(sessions);
 		});
 	});
 
@@ -111,7 +222,11 @@ describe("agentChatReducer", () => {
 
 	describe("APPEND_STREAMING", () => {
 		it("appends chunk to matching message", () => {
-			const msg = makeMessage({ id: "m1", role: "agent", content: "Hello" });
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [{ type: "text", content: "Hello" }],
+			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				activeSession: makeSession({ messages: [msg] }),
@@ -121,12 +236,21 @@ describe("agentChatReducer", () => {
 				messageId: "m1",
 				chunk: " world",
 			});
-			expect(next.activeSession?.messages[0].content).toBe("Hello world");
+			const textPart = next.activeSession?.messages[0].parts[0];
+			expect(textPart?.type).toBe("text");
+			expect((textPart as { content: string }).content).toBe("Hello world");
 		});
 
 		it("does not modify non-matching messages", () => {
-			const msg1 = makeMessage({ id: "m1", content: "first" });
-			const msg2 = makeMessage({ id: "m2", role: "agent", content: "second" });
+			const msg1 = makeMessage({
+				id: "m1",
+				parts: [{ type: "text", content: "first" }],
+			});
+			const msg2 = makeMessage({
+				id: "m2",
+				role: "agent",
+				parts: [{ type: "text", content: "second" }],
+			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				activeSession: makeSession({ messages: [msg1, msg2] }),
@@ -136,8 +260,14 @@ describe("agentChatReducer", () => {
 				messageId: "m2",
 				chunk: "!",
 			});
-			expect(next.activeSession?.messages[0].content).toBe("first");
-			expect(next.activeSession?.messages[1].content).toBe("second!");
+			expect(
+				(next.activeSession?.messages[0].parts[0] as { content: string })
+					.content,
+			).toBe("first");
+			expect(
+				(next.activeSession?.messages[1].parts[0] as { content: string })
+					.content,
+			).toBe("second!");
 		});
 
 		it("does nothing when no active session", () => {
@@ -150,7 +280,11 @@ describe("agentChatReducer", () => {
 		});
 
 		it("duplicates content when same chunk is appended twice", () => {
-			const msg = makeMessage({ id: "m1", role: "agent", content: "" });
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [],
+			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				activeSession: makeSession({ messages: [msg] }),
@@ -165,17 +299,19 @@ describe("agentChatReducer", () => {
 				messageId: "m1",
 				chunk: "hello",
 			});
-			expect(step2.activeSession?.messages[0].content).toBe("hellohello");
+			expect(
+				(step2.activeSession?.messages[0].parts[0] as { content: string })
+					.content,
+			).toBe("hellohello");
 		});
 	});
 
 	describe("APPEND_THINKING", () => {
-		it("appends chunk to thinking field of matching message", () => {
+		it("appends chunk to thinking part of matching message", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
-				content: "",
-				thinking: "Let me",
+				parts: [{ type: "thinking", content: "Let me" }],
 			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
@@ -186,11 +322,19 @@ describe("agentChatReducer", () => {
 				messageId: "m1",
 				chunk: " think",
 			});
-			expect(next.activeSession?.messages[0].thinking).toBe("Let me think");
+			const thinkingPart = next.activeSession?.messages[0].parts[0];
+			expect(thinkingPart?.type).toBe("thinking");
+			expect((thinkingPart as { content: string }).content).toBe(
+				"Let me think",
+			);
 		});
 
-		it("initializes thinking from undefined", () => {
-			const msg = makeMessage({ id: "m1", role: "agent", content: "" });
+		it("creates new thinking part when parts is empty", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [],
+			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				activeSession: makeSession({ messages: [msg] }),
@@ -200,16 +344,20 @@ describe("agentChatReducer", () => {
 				messageId: "m1",
 				chunk: "first chunk",
 			});
-			expect(next.activeSession?.messages[0].thinking).toBe("first chunk");
+			const thinkingPart = next.activeSession?.messages[0].parts[0];
+			expect(thinkingPart?.type).toBe("thinking");
+			expect((thinkingPart as { content: string }).content).toBe("first chunk");
 		});
 
 		it("does not modify non-matching messages", () => {
-			const msg1 = makeMessage({ id: "m1", content: "first" });
+			const msg1 = makeMessage({
+				id: "m1",
+				parts: [{ type: "text", content: "first" }],
+			});
 			const msg2 = makeMessage({
 				id: "m2",
 				role: "agent",
-				content: "",
-				thinking: "a",
+				parts: [{ type: "thinking", content: "a" }],
 			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
@@ -220,8 +368,9 @@ describe("agentChatReducer", () => {
 				messageId: "m2",
 				chunk: "b",
 			});
-			expect(next.activeSession?.messages[0].thinking).toBeUndefined();
-			expect(next.activeSession?.messages[1].thinking).toBe("ab");
+			expect(next.activeSession?.messages[0].parts[0].type).toBe("text");
+			const thinkingPart = next.activeSession?.messages[1].parts[0];
+			expect((thinkingPart as { content: string }).content).toBe("ab");
 		});
 
 		it("does nothing when no active session", () => {
@@ -234,13 +383,61 @@ describe("agentChatReducer", () => {
 		});
 	});
 
-	describe("SET_STREAMING", () => {
-		it("updates streaming flag", () => {
+	describe("START_STREAMING / STOP_STREAMING", () => {
+		it("adds sessionId to streamingSessionIds", () => {
 			const next = reducer(INITIAL_STATE, {
-				type: "SET_STREAMING",
-				streaming: true,
+				type: "START_STREAMING",
+				sessionId: "s1",
 			});
-			expect(next.isStreaming).toBe(true);
+			expect(next.streamingSessionIds).toEqual(["s1"]);
+		});
+
+		it("does not duplicate sessionId", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				streamingSessionIds: ["s1"],
+			};
+			const next = reducer(state, {
+				type: "START_STREAMING",
+				sessionId: "s1",
+			});
+			expect(next.streamingSessionIds).toEqual(["s1"]);
+		});
+
+		it("supports multiple concurrent sessions", () => {
+			const step1 = reducer(INITIAL_STATE, {
+				type: "START_STREAMING",
+				sessionId: "s1",
+			});
+			const step2 = reducer(step1, {
+				type: "START_STREAMING",
+				sessionId: "s2",
+			});
+			expect(step2.streamingSessionIds).toEqual(["s1", "s2"]);
+		});
+
+		it("removes sessionId from streamingSessionIds", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				streamingSessionIds: ["s1", "s2"],
+			};
+			const next = reducer(state, {
+				type: "STOP_STREAMING",
+				sessionId: "s1",
+			});
+			expect(next.streamingSessionIds).toEqual(["s2"]);
+		});
+
+		it("does nothing when stopping non-streaming session", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				streamingSessionIds: ["s1"],
+			};
+			const next = reducer(state, {
+				type: "STOP_STREAMING",
+				sessionId: "s2",
+			});
+			expect(next.streamingSessionIds).toEqual(["s1"]);
 		});
 	});
 
@@ -286,8 +483,12 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("APPEND_TOOL_USE", () => {
-		it("appends tool_use entry to matching message activities", () => {
-			const msg = makeMessage({ id: "m1", role: "agent", content: "" });
+		it("appends tool_use part to matching message", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [],
+			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				activeSession: makeSession({ messages: [msg] }),
@@ -299,7 +500,7 @@ describe("agentChatReducer", () => {
 				input: { file_path: "/src/index.ts" },
 				id: "toolu_001",
 			});
-			expect(next.activeSession?.messages[0].activities).toEqual([
+			expect(next.activeSession?.messages[0].parts).toEqual([
 				{
 					type: "tool_use",
 					tool: "Read",
@@ -309,13 +510,16 @@ describe("agentChatReducer", () => {
 			]);
 		});
 
-		it("initializes activities from undefined", () => {
-			const msg = makeMessage({ id: "m1", role: "agent", content: "" });
+		it("adds tool_use part to empty parts array", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [],
+			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				activeSession: makeSession({ messages: [msg] }),
 			};
-			expect(msg.activities).toBeUndefined();
 			const next = reducer(state, {
 				type: "APPEND_TOOL_USE",
 				messageId: "m1",
@@ -323,7 +527,7 @@ describe("agentChatReducer", () => {
 				input: { pattern: "TODO" },
 				id: "toolu_002",
 			});
-			expect(next.activeSession?.messages[0].activities).toHaveLength(1);
+			expect(next.activeSession?.messages[0].parts).toHaveLength(1);
 		});
 
 		it("does nothing when no active session", () => {
@@ -339,12 +543,11 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("APPEND_TOOL_RESULT", () => {
-		it("appends tool_result entry to matching message activities", () => {
+		it("appends tool_result part to matching message", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
-				content: "",
-				activities: [
+				parts: [
 					{
 						type: "tool_use",
 						tool: "Read",
@@ -363,8 +566,8 @@ describe("agentChatReducer", () => {
 				content: "file contents here",
 				isError: false,
 			});
-			expect(next.activeSession?.messages[0].activities).toHaveLength(2);
-			expect(next.activeSession?.messages[0].activities?.[1]).toEqual({
+			expect(next.activeSession?.messages[0].parts).toHaveLength(2);
+			expect(next.activeSession?.messages[0].parts[1]).toEqual({
 				type: "tool_result",
 				content: "file contents here",
 				isError: false,
@@ -372,7 +575,11 @@ describe("agentChatReducer", () => {
 		});
 
 		it("handles error results", () => {
-			const msg = makeMessage({ id: "m1", role: "agent", content: "" });
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [],
+			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				activeSession: makeSession({ messages: [msg] }),
@@ -383,8 +590,7 @@ describe("agentChatReducer", () => {
 				content: "File not found",
 				isError: true,
 			});
-			const entry = next.activeSession?.messages[0].activities?.[0];
-			expect(entry).toEqual({
+			expect(next.activeSession?.messages[0].parts[0]).toEqual({
 				type: "tool_result",
 				content: "File not found",
 				isError: true,
@@ -458,7 +664,7 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("SET_PENDING_PERMISSION", () => {
-		it("sets pending permission request", () => {
+		it("sets pending permission request for a session", () => {
 			const request = {
 				request_id: "req-1",
 				tool_name: "Edit",
@@ -468,26 +674,56 @@ describe("agentChatReducer", () => {
 			};
 			const next = reducer(INITIAL_STATE, {
 				type: "SET_PENDING_PERMISSION",
+				sessionId: "s1",
 				request,
 			});
-			expect(next.pendingPermission).toBe(request);
+			expect(next.pendingPermissions.s1).toBe(request);
 		});
 
 		it("clears pending permission with null", () => {
+			const request = {
+				request_id: "req-1",
+				tool_name: "Edit",
+				input: {},
+				tool_use_id: "toolu_001",
+			};
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				pendingPermission: {
-					request_id: "req-1",
-					tool_name: "Edit",
-					input: {},
-					tool_use_id: "toolu_001",
-				},
+				pendingPermissions: { s1: request },
 			};
 			const next = reducer(state, {
 				type: "SET_PENDING_PERMISSION",
+				sessionId: "s1",
 				request: null,
 			});
-			expect(next.pendingPermission).toBeNull();
+			expect(next.pendingPermissions.s1).toBeUndefined();
+		});
+
+		it("stores permissions for multiple sessions independently", () => {
+			const req1 = {
+				request_id: "req-1",
+				tool_name: "Edit",
+				input: {},
+				tool_use_id: "toolu_001",
+			};
+			const req2 = {
+				request_id: "req-2",
+				tool_name: "Bash",
+				input: {},
+				tool_use_id: "toolu_002",
+			};
+			const step1 = reducer(INITIAL_STATE, {
+				type: "SET_PENDING_PERMISSION",
+				sessionId: "s1",
+				request: req1,
+			});
+			const step2 = reducer(step1, {
+				type: "SET_PENDING_PERMISSION",
+				sessionId: "s2",
+				request: req2,
+			});
+			expect(step2.pendingPermissions.s1).toBe(req1);
+			expect(step2.pendingPermissions.s2).toBe(req2);
 		});
 	});
 

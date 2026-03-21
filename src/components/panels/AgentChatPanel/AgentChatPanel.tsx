@@ -1,11 +1,16 @@
-import { Loader2 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { History, Loader2, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@/components/ui/popover";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
-import { ActivityLog } from "./ActivityLog";
+import { ActivityItem } from "./ActivityLog";
 import { MessageInput } from "./MessageInput";
-import { ModeSelector } from "./ModeSelector";
+import { MODES } from "./ModeSelector";
 import { PermissionDialog } from "./PermissionDialog";
-import { SessionList } from "./SessionList";
 import { StreamMessage } from "./StreamMessage";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 
@@ -16,6 +21,8 @@ interface AgentChatPanelProps {
 export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 	const {
 		sessions,
+		orderedSessions,
+		closedSessions,
 		activeSession,
 		isStreaming,
 		error,
@@ -24,13 +31,19 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 		sendMessage,
 		interrupt,
 		selectSession,
-		refreshSessions,
-		clearActiveSession,
+		closeSession,
+		restoreSession,
+		createNewSession,
+		reorderSessions,
 		setPermissionMode,
 		respondPermission,
+		refreshClosedSessions,
 	} = useAgentChat(worktreePath);
 
 	const isWaiting = isStreaming && pendingPermission !== null;
+	const [historyOpen, setHistoryOpen] = useState(false);
+	const draggedSessionIdRef = useRef<string | null>(null);
+	const isDraggingRef = useRef(false);
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const lastMessageCount = useRef(0);
@@ -50,10 +63,15 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 	const agentMessages = activeSession?.messages.filter(
 		(m) => m.role === "agent",
 	);
+	const lastAgentMsg = agentMessages?.[agentMessages.length - 1];
+	const lastAgentPartsLen = lastAgentMsg?.parts.length ?? 0;
 	const lastAgentContent =
-		agentMessages?.[agentMessages.length - 1]?.content?.length ?? 0;
+		lastAgentMsg?.parts
+			.filter((p) => p.type === "text")
+			.reduce((len, p) => len + (p as { content: string }).content.length, 0) ??
+		0;
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: lastAgentContent triggers scroll on content growth
+	// biome-ignore lint/correctness/useExhaustiveDependencies: lastAgentContent/lastAgentPartsLen triggers scroll on content growth
 	useEffect(() => {
 		if (!isStreaming) return;
 		const el = scrollRef.current;
@@ -62,133 +80,291 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 		if (isNearBottom) {
 			el.scrollTop = el.scrollHeight;
 		}
-	}, [isStreaming, lastAgentContent]);
-
-	const handleNewSession = () => {
-		clearActiveSession();
-		refreshSessions();
-	};
+	}, [isStreaming, lastAgentContent, lastAgentPartsLen]);
 
 	const msgs = activeSession?.messages;
 	const lastMsg = msgs?.[msgs.length - 1];
 	const showWaitingIndicator =
-		isStreaming &&
-		lastMsg?.role === "agent" &&
-		!lastMsg.content &&
-		!lastMsg.thinking;
+		isStreaming && lastMsg?.role === "agent" && lastMsg.parts.length === 0;
 
 	const isInputDisabled = isStreaming;
 
-	return (
-		<div data-testid="agent-chat-panel" className="flex h-full">
-			<SessionList
-				sessions={sessions}
-				activeSessionId={activeSession?.id ?? null}
-				onSelect={selectSession}
-				onNew={handleNewSession}
-			/>
-			<div className="flex flex-col flex-1 min-w-0">
-				{error && (
-					<div className="px-4 py-2 bg-destructive/10 text-destructive text-sm border-b border-destructive/20">
-						{error}
-					</div>
-				)}
-				{permissionMode === "plan" && (
-					<div
-						data-testid="plan-mode-indicator"
-						className="px-4 py-1 bg-blue-500/10 text-blue-500 text-xs border-b border-blue-500/20"
-					>
-						Plan Mode
-					</div>
-				)}
-				{isStreaming && (
-					<div
-						data-testid="agent-state-indicator"
-						className="px-4 py-1 bg-muted text-muted-foreground text-xs border-b"
-					>
-						{isWaiting ? "Waiting..." : "Running..."}
-					</div>
-				)}
-				<div ref={scrollRef} className="flex-1 overflow-y-auto">
-					{activeSession ? (
-						<div className="py-2">
-							{activeSession.messages.map((msg, idx) => {
-								const isLastAgent =
-									idx === activeSession.messages.length - 1 &&
-									msg.role === "agent";
-								const isLastAgentStreaming = isStreaming && isLastAgent;
-								const showThinking = isLastAgent && !!msg.thinking;
-								const showActivities =
-									msg.role === "agent" &&
-									msg.activities &&
-									msg.activities.length > 0;
-								const showMessage = !isLastAgentStreaming || !!msg.content;
+	const cycleMode = useCallback(() => {
+		const currentIndex = MODES.findIndex((m) => m.value === permissionMode);
+		const nextIndex = (currentIndex + 1) % MODES.length;
+		setPermissionMode(MODES[nextIndex].value);
+	}, [permissionMode, setPermissionMode]);
 
-								return (
-									<div key={msg.id}>
-										{showThinking && (
-											<ThinkingIndicator
-												content={msg.thinking}
-												isStreaming={isLastAgentStreaming && !msg.content}
-											/>
-										)}
-										{showActivities && msg.activities && (
-											<ActivityLog
-												activities={msg.activities}
-												isStreaming={isLastAgentStreaming}
-											/>
-										)}
-										{showMessage && (
-											<StreamMessage
-												message={msg}
-												isStreaming={isLastAgentStreaming}
-											/>
-										)}
-									</div>
-								);
-							})}
-							{showWaitingIndicator && (
-								<div data-testid="waiting-indicator" className="px-4 py-3">
-									<div className="flex items-center gap-2 text-sm text-muted-foreground">
-										<Loader2 className="size-4 animate-spin" />
-										<span>Waiting...</span>
-									</div>
+	const handleHistoryOpen = useCallback(
+		(open: boolean) => {
+			setHistoryOpen(open);
+			if (open) {
+				refreshClosedSessions();
+			}
+		},
+		[refreshClosedSessions],
+	);
+
+	const handleRestore = useCallback(
+		(sessionId: string) => {
+			restoreSession(sessionId);
+			setHistoryOpen(false);
+		},
+		[restoreSession],
+	);
+
+	const handleDragStart = useCallback(
+		(e: React.DragEvent, sessionId: string) => {
+			draggedSessionIdRef.current = sessionId;
+			isDraggingRef.current = true;
+			e.dataTransfer.effectAllowed = "move";
+			e.dataTransfer.setData("text/plain", sessionId);
+		},
+		[],
+	);
+
+	const handleDragOver = useCallback((e: React.DragEvent) => {
+		e.preventDefault();
+		e.dataTransfer.dropEffect = "move";
+	}, []);
+
+	const handleDrop = useCallback(
+		(e: React.DragEvent, targetId: string) => {
+			e.preventDefault();
+			const draggedId = draggedSessionIdRef.current;
+			if (!draggedId || draggedId === targetId) return;
+
+			const currentOrder = orderedSessions.map((s) => s.id);
+			const fromIndex = currentOrder.indexOf(draggedId);
+			const toIndex = currentOrder.indexOf(targetId);
+			if (fromIndex === -1 || toIndex === -1) return;
+
+			const newOrder = [...currentOrder];
+			newOrder.splice(fromIndex, 1);
+			newOrder.splice(toIndex, 0, draggedId);
+			reorderSessions(newOrder);
+		},
+		[orderedSessions, reorderSessions],
+	);
+
+	const handleDragEnd = useCallback(() => {
+		draggedSessionIdRef.current = null;
+		isDraggingRef.current = false;
+	}, []);
+
+	const handleTabClick = useCallback(
+		(sessionId: string) => {
+			if (isDraggingRef.current) return;
+			selectSession(sessionId);
+		},
+		[selectSession],
+	);
+
+	return (
+		<div data-testid="agent-chat-panel" className="flex flex-col h-full">
+			<Tabs
+				value={activeSession?.id ?? ""}
+				onValueChange={selectSession}
+				className="flex flex-col h-full gap-0"
+			>
+				<div className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background border-b">
+					<TabsList
+						data-testid="session-tab-list"
+						className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
+					>
+						{orderedSessions.map((session) => (
+							<TabsTrigger key={session.id} value={session.id} asChild>
+								{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}
+								{/* biome-ignore lint/a11y/useKeyWithClickEvents: TabsTrigger がキーボード操作を処理 */}
+								<div
+									className="gap-2"
+									draggable={sessions.length > 1}
+									onDragStart={(e) => handleDragStart(e, session.id)}
+									onDragOver={handleDragOver}
+									onDrop={(e) => handleDrop(e, session.id)}
+									onDragEnd={handleDragEnd}
+									onClick={() => handleTabClick(session.id)}
+								>
+									<span className="truncate max-w-[120px]">
+										{session.firstMessage || "New session"}
+									</span>
+									{sessions.length > 1 && (
+										<button
+											type="button"
+											onPointerDown={(e) => e.stopPropagation()}
+											onMouseDown={(e) => e.stopPropagation()}
+											onClick={(e) => {
+												e.stopPropagation();
+												closeSession(session.id);
+											}}
+											className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
+											aria-label={`Close ${session.firstMessage || "New session"}`}
+										>
+											<X className="size-3.5" />
+										</button>
+									)}
 								</div>
+							</TabsTrigger>
+						))}
+					</TabsList>
+					<button
+						type="button"
+						onClick={() => createNewSession()}
+						aria-label="New session"
+						className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
+					>
+						+
+					</button>
+					<Popover open={historyOpen} onOpenChange={handleHistoryOpen}>
+						<PopoverTrigger asChild>
+							<button
+								type="button"
+								aria-label="Session history"
+								className="p-1 rounded hover:bg-muted-foreground/20 transition-colors shrink-0 ml-auto"
+							>
+								<History className="size-3.5" />
+							</button>
+						</PopoverTrigger>
+						<PopoverContent align="end" className="w-64 p-0">
+							{closedSessions.length > 0 ? (
+								<ul className="max-h-60 overflow-y-auto">
+									{closedSessions.map((session) => (
+										<li key={session.id}>
+											<button
+												type="button"
+												className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors truncate"
+												onClick={() => handleRestore(session.id)}
+											>
+												{session.firstMessage || "New session"}
+											</button>
+										</li>
+									))}
+								</ul>
+							) : (
+								<p className="px-3 py-4 text-sm text-muted-foreground text-center">
+									No closed sessions
+								</p>
 							)}
-						</div>
-					) : (
-						<div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-							<p>Start a conversation or select a session from the sidebar.</p>
+						</PopoverContent>
+					</Popover>
+				</div>
+				<div className="flex flex-col flex-1 min-h-0">
+					{error && (
+						<div className="px-4 py-2 bg-destructive/10 text-destructive text-sm border-b border-destructive/20">
+							{error}
 						</div>
 					)}
-				</div>
-				<div className="border-t">
-					{pendingPermission && (
-						<PermissionDialog
-							request={pendingPermission}
-							onAllow={(id) => respondPermission(id, true)}
-							onDeny={(id) => respondPermission(id, false)}
-							onAnswer={(id, answers) =>
-								respondPermission(id, true, {
-									...pendingPermission.input,
-									answers,
-								})
-							}
+					{isStreaming && (
+						<div
+							data-testid="agent-state-indicator"
+							className="px-4 py-1 bg-muted text-muted-foreground text-xs border-b"
+						>
+							{isWaiting ? "Waiting..." : "Running..."}
+						</div>
+					)}
+					<div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+						{activeSession && (
+							<div className="py-2">
+								{activeSession.messages.map((msg, idx) => {
+									if (msg.role !== "agent") {
+										const textContent = msg.parts
+											.filter((p) => p.type === "text")
+											.map((p) => (p as { content: string }).content)
+											.join("");
+										return (
+											<div key={msg.id}>
+												<StreamMessage
+													content={textContent}
+													role={msg.role}
+													isStreaming={false}
+												/>
+											</div>
+										);
+									}
+
+									const isLastMsg = idx === activeSession.messages.length - 1;
+									const isLastAgentStreaming = isStreaming && isLastMsg;
+
+									return (
+										<div key={msg.id}>
+											{/* biome-ignore lint/suspicious/useIterableCallbackReturn: switch is exhaustive for MessagePart */}
+											{msg.parts.map((part, i) => {
+												const key = `${msg.id}-p${i}`;
+												const isLastPart = i === msg.parts.length - 1;
+												const partStreaming =
+													isLastAgentStreaming && isLastPart;
+												switch (part.type) {
+													case "thinking":
+														return (
+															<ThinkingIndicator
+																key={key}
+																content={part.content}
+																isStreaming={partStreaming}
+															/>
+														);
+													case "text":
+														return (
+															// biome-ignore lint/a11y/useValidAriaRole: role is a component prop, not an ARIA role
+															<StreamMessage
+																key={key}
+																content={part.content}
+																role="agent"
+																isStreaming={partStreaming}
+															/>
+														);
+													case "tool_use":
+													case "tool_result":
+														return (
+															<div key={key} className="px-4 py-0.5 text-xs">
+																<ActivityItem entry={part} index={i} />
+															</div>
+														);
+													case "permission":
+														return (
+															<PermissionDialog
+																key={key}
+																request={part.request}
+																status={part.status}
+																resolvedAnswers={part.answers}
+																onAllow={(id) => respondPermission(id, true)}
+																onDeny={(id) => respondPermission(id, false)}
+																onAnswer={(id, answers) =>
+																	respondPermission(id, true, {
+																		...part.request.input,
+																		answers,
+																	})
+																}
+															/>
+														);
+												}
+											})}
+										</div>
+									);
+								})}
+								{showWaitingIndicator && (
+									<div data-testid="waiting-indicator" className="px-4 py-3">
+										<div className="flex items-center gap-2 text-sm text-muted-foreground">
+											<Loader2 className="size-4 animate-spin" />
+											<span>Waiting...</span>
+										</div>
+									</div>
+								)}
+							</div>
+						)}
+					</div>
+					<div className="shrink-0">
+						<MessageInput
+							onSend={sendMessage}
+							onInterrupt={interrupt}
+							disabled={isInputDisabled}
+							isStreaming={isStreaming}
+							onCycleMode={cycleMode}
+							mode={permissionMode}
+							onModeChange={setPermissionMode}
 						/>
-					)}
-					<ModeSelector
-						mode={permissionMode}
-						onModeChange={setPermissionMode}
-						disabled={false}
-					/>
+					</div>
 				</div>
-				<MessageInput
-					onSend={sendMessage}
-					onInterrupt={interrupt}
-					disabled={isInputDisabled}
-					isStreaming={isStreaming}
-				/>
-			</div>
+			</Tabs>
 		</div>
 	);
 }

@@ -14,6 +14,8 @@ interface AskQuestion {
 
 interface PermissionDialogProps {
 	request: PermissionRequest;
+	status?: "pending" | "allowed" | "denied";
+	resolvedAnswers?: Record<string, string>;
 	onAllow: (requestId: string) => void;
 	onDeny: (requestId: string) => void;
 	onAnswer?: (requestId: string, answers: Record<string, string>) => void;
@@ -21,6 +23,8 @@ interface PermissionDialogProps {
 
 export function PermissionDialog({
 	request,
+	status = "pending",
+	resolvedAnswers,
 	onAllow,
 	onDeny,
 	onAnswer,
@@ -28,6 +32,36 @@ export function PermissionDialog({
 	const [answers, setAnswers] = useState<Record<string, string>>({});
 	const [otherTexts, setOtherTexts] = useState<Record<string, string>>({});
 	const remarkPlugins = useMemo(() => remarkPluginList, []);
+
+	if (status !== "pending") {
+		const isAllowed = status === "allowed";
+		let label: string;
+		if (request.tool_name === "ExitPlanMode") {
+			label = isAllowed ? "Plan approved" : "Plan denied";
+		} else if (request.tool_name === "AskUserQuestion") {
+			const answerSummary = resolvedAnswers
+				? Object.values(resolvedAnswers).join(", ")
+				: "";
+			label = answerSummary ? `Answered: ${answerSummary}` : "Answered";
+		} else {
+			const toolLabel =
+				request.title || request.display_name || request.tool_name;
+			label = `${toolLabel} — ${status}`;
+		}
+		return (
+			<div
+				data-testid="permission-resolved"
+				className={cn(
+					"mx-3 my-1 rounded-md px-3 py-1.5 text-xs",
+					isAllowed
+						? "border border-green-500/20 bg-green-500/5 text-green-700 dark:text-green-400"
+						: "border border-red-500/20 bg-red-500/5 text-red-700 dark:text-red-400",
+				)}
+			>
+				{isAllowed ? "✓" : "✗"} {label}
+			</div>
+		);
+	}
 
 	if (request.tool_name === "AskUserQuestion" && onAnswer) {
 		const questions: AskQuestion[] =

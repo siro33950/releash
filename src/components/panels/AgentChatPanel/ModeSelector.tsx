@@ -1,8 +1,15 @@
+import { ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuRadioGroup,
+	DropdownMenuRadioItem,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { PermissionMode } from "@/types/session";
 
-const MODES: { value: PermissionMode; label: string }[] = [
+export const MODES: { value: PermissionMode; label: string }[] = [
 	{ value: "acceptEdits", label: "Code" },
 	{ value: "default", label: "Ask" },
 	{ value: "plan", label: "Plan" },
@@ -20,24 +27,34 @@ export function ModeSelector({
 	onModeChange,
 	disabled,
 }: ModeSelectorProps) {
+	const currentLabel = MODES.find((m) => m.value === mode)?.label ?? "Code";
+
 	return (
-		<div data-testid="mode-selector" className="flex gap-1 px-3 py-1.5">
-			{MODES.map((m) => {
-				const isActive = mode === m.value;
-				return (
-					<Button
-						key={m.value}
-						variant={isActive ? "default" : "ghost"}
-						size="xs"
-						disabled={disabled}
-						data-active={isActive ? "true" : undefined}
-						onClick={() => onModeChange(m.value)}
-						className={cn(isActive && "pointer-events-none")}
-					>
-						{m.label}
-					</Button>
-				);
-			})}
-		</div>
+		<DropdownMenu>
+			<DropdownMenuTrigger asChild>
+				<Button
+					variant="ghost"
+					size="xs"
+					disabled={disabled}
+					data-testid="mode-selector-trigger"
+					className="gap-1"
+				>
+					{currentLabel}
+					<ChevronDown className="size-3" />
+				</Button>
+			</DropdownMenuTrigger>
+			<DropdownMenuContent side="top" align="start">
+				<DropdownMenuRadioGroup
+					value={mode}
+					onValueChange={(v) => onModeChange(v as PermissionMode)}
+				>
+					{MODES.map((m) => (
+						<DropdownMenuRadioItem key={m.value} value={m.value}>
+							{m.label}
+						</DropdownMenuRadioItem>
+					))}
+				</DropdownMenuRadioGroup>
+			</DropdownMenuContent>
+		</DropdownMenu>
 	);
 }

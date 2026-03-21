@@ -15,9 +15,26 @@ export interface PermissionRequest {
 	decision_reason?: string;
 }
 
-export type MessageRole = "human" | "agent";
+export type MessageRole = "human" | "agent" | "system";
 
-export type SessionState = "active" | "idle" | "done" | "error";
+export type SessionState = "active" | "idle" | "done" | "error" | "closed";
+
+export type MessagePart =
+	| { type: "thinking"; content: string }
+	| { type: "text"; content: string }
+	| {
+			type: "tool_use";
+			tool: string;
+			input: Record<string, unknown>;
+			id: string;
+	  }
+	| { type: "tool_result"; content: string; isError: boolean }
+	| {
+			type: "permission";
+			request: PermissionRequest;
+			status: "pending" | "allowed" | "denied";
+			answers?: Record<string, string>;
+	  };
 
 export type ActivityEntry =
 	| {
@@ -26,9 +43,23 @@ export type ActivityEntry =
 			input: Record<string, unknown>;
 			id: string;
 	  }
-	| { type: "tool_result"; content: string; isError: boolean };
+	| { type: "tool_result"; content: string; isError: boolean }
+	| {
+			type: "permission_result";
+			toolName: string;
+			status: string;
+			summary: string;
+	  };
 
 export interface ChatMessage {
+	id: string;
+	role: MessageRole;
+	parts: MessagePart[];
+	timestamp: number;
+}
+
+/** Rust backend ChatMessage format (for DB persistence) */
+export interface LegacyChatMessage {
 	id: string;
 	role: MessageRole;
 	content: string;

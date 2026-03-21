@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-resizable-panels", () => ({
@@ -24,8 +24,12 @@ vi.mock("@/hooks/useAgentChat", () => ({
 const { AgentChatPanel } = await import("./AgentChatPanel");
 
 function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
+	const sessions = (overrides.sessions ?? []) as Array<{ id: string }>;
+	const orderedSessions = overrides.orderedSessions ?? sessions;
 	useAgentChatMock.mockReturnValue({
-		sessions: [],
+		sessions,
+		orderedSessions,
+		closedSessions: [],
 		activeSession: null,
 		isStreaming: false,
 		error: null,
@@ -34,7 +38,14 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		interrupt: vi.fn(),
 		selectSession: vi.fn(),
 		refreshSessions: vi.fn(),
-		clearActiveSession: vi.fn(),
+		refreshClosedSessions: vi.fn(),
+		closeSession: vi.fn(),
+		restoreSession: vi.fn(),
+		createNewSession: vi.fn(),
+		reorderSessions: vi.fn(),
+		setPermissionMode: vi.fn(),
+		respondPermission: vi.fn(),
+		permissionMode: "acceptEdits",
 		...overrides,
 	});
 }
@@ -44,17 +55,6 @@ describe("AgentChatPanel", () => {
 		mockUseAgentChat();
 		render(<AgentChatPanel worktreePath="/repo" />);
 		expect(screen.getByTestId("agent-chat-panel")).toBeDefined();
-		expect(
-			screen.getByText(
-				"Start a conversation or select a session from the sidebar.",
-			),
-		).toBeDefined();
-	});
-
-	it("renders session list", () => {
-		mockUseAgentChat();
-		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(screen.getByTestId("session-list")).toBeDefined();
 	});
 
 	it("renders message input", () => {
@@ -64,29 +64,165 @@ describe("AgentChatPanel", () => {
 	});
 });
 
-describe("AgentChatPanel plan mode", () => {
-	it("displays plan mode indicator when permissionMode is plan", () => {
+describe("AgentChatPanel session tabs", () => {
+	it("renders a tab for each session with firstMessage as label", () => {
 		mockUseAgentChat({
-			permissionMode: "plan",
-			activeSession: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [
-					{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
-					{
-						id: "m2",
-						role: "agent",
-						content: "Planning...",
-						timestamp: 1001,
-					},
-				],
-				state: "active",
-				createdAt: 1000,
-				updatedAt: 1000,
-			},
+			sessions: [
+				{
+					id: "s1",
+					firstMessage: "Hello",
+					messageCount: 3,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+				{
+					id: "s2",
+					firstMessage: "Fix bug",
+					messageCount: 5,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+			],
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(screen.getByTestId("plan-mode-indicator")).toBeDefined();
+		expect(screen.getByText("Hello")).toBeDefined();
+		expect(screen.getByText("Fix bug")).toBeDefined();
+	});
+
+	it("shows 'New session' for sessions without firstMessage", () => {
+		mockUseAgentChat({
+			sessions: [
+				{
+					id: "s1",
+					firstMessage: "",
+					messageCount: 0,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+			],
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		expect(screen.getByText("New session")).toBeDefined();
+	});
+
+	it("does not show X button when only one session", () => {
+		mockUseAgentChat({
+			sessions: [
+				{
+					id: "s1",
+					firstMessage: "Hello",
+					messageCount: 3,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+			],
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		expect(screen.queryByLabelText("Close Hello")).toBeNull();
+	});
+
+	it("shows X button when multiple sessions", () => {
+		mockUseAgentChat({
+			sessions: [
+				{
+					id: "s1",
+					firstMessage: "Hello",
+					messageCount: 3,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+				{
+					id: "s2",
+					firstMessage: "Fix bug",
+					messageCount: 5,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+			],
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		expect(screen.getByLabelText("Close Hello")).toBeDefined();
+		expect(screen.getByLabelText("Close Fix bug")).toBeDefined();
+	});
+
+	it("calls closeSession when X button is clicked", () => {
+		const closeSession = vi.fn();
+		mockUseAgentChat({
+			sessions: [
+				{
+					id: "s1",
+					firstMessage: "Hello",
+					messageCount: 3,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+				{
+					id: "s2",
+					firstMessage: "Fix bug",
+					messageCount: 5,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+			],
+			closeSession,
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		fireEvent.click(screen.getByLabelText("Close Hello"));
+		expect(closeSession).toHaveBeenCalledWith("s1");
+	});
+
+	it("calls createNewSession when + button is clicked", () => {
+		const createNewSession = vi.fn();
+		mockUseAgentChat({ createNewSession });
+		render(<AgentChatPanel worktreePath="/repo" />);
+		fireEvent.click(screen.getByLabelText("New session"));
+		expect(createNewSession).toHaveBeenCalled();
+	});
+
+	it("calls selectSession when tab is clicked", () => {
+		const selectSession = vi.fn();
+		mockUseAgentChat({
+			sessions: [
+				{
+					id: "s1",
+					firstMessage: "Hello",
+					messageCount: 3,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+				{
+					id: "s2",
+					firstMessage: "Fix bug",
+					messageCount: 5,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+			],
+			selectSession,
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		fireEvent.click(screen.getByText("Fix bug"));
+		expect(selectSession).toHaveBeenCalledWith("s2");
 	});
 });
 
@@ -104,8 +240,18 @@ describe("AgentChatPanel agent state reflection", () => {
 				id: "s1",
 				worktreePath: "/repo",
 				messages: [
-					{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
-					{ id: "m2", role: "agent", content: "editing...", timestamp: 1001 },
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "text", content: "editing..." }],
+						timestamp: 1001,
+					},
 				],
 				state: "active",
 				createdAt: 1000,
@@ -126,8 +272,18 @@ describe("AgentChatPanel agent state reflection", () => {
 				id: "s1",
 				worktreePath: "/repo",
 				messages: [
-					{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
-					{ id: "m2", role: "agent", content: "working...", timestamp: 1001 },
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "text", content: "working..." }],
+						timestamp: 1001,
+					},
 				],
 				state: "active",
 				createdAt: 1000,
@@ -141,16 +297,19 @@ describe("AgentChatPanel agent state reflection", () => {
 		);
 	});
 
-	it("reflects permissionMode plan in ModeSelector by showing Plan as active", () => {
+	it("reflects permissionMode plan in ModeSelector trigger label", () => {
 		mockUseAgentChat({
 			permissionMode: "plan",
-			setPermissionMode: vi.fn(),
-			respondPermission: vi.fn(),
 			activeSession: {
 				id: "s1",
 				worktreePath: "/repo",
 				messages: [
-					{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
 				],
 				state: "active",
 				createdAt: 1000,
@@ -159,21 +318,27 @@ describe("AgentChatPanel agent state reflection", () => {
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
 
-		const planButton = screen.getByText("Plan");
-		expect(planButton).toHaveAttribute("data-active", "true");
+		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent(
+			"Plan",
+		);
 	});
 });
 
 describe("AgentChatPanel ThinkingIndicator", () => {
-	it("shows waiting indicator when streaming with empty agent content and no thinking", () => {
+	it("shows waiting indicator when streaming with empty agent parts", () => {
 		mockUseAgentChat({
 			isStreaming: true,
 			activeSession: {
 				id: "s1",
 				worktreePath: "/repo",
 				messages: [
-					{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
-					{ id: "m2", role: "agent", content: "", timestamp: 1001 },
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{ id: "m2", role: "agent", parts: [], timestamp: 1001 },
 				],
 				state: "active",
 				createdAt: 1000,
@@ -183,7 +348,6 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 		render(<AgentChatPanel worktreePath="/repo" />);
 		expect(screen.getByTestId("waiting-indicator")).toBeDefined();
 		expect(screen.getByText("Waiting...")).toBeDefined();
-		// Empty content StreamMessage should NOT be shown
 		expect(screen.queryByTestId("stream-message-agent")).toBeNull();
 	});
 
@@ -194,12 +358,18 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 				id: "s1",
 				worktreePath: "/repo",
 				messages: [
-					{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
 					{
 						id: "m2",
 						role: "agent",
-						content: "",
-						thinking: "Let me think about this...",
+						parts: [
+							{ type: "thinking", content: "Let me think about this..." },
+						],
 						timestamp: 1001,
 					},
 				],
@@ -211,7 +381,6 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 		render(<AgentChatPanel worktreePath="/repo" />);
 		expect(screen.getByTestId("thinking-indicator")).toBeDefined();
 		expect(screen.getByTestId("thinking-toggle")).toBeDefined();
-		// Empty content StreamMessage should NOT be shown during thinking phase
 		expect(screen.queryByTestId("stream-message-agent")).toBeNull();
 	});
 
@@ -222,12 +391,19 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 				id: "s1",
 				worktreePath: "/repo",
 				messages: [
-					{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
 					{
 						id: "m2",
 						role: "agent",
-						content: "I am responding...",
-						thinking: "Let me think...",
+						parts: [
+							{ type: "thinking", content: "Let me think..." },
+							{ type: "text", content: "I am responding..." },
+						],
 						timestamp: 1001,
 					},
 				],
@@ -248,11 +424,16 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 				id: "s1",
 				worktreePath: "/repo",
 				messages: [
-					{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
 					{
 						id: "m2",
 						role: "agent",
-						content: "I am responding...",
+						parts: [{ type: "text", content: "I am responding..." }],
 						timestamp: 1001,
 					},
 				],
@@ -273,11 +454,16 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 				id: "s1",
 				worktreePath: "/repo",
 				messages: [
-					{ id: "m1", role: "human", content: "hello", timestamp: 1000 },
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
 					{
 						id: "m2",
 						role: "agent",
-						content: "Done.",
+						parts: [{ type: "text", content: "Done." }],
 						timestamp: 1001,
 					},
 				],
@@ -289,5 +475,59 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 		render(<AgentChatPanel worktreePath="/repo" />);
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
 		expect(screen.queryByTestId("thinking-indicator")).toBeNull();
+	});
+});
+
+describe("AgentChatPanel Shift+Tab mode cycle", () => {
+	it("cycles mode on Shift+Tab in textarea", () => {
+		const setPermissionMode = vi.fn();
+		mockUseAgentChat({
+			permissionMode: "acceptEdits",
+			setPermissionMode,
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
+		// acceptEdits (index 0) → default (index 1)
+		expect(setPermissionMode).toHaveBeenCalledWith("default");
+	});
+});
+
+describe("AgentChatPanel session history", () => {
+	it("renders history button", () => {
+		mockUseAgentChat();
+		render(<AgentChatPanel worktreePath="/repo" />);
+		expect(screen.getByLabelText("Session history")).toBeDefined();
+	});
+
+	it("shows 'No closed sessions' when closedSessions is empty", () => {
+		mockUseAgentChat();
+		render(<AgentChatPanel worktreePath="/repo" />);
+		fireEvent.click(screen.getByLabelText("Session history"));
+		expect(screen.getByText("No closed sessions")).toBeDefined();
+	});
+
+	it("shows closed sessions in popover and calls restoreSession on click", () => {
+		const restoreSession = vi.fn();
+		mockUseAgentChat({
+			closedSessions: [
+				{
+					id: "closed-1",
+					firstMessage: "Old conversation",
+					messageCount: 5,
+					worktreePath: "/repo",
+					state: "closed",
+					createdAt: 500,
+					updatedAt: 500,
+				},
+			],
+			restoreSession,
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		fireEvent.click(screen.getByLabelText("Session history"));
+		expect(screen.getByText("Old conversation")).toBeDefined();
+		fireEvent.click(screen.getByText("Old conversation"));
+		expect(restoreSession).toHaveBeenCalledWith("closed-1");
 	});
 });
