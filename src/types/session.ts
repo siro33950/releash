@@ -22,6 +22,7 @@ export type SessionState = "active" | "idle" | "done" | "error" | "closed";
 export type MessagePart =
 	| { type: "thinking"; content: string }
 	| { type: "text"; content: string }
+	| { type: "error"; content: string }
 	| {
 			type: "tool_use";
 			tool: string;

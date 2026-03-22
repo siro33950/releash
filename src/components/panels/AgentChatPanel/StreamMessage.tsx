@@ -43,7 +43,7 @@ export function StreamMessage({
 						{deferredContent}
 					</Markdown>
 					{isStreaming && (
-						<span className="inline-block w-2 h-4 bg-foreground/60 animate-pulse ml-0.5" />
+						<span className="inline-block w-24 h-3 agent-shimmer ml-0.5 align-middle" />
 					)}
 				</div>
 			)}

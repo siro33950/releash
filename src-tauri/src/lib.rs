@@ -400,7 +400,7 @@ pub fn run() {
             session::list_closed_sessions,
             session::add_message,
             session::update_session_state,
-            session::update_message_content,
+            session::update_message_parts,
             session::update_session_agent_info,
             // Menu
             menu::set_menu_items_enabled,

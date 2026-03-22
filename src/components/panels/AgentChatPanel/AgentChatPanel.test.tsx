@@ -324,8 +324,8 @@ describe("AgentChatPanel agent state reflection", () => {
 	});
 });
 
-describe("AgentChatPanel ThinkingIndicator", () => {
-	it("shows waiting indicator when streaming with empty agent parts", () => {
+describe("AgentChatPanel shimmer placeholder", () => {
+	it("shows shimmer when streaming with empty agent parts", () => {
 		mockUseAgentChat({
 			isStreaming: true,
 			activeSession: {
@@ -346,12 +346,11 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 			},
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(screen.getByTestId("waiting-indicator")).toBeDefined();
-		expect(screen.getByText("Waiting...")).toBeDefined();
+		expect(screen.getByTestId("shimmer-placeholder")).toBeDefined();
 		expect(screen.queryByTestId("stream-message-agent")).toBeNull();
 	});
 
-	it("shows ThinkingIndicator with content during thinking phase", () => {
+	it("shows shimmer during thinking phase while streaming", () => {
 		mockUseAgentChat({
 			isStreaming: true,
 			activeSession: {
@@ -379,12 +378,11 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 			},
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(screen.getByTestId("thinking-indicator")).toBeDefined();
-		expect(screen.getByTestId("thinking-toggle")).toBeDefined();
+		expect(screen.getByTestId("shimmer-placeholder")).toBeDefined();
 		expect(screen.queryByTestId("stream-message-agent")).toBeNull();
 	});
 
-	it("shows both ThinkingIndicator and StreamMessage when text arrives after thinking", () => {
+	it("hides thinking and shows text when text arrives after thinking", () => {
 		mockUseAgentChat({
 			isStreaming: true,
 			activeSession: {
@@ -413,11 +411,11 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 			},
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(screen.getByTestId("thinking-indicator")).toBeDefined();
+		expect(screen.queryByTestId("thinking-indicator")).toBeNull();
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
 	});
 
-	it("shows StreamMessage but not ThinkingIndicator when streaming with no thinking", () => {
+	it("shows StreamMessage without shimmer when streaming with no thinking", () => {
 		mockUseAgentChat({
 			isStreaming: true,
 			activeSession: {
@@ -444,10 +442,10 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
-		expect(screen.queryByTestId("thinking-indicator")).toBeNull();
+		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
 	});
 
-	it("does not show ThinkingIndicator when streaming is finished and no thinking", () => {
+	it("hides thinking part when streaming is finished", () => {
 		mockUseAgentChat({
 			isStreaming: false,
 			activeSession: {
@@ -474,7 +472,43 @@ describe("AgentChatPanel ThinkingIndicator", () => {
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
-		expect(screen.queryByTestId("thinking-indicator")).toBeNull();
+		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
+	});
+
+	it("shows shimmer when last part is tool_use waiting for result", () => {
+		mockUseAgentChat({
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "tool_use",
+								tool: "Read",
+								input: { file_path: "/src/main.ts" },
+								id: "t1",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		expect(screen.getByTestId("shimmer-placeholder")).toBeDefined();
 	});
 });
 

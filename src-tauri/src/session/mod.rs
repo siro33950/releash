@@ -6,6 +6,33 @@ use tauri::{Manager, State};
 
 pub use store::SessionStore;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MessagePart {
+    Thinking {
+        content: String,
+    },
+    Text {
+        content: String,
+    },
+    ToolUse {
+        tool: String,
+        input: serde_json::Value,
+        id: String,
+    },
+    ToolResult {
+        content: String,
+        #[serde(rename = "isError")]
+        is_error: bool,
+    },
+    Permission {
+        request: serde_json::Value,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        answers: Option<serde_json::Value>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageRole {
@@ -55,6 +82,8 @@ pub struct ChatMessage {
     pub thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub activities: Option<Vec<ActivityEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub parts: Option<Vec<MessagePart>>,
     pub timestamp: f64,
 }
 
@@ -185,6 +214,7 @@ pub fn add_message(
         content,
         thinking: None,
         activities: None,
+        parts: None,
         timestamp: now,
     };
     session.messages.push(message.clone());
@@ -205,33 +235,6 @@ pub fn update_session_state(
         .get_session(&data_dir, &session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
     session.state = new_state;
-    session.updated_at = now_timestamp();
-    state.save_session(&data_dir, &session)?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn update_message_content(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
-    message_id: String,
-    content: String,
-    thinking: Option<String>,
-    activities: Option<Vec<ActivityEntry>>,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    let mut session = state
-        .get_session(&data_dir, &session_id)?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    let msg = session
-        .messages
-        .iter_mut()
-        .find(|m| m.id == message_id)
-        .ok_or_else(|| format!("Message not found: {message_id}"))?;
-    msg.content = content;
-    msg.thinking = thinking;
-    msg.activities = activities;
     session.updated_at = now_timestamp();
     state.save_session(&data_dir, &session)?;
     Ok(())
@@ -280,6 +283,96 @@ pub fn list_closed_sessions(
 }
 
 #[tauri::command]
+pub fn update_message_parts(
+    state: State<'_, Arc<SessionStore>>,
+    app: tauri::AppHandle,
+    session_id: String,
+    message_id: String,
+    parts: Vec<MessagePart>,
+) -> Result<(), String> {
+    let data_dir = resolve_data_dir(&app)?;
+    let mut session = state
+        .get_session(&data_dir, &session_id)?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    let msg = session
+        .messages
+        .iter_mut()
+        .find(|m| m.id == message_id)
+        .ok_or_else(|| format!("Message not found: {message_id}"))?;
+
+    // Generate legacy fields from parts for backward compatibility
+    let mut content = String::new();
+    let mut thinking = String::new();
+    let mut activities: Vec<ActivityEntry> = Vec::new();
+    for part in &parts {
+        match part {
+            MessagePart::Text { content: c } => content.push_str(c),
+            MessagePart::Thinking { content: c } => thinking.push_str(c),
+            MessagePart::ToolUse { tool, input, id } => {
+                activities.push(ActivityEntry::ToolUse {
+                    tool: tool.clone(),
+                    input: input.clone(),
+                    id: id.clone(),
+                });
+            }
+            MessagePart::ToolResult {
+                content: c,
+                is_error,
+            } => {
+                activities.push(ActivityEntry::ToolResult {
+                    content: c.clone(),
+                    is_error: *is_error,
+                });
+            }
+            MessagePart::Permission {
+                request,
+                status,
+                answers,
+            } => {
+                if status != "pending" {
+                    let tool_name = request
+                        .get("tool_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let summary = answers
+                        .as_ref()
+                        .and_then(|a| a.as_object())
+                        .map(|obj| {
+                            obj.values()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_else(|| status.clone());
+                    activities.push(ActivityEntry::PermissionResult {
+                        tool_name,
+                        status: status.clone(),
+                        summary,
+                    });
+                }
+            }
+        }
+    }
+
+    msg.content = content;
+    msg.thinking = if thinking.is_empty() {
+        None
+    } else {
+        Some(thinking)
+    };
+    msg.activities = if activities.is_empty() {
+        None
+    } else {
+        Some(activities)
+    };
+    msg.parts = Some(parts);
+    session.updated_at = now_timestamp();
+    state.save_session(&data_dir, &session)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn update_session_agent_info(
     state: State<'_, Arc<SessionStore>>,
     app: tauri::AppHandle,
@@ -311,6 +404,7 @@ mod tests {
                 content: "Hello agent".to_string(),
                 thinking: None,
                 activities: None,
+                parts: None,
                 timestamp: 1000.0,
             }],
             state: SessionState::Active,
@@ -336,6 +430,7 @@ mod tests {
                 content: long_content,
                 thinking: None,
                 activities: None,
+                parts: None,
                 timestamp: 1000.0,
             }],
             state: SessionState::Idle,
@@ -361,6 +456,7 @@ mod tests {
                 content: long_content,
                 thinking: None,
                 activities: None,
+                parts: None,
                 timestamp: 1000.0,
             }],
             state: SessionState::Idle,
@@ -439,6 +535,7 @@ mod tests {
             content: "response".to_string(),
             thinking: Some("deep thought".to_string()),
             activities: None,
+            parts: None,
             timestamp: 1000.0,
         };
         let json = serde_json::to_string(&msg_with).unwrap();
@@ -452,6 +549,7 @@ mod tests {
             content: "response".to_string(),
             thinking: None,
             activities: None,
+            parts: None,
             timestamp: 1000.0,
         };
         let json = serde_json::to_string(&msg_without).unwrap();
@@ -479,6 +577,7 @@ mod tests {
                     content: "Hello".to_string(),
                     thinking: None,
                     activities: None,
+                    parts: None,
                     timestamp: 1000.0,
                 },
                 ChatMessage {
@@ -487,6 +586,7 @@ mod tests {
                     content: "Hi there!".to_string(),
                     thinking: None,
                     activities: None,
+                    parts: None,
                     timestamp: 1001.0,
                 },
             ],
@@ -582,10 +682,88 @@ mod tests {
                     is_error: false,
                 },
             ]),
+            parts: None,
             timestamp: 1000.0,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ChatMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back.activities.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn message_part_serde_roundtrip() {
+        let parts = vec![
+            MessagePart::Thinking {
+                content: "hmm".to_string(),
+            },
+            MessagePart::Text {
+                content: "hello".to_string(),
+            },
+            MessagePart::ToolUse {
+                tool: "Read".to_string(),
+                input: serde_json::json!({"file_path": "/a.ts"}),
+                id: "t1".to_string(),
+            },
+            MessagePart::ToolResult {
+                content: "ok".to_string(),
+                is_error: false,
+            },
+            MessagePart::Permission {
+                request: serde_json::json!({"request_id": "r1", "tool_name": "Bash"}),
+                status: "allowed".to_string(),
+                answers: Some(serde_json::json!({"q1": "yes"})),
+            },
+        ];
+        let json = serde_json::to_string(&parts).unwrap();
+        let back: Vec<MessagePart> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 5);
+        assert_eq!(back, parts);
+    }
+
+    #[test]
+    fn chat_message_with_parts_roundtrip() {
+        let msg = ChatMessage {
+            id: "m1".to_string(),
+            role: MessageRole::Agent,
+            content: "hi".to_string(),
+            thinking: Some("think".to_string()),
+            activities: None,
+            parts: Some(vec![
+                MessagePart::Thinking {
+                    content: "think".to_string(),
+                },
+                MessagePart::Text {
+                    content: "hi".to_string(),
+                },
+            ]),
+            timestamp: 1000.0,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.parts.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn old_json_without_parts_deserializes_to_none() {
+        let json = r#"{"id":"m1","role":"agent","content":"hello","timestamp":1000.0}"#;
+        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.parts, None);
+    }
+
+    #[test]
+    fn message_part_permission_without_answers_serializes() {
+        let part = MessagePart::Permission {
+            request: serde_json::json!({"request_id": "r1"}),
+            status: "pending".to_string(),
+            answers: None,
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(!json.contains("answers"));
+        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        if let MessagePart::Permission { answers, .. } = back {
+            assert_eq!(answers, None);
+        } else {
+            panic!("Expected Permission variant");
+        }
     }
 }

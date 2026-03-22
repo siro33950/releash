@@ -10,8 +10,7 @@ import type {
 } from "@/types/session";
 import type { AgentChatAction } from "./agentChatReducer";
 import {
-	partsToLegacy,
-	updateMessageContent,
+	updateMessageParts,
 	updateSessionAgentInfo,
 	updateSessionState,
 } from "./useSessionStore";
@@ -95,7 +94,7 @@ interface QueryCompleted {
 	chat_session_id?: string;
 }
 
-export interface AgentPtyListenerRefs {
+export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	streamingMessageIdsRef: MutableRefObject<Map<string, string>>;
 	activeSessionRef: MutableRefObject<ChatSession | null>;
@@ -137,21 +136,16 @@ export function extractStreamingDelta(msg: SdkMessage): StreamDelta | null {
 	return null;
 }
 
-function bufferAppendText(buf: StreamingBuffer, chunk: string): void {
+function bufferAppend(
+	buf: StreamingBuffer,
+	partType: "text" | "thinking",
+	chunk: string,
+): void {
 	const last = buf.parts[buf.parts.length - 1];
-	if (last && last.type === "text") {
+	if (last && last.type === partType) {
 		last.content += chunk;
 	} else {
-		buf.parts.push({ type: "text", content: chunk });
-	}
-}
-
-function bufferAppendThinking(buf: StreamingBuffer, chunk: string): void {
-	const last = buf.parts[buf.parts.length - 1];
-	if (last && last.type === "thinking") {
-		last.content += chunk;
-	} else {
-		buf.parts.push({ type: "thinking", content: chunk });
+		buf.parts.push({ type: partType, content: chunk });
 	}
 }
 
@@ -186,7 +180,7 @@ export function shouldRetry(
 	return humanText || null;
 }
 
-export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
+export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 	const {
 		dispatch,
 		streamingMessageIdsRef,
@@ -226,6 +220,14 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 						messageId,
 						request: req as PermissionRequest,
 					});
+					const buf = streamingBuffersRef.current.get(chatSessionId);
+					if (buf) {
+						buf.parts.push({
+							type: "permission",
+							request: req as PermissionRequest,
+							status: "pending",
+						});
+					}
 				}
 			}
 
@@ -297,14 +299,14 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 							messageId,
 							chunk: delta.text,
 						});
-						if (buf) bufferAppendText(buf, delta.text);
+						if (buf) bufferAppend(buf, "text", delta.text);
 					} else {
 						dispatch({
 							type: "APPEND_THINKING",
 							messageId,
 							chunk: delta.thinking,
 						});
-						if (buf) bufferAppendThinking(buf, delta.thinking);
+						if (buf) bufferAppend(buf, "thinking", delta.thinking);
 					}
 				}
 
@@ -367,8 +369,8 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 						type: "ADD_MESSAGE",
 						message: {
 							id: `system-error-${Date.now()}`,
-							role: "system",
-							parts: [{ type: "text", content: resultMsg.errors.join("\n") }],
+							role: "agent",
+							parts: [{ type: "error", content: resultMsg.errors.join("\n") }],
 							timestamp: Date.now(),
 						},
 					});
@@ -422,14 +424,9 @@ export function useAgentPtyListeners(refs: AgentPtyListenerRefs): void {
 
 			// Persist final message content from buffer (works for all sessions)
 			if (msgId && chatSessionId && buffer) {
-				const legacy = partsToLegacy(buffer.parts);
-				updateMessageContent(
-					chatSessionId,
-					msgId,
-					legacy.content,
-					legacy.thinking,
-					legacy.activities,
-				).catch((e) => console.error("Failed to persist agent message:", e));
+				updateMessageParts(chatSessionId, msgId, buffer.parts).catch((e) =>
+					console.error("Failed to persist agent message:", e),
+				);
 			}
 
 			// Retry logic: if --resume failed (error + empty content), retry without session ID

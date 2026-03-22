@@ -26,19 +26,19 @@ describe("StreamMessage", () => {
 		expect(el.textContent).toContain("Hello human");
 	});
 
-	it("shows streaming cursor for agent when streaming", () => {
+	it("shows streaming shimmer for agent when streaming", () => {
 		const { container } = render(
 			<StreamMessage content="Processing..." role={agent} isStreaming={true} />,
 		);
-		const cursor = container.querySelector(".animate-pulse");
+		const cursor = container.querySelector(".agent-shimmer");
 		expect(cursor).not.toBeNull();
 	});
 
-	it("does not show streaming cursor when not streaming", () => {
+	it("does not show streaming shimmer when not streaming", () => {
 		const { container } = render(
 			<StreamMessage content="Done" role={agent} isStreaming={false} />,
 		);
-		const cursor = container.querySelector("span.animate-pulse");
+		const cursor = container.querySelector("span.agent-shimmer");
 		expect(cursor).toBeNull();
 	});
 

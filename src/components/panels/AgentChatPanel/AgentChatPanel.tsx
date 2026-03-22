@@ -1,4 +1,4 @@
-import { History, Loader2, X } from "lucide-react";
+import { History, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	Popover,
@@ -7,12 +7,12 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
-import { ActivityItem } from "./ActivityLog";
+import { ActivityItem, CollapsibleError, ToolActivity } from "./ActivityLog";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
 import { PermissionDialog } from "./PermissionDialog";
+import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
 import { StreamMessage } from "./StreamMessage";
-import { ThinkingIndicator } from "./ThinkingIndicator";
 
 interface AgentChatPanelProps {
 	worktreePath: string;
@@ -84,7 +84,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 
 	const msgs = activeSession?.messages;
 	const lastMsg = msgs?.[msgs.length - 1];
-	const showWaitingIndicator =
+	const showWaitingShimmer =
 		isStreaming && lastMsg?.role === "agent" && lastMsg.parts.length === 0;
 
 	const isInputDisabled = isStreaming;
@@ -249,11 +249,6 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 					</Popover>
 				</div>
 				<div className="flex flex-col flex-1 min-h-0">
-					{error && (
-						<div className="px-4 py-2 bg-destructive/10 text-destructive text-sm border-b border-destructive/20">
-							{error}
-						</div>
-					)}
 					{isStreaming && (
 						<div
 							data-testid="agent-state-indicator"
@@ -290,18 +285,24 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 											{/* biome-ignore lint/suspicious/useIterableCallbackReturn: switch is exhaustive for MessagePart */}
 											{msg.parts.map((part, i) => {
 												const key = `${msg.id}-p${i}`;
+												const nextPart = msg.parts[i + 1];
 												const isLastPart = i === msg.parts.length - 1;
 												const partStreaming =
 													isLastAgentStreaming && isLastPart;
+
+												// Skip tool_result that is paired with preceding tool_use
+												if (
+													part.type === "tool_result" &&
+													i > 0 &&
+													msg.parts[i - 1].type === "tool_use"
+												)
+													return null;
+
 												switch (part.type) {
 													case "thinking":
-														return (
-															<ThinkingIndicator
-																key={key}
-																content={part.content}
-																isStreaming={partStreaming}
-															/>
-														);
+														if (isLastAgentStreaming)
+															return <ShimmerPlaceholder key={key} lines={2} />;
+														return null;
 													case "text":
 														return (
 															// biome-ignore lint/a11y/useValidAriaRole: role is a component prop, not an ARIA role
@@ -312,10 +313,30 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 																isStreaming={partStreaming}
 															/>
 														);
-													case "tool_use":
+													case "error":
+														return (
+															<div key={key} className="px-5 py-0.5 text-xs">
+																<CollapsibleError content={part.content} />
+															</div>
+														);
+													case "tool_use": {
+														const pairedResult =
+															nextPart?.type === "tool_result"
+																? nextPart
+																: undefined;
+														return (
+															<div key={key} className="px-5 py-0.5 text-xs">
+																<ToolActivity
+																	entry={part}
+																	result={pairedResult}
+																	index={i}
+																/>
+															</div>
+														);
+													}
 													case "tool_result":
 														return (
-															<div key={key} className="px-4 py-0.5 text-xs">
+															<div key={key} className="px-5 py-0.5 text-xs">
 																<ActivityItem entry={part} index={i} />
 															</div>
 														);
@@ -338,21 +359,26 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 														);
 												}
 											})}
+											{isLastAgentStreaming &&
+												msg.parts.length > 0 &&
+												msg.parts[msg.parts.length - 1].type === "tool_use" && (
+													<ShimmerPlaceholder lines={2} />
+												)}
 										</div>
 									);
 								})}
-								{showWaitingIndicator && (
-									<div data-testid="waiting-indicator" className="px-4 py-3">
-										<div className="flex items-center gap-2 text-sm text-muted-foreground">
-											<Loader2 className="size-4 animate-spin" />
-											<span>Waiting...</span>
-										</div>
-									</div>
-								)}
+								{showWaitingShimmer && <ShimmerPlaceholder />}
 							</div>
 						)}
 					</div>
 					<div className="shrink-0">
+						{error && (
+							<div className="px-2 pb-2">
+								<div className="bg-destructive/10 text-destructive rounded-lg px-3 py-2 text-sm">
+									{error}
+								</div>
+							</div>
+						)}
 						<MessageInput
 							onSend={sendMessage}
 							onInterrupt={interrupt}

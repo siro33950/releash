@@ -165,6 +165,7 @@ mod tests {
                 content: "Hello".to_string(),
                 thinking: None,
                 activities: None,
+                parts: None,
                 timestamp: 1000.0,
             }],
             state: SessionState::Active,
@@ -231,6 +232,7 @@ mod tests {
             content: "Response".to_string(),
             thinking: None,
             activities: None,
+            parts: None,
             timestamp: 1001.0,
         });
         session.updated_at = 1001.0;

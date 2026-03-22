@@ -28,20 +28,20 @@ vi.mock("./useSessionStore", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./useSessionStore")>();
 	return {
 		...actual,
-		updateMessageContent: vi.fn().mockResolvedValue(undefined),
+		updateMessageParts: vi.fn().mockResolvedValue(undefined),
 		updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
 		updateSessionState: vi.fn().mockResolvedValue(undefined),
 	};
 });
 
 const {
-	useAgentPtyListeners,
+	useAgentSdkListeners,
 	extractStreamingDelta,
 	extractToolResultContent,
 	shouldRetry,
-} = await import("./useAgentPtyListeners");
+} = await import("./useAgentSdkListeners");
 
-import type { StreamingBuffer } from "./useAgentPtyListeners";
+import type { StreamingBuffer } from "./useAgentSdkListeners";
 
 function makeRefs() {
 	return {
@@ -129,12 +129,12 @@ describe("extractToolResultContent", () => {
 	});
 });
 
-describe("useAgentPtyListeners cancelled flag", () => {
+describe("useAgentSdkListeners cancelled flag", () => {
 	it("calls unlisten immediately if cleanup happens before listen resolves", async () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
-		const { unmount } = renderHook(() => useAgentPtyListeners(refs));
+		const { unmount } = renderHook(() => useAgentSdkListeners(refs));
 
 		const pendingResolvers = [...listenResolvers];
 		expect(pendingResolvers.length).toBeGreaterThanOrEqual(2);
@@ -159,7 +159,7 @@ describe("useAgentPtyListeners cancelled flag", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
-		const { unmount } = renderHook(() => useAgentPtyListeners(refs));
+		const { unmount } = renderHook(() => useAgentSdkListeners(refs));
 
 		const unlistenFns: UnlistenFn[] = [];
 		for (const { resolve } of listenResolvers) {
@@ -185,7 +185,7 @@ describe("useAgentPtyListeners cancelled flag", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		const eventNames = listenResolvers.map((r) => r.eventName);
 		expect(eventNames).toContain("agent-sdk-message");
@@ -194,14 +194,14 @@ describe("useAgentPtyListeners cancelled flag", () => {
 	});
 });
 
-describe("useAgentPtyListeners callback behavior", () => {
+describe("useAgentSdkListeners callback behavior", () => {
 	it("dispatches APPEND_STREAMING when stream_event with text_delta is received", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
 		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		// Resolve all listeners so they're active
 		for (const { resolve } of listenResolvers) {
@@ -244,7 +244,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 			agentSessionId: null,
 		} as never;
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		for (const { resolve } of listenResolvers) {
 			resolve(vi.fn());
@@ -285,7 +285,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 			agentSessionId: null,
 		} as never;
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		for (const { resolve } of listenResolvers) {
 			resolve(vi.fn());
@@ -318,7 +318,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		const refs = makeRefs();
 		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		for (const { resolve } of listenResolvers) {
 			resolve(vi.fn());
@@ -352,7 +352,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		const refs = makeRefs();
 		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		for (const { resolve } of listenResolvers) {
 			resolve(vi.fn());
@@ -394,7 +394,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		const refs = makeRefs();
 		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		for (const { resolve } of listenResolvers) {
 			resolve(vi.fn());
@@ -435,7 +435,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		const refs = makeRefs();
 		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		for (const { resolve } of listenResolvers) {
 			resolve(vi.fn());
@@ -475,7 +475,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		for (const { resolve } of listenResolvers) {
 			resolve(vi.fn());
@@ -520,7 +520,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 			agentSessionId: null,
 		} as never;
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		for (const { resolve } of listenResolvers) {
 			resolve(vi.fn());
@@ -546,7 +546,7 @@ describe("useAgentPtyListeners callback behavior", () => {
 		const refs = makeRefs();
 		// No entry in streamingMessageIdsRef for "session-1"
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 
 		for (const { resolve } of listenResolvers) {
 			resolve(vi.fn());
@@ -580,7 +580,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -605,7 +605,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -628,7 +628,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -653,7 +653,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -689,7 +689,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -723,7 +723,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -749,7 +749,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -773,7 +773,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		const refs = makeRefs();
 		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -929,7 +929,7 @@ describe("streaming buffer accumulation", () => {
 			parts: [],
 		});
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -972,7 +972,7 @@ describe("streaming buffer accumulation", () => {
 			parts: [],
 		});
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -1015,7 +1015,7 @@ describe("streaming buffer accumulation", () => {
 			parts: [],
 		});
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -1095,7 +1095,7 @@ describe("non-active session persistence", () => {
 			agentSessionId: null,
 		} as never;
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-query-completed");
@@ -1108,16 +1108,17 @@ describe("non-active session persistence", () => {
 			},
 		});
 
-		const { updateMessageContent } = await import("./useSessionStore");
-		const calls = vi.mocked(updateMessageContent).mock.calls;
+		const { updateMessageParts } = await import("./useSessionStore");
+		const calls = vi.mocked(updateMessageParts).mock.calls;
 		const call = calls.find((c) => c[0] === "session-2");
 		expect(call).toBeDefined();
 		expect(call).toEqual([
 			"session-2",
 			"msg-002",
-			"background response",
-			"some thinking",
-			undefined,
+			[
+				{ type: "thinking", content: "some thinking" },
+				{ type: "text", content: "background response" },
+			],
 		]);
 	});
 
@@ -1135,7 +1136,7 @@ describe("non-active session persistence", () => {
 			agentSessionId: "sdk-1",
 		} as never;
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -1183,7 +1184,7 @@ describe("non-active session persistence", () => {
 			agentSessionId: null,
 		} as never;
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-query-completed");
@@ -1216,7 +1217,7 @@ describe("non-active session persistence", () => {
 			agentSessionId: null,
 		} as never;
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-query-completed");
@@ -1239,7 +1240,7 @@ describe("result error display", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -1265,7 +1266,8 @@ describe("result error display", () => {
 				};
 			}
 		).message;
-		expect(msg.role).toBe("system");
+		expect(msg.role).toBe("agent");
+		expect(msg.parts[0].type).toBe("error");
 		expect(msg.parts[0].content).toBe("Authentication failed\nPlease log in");
 	});
 
@@ -1274,7 +1276,7 @@ describe("result error display", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");
@@ -1298,7 +1300,7 @@ describe("result error display", () => {
 		listenCallbacks.clear();
 		const refs = makeRefs();
 
-		renderHook(() => useAgentPtyListeners(refs));
+		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
 		const cb = listenCallbacks.get("agent-sdk-message");

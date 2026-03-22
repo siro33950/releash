@@ -77,7 +77,17 @@ process.stdin.on("data", (chunk) => {
 	}
 });
 
-for await (const message of q) {
-	process.stdout.write(JSON.stringify(message) + "\n");
+try {
+	for await (const message of q) {
+		process.stdout.write(JSON.stringify(message) + "\n");
+	}
+} catch (e) {
+	process.stdout.write(
+		JSON.stringify({
+			type: "result",
+			errors: [e instanceof Error ? e.message : String(e)],
+		}) + "\n",
+	);
+	process.exit(1);
 }
 process.exit(0);

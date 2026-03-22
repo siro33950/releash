@@ -38,7 +38,6 @@ vi.mock("./useSessionStore", () => ({
 		}),
 	),
 	updateSessionState: vi.fn().mockResolvedValue(undefined),
-	updateMessageContent: vi.fn().mockResolvedValue(undefined),
 	updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
 	closeSession: vi.fn().mockResolvedValue(undefined),
 	restoreSession: vi.fn().mockResolvedValue(undefined),
@@ -691,7 +690,6 @@ describe("useSessionStore", () => {
 		expect(mod.createSession).toBeDefined();
 		expect(mod.addMessage).toBeDefined();
 		expect(mod.updateSessionState).toBeDefined();
-		expect(mod.updateMessageContent).toBeDefined();
 		expect(mod.updateSessionAgentInfo).toBeDefined();
 		expect(mod.closeSession).toBeDefined();
 		expect(mod.restoreSession).toBeDefined();

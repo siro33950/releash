@@ -9,8 +9,8 @@ import type {
 import { INITIAL_STATE, reducer } from "./agentChatReducer";
 import {
 	type StreamingBuffer,
-	useAgentPtyListeners,
-} from "./useAgentPtyListeners";
+	useAgentSdkListeners,
+} from "./useAgentSdkListeners";
 import {
 	addMessage,
 	closeSession as closeSessionApi,
@@ -311,6 +311,18 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 					status,
 					answers,
 				});
+				// Also update the streaming buffer so persistence captures the resolved state
+				const buffer = streamingBuffersRef.current.get(sessionId);
+				if (buffer) {
+					const permPart = buffer.parts.find(
+						(p) =>
+							p.type === "permission" && p.request.request_id === requestId,
+					);
+					if (permPart && permPart.type === "permission") {
+						permPart.status = status;
+						if (answers) permPart.answers = answers;
+					}
+				}
 			}
 		},
 		[],
@@ -338,7 +350,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		[startQuery],
 	);
 
-	useAgentPtyListeners({
+	useAgentSdkListeners({
 		dispatch,
 		streamingMessageIdsRef,
 		activeSessionRef,
