@@ -1,5 +1,5 @@
 import { ChevronRight } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
@@ -13,6 +13,71 @@ interface AskQuestion {
 	multiSelect: boolean;
 }
 
+interface ExitPlanModeInput {
+	plan: string;
+	planFilePath?: string;
+	allowedPrompts: { tool: string; prompt: string }[];
+}
+
+function parseExitPlanModeInput(
+	input: Record<string, unknown>,
+): ExitPlanModeInput {
+	const raw = input as {
+		plan?: string;
+		planFilePath?: string;
+		allowedPrompts?: { tool: string; prompt: string }[];
+	};
+	return {
+		plan: raw.plan ?? "",
+		planFilePath: raw.planFilePath,
+		allowedPrompts: raw.allowedPrompts ?? [],
+	};
+}
+
+function parseAskQuestions(input: Record<string, unknown>): AskQuestion[] {
+	return (input as { questions?: AskQuestion[] }).questions ?? [];
+}
+
+function PlanContent({
+	plan,
+	allowedPrompts,
+}: {
+	plan: string;
+	allowedPrompts: { tool: string; prompt: string }[];
+}) {
+	return (
+		<>
+			{plan && (
+				<div
+					data-testid="plan-markdown"
+					className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words"
+				>
+					<Markdown
+						remarkPlugins={remarkPluginList}
+						rehypePlugins={rehypePluginList}
+					>
+						{plan}
+					</Markdown>
+				</div>
+			)}
+			{allowedPrompts.length > 0 && (
+				<div data-testid="allowed-prompts">
+					<p className="text-xs font-medium text-muted-foreground mb-0.5">
+						Permissions:
+					</p>
+					<ul className="text-xs text-muted-foreground list-disc list-inside">
+						{allowedPrompts.map((p) => (
+							<li key={`${p.tool}:${p.prompt}`}>
+								{p.tool}: {p.prompt}
+							</li>
+						))}
+					</ul>
+				</div>
+			)}
+		</>
+	);
+}
+
 interface PermissionDialogProps {
 	request: PermissionRequest;
 	status?: "pending" | "allowed" | "denied";
@@ -24,19 +89,11 @@ interface PermissionDialogProps {
 
 function hasResolvedDetail(request: PermissionRequest): boolean {
 	if (request.tool_name === "ExitPlanMode") {
-		const input = request.input as {
-			plan?: string;
-			allowedPrompts?: { tool: string; prompt: string }[];
-		};
-		return !!(
-			input.plan ||
-			(input.allowedPrompts && input.allowedPrompts.length > 0)
-		);
+		const { plan, allowedPrompts } = parseExitPlanModeInput(request.input);
+		return !!(plan || allowedPrompts.length > 0);
 	}
 	if (request.tool_name === "AskUserQuestion") {
-		const questions =
-			(request.input as { questions?: AskQuestion[] }).questions ?? [];
-		return questions.length > 0;
+		return parseAskQuestions(request.input).length > 0;
 	}
 	return !!(request.input && Object.keys(request.input).length > 0);
 }
@@ -48,49 +105,18 @@ function ResolvedDetail({
 	request: PermissionRequest;
 	resolvedAnswers?: Record<string, string>;
 }) {
-	const remarkPlugins = useMemo(() => remarkPluginList, []);
-
 	if (request.tool_name === "ExitPlanMode") {
-		const input = request.input as {
-			plan?: string;
-			allowedPrompts?: { tool: string; prompt: string }[];
-		};
-		const plan = input.plan ?? "";
-		const allowedPrompts = input.allowedPrompts;
-		if (!plan && (!allowedPrompts || allowedPrompts.length === 0)) return null;
+		const { plan, allowedPrompts } = parseExitPlanModeInput(request.input);
+		if (!plan && allowedPrompts.length === 0) return null;
 		return (
 			<div className="mt-1.5 space-y-1.5">
-				{plan && (
-					<div className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words">
-						<Markdown
-							remarkPlugins={remarkPlugins}
-							rehypePlugins={rehypePluginList}
-						>
-							{plan}
-						</Markdown>
-					</div>
-				)}
-				{allowedPrompts && allowedPrompts.length > 0 && (
-					<div>
-						<p className="text-xs font-medium text-muted-foreground mb-0.5">
-							Permissions:
-						</p>
-						<ul className="text-xs text-muted-foreground list-disc list-inside">
-							{allowedPrompts.map((p) => (
-								<li key={`${p.tool}:${p.prompt}`}>
-									{p.tool}: {p.prompt}
-								</li>
-							))}
-						</ul>
-					</div>
-				)}
+				<PlanContent plan={plan} allowedPrompts={allowedPrompts} />
 			</div>
 		);
 	}
 
 	if (request.tool_name === "AskUserQuestion") {
-		const questions: AskQuestion[] =
-			(request.input as { questions?: AskQuestion[] }).questions ?? [];
+		const questions = parseAskQuestions(request.input);
 		if (questions.length === 0) return null;
 		return (
 			<div className="mt-1.5 space-y-1">
@@ -129,8 +155,6 @@ export function PermissionDialog({
 	const [answers, setAnswers] = useState<Record<string, string>>({});
 	const [otherTexts, setOtherTexts] = useState<Record<string, string>>({});
 	const [isExpanded, setIsExpanded] = useState(false);
-	const remarkPlugins = useMemo(() => remarkPluginList, []);
-
 	if (status !== "pending") {
 		const isAllowed = status === "allowed";
 		let label: string;
@@ -185,8 +209,7 @@ export function PermissionDialog({
 	}
 
 	if (request.tool_name === "AskUserQuestion" && onAnswer) {
-		const questions: AskQuestion[] =
-			(request.input as { questions?: AskQuestion[] }).questions ?? [];
+		const questions = parseAskQuestions(request.input);
 
 		const OTHER_LABEL = "__other__";
 
@@ -281,13 +304,7 @@ export function PermissionDialog({
 	}
 
 	if (request.tool_name === "ExitPlanMode") {
-		const input = request.input as {
-			plan?: string;
-			planFilePath?: string;
-			allowedPrompts?: { tool: string; prompt: string }[];
-		};
-		const plan = input.plan ?? "";
-		const allowedPrompts = input.allowedPrompts;
+		const { plan, allowedPrompts } = parseExitPlanModeInput(request.input);
 
 		return (
 			<div
@@ -295,45 +312,14 @@ export function PermissionDialog({
 				className="mx-3 my-1.5 rounded-md border border-border bg-muted/50 p-3"
 			>
 				<p className="text-sm font-medium mb-2">Plan Review</p>
-				{plan && (
-					<div
-						data-testid="plan-markdown"
-						className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words mb-2"
-					>
-						<Markdown
-							remarkPlugins={remarkPlugins}
-							rehypePlugins={rehypePluginList}
-						>
-							{plan}
-						</Markdown>
-					</div>
-				)}
-				{allowedPrompts && allowedPrompts.length > 0 && (
-					<div data-testid="allowed-prompts" className="mb-2">
-						<p className="text-xs font-medium text-muted-foreground mb-1">
-							Permissions:
-						</p>
-						<ul className="text-xs text-muted-foreground list-disc list-inside">
-							{allowedPrompts.map((p) => (
-								<li key={`${p.tool}:${p.prompt}`}>
-									{p.tool}: {p.prompt}
-								</li>
-							))}
-						</ul>
-					</div>
-				)}
-				<div className="flex gap-2">
-					<Button size="xs" onClick={() => onAllow(request.request_id)}>
-						Allow
-					</Button>
-					<Button
-						size="xs"
-						variant="outline"
-						onClick={() => onDeny(request.request_id)}
-					>
-						Deny
-					</Button>
+				<div className="space-y-2 mb-2">
+					<PlanContent plan={plan} allowedPrompts={allowedPrompts} />
 				</div>
+				<AllowDenyButtons
+					requestId={request.request_id}
+					onAllow={onAllow}
+					onDeny={onDeny}
+				/>
 			</div>
 		);
 	}
@@ -361,18 +347,32 @@ export function PermissionDialog({
 					{JSON.stringify(request.input, null, 2)}
 				</pre>
 			)}
-			<div className="flex gap-2">
-				<Button size="xs" onClick={() => onAllow(request.request_id)}>
-					Allow
-				</Button>
-				<Button
-					size="xs"
-					variant="outline"
-					onClick={() => onDeny(request.request_id)}
-				>
-					Deny
-				</Button>
-			</div>
+			<AllowDenyButtons
+				requestId={request.request_id}
+				onAllow={onAllow}
+				onDeny={onDeny}
+			/>
+		</div>
+	);
+}
+
+function AllowDenyButtons({
+	requestId,
+	onAllow,
+	onDeny,
+}: {
+	requestId: string;
+	onAllow: (requestId: string) => void;
+	onDeny: (requestId: string) => void;
+}) {
+	return (
+		<div className="flex gap-2">
+			<Button size="xs" onClick={() => onAllow(requestId)}>
+				Allow
+			</Button>
+			<Button size="xs" variant="outline" onClick={() => onDeny(requestId)}>
+				Deny
+			</Button>
 		</div>
 	);
 }

@@ -80,7 +80,9 @@ process.stdin.on("data", (chunk) => {
 
 q.supportedCommands().then((commands) => {
 	process.stdout.write(JSON.stringify({ type: "supported_commands", commands }) + "\n");
-}).catch(() => {});
+}).catch((e) => {
+	process.stderr.write(`bridge: supportedCommands failed: ${e instanceof Error ? e.message : String(e)}\n`);
+});
 
 try {
 	for await (const message of q) {

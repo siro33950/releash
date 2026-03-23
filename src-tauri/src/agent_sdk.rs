@@ -128,8 +128,16 @@ pub async fn execute_agent_query(
         .map_err(|e| format!("Failed to wait for process: {e}"))?;
 
     // Wait for stream readers to complete
-    let _ = stdout_task.await;
-    let stderr_output = stderr_task.await.unwrap_or_default();
+    if let Err(e) = stdout_task.await {
+        log::error!("stdout reader task failed: {e}");
+    }
+    let stderr_output = match stderr_task.await {
+        Ok(output) => output,
+        Err(e) => {
+            log::error!("stderr reader task failed: {e}");
+            String::new()
+        }
+    };
 
     // Clean up handle
     {

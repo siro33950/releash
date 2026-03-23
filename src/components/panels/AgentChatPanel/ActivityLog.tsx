@@ -5,6 +5,7 @@ import {
 	classifyTool,
 	getCommandLabel,
 	getReadToolLabel,
+	shortenPath,
 } from "./toolClassification";
 
 function truncateResult(content: string, maxLines = 5): string {
@@ -42,14 +43,6 @@ export function CollapsibleError({
 	);
 }
 
-function shortenPath(fullPath: string, basePath?: string): string {
-	if (basePath && fullPath.startsWith(basePath)) {
-		const rel = fullPath.slice(basePath.length);
-		return rel.startsWith("/") ? rel.slice(1) : rel;
-	}
-	return fullPath;
-}
-
 function summarizeToolInput(
 	tool: string,
 	input: Record<string, unknown>,
@@ -83,6 +76,40 @@ interface ToolActivityProps {
 	basePath?: string;
 }
 
+function ToolActivityHeader({
+	index,
+	isExecuting,
+	isExpanded,
+	onToggle,
+	children,
+	className,
+}: {
+	index: number;
+	isExecuting?: boolean;
+	isExpanded: boolean;
+	onToggle: () => void;
+	children: React.ReactNode;
+	className?: string;
+}) {
+	return (
+		<button
+			type="button"
+			data-testid={`activity-tool-use-${index}`}
+			className={`flex items-center ${className ?? "gap-1"} min-w-0 text-muted-foreground/70 hover:text-foreground/80 transition-colors`}
+			onClick={onToggle}
+		>
+			{isExecuting ? (
+				<Loader2 className="size-3 shrink-0 animate-spin" />
+			) : (
+				<ChevronRight
+					className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+				/>
+			)}
+			{children}
+		</button>
+	);
+}
+
 function ReadToolActivity({
 	entry,
 	result,
@@ -94,21 +121,15 @@ function ReadToolActivity({
 	const label = getReadToolLabel(entry.tool, entry.input, basePath);
 
 	return (
-		<div data-testid={`activity-tool-use-${index}`} className="py-0.5">
-			<button
-				type="button"
-				className="flex items-center gap-1 min-w-0 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
-				onClick={() => setIsExpanded(!isExpanded)}
+		<div className="py-0.5">
+			<ToolActivityHeader
+				index={index}
+				isExecuting={isExecuting}
+				isExpanded={isExpanded}
+				onToggle={() => setIsExpanded(!isExpanded)}
 			>
-				{isExecuting ? (
-					<Loader2 className="size-3 shrink-0 animate-spin" />
-				) : (
-					<ChevronRight
-						className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-					/>
-				)}
 				<span className="truncate">{label}</span>
-			</button>
+			</ToolActivityHeader>
 			{isExpanded && result && result.content.trim().length > 0 && (
 				<pre className="mt-1 ml-4 text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden max-h-48 overflow-y-auto">
 					{truncateResult(result.content)}
@@ -129,22 +150,17 @@ function CommandToolActivity({
 	const hasResult = result && result.content.trim().length > 0;
 
 	return (
-		<div data-testid={`activity-tool-use-${index}`} className="py-0.5">
-			<button
-				type="button"
-				className="flex items-center gap-1.5 min-w-0 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
-				onClick={() => setIsExpanded(!isExpanded)}
+		<div className="py-0.5">
+			<ToolActivityHeader
+				index={index}
+				isExecuting={isExecuting}
+				isExpanded={isExpanded}
+				onToggle={() => setIsExpanded(!isExpanded)}
+				className="gap-1.5"
 			>
-				{isExecuting ? (
-					<Loader2 className="size-3 shrink-0 animate-spin" />
-				) : (
-					<ChevronRight
-						className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-					/>
-				)}
 				<Terminal className="size-3 shrink-0" />
 				<code className="truncate text-foreground/80">{label}</code>
-			</button>
+			</ToolActivityHeader>
 			{hasResult && result.isError ? (
 				<CollapsibleError content={result.content} maxLines={20} />
 			) : isExpanded && hasResult ? (
@@ -168,23 +184,17 @@ function DefaultToolActivity({
 	const summary = summarizeToolInput(entry.tool, entry.input, basePath);
 
 	return (
-		<div data-testid={`activity-tool-use-${index}`} className="py-0.5">
-			<button
-				type="button"
-				className="flex items-center gap-1 min-w-0 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
-				onClick={() => setIsExpanded(!isExpanded)}
+		<div className="py-0.5">
+			<ToolActivityHeader
+				index={index}
+				isExecuting={isExecuting}
+				isExpanded={isExpanded}
+				onToggle={() => setIsExpanded(!isExpanded)}
 			>
-				{isExecuting ? (
-					<Loader2 className="size-3 shrink-0 animate-spin" />
-				) : (
-					<ChevronRight
-						className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-					/>
-				)}
 				<span className="truncate">
 					{entry.tool} {summary}
 				</span>
-			</button>
+			</ToolActivityHeader>
 			{isExpanded && (
 				<>
 					{hasInput && (
@@ -233,6 +243,8 @@ export function ToolActivity({
 					basePath={basePath}
 				/>
 			);
+		// biome-ignore lint/complexity/noUselessSwitchCase: explicit coverage for classifyTool return type
+		case "write":
 		default:
 			return (
 				<DefaultToolActivity

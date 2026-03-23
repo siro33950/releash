@@ -80,13 +80,20 @@ function updateMessageInSession(
 	updater: (msg: ChatMessage) => ChatMessage,
 ): AgentChatState {
 	if (!state.activeSession) return state;
-	const messages = state.activeSession.messages.map((m) =>
-		m.id === messageId ? updater(m) : m,
-	);
+	const msgs = state.activeSession.messages;
+	const lastIdx = msgs.length - 1;
+	// Streaming target is almost always the last message — check it first
+	const idx =
+		lastIdx >= 0 && msgs[lastIdx].id === messageId
+			? lastIdx
+			: msgs.findIndex((m) => m.id === messageId);
+	if (idx === -1) return state;
+	const messages = msgs.slice();
+	messages[idx] = updater(msgs[idx]);
 	return { ...state, activeSession: { ...state.activeSession, messages } };
 }
 
-function appendToParts(
+export function appendToParts(
 	parts: MessagePart[],
 	partType: "thinking" | "text",
 	chunk: string,

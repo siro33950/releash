@@ -9,13 +9,14 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { loadSlashCommands } from "@/hooks/useSlashCommands";
-import { getTextContent, type MessagePart } from "@/types/session";
+import { getTextContent } from "@/types/session";
 import { ActivityItem, CollapsibleError, ToolActivity } from "./ActivityLog";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
 import { PermissionDialog } from "./PermissionDialog";
 import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
 import { StreamMessage } from "./StreamMessage";
+import { buildToolPairings } from "./toolPairing";
 
 interface AgentChatPanelProps {
 	worktreePath: string;
@@ -295,24 +296,14 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 									const isLastMsg = idx === activeSession.messages.length - 1;
 									const isLastAgentStreaming = isStreaming && isLastMsg;
 
-									// Build ID-based result map for tool_use ↔ tool_result pairing
-									const resultByToolUseId = new Map<
-										string,
-										Extract<MessagePart, { type: "tool_result" }>
-									>();
-									const pairedToolUseIds = new Set<string>();
-									for (const p of msg.parts) {
-										if (p.type === "tool_result" && p.toolUseId) {
-											resultByToolUseId.set(p.toolUseId, p);
-										}
-									}
+									const { pairedResults, skippedResultIndices } =
+										buildToolPairings(msg.parts);
 
 									return (
 										<div key={msg.id}>
 											{/* biome-ignore lint/suspicious/useIterableCallbackReturn: switch is exhaustive for MessagePart */}
 											{msg.parts.map((part, i) => {
 												const key = `${msg.id}-p${i}`;
-												const nextPart = msg.parts[i + 1];
 												switch (part.type) {
 													case "thinking":
 														return null;
@@ -332,15 +323,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 															</div>
 														);
 													case "tool_use": {
-														const pairedResult =
-															resultByToolUseId.get(part.id) ??
-															(nextPart?.type === "tool_result"
-																? nextPart
-																: undefined);
-														if (pairedResult?.toolUseId)
-															pairedToolUseIds.add(pairedResult.toolUseId);
-														else if (pairedResult && nextPart === pairedResult)
-															pairedToolUseIds.add(`adj-${i}`);
+														const pairedResult = pairedResults.get(i);
 														const isExecuting =
 															isLastAgentStreaming && !pairedResult;
 														return (
@@ -356,17 +339,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 														);
 													}
 													case "tool_result": {
-														// ID-based paired — skip
-														if (
-															part.toolUseId &&
-															pairedToolUseIds.has(part.toolUseId)
-														)
-															return null;
-														// Adjacent-based paired — skip
-														if (i > 0 && msg.parts[i - 1].type === "tool_use") {
-															if (pairedToolUseIds.has(`adj-${i - 1}`))
-																return null;
-														}
+														if (skippedResultIndices.has(i)) return null;
 														return (
 															<div key={key} className="px-5 py-0.5 text-xs">
 																<ActivityItem entry={part} index={i} />

@@ -9,7 +9,7 @@ import {
 	type PermissionRequest,
 	type SessionState,
 } from "@/types/session";
-import type { AgentChatAction } from "./agentChatReducer";
+import { type AgentChatAction, appendToParts } from "./agentChatReducer";
 import {
 	updateMessageParts,
 	updateSessionAgentInfo,
@@ -143,16 +143,226 @@ function bufferAppend(
 	partType: "text" | "thinking",
 	chunk: string,
 ): void {
-	const last = buf.parts[buf.parts.length - 1];
-	if (last && last.type === partType) {
-		last.content += chunk;
-	} else {
-		buf.parts.push({ type: partType, content: chunk });
-	}
+	buf.parts = appendToParts(buf.parts, partType, chunk);
 }
 
 function getBufferTextContent(buf: StreamingBuffer): string {
 	return getTextContent(buf.parts);
+}
+
+function handleSupportedCommands(msg: SdkMessage): void {
+	if (
+		msg.type === "supported_commands" &&
+		"commands" in msg &&
+		Array.isArray(msg.commands)
+	) {
+		setSlashCommands(
+			msg.commands as {
+				name: string;
+				description: string;
+				argumentHint?: string;
+			}[],
+		);
+	}
+}
+
+function handlePermissionRequest(
+	msg: SdkMessage,
+	chatSessionId: string | undefined,
+	messageId: string | null,
+	dispatch: Dispatch<AgentChatAction>,
+	streamingBuffersRef: MutableRefObject<Map<string, StreamingBuffer>>,
+): void {
+	if (msg.type !== "permission_request" || !chatSessionId) return;
+	const req = msg as unknown as PermissionRequest & {
+		tool_name?: string;
+	};
+	dispatch({
+		type: "SET_PENDING_PERMISSION",
+		sessionId: chatSessionId,
+		request: req as PermissionRequest,
+	});
+	if (messageId) {
+		dispatch({
+			type: "ADD_PERMISSION_PART",
+			messageId,
+			request: req as PermissionRequest,
+		});
+		const buf = streamingBuffersRef.current.get(chatSessionId);
+		if (buf) {
+			buf.parts.push({
+				type: "permission",
+				request: req as PermissionRequest,
+				status: "pending",
+			});
+		}
+	}
+}
+
+function handlePermissionModeSync(
+	msg: SdkMessage,
+	dispatch: Dispatch<AgentChatAction>,
+): void {
+	if (
+		msg.type === "system" &&
+		"permissionMode" in msg &&
+		typeof msg.permissionMode === "string"
+	) {
+		const sdkMode = msg.permissionMode as PermissionMode;
+		if (sdkMode === "default") {
+			dispatch({ type: "RESTORE_USER_PERMISSION_MODE" });
+		} else {
+			dispatch({ type: "SET_PERMISSION_MODE", mode: sdkMode });
+		}
+	}
+}
+
+function handleSystemMessage(
+	msg: SdkMessage,
+	chatSessionId: string | undefined,
+	dispatch: Dispatch<AgentChatAction>,
+): void {
+	if (msg.type !== "system" || !chatSessionId) return;
+	const text =
+		typeof (msg as Record<string, unknown>).message === "string"
+			? ((msg as Record<string, unknown>).message as string)
+			: typeof (msg as Record<string, unknown>).content === "string"
+				? ((msg as Record<string, unknown>).content as string)
+				: null;
+	if (text) {
+		dispatch({
+			type: "ADD_MESSAGE",
+			message: {
+				id: `system-${Date.now()}`,
+				role: "system",
+				parts: [{ type: "text", content: text }],
+				timestamp: Date.now(),
+			},
+		});
+	}
+}
+
+function handleSessionIdCapture(
+	msg: SdkMessage,
+	chatSessionId: string | undefined,
+	activeSessionRef: MutableRefObject<ChatSession | null>,
+	dispatch: Dispatch<AgentChatAction>,
+): void {
+	if (!("session_id" in msg) || !msg.session_id || !chatSessionId) return;
+	updateSessionAgentInfo(chatSessionId, msg.session_id).catch((e) =>
+		console.error("Failed to persist agent session id:", e),
+	);
+	const session = activeSessionRef.current;
+	if (session && session.id === chatSessionId && !session.agentSessionId) {
+		dispatch({
+			type: "SET_AGENT_SESSION_ID",
+			agentSessionId: msg.session_id,
+		});
+	}
+}
+
+function handleStreamingContent(
+	msg: SdkMessage,
+	messageId: string,
+	chatSessionId: string | undefined,
+	dispatch: Dispatch<AgentChatAction>,
+	streamingBuffersRef: MutableRefObject<Map<string, StreamingBuffer>>,
+): void {
+	const buf = chatSessionId
+		? streamingBuffersRef.current.get(chatSessionId)
+		: undefined;
+	const delta = extractStreamingDelta(msg);
+	// dispatch updates the active session's UI via reducer;
+	// buf accumulates for all sessions (used for persistence).
+	if (delta) {
+		if (delta.type === "text") {
+			dispatch({
+				type: "APPEND_STREAMING",
+				messageId,
+				chunk: delta.text,
+			});
+			if (buf) bufferAppend(buf, "text", delta.text);
+		} else {
+			dispatch({
+				type: "APPEND_THINKING",
+				messageId,
+				chunk: delta.thinking,
+			});
+			if (buf) bufferAppend(buf, "thinking", delta.thinking);
+		}
+	}
+
+	// Extract tool_use from assistant messages
+	if (msg.type === "assistant") {
+		const assistantMsg = msg as AssistantMessage;
+		for (const block of assistantMsg.message.content) {
+			if (block.type === "tool_use") {
+				const toolBlock = block as ToolUseBlock;
+				dispatch({
+					type: "APPEND_TOOL_USE",
+					messageId,
+					tool: toolBlock.name,
+					input: toolBlock.input,
+					id: toolBlock.id,
+				});
+				if (buf) {
+					buf.parts.push({
+						type: "tool_use",
+						tool: toolBlock.name,
+						input: toolBlock.input,
+						id: toolBlock.id,
+					});
+				}
+			}
+		}
+	}
+
+	// Extract tool_result from user messages
+	if (msg.type === "user") {
+		const userMsg = msg as UserMessage;
+		for (const block of userMsg.message.content) {
+			if (block.type === "tool_result") {
+				const resultBlock = block as ToolResultBlock;
+				const content = extractToolResultContent(resultBlock.content);
+				const isError = !!resultBlock.is_error;
+				dispatch({
+					type: "APPEND_TOOL_RESULT",
+					messageId,
+					content,
+					isError,
+					toolUseId: resultBlock.tool_use_id,
+				});
+				if (buf) {
+					buf.parts.push({
+						type: "tool_result",
+						content,
+						isError,
+						toolUseId: resultBlock.tool_use_id,
+					});
+				}
+			}
+		}
+	}
+}
+
+function handleResultErrors(
+	msg: SdkMessage,
+	chatSessionId: string | undefined,
+	dispatch: Dispatch<AgentChatAction>,
+): void {
+	if (msg.type !== "result" || !chatSessionId) return;
+	const resultMsg = msg as ResultMessage;
+	if (resultMsg.errors && resultMsg.errors.length > 0) {
+		dispatch({
+			type: "ADD_MESSAGE",
+			message: {
+				id: `system-error-${Date.now()}`,
+				role: "agent",
+				parts: [{ type: "error", content: resultMsg.errors.join("\n") }],
+				timestamp: Date.now(),
+			},
+		});
+	}
 }
 
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
@@ -179,195 +389,27 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				? streamingMessageIdsRef.current.get(chatSessionId)
 				: null;
 
-			// Cache slash commands from supported_commands message
-			if (
-				msg.type === "supported_commands" &&
-				"commands" in msg &&
-				Array.isArray(msg.commands)
-			) {
-				setSlashCommands(
-					msg.commands as {
-						name: string;
-						description: string;
-						argumentHint?: string;
-					}[],
-				);
-			}
-
-			// Detect permission_request and dispatch
-			if (msg.type === "permission_request" && chatSessionId) {
-				const req = msg as unknown as PermissionRequest & {
-					tool_name?: string;
-				};
-				dispatch({
-					type: "SET_PENDING_PERMISSION",
-					sessionId: chatSessionId,
-					request: req as PermissionRequest,
-				});
-				if (messageId) {
-					dispatch({
-						type: "ADD_PERMISSION_PART",
-						messageId,
-						request: req as PermissionRequest,
-					});
-					const buf = streamingBuffersRef.current.get(chatSessionId);
-					if (buf) {
-						buf.parts.push({
-							type: "permission",
-							request: req as PermissionRequest,
-							status: "pending",
-						});
-					}
-				}
-			}
-
-			// Sync permissionMode from SDK system messages (init/status)
-			if (
-				msg.type === "system" &&
-				"permissionMode" in msg &&
-				typeof msg.permissionMode === "string"
-			) {
-				const sdkMode = msg.permissionMode as PermissionMode;
-				if (sdkMode === "default") {
-					dispatch({ type: "RESTORE_USER_PERMISSION_MODE" });
-				} else {
-					dispatch({ type: "SET_PERMISSION_MODE", mode: sdkMode });
-				}
-			}
-
-			// Add system messages with text content to the chat
-			if (msg.type === "system" && chatSessionId) {
-				const text =
-					typeof (msg as Record<string, unknown>).message === "string"
-						? ((msg as Record<string, unknown>).message as string)
-						: typeof (msg as Record<string, unknown>).content === "string"
-							? ((msg as Record<string, unknown>).content as string)
-							: null;
-				if (text) {
-					dispatch({
-						type: "ADD_MESSAGE",
-						message: {
-							id: `system-${Date.now()}`,
-							role: "system",
-							parts: [{ type: "text", content: text }],
-							timestamp: Date.now(),
-						},
-					});
-				}
-			}
-
-			// Capture session_id from SDK messages
-			if ("session_id" in msg && msg.session_id && chatSessionId) {
-				updateSessionAgentInfo(chatSessionId, msg.session_id).catch((e) =>
-					console.error("Failed to persist agent session id:", e),
-				);
-				const session = activeSessionRef.current;
-				if (
-					session &&
-					session.id === chatSessionId &&
-					!session.agentSessionId
-				) {
-					dispatch({
-						type: "SET_AGENT_SESSION_ID",
-						agentSessionId: msg.session_id,
-					});
-				}
-			}
-
-			// Extract streaming delta from stream_event messages
+			handleSupportedCommands(msg);
+			handlePermissionRequest(
+				msg,
+				chatSessionId,
+				messageId,
+				dispatch,
+				streamingBuffersRef,
+			);
+			handlePermissionModeSync(msg, dispatch);
+			handleSystemMessage(msg, chatSessionId, dispatch);
+			handleSessionIdCapture(msg, chatSessionId, activeSessionRef, dispatch);
 			if (messageId) {
-				const buf = chatSessionId
-					? streamingBuffersRef.current.get(chatSessionId)
-					: undefined;
-				const delta = extractStreamingDelta(msg);
-				// dispatch updates the active session's UI via reducer;
-				// buf accumulates for all sessions (used for persistence).
-				if (delta) {
-					if (delta.type === "text") {
-						dispatch({
-							type: "APPEND_STREAMING",
-							messageId,
-							chunk: delta.text,
-						});
-						if (buf) bufferAppend(buf, "text", delta.text);
-					} else {
-						dispatch({
-							type: "APPEND_THINKING",
-							messageId,
-							chunk: delta.thinking,
-						});
-						if (buf) bufferAppend(buf, "thinking", delta.thinking);
-					}
-				}
-
-				// Extract tool_use from assistant messages
-				if (msg.type === "assistant") {
-					const assistantMsg = msg as AssistantMessage;
-					for (const block of assistantMsg.message.content) {
-						if (block.type === "tool_use") {
-							const toolBlock = block as ToolUseBlock;
-							dispatch({
-								type: "APPEND_TOOL_USE",
-								messageId,
-								tool: toolBlock.name,
-								input: toolBlock.input,
-								id: toolBlock.id,
-							});
-							if (buf) {
-								buf.parts.push({
-									type: "tool_use",
-									tool: toolBlock.name,
-									input: toolBlock.input,
-									id: toolBlock.id,
-								});
-							}
-						}
-					}
-				}
-
-				// Extract tool_result from user messages
-				if (msg.type === "user") {
-					const userMsg = msg as UserMessage;
-					for (const block of userMsg.message.content) {
-						if (block.type === "tool_result") {
-							const resultBlock = block as ToolResultBlock;
-							const content = extractToolResultContent(resultBlock.content);
-							const isError = !!resultBlock.is_error;
-							dispatch({
-								type: "APPEND_TOOL_RESULT",
-								messageId,
-								content,
-								isError,
-								toolUseId: resultBlock.tool_use_id,
-							});
-							if (buf) {
-								buf.parts.push({
-									type: "tool_result",
-									content,
-									isError,
-									toolUseId: resultBlock.tool_use_id,
-								});
-							}
-						}
-					}
-				}
+				handleStreamingContent(
+					msg,
+					messageId,
+					chatSessionId,
+					dispatch,
+					streamingBuffersRef,
+				);
 			}
-
-			// Show errors from result messages
-			if (msg.type === "result" && chatSessionId) {
-				const resultMsg = msg as ResultMessage;
-				if (resultMsg.errors && resultMsg.errors.length > 0) {
-					dispatch({
-						type: "ADD_MESSAGE",
-						message: {
-							id: `system-error-${Date.now()}`,
-							role: "agent",
-							parts: [{ type: "error", content: resultMsg.errors.join("\n") }],
-							timestamp: Date.now(),
-						},
-					});
-				}
-			}
+			handleResultErrors(msg, chatSessionId, dispatch);
 		}).then((fn) => {
 			if (cancelled) {
 				fn();
@@ -434,9 +476,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			) {
 				const lastPrompt = lastPromptsRef.current.get(chatSessionId);
 				if (buffer && !getBufferTextContent(buffer).trim() && lastPrompt) {
-					if (chatSessionId) {
-						streamingBuffersRef.current.delete(chatSessionId);
-					}
+					streamingBuffersRef.current.delete(chatSessionId);
 					handleRetry(lastPrompt, chatSessionId);
 					return;
 				}

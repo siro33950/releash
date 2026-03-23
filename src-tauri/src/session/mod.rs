@@ -24,6 +24,11 @@ pub enum MessagePart {
         content: String,
         #[serde(rename = "isError")]
         is_error: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default, rename = "toolUseId")]
+        tool_use_id: Option<String>,
+    },
+    Error {
+        content: String,
     },
     Permission {
         request: serde_json::Value,
@@ -63,6 +68,8 @@ pub enum ActivityEntry {
         content: String,
         #[serde(rename = "isError")]
         is_error: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default, rename = "toolUseId")]
+        tool_use_id: Option<String>,
     },
     PermissionResult {
         #[serde(rename = "toolName")]
@@ -307,6 +314,7 @@ pub fn update_message_parts(
     for part in &parts {
         match part {
             MessagePart::Text { content: c } => content.push_str(c),
+            MessagePart::Error { content: c } => content.push_str(c),
             MessagePart::Thinking { content: c } => thinking.push_str(c),
             MessagePart::ToolUse { tool, input, id } => {
                 activities.push(ActivityEntry::ToolUse {
@@ -318,10 +326,12 @@ pub fn update_message_parts(
             MessagePart::ToolResult {
                 content: c,
                 is_error,
+                tool_use_id,
             } => {
                 activities.push(ActivityEntry::ToolResult {
                     content: c.clone(),
                     is_error: *is_error,
+                    tool_use_id: tool_use_id.clone(),
                 });
             }
             MessagePart::Permission {
@@ -623,12 +633,14 @@ mod tests {
         let entry = ActivityEntry::ToolResult {
             content: "file contents".to_string(),
             is_error: false,
+            tool_use_id: Some("toolu_001".into()),
         };
         let json = serde_json::to_string(&entry).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "tool_result");
         assert_eq!(v["content"], "file contents");
         assert_eq!(v["isError"], false);
+        assert_eq!(v["toolUseId"], "toolu_001");
     }
 
     #[test]
@@ -680,6 +692,7 @@ mod tests {
                 ActivityEntry::ToolResult {
                     content: "ok".to_string(),
                     is_error: false,
+                    tool_use_id: None,
                 },
             ]),
             parts: None,
@@ -699,6 +712,9 @@ mod tests {
             MessagePart::Text {
                 content: "hello".to_string(),
             },
+            MessagePart::Error {
+                content: "something went wrong".to_string(),
+            },
             MessagePart::ToolUse {
                 tool: "Read".to_string(),
                 input: serde_json::json!({"file_path": "/a.ts"}),
@@ -707,6 +723,7 @@ mod tests {
             MessagePart::ToolResult {
                 content: "ok".to_string(),
                 is_error: false,
+                tool_use_id: None,
             },
             MessagePart::Permission {
                 request: serde_json::json!({"request_id": "r1", "tool_name": "Bash"}),
@@ -716,8 +733,21 @@ mod tests {
         ];
         let json = serde_json::to_string(&parts).unwrap();
         let back: Vec<MessagePart> = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.len(), 5);
+        assert_eq!(back.len(), 6);
         assert_eq!(back, parts);
+    }
+
+    #[test]
+    fn message_part_error_serialization() {
+        let part = MessagePart::Error {
+            content: "fail".to_string(),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "error");
+        assert_eq!(v["content"], "fail");
+        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, part);
     }
 
     #[test]
@@ -764,6 +794,24 @@ mod tests {
             assert_eq!(answers, None);
         } else {
             panic!("Expected Permission variant");
+        }
+    }
+
+    #[test]
+    fn tool_result_without_tool_use_id_deserializes() {
+        let json = r#"{"type":"tool_result","content":"ok","isError":false}"#;
+        let part: MessagePart = serde_json::from_str(json).unwrap();
+        if let MessagePart::ToolResult { tool_use_id, .. } = part {
+            assert_eq!(tool_use_id, None);
+        } else {
+            panic!("Expected ToolResult variant");
+        }
+
+        let entry: ActivityEntry = serde_json::from_str(json).unwrap();
+        if let ActivityEntry::ToolResult { tool_use_id, .. } = entry {
+            assert_eq!(tool_use_id, None);
+        } else {
+            panic!("Expected ToolResult variant");
         }
     }
 }

@@ -31,7 +31,6 @@ export interface UseAgentChatResult {
 	isStreaming: boolean;
 	error: string | null;
 	permissionMode: PermissionMode;
-	pendingPermission: PermissionRequest | null;
 	sessionAgentStates: Map<string, AgentState>;
 	sendMessage: (content: string) => Promise<void>;
 	interrupt: () => void;
@@ -330,14 +329,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				// Also update the streaming buffer so persistence captures the resolved state
 				const buffer = streamingBuffersRef.current.get(sessionId);
 				if (buffer) {
-					const permPart = buffer.parts.find(
-						(p) =>
-							p.type === "permission" && p.request.request_id === requestId,
+					buffer.parts = buffer.parts.map((p) =>
+						p.type === "permission" && p.request.request_id === requestId
+							? { ...p, status, ...(answers && { answers }) }
+							: p,
 					);
-					if (permPart && permPart.type === "permission") {
-						permPart.status = status;
-						if (answers) permPart.answers = answers;
-					}
 				}
 			}
 		},
@@ -377,17 +373,19 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		isRetryingRef,
 	});
 
+	const initSessions = useCallback(async () => {
+		const sessions = await refreshSessions();
+		if (sessions.length > 0) {
+			await selectSession(sessions[0].id);
+		} else {
+			await createNewSession();
+		}
+	}, [refreshSessions, selectSession, createNewSession]);
+
 	// Load sessions on mount
 	useEffect(() => {
-		(async () => {
-			const sessions = await refreshSessions();
-			if (sessions.length > 0) {
-				await selectSession(sessions[0].id);
-			} else {
-				await createNewSession();
-			}
-		})();
-	}, [refreshSessions, selectSession, createNewSession]);
+		initSessions();
+	}, [initSessions]);
 
 	// Reset when worktreePath changes
 	const prevWorktreePathRef = useRef(worktreePath);
@@ -395,24 +393,13 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		if (prevWorktreePathRef.current !== worktreePath) {
 			prevWorktreePathRef.current = worktreePath;
 			dispatch({ type: "SET_ACTIVE_SESSION", session: null });
-			(async () => {
-				const sessions = await refreshSessions();
-				if (sessions.length > 0) {
-					await selectSession(sessions[0].id);
-				} else {
-					await createNewSession();
-				}
-			})();
+			initSessions();
 		}
-	}, [worktreePath, refreshSessions, selectSession, createNewSession]);
+	}, [worktreePath, initSessions]);
 
 	const isStreaming = state.streamingSessionIds.includes(
 		state.activeSession?.id ?? "",
 	);
-	const pendingPermission = state.activeSession?.id
-		? (state.pendingPermissions[state.activeSession.id] ?? null)
-		: null;
-
 	const orderedSessions = useMemo(() => {
 		const sessionMap = new Map(state.sessions.map((s) => [s.id, s]));
 		return state.sessionOrder
@@ -449,7 +436,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		isStreaming,
 		error: state.error,
 		permissionMode: state.permissionMode,
-		pendingPermission,
 		sessionAgentStates,
 		sendMessage,
 		interrupt,

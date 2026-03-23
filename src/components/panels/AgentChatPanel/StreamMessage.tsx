@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo } from "react";
+import { useDeferredValue } from "react";
 import Markdown from "react-markdown";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import type { MessageRole } from "@/types/session";
@@ -11,7 +11,6 @@ interface StreamMessageProps {
 export function StreamMessage({ content, role }: StreamMessageProps) {
 	const isHuman = role === "human";
 	const deferredContent = useDeferredValue(content);
-	const plugins = useMemo(() => remarkPluginList, []);
 
 	if (role === "system") {
 		return (
@@ -34,7 +33,10 @@ export function StreamMessage({ content, role }: StreamMessageProps) {
 				</div>
 			) : (
 				<div className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words">
-					<Markdown remarkPlugins={plugins} rehypePlugins={rehypePluginList}>
+					<Markdown
+						remarkPlugins={remarkPluginList}
+						rehypePlugins={rehypePluginList}
+					>
 						{deferredContent}
 					</Markdown>
 				</div>
