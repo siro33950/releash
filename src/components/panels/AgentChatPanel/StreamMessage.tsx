@@ -6,14 +6,9 @@ import type { MessageRole } from "@/types/session";
 interface StreamMessageProps {
 	content: string;
 	role: MessageRole;
-	isStreaming: boolean;
 }
 
-export function StreamMessage({
-	content,
-	role,
-	isStreaming,
-}: StreamMessageProps) {
+export function StreamMessage({ content, role }: StreamMessageProps) {
 	const isHuman = role === "human";
 	const deferredContent = useDeferredValue(content);
 	const plugins = useMemo(() => remarkPluginList, []);
@@ -42,9 +37,6 @@ export function StreamMessage({
 					<Markdown remarkPlugins={plugins} rehypePlugins={rehypePluginList}>
 						{deferredContent}
 					</Markdown>
-					{isStreaming && (
-						<span className="inline-block w-24 h-3 agent-shimmer ml-0.5 align-middle" />
-					)}
 				</div>
 			)}
 		</div>

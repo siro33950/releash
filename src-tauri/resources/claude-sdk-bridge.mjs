@@ -10,6 +10,7 @@ const options = {
 	cwd: args.cwd,
 	permissionMode,
 	includePartialMessages: true,
+	settingSources: ["user", "project"],
 };
 
 if (permissionMode === "bypassPermissions") {
@@ -76,6 +77,10 @@ process.stdin.on("data", (chunk) => {
 		}
 	}
 });
+
+q.supportedCommands().then((commands) => {
+	process.stdout.write(JSON.stringify({ type: "supported_commands", commands }) + "\n");
+}).catch(() => {});
 
 try {
 	for await (const message of q) {

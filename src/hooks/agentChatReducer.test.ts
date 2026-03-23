@@ -33,6 +33,7 @@ describe("agentChatReducer", () => {
 			closedSessions: [],
 			activeSession: null,
 			streamingSessionIds: [],
+			sessionFinalStates: {},
 			error: null,
 			permissionMode: "acceptEdits",
 			userPermissionMode: "acceptEdits",
@@ -594,6 +595,61 @@ describe("agentChatReducer", () => {
 				type: "tool_result",
 				content: "File not found",
 				isError: true,
+			});
+		});
+
+		it("includes toolUseId when provided", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [
+					{
+						type: "tool_use",
+						tool: "Read",
+						input: { file_path: "/src/index.ts" },
+						id: "toolu_001",
+					},
+				],
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				activeSession: makeSession({ messages: [msg] }),
+			};
+			const next = reducer(state, {
+				type: "APPEND_TOOL_RESULT",
+				messageId: "m1",
+				content: "file contents here",
+				isError: false,
+				toolUseId: "toolu_001",
+			});
+			expect(next.activeSession?.messages[0].parts[1]).toEqual({
+				type: "tool_result",
+				content: "file contents here",
+				isError: false,
+				toolUseId: "toolu_001",
+			});
+		});
+
+		it("omits toolUseId when not provided", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [],
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				activeSession: makeSession({ messages: [msg] }),
+			};
+			const next = reducer(state, {
+				type: "APPEND_TOOL_RESULT",
+				messageId: "m1",
+				content: "result",
+				isError: false,
+			});
+			expect(next.activeSession?.messages[0].parts[0]).toEqual({
+				type: "tool_result",
+				content: "result",
+				isError: false,
 			});
 		});
 

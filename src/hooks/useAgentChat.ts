@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import type { AgentState } from "@/types/protocol";
 import type {
 	ChatSession,
 	PermissionMode,
@@ -31,6 +32,7 @@ export interface UseAgentChatResult {
 	error: string | null;
 	permissionMode: PermissionMode;
 	pendingPermission: PermissionRequest | null;
+	sessionAgentStates: Map<string, AgentState>;
 	sendMessage: (content: string) => Promise<void>;
 	interrupt: () => void;
 	selectSession: (sessionId: string) => Promise<void>;
@@ -48,6 +50,18 @@ export interface UseAgentChatResult {
 	) => void;
 }
 
+function deriveAgentState(
+	sessionId: string,
+	streamingSessionIds: string[],
+	pendingPermissions: Record<string, PermissionRequest>,
+	sessionFinalStates: Record<string, "done" | "error">,
+): AgentState {
+	if (streamingSessionIds.includes(sessionId)) {
+		return sessionId in pendingPermissions ? "waiting" : "running";
+	}
+	return sessionFinalStates[sessionId] ?? "done";
+}
+
 export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 	const streamingMessageIdsRef = useRef<Map<string, string>>(new Map());
@@ -63,15 +77,17 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	const permissionModeRef = useRef(state.permissionMode);
 	permissionModeRef.current = state.permissionMode;
 
-	const refreshSessions = useCallback(async () => {
+	const refreshSessions = useCallback(async (): Promise<SessionSummary[]> => {
 		try {
 			const sessions = await listSessions(worktreePathRef.current);
 			dispatch({ type: "SET_SESSIONS", sessions });
+			return sessions;
 		} catch (e) {
 			dispatch({
 				type: "SET_ERROR",
 				error: `セッション一覧の取得に失敗: ${e}`,
 			});
+			return [];
 		}
 	}, []);
 
@@ -363,8 +379,15 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 
 	// Load sessions on mount
 	useEffect(() => {
-		refreshSessions();
-	}, [refreshSessions]);
+		(async () => {
+			const sessions = await refreshSessions();
+			if (sessions.length > 0) {
+				await selectSession(sessions[0].id);
+			} else {
+				await createNewSession();
+			}
+		})();
+	}, [refreshSessions, selectSession, createNewSession]);
 
 	// Reset when worktreePath changes
 	const prevWorktreePathRef = useRef(worktreePath);
@@ -372,9 +395,16 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		if (prevWorktreePathRef.current !== worktreePath) {
 			prevWorktreePathRef.current = worktreePath;
 			dispatch({ type: "SET_ACTIVE_SESSION", session: null });
-			refreshSessions();
+			(async () => {
+				const sessions = await refreshSessions();
+				if (sessions.length > 0) {
+					await selectSession(sessions[0].id);
+				} else {
+					await createNewSession();
+				}
+			})();
 		}
-	}, [worktreePath, refreshSessions]);
+	}, [worktreePath, refreshSessions, selectSession, createNewSession]);
 
 	const isStreaming = state.streamingSessionIds.includes(
 		state.activeSession?.id ?? "",
@@ -390,6 +420,27 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			.filter((s): s is SessionSummary => !!s);
 	}, [state.sessions, state.sessionOrder]);
 
+	const sessionAgentStates = useMemo(() => {
+		const map = new Map<string, AgentState>();
+		for (const s of state.sessions) {
+			map.set(
+				s.id,
+				deriveAgentState(
+					s.id,
+					state.streamingSessionIds,
+					state.pendingPermissions,
+					state.sessionFinalStates,
+				),
+			);
+		}
+		return map;
+	}, [
+		state.sessions,
+		state.streamingSessionIds,
+		state.pendingPermissions,
+		state.sessionFinalStates,
+	]);
+
 	return {
 		sessions: state.sessions,
 		orderedSessions,
@@ -399,6 +450,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		error: state.error,
 		permissionMode: state.permissionMode,
 		pendingPermission,
+		sessionAgentStates,
 		sendMessage,
 		interrupt,
 		selectSession,

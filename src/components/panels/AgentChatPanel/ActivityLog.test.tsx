@@ -52,6 +52,82 @@ describe("ToolActivity", () => {
 		});
 	});
 
+	describe("basePath shortening", () => {
+		it("shortens file_path label when basePath is provided", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Read",
+				input: { file_path: "/home/user/project/src/main.ts" },
+				id: "t-bp1",
+			};
+			render(
+				<ToolActivity entry={entry} index={0} basePath="/home/user/project" />,
+			);
+
+			const el = screen.getByTestId("activity-tool-use-0");
+			expect(el).toHaveTextContent("Explored src/main.ts");
+		});
+
+		it("shortens file_path in default tool when basePath is provided", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Edit",
+				input: { file_path: "/home/user/project/src/app.ts" },
+				id: "t-bp2",
+			};
+			render(
+				<ToolActivity entry={entry} index={0} basePath="/home/user/project" />,
+			);
+
+			const el = screen.getByTestId("activity-tool-use-0");
+			expect(el).toHaveTextContent("Edit src/app.ts");
+		});
+	});
+
+	describe("truncate class", () => {
+		it("applies truncate to read tool label", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Read",
+				input: { file_path: "/src/main.ts" },
+				id: "t-tr1",
+			};
+			render(<ToolActivity entry={entry} index={0} />);
+
+			const el = screen.getByTestId("activity-tool-use-0");
+			const span = el.querySelector("span.truncate");
+			expect(span).not.toBeNull();
+		});
+
+		it("applies truncate to command tool label", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "git status" },
+				id: "t-tr2",
+			};
+			render(<ToolActivity entry={entry} index={0} />);
+
+			const el = screen.getByTestId("activity-tool-use-0");
+			const code = el.querySelector("code.truncate");
+			expect(code).not.toBeNull();
+		});
+
+		it("applies truncate to default tool label", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Edit",
+				input: { file_path: "/src/app.ts" },
+				id: "t-tr3",
+			};
+			render(<ToolActivity entry={entry} index={0} />);
+
+			const el = screen.getByTestId("activity-tool-use-0");
+			const span = el.querySelector("span.truncate");
+			expect(span).not.toBeNull();
+		});
+	});
+
 	describe("CommandToolActivity", () => {
 		it("shows command with terminal icon", () => {
 			const entry = {
@@ -105,6 +181,82 @@ describe("ToolActivity", () => {
 
 			fireEvent.click(screen.getByText("Error"));
 			expect(screen.getByText("command not found")).toBeInTheDocument();
+		});
+	});
+
+	describe("isExecuting spinner", () => {
+		it("shows spinner when isExecuting is true for read tool", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Read",
+				input: { file_path: "/src/main.ts" },
+				id: "t1",
+			};
+			render(<ToolActivity entry={entry} index={0} isExecuting={true} />);
+			const el = screen.getByTestId("activity-tool-use-0");
+			expect(el.querySelector(".animate-spin")).not.toBeNull();
+		});
+
+		it("shows chevron when isExecuting is false for read tool", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Read",
+				input: { file_path: "/src/main.ts" },
+				id: "t1",
+			};
+			const result = {
+				type: "tool_result" as const,
+				content: "contents",
+				isError: false,
+			};
+			render(
+				<ToolActivity
+					entry={entry}
+					result={result}
+					index={0}
+					isExecuting={false}
+				/>,
+			);
+			const el = screen.getByTestId("activity-tool-use-0");
+			expect(el.querySelector(".animate-spin")).toBeNull();
+		});
+
+		it("shows spinner when isExecuting is true for command tool", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Bash",
+				input: { command: "git status" },
+				id: "t1",
+			};
+			render(<ToolActivity entry={entry} index={0} isExecuting={true} />);
+			const el = screen.getByTestId("activity-tool-use-0");
+			expect(el.querySelector(".animate-spin")).not.toBeNull();
+		});
+
+		it("shows spinner when isExecuting is true for default tool", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Edit",
+				input: { file_path: "/src/app.ts" },
+				id: "t1",
+			};
+			render(<ToolActivity entry={entry} index={0} isExecuting={true} />);
+			const el = screen.getByTestId("activity-tool-use-0");
+			expect(el.querySelector(".animate-spin")).not.toBeNull();
+		});
+
+		it("allows expand while executing", () => {
+			const entry = {
+				type: "tool_use" as const,
+				tool: "Edit",
+				input: { file_path: "/src/app.ts" },
+				id: "t1",
+			};
+			render(<ToolActivity entry={entry} index={0} isExecuting={true} />);
+			fireEvent.click(screen.getByText(/Edit/));
+			expect(
+				screen.getByText(/"file_path": "\/src\/app.ts"/),
+			).toBeInTheDocument();
 		});
 	});
 

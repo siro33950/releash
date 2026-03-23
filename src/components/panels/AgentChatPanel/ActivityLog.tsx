@@ -1,4 +1,4 @@
-import { ChevronRight, Terminal } from "lucide-react";
+import { ChevronRight, Loader2, Terminal } from "lucide-react";
 import { useState } from "react";
 import type { ActivityEntry } from "@/types/session";
 import {
@@ -42,12 +42,21 @@ export function CollapsibleError({
 	);
 }
 
+function shortenPath(fullPath: string, basePath?: string): string {
+	if (basePath && fullPath.startsWith(basePath)) {
+		const rel = fullPath.slice(basePath.length);
+		return rel.startsWith("/") ? rel.slice(1) : rel;
+	}
+	return fullPath;
+}
+
 function summarizeToolInput(
 	tool: string,
 	input: Record<string, unknown>,
+	basePath?: string,
 ): string {
 	if (input.file_path && typeof input.file_path === "string") {
-		return input.file_path;
+		return shortenPath(input.file_path, basePath);
 	}
 	if (input.pattern && typeof input.pattern === "string") {
 		return input.pattern;
@@ -70,23 +79,35 @@ interface ToolActivityProps {
 	entry: Extract<ActivityEntry, { type: "tool_use" }>;
 	result?: Extract<ActivityEntry, { type: "tool_result" }>;
 	index: number;
+	isExecuting?: boolean;
+	basePath?: string;
 }
 
-function ReadToolActivity({ entry, result, index }: ToolActivityProps) {
+function ReadToolActivity({
+	entry,
+	result,
+	index,
+	isExecuting,
+	basePath,
+}: ToolActivityProps) {
 	const [isExpanded, setIsExpanded] = useState(false);
-	const label = getReadToolLabel(entry.tool, entry.input);
+	const label = getReadToolLabel(entry.tool, entry.input, basePath);
 
 	return (
 		<div data-testid={`activity-tool-use-${index}`} className="py-0.5">
 			<button
 				type="button"
-				className="flex items-center gap-1 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
+				className="flex items-center gap-1 min-w-0 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
 				onClick={() => setIsExpanded(!isExpanded)}
 			>
-				<ChevronRight
-					className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-				/>
-				<span>{label}</span>
+				{isExecuting ? (
+					<Loader2 className="size-3 shrink-0 animate-spin" />
+				) : (
+					<ChevronRight
+						className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+					/>
+				)}
+				<span className="truncate">{label}</span>
 			</button>
 			{isExpanded && result && result.content.trim().length > 0 && (
 				<pre className="mt-1 ml-4 text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden max-h-48 overflow-y-auto">
@@ -97,7 +118,12 @@ function ReadToolActivity({ entry, result, index }: ToolActivityProps) {
 	);
 }
 
-function CommandToolActivity({ entry, result, index }: ToolActivityProps) {
+function CommandToolActivity({
+	entry,
+	result,
+	index,
+	isExecuting,
+}: ToolActivityProps) {
 	const [isExpanded, setIsExpanded] = useState(false);
 	const label = getCommandLabel(entry.input);
 	const hasResult = result && result.content.trim().length > 0;
@@ -106,14 +132,18 @@ function CommandToolActivity({ entry, result, index }: ToolActivityProps) {
 		<div data-testid={`activity-tool-use-${index}`} className="py-0.5">
 			<button
 				type="button"
-				className="flex items-center gap-1.5 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
+				className="flex items-center gap-1.5 min-w-0 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
 				onClick={() => setIsExpanded(!isExpanded)}
 			>
-				<ChevronRight
-					className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-				/>
+				{isExecuting ? (
+					<Loader2 className="size-3 shrink-0 animate-spin" />
+				) : (
+					<ChevronRight
+						className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+					/>
+				)}
 				<Terminal className="size-3 shrink-0" />
-				<code className="text-foreground/80">{label}</code>
+				<code className="truncate text-foreground/80">{label}</code>
 			</button>
 			{hasResult && result.isError ? (
 				<CollapsibleError content={result.content} maxLines={20} />
@@ -126,22 +156,32 @@ function CommandToolActivity({ entry, result, index }: ToolActivityProps) {
 	);
 }
 
-function DefaultToolActivity({ entry, result, index }: ToolActivityProps) {
+function DefaultToolActivity({
+	entry,
+	result,
+	index,
+	isExecuting,
+	basePath,
+}: ToolActivityProps) {
 	const [isExpanded, setIsExpanded] = useState(false);
 	const hasInput = Object.keys(entry.input).length > 0;
-	const summary = summarizeToolInput(entry.tool, entry.input);
+	const summary = summarizeToolInput(entry.tool, entry.input, basePath);
 
 	return (
 		<div data-testid={`activity-tool-use-${index}`} className="py-0.5">
 			<button
 				type="button"
-				className="flex items-center gap-1 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
+				className="flex items-center gap-1 min-w-0 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
 				onClick={() => setIsExpanded(!isExpanded)}
 			>
-				<ChevronRight
-					className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-				/>
-				<span>
+				{isExecuting ? (
+					<Loader2 className="size-3 shrink-0 animate-spin" />
+				) : (
+					<ChevronRight
+						className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+					/>
+				)}
+				<span className="truncate">
 					{entry.tool} {summary}
 				</span>
 			</button>
@@ -163,19 +203,45 @@ function DefaultToolActivity({ entry, result, index }: ToolActivityProps) {
 	);
 }
 
-export function ToolActivity({ entry, result, index }: ToolActivityProps) {
+export function ToolActivity({
+	entry,
+	result,
+	index,
+	isExecuting,
+	basePath,
+}: ToolActivityProps) {
 	const category = classifyTool(entry.tool);
 
 	switch (category) {
 		case "read":
-			return <ReadToolActivity entry={entry} result={result} index={index} />;
+			return (
+				<ReadToolActivity
+					entry={entry}
+					result={result}
+					index={index}
+					isExecuting={isExecuting}
+					basePath={basePath}
+				/>
+			);
 		case "command":
 			return (
-				<CommandToolActivity entry={entry} result={result} index={index} />
+				<CommandToolActivity
+					entry={entry}
+					result={result}
+					index={index}
+					isExecuting={isExecuting}
+					basePath={basePath}
+				/>
 			);
 		default:
 			return (
-				<DefaultToolActivity entry={entry} result={result} index={index} />
+				<DefaultToolActivity
+					entry={entry}
+					result={result}
+					index={index}
+					isExecuting={isExecuting}
+					basePath={basePath}
+				/>
 			);
 	}
 }

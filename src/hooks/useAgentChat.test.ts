@@ -188,6 +188,13 @@ describe("useAgentChat", () => {
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
 
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Wait for mount effect (auto-creates session when no sessions exist)
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
 		const mockSession = {
 			id: "s2",
 			worktreePath: "/repo",
@@ -206,8 +213,6 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
 			mockSession as never,
 		);
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
 			await result.current.selectSession("s2");
@@ -400,6 +405,11 @@ describe("useAgentChat", () => {
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
+		// Wait for mount effect (auto-creates session when no sessions exist)
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
 		// Set sessions via refreshSessions
 		vi.mocked(sessionStore.listSessions).mockResolvedValueOnce([
 			{
@@ -448,6 +458,13 @@ describe("useAgentChat", () => {
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
 
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Wait for mount effect (auto-creates session when no sessions exist)
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
 		const newSession = {
 			id: "new-s",
 			worktreePath: "/repo",
@@ -459,8 +476,6 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
 			newSession as never,
 		);
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
 			await result.current.createNewSession();
@@ -550,11 +565,16 @@ describe("useAgentChat", () => {
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
 
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Wait for mount effect (auto-creates session when no sessions exist)
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
 		vi.mocked(sessionStore.closeSession).mockRejectedValueOnce(
 			new Error("close failed"),
 		);
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
 			await result.current.closeSession("s1");
@@ -567,6 +587,13 @@ describe("useAgentChat", () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Wait for mount effect (auto-creates session when no sessions exist)
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
 
 		const restoredSession = {
 			id: "s-closed",
@@ -587,8 +614,6 @@ describe("useAgentChat", () => {
 			restoredSession as never,
 		);
 
-		const { result } = renderHook(() => useAgentChat("/repo"));
-
 		await act(async () => {
 			await result.current.restoreSession("s-closed");
 		});
@@ -602,11 +627,16 @@ describe("useAgentChat", () => {
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
 
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Wait for mount effect (auto-creates session when no sessions exist)
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
 		vi.mocked(sessionStore.restoreSession).mockRejectedValueOnce(
 			new Error("restore failed"),
 		);
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
 			await result.current.restoreSession("s-closed");

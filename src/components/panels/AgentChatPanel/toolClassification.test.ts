@@ -94,6 +94,51 @@ describe("getReadToolLabel", () => {
 	});
 });
 
+describe("getReadToolLabel with basePath", () => {
+	it("shortens file_path when basePath matches", () => {
+		expect(
+			getReadToolLabel(
+				"Read",
+				{ file_path: "/home/user/project/src/main.ts" },
+				"/home/user/project",
+			),
+		).toBe("Explored src/main.ts");
+	});
+
+	it("keeps full path when basePath does not match", () => {
+		expect(
+			getReadToolLabel(
+				"Read",
+				{ file_path: "/other/path/main.ts" },
+				"/home/user/project",
+			),
+		).toBe("Explored /other/path/main.ts");
+	});
+
+	it("shortens path for Grep tool", () => {
+		expect(
+			getReadToolLabel(
+				"Grep",
+				{ path: "/home/user/project/src", pattern: "foo" },
+				"/home/user/project",
+			),
+		).toBe("Explored foo");
+	});
+
+	it("does not shorten pattern or query", () => {
+		expect(
+			getReadToolLabel("Glob", { pattern: "**/*.ts" }, "/home/user/project"),
+		).toBe("Explored **/*.ts");
+		expect(
+			getReadToolLabel(
+				"WebSearch",
+				{ query: "react hooks" },
+				"/home/user/project",
+			),
+		).toBe('Searched "react hooks"');
+	});
+});
+
 describe("getCommandLabel", () => {
 	it("returns command string", () => {
 		expect(getCommandLabel({ command: "git status" })).toBe("git status");

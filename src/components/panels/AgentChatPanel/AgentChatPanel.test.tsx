@@ -1,6 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+// jsdom does not implement scrollIntoView
+Element.prototype.scrollIntoView = vi.fn();
+
 vi.mock("react-resizable-panels", () => ({
 	Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 	Panel: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -34,6 +37,7 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		isStreaming: false,
 		error: null,
 		pendingPermission: null,
+		sessionAgentStates: new Map(),
 		sendMessage: vi.fn(),
 		interrupt: vi.fn(),
 		selectSession: vi.fn(),
@@ -227,8 +231,63 @@ describe("AgentChatPanel session tabs", () => {
 });
 
 describe("AgentChatPanel agent state reflection", () => {
-	it("shows Waiting when isStreaming with pendingPermission", () => {
+	it("shows AgentStateIcon on tab when session is running", () => {
 		mockUseAgentChat({
+			sessions: [
+				{
+					id: "s1",
+					firstMessage: "Hello",
+					messageCount: 3,
+					worktreePath: "/repo",
+					state: "active",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+			],
+			sessionAgentStates: new Map([["s1", "running"]]),
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "text", content: "working..." }],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+
+		const tab = screen.getByText("Hello").closest("[role='tab']");
+		expect(tab?.querySelector("[title='running']")).not.toBeNull();
+	});
+
+	it("shows AgentStateIcon with waiting state on tab", () => {
+		mockUseAgentChat({
+			sessions: [
+				{
+					id: "s1",
+					firstMessage: "Hello",
+					messageCount: 3,
+					worktreePath: "/repo",
+					state: "active",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+			],
+			sessionAgentStates: new Map([["s1", "waiting"]]),
 			isStreaming: true,
 			pendingPermission: {
 				request_id: "req-001",
@@ -260,41 +319,29 @@ describe("AgentChatPanel agent state reflection", () => {
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
 
-		expect(screen.getByTestId("agent-state-indicator")).toHaveTextContent(
-			/waiting/i,
-		);
+		const tab = screen.getByText("Hello").closest("[role='tab']");
+		expect(tab?.querySelector("[title='waiting']")).not.toBeNull();
 	});
 
-	it("shows Running when isStreaming without pendingPermission", () => {
+	it("shows AgentStateIcon with done state on tab when session is idle", () => {
 		mockUseAgentChat({
-			isStreaming: true,
-			activeSession: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [
-					{
-						id: "m1",
-						role: "human",
-						parts: [{ type: "text", content: "hello" }],
-						timestamp: 1000,
-					},
-					{
-						id: "m2",
-						role: "agent",
-						parts: [{ type: "text", content: "working..." }],
-						timestamp: 1001,
-					},
-				],
-				state: "active",
-				createdAt: 1000,
-				updatedAt: 1000,
-			},
+			sessions: [
+				{
+					id: "s1",
+					firstMessage: "Hello",
+					messageCount: 3,
+					worktreePath: "/repo",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+			],
+			sessionAgentStates: new Map([["s1", "done"]]),
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
 
-		expect(screen.getByTestId("agent-state-indicator")).toHaveTextContent(
-			/running/i,
-		);
+		const tab = screen.getByText("Hello").closest("[role='tab']");
+		expect(tab?.querySelector("[title='done']")).not.toBeNull();
 	});
 
 	it("reflects permissionMode plan in ModeSelector trigger label", () => {
@@ -325,7 +372,7 @@ describe("AgentChatPanel agent state reflection", () => {
 });
 
 describe("AgentChatPanel shimmer placeholder", () => {
-	it("shows shimmer when streaming with empty agent parts", () => {
+	it("shows 3-line shimmer when streaming with empty agent parts", () => {
 		mockUseAgentChat({
 			isStreaming: true,
 			activeSession: {
@@ -346,11 +393,13 @@ describe("AgentChatPanel shimmer placeholder", () => {
 			},
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(screen.getByTestId("shimmer-placeholder")).toBeDefined();
+		const shimmer = screen.getByTestId("shimmer-placeholder");
+		expect(shimmer).toBeDefined();
+		expect(shimmer.children).toHaveLength(3);
 		expect(screen.queryByTestId("stream-message-agent")).toBeNull();
 	});
 
-	it("shows shimmer during thinking phase while streaming", () => {
+	it("shows 2-line shimmer during thinking phase while streaming", () => {
 		mockUseAgentChat({
 			isStreaming: true,
 			activeSession: {
@@ -378,8 +427,195 @@ describe("AgentChatPanel shimmer placeholder", () => {
 			},
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(screen.getByTestId("shimmer-placeholder")).toBeDefined();
+		const shimmer = screen.getByTestId("shimmer-placeholder");
+		expect(shimmer).toBeDefined();
+		expect(shimmer.children).toHaveLength(2);
 		expect(screen.queryByTestId("stream-message-agent")).toBeNull();
+	});
+
+	it("shows 1-line shimmer when streaming text", () => {
+		mockUseAgentChat({
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "text", content: "I am responding..." }],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
+		const shimmer = screen.getByTestId("shimmer-placeholder");
+		expect(shimmer).toBeDefined();
+		expect(shimmer.children).toHaveLength(1);
+	});
+
+	it("shows 2-line shimmer when last part is tool_use", () => {
+		mockUseAgentChat({
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "tool_use",
+								tool: "Read",
+								input: { file_path: "/src/main.ts" },
+								id: "t1",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		const shimmer = screen.getByTestId("shimmer-placeholder");
+		expect(shimmer).toBeDefined();
+		expect(shimmer.children).toHaveLength(2);
+		const toolEl = screen.getByTestId("activity-tool-use-0");
+		expect(toolEl.querySelector(".animate-spin")).not.toBeNull();
+	});
+
+	it("shows 2-line shimmer when last part is tool_result", () => {
+		mockUseAgentChat({
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "tool_use",
+								tool: "Read",
+								input: { file_path: "/src/main.ts" },
+								id: "t1",
+							},
+							{
+								type: "tool_result",
+								content: "file content",
+								isError: false,
+								toolUseId: "t1",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		const shimmer = screen.getByTestId("shimmer-placeholder");
+		expect(shimmer).toBeDefined();
+		expect(shimmer.children).toHaveLength(2);
+	});
+
+	it("hides shimmer when last part is permission", () => {
+		mockUseAgentChat({
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "permission",
+								request: {
+									request_id: "r1",
+									tool_name: "Edit",
+									input: {},
+									tool_use_id: "tu1",
+								},
+								status: "pending",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
+	});
+
+	it("hides shimmer when last part is error", () => {
+		mockUseAgentChat({
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [{ type: "error", content: "Something went wrong" }],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
 	});
 
 	it("hides thinking and shows text when text arrives after thinking", () => {
@@ -415,37 +651,7 @@ describe("AgentChatPanel shimmer placeholder", () => {
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
 	});
 
-	it("shows StreamMessage without shimmer when streaming with no thinking", () => {
-		mockUseAgentChat({
-			isStreaming: true,
-			activeSession: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [
-					{
-						id: "m1",
-						role: "human",
-						parts: [{ type: "text", content: "hello" }],
-						timestamp: 1000,
-					},
-					{
-						id: "m2",
-						role: "agent",
-						parts: [{ type: "text", content: "I am responding..." }],
-						timestamp: 1001,
-					},
-				],
-				state: "active",
-				createdAt: 1000,
-				updatedAt: 1000,
-			},
-		});
-		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
-		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
-	});
-
-	it("hides thinking part when streaming is finished", () => {
+	it("hides shimmer when streaming is finished", () => {
 		mockUseAgentChat({
 			isStreaming: false,
 			activeSession: {
@@ -475,9 +681,9 @@ describe("AgentChatPanel shimmer placeholder", () => {
 		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
 	});
 
-	it("shows shimmer when last part is tool_use waiting for result", () => {
+	it("pairs tool_result with tool_use by toolUseId across parallel calls", () => {
 		mockUseAgentChat({
-			isStreaming: true,
+			isStreaming: false,
 			activeSession: {
 				id: "s1",
 				worktreePath: "/repo",
@@ -495,20 +701,42 @@ describe("AgentChatPanel shimmer placeholder", () => {
 							{
 								type: "tool_use",
 								tool: "Read",
-								input: { file_path: "/src/main.ts" },
+								input: { file_path: "/a.ts" },
 								id: "t1",
+							},
+							{
+								type: "tool_use",
+								tool: "Read",
+								input: { file_path: "/b.ts" },
+								id: "t2",
+							},
+							{
+								type: "tool_result",
+								content: "content-a",
+								isError: false,
+								toolUseId: "t1",
+							},
+							{
+								type: "tool_result",
+								content: "content-b",
+								isError: false,
+								toolUseId: "t2",
 							},
 						],
 						timestamp: 1001,
 					},
 				],
-				state: "active",
+				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
 			},
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(screen.getByTestId("shimmer-placeholder")).toBeDefined();
+		// Both tool_use items should be rendered, but no standalone tool_result items
+		expect(screen.getByTestId("activity-tool-use-0")).toBeDefined();
+		expect(screen.getByTestId("activity-tool-use-1")).toBeDefined();
+		expect(screen.queryByTestId("activity-tool-result-2")).toBeNull();
+		expect(screen.queryByTestId("activity-tool-result-3")).toBeNull();
 	});
 });
 

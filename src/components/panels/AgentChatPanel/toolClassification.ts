@@ -49,18 +49,27 @@ export function classifyTool(toolName: string): ToolCategory {
 	return "other";
 }
 
+function shortenPath(fullPath: string, basePath?: string): string {
+	if (basePath && fullPath.startsWith(basePath)) {
+		const rel = fullPath.slice(basePath.length);
+		return rel.startsWith("/") ? rel.slice(1) : rel;
+	}
+	return fullPath;
+}
+
 export function getReadToolLabel(
 	toolName: string,
 	input: Record<string, unknown>,
+	basePath?: string,
 ): string {
 	if (input.file_path && typeof input.file_path === "string") {
-		return `Explored ${input.file_path}`;
+		return `Explored ${shortenPath(input.file_path, basePath)}`;
 	}
 	if (input.pattern && typeof input.pattern === "string") {
 		return `Explored ${input.pattern}`;
 	}
 	if (input.path && typeof input.path === "string") {
-		return `Explored ${input.path}`;
+		return `Explored ${shortenPath(input.path, basePath)}`;
 	}
 	if (input.query && typeof input.query === "string") {
 		const q = input.query as string;

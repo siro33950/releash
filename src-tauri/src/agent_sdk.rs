@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::Manager;
@@ -219,6 +220,109 @@ pub async fn respond_agent_permission(
         ));
     }
     Ok(())
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct SlashCommandEntry {
+    pub name: String,
+    pub description: String,
+}
+
+/// Parse SKILL.md frontmatter (delimited by `---`) and extract `name` / `description` fields.
+fn parse_skill_frontmatter(content: &str) -> Option<(String, String)> {
+    let mut lines = content.lines();
+    // First line must be `---`
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        if let Some(val) = trimmed.strip_prefix("name:") {
+            name = Some(val.trim().to_string());
+        } else if let Some(val) = trimmed.strip_prefix("description:") {
+            description = Some(val.trim().to_string());
+        }
+    }
+    Some((name.unwrap_or_default(), description.unwrap_or_default()))
+}
+
+/// Scan skill and command directories to collect slash commands with deduplication.
+///
+/// Scan order (highest priority first):
+/// 1. `~/.claude/skills/*/SKILL.md` — personal skill
+/// 2. `{cwd}/.claude/skills/*/SKILL.md` — project skill
+/// 3. `~/.claude/commands/*.md` — personal command
+/// 4. `{cwd}/.claude/commands/*.md` — project command
+///
+/// When the same name appears in multiple sources, the higher-priority entry wins.
+#[tauri::command]
+pub async fn scan_slash_commands(cwd: String) -> Result<Vec<SlashCommandEntry>, String> {
+    let mut commands = Vec::new();
+    let mut seen = HashSet::new();
+
+    let cwd_path = PathBuf::from(&cwd);
+
+    // Build list of directories to scan in priority order
+    let mut skill_dirs: Vec<PathBuf> = Vec::new();
+    let mut command_dirs: Vec<PathBuf> = Vec::new();
+
+    if let Some(home) = dirs::home_dir() {
+        skill_dirs.push(home.join(".claude").join("skills"));
+        command_dirs.push(home.join(".claude").join("commands"));
+    }
+    skill_dirs.push(cwd_path.join(".claude").join("skills"));
+    command_dirs.push(cwd_path.join(".claude").join("commands"));
+
+    // Scan skills (personal first, then project)
+    for skills_dir in &skill_dirs {
+        if let Ok(entries) = std::fs::read_dir(skills_dir) {
+            for entry in entries.flatten() {
+                let skill_md = entry.path().join("SKILL.md");
+                if skill_md.is_file() {
+                    if let Ok(content) = std::fs::read_to_string(&skill_md) {
+                        if let Some((name, description)) = parse_skill_frontmatter(&content) {
+                            if !name.is_empty() && seen.insert(name.clone()) {
+                                commands.push(SlashCommandEntry { name, description });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Scan commands (personal first, then project)
+    for cmd_dir in &command_dirs {
+        if let Ok(entries) = std::fs::read_dir(cmd_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("md") && path.is_file() {
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    if seen.insert(name.clone()) {
+                        let description = std::fs::read_to_string(&path)
+                            .ok()
+                            .and_then(|c| c.lines().next().map(|l| l.trim().to_string()))
+                            .unwrap_or_default();
+                        commands.push(SlashCommandEntry { name, description });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(commands)
 }
 
 #[cfg(test)]
@@ -890,5 +994,112 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn parse_skill_frontmatter_valid() {
+        let content = "---\nname: review\ndescription: Code review tool\n---\nBody here";
+        let (name, desc) = parse_skill_frontmatter(content).unwrap();
+        assert_eq!(name, "review");
+        assert_eq!(desc, "Code review tool");
+    }
+
+    #[test]
+    fn parse_skill_frontmatter_missing_fields() {
+        let content = "---\ntitle: something\n---\n";
+        let (name, desc) = parse_skill_frontmatter(content).unwrap();
+        assert_eq!(name, "");
+        assert_eq!(desc, "");
+    }
+
+    #[test]
+    fn parse_skill_frontmatter_no_opening_delimiter() {
+        let content = "name: review\n---\n";
+        assert!(parse_skill_frontmatter(content).is_none());
+    }
+
+    #[test]
+    fn parse_skill_frontmatter_empty_content() {
+        assert!(parse_skill_frontmatter("").is_none());
+    }
+
+    #[tokio::test]
+    async fn scan_slash_commands_with_nonexistent_cwd() {
+        let result = scan_slash_commands("/nonexistent/path/abc123".to_string()).await;
+        assert!(result.is_ok());
+        // Should return commands from ~/.claude/skills (if any), but no error
+    }
+
+    #[tokio::test]
+    async fn scan_slash_commands_with_temp_dir() {
+        let tmp = std::env::temp_dir().join("releash_test_scan_cmds");
+        let commands_dir = tmp.join(".claude").join("commands");
+        let _ = std::fs::create_dir_all(&commands_dir);
+
+        // Create a test command file
+        std::fs::write(
+            commands_dir.join("test-cmd.md"),
+            "This is a test command\nMore details here",
+        )
+        .unwrap();
+
+        let result = scan_slash_commands(tmp.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        // Should contain our test command (may also contain skills from ~/.claude/skills)
+        let test_cmd = result.iter().find(|c| c.name == "test-cmd");
+        assert!(test_cmd.is_some(), "Should find test-cmd in results");
+        assert_eq!(test_cmd.unwrap().description, "This is a test command");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn scan_slash_commands_deduplicates_skill_over_command() {
+        // Use a unique name to avoid collisions with real ~/.claude/skills/
+        let tmp = std::env::temp_dir().join("releash_test_dedup");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        // Create a project skill
+        let skill_dir = tmp
+            .join(".claude")
+            .join("skills")
+            .join("zzz-dedup-test-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: zzz-dedup-test\ndescription: From skill\n---\nBody",
+        )
+        .unwrap();
+
+        // Create a project command with the same name
+        let commands_dir = tmp.join(".claude").join("commands");
+        std::fs::create_dir_all(&commands_dir).unwrap();
+        std::fs::write(
+            commands_dir.join("zzz-dedup-test.md"),
+            "From command\nDetails",
+        )
+        .unwrap();
+
+        let result = scan_slash_commands(tmp.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        // "zzz-dedup-test" should appear exactly once, with the skill's description (higher priority)
+        let matches: Vec<_> = result
+            .iter()
+            .filter(|c| c.name == "zzz-dedup-test")
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "zzz-dedup-test should appear exactly once, got: {matches:?}"
+        );
+        assert_eq!(matches[0].description, "From skill");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

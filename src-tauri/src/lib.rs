@@ -391,6 +391,7 @@ pub fn run() {
             agent_sdk::execute_agent_query,
             agent_sdk::interrupt_agent_query,
             agent_sdk::respond_agent_permission,
+            agent_sdk::scan_slash_commands,
             // Session
             session::list_sessions,
             session::get_session,

@@ -1,5 +1,6 @@
 import { History, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import {
 	Popover,
 	PopoverContent,
@@ -7,6 +8,8 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import { loadSlashCommands } from "@/hooks/useSlashCommands";
+import { getTextContent, type MessagePart } from "@/types/session";
 import { ActivityItem, CollapsibleError, ToolActivity } from "./ActivityLog";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
@@ -27,7 +30,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 		isStreaming,
 		error,
 		permissionMode,
-		pendingPermission,
+		sessionAgentStates,
 		sendMessage,
 		interrupt,
 		selectSession,
@@ -40,52 +43,74 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 		refreshClosedSessions,
 	} = useAgentChat(worktreePath);
 
-	const isWaiting = isStreaming && pendingPermission !== null;
 	const [historyOpen, setHistoryOpen] = useState(false);
 	const draggedSessionIdRef = useRef<string | null>(null);
 	const isDraggingRef = useRef(false);
 
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const scrollAnchorRef = useRef<HTMLDivElement>(null);
 	const lastMessageCount = useRef(0);
+	const isNearBottomRef = useRef(true);
 
-	// Auto-scroll to bottom when messages are added
+	// Load slash commands from filesystem on mount
 	useEffect(() => {
+		loadSlashCommands(worktreePath).catch((e) =>
+			console.error("Failed to load slash commands:", e),
+		);
+	}, [worktreePath]);
+
+	// Track scroll position via onScroll handler
+	const handleScroll = useCallback(() => {
 		const el = scrollRef.current;
 		if (!el) return;
-		const count = activeSession?.messages.length ?? 0;
-		if (count > lastMessageCount.current) {
-			el.scrollTop = el.scrollHeight;
-		}
-		lastMessageCount.current = count;
-	}, [activeSession?.messages.length]);
+		isNearBottomRef.current =
+			el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+	}, []);
 
-	// Also scroll when streaming content updates
+	// Derive streaming content tracking values
 	const agentMessages = activeSession?.messages.filter(
 		(m) => m.role === "agent",
 	);
 	const lastAgentMsg = agentMessages?.[agentMessages.length - 1];
 	const lastAgentPartsLen = lastAgentMsg?.parts.length ?? 0;
-	const lastAgentContent =
-		lastAgentMsg?.parts
-			.filter((p) => p.type === "text")
-			.reduce((len, p) => len + (p as { content: string }).content.length, 0) ??
-		0;
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: lastAgentContent/lastAgentPartsLen triggers scroll on content growth
-	useEffect(() => {
-		if (!isStreaming) return;
-		const el = scrollRef.current;
-		if (!el) return;
-		const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-		if (isNearBottom) {
-			el.scrollTop = el.scrollHeight;
-		}
-	}, [isStreaming, lastAgentContent, lastAgentPartsLen]);
+	const lastAgentContent = getTextContent(lastAgentMsg?.parts ?? []).length;
 
 	const msgs = activeSession?.messages;
 	const lastMsg = msgs?.[msgs.length - 1];
-	const showWaitingShimmer =
-		isStreaming && lastMsg?.role === "agent" && lastMsg.parts.length === 0;
+	const shimmerLineCount = useMemo(() => {
+		if (!isStreaming || lastMsg?.role !== "agent") return 0;
+		if (lastMsg.parts.length === 0) return 3;
+		const lastPart = lastMsg.parts[lastMsg.parts.length - 1];
+		switch (lastPart.type) {
+			case "thinking":
+			case "tool_use":
+			case "tool_result":
+				return 2;
+			case "text":
+				return 1;
+			default:
+				return 0;
+		}
+	}, [isStreaming, lastMsg]);
+
+	// Auto-scroll: anchor-based approach
+	// biome-ignore lint/correctness/useExhaustiveDependencies: lastAgentContent/lastAgentPartsLen/shimmerLineCount triggers scroll on content growth
+	useEffect(() => {
+		const count = activeSession?.messages.length ?? 0;
+		if (count > lastMessageCount.current) {
+			// New message added → force scroll
+			scrollAnchorRef.current?.scrollIntoView({ behavior: "instant" });
+		} else if (isNearBottomRef.current) {
+			// Content update → follow if near bottom
+			scrollAnchorRef.current?.scrollIntoView({ behavior: "instant" });
+		}
+		lastMessageCount.current = count;
+	}, [
+		activeSession?.messages.length,
+		lastAgentContent,
+		lastAgentPartsLen,
+		shimmerLineCount,
+	]);
 
 	const isInputDisabled = isStreaming;
 
@@ -185,6 +210,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 									onDragEnd={handleDragEnd}
 									onClick={() => handleTabClick(session.id)}
 								>
+									<AgentStateIcon state={sessionAgentStates.get(session.id)} />
 									<span className="truncate max-w-[120px]">
 										{session.firstMessage || "New session"}
 									</span>
@@ -249,30 +275,19 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 					</Popover>
 				</div>
 				<div className="flex flex-col flex-1 min-h-0">
-					{isStreaming && (
-						<div
-							data-testid="agent-state-indicator"
-							className="px-4 py-1 bg-muted text-muted-foreground text-xs border-b"
-						>
-							{isWaiting ? "Waiting..." : "Running..."}
-						</div>
-					)}
-					<div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+					<div
+						ref={scrollRef}
+						onScroll={handleScroll}
+						className="flex-1 min-h-0 overflow-y-auto select-text"
+					>
 						{activeSession && (
 							<div className="py-2">
 								{activeSession.messages.map((msg, idx) => {
 									if (msg.role !== "agent") {
-										const textContent = msg.parts
-											.filter((p) => p.type === "text")
-											.map((p) => (p as { content: string }).content)
-											.join("");
+										const textContent = getTextContent(msg.parts);
 										return (
 											<div key={msg.id}>
-												<StreamMessage
-													content={textContent}
-													role={msg.role}
-													isStreaming={false}
-												/>
+												<StreamMessage content={textContent} role={msg.role} />
 											</div>
 										);
 									}
@@ -280,28 +295,26 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 									const isLastMsg = idx === activeSession.messages.length - 1;
 									const isLastAgentStreaming = isStreaming && isLastMsg;
 
+									// Build ID-based result map for tool_use ↔ tool_result pairing
+									const resultByToolUseId = new Map<
+										string,
+										Extract<MessagePart, { type: "tool_result" }>
+									>();
+									const pairedToolUseIds = new Set<string>();
+									for (const p of msg.parts) {
+										if (p.type === "tool_result" && p.toolUseId) {
+											resultByToolUseId.set(p.toolUseId, p);
+										}
+									}
+
 									return (
 										<div key={msg.id}>
 											{/* biome-ignore lint/suspicious/useIterableCallbackReturn: switch is exhaustive for MessagePart */}
 											{msg.parts.map((part, i) => {
 												const key = `${msg.id}-p${i}`;
 												const nextPart = msg.parts[i + 1];
-												const isLastPart = i === msg.parts.length - 1;
-												const partStreaming =
-													isLastAgentStreaming && isLastPart;
-
-												// Skip tool_result that is paired with preceding tool_use
-												if (
-													part.type === "tool_result" &&
-													i > 0 &&
-													msg.parts[i - 1].type === "tool_use"
-												)
-													return null;
-
 												switch (part.type) {
 													case "thinking":
-														if (isLastAgentStreaming)
-															return <ShimmerPlaceholder key={key} lines={2} />;
 														return null;
 													case "text":
 														return (
@@ -310,7 +323,6 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 																key={key}
 																content={part.content}
 																role="agent"
-																isStreaming={partStreaming}
 															/>
 														);
 													case "error":
@@ -321,25 +333,46 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 														);
 													case "tool_use": {
 														const pairedResult =
-															nextPart?.type === "tool_result"
+															resultByToolUseId.get(part.id) ??
+															(nextPart?.type === "tool_result"
 																? nextPart
-																: undefined;
+																: undefined);
+														if (pairedResult?.toolUseId)
+															pairedToolUseIds.add(pairedResult.toolUseId);
+														else if (pairedResult && nextPart === pairedResult)
+															pairedToolUseIds.add(`adj-${i}`);
+														const isExecuting =
+															isLastAgentStreaming && !pairedResult;
 														return (
 															<div key={key} className="px-5 py-0.5 text-xs">
 																<ToolActivity
 																	entry={part}
 																	result={pairedResult}
 																	index={i}
+																	isExecuting={isExecuting}
+																	basePath={worktreePath}
 																/>
 															</div>
 														);
 													}
-													case "tool_result":
+													case "tool_result": {
+														// ID-based paired — skip
+														if (
+															part.toolUseId &&
+															pairedToolUseIds.has(part.toolUseId)
+														)
+															return null;
+														// Adjacent-based paired — skip
+														if (i > 0 && msg.parts[i - 1].type === "tool_use") {
+															if (pairedToolUseIds.has(`adj-${i - 1}`))
+																return null;
+														}
 														return (
 															<div key={key} className="px-5 py-0.5 text-xs">
 																<ActivityItem entry={part} index={i} />
 															</div>
 														);
+													}
 													case "permission":
 														return (
 															<PermissionDialog
@@ -359,15 +392,13 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 														);
 												}
 											})}
-											{isLastAgentStreaming &&
-												msg.parts.length > 0 &&
-												msg.parts[msg.parts.length - 1].type === "tool_use" && (
-													<ShimmerPlaceholder lines={2} />
-												)}
 										</div>
 									);
 								})}
-								{showWaitingShimmer && <ShimmerPlaceholder />}
+								{shimmerLineCount > 0 && (
+									<ShimmerPlaceholder lines={shimmerLineCount} />
+								)}
+								<div ref={scrollAnchorRef} />
 							</div>
 						)}
 					</div>

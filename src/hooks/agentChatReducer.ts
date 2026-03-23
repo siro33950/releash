@@ -14,6 +14,7 @@ export interface AgentChatState {
 	closedSessions: SessionSummary[];
 	activeSession: ChatSession | null;
 	streamingSessionIds: string[];
+	sessionFinalStates: Record<string, "done" | "error">;
 	error: string | null;
 	permissionMode: PermissionMode;
 	userPermissionMode: PermissionMode;
@@ -44,6 +45,7 @@ export type AgentChatAction =
 			messageId: string;
 			content: string;
 			isError: boolean;
+			toolUseId?: string;
 	  }
 	| { type: "SET_PERMISSION_MODE"; mode: PermissionMode }
 	| { type: "SET_USER_PERMISSION_MODE"; mode: PermissionMode }
@@ -54,6 +56,11 @@ export type AgentChatAction =
 			request: PermissionRequest | null;
 	  }
 	| { type: "REORDER_SESSIONS"; sessionOrder: string[] }
+	| {
+			type: "SET_SESSION_FINAL_STATE";
+			sessionId: string;
+			state: "done" | "error";
+	  }
 	| {
 			type: "ADD_PERMISSION_PART";
 			messageId: string;
@@ -133,7 +140,8 @@ export function reducer(
 				...m,
 				parts: appendToParts(m.parts, "thinking", action.chunk),
 			}));
-		case "START_STREAMING":
+		case "START_STREAMING": {
+			const { [action.sessionId]: _, ...restFinal } = state.sessionFinalStates;
 			return {
 				...state,
 				streamingSessionIds: state.streamingSessionIds.includes(
@@ -141,7 +149,9 @@ export function reducer(
 				)
 					? state.streamingSessionIds
 					: [...state.streamingSessionIds, action.sessionId],
+				sessionFinalStates: restFinal,
 			};
+		}
 		case "STOP_STREAMING":
 			return {
 				...state,
@@ -185,6 +195,7 @@ export function reducer(
 				type: "tool_result",
 				content: action.content,
 				isError: action.isError,
+				...(action.toolUseId && { toolUseId: action.toolUseId }),
 			};
 			return updateMessageInSession(state, action.messageId, (m) => ({
 				...m,
@@ -241,6 +252,14 @@ export function reducer(
 		}
 		case "REORDER_SESSIONS":
 			return { ...state, sessionOrder: action.sessionOrder };
+		case "SET_SESSION_FINAL_STATE":
+			return {
+				...state,
+				sessionFinalStates: {
+					...state.sessionFinalStates,
+					[action.sessionId]: action.state,
+				},
+			};
 	}
 }
 
@@ -250,6 +269,7 @@ export const INITIAL_STATE: AgentChatState = {
 	closedSessions: [],
 	activeSession: null,
 	streamingSessionIds: [],
+	sessionFinalStates: {},
 	error: null,
 	permissionMode: "acceptEdits",
 	userPermissionMode: "acceptEdits",

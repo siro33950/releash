@@ -29,7 +29,12 @@ export type MessagePart =
 			input: Record<string, unknown>;
 			id: string;
 	  }
-	| { type: "tool_result"; content: string; isError: boolean }
+	| {
+			type: "tool_result";
+			content: string;
+			isError: boolean;
+			toolUseId?: string;
+	  }
 	| {
 			type: "permission";
 			request: PermissionRequest;
@@ -44,7 +49,12 @@ export type ActivityEntry =
 			input: Record<string, unknown>;
 			id: string;
 	  }
-	| { type: "tool_result"; content: string; isError: boolean }
+	| {
+			type: "tool_result";
+			content: string;
+			isError: boolean;
+			toolUseId?: string;
+	  }
 	| {
 			type: "permission_result";
 			toolName: string;
@@ -77,6 +87,13 @@ export interface ChatSession {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
+}
+
+export function getTextContent(parts: MessagePart[]): string {
+	return parts
+		.filter((p): p is { type: "text"; content: string } => p.type === "text")
+		.map((p) => p.content)
+		.join("");
 }
 
 export interface SessionSummary {

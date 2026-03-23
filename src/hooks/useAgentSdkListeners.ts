@@ -1,12 +1,13 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Dispatch, MutableRefObject } from "react";
 import { useEffect } from "react";
-import type {
-	ChatSession,
-	MessagePart,
-	PermissionMode,
-	PermissionRequest,
-	SessionState,
+import {
+	type ChatSession,
+	getTextContent,
+	type MessagePart,
+	type PermissionMode,
+	type PermissionRequest,
+	type SessionState,
 } from "@/types/session";
 import type { AgentChatAction } from "./agentChatReducer";
 import {
@@ -14,6 +15,7 @@ import {
 	updateSessionAgentInfo,
 	updateSessionState,
 } from "./useSessionStore";
+import { setSlashCommands } from "./useSlashCommands";
 
 export interface StreamingBuffer {
 	parts: MessagePart[];
@@ -150,34 +152,7 @@ function bufferAppend(
 }
 
 function getBufferTextContent(buf: StreamingBuffer): string {
-	return buf.parts
-		.filter((p) => p.type === "text")
-		.map((p) => (p as { content: string }).content)
-		.join("");
-}
-
-export function shouldRetry(
-	exitCode: number,
-	isRetrying: boolean,
-	session: ChatSession | null,
-): string | null {
-	if (exitCode === 0 || isRetrying || !session?.agentSessionId) return null;
-	const agentMsgs = session.messages.filter((m) => m.role === "agent");
-	const lastAgentMsg = agentMsgs[agentMsgs.length - 1];
-	if (!lastAgentMsg) return null;
-	const textContent = lastAgentMsg.parts
-		.filter((p) => p.type === "text")
-		.map((p) => (p as { content: string }).content)
-		.join("");
-	if (textContent.trim()) return null;
-	const humanMsgs = session.messages.filter((m) => m.role === "human");
-	const lastHumanMsg = humanMsgs[humanMsgs.length - 1];
-	if (!lastHumanMsg) return null;
-	const humanText = lastHumanMsg.parts
-		.filter((p) => p.type === "text")
-		.map((p) => (p as { content: string }).content)
-		.join("");
-	return humanText || null;
+	return getTextContent(buf.parts);
 }
 
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
@@ -203,6 +178,21 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			const messageId = chatSessionId
 				? streamingMessageIdsRef.current.get(chatSessionId)
 				: null;
+
+			// Cache slash commands from supported_commands message
+			if (
+				msg.type === "supported_commands" &&
+				"commands" in msg &&
+				Array.isArray(msg.commands)
+			) {
+				setSlashCommands(
+					msg.commands as {
+						name: string;
+						description: string;
+						argumentHint?: string;
+					}[],
+				);
+			}
 
 			// Detect permission_request and dispatch
 			if (msg.type === "permission_request" && chatSessionId) {
@@ -348,12 +338,14 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 								messageId,
 								content,
 								isError,
+								toolUseId: resultBlock.tool_use_id,
 							});
 							if (buf) {
 								buf.parts.push({
 									type: "tool_result",
 									content,
 									isError,
+									toolUseId: resultBlock.tool_use_id,
 								});
 							}
 						}
@@ -403,6 +395,11 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				dispatch({
 					type: "STOP_STREAMING",
 					sessionId: chatSessionId,
+				});
+				dispatch({
+					type: "SET_SESSION_FINAL_STATE",
+					sessionId: chatSessionId,
+					state: info.exit_code === 0 ? "done" : "error",
 				});
 				dispatch({
 					type: "SET_PENDING_PERMISSION",

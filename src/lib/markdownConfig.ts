@@ -2,6 +2,7 @@ import type { Options } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
 const sanitizeSchema = {
@@ -18,4 +19,4 @@ export const rehypePluginList = [
 	rehypeHighlight,
 ] as Options["rehypePlugins"];
 
-export const remarkPluginList = [remarkGfm];
+export const remarkPluginList = [remarkGfm, remarkBreaks];

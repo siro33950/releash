@@ -24,6 +24,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("./useSlashCommands", () => ({
+	setSlashCommands: vi.fn(),
+}));
+
 vi.mock("./useSessionStore", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./useSessionStore")>();
 	return {
@@ -38,7 +42,6 @@ const {
 	useAgentSdkListeners,
 	extractStreamingDelta,
 	extractToolResultContent,
-	shouldRetry,
 } = await import("./useAgentSdkListeners");
 
 import type { StreamingBuffer } from "./useAgentSdkListeners";
@@ -388,7 +391,7 @@ describe("useAgentSdkListeners callback behavior", () => {
 		});
 	});
 
-	it("dispatches APPEND_TOOL_RESULT when user message with tool_result is received", () => {
+	it("dispatches APPEND_TOOL_RESULT with toolUseId when user message with tool_result is received", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -426,10 +429,11 @@ describe("useAgentSdkListeners callback behavior", () => {
 			messageId: "msg-001",
 			content: "file content here",
 			isError: false,
+			toolUseId: "toolu_abc",
 		});
 	});
 
-	it("dispatches APPEND_TOOL_RESULT with isError true for error results", () => {
+	it("dispatches APPEND_TOOL_RESULT with isError true and toolUseId for error results", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -467,6 +471,7 @@ describe("useAgentSdkListeners callback behavior", () => {
 			messageId: "msg-001",
 			content: "Error: file not found",
 			isError: true,
+			toolUseId: "toolu_abc",
 		});
 	});
 
@@ -803,122 +808,6 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 	});
 });
 
-describe("shouldRetry", () => {
-	it("returns null when exit code is 0", () => {
-		const session = {
-			id: "s1",
-			worktreePath: "/repo",
-			messages: [
-				{
-					id: "m1",
-					role: "human",
-					parts: [{ type: "text", content: "hello" }],
-					timestamp: 1000,
-				},
-				{ id: "m2", role: "agent", parts: [], timestamp: 1001 },
-			],
-			state: "active",
-			createdAt: 1000,
-			updatedAt: 1000,
-			agentSessionId: "sdk-sess-1",
-		} as never;
-		expect(shouldRetry(0, false, session)).toBeNull();
-	});
-
-	it("returns null when already retrying", () => {
-		const session = {
-			id: "s1",
-			worktreePath: "/repo",
-			messages: [
-				{
-					id: "m1",
-					role: "human",
-					parts: [{ type: "text", content: "hello" }],
-					timestamp: 1000,
-				},
-				{ id: "m2", role: "agent", parts: [], timestamp: 1001 },
-			],
-			state: "active",
-			createdAt: 1000,
-			updatedAt: 1000,
-			agentSessionId: "sdk-sess-1",
-		} as never;
-		expect(shouldRetry(1, true, session)).toBeNull();
-	});
-
-	it("returns null when no agentSessionId", () => {
-		const session = {
-			id: "s1",
-			worktreePath: "/repo",
-			messages: [
-				{
-					id: "m1",
-					role: "human",
-					parts: [{ type: "text", content: "hello" }],
-					timestamp: 1000,
-				},
-				{ id: "m2", role: "agent", parts: [], timestamp: 1001 },
-			],
-			state: "active",
-			createdAt: 1000,
-			updatedAt: 1000,
-			agentSessionId: null,
-		} as never;
-		expect(shouldRetry(1, false, session)).toBeNull();
-	});
-
-	it("returns null when last agent message has content", () => {
-		const session = {
-			id: "s1",
-			worktreePath: "/repo",
-			messages: [
-				{
-					id: "m1",
-					role: "human",
-					parts: [{ type: "text", content: "hello" }],
-					timestamp: 1000,
-				},
-				{
-					id: "m2",
-					role: "agent",
-					parts: [{ type: "text", content: "response" }],
-					timestamp: 1001,
-				},
-			],
-			state: "active",
-			createdAt: 1000,
-			updatedAt: 1000,
-			agentSessionId: "sdk-sess-1",
-		} as never;
-		expect(shouldRetry(1, false, session)).toBeNull();
-	});
-
-	it("returns last human message content when retry conditions met", () => {
-		const session = {
-			id: "s1",
-			worktreePath: "/repo",
-			messages: [
-				{
-					id: "m1",
-					role: "human",
-					parts: [{ type: "text", content: "hello" }],
-					timestamp: 1000,
-				},
-				{ id: "m2", role: "agent", parts: [], timestamp: 1001 },
-			],
-			state: "active",
-			createdAt: 1000,
-			updatedAt: 1000,
-			agentSessionId: "sdk-sess-1",
-		} as never;
-		expect(shouldRetry(1, false, session)).toBe("hello");
-	});
-
-	it("returns null when session is null", () => {
-		expect(shouldRetry(1, false, null)).toBeNull();
-	});
-});
-
 describe("streaming buffer accumulation", () => {
 	it("accumulates text delta into streamingBuffersRef", () => {
 		listenResolvers = [];
@@ -1069,6 +958,7 @@ describe("streaming buffer accumulation", () => {
 			type: "tool_result",
 			content: "file content",
 			isError: false,
+			toolUseId: "toolu_abc",
 		});
 	});
 });
@@ -1318,5 +1208,60 @@ describe("result error display", () => {
 			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
 		);
 		expect(addMsgCalls).toHaveLength(0);
+	});
+});
+
+describe("supported_commands handling", () => {
+	it("calls setSlashCommands when supported_commands message is received", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		const commands = [
+			{ name: "plan-spec", description: "Create plan spec" },
+			{
+				name: "review",
+				description: "Code review",
+				argumentHint: "<file>",
+			},
+		];
+
+		cb?.({
+			payload: {
+				type: "supported_commands",
+				commands,
+			},
+		});
+
+		const { setSlashCommands } = await import("./useSlashCommands");
+		expect(setSlashCommands).toHaveBeenCalledWith(commands);
+	});
+
+	it("does not call setSlashCommands when commands is not an array", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		const { setSlashCommands } = await import("./useSlashCommands");
+		vi.mocked(setSlashCommands).mockClear();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "supported_commands",
+				commands: "not-an-array",
+			},
+		});
+
+		expect(setSlashCommands).not.toHaveBeenCalled();
 	});
 });
