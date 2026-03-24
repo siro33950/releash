@@ -11,14 +11,32 @@ pub use store::SessionStore;
 pub enum MessagePart {
     Thinking {
         content: String,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            rename = "parentToolUseId"
+        )]
+        parent_tool_use_id: Option<String>,
     },
     Text {
         content: String,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            rename = "parentToolUseId"
+        )]
+        parent_tool_use_id: Option<String>,
     },
     ToolUse {
         tool: String,
         input: serde_json::Value,
         id: String,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            rename = "parentToolUseId"
+        )]
+        parent_tool_use_id: Option<String>,
     },
     ToolResult {
         content: String,
@@ -26,15 +44,42 @@ pub enum MessagePart {
         is_error: bool,
         #[serde(skip_serializing_if = "Option::is_none", default, rename = "toolUseId")]
         tool_use_id: Option<String>,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            rename = "parentToolUseId"
+        )]
+        parent_tool_use_id: Option<String>,
     },
     Error {
         content: String,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            rename = "parentToolUseId"
+        )]
+        parent_tool_use_id: Option<String>,
     },
     Permission {
         request: serde_json::Value,
         status: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         answers: Option<serde_json::Value>,
+        #[serde(
+            skip_serializing_if = "Option::is_none",
+            default,
+            rename = "parentToolUseId"
+        )]
+        parent_tool_use_id: Option<String>,
+    },
+    TaskStatus {
+        #[serde(rename = "taskToolUseId")]
+        task_tool_use_id: String,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        description: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        summary: Option<String>,
     },
 }
 
@@ -313,10 +358,10 @@ pub fn update_message_parts(
     let mut activities: Vec<ActivityEntry> = Vec::new();
     for part in &parts {
         match part {
-            MessagePart::Text { content: c } => content.push_str(c),
-            MessagePart::Error { content: c } => content.push_str(c),
-            MessagePart::Thinking { content: c } => thinking.push_str(c),
-            MessagePart::ToolUse { tool, input, id } => {
+            MessagePart::Text { content: c, .. } => content.push_str(c),
+            MessagePart::Error { content: c, .. } => content.push_str(c),
+            MessagePart::Thinking { content: c, .. } => thinking.push_str(c),
+            MessagePart::ToolUse { tool, input, id, .. } => {
                 activities.push(ActivityEntry::ToolUse {
                     tool: tool.clone(),
                     input: input.clone(),
@@ -327,6 +372,7 @@ pub fn update_message_parts(
                 content: c,
                 is_error,
                 tool_use_id,
+                ..
             } => {
                 activities.push(ActivityEntry::ToolResult {
                     content: c.clone(),
@@ -338,6 +384,7 @@ pub fn update_message_parts(
                 request,
                 status,
                 answers,
+                ..
             } => {
                 if status != "pending" {
                     let tool_name = request
@@ -362,6 +409,7 @@ pub fn update_message_parts(
                     });
                 }
             }
+            MessagePart::TaskStatus { .. } => {}
         }
     }
 
@@ -708,27 +756,33 @@ mod tests {
         let parts = vec![
             MessagePart::Thinking {
                 content: "hmm".to_string(),
+                parent_tool_use_id: None,
             },
             MessagePart::Text {
                 content: "hello".to_string(),
+                parent_tool_use_id: None,
             },
             MessagePart::Error {
                 content: "something went wrong".to_string(),
+                parent_tool_use_id: None,
             },
             MessagePart::ToolUse {
                 tool: "Read".to_string(),
                 input: serde_json::json!({"file_path": "/a.ts"}),
                 id: "t1".to_string(),
+                parent_tool_use_id: None,
             },
             MessagePart::ToolResult {
                 content: "ok".to_string(),
                 is_error: false,
                 tool_use_id: None,
+                parent_tool_use_id: None,
             },
             MessagePart::Permission {
                 request: serde_json::json!({"request_id": "r1", "tool_name": "Bash"}),
                 status: "allowed".to_string(),
                 answers: Some(serde_json::json!({"q1": "yes"})),
+                parent_tool_use_id: None,
             },
         ];
         let json = serde_json::to_string(&parts).unwrap();
@@ -741,6 +795,7 @@ mod tests {
     fn message_part_error_serialization() {
         let part = MessagePart::Error {
             content: "fail".to_string(),
+            parent_tool_use_id: None,
         };
         let json = serde_json::to_string(&part).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -761,9 +816,11 @@ mod tests {
             parts: Some(vec![
                 MessagePart::Thinking {
                     content: "think".to_string(),
+                    parent_tool_use_id: None,
                 },
                 MessagePart::Text {
                     content: "hi".to_string(),
+                    parent_tool_use_id: None,
                 },
             ]),
             timestamp: 1000.0,
@@ -786,6 +843,7 @@ mod tests {
             request: serde_json::json!({"request_id": "r1"}),
             status: "pending".to_string(),
             answers: None,
+            parent_tool_use_id: None,
         };
         let json = serde_json::to_string(&part).unwrap();
         assert!(!json.contains("answers"));
@@ -812,6 +870,78 @@ mod tests {
             assert_eq!(tool_use_id, None);
         } else {
             panic!("Expected ToolResult variant");
+        }
+    }
+
+    #[test]
+    fn task_status_serde_roundtrip() {
+        let part = MessagePart::TaskStatus {
+            task_tool_use_id: "toolu_task_001".to_string(),
+            status: "completed".to_string(),
+            description: Some("Search codebase".to_string()),
+            summary: Some("Found 3 files".to_string()),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "task_status");
+        assert_eq!(v["taskToolUseId"], "toolu_task_001");
+        assert_eq!(v["status"], "completed");
+        assert_eq!(v["description"], "Search codebase");
+        assert_eq!(v["summary"], "Found 3 files");
+        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, part);
+    }
+
+    #[test]
+    fn task_status_without_optional_fields_deserializes() {
+        let json = r#"{"type":"task_status","taskToolUseId":"t1","status":"started"}"#;
+        let part: MessagePart = serde_json::from_str(json).unwrap();
+        if let MessagePart::TaskStatus {
+            task_tool_use_id,
+            status,
+            description,
+            summary,
+        } = part
+        {
+            assert_eq!(task_tool_use_id, "t1");
+            assert_eq!(status, "started");
+            assert_eq!(description, None);
+            assert_eq!(summary, None);
+        } else {
+            panic!("Expected TaskStatus variant");
+        }
+    }
+
+    #[test]
+    fn parent_tool_use_id_serde() {
+        let part = MessagePart::Text {
+            content: "sub-agent text".to_string(),
+            parent_tool_use_id: Some("toolu_parent".to_string()),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        assert!(json.contains("parentToolUseId"));
+        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        if let MessagePart::Text {
+            parent_tool_use_id, ..
+        } = back
+        {
+            assert_eq!(parent_tool_use_id, Some("toolu_parent".to_string()));
+        } else {
+            panic!("Expected Text variant");
+        }
+    }
+
+    #[test]
+    fn old_json_without_parent_tool_use_id_deserializes() {
+        let json = r#"{"type":"text","content":"hello"}"#;
+        let part: MessagePart = serde_json::from_str(json).unwrap();
+        if let MessagePart::Text {
+            parent_tool_use_id, ..
+        } = part
+        {
+            assert_eq!(parent_tool_use_id, None);
+        } else {
+            panic!("Expected Text variant");
         }
     }
 }

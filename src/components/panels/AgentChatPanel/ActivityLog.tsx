@@ -1,12 +1,13 @@
-import { ChevronRight, Loader2, Terminal } from "lucide-react";
+import { ChevronRight, Layers, Loader2, Terminal } from "lucide-react";
 import { useState } from "react";
-import type { ActivityEntry } from "@/types/session";
+import type { ActivityEntry, MessagePart } from "@/types/session";
 import {
 	classifyTool,
 	getCommandLabel,
 	getReadToolLabel,
 	shortenPath,
 } from "./toolClassification";
+import type { TaskGroup } from "./toolPairing";
 
 function truncateResult(content: string, maxLines = 5): string {
 	const lines = content.split("\n");
@@ -318,4 +319,115 @@ export function ActivityItem({
 
 	// tool_use without paired result — fallback
 	return <ToolActivity entry={entry} index={index} />;
+}
+
+interface TaskToolActivityProps {
+	group: TaskGroup;
+	parts: MessagePart[];
+	pairedResults: Map<number, Extract<MessagePart, { type: "tool_result" }>>;
+	isStreaming: boolean;
+	basePath?: string;
+}
+
+export function TaskToolActivity({
+	group,
+	parts,
+	pairedResults,
+	isStreaming,
+	basePath,
+}: TaskToolActivityProps) {
+	const [isExpanded, setIsExpanded] = useState(false);
+	const isRunning = isStreaming && !group.isCompleted;
+
+	const label = group.description
+		? group.subagentType
+			? `${group.description} (${group.subagentType})`
+			: group.description
+		: group.subagentType
+			? `Task (${group.subagentType})`
+			: "Task";
+
+	return (
+		<div className="py-0.5">
+			<button
+				type="button"
+				data-testid={`activity-task-${group.toolUseIndex}`}
+				className="flex items-center gap-1 min-w-0 text-muted-foreground/70 hover:text-foreground/80 transition-colors"
+				onClick={() => setIsExpanded(!isExpanded)}
+			>
+				{isRunning ? (
+					<Loader2 className="size-3 shrink-0 animate-spin" />
+				) : (
+					<ChevronRight
+						className={`size-3 shrink-0 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+					/>
+				)}
+				<Layers className="size-3 shrink-0" />
+				<span className="truncate">{label}</span>
+				{group.isCompleted && (
+					<span className="text-muted-foreground/50 ml-1">
+						({group.childIndices.length} steps)
+					</span>
+				)}
+			</button>
+			{isExpanded && (
+				<div className="ml-4 mt-0.5 border-l border-muted pl-2">
+					{group.childIndices.map((ci) => {
+						const child = parts[ci];
+						if (!child) return null;
+						const key = `task-child-${ci}`;
+						switch (child.type) {
+							case "text":
+								return child.content.trim() ? (
+									<div
+										key={key}
+										className="py-0.5 text-muted-foreground/70 text-[11px] whitespace-pre-wrap break-words max-h-24 overflow-hidden"
+									>
+										{child.content.length > 200
+											? `${child.content.slice(0, 200)}…`
+											: child.content}
+									</div>
+								) : null;
+							case "tool_use": {
+								const result = pairedResults.get(ci);
+								const executing = isRunning && !result;
+								return (
+									<div key={key}>
+										<ToolActivity
+											entry={child}
+											result={result}
+											index={ci}
+											isExecuting={executing}
+											basePath={basePath}
+										/>
+									</div>
+								);
+							}
+							case "error":
+								return (
+									<div key={key}>
+										<CollapsibleError content={child.content} />
+									</div>
+								);
+							default:
+								return null;
+						}
+					})}
+					{group.statusParts.map((sp) => {
+						if (sp.status === "started" || sp.status === "progress")
+							return null;
+						return (
+							<div
+								key={`task-status-${group.toolUseId}-${sp.status}`}
+								className="py-0.5 text-muted-foreground/50 text-[11px]"
+							>
+								{sp.status}
+								{sp.summary ? `: ${sp.summary}` : ""}
+							</div>
+						);
+					})}
+				</div>
+			)}
+		</div>
+	);
 }

@@ -1,5 +1,11 @@
 import { History, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import {
 	Popover,
@@ -9,14 +15,125 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { loadSlashCommands } from "@/hooks/useSlashCommands";
+import type { ChatMessage } from "@/types/session";
 import { getTextContent } from "@/types/session";
-import { ActivityItem, CollapsibleError, ToolActivity } from "./ActivityLog";
+import {
+	ActivityItem,
+	CollapsibleError,
+	TaskToolActivity,
+	ToolActivity,
+} from "./ActivityLog";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
 import { PermissionDialog } from "./PermissionDialog";
 import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
 import { StreamMessage } from "./StreamMessage";
 import { buildToolPairings } from "./toolPairing";
+
+interface AgentMessagePartsProps {
+	msg: ChatMessage;
+	isLastAgentStreaming: boolean;
+	worktreePath: string;
+	respondPermission: (
+		id: string,
+		allow: boolean,
+		updatedInput?: Record<string, unknown>,
+	) => void;
+}
+
+const AgentMessageParts = React.memo(function AgentMessageParts({
+	msg,
+	isLastAgentStreaming,
+	worktreePath,
+	respondPermission,
+}: AgentMessagePartsProps) {
+	const { pairedResults, skippedResultIndices, taskGroups, taskChildIndices } =
+		useMemo(() => buildToolPairings(msg.parts), [msg.parts]);
+
+	return (
+		<>
+			{/* biome-ignore lint/suspicious/useIterableCallbackReturn: switch is exhaustive for MessagePart */}
+			{msg.parts.map((part, i) => {
+				const key = `${msg.id}-p${i}`;
+
+				if (taskChildIndices.has(i) || part.type === "task_status") return null;
+
+				{
+					const taskGroup = taskGroups.get(i);
+					if (taskGroup) {
+						return (
+							<div key={key} className="px-5 py-0.5 text-xs">
+								<TaskToolActivity
+									group={taskGroup}
+									parts={msg.parts}
+									pairedResults={pairedResults}
+									isStreaming={isLastAgentStreaming}
+									basePath={worktreePath}
+								/>
+							</div>
+						);
+					}
+				}
+
+				switch (part.type) {
+					case "thinking":
+						return null;
+					case "text":
+						return (
+							// biome-ignore lint/a11y/useValidAriaRole: role is a component prop, not an ARIA role
+							<StreamMessage key={key} content={part.content} role="agent" />
+						);
+					case "error":
+						return (
+							<div key={key} className="px-5 py-0.5 text-xs">
+								<CollapsibleError content={part.content} />
+							</div>
+						);
+					case "tool_use": {
+						const pairedResult = pairedResults.get(i);
+						const isExecuting = isLastAgentStreaming && !pairedResult;
+						return (
+							<div key={key} className="px-5 py-0.5 text-xs">
+								<ToolActivity
+									entry={part}
+									result={pairedResult}
+									index={i}
+									isExecuting={isExecuting}
+									basePath={worktreePath}
+								/>
+							</div>
+						);
+					}
+					case "tool_result": {
+						if (skippedResultIndices.has(i)) return null;
+						return (
+							<div key={key} className="px-5 py-0.5 text-xs">
+								<ActivityItem entry={part} index={i} />
+							</div>
+						);
+					}
+					case "permission":
+						return (
+							<PermissionDialog
+								key={key}
+								request={part.request}
+								status={part.status}
+								resolvedAnswers={part.answers}
+								onAllow={(id) => respondPermission(id, true)}
+								onDeny={(id) => respondPermission(id, false)}
+								onAnswer={(id, answers) =>
+									respondPermission(id, true, {
+										...part.request.input,
+										answers,
+									})
+								}
+							/>
+						);
+				}
+			})}
+		</>
+	);
+});
 
 interface AgentChatPanelProps {
 	worktreePath: string;
@@ -86,6 +203,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 			case "thinking":
 			case "tool_use":
 			case "tool_result":
+			case "task_status":
 				return 2;
 			case "text":
 				return 1;
@@ -296,75 +414,14 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 									const isLastMsg = idx === activeSession.messages.length - 1;
 									const isLastAgentStreaming = isStreaming && isLastMsg;
 
-									const { pairedResults, skippedResultIndices } =
-										buildToolPairings(msg.parts);
-
 									return (
 										<div key={msg.id}>
-											{/* biome-ignore lint/suspicious/useIterableCallbackReturn: switch is exhaustive for MessagePart */}
-											{msg.parts.map((part, i) => {
-												const key = `${msg.id}-p${i}`;
-												switch (part.type) {
-													case "thinking":
-														return null;
-													case "text":
-														return (
-															// biome-ignore lint/a11y/useValidAriaRole: role is a component prop, not an ARIA role
-															<StreamMessage
-																key={key}
-																content={part.content}
-																role="agent"
-															/>
-														);
-													case "error":
-														return (
-															<div key={key} className="px-5 py-0.5 text-xs">
-																<CollapsibleError content={part.content} />
-															</div>
-														);
-													case "tool_use": {
-														const pairedResult = pairedResults.get(i);
-														const isExecuting =
-															isLastAgentStreaming && !pairedResult;
-														return (
-															<div key={key} className="px-5 py-0.5 text-xs">
-																<ToolActivity
-																	entry={part}
-																	result={pairedResult}
-																	index={i}
-																	isExecuting={isExecuting}
-																	basePath={worktreePath}
-																/>
-															</div>
-														);
-													}
-													case "tool_result": {
-														if (skippedResultIndices.has(i)) return null;
-														return (
-															<div key={key} className="px-5 py-0.5 text-xs">
-																<ActivityItem entry={part} index={i} />
-															</div>
-														);
-													}
-													case "permission":
-														return (
-															<PermissionDialog
-																key={key}
-																request={part.request}
-																status={part.status}
-																resolvedAnswers={part.answers}
-																onAllow={(id) => respondPermission(id, true)}
-																onDeny={(id) => respondPermission(id, false)}
-																onAnswer={(id, answers) =>
-																	respondPermission(id, true, {
-																		...part.request.input,
-																		answers,
-																	})
-																}
-															/>
-														);
-												}
-											})}
+											<AgentMessageParts
+												msg={msg}
+												isLastAgentStreaming={isLastAgentStreaming}
+												worktreePath={worktreePath}
+												respondPermission={respondPermission}
+											/>
 										</div>
 									);
 								})}

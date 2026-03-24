@@ -20,26 +20,36 @@ export type MessageRole = "human" | "agent" | "system";
 export type SessionState = "active" | "idle" | "done" | "error" | "closed";
 
 export type MessagePart =
-	| { type: "thinking"; content: string }
-	| { type: "text"; content: string }
-	| { type: "error"; content: string }
+	| { type: "thinking"; content: string; parentToolUseId?: string }
+	| { type: "text"; content: string; parentToolUseId?: string }
+	| { type: "error"; content: string; parentToolUseId?: string }
 	| {
 			type: "tool_use";
 			tool: string;
 			input: Record<string, unknown>;
 			id: string;
+			parentToolUseId?: string;
 	  }
 	| {
 			type: "tool_result";
 			content: string;
 			isError: boolean;
 			toolUseId?: string;
+			parentToolUseId?: string;
 	  }
 	| {
 			type: "permission";
 			request: PermissionRequest;
 			status: "pending" | "allowed" | "denied";
 			answers?: Record<string, string>;
+			parentToolUseId?: string;
+	  }
+	| {
+			type: "task_status";
+			taskToolUseId: string;
+			status: "started" | "completed" | "failed" | "stopped" | "progress";
+			description?: string;
+			summary?: string;
 	  };
 
 export type ActivityEntry =

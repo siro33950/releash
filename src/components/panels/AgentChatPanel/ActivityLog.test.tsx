@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { ActivityEntry } from "@/types/session";
-import { ActivityItem, ToolActivity } from "./ActivityLog";
+import type { ActivityEntry, MessagePart } from "@/types/session";
+import { ActivityItem, TaskToolActivity, ToolActivity } from "./ActivityLog";
+import type { TaskGroup } from "./toolPairing";
 
 describe("ToolActivity", () => {
 	describe("ReadToolActivity", () => {
@@ -370,6 +371,17 @@ describe("ActivityItem", () => {
 		expect(screen.getByText(/15 more lines/)).toBeInTheDocument();
 	});
 
+	it("shows tool_use fallback when no paired result", () => {
+		const entry: ActivityEntry = {
+			type: "tool_use",
+			tool: "Read",
+			input: { file_path: "/src/main.ts" },
+			id: "t-orphan",
+		};
+		render(<ActivityItem entry={entry} index={2} />);
+		expect(screen.getByTestId("activity-tool-use-2")).toBeDefined();
+	});
+
 	it("shows permission_result with allowed status", () => {
 		const entry: ActivityEntry = {
 			type: "permission_result",
@@ -382,5 +394,268 @@ describe("ActivityItem", () => {
 		const el = screen.getByTestId("activity-permission-result-0");
 		expect(el).toHaveTextContent("✓");
 		expect(el).toHaveTextContent("Bash");
+	});
+});
+
+describe("TaskToolActivity", () => {
+	function makeTaskGroup(overrides: Partial<TaskGroup> = {}): TaskGroup {
+		return {
+			toolUseIndex: 0,
+			toolUseId: "toolu_task_001",
+			description: "Explore codebase",
+			subagentType: "Explore",
+			childIndices: [],
+			statusParts: [],
+			resultIndex: undefined,
+			isCompleted: false,
+			...overrides,
+		};
+	}
+
+	const baseParts: MessagePart[] = [
+		{
+			type: "tool_use",
+			tool: "Task",
+			input: { description: "Explore codebase", subagent_type: "Explore" },
+			id: "toolu_task_001",
+		},
+	];
+
+	it("shows completed task in collapsed state with description and subagentType", () => {
+		const group = makeTaskGroup({
+			isCompleted: true,
+			childIndices: [1, 2],
+			statusParts: [
+				{
+					type: "task_status",
+					taskToolUseId: "toolu_task_001",
+					status: "completed",
+					summary: "Done",
+				},
+			],
+		});
+		const parts: MessagePart[] = [
+			...baseParts,
+			{
+				type: "tool_use",
+				tool: "Read",
+				input: { file_path: "/src/main.ts" },
+				id: "toolu_child_001",
+				parentToolUseId: "toolu_task_001",
+			},
+			{
+				type: "tool_result",
+				content: "file content",
+				isError: false,
+				toolUseId: "toolu_child_001",
+				parentToolUseId: "toolu_task_001",
+			},
+		];
+		render(
+			<TaskToolActivity
+				group={group}
+				parts={parts}
+				pairedResults={new Map()}
+				isStreaming={false}
+			/>,
+		);
+
+		const el = screen.getByTestId("activity-task-0");
+		expect(el).toHaveTextContent("Explore codebase");
+		// Children should not be visible (collapsed)
+		expect(screen.queryByTestId("activity-tool-use-1")).toBeNull();
+	});
+
+	it("shows running task in collapsed state by default", () => {
+		const group = makeTaskGroup({
+			childIndices: [1],
+		});
+		const parts: MessagePart[] = [
+			...baseParts,
+			{
+				type: "tool_use",
+				tool: "Read",
+				input: { file_path: "/src/main.ts" },
+				id: "toolu_child_001",
+				parentToolUseId: "toolu_task_001",
+			},
+		];
+		render(
+			<TaskToolActivity
+				group={group}
+				parts={parts}
+				pairedResults={new Map()}
+				isStreaming={true}
+			/>,
+		);
+
+		const el = screen.getByTestId("activity-task-0");
+		// Running task shows spinner
+		expect(el.querySelector(".animate-spin")).not.toBeNull();
+		// Children not visible (collapsed by default)
+		expect(screen.queryByTestId("activity-tool-use-1")).toBeNull();
+	});
+
+	it("toggles expand/collapse on label click", () => {
+		const group = makeTaskGroup({
+			isCompleted: true,
+			childIndices: [1],
+			statusParts: [
+				{
+					type: "task_status",
+					taskToolUseId: "toolu_task_001",
+					status: "completed",
+				},
+			],
+		});
+		const parts: MessagePart[] = [
+			...baseParts,
+			{
+				type: "tool_use",
+				tool: "Read",
+				input: { file_path: "/src/main.ts" },
+				id: "toolu_child_001",
+				parentToolUseId: "toolu_task_001",
+			},
+		];
+		render(
+			<TaskToolActivity
+				group={group}
+				parts={parts}
+				pairedResults={new Map()}
+				isStreaming={false}
+			/>,
+		);
+
+		// Completed → initially collapsed
+		expect(screen.queryByTestId("activity-tool-use-1")).toBeNull();
+
+		// Click to expand
+		fireEvent.click(screen.getByTestId("activity-task-0"));
+		expect(screen.getByTestId("activity-tool-use-1")).toBeDefined();
+
+		// Click to collapse
+		fireEvent.click(screen.getByTestId("activity-task-0"));
+		expect(screen.queryByTestId("activity-tool-use-1")).toBeNull();
+	});
+
+	it("shows child tool_use entries when expanded by click", () => {
+		const childResult: Extract<MessagePart, { type: "tool_result" }> = {
+			type: "tool_result",
+			content: "file content here",
+			isError: false,
+			toolUseId: "toolu_child_001",
+		};
+		const group = makeTaskGroup({
+			childIndices: [1],
+		});
+		const parts: MessagePart[] = [
+			...baseParts,
+			{
+				type: "tool_use",
+				tool: "Read",
+				input: { file_path: "/src/main.ts" },
+				id: "toolu_child_001",
+				parentToolUseId: "toolu_task_001",
+			},
+		];
+		const pairedResults = new Map<
+			number,
+			Extract<MessagePart, { type: "tool_result" }>
+		>([[1, childResult]]);
+
+		render(
+			<TaskToolActivity
+				group={group}
+				parts={parts}
+				pairedResults={pairedResults}
+				isStreaming={false}
+			/>,
+		);
+
+		// Collapsed by default
+		expect(screen.queryByTestId("activity-tool-use-1")).toBeNull();
+
+		// Click to expand
+		fireEvent.click(screen.getByTestId("activity-task-0"));
+		const toolEl = screen.getByTestId("activity-tool-use-1");
+		expect(toolEl).toHaveTextContent("Explored /src/main.ts");
+	});
+
+	it("shows description with subagentType suffix when both present", () => {
+		const group = makeTaskGroup({
+			isCompleted: true,
+			childIndices: [],
+			statusParts: [
+				{
+					type: "task_status",
+					taskToolUseId: "toolu_task_001",
+					status: "completed",
+				},
+			],
+		});
+		render(
+			<TaskToolActivity
+				group={group}
+				parts={baseParts}
+				pairedResults={new Map()}
+				isStreaming={false}
+			/>,
+		);
+
+		const el = screen.getByTestId("activity-task-0");
+		expect(el).toHaveTextContent("Explore codebase (Explore)");
+	});
+
+	it("shows sub-agent text output when expanded by click", () => {
+		const group = makeTaskGroup({
+			childIndices: [1],
+		});
+		const parts: MessagePart[] = [
+			...baseParts,
+			{
+				type: "text",
+				content: "Analysis result: found 3 components",
+				parentToolUseId: "toolu_task_001",
+			},
+		];
+		render(
+			<TaskToolActivity
+				group={group}
+				parts={parts}
+				pairedResults={new Map()}
+				isStreaming={false}
+			/>,
+		);
+
+		// Collapsed by default
+		expect(
+			screen.queryByText("Analysis result: found 3 components"),
+		).toBeNull();
+
+		// Click to expand
+		fireEvent.click(screen.getByTestId("activity-task-0"));
+		expect(
+			screen.getByText("Analysis result: found 3 components"),
+		).toBeInTheDocument();
+	});
+
+	it("shows fallback label with subagentType when no description", () => {
+		const group = makeTaskGroup({
+			description: undefined,
+			subagentType: "Explore",
+		});
+		render(
+			<TaskToolActivity
+				group={group}
+				parts={baseParts}
+				pairedResults={new Map()}
+				isStreaming={false}
+			/>,
+		);
+
+		expect(screen.getByTestId("activity-task-0")).toHaveTextContent(
+			"Task (Explore)",
+		);
 	});
 });

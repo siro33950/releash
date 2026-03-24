@@ -504,7 +504,16 @@ describe("useAgentSdkListeners callback behavior", () => {
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_PENDING_PERMISSION",
 			sessionId: "session-1",
-			request,
+			request: {
+				request_id: "req-001",
+				tool_name: "Edit",
+				input: { file_path: "/src/index.ts" },
+				tool_use_id: "toolu_001",
+				title: "Edit file",
+				display_name: undefined,
+				description: undefined,
+				decision_reason: undefined,
+			},
 		});
 	});
 
@@ -740,6 +749,88 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 				chat_session_id: "session-1",
 				session_id: "sdk-session-abc",
 				permissionMode: "plan",
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(0);
+	});
+
+	it("does not dispatch ADD_MESSAGE for task system messages (task_started)", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				subtype: "task_started",
+				chat_session_id: "session-1",
+				tool_use_id: "toolu_task_001",
+				description: "Explore codebase",
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(0);
+	});
+
+	it("does not dispatch ADD_MESSAGE for task system messages (task_notification)", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				subtype: "task_notification",
+				chat_session_id: "session-1",
+				tool_use_id: "toolu_task_001",
+				status: "completed",
+				summary: "Done",
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(0);
+	});
+
+	it("does not dispatch ADD_MESSAGE for task system messages (task_progress)", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				subtype: "task_progress",
+				chat_session_id: "session-1",
+				tool_use_id: "toolu_task_001",
+				description: "Processing files",
 			},
 		});
 
@@ -1208,6 +1299,248 @@ describe("result error display", () => {
 			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
 		);
 		expect(addMsgCalls).toHaveLength(0);
+	});
+});
+
+describe("parent_tool_use_id propagation", () => {
+	it("includes parentToolUseId in APPEND_STREAMING when stream_event has parent_tool_use_id", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "stream_event",
+				session_id: "sid-123",
+				chat_session_id: "session-1",
+				parent_tool_use_id: "toolu_task_001",
+				event: {
+					type: "content_block_delta",
+					delta: { type: "text_delta", text: "Sub-agent output" },
+				},
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPEND_STREAMING",
+			messageId: "msg-001",
+			chunk: "Sub-agent output",
+			parentToolUseId: "toolu_task_001",
+		});
+	});
+
+	it("includes parentToolUseId in APPEND_TOOL_USE when assistant message has parent_tool_use_id", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "assistant",
+				session_id: "sid-123",
+				chat_session_id: "session-1",
+				parent_tool_use_id: "toolu_task_001",
+				message: {
+					content: [
+						{
+							type: "tool_use",
+							id: "toolu_child_001",
+							name: "Read",
+							input: { file_path: "/src/lib.ts" },
+						},
+					],
+				},
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPEND_TOOL_USE",
+			messageId: "msg-001",
+			tool: "Read",
+			input: { file_path: "/src/lib.ts" },
+			id: "toolu_child_001",
+			parentToolUseId: "toolu_task_001",
+		});
+	});
+
+	it("includes parentToolUseId in APPEND_TOOL_RESULT when user message has parent_tool_use_id", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "user",
+				session_id: "sid-123",
+				chat_session_id: "session-1",
+				parent_tool_use_id: "toolu_task_001",
+				message: {
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "toolu_child_001",
+							content: "file content",
+							is_error: false,
+						},
+					],
+				},
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPEND_TOOL_RESULT",
+			messageId: "msg-001",
+			content: "file content",
+			isError: false,
+			toolUseId: "toolu_child_001",
+			parentToolUseId: "toolu_task_001",
+		});
+	});
+});
+
+describe("handleTaskMessage dispatch", () => {
+	it("dispatches APPEND_TASK_STATUS with status started on task_started", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				subtype: "task_started",
+				chat_session_id: "session-1",
+				tool_use_id: "toolu_task_001",
+				description: "Explore codebase",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPEND_TASK_STATUS",
+			messageId: "msg-001",
+			taskToolUseId: "toolu_task_001",
+			status: "started",
+			description: "Explore codebase",
+			summary: undefined,
+		});
+	});
+
+	it("dispatches APPEND_TASK_STATUS with status completed and summary on task_notification", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				subtype: "task_notification",
+				chat_session_id: "session-1",
+				tool_use_id: "toolu_task_001",
+				status: "completed",
+				summary: "Found 3 files",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPEND_TASK_STATUS",
+			messageId: "msg-001",
+			taskToolUseId: "toolu_task_001",
+			status: "completed",
+			description: undefined,
+			summary: "Found 3 files",
+		});
+	});
+
+	it("dispatches APPEND_TASK_STATUS with status progress on task_progress", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				subtype: "task_progress",
+				chat_session_id: "session-1",
+				tool_use_id: "toolu_task_001",
+				description: "Processing files",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPEND_TASK_STATUS",
+			messageId: "msg-001",
+			taskToolUseId: "toolu_task_001",
+			status: "progress",
+			description: "Processing files",
+			summary: undefined,
+		});
+	});
+
+	it("dispatches APPEND_TASK_STATUS with status failed on task_notification failure", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				subtype: "task_notification",
+				chat_session_id: "session-1",
+				tool_use_id: "toolu_task_001",
+				status: "failed",
+				summary: "Timeout exceeded",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPEND_TASK_STATUS",
+			messageId: "msg-001",
+			taskToolUseId: "toolu_task_001",
+			status: "failed",
+			description: undefined,
+			summary: "Timeout exceeded",
+		});
 	});
 });
 

@@ -756,6 +756,124 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 	});
 });
 
+describe("AgentChatPanel Task tool rendering", () => {
+	it("renders TaskToolActivity and excludes child parts from flat display", () => {
+		mockUseAgentChat({
+			isStreaming: false,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "tool_use",
+								tool: "Task",
+								input: {
+									description: "Explore code",
+									subagent_type: "Explore",
+								},
+								id: "toolu_task_001",
+							},
+							{
+								type: "tool_use",
+								tool: "Read",
+								input: { file_path: "/src/main.ts" },
+								id: "toolu_child_001",
+								parentToolUseId: "toolu_task_001",
+							},
+							{
+								type: "tool_result",
+								content: "file content",
+								isError: false,
+								toolUseId: "toolu_child_001",
+								parentToolUseId: "toolu_task_001",
+							},
+							{
+								type: "task_status",
+								taskToolUseId: "toolu_task_001",
+								status: "completed",
+								summary: "Done",
+							},
+							{
+								type: "tool_result",
+								content: "task result",
+								isError: false,
+								toolUseId: "toolu_task_001",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+
+		// TaskToolActivity should be rendered
+		expect(screen.getByTestId("activity-task-0")).toBeDefined();
+
+		// Child parts should NOT be rendered as standalone items
+		expect(screen.queryByTestId("activity-tool-use-1")).toBeNull();
+		expect(screen.queryByTestId("activity-tool-result-2")).toBeNull();
+	});
+
+	it("shows 2-line shimmer when last part is task_status", () => {
+		mockUseAgentChat({
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "tool_use",
+								tool: "Task",
+								input: {
+									description: "Explore code",
+									subagent_type: "Explore",
+								},
+								id: "toolu_task_001",
+							},
+							{
+								type: "task_status",
+								taskToolUseId: "toolu_task_001",
+								status: "started",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		const shimmer = screen.getByTestId("shimmer-placeholder");
+		expect(shimmer.children).toHaveLength(2);
+	});
+});
+
 describe("AgentChatPanel session history", () => {
 	it("renders history button", () => {
 		mockUseAgentChat();

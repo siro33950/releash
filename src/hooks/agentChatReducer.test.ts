@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage, ChatSession } from "@/types/session";
 import type { AgentChatState } from "./agentChatReducer";
-import { INITIAL_STATE, reducer } from "./agentChatReducer";
+import { appendToParts, INITIAL_STATE, reducer } from "./agentChatReducer";
 
 function makeSession(overrides?: Partial<ChatSession>): ChatSession {
 	return {
@@ -814,6 +814,90 @@ describe("agentChatReducer", () => {
 				agentSessionId: "sess-xyz",
 			});
 			expect(next).toBe(INITIAL_STATE);
+		});
+	});
+
+	describe("appendToParts with parentToolUseId", () => {
+		it("does not merge text parts with different parentToolUseId", () => {
+			const parts = appendToParts([], "text", "main text");
+			const result = appendToParts(parts, "text", "sub text", "parent1");
+			expect(result).toHaveLength(2);
+			expect(result[0].type).toBe("text");
+			expect((result[0] as { content: string }).content).toBe("main text");
+			expect(result[1].type).toBe("text");
+			expect((result[1] as { content: string }).content).toBe("sub text");
+			expect((result[1] as { parentToolUseId?: string }).parentToolUseId).toBe(
+				"parent1",
+			);
+		});
+
+		it("merges text parts with same parentToolUseId", () => {
+			const parts = appendToParts([], "text", "chunk1", "parent1");
+			const result = appendToParts(parts, "text", " chunk2", "parent1");
+			expect(result).toHaveLength(1);
+			expect((result[0] as { content: string }).content).toBe("chunk1 chunk2");
+		});
+
+		it("does not merge when switching from sub-agent to main", () => {
+			const parts = appendToParts([], "text", "sub", "parent1");
+			const result = appendToParts(parts, "text", "main");
+			expect(result).toHaveLength(2);
+		});
+	});
+
+	describe("APPEND_TASK_STATUS", () => {
+		it("appends task_status part to matching message", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [],
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				activeSession: makeSession({ messages: [msg] }),
+			};
+			const next = reducer(state, {
+				type: "APPEND_TASK_STATUS",
+				messageId: "m1",
+				taskToolUseId: "task1",
+				status: "started",
+				description: "Search codebase",
+			});
+			expect(next.activeSession?.messages[0].parts).toHaveLength(1);
+			const part = next.activeSession?.messages[0].parts[0];
+			expect(part?.type).toBe("task_status");
+			if (part?.type === "task_status") {
+				expect(part.taskToolUseId).toBe("task1");
+				expect(part.status).toBe("started");
+				expect(part.description).toBe("Search codebase");
+			}
+		});
+
+		it("appends task_status part with progress status", () => {
+			const msg = makeMessage({
+				id: "m1",
+				role: "agent",
+				parts: [],
+			});
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				activeSession: makeSession({ messages: [msg] }),
+			};
+			const next = reducer(state, {
+				type: "APPEND_TASK_STATUS",
+				messageId: "m1",
+				taskToolUseId: "task1",
+				status: "progress",
+				description: "Processing files",
+			});
+			expect(next.activeSession?.messages[0].parts).toHaveLength(1);
+			const part = next.activeSession?.messages[0].parts[0];
+			expect(part?.type).toBe("task_status");
+			if (part?.type === "task_status") {
+				expect(part.taskToolUseId).toBe("task1");
+				expect(part.status).toBe("progress");
+				expect(part.description).toBe("Processing files");
+			}
 		});
 	});
 });

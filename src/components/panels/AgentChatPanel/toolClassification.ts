@@ -1,4 +1,4 @@
-export type ToolCategory = "read" | "write" | "command" | "other";
+type ToolCategory = "read" | "write" | "command" | "other";
 
 const READ_TOOLS = new Set([
 	"Read",

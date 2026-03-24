@@ -30,6 +30,7 @@ interface StreamEvent {
 	type: "stream_event";
 	session_id?: string;
 	chat_session_id?: string;
+	parent_tool_use_id?: string | null;
 	event: ContentBlockDelta | { type: string };
 }
 
@@ -56,6 +57,7 @@ interface AssistantMessage {
 	type: "assistant";
 	session_id?: string;
 	chat_session_id?: string;
+	parent_tool_use_id?: string | null;
 	message: {
 		content: ContentBlock[];
 	};
@@ -65,6 +67,7 @@ interface UserMessage {
 	type: "user";
 	session_id?: string;
 	chat_session_id?: string;
+	parent_tool_use_id?: string | null;
 	message: {
 		content: ContentBlock[];
 	};
@@ -78,15 +81,44 @@ interface ResultMessage {
 	errors?: string[];
 }
 
+interface TaskSystemMessage {
+	type: "system";
+	session_id?: string;
+	chat_session_id?: string;
+	parent_tool_use_id?: string | null;
+	subtype: "task_started" | "task_notification" | "task_progress";
+	tool_use_id: string;
+	description?: string;
+	summary?: string;
+	status?: string;
+}
+
+interface PermissionRequestMessage {
+	type: "permission_request";
+	session_id?: string;
+	chat_session_id?: string;
+	request_id: string;
+	tool_name: string;
+	input: Record<string, unknown>;
+	tool_use_id: string;
+	title?: string;
+	display_name?: string;
+	description?: string;
+	decision_reason?: string;
+}
+
 type SdkMessage =
 	| StreamEvent
 	| AssistantMessage
 	| UserMessage
 	| ResultMessage
+	| TaskSystemMessage
+	| PermissionRequestMessage
 	| {
 			type: string;
 			session_id?: string;
 			chat_session_id?: string;
+			parent_tool_use_id?: string | null;
 			[key: string]: unknown;
 	  };
 
@@ -142,12 +174,50 @@ function bufferAppend(
 	buf: StreamingBuffer,
 	partType: "text" | "thinking",
 	chunk: string,
+	parentToolUseId?: string,
 ): void {
-	buf.parts = appendToParts(buf.parts, partType, chunk);
+	buf.parts = appendToParts(buf.parts, partType, chunk, parentToolUseId);
 }
 
 function getBufferTextContent(buf: StreamingBuffer): string {
 	return getTextContent(buf.parts);
+}
+
+function isTaskSystemMessage(msg: SdkMessage): msg is TaskSystemMessage {
+	return (
+		msg.type === "system" &&
+		"subtype" in msg &&
+		typeof msg.subtype === "string" &&
+		["task_started", "task_notification", "task_progress"].includes(
+			msg.subtype,
+		) &&
+		"tool_use_id" in msg &&
+		typeof msg.tool_use_id === "string"
+	);
+}
+
+type TaskStatusValue =
+	| "started"
+	| "completed"
+	| "failed"
+	| "stopped"
+	| "progress";
+
+function resolveTaskStatus(msg: TaskSystemMessage): TaskStatusValue | null {
+	switch (msg.subtype) {
+		case "task_started":
+			return "started";
+		case "task_progress":
+			return "progress";
+		case "task_notification":
+			if (
+				msg.status === "completed" ||
+				msg.status === "failed" ||
+				msg.status === "stopped"
+			)
+				return msg.status;
+			return null;
+	}
 }
 
 function handleSupportedCommands(msg: SdkMessage): void {
@@ -174,28 +244,35 @@ function handlePermissionRequest(
 	streamingBuffersRef: MutableRefObject<Map<string, StreamingBuffer>>,
 ): void {
 	if (msg.type !== "permission_request" || !chatSessionId) return;
-	const req = msg as unknown as PermissionRequest & {
-		tool_name?: string;
+	const prMsg = msg as PermissionRequestMessage;
+	const req: PermissionRequest = {
+		request_id: prMsg.request_id,
+		tool_name: prMsg.tool_name,
+		input: prMsg.input,
+		tool_use_id: prMsg.tool_use_id,
+		title: prMsg.title,
+		display_name: prMsg.display_name,
+		description: prMsg.description,
+		decision_reason: prMsg.decision_reason,
 	};
 	dispatch({
 		type: "SET_PENDING_PERMISSION",
 		sessionId: chatSessionId,
-		request: req as PermissionRequest,
+		request: req,
 	});
 	if (messageId) {
+		const part: MessagePart = {
+			type: "permission",
+			request: req,
+			status: "pending",
+		};
 		dispatch({
 			type: "ADD_PERMISSION_PART",
 			messageId,
-			request: req as PermissionRequest,
+			request: req,
 		});
 		const buf = streamingBuffersRef.current.get(chatSessionId);
-		if (buf) {
-			buf.parts.push({
-				type: "permission",
-				request: req as PermissionRequest,
-				status: "pending",
-			});
-		}
+		if (buf) buf.parts.push(part);
 	}
 }
 
@@ -223,11 +300,13 @@ function handleSystemMessage(
 	dispatch: Dispatch<AgentChatAction>,
 ): void {
 	if (msg.type !== "system" || !chatSessionId) return;
+	// task subtypes are handled by handleTaskMessage
+	if (isTaskSystemMessage(msg)) return;
 	const text =
-		typeof (msg as Record<string, unknown>).message === "string"
-			? ((msg as Record<string, unknown>).message as string)
-			: typeof (msg as Record<string, unknown>).content === "string"
-				? ((msg as Record<string, unknown>).content as string)
+		typeof msg.message === "string"
+			? msg.message
+			: typeof msg.content === "string"
+				? msg.content
 				: null;
 	if (text) {
 		dispatch({
@@ -271,6 +350,11 @@ function handleStreamingContent(
 	const buf = chatSessionId
 		? streamingBuffersRef.current.get(chatSessionId)
 		: undefined;
+	const parentToolUseId =
+		("parent_tool_use_id" in msg &&
+			typeof msg.parent_tool_use_id === "string" &&
+			msg.parent_tool_use_id) ||
+		undefined;
 	const delta = extractStreamingDelta(msg);
 	// dispatch updates the active session's UI via reducer;
 	// buf accumulates for all sessions (used for persistence).
@@ -280,39 +364,43 @@ function handleStreamingContent(
 				type: "APPEND_STREAMING",
 				messageId,
 				chunk: delta.text,
+				parentToolUseId,
 			});
-			if (buf) bufferAppend(buf, "text", delta.text);
+			if (buf) bufferAppend(buf, "text", delta.text, parentToolUseId);
 		} else {
 			dispatch({
 				type: "APPEND_THINKING",
 				messageId,
 				chunk: delta.thinking,
+				parentToolUseId,
 			});
-			if (buf) bufferAppend(buf, "thinking", delta.thinking);
+			if (buf) bufferAppend(buf, "thinking", delta.thinking, parentToolUseId);
 		}
 	}
 
 	// Extract tool_use from assistant messages
 	if (msg.type === "assistant") {
 		const assistantMsg = msg as AssistantMessage;
+		const pId = assistantMsg.parent_tool_use_id || undefined;
 		for (const block of assistantMsg.message.content) {
 			if (block.type === "tool_use") {
 				const toolBlock = block as ToolUseBlock;
+				const part: MessagePart = {
+					type: "tool_use",
+					tool: toolBlock.name,
+					input: toolBlock.input,
+					id: toolBlock.id,
+					...(pId && { parentToolUseId: pId }),
+				};
 				dispatch({
 					type: "APPEND_TOOL_USE",
 					messageId,
 					tool: toolBlock.name,
 					input: toolBlock.input,
 					id: toolBlock.id,
+					parentToolUseId: pId,
 				});
-				if (buf) {
-					buf.parts.push({
-						type: "tool_use",
-						tool: toolBlock.name,
-						input: toolBlock.input,
-						id: toolBlock.id,
-					});
-				}
+				if (buf) buf.parts.push(part);
 			}
 		}
 	}
@@ -320,29 +408,64 @@ function handleStreamingContent(
 	// Extract tool_result from user messages
 	if (msg.type === "user") {
 		const userMsg = msg as UserMessage;
+		const pId = userMsg.parent_tool_use_id || undefined;
 		for (const block of userMsg.message.content) {
 			if (block.type === "tool_result") {
 				const resultBlock = block as ToolResultBlock;
 				const content = extractToolResultContent(resultBlock.content);
 				const isError = !!resultBlock.is_error;
+				const part: MessagePart = {
+					type: "tool_result",
+					content,
+					isError,
+					toolUseId: resultBlock.tool_use_id,
+					...(pId && { parentToolUseId: pId }),
+				};
 				dispatch({
 					type: "APPEND_TOOL_RESULT",
 					messageId,
 					content,
 					isError,
 					toolUseId: resultBlock.tool_use_id,
+					parentToolUseId: pId,
 				});
-				if (buf) {
-					buf.parts.push({
-						type: "tool_result",
-						content,
-						isError,
-						toolUseId: resultBlock.tool_use_id,
-					});
-				}
+				if (buf) buf.parts.push(part);
 			}
 		}
 	}
+}
+
+function handleTaskMessage(
+	msg: SdkMessage,
+	messageId: string | null | undefined,
+	chatSessionId: string | undefined,
+	dispatch: Dispatch<AgentChatAction>,
+	streamingBuffersRef: MutableRefObject<Map<string, StreamingBuffer>>,
+): void {
+	if (!chatSessionId || !messageId || !isTaskSystemMessage(msg)) return;
+
+	const status = resolveTaskStatus(msg);
+	if (!status) return;
+
+	const part: MessagePart = {
+		type: "task_status",
+		taskToolUseId: msg.tool_use_id,
+		status,
+		...(msg.description && { description: msg.description }),
+		...(msg.summary && { summary: msg.summary }),
+	};
+
+	dispatch({
+		type: "APPEND_TASK_STATUS",
+		messageId,
+		taskToolUseId: msg.tool_use_id,
+		status,
+		description: msg.description,
+		summary: msg.summary,
+	});
+
+	const buf = streamingBuffersRef.current.get(chatSessionId);
+	if (buf) buf.parts.push(part);
 }
 
 function handleResultErrors(
@@ -398,6 +521,13 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				streamingBuffersRef,
 			);
 			handlePermissionModeSync(msg, dispatch);
+			handleTaskMessage(
+				msg,
+				messageId,
+				chatSessionId,
+				dispatch,
+				streamingBuffersRef,
+			);
 			handleSystemMessage(msg, chatSessionId, dispatch);
 			handleSessionIdCapture(msg, chatSessionId, activeSessionRef, dispatch);
 			if (messageId) {
