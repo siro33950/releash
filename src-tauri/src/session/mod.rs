@@ -361,7 +361,9 @@ pub fn update_message_parts(
             MessagePart::Text { content: c, .. } => content.push_str(c),
             MessagePart::Error { content: c, .. } => content.push_str(c),
             MessagePart::Thinking { content: c, .. } => thinking.push_str(c),
-            MessagePart::ToolUse { tool, input, id, .. } => {
+            MessagePart::ToolUse {
+                tool, input, id, ..
+            } => {
                 activities.push(ActivityEntry::ToolUse {
                     tool: tool.clone(),
                     input: input.clone(),

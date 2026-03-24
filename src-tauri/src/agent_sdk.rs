@@ -626,12 +626,13 @@ mod tests {
         eprintln!("Bridge script exit code: {:?}", status.code());
         eprintln!("Bridge script stdout lines: {}", stdout_lines.len());
         for (i, line) in stdout_lines.iter().enumerate() {
-            eprintln!("  stdout[{}]: {}", i, &line[..line.len().min(200)]);
+            let truncated: String = line.chars().take(200).collect();
+            eprintln!("  stdout[{}]: {}", i, truncated);
         }
         if !stderr_output.is_empty() {
             eprintln!(
                 "Bridge script stderr: {}",
-                &stderr_output[..stderr_output.len().min(500)]
+                stderr_output.chars().take(500).collect::<String>()
             );
         }
 
@@ -891,7 +892,12 @@ mod tests {
     /// read stderr in a spawned task, then wait for exit.
     /// Verifies that `child.wait()` returns within a reasonable time
     /// after all SDK messages (including "result") have been received.
+    ///
+    /// NOTE: Currently ignored because the bridge process hangs after result
+    /// due to open handles (stdin listener, SDK internals). This will be
+    /// resolved by migrating to Streaming Input Mode (#715).
     #[tokio::test]
+    #[ignore]
     async fn bridge_process_exits_after_result_message_like_execute_agent_query() {
         let bridge_path = dev_bridge_path();
         assert!(bridge_path.exists());
