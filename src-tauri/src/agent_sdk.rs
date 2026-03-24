@@ -646,10 +646,13 @@ mod tests {
     /// Verifies that the bridge script sets `canUseTool` for interactive tools
     /// (AskUserQuestion, EnterPlanMode) even when permissionMode is "acceptEdits".
     /// Currently FAILS because the bridge only sets canUseTool for "default" mode.
+    ///
+    /// Uses an inline Node.js script instead of spawning the real bridge because:
+    /// - The real bridge requires `@anthropic-ai/claude-agent-sdk` and a valid API key
+    /// - We only need to test the canUseTool conditional logic, not the full SDK interaction
+    /// - Inline scripts are self-contained and run in CI without external dependencies
     #[tokio::test]
     async fn bridge_sets_can_use_tool_for_interactive_tools_in_accept_edits_mode() {
-        // Inline script that simulates the bridge's canUseTool conditional logic
-        // and checks whether canUseTool would be set for interactive tools.
         let test_script = r#"
             const permissionMode = "acceptEdits";
             const INTERACTIVE_TOOLS = ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"];
@@ -1046,9 +1049,9 @@ mod tests {
 
     #[tokio::test]
     async fn scan_slash_commands_with_temp_dir() {
-        let tmp = std::env::temp_dir().join("releash_test_scan_cmds");
-        let commands_dir = tmp.join(".claude").join("commands");
-        let _ = std::fs::create_dir_all(&commands_dir);
+        let tmp = tempfile::tempdir().unwrap();
+        let commands_dir = tmp.path().join(".claude").join("commands");
+        std::fs::create_dir_all(&commands_dir).unwrap();
 
         // Create a test command file
         std::fs::write(
@@ -1057,7 +1060,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = scan_slash_commands(tmp.to_string_lossy().to_string())
+        let result = scan_slash_commands(tmp.path().to_string_lossy().to_string())
             .await
             .unwrap();
 
@@ -1065,19 +1068,16 @@ mod tests {
         let test_cmd = result.iter().find(|c| c.name == "test-cmd");
         assert!(test_cmd.is_some(), "Should find test-cmd in results");
         assert_eq!(test_cmd.unwrap().description, "This is a test command");
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
     async fn scan_slash_commands_deduplicates_skill_over_command() {
         // Use a unique name to avoid collisions with real ~/.claude/skills/
-        let tmp = std::env::temp_dir().join("releash_test_dedup");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp = tempfile::tempdir().unwrap();
 
         // Create a project skill
         let skill_dir = tmp
+            .path()
             .join(".claude")
             .join("skills")
             .join("zzz-dedup-test-skill");
@@ -1089,7 +1089,7 @@ mod tests {
         .unwrap();
 
         // Create a project command with the same name
-        let commands_dir = tmp.join(".claude").join("commands");
+        let commands_dir = tmp.path().join(".claude").join("commands");
         std::fs::create_dir_all(&commands_dir).unwrap();
         std::fs::write(
             commands_dir.join("zzz-dedup-test.md"),
@@ -1097,7 +1097,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = scan_slash_commands(tmp.to_string_lossy().to_string())
+        let result = scan_slash_commands(tmp.path().to_string_lossy().to_string())
             .await
             .unwrap();
 
@@ -1112,8 +1112,5 @@ mod tests {
             "zzz-dedup-test should appear exactly once, got: {matches:?}"
         );
         assert_eq!(matches[0].description, "From skill");
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

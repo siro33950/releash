@@ -97,7 +97,12 @@ impl SessionStore {
         let file = session_file(app_data_dir, &session.id)?;
         let json = serde_json::to_string_pretty(session)
             .map_err(|e| format!("Failed to serialize session: {e}"))?;
-        std::fs::write(&file, json).map_err(|e| format!("Failed to write session file: {e}"))?;
+        // Atomic write: write to .tmp then rename to avoid partial reads on crash
+        let tmp_file = file.with_extension("json.tmp");
+        std::fs::write(&tmp_file, json)
+            .map_err(|e| format!("Failed to write session temp file: {e}"))?;
+        std::fs::rename(&tmp_file, &file)
+            .map_err(|e| format!("Failed to rename session temp file: {e}"))?;
         self.cache
             .write()
             .insert(session.id.clone(), session.clone());

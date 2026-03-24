@@ -38,6 +38,7 @@ export function legacyToParts(msg: LegacyChatMessage): MessagePart[] {
 					type: "tool_result",
 					content: a.content,
 					isError: a.isError,
+					...(a.toolUseId && { toolUseId: a.toolUseId }),
 				});
 			} else if (a.type === "permission_result") {
 				parts.push({

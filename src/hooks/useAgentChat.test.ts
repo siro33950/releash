@@ -29,14 +29,7 @@ vi.mock("./useSessionStore", () => ({
 		createdAt: 1000,
 		updatedAt: 1000,
 	}),
-	addMessage: vi.fn().mockImplementation((_sid, role, content) =>
-		Promise.resolve({
-			id: `msg-${Date.now()}`,
-			role,
-			parts: [{ type: "text", content }],
-			timestamp: Date.now(),
-		}),
-	),
+	addMessage: vi.fn(),
 	updateSessionState: vi.fn().mockResolvedValue(undefined),
 	updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
 	closeSession: vi.fn().mockResolvedValue(undefined),
@@ -44,9 +37,24 @@ vi.mock("./useSessionStore", () => ({
 	listClosedSessions: vi.fn().mockResolvedValue([]),
 }));
 
+let addMessageCounter = 0;
+
 describe("useAgentChat", () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		mockInvoke.mockClear();
+		addMessageCounter = 0;
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.addMessage).mockImplementation(
+			(_sid, role, content) => {
+				addMessageCounter++;
+				return Promise.resolve({
+					id: `msg-${addMessageCounter}`,
+					role,
+					parts: [{ type: "text", content }],
+					timestamp: 1000 + addMessageCounter,
+				});
+			},
+		);
 	});
 
 	it("should define the hook", async () => {
@@ -226,20 +234,6 @@ describe("useAgentChat", () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
-
-		// Use deterministic IDs for addMessage
-		let msgCounter = 0;
-		vi.mocked(sessionStore.addMessage).mockImplementation(
-			(_sid, role, content) => {
-				msgCounter++;
-				return Promise.resolve({
-					id: `msg-${msgCounter}`,
-					role,
-					parts: [{ type: "text", content }],
-					timestamp: 1000 + msgCounter,
-				});
-			},
-		);
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 

@@ -50,9 +50,12 @@ export function classifyTool(toolName: string): ToolCategory {
 }
 
 export function shortenPath(fullPath: string, basePath?: string): string {
-	if (basePath && fullPath.startsWith(basePath)) {
+	if (
+		basePath &&
+		(fullPath === basePath || fullPath.startsWith(`${basePath}/`))
+	) {
 		const rel = fullPath.slice(basePath.length);
-		return rel.startsWith("/") ? rel.slice(1) : rel;
+		return rel.startsWith("/") ? rel.slice(1) : rel || ".";
 	}
 	return fullPath;
 }

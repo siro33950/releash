@@ -35,7 +35,7 @@ export interface UseAgentChatResult {
 	sendMessage: (content: string) => Promise<void>;
 	interrupt: () => void;
 	selectSession: (sessionId: string) => Promise<void>;
-	refreshSessions: () => Promise<void>;
+	refreshSessions: () => Promise<SessionSummary[] | undefined>;
 	refreshClosedSessions: () => Promise<void>;
 	closeSession: (sessionId: string) => Promise<void>;
 	restoreSession: (sessionId: string) => Promise<void>;
@@ -148,6 +148,14 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				permissionMode: permissionModeRef.current,
 			}).catch((e) => {
 				console.error("execute_agent_query failed:", e);
+				const msgId = streamingMessageIdsRef.current.get(sessionId);
+				if (msgId) {
+					dispatch({
+						type: "APPEND_STREAMING",
+						messageId: msgId,
+						chunk: `Error: ${e}`,
+					});
+				}
 				dispatch({ type: "STOP_STREAMING", sessionId });
 				streamingMessageIdsRef.current.delete(sessionId);
 				dispatch({
@@ -306,6 +314,10 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				updatedInput: updatedInput ? JSON.stringify(updatedInput) : null,
 			}).catch((e) => {
 				console.error("Failed to respond to permission:", e);
+				dispatch({
+					type: "SET_ERROR",
+					error: `パーミッション応答に失敗: ${e}`,
+				});
 			});
 			dispatch({
 				type: "SET_PENDING_PERMISSION",
@@ -394,8 +406,9 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			prevWorktreePathRef.current = worktreePath;
 			dispatch({ type: "SET_ACTIVE_SESSION", session: null });
 			initSessions();
+			refreshClosedSessions();
 		}
-	}, [worktreePath, initSessions]);
+	}, [worktreePath, initSessions, refreshClosedSessions]);
 
 	const isStreaming = state.streamingSessionIds.includes(
 		state.activeSession?.id ?? "",

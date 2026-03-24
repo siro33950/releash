@@ -666,6 +666,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-1" } as never;
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -702,6 +703,7 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-1" } as never;
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -1220,6 +1222,7 @@ describe("result error display", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-1" } as never;
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());

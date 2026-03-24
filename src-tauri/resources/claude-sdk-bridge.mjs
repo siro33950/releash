@@ -1,7 +1,13 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import crypto from "node:crypto";
 
-const args = JSON.parse(process.argv[2]);
+let args;
+try {
+	args = JSON.parse(process.argv[2]);
+} catch (e) {
+	process.stderr.write(`bridge: argv parse error: ${e instanceof Error ? e.message : String(e)}\n`);
+	process.exit(1);
+}
 const permissionMode = args.permissionMode || "acceptEdits";
 
 const pendingPermissions = new Map();

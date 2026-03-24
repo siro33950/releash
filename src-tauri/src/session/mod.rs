@@ -716,7 +716,7 @@ mod tests {
         // Existing session files without permission_result should still deserialize
         let json = r#"{"type":"tool_use","tool":"Read","input":{},"id":"t1"}"#;
         let entry: ActivityEntry = serde_json::from_str(json).unwrap();
-        matches!(entry, ActivityEntry::ToolUse { .. });
+        assert!(matches!(entry, ActivityEntry::ToolUse { .. }));
     }
 
     #[test]

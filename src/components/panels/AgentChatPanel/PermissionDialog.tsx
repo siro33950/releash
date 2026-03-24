@@ -152,7 +152,7 @@ export function PermissionDialog({
 	onDeny,
 	onAnswer,
 }: PermissionDialogProps) {
-	const [answers, setAnswers] = useState<Record<string, string>>({});
+	const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
 	const [otherTexts, setOtherTexts] = useState<Record<string, string>>({});
 	const [isExpanded, setIsExpanded] = useState(false);
 	if (status !== "pending") {
@@ -213,13 +213,30 @@ export function PermissionDialog({
 
 		const OTHER_LABEL = "__other__";
 
-		const handleSelect = (questionText: string, label: string) => {
-			setAnswers((prev) => ({ ...prev, [questionText]: label }));
+		const handleSelect = (
+			questionText: string,
+			label: string,
+			multi: boolean,
+		) => {
+			if (multi) {
+				setAnswers((prev) => {
+					const current = Array.isArray(prev[questionText])
+						? (prev[questionText] as string[])
+						: [];
+					const next = current.includes(label)
+						? current.filter((l) => l !== label)
+						: [...current, label];
+					return { ...prev, [questionText]: next };
+				});
+			} else {
+				setAnswers((prev) => ({ ...prev, [questionText]: label }));
+			}
 		};
 
 		const allAnswered = questions.every((q) => {
 			const selected = answers[q.question];
 			if (!selected) return false;
+			if (Array.isArray(selected)) return selected.length > 0;
 			if (selected === OTHER_LABEL) return !!otherTexts[q.question]?.trim();
 			return true;
 		});
@@ -229,8 +246,12 @@ export function PermissionDialog({
 			const resolved: Record<string, string> = {};
 			for (const q of questions) {
 				const selected = answers[q.question];
-				resolved[q.question] =
-					selected === OTHER_LABEL ? otherTexts[q.question].trim() : selected;
+				if (Array.isArray(selected)) {
+					resolved[q.question] = selected.join(", ");
+				} else {
+					resolved[q.question] =
+						selected === OTHER_LABEL ? otherTexts[q.question].trim() : selected;
+				}
 			}
 			onAnswer(request.request_id, resolved);
 		};
@@ -245,34 +266,43 @@ export function PermissionDialog({
 						<p className="text-xs text-muted-foreground mb-0.5">{q.header}</p>
 						<p className="text-sm font-medium mb-1.5">{q.question}</p>
 						<div className="flex flex-wrap gap-1.5">
-							{q.options.map((opt) => (
+							{q.options.map((opt) => {
+								const isSelected = q.multiSelect
+									? Array.isArray(answers[q.question]) &&
+										(answers[q.question] as string[]).includes(opt.label)
+									: answers[q.question] === opt.label;
+								return (
+									<Button
+										key={opt.label}
+										size="xs"
+										variant={isSelected ? "default" : "outline"}
+										onClick={() =>
+											handleSelect(q.question, opt.label, q.multiSelect)
+										}
+										title={opt.description}
+										className={cn(
+											!q.multiSelect && isSelected && "pointer-events-none",
+										)}
+									>
+										{opt.label}
+									</Button>
+								);
+							})}
+							{!q.multiSelect && (
 								<Button
-									key={opt.label}
 									size="xs"
 									variant={
-										answers[q.question] === opt.label ? "default" : "outline"
+										answers[q.question] === OTHER_LABEL ? "default" : "outline"
 									}
-									onClick={() => handleSelect(q.question, opt.label)}
-									title={opt.description}
+									onClick={() => handleSelect(q.question, OTHER_LABEL, false)}
 									className={cn(
-										answers[q.question] === opt.label && "pointer-events-none",
+										answers[q.question] === OTHER_LABEL &&
+											"pointer-events-none",
 									)}
 								>
-									{opt.label}
+									Other
 								</Button>
-							))}
-							<Button
-								size="xs"
-								variant={
-									answers[q.question] === OTHER_LABEL ? "default" : "outline"
-								}
-								onClick={() => handleSelect(q.question, OTHER_LABEL)}
-								className={cn(
-									answers[q.question] === OTHER_LABEL && "pointer-events-none",
-								)}
-							>
-								Other
-							</Button>
+							)}
 						</div>
 						{answers[q.question] === OTHER_LABEL && (
 							<input

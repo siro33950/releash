@@ -134,7 +134,7 @@ export interface AgentSdkListenerRefs {
 	activeSessionRef: MutableRefObject<ChatSession | null>;
 	streamingBuffersRef: MutableRefObject<Map<string, StreamingBuffer>>;
 	lastPromptsRef: MutableRefObject<Map<string, string>>;
-	refreshSessions: () => Promise<void>;
+	refreshSessions: () => Promise<unknown>;
 	handleRetry: (content: string, chatSessionId: string) => Promise<void>;
 	isRetryingRef: MutableRefObject<Set<string>>;
 }
@@ -298,10 +298,13 @@ function handleSystemMessage(
 	msg: SdkMessage,
 	chatSessionId: string | undefined,
 	dispatch: Dispatch<AgentChatAction>,
+	activeSessionRef: MutableRefObject<ChatSession | null>,
 ): void {
 	if (msg.type !== "system" || !chatSessionId) return;
 	// task subtypes are handled by handleTaskMessage
 	if (isTaskSystemMessage(msg)) return;
+	// Skip dispatching for non-active sessions (Rust persists these)
+	if (activeSessionRef.current?.id !== chatSessionId) return;
 	const text =
 		typeof msg.message === "string"
 			? msg.message
@@ -472,8 +475,11 @@ function handleResultErrors(
 	msg: SdkMessage,
 	chatSessionId: string | undefined,
 	dispatch: Dispatch<AgentChatAction>,
+	activeSessionRef: MutableRefObject<ChatSession | null>,
 ): void {
 	if (msg.type !== "result" || !chatSessionId) return;
+	// Skip dispatching for non-active sessions (Rust persists these)
+	if (activeSessionRef.current?.id !== chatSessionId) return;
 	const resultMsg = msg as ResultMessage;
 	if (resultMsg.errors && resultMsg.errors.length > 0) {
 		dispatch({
@@ -509,7 +515,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			const msg = event.payload;
 			const chatSessionId = msg.chat_session_id;
 			const messageId = chatSessionId
-				? streamingMessageIdsRef.current.get(chatSessionId)
+				? (streamingMessageIdsRef.current.get(chatSessionId) ?? null)
 				: null;
 
 			handleSupportedCommands(msg);
@@ -528,7 +534,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				dispatch,
 				streamingBuffersRef,
 			);
-			handleSystemMessage(msg, chatSessionId, dispatch);
+			handleSystemMessage(msg, chatSessionId, dispatch, activeSessionRef);
 			handleSessionIdCapture(msg, chatSessionId, activeSessionRef, dispatch);
 			if (messageId) {
 				handleStreamingContent(
@@ -539,7 +545,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					streamingBuffersRef,
 				);
 			}
-			handleResultErrors(msg, chatSessionId, dispatch);
+			handleResultErrors(msg, chatSessionId, dispatch, activeSessionRef);
 		}).then((fn) => {
 			if (cancelled) {
 				fn();

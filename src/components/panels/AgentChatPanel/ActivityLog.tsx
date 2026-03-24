@@ -131,11 +131,13 @@ function ReadToolActivity({
 			>
 				<span className="truncate">{label}</span>
 			</ToolActivityHeader>
-			{isExpanded && result && result.content.trim().length > 0 && (
+			{result?.isError && result.content.trim().length > 0 ? (
+				<CollapsibleError content={result.content} />
+			) : isExpanded && result && result.content.trim().length > 0 ? (
 				<pre className="mt-1 ml-4 text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden max-h-48 overflow-y-auto">
 					{truncateResult(result.content)}
 				</pre>
-			)}
+			) : null}
 		</div>
 	);
 }
@@ -196,7 +198,9 @@ function DefaultToolActivity({
 					{entry.tool} {summary}
 				</span>
 			</ToolActivityHeader>
-			{isExpanded && (
+			{result?.isError && result.content.trim().length > 0 ? (
+				<CollapsibleError content={result.content} />
+			) : isExpanded ? (
 				<>
 					{hasInput && (
 						<pre className="mt-1 ml-4 text-[11px] text-muted-foreground/70 whitespace-pre-wrap break-words overflow-hidden max-h-48 overflow-y-auto">
@@ -209,7 +213,7 @@ function DefaultToolActivity({
 						</pre>
 					)}
 				</>
-			)}
+			) : null}
 		</div>
 	);
 }
