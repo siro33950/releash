@@ -42,6 +42,7 @@ src-tauri/WixTools/
 src-tauri/icons/generated/
 src-tauri/resources/remote/*
 !src-tauri/resources/remote/.gitkeep
+src-tauri/resources/claude-sdk-bridge.bundled.mjs
 
 # Rust
 *.rs.bk

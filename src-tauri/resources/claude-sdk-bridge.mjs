@@ -17,6 +17,7 @@ const options = {
 	permissionMode,
 	includePartialMessages: true,
 	settingSources: ["user", "project"],
+	pathToClaudeCodeExecutable: "claude",
 };
 
 if (permissionMode === "bypassPermissions") {
