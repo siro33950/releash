@@ -361,13 +361,8 @@ pub async fn regenerate_token(state: tauri::State<'_, Arc<AppConfig>>) -> Result
     .map_err(|e| format!("task join error: {e}"))?
 }
 
-#[tauri::command]
-pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
-    let config = state.get_config()?;
-    let port = config.server.hook_port;
-    let token = config.server.token;
-
-    let hooks_json = serde_json::json!({
+fn build_hooks_json(port: u16, token: &str) -> serde_json::Value {
+    serde_json::json!({
         "hooks": {
             "UserPromptSubmit": [{
                 "matcher": "",
@@ -435,7 +430,16 @@ pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<
                 }]
             }]
         }
-    });
+    })
+}
+
+#[tauri::command]
+pub fn generate_hooks_config(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
+    let config = state.get_config()?;
+    let port = config.server.hook_port;
+    let token = config.server.token;
+
+    let hooks_json = build_hooks_json(port, &token);
 
     serde_json::to_string_pretty(&hooks_json).map_err(|e| format!("JSON生成失敗: {e}"))
 }
@@ -1407,5 +1411,46 @@ token = "existing_token_value_here_with_enough_length_!!"
         assert_eq!(repo_config.api_token, "ntn_test_token");
         assert_eq!(repo_config.database_id, "db-id-456");
         assert_eq!(repo_config.property_mapping.title, "Name");
+    }
+
+    #[test]
+    fn build_hooks_json_no_python3_or_session_id() {
+        let json = build_hooks_json(19700, "test-token");
+        let hooks = json.get("hooks").expect("hooks key should exist");
+        let event_keys = [
+            "UserPromptSubmit",
+            "Stop",
+            "Notification",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "SessionStart",
+        ];
+
+        for key in &event_keys {
+            let entries = hooks.get(*key).expect(&format!("{key} should exist"));
+            let arr = entries.as_array().expect(&format!("{key} should be array"));
+            for entry in arr {
+                let cmd = entry["hooks"][0]["command"]
+                    .as_str()
+                    .expect("command should be string");
+                assert!(
+                    !cmd.contains("python3"),
+                    "{key} command should not contain python3"
+                );
+                assert!(
+                    !cmd.contains("session_id"),
+                    "{key} command should not contain session_id"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_hooks_json_has_7_event_entries() {
+        let json = build_hooks_json(19700, "test-token");
+        let hooks = json.get("hooks").unwrap().as_object().unwrap();
+        // 6 keys, but Notification has 2 entries
+        let total_entries: usize = hooks.values().map(|v| v.as_array().unwrap().len()).sum();
+        assert_eq!(total_entries, 7);
     }
 }

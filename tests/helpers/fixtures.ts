@@ -215,6 +215,37 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// Worktree作成
 	create_worktree: null,
+
+	// Agent chat sessions
+	list_sessions: [],
+	get_session: null,
+	create_session: {
+		id: "mock-session-1",
+		worktreePath: "/test/repo",
+		messages: [],
+		state: "active",
+		createdAt: 1000,
+		updatedAt: 1000,
+	},
+	close_session: null,
+	restore_session: null,
+	list_closed_sessions: [],
+	add_message: {
+		id: "mock-msg-1",
+		role: "agent",
+		content: "",
+		timestamp: 1000,
+	},
+	update_session_state: null,
+	update_message_parts: null,
+	update_session_agent_info: null,
+	execute_agent_query: null,
+	interrupt_agent_query: null,
+	respond_agent_permission: null,
+	scan_slash_commands: [],
+
+	// Workspace state
+	save_workspace_state: null,
 };
 
 // -------------------------------------------------------
