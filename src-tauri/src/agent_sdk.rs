@@ -26,10 +26,10 @@ fn resolve_bridge_script(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
         }
     }
 
-    // Production: resolve from Tauri resource_dir
+    // Production: resolve from Tauri resource_dir (bundled version)
     app.path()
         .resource_dir()
-        .map(|d| d.join("resources").join("claude-sdk-bridge.mjs"))
+        .map(|d| d.join("resources").join("claude-sdk-bridge.bundled.mjs"))
         .map_err(|e| format!("Failed to resolve resource dir: {e}"))
 }
 
