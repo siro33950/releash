@@ -223,7 +223,7 @@ const baseIpcHandler: Record<string, unknown> = {
 		id: "mock-session-1",
 		worktreePath: "/test/repo",
 		messages: [],
-		state: "idle",
+		state: "active",
 		createdAt: 1000,
 		updatedAt: 1000,
 	},

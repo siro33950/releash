@@ -22,20 +22,18 @@ interface ExitPlanModeInput {
 function parseExitPlanModeInput(
 	input: Record<string, unknown>,
 ): ExitPlanModeInput {
-	const raw = input as {
-		plan?: string;
-		planFilePath?: string;
-		allowedPrompts?: { tool: string; prompt: string }[];
-	};
 	return {
-		plan: raw.plan ?? "",
-		planFilePath: raw.planFilePath,
-		allowedPrompts: raw.allowedPrompts ?? [],
+		plan: typeof input.plan === "string" ? input.plan : "",
+		planFilePath:
+			typeof input.planFilePath === "string" ? input.planFilePath : undefined,
+		allowedPrompts: Array.isArray(input.allowedPrompts)
+			? input.allowedPrompts
+			: [],
 	};
 }
 
 function parseAskQuestions(input: Record<string, unknown>): AskQuestion[] {
-	return (input as { questions?: AskQuestion[] }).questions ?? [];
+	return Array.isArray(input.questions) ? input.questions : [];
 }
 
 function PlanContent({

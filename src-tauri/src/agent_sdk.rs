@@ -201,8 +201,13 @@ pub async fn respond_agent_permission(
         result["message"] = serde_json::Value::String(msg.clone());
     }
     if let Some(input_json) = &updated_input {
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(input_json) {
-            result["updatedInput"] = parsed;
+        match serde_json::from_str::<serde_json::Value>(input_json) {
+            Ok(parsed) => {
+                result["updatedInput"] = parsed;
+            }
+            Err(e) => {
+                log::warn!("Failed to parse updated_input JSON: {e}");
+            }
         }
     }
     let payload = serde_json::json!({

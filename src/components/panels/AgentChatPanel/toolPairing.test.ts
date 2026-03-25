@@ -195,6 +195,7 @@ describe("buildToolPairings", () => {
 		expect(group).toBeDefined();
 		expect(group?.isCompleted).toBe(true);
 		expect(group?.resultIndex).toBe(3);
+		expect(result.taskChildIndices.has(3)).toBe(true);
 	});
 
 	it("creates task group for Agent tool_use (SDK v0.2.77+)", () => {
