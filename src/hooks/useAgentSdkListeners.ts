@@ -1,20 +1,15 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Dispatch, MutableRefObject } from "react";
 import { useEffect } from "react";
-import {
-	type ChatSession,
-	getTextContent,
-	type MessagePart,
-	type PermissionMode,
-	type PermissionRequest,
-	type SessionState,
+import type {
+	ChatSession,
+	MessagePart,
+	PermissionMode,
+	PermissionRequest,
+	SessionState,
 } from "@/types/session";
 import { type AgentChatAction, appendToParts } from "./agentChatReducer";
-import {
-	updateMessageParts,
-	updateSessionAgentInfo,
-	updateSessionState,
-} from "./useSessionStore";
+import { updateMessageParts, updateSessionState } from "./useSessionStore";
 import { setSlashCommands } from "./useSlashCommands";
 
 export interface StreamingBuffer {
@@ -133,10 +128,7 @@ export interface AgentSdkListenerRefs {
 	streamingMessageIdsRef: MutableRefObject<Map<string, string>>;
 	activeSessionRef: MutableRefObject<ChatSession | null>;
 	streamingBuffersRef: MutableRefObject<Map<string, StreamingBuffer>>;
-	lastPromptsRef: MutableRefObject<Map<string, string>>;
 	refreshSessions: () => Promise<unknown>;
-	handleRetry: (content: string, chatSessionId: string) => Promise<void>;
-	isRetryingRef: MutableRefObject<Set<string>>;
 }
 
 type StreamDelta =
@@ -177,10 +169,6 @@ function bufferAppend(
 	parentToolUseId?: string,
 ): void {
 	buf.parts = appendToParts(buf.parts, partType, chunk, parentToolUseId);
-}
-
-function getBufferTextContent(buf: StreamingBuffer): string {
-	return getTextContent(buf.parts);
 }
 
 function isTaskSystemMessage(msg: SdkMessage): msg is TaskSystemMessage {
@@ -324,25 +312,6 @@ function handleSystemMessage(
 	}
 }
 
-function handleSessionIdCapture(
-	msg: SdkMessage,
-	chatSessionId: string | undefined,
-	activeSessionRef: MutableRefObject<ChatSession | null>,
-	dispatch: Dispatch<AgentChatAction>,
-): void {
-	if (!("session_id" in msg) || !msg.session_id || !chatSessionId) return;
-	updateSessionAgentInfo(chatSessionId, msg.session_id).catch((e) =>
-		console.error("Failed to persist agent session id:", e),
-	);
-	const session = activeSessionRef.current;
-	if (session && session.id === chatSessionId && !session.agentSessionId) {
-		dispatch({
-			type: "SET_AGENT_SESSION_ID",
-			agentSessionId: msg.session_id,
-		});
-	}
-}
-
 function handleStreamingContent(
 	msg: SdkMessage,
 	messageId: string,
@@ -471,6 +440,27 @@ function handleTaskMessage(
 	if (buf) buf.parts.push(part);
 }
 
+function handleBridgeError(
+	msg: SdkMessage,
+	chatSessionId: string | undefined,
+	messageId: string | null,
+	dispatch: Dispatch<AgentChatAction>,
+	streamingBuffersRef: MutableRefObject<Map<string, StreamingBuffer>>,
+): void {
+	if (msg.type !== "error" || !chatSessionId) return;
+	const errorText =
+		typeof msg.message === "string" ? msg.message : "Unknown error";
+	if (messageId) {
+		dispatch({
+			type: "APPEND_STREAMING",
+			messageId,
+			chunk: `Error: ${errorText}`,
+		});
+		const buf = streamingBuffersRef.current.get(chatSessionId);
+		if (buf) bufferAppend(buf, "text", `Error: ${errorText}`);
+	}
+}
+
 function handleResultErrors(
 	msg: SdkMessage,
 	chatSessionId: string | undefined,
@@ -500,10 +490,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		streamingMessageIdsRef,
 		activeSessionRef,
 		streamingBuffersRef,
-		lastPromptsRef,
 		refreshSessions,
-		handleRetry,
-		isRetryingRef,
 	} = refs;
 
 	// Listen to SDK messages for streaming agent responses and session_id capture
@@ -519,6 +506,13 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				: null;
 
 			handleSupportedCommands(msg);
+			handleBridgeError(
+				msg,
+				chatSessionId,
+				messageId,
+				dispatch,
+				streamingBuffersRef,
+			);
 			handlePermissionRequest(
 				msg,
 				chatSessionId,
@@ -535,7 +529,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				streamingBuffersRef,
 			);
 			handleSystemMessage(msg, chatSessionId, dispatch, activeSessionRef);
-			handleSessionIdCapture(msg, chatSessionId, activeSessionRef, dispatch);
 			if (messageId) {
 				handleStreamingContent(
 					msg,
@@ -604,20 +597,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				);
 			}
 
-			// Retry logic: if --resume failed (error + empty content), retry without session ID
-			if (
-				chatSessionId &&
-				info.exit_code !== 0 &&
-				!isRetryingRef.current.has(chatSessionId)
-			) {
-				const lastPrompt = lastPromptsRef.current.get(chatSessionId);
-				if (buffer && !getBufferTextContent(buffer).trim() && lastPrompt) {
-					streamingBuffersRef.current.delete(chatSessionId);
-					handleRetry(lastPrompt, chatSessionId);
-					return;
-				}
-			}
-
 			if (chatSessionId) {
 				streamingBuffersRef.current.delete(chatSessionId);
 			}
@@ -655,9 +634,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		streamingMessageIdsRef,
 		activeSessionRef,
 		streamingBuffersRef,
-		lastPromptsRef,
 		refreshSessions,
-		handleRetry,
-		isRetryingRef,
 	]);
 }

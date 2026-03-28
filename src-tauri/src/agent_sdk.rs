@@ -1,14 +1,35 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-/// Per-session agent process map: chat_session_id → ChildStdin
-pub type AgentProcessMap = HashMap<String, tokio::process::ChildStdin>;
+use crate::session::SessionStore;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BridgeState {
+    Initializing,
+    Ready,
+    Streaming,
+    Crashed,
+}
+
+pub struct AgentProcess {
+    pub stdin: tokio::process::ChildStdin,
+    pub state: BridgeState,
+    pub sdk_session_id: Option<String>,
+    pub child: tokio::process::Child,
+    pub generation_id: u64,
+}
+
+/// Per-session agent process map: chat_session_id → AgentProcess
+pub type AgentProcessMap = HashMap<String, AgentProcess>;
 
 fn dev_bridge_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -33,35 +54,70 @@ fn resolve_bridge_script(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
         .map_err(|e| format!("Failed to resolve resource dir: {e}"))
 }
 
-#[tauri::command]
-pub async fn execute_agent_query(
-    app: tauri::AppHandle,
-    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    prompt: String,
+fn resolve_data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {e}"))
+}
+
+fn get_resume_session_id(
+    app: &tauri::AppHandle,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+) -> Option<String> {
+    resolve_data_dir(app)
+        .ok()
+        .and_then(|data_dir| {
+            session_store
+                .get_session(&data_dir, chat_session_id)
+                .ok()
+                .flatten()
+        })
+        .and_then(|s| s.agent_session_id)
+}
+
+fn emit_agent_query_completed(
+    app: &tauri::AppHandle,
+    exit_code: i64,
+    stderr: &str,
+    chat_session_id: &str,
+) {
+    use tauri::Emitter;
+    let _ = app.emit(
+        "agent-query-completed",
+        serde_json::json!({
+            "exit_code": exit_code,
+            "stderr": stderr,
+            "chat_session_id": chat_session_id,
+        }),
+    );
+}
+
+fn now_timestamp() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
+
+const INTERRUPT_TIMEOUT_SECS: u64 = 10;
+const CLOSE_TIMEOUT_SECS: u64 = 5;
+
+async fn spawn_bridge_process(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
     session_id: Option<String>,
-    chat_session_id: String,
-    cwd: String,
+    cwd: &str,
     permission_mode: Option<String>,
 ) -> Result<(), String> {
-    let bridge_path = resolve_bridge_script(&app)?;
+    let bridge_path = resolve_bridge_script(app)?;
     if !bridge_path.exists() {
         return Err(format!(
             "Bridge script not found: {}",
             bridge_path.display()
         ));
-    }
-
-    let mut args_json = serde_json::json!({
-        "prompt": prompt,
-        "cwd": cwd,
-    });
-    if let Some(sid) = &session_id {
-        if !sid.is_empty() {
-            args_json["sessionId"] = serde_json::Value::String(sid.clone());
-        }
-    }
-    if let Some(pm) = &permission_mode {
-        args_json["permissionMode"] = serde_json::Value::String(pm.clone());
     }
 
     let mut child = Command::new("node")
@@ -70,19 +126,21 @@ pub async fn execute_agent_query(
                 .to_str()
                 .ok_or_else(|| "Bridge script path contains invalid UTF-8".to_string())?,
         )
-        .arg(args_json.to_string())
-        .current_dir(&cwd)
+        .current_dir(cwd)
+        // Remove Claude Code nesting-detection env vars so the SDK-spawned
+        // `claude` CLI does not refuse to start.
+        .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to spawn node process: {e}"))?;
 
-    if let Some(stdin) = child.stdin.take() {
-        let mut map = handles.lock().await;
-        map.insert(chat_session_id.clone(), stdin);
-    }
-
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Failed to capture stdin".to_string())?;
     let stdout = child
         .stdout
         .take()
@@ -92,9 +150,47 @@ pub async fn execute_agent_query(
         .take()
         .ok_or_else(|| "Failed to capture stderr".to_string())?;
 
+    // Send init command
+    let init_cmd = serde_json::json!({
+        "type": "init",
+        "cwd": cwd,
+        "permissionMode": permission_mode.unwrap_or_else(|| "acceptEdits".to_string()),
+        "sessionId": session_id,
+    });
+    let init_data = format!("{}\n", init_cmd);
+    stdin
+        .write_all(init_data.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write init command: {e}"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|e| format!("Failed to flush init command: {e}"))?;
+
+    // Store process
+    let gen_id = GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    {
+        let mut map = handles.lock().await;
+        map.insert(
+            chat_session_id.to_string(),
+            AgentProcess {
+                stdin,
+                state: BridgeState::Initializing,
+                sdk_session_id: session_id,
+                child,
+                generation_id: gen_id,
+            },
+        );
+    }
+
+    // Spawn stdout reader (process-lifetime)
+    let handles_stdout = Arc::clone(handles);
+    let session_store_clone = Arc::clone(session_store);
     let app_stdout = app.clone();
-    let csid_stdout = chat_session_id.clone();
-    let stdout_task = tokio::spawn(async move {
+    let csid_stdout = chat_session_id.to_string();
+    let captured_gen_id = gen_id;
+    tokio::spawn(async move {
+        use tauri::Emitter;
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
@@ -103,59 +199,269 @@ pub async fn execute_agent_query(
             }
             if let Ok(mut msg) = serde_json::from_str::<serde_json::Value>(&line) {
                 msg["chat_session_id"] = serde_json::Value::String(csid_stdout.clone());
-                use tauri::Emitter;
-                let _ = app_stdout.emit("agent-sdk-message", &msg);
+
+                let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                match msg_type {
+                    "session_ready" => {
+                        let mut map = handles_stdout.lock().await;
+                        if let Some(proc) = map.get_mut(&csid_stdout) {
+                            // Only transition to Ready if still Initializing (not already Streaming)
+                            if proc.state == BridgeState::Initializing {
+                                proc.state = BridgeState::Ready;
+                            }
+                            if let Some(sid) = msg.get("session_id").and_then(|v| v.as_str()) {
+                                proc.sdk_session_id = Some(sid.to_string());
+                            }
+                        }
+                        let _ = app_stdout.emit("agent-sdk-message", &msg);
+                    }
+                    "turn_complete" => {
+                        let exit_code = msg.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let was_streaming;
+                        {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                was_streaming = proc.state == BridgeState::Streaming;
+                                proc.state = BridgeState::Ready;
+
+                                // User turn succeeded: persist agent_session_id to SessionStore
+                                if was_streaming && exit_code == 0 {
+                                    if let Some(sid) = &proc.sdk_session_id {
+                                        if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
+                                            if let Ok(Some(mut session)) = session_store_clone
+                                                .get_session(&data_dir, &csid_stdout)
+                                            {
+                                                session.agent_session_id = Some(sid.to_string());
+                                                session.updated_at = now_timestamp();
+                                                let _ = session_store_clone
+                                                    .save_session(&data_dir, &session);
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                was_streaming = false;
+                            }
+                        }
+
+                        // Resume failure (error during init) → clear stale agent_session_id
+                        if !was_streaming && exit_code != 0 {
+                            if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
+                                if let Ok(Some(mut session)) =
+                                    session_store_clone.get_session(&data_dir, &csid_stdout)
+                                {
+                                    if session.agent_session_id.is_some() {
+                                        session.agent_session_id = None;
+                                        session.updated_at = now_timestamp();
+                                        let _ =
+                                            session_store_clone.save_session(&data_dir, &session);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Emit agent-query-completed only for user turns (was Streaming)
+                        if was_streaming {
+                            let stderr_text =
+                                msg.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
+                            emit_agent_query_completed(
+                                &app_stdout,
+                                exit_code,
+                                stderr_text,
+                                &csid_stdout,
+                            );
+                        }
+                    }
+                    "error" => {
+                        let error_msg = msg
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Unknown bridge error");
+                        log::error!("Bridge error [{}]: {}", csid_stdout, error_msg);
+
+                        let _ = app_stdout.emit("agent-sdk-message", &msg);
+
+                        // Transition to Crashed for both Streaming and Initializing states
+                        let (was_streaming, was_initializing) = {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                let ws = proc.state == BridgeState::Streaming;
+                                let wi = proc.state == BridgeState::Initializing;
+                                if ws || wi {
+                                    proc.state = BridgeState::Crashed;
+                                }
+                                (ws, wi)
+                            } else {
+                                (false, false)
+                            }
+                        };
+                        if was_streaming {
+                            emit_agent_query_completed(&app_stdout, 1, error_msg, &csid_stdout);
+                        }
+                        // Init error → clear stale agent_session_id to prevent infinite resume loop
+                        if was_initializing {
+                            if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
+                                if let Ok(Some(mut session)) =
+                                    session_store_clone.get_session(&data_dir, &csid_stdout)
+                                {
+                                    if session.agent_session_id.is_some() {
+                                        session.agent_session_id = None;
+                                        session.updated_at = now_timestamp();
+                                        let _ =
+                                            session_store_clone.save_session(&data_dir, &session);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        let _ = app_stdout.emit("agent-sdk-message", &msg);
+                    }
+                }
+            }
+        }
+        // EOF — process exited; verify generation to avoid acting on stale events
+        let was_streaming = {
+            let map = handles_stdout.lock().await;
+            map.get(&csid_stdout).is_some_and(|p| {
+                p.generation_id == captured_gen_id && p.state == BridgeState::Streaming
+            })
+        };
+        if was_streaming {
+            emit_agent_query_completed(
+                &app_stdout,
+                -1,
+                "Bridge process exited unexpectedly",
+                &csid_stdout,
+            );
+        }
+        {
+            let mut map = handles_stdout.lock().await;
+            if let Some(proc) = map.get_mut(&csid_stdout) {
+                if proc.generation_id == captured_gen_id {
+                    proc.state = BridgeState::Crashed;
+                }
             }
         }
     });
 
-    let stderr_task = tokio::spawn(async move {
+    // Spawn stderr reader (process-lifetime)
+    let csid_stderr = chat_session_id.to_string();
+    tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
-        let mut stderr_output = String::new();
         while let Ok(Some(line)) = lines.next_line().await {
             if !line.is_empty() {
-                stderr_output.push_str(&line);
-                stderr_output.push('\n');
+                log::warn!("bridge stderr [{}]: {}", csid_stderr, line);
             }
         }
-        stderr_output
     });
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| format!("Failed to wait for process: {e}"))?;
+    Ok(())
+}
 
-    // Wait for stream readers to complete
-    if let Err(e) = stdout_task.await {
-        log::error!("stdout reader task failed: {e}");
-    }
-    let stderr_output = match stderr_task.await {
-        Ok(output) => output,
-        Err(e) => {
-            log::error!("stderr reader task failed: {e}");
-            String::new()
-        }
-    };
-
-    // Clean up handle
+#[tauri::command]
+pub async fn start_agent_session(
+    app: tauri::AppHandle,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    chat_session_id: String,
+    cwd: String,
+    permission_mode: Option<String>,
+) -> Result<(), String> {
+    // If process already exists and is not crashed, do nothing; otherwise remove crashed entry
     {
         let mut map = handles.lock().await;
+        if let Some(proc) = map.get(&chat_session_id) {
+            if proc.state != BridgeState::Crashed {
+                return Ok(());
+            }
+        }
         map.remove(&chat_session_id);
     }
 
-    let exit_code = status.code().unwrap_or(-1);
-    use tauri::Emitter;
-    if let Err(e) = app.emit(
-        "agent-query-completed",
-        serde_json::json!({
-            "exit_code": exit_code,
-            "stderr": stderr_output,
-            "chat_session_id": chat_session_id,
-        }),
-    ) {
-        log::error!("Failed to emit agent-query-completed: {e}");
+    let resume_sid = get_resume_session_id(&app, session_store.inner(), &chat_session_id);
+
+    spawn_bridge_process(
+        &app,
+        handles.inner(),
+        session_store.inner(),
+        &chat_session_id,
+        resume_sid,
+        &cwd,
+        permission_mode,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn execute_agent_query(
+    app: tauri::AppHandle,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    prompt: String,
+    chat_session_id: String,
+    cwd: String,
+    permission_mode: Option<String>,
+) -> Result<(), String> {
+    // Check if we need to spawn a new process (single lock to avoid TOCTOU)
+    let spawn_info = {
+        let mut map = handles.lock().await;
+        match map.get(&chat_session_id) {
+            None => Some(get_resume_session_id(
+                &app,
+                session_store.inner(),
+                &chat_session_id,
+            )),
+            Some(proc) if proc.state == BridgeState::Crashed => {
+                map.remove(&chat_session_id);
+                Some(get_resume_session_id(
+                    &app,
+                    session_store.inner(),
+                    &chat_session_id,
+                ))
+            }
+            _ => None,
+        }
+    };
+
+    if let Some(resume_sid) = spawn_info {
+        spawn_bridge_process(
+            &app,
+            handles.inner(),
+            session_store.inner(),
+            &chat_session_id,
+            resume_sid,
+            &cwd,
+            permission_mode,
+        )
+        .await?;
+    }
+
+    // Send message command.
+    // Even if a message is sent while the SDK is still processing an interrupt,
+    // the Bridge's promptGenerator queues it and only yields after the current turn completes.
+    // The SDK calls generator.next() only when ready for the next turn, providing ordering guarantee.
+    let msg_cmd = serde_json::json!({
+        "type": "message",
+        "prompt": prompt,
+    });
+    let data = format!("{}\n", msg_cmd);
+
+    let mut map = handles.lock().await;
+    if let Some(proc) = map.get_mut(&chat_session_id) {
+        proc.state = BridgeState::Streaming;
+        proc.stdin
+            .write_all(data.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write message: {e}"))?;
+        proc.stdin
+            .flush()
+            .await
+            .map_err(|e| format!("Failed to flush message: {e}"))?;
+    } else {
+        return Err(format!("No agent process for session {chat_session_id}"));
     }
 
     Ok(())
@@ -166,21 +472,87 @@ pub async fn interrupt_agent_query(
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     chat_session_id: String,
 ) -> Result<(), String> {
-    let mut map = handles.lock().await;
-    if let Some(stdin) = map.get_mut(&chat_session_id) {
-        stdin
-            .write_all(b"{\"type\":\"interrupt\"}\n")
-            .await
-            .map_err(|e| format!("Failed to write interrupt: {e}"))?;
-        stdin
-            .flush()
-            .await
-            .map_err(|e| format!("Failed to flush: {e}"))?;
-    } else {
-        return Err(format!(
-            "No active agent process for session {chat_session_id}"
-        ));
+    {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(&chat_session_id) {
+            proc.stdin
+                .write_all(b"{\"type\":\"interrupt\"}\n")
+                .await
+                .map_err(|e| format!("Failed to write interrupt: {e}"))?;
+            proc.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Failed to flush: {e}"))?;
+        } else {
+            return Err(format!(
+                "No active agent process for session {chat_session_id}"
+            ));
+        }
     }
+
+    // Timeout fallback: if turn doesn't complete, kill the process
+    let handles_clone = Arc::clone(handles.inner());
+    let csid = chat_session_id.clone();
+    let timeout_gen_id = {
+        let map = handles_clone.lock().await;
+        map.get(&csid).map(|p| p.generation_id)
+    };
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(INTERRUPT_TIMEOUT_SECS)).await;
+        let mut map = handles_clone.lock().await;
+        if let Some(proc) = map.get_mut(&csid) {
+            if timeout_gen_id == Some(proc.generation_id) && proc.state == BridgeState::Streaming {
+                log::warn!("Interrupt timeout for session {csid}, killing process");
+                let _ = proc.child.kill().await;
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_agent_session(
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    chat_session_id: String,
+) -> Result<(), String> {
+    {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(&chat_session_id) {
+            if let Err(e) = proc.stdin.write_all(b"{\"type\":\"close\"}\n").await {
+                log::warn!("Failed to send close command for session {chat_session_id}: {e}");
+            }
+            if let Err(e) = proc.stdin.flush().await {
+                log::warn!("Failed to flush close command for session {chat_session_id}: {e}");
+            }
+        } else {
+            // No process to close — already gone
+            return Ok(());
+        }
+    }
+
+    // Timeout fallback: if process doesn't exit, kill it
+    let handles_clone = Arc::clone(handles.inner());
+    let csid = chat_session_id.clone();
+    let timeout_gen_id = {
+        let map = handles_clone.lock().await;
+        map.get(&csid).map(|p| p.generation_id)
+    };
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(CLOSE_TIMEOUT_SECS)).await;
+        let mut map = handles_clone.lock().await;
+        if let Some(proc) = map.get_mut(&csid) {
+            if timeout_gen_id == Some(proc.generation_id) {
+                log::warn!("Close timeout for session {csid}, killing process");
+                let _ = proc.child.kill().await;
+            } else {
+                // Generation mismatch: a new process has been spawned; skip kill and remove
+                return;
+            }
+        }
+        map.remove(&csid);
+    });
+
     Ok(())
 }
 
@@ -218,12 +590,12 @@ pub async fn respond_agent_permission(
     let data = format!("{}\n", payload);
 
     let mut map = handles.lock().await;
-    if let Some(stdin) = map.get_mut(&chat_session_id) {
-        stdin
+    if let Some(proc) = map.get_mut(&chat_session_id) {
+        proc.stdin
             .write_all(data.as_bytes())
             .await
             .map_err(|e| format!("Failed to write permission response: {e}"))?;
-        stdin
+        proc.stdin
             .flush()
             .await
             .map_err(|e| format!("Failed to flush: {e}"))?;
@@ -349,63 +721,52 @@ mod tests {
     }
 
     #[test]
-    fn bridge_script_args_without_session_id() {
-        let mut args = serde_json::json!({
-            "prompt": "hello",
-            "cwd": "/repo",
+    fn bridge_state_transitions() {
+        let state = BridgeState::Initializing;
+        assert_eq!(state, BridgeState::Initializing);
+        assert_ne!(state, BridgeState::Ready);
+        assert_ne!(state, BridgeState::Streaming);
+        assert_ne!(state, BridgeState::Crashed);
+    }
+
+    #[test]
+    fn init_command_format() {
+        let cwd = "/repo";
+        let permission_mode = "acceptEdits";
+        let session_id: Option<String> = Some("sess-abc".to_string());
+        let cmd = serde_json::json!({
+            "type": "init",
+            "cwd": cwd,
+            "permissionMode": permission_mode,
+            "sessionId": session_id,
         });
+        assert_eq!(cmd["type"], "init");
+        assert_eq!(cmd["cwd"], "/repo");
+        assert_eq!(cmd["permissionMode"], "acceptEdits");
+        assert_eq!(cmd["sessionId"], "sess-abc");
+    }
+
+    #[test]
+    fn init_command_without_session_id() {
         let session_id: Option<String> = None;
-        if let Some(sid) = &session_id {
-            if !sid.is_empty() {
-                args["sessionId"] = serde_json::Value::String(sid.clone());
-            }
-        }
-        assert!(args.get("sessionId").is_none());
-        assert_eq!(args["prompt"], "hello");
-        assert_eq!(args["cwd"], "/repo");
+        let cmd = serde_json::json!({
+            "type": "init",
+            "cwd": "/repo",
+            "permissionMode": "acceptEdits",
+            "sessionId": session_id,
+        });
+        assert!(cmd["sessionId"].is_null());
     }
 
     #[test]
-    fn bridge_script_args_with_session_id() {
-        let mut args = serde_json::json!({
-            "prompt": "hello",
-            "cwd": "/repo",
+    fn message_command_format() {
+        let prompt = "Hello, agent!";
+        let cmd = serde_json::json!({
+            "type": "message",
+            "prompt": prompt,
         });
-        let session_id = Some("sess-abc".to_string());
-        if let Some(sid) = &session_id {
-            if !sid.is_empty() {
-                args["sessionId"] = serde_json::Value::String(sid.clone());
-            }
-        }
-        assert_eq!(args["sessionId"], "sess-abc");
-    }
-
-    #[test]
-    fn bridge_script_args_with_empty_session_id() {
-        let mut args = serde_json::json!({
-            "prompt": "test",
-            "cwd": "/repo",
-        });
-        let session_id = Some("".to_string());
-        if let Some(sid) = &session_id {
-            if !sid.is_empty() {
-                args["sessionId"] = serde_json::Value::String(sid.clone());
-            }
-        }
-        assert!(args.get("sessionId").is_none());
-    }
-
-    #[test]
-    fn bridge_script_args_with_permission_mode() {
-        let mut args = serde_json::json!({
-            "prompt": "test",
-            "cwd": "/repo",
-        });
-        let pm = Some("plan".to_string());
-        if let Some(mode) = &pm {
-            args["permissionMode"] = serde_json::Value::String(mode.clone());
-        }
-        assert_eq!(args["permissionMode"], "plan");
+        assert_eq!(cmd["type"], "message");
+        assert_eq!(cmd["prompt"], "Hello, agent!");
     }
 
     #[test]
@@ -520,8 +881,6 @@ mod tests {
 
     #[tokio::test]
     async fn node_subprocess_stdout_is_readable_as_ndjson() {
-        // Verify that spawning a node process and reading its stdout line-by-line works.
-        // Uses an inline script that outputs mock SDK messages.
         let mock_script = r#"
             process.stdout.write(JSON.stringify({type:"system",session_id:"test-sid"}) + "\n");
             process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",delta:{type:"text_delta",text:"hello"}}}) + "\n");
@@ -553,109 +912,89 @@ mod tests {
         assert!(status.success(), "node process should exit 0");
         assert_eq!(messages.len(), 3, "Should have 3 messages");
 
-        // Verify session_id extraction
         assert_eq!(
             messages[0].get("session_id").and_then(|v| v.as_str()),
             Some("test-sid")
         );
 
-        // Verify stream_event text_delta
         let event = &messages[1]["event"];
         assert_eq!(event["type"].as_str(), Some("content_block_delta"));
         assert_eq!(event["delta"]["type"].as_str(), Some("text_delta"));
         assert_eq!(event["delta"]["text"].as_str(), Some("hello"));
 
-        // Verify result
         assert_eq!(messages[2]["type"].as_str(), Some("result"));
         assert_eq!(messages[2]["subtype"].as_str(), Some("success"));
     }
 
     #[tokio::test]
-    async fn bridge_script_spawns_and_exits_from_rust() {
-        // Verify that spawning the actual bridge script from Rust works.
-        // Uses an invalid prompt scenario that should cause the SDK to exit quickly.
-        let bridge_path = dev_bridge_path();
-        assert!(bridge_path.exists(), "Bridge script must exist");
+    async fn bridge_stdin_command_protocol_roundtrip() {
+        use tokio::io::AsyncWriteExt;
 
-        let args_json = serde_json::json!({
-            "prompt": "test",
-            "cwd": "/tmp",
-        });
+        // Simulate the bridge's stdin protocol: init → message handling
+        // Uses an inline script that mirrors the bridge's command parsing.
+        let test_script = r#"
+            let stdinBuffer = "";
+            const commands = [];
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => {
+                stdinBuffer += chunk;
+                const lines = stdinBuffer.split("\n");
+                stdinBuffer = lines.pop();
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        commands.push(JSON.parse(line));
+                    } catch {}
+                }
+            });
+            process.stdin.on("end", () => {
+                process.stdout.write(JSON.stringify({ received: commands }) + "\n");
+            });
+        "#;
 
         let mut child = tokio::process::Command::new("node")
-            .arg(bridge_path.to_str().unwrap())
-            .arg(args_json.to_string())
+            .arg("-e")
+            .arg(test_script)
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
             .spawn()
-            .expect("Failed to spawn node with bridge script");
+            .expect("Failed to spawn node");
 
+        let mut stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
 
-        let stdout_task = tokio::spawn(async move {
-            let reader = tokio::io::BufReader::new(stdout);
-            let mut lines = reader.lines();
-            let mut output = Vec::new();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.is_empty() {
-                    output.push(line);
-                }
-            }
-            output
-        });
+        // Send init and message commands
+        let init_cmd =
+            serde_json::json!({"type": "init", "cwd": "/tmp", "permissionMode": "acceptEdits"});
+        let msg_cmd = serde_json::json!({"type": "message", "prompt": "hello"});
+        let close_cmd = serde_json::json!({"type": "close"});
 
-        let stderr_task = tokio::spawn(async move {
-            let reader = tokio::io::BufReader::new(stderr);
-            let mut lines = reader.lines();
-            let mut output = String::new();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.is_empty() {
-                    output.push_str(&line);
-                    output.push('\n');
-                }
-            }
-            output
-        });
-
-        // Wait for exit with a timeout
-        let status = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait())
+        stdin
+            .write_all(format!("{}\n{}\n{}\n", init_cmd, msg_cmd, close_cmd).as_bytes())
             .await
-            .expect("Bridge script timed out after 30 seconds")
-            .expect("Failed to wait for bridge script");
+            .unwrap();
+        drop(stdin); // Close stdin to trigger "end" event
 
-        let stdout_lines = stdout_task.await.unwrap();
-        let stderr_output = stderr_task.await.unwrap();
+        let reader = tokio::io::BufReader::new(stdout);
+        let mut lines = reader.lines();
+        let line = tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
+            .await
+            .expect("Timeout")
+            .unwrap()
+            .unwrap();
 
-        // The process should exit (either success or error, but it must not hang)
-        eprintln!("Bridge script exit code: {:?}", status.code());
-        eprintln!("Bridge script stdout lines: {}", stdout_lines.len());
-        for (i, line) in stdout_lines.iter().enumerate() {
-            let truncated: String = line.chars().take(200).collect();
-            eprintln!("  stdout[{}]: {}", i, truncated);
-        }
-        if !stderr_output.is_empty() {
-            eprintln!(
-                "Bridge script stderr: {}",
-                stderr_output.chars().take(500).collect::<String>()
-            );
-        }
+        let result: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let received = result["received"].as_array().unwrap();
+        assert_eq!(received.len(), 3);
+        assert_eq!(received[0]["type"], "init");
+        assert_eq!(received[1]["type"], "message");
+        assert_eq!(received[1]["prompt"], "hello");
+        assert_eq!(received[2]["type"], "close");
 
-        // The process must exit (this test's main purpose is to verify it doesn't hang)
-        assert!(
-            status.code().is_some(),
-            "Bridge script should exit with a code, not be killed by signal"
-        );
+        let status = child.wait().await.unwrap();
+        assert!(status.success());
     }
 
-    /// Verifies that the bridge script sets `canUseTool` for interactive tools
-    /// (AskUserQuestion, EnterPlanMode) even when permissionMode is "acceptEdits".
-    /// Currently FAILS because the bridge only sets canUseTool for "default" mode.
-    ///
-    /// Uses an inline Node.js script instead of spawning the real bridge because:
-    /// - The real bridge requires `@anthropic-ai/claude-agent-sdk` and a valid API key
-    /// - We only need to test the canUseTool conditional logic, not the full SDK interaction
-    /// - Inline scripts are self-contained and run in CI without external dependencies
     #[tokio::test]
     async fn bridge_sets_can_use_tool_for_interactive_tools_in_accept_edits_mode() {
         let test_script = r#"
@@ -663,7 +1002,6 @@ mod tests {
             const INTERACTIVE_TOOLS = ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"];
             let canUseToolSet = false;
 
-            // Reproduce the bridge logic
             if (permissionMode !== "bypassPermissions") {
                 canUseToolSet = true;
             }
@@ -692,19 +1030,13 @@ mod tests {
         let status = child.wait().await.unwrap();
         assert!(status.success());
 
-        // This assertion FAILS: in acceptEdits mode, canUseTool is NOT set,
-        // so interactive tools (AskUserQuestion, EnterPlanMode) are auto-handled
-        // by the SDK and never generate permission_request messages.
         assert!(
             result["interactiveToolsHandled"].as_bool().unwrap(),
-            "acceptEdits mode should set canUseTool for interactive tools, \
-             but the bridge only sets it for 'default' mode. \
-             Result: {}",
+            "acceptEdits mode should set canUseTool for interactive tools. Result: {}",
             result
         );
     }
 
-    /// Same as above but for "plan" permissionMode.
     #[tokio::test]
     async fn bridge_sets_can_use_tool_for_interactive_tools_in_plan_mode() {
         let test_script = r#"
@@ -712,7 +1044,6 @@ mod tests {
             const INTERACTIVE_TOOLS = ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"];
             let canUseToolSet = false;
 
-            // Reproduce the bridge logic
             if (permissionMode !== "bypassPermissions") {
                 canUseToolSet = true;
             }
@@ -743,25 +1074,15 @@ mod tests {
 
         assert!(
             result["interactiveToolsHandled"].as_bool().unwrap(),
-            "plan mode should set canUseTool for interactive tools, \
-             but the bridge only sets it for 'default' mode. \
-             Result: {}",
+            "plan mode should set canUseTool for interactive tools. Result: {}",
             result
         );
     }
 
-    /// ExitPlanMode permission round-trip through inline bridge simulation.
-    /// Verifies the exact JSON that canUseTool resolves with when user clicks Allow.
-    /// The bridge must augment allow responses with `updatedInput` (defaulting to
-    /// the original tool input) because the CLI validates with a Zod schema
-    /// where `updatedInput` is required in the allow variant.
     #[tokio::test]
     async fn bridge_exit_plan_mode_permission_response_roundtrip() {
         use tokio::io::AsyncWriteExt;
 
-        // This script simulates the bridge's canUseTool logic:
-        // - Stores { resolve, input } in pendingPermissions
-        // - On permission_response, augments allow results with updatedInput if missing
         let test_script = r#"
             const pendingPermissions = new Map();
 
@@ -833,14 +1154,11 @@ mod tests {
         let reader = tokio::io::BufReader::new(stdout);
         let mut lines = reader.lines();
 
-        // Read the permission_request from the bridge
         let request_line = lines.next_line().await.unwrap().unwrap();
         let request: serde_json::Value = serde_json::from_str(&request_line).unwrap();
         assert_eq!(request["type"], "permission_request");
         assert_eq!(request["tool_name"], "ExitPlanMode");
 
-        // Build permission_response using the same logic as respond_agent_permission
-        // (Rust sends { behavior: "allow" } WITHOUT updatedInput — the bridge adds it)
         let behavior = "allow";
         let message: Option<String> = None;
         let updated_input: Option<String> = None;
@@ -862,7 +1180,6 @@ mod tests {
         stdin.write_all(data.as_bytes()).await.unwrap();
         stdin.flush().await.unwrap();
 
-        // Read the resolved canUseTool value
         let resolved_line =
             tokio::time::timeout(std::time::Duration::from_secs(5), lines.next_line())
                 .await
@@ -874,9 +1191,6 @@ mod tests {
         assert_eq!(resolved["type"], "canUseTool_resolved");
         assert_eq!(resolved["tool_name"], "ExitPlanMode");
 
-        // The bridge augments the allow response with updatedInput from the original input.
-        // This is required because the CLI's Zod schema (Lo6) requires updatedInput
-        // in the allow variant of the PermissionResult union.
         let can_use_tool_result = &resolved["result"];
         assert_eq!(
             can_use_tool_result["behavior"], "allow",
@@ -895,127 +1209,28 @@ mod tests {
         assert!(status.success());
     }
 
-    /// Reproduces the exact same flow as `execute_agent_query`:
-    /// spawn bridge script with piped stdin, read stdout in a spawned task,
-    /// read stderr in a spawned task, then wait for exit.
-    /// Verifies that `child.wait()` returns within a reasonable time
-    /// after all SDK messages (including "result") have been received.
-    ///
-    /// NOTE: Currently ignored because the bridge process hangs after result
-    /// due to open handles (stdin listener, SDK internals). This will be
-    /// resolved by migrating to Streaming Input Mode (#715).
-    #[tokio::test]
-    #[ignore]
-    async fn bridge_process_exits_after_result_message_like_execute_agent_query() {
-        let bridge_path = dev_bridge_path();
-        assert!(bridge_path.exists());
+    #[test]
+    fn turn_complete_message_parsing() {
+        let msg_str = r#"{"type":"turn_complete","session_id":"sess-123","exit_code":0}"#;
+        let msg: serde_json::Value = serde_json::from_str(msg_str).unwrap();
+        assert_eq!(msg["type"], "turn_complete");
+        assert_eq!(msg["exit_code"], 0);
+        assert_eq!(msg["session_id"], "sess-123");
+    }
 
-        let args_json = serde_json::json!({
-            "prompt": "say hi",
-            "cwd": "/tmp",
-        });
+    #[test]
+    fn turn_complete_with_error() {
+        let msg_str = r#"{"type":"turn_complete","session_id":"sess-123","exit_code":1}"#;
+        let msg: serde_json::Value = serde_json::from_str(msg_str).unwrap();
+        assert_eq!(msg["exit_code"], 1);
+    }
 
-        // Spawn exactly like execute_agent_query does
-        let mut child = tokio::process::Command::new("node")
-            .arg(bridge_path.to_str().unwrap())
-            .arg(args_json.to_string())
-            .current_dir("/tmp")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("Failed to spawn");
-
-        // Take stdin and HOLD it (same as storing in AgentProcessMap)
-        let _stdin = child.stdin.take();
-
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-
-        // Spawn stdout reader (same pattern as execute_agent_query)
-        let stdout_task = tokio::spawn(async move {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-            let mut messages: Vec<serde_json::Value> = Vec::new();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.is_empty() {
-                    continue;
-                }
-                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                    messages.push(msg);
-                }
-            }
-            messages
-        });
-
-        // Spawn stderr reader (same pattern as execute_agent_query)
-        let stderr_task = tokio::spawn(async move {
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-            let mut output = String::new();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.is_empty() {
-                    output.push_str(&line);
-                    output.push('\n');
-                }
-            }
-            output
-        });
-
-        // Wait for process exit with timeout (same as execute_agent_query, but with timeout)
-        // BUG REPRODUCTION: if the process hangs after emitting "result",
-        // child.wait() will never return and this timeout will fire.
-        let wait_result =
-            tokio::time::timeout(std::time::Duration::from_secs(15), child.wait()).await;
-
-        match wait_result {
-            Ok(Ok(status)) => {
-                // Process exited — no hang
-                let messages = stdout_task.await.unwrap();
-                let _stderr = stderr_task.await.unwrap_or_default();
-                let has_result = messages.iter().any(|m| m["type"] == "result");
-                eprintln!(
-                    "Process exited: code={:?}, messages={}, has_result={}",
-                    status.code(),
-                    messages.len(),
-                    has_result
-                );
-                assert!(has_result, "Should have received a result message");
-            }
-            Ok(Err(e)) => {
-                panic!("child.wait() error: {e}");
-            }
-            Err(_) => {
-                // TIMEOUT: process did not exit within 15 seconds after SDK query completed.
-                // This reproduces the bug where agent-query-completed is never emitted.
-                //
-                // Kill the process FIRST so stdout/stderr pipes close,
-                // allowing the reader tasks to finish.
-                child.kill().await.ok();
-
-                let messages = stdout_task.await.unwrap_or_default();
-                let _stderr = stderr_task.await.unwrap_or_default();
-                let has_result = messages.iter().any(|m| m["type"] == "result");
-                eprintln!(
-                    "TIMEOUT: process hung. messages={}, has_result={}",
-                    messages.len(),
-                    has_result
-                );
-                if has_result {
-                    panic!(
-                        "BUG REPRODUCED: bridge script received result message \
-                         but process did not exit within 15 seconds. \
-                         This causes agent-query-completed to never fire."
-                    );
-                } else {
-                    panic!(
-                        "Process hung but result was not received. \
-                         messages count: {}",
-                        messages.len()
-                    );
-                }
-            }
-        }
+    #[test]
+    fn session_ready_message_parsing() {
+        let msg_str = r#"{"type":"session_ready","session_id":"sess-456"}"#;
+        let msg: serde_json::Value = serde_json::from_str(msg_str).unwrap();
+        assert_eq!(msg["type"], "session_ready");
+        assert_eq!(msg["session_id"], "sess-456");
     }
 
     #[test]
@@ -1049,7 +1264,6 @@ mod tests {
     async fn scan_slash_commands_with_nonexistent_cwd() {
         let result = scan_slash_commands("/nonexistent/path/abc123".to_string()).await;
         assert!(result.is_ok());
-        // Should return commands from ~/.claude/skills (if any), but no error
     }
 
     #[tokio::test]
@@ -1058,7 +1272,6 @@ mod tests {
         let commands_dir = tmp.path().join(".claude").join("commands");
         std::fs::create_dir_all(&commands_dir).unwrap();
 
-        // Create a test command file
         std::fs::write(
             commands_dir.join("test-cmd.md"),
             "This is a test command\nMore details here",
@@ -1069,7 +1282,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Should contain our test command (may also contain skills from ~/.claude/skills)
         let test_cmd = result.iter().find(|c| c.name == "test-cmd");
         assert!(test_cmd.is_some(), "Should find test-cmd in results");
         assert_eq!(test_cmd.unwrap().description, "This is a test command");
@@ -1077,10 +1289,8 @@ mod tests {
 
     #[tokio::test]
     async fn scan_slash_commands_deduplicates_skill_over_command() {
-        // Use a unique name to avoid collisions with real ~/.claude/skills/
         let tmp = tempfile::tempdir().unwrap();
 
-        // Create a project skill
         let skill_dir = tmp
             .path()
             .join(".claude")
@@ -1093,7 +1303,6 @@ mod tests {
         )
         .unwrap();
 
-        // Create a project command with the same name
         let commands_dir = tmp.path().join(".claude").join("commands");
         std::fs::create_dir_all(&commands_dir).unwrap();
         std::fs::write(
@@ -1106,7 +1315,6 @@ mod tests {
             .await
             .unwrap();
 
-        // "zzz-dedup-test" should appear exactly once, with the skill's description (higher priority)
         let matches: Vec<_> = result
             .iter()
             .filter(|c| c.name == "zzz-dedup-test")

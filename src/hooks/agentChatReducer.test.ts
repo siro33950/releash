@@ -783,40 +783,6 @@ describe("agentChatReducer", () => {
 		});
 	});
 
-	describe("SET_AGENT_SESSION_ID", () => {
-		it("sets agent session id on active session", () => {
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession(),
-			};
-			const next = reducer(state, {
-				type: "SET_AGENT_SESSION_ID",
-				agentSessionId: "sess-xyz",
-			});
-			expect(next.activeSession?.agentSessionId).toBe("sess-xyz");
-		});
-
-		it("clears agent session id with null", () => {
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ agentSessionId: "sess-xyz" }),
-			};
-			const next = reducer(state, {
-				type: "SET_AGENT_SESSION_ID",
-				agentSessionId: null,
-			});
-			expect(next.activeSession?.agentSessionId).toBeNull();
-		});
-
-		it("does nothing when no active session", () => {
-			const next = reducer(INITIAL_STATE, {
-				type: "SET_AGENT_SESSION_ID",
-				agentSessionId: "sess-xyz",
-			});
-			expect(next).toBe(INITIAL_STATE);
-		});
-	});
-
 	describe("appendToParts with parentToolUseId", () => {
 		it("does not merge text parts with different parentToolUseId", () => {
 			const parts = appendToParts([], "text", "main text");

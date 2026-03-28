@@ -101,13 +101,12 @@ async fn start_mcp_server_inner(
     let ct = CancellationToken::new();
 
     let state_for_factory = state;
+    let mut server_config = StreamableHttpServerConfig::default();
+    server_config.cancellation_token = ct.child_token();
     let service = StreamableHttpService::new(
         move || Ok(ReleashMcpServer::new(state_for_factory.clone())),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig {
-            cancellation_token: ct.child_token(),
-            ..Default::default()
-        },
+        server_config,
     );
 
     let token_for_middleware = token.clone();

@@ -20,7 +20,6 @@ import {
 	listClosedSessions,
 	listSessions,
 	restoreSession as restoreSessionApi,
-	updateSessionAgentInfo,
 } from "./useSessionStore";
 
 export interface UseAgentChatResult {
@@ -49,6 +48,20 @@ export interface UseAgentChatResult {
 	) => void;
 }
 
+function startAgentProcess(
+	chatSessionId: string,
+	cwd: string,
+	permissionMode: string,
+): void {
+	invoke("start_agent_session", {
+		chatSessionId,
+		cwd,
+		permissionMode,
+	}).catch((e) => {
+		console.error(`Failed to start agent session ${chatSessionId}:`, e);
+	});
+}
+
 function deriveAgentState(
 	sessionId: string,
 	streamingSessionIds: string[],
@@ -65,14 +78,12 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 	const streamingMessageIdsRef = useRef<Map<string, string>>(new Map());
 	const streamingBuffersRef = useRef<Map<string, StreamingBuffer>>(new Map());
-	const lastPromptsRef = useRef<Map<string, string>>(new Map());
 	const worktreePathRef = useRef(worktreePath);
 	worktreePathRef.current = worktreePath;
 	const activeSessionRef = useRef(state.activeSession);
 	activeSessionRef.current = state.activeSession;
 	const sessionsRef = useRef(state.sessions);
 	sessionsRef.current = state.sessions;
-	const isRetryingRef = useRef<Set<string>>(new Set());
 	const permissionModeRef = useRef(state.permissionMode);
 	permissionModeRef.current = state.permissionMode;
 
@@ -120,52 +131,43 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		}
 	}, []);
 
-	const startQuery = useCallback(
-		async (
-			sessionId: string,
-			prompt: string,
-			agentSessionId: string | null,
-		) => {
-			const agentMsg = await addMessage(sessionId, "agent", "");
-			dispatch({ type: "ADD_MESSAGE", message: agentMsg });
-			streamingMessageIdsRef.current.set(sessionId, agentMsg.id);
-			// Keep a ref-based buffer alongside reducer state so that
-			// streaming content is captured even for non-active sessions
-			// (reducer only updates the active session's messages).
-			// This buffer is the source-of-truth for persistence on
-			// agent-query-completed and for merging in selectSession.
-			streamingBuffersRef.current.set(sessionId, {
-				parts: [],
-			});
-			lastPromptsRef.current.set(sessionId, prompt);
-			dispatch({ type: "START_STREAMING", sessionId });
+	const startQuery = useCallback(async (sessionId: string, prompt: string) => {
+		const agentMsg = await addMessage(sessionId, "agent", "");
+		dispatch({ type: "ADD_MESSAGE", message: agentMsg });
+		streamingMessageIdsRef.current.set(sessionId, agentMsg.id);
+		// Keep a ref-based buffer alongside reducer state so that
+		// streaming content is captured even for non-active sessions
+		// (reducer only updates the active session's messages).
+		// This buffer is the source-of-truth for persistence on
+		// agent-query-completed and for merging in selectSession.
+		streamingBuffersRef.current.set(sessionId, {
+			parts: [],
+		});
+		dispatch({ type: "START_STREAMING", sessionId });
 
-			invoke("execute_agent_query", {
-				prompt,
-				sessionId: agentSessionId,
-				chatSessionId: sessionId,
-				cwd: worktreePathRef.current,
-				permissionMode: permissionModeRef.current,
-			}).catch((e) => {
-				console.error("execute_agent_query failed:", e);
-				const msgId = streamingMessageIdsRef.current.get(sessionId);
-				if (msgId) {
-					dispatch({
-						type: "APPEND_STREAMING",
-						messageId: msgId,
-						chunk: `Error: ${e}`,
-					});
-				}
-				dispatch({ type: "STOP_STREAMING", sessionId });
-				streamingMessageIdsRef.current.delete(sessionId);
+		invoke("execute_agent_query", {
+			prompt,
+			chatSessionId: sessionId,
+			cwd: worktreePathRef.current,
+			permissionMode: permissionModeRef.current,
+		}).catch((e) => {
+			console.error("execute_agent_query failed:", e);
+			const msgId = streamingMessageIdsRef.current.get(sessionId);
+			if (msgId) {
 				dispatch({
-					type: "SET_ERROR",
-					error: `エージェント実行に失敗: ${e}`,
+					type: "APPEND_STREAMING",
+					messageId: msgId,
+					chunk: `Error: ${e}`,
 				});
+			}
+			dispatch({ type: "STOP_STREAMING", sessionId });
+			streamingMessageIdsRef.current.delete(sessionId);
+			dispatch({
+				type: "SET_ERROR",
+				error: `エージェント実行に失敗: ${e}`,
 			});
-		},
-		[],
-	);
+		});
+	}, []);
 
 	const sendMessage = useCallback(
 		async (content: string) => {
@@ -182,9 +184,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				const message = await addMessage(session.id, "human", trimmed);
 				dispatch({ type: "ADD_MESSAGE", message });
 
-				isRetryingRef.current.delete(session.id);
-
-				await startQuery(session.id, trimmed, session.agentSessionId || null);
+				await startQuery(session.id, trimmed);
 
 				await refreshSessions();
 			} catch (e) {
@@ -218,6 +218,13 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			try {
 				const sessions = sessionsRef.current;
 				const idx = sessions.findIndex((s) => s.id === sessionId);
+
+				// Close agent process gracefully
+				invoke("close_agent_session", {
+					chatSessionId: sessionId,
+				}).catch((e) => {
+					console.error("Failed to close agent session:", e);
+				});
 
 				await closeSessionApi(sessionId);
 
@@ -257,6 +264,12 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				await restoreSessionApi(sessionId);
 				const full = await getSession(sessionId);
 				dispatch({ type: "SET_ACTIVE_SESSION", session: full });
+				// Start Bridge process for the restored session
+				startAgentProcess(
+					sessionId,
+					worktreePathRef.current,
+					permissionModeRef.current,
+				);
 				await refreshSessions();
 				await refreshClosedSessions();
 			} catch (e) {
@@ -273,6 +286,12 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		try {
 			const session = await createSession(worktreePathRef.current);
 			dispatch({ type: "SET_ACTIVE_SESSION", session });
+			// Prewarm: start agent process in background
+			startAgentProcess(
+				session.id,
+				worktreePathRef.current,
+				permissionModeRef.current,
+			);
 			await refreshSessions();
 		} catch (e) {
 			dispatch({
@@ -352,41 +371,24 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		[],
 	);
 
-	const handleRetry = useCallback(
-		async (content: string, chatSessionId: string) => {
-			const session = activeSessionRef.current;
-			if (
-				!session ||
-				session.id !== chatSessionId ||
-				isRetryingRef.current.has(chatSessionId)
-			)
-				return;
-
-			isRetryingRef.current.add(chatSessionId);
-
-			dispatch({ type: "SET_AGENT_SESSION_ID", agentSessionId: null });
-			await updateSessionAgentInfo(session.id, null).catch((e) =>
-				console.error("Failed to clear agent session id:", e),
-			);
-
-			await startQuery(session.id, content, null);
-		},
-		[startQuery],
-	);
-
 	useAgentSdkListeners({
 		dispatch,
 		streamingMessageIdsRef,
 		activeSessionRef,
 		streamingBuffersRef,
-		lastPromptsRef,
 		refreshSessions,
-		handleRetry,
-		isRetryingRef,
 	});
 
 	const initSessions = useCallback(async () => {
 		const sessions = await refreshSessions();
+		// Start Bridge processes for all existing sessions
+		for (const session of sessions) {
+			startAgentProcess(
+				session.id,
+				worktreePathRef.current,
+				permissionModeRef.current,
+			);
+		}
 		if (sessions.length > 0) {
 			await selectSession(sessions[0].id);
 		} else {

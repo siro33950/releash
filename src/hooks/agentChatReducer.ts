@@ -42,7 +42,6 @@ export type AgentChatAction =
 	| { type: "STOP_STREAMING"; sessionId: string }
 	| { type: "SET_ERROR"; error: string | null }
 	| { type: "UPDATE_SESSION_STATE"; state: SessionState }
-	| { type: "SET_AGENT_SESSION_ID"; agentSessionId: string | null }
 	| {
 			type: "APPEND_TOOL_USE";
 			messageId: string;
@@ -211,16 +210,6 @@ export function reducer(
 			return {
 				...state,
 				activeSession: { ...state.activeSession, state: action.state },
-			};
-		}
-		case "SET_AGENT_SESSION_ID": {
-			if (!state.activeSession) return state;
-			return {
-				...state,
-				activeSession: {
-					...state.activeSession,
-					agentSessionId: action.agentSessionId,
-				},
 			};
 		}
 		case "APPEND_TOOL_USE": {
