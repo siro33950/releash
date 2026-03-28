@@ -54,10 +54,7 @@ function makeRefs() {
 		streamingBuffersRef: {
 			current: new Map<string, StreamingBuffer>(),
 		},
-		lastPromptsRef: { current: new Map<string, string>() },
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
-		handleRetry: vi.fn().mockResolvedValue(undefined),
-		isRetryingRef: { current: new Set<string>() },
 	};
 }
 
@@ -231,43 +228,6 @@ describe("useAgentSdkListeners callback behavior", () => {
 			type: "APPEND_STREAMING",
 			messageId: "msg-001",
 			chunk: "Hello",
-		});
-	});
-
-	it("dispatches SET_AGENT_SESSION_ID when session_id is in message", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.activeSessionRef.current = {
-			id: "session-1",
-			worktreePath: "/repo",
-			state: "idle",
-			messages: [],
-			createdAt: Date.now(),
-			agentSessionId: null,
-		} as never;
-
-		renderHook(() => useAgentSdkListeners(refs));
-
-		for (const { resolve } of listenResolvers) {
-			resolve(vi.fn());
-		}
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-		expect(cb).toBeDefined();
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "init",
-				session_id: "sdk-session-abc",
-				chat_session_id: "session-1",
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "SET_AGENT_SESSION_ID",
-			agentSessionId: "sdk-session-abc",
 		});
 	});
 
@@ -1105,84 +1065,6 @@ describe("non-active session persistence", () => {
 		]);
 	});
 
-	it("persists agentSessionId for non-active session", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		// Active session is session-1
-		refs.activeSessionRef.current = {
-			id: "session-1",
-			worktreePath: "/repo",
-			state: "idle",
-			messages: [],
-			createdAt: Date.now(),
-			agentSessionId: "sdk-1",
-		} as never;
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		// session-2 (non-active) receives session_id
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "init",
-				session_id: "sdk-session-2",
-				chat_session_id: "session-2",
-			},
-		});
-
-		const { updateSessionAgentInfo } = await import("./useSessionStore");
-		expect(updateSessionAgentInfo).toHaveBeenCalledWith(
-			"session-2",
-			"sdk-session-2",
-		);
-
-		// Should NOT dispatch SET_AGENT_SESSION_ID since session-2 is not active
-		const setAgentCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) =>
-				(call[0] as { type: string }).type === "SET_AGENT_SESSION_ID",
-		);
-		expect(setAgentCalls).toHaveLength(0);
-	});
-
-	it("retries for non-active session with empty buffer content", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-2", "msg-002");
-		refs.streamingBuffersRef.current.set("session-2", {
-			parts: [],
-		});
-		refs.lastPromptsRef.current.set("session-2", "hello");
-		// Active session is session-1
-		refs.activeSessionRef.current = {
-			id: "session-1",
-			worktreePath: "/repo",
-			state: "idle",
-			messages: [],
-			createdAt: Date.now(),
-			agentSessionId: null,
-		} as never;
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-query-completed");
-
-		cb?.({
-			payload: {
-				exit_code: 1,
-				stderr: "error",
-				chat_session_id: "session-2",
-			},
-		});
-
-		expect(refs.handleRetry).toHaveBeenCalledWith("hello", "session-2");
-	});
-
 	it("cleans up buffer after completion", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
@@ -1543,6 +1425,96 @@ describe("handleTaskMessage dispatch", () => {
 			status: "failed",
 			description: undefined,
 			summary: "Timeout exceeded",
+		});
+	});
+});
+
+describe("handleBridgeError", () => {
+	it("dispatches APPEND_STREAMING and accumulates buffer when error arrives during streaming", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+		refs.streamingBuffersRef.current.set("session-1", { parts: [] });
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				type: "error",
+				chat_session_id: "session-1",
+				message: "Bridge crashed",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPEND_STREAMING",
+			messageId: "msg-001",
+			chunk: "Error: Bridge crashed",
+		});
+
+		const buf = refs.streamingBuffersRef.current.get("session-1");
+		const textParts = buf?.parts.filter((p) => p.type === "text");
+		expect(textParts).toHaveLength(1);
+		expect((textParts?.[0] as { content: string })?.content).toBe(
+			"Error: Bridge crashed",
+		);
+	});
+
+	it("does NOT dispatch APPEND_STREAMING when no streaming messageId for session", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		// No entry in streamingMessageIdsRef for "session-1"
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "error",
+				chat_session_id: "session-1",
+				message: "Some error",
+			},
+		});
+
+		const appendCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) =>
+				(call[0] as { type: string }).type === "APPEND_STREAMING",
+		);
+		expect(appendCalls).toHaveLength(0);
+	});
+
+	it("uses 'Unknown error' fallback when message is not a string", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
+		refs.streamingBuffersRef.current.set("session-1", { parts: [] });
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "error",
+				chat_session_id: "session-1",
+				// message is not a string (or absent)
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "APPEND_STREAMING",
+			messageId: "msg-001",
+			chunk: "Error: Unknown error",
 		});
 	});
 });

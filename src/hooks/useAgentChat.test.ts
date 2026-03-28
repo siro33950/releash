@@ -477,6 +477,14 @@ describe("useAgentChat", () => {
 
 		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo");
 		expect(result.current.activeSession).toEqual(newSession);
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"start_agent_session",
+			expect.objectContaining({
+				chatSessionId: "new-s",
+				cwd: "/repo",
+				permissionMode: "acceptEdits",
+			}),
+		);
 	});
 
 	it("closeSession on non-active session keeps activeSession unchanged", async () => {
@@ -510,6 +518,9 @@ describe("useAgentChat", () => {
 		});
 
 		expect(sessionStore.closeSession).toHaveBeenCalledWith("s2");
+		expect(mockInvoke).toHaveBeenCalledWith("close_agent_session", {
+			chatSessionId: "s2",
+		});
 		expect(result.current.activeSession?.id).toBe(activeSession?.id);
 	});
 
@@ -551,6 +562,9 @@ describe("useAgentChat", () => {
 		});
 
 		expect(sessionStore.closeSession).toHaveBeenCalledWith("s1");
+		expect(mockInvoke).toHaveBeenCalledWith("close_agent_session", {
+			chatSessionId: "s1",
+		});
 		expect(result.current.activeSession?.id).toBe("s2");
 	});
 
@@ -616,6 +630,45 @@ describe("useAgentChat", () => {
 		expect(result.current.activeSession?.id).toBe("s-closed");
 	});
 
+	it("restoreSession starts agent process for restored session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Wait for mount effect
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const restoredSession = {
+			id: "s-closed",
+			worktreePath: "/repo",
+			messages: [],
+			state: "idle",
+			createdAt: 500,
+			updatedAt: 500,
+		};
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
+			restoredSession as never,
+		);
+		mockInvoke.mockClear();
+
+		await act(async () => {
+			await result.current.restoreSession("s-closed");
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"start_agent_session",
+			expect.objectContaining({
+				chatSessionId: "s-closed",
+				cwd: "/repo",
+				permissionMode: "acceptEdits",
+			}),
+		);
+	});
+
 	it("restoreSession sets error on failure", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
@@ -637,6 +690,64 @@ describe("useAgentChat", () => {
 		});
 
 		expect(result.current.error).toContain("セッション復元に失敗");
+	});
+
+	it("initSessions starts agent process for each existing session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		// listSessions returns multiple sessions
+		vi.mocked(sessionStore.listSessions).mockResolvedValueOnce([
+			{
+				id: "s1",
+				worktreePath: "/repo",
+				updatedAt: 1000,
+				state: "active",
+				firstMessage: "hi",
+				messageCount: 1,
+				createdAt: 1000,
+			},
+			{
+				id: "s2",
+				worktreePath: "/repo",
+				updatedAt: 900,
+				state: "active",
+				firstMessage: "hello",
+				messageCount: 1,
+				createdAt: 900,
+			},
+		] as never);
+
+		// getSession for the first session (selectSession(sessions[0].id))
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 1000,
+			updatedAt: 1000,
+		} as never);
+
+		mockInvoke.mockClear();
+
+		renderHook(() => useAgentChat("/repo"));
+
+		// Wait for mount effect to complete
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const startCalls = mockInvoke.mock.calls.filter(
+			(call: unknown[]) => call[0] === "start_agent_session",
+		);
+		expect(startCalls).toHaveLength(2);
+		expect(startCalls[0][1]).toEqual(
+			expect.objectContaining({ chatSessionId: "s1" }),
+		);
+		expect(startCalls[1][1]).toEqual(
+			expect.objectContaining({ chatSessionId: "s2" }),
+		);
 	});
 });
 

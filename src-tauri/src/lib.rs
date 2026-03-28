@@ -388,8 +388,10 @@ pub fn run() {
             lsp::get_language_for_extension,
             lsp::get_supported_lsp_languages,
             // Agent SDK
+            agent_sdk::start_agent_session,
             agent_sdk::execute_agent_query,
             agent_sdk::interrupt_agent_query,
+            agent_sdk::close_agent_session,
             agent_sdk::respond_agent_permission,
             agent_sdk::scan_slash_commands,
             // Session
