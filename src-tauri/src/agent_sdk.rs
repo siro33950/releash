@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -22,6 +25,7 @@ pub struct AgentProcess {
     pub state: BridgeState,
     pub sdk_session_id: Option<String>,
     pub child: tokio::process::Child,
+    pub generation_id: u64,
 }
 
 /// Per-session agent process map: chat_session_id → AgentProcess
@@ -164,6 +168,7 @@ async fn spawn_bridge_process(
         .map_err(|e| format!("Failed to flush init command: {e}"))?;
 
     // Store process
+    let gen_id = GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
     {
         let mut map = handles.lock().await;
         map.insert(
@@ -173,6 +178,7 @@ async fn spawn_bridge_process(
                 state: BridgeState::Initializing,
                 sdk_session_id: session_id,
                 child,
+                generation_id: gen_id,
             },
         );
     }
@@ -182,6 +188,7 @@ async fn spawn_bridge_process(
     let session_store_clone = Arc::clone(session_store);
     let app_stdout = app.clone();
     let csid_stdout = chat_session_id.to_string();
+    let captured_gen_id = gen_id;
     tokio::spawn(async move {
         use tauri::Emitter;
         let reader = BufReader::new(stdout);
@@ -275,21 +282,37 @@ async fn spawn_bridge_process(
 
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
 
-                        // If streaming, emit completion with error so frontend can stop
-                        let was_streaming = {
+                        // Transition to Crashed for both Streaming and Initializing states
+                        let (was_streaming, was_initializing) = {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 let ws = proc.state == BridgeState::Streaming;
-                                if ws {
+                                let wi = proc.state == BridgeState::Initializing;
+                                if ws || wi {
                                     proc.state = BridgeState::Crashed;
                                 }
-                                ws
+                                (ws, wi)
                             } else {
-                                false
+                                (false, false)
                             }
                         };
                         if was_streaming {
                             emit_agent_query_completed(&app_stdout, 1, error_msg, &csid_stdout);
+                        }
+                        // Init error → clear stale agent_session_id to prevent infinite resume loop
+                        if was_initializing {
+                            if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
+                                if let Ok(Some(mut session)) =
+                                    session_store_clone.get_session(&data_dir, &csid_stdout)
+                                {
+                                    if session.agent_session_id.is_some() {
+                                        session.agent_session_id = None;
+                                        session.updated_at = now_timestamp();
+                                        let _ =
+                                            session_store_clone.save_session(&data_dir, &session);
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => {
@@ -298,11 +321,12 @@ async fn spawn_bridge_process(
                 }
             }
         }
-        // EOF — process exited
+        // EOF — process exited; verify generation to avoid acting on stale events
         let was_streaming = {
             let map = handles_stdout.lock().await;
-            map.get(&csid_stdout)
-                .is_some_and(|p| p.state == BridgeState::Streaming)
+            map.get(&csid_stdout).is_some_and(|p| {
+                p.generation_id == captured_gen_id && p.state == BridgeState::Streaming
+            })
         };
         if was_streaming {
             emit_agent_query_completed(
@@ -315,7 +339,9 @@ async fn spawn_bridge_process(
         {
             let mut map = handles_stdout.lock().await;
             if let Some(proc) = map.get_mut(&csid_stdout) {
-                proc.state = BridgeState::Crashed;
+                if proc.generation_id == captured_gen_id {
+                    proc.state = BridgeState::Crashed;
+                }
             }
         }
     });
@@ -389,9 +415,12 @@ pub async fn execute_agent_query(
                 &chat_session_id,
             )),
             Some(proc) if proc.state == BridgeState::Crashed => {
-                let sid = proc.sdk_session_id.clone();
                 map.remove(&chat_session_id);
-                Some(sid)
+                Some(get_resume_session_id(
+                    &app,
+                    session_store.inner(),
+                    &chat_session_id,
+                ))
             }
             _ => None,
         }
@@ -464,11 +493,15 @@ pub async fn interrupt_agent_query(
     // Timeout fallback: if turn doesn't complete, kill the process
     let handles_clone = Arc::clone(handles.inner());
     let csid = chat_session_id.clone();
+    let timeout_gen_id = {
+        let map = handles_clone.lock().await;
+        map.get(&csid).map(|p| p.generation_id)
+    };
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(INTERRUPT_TIMEOUT_SECS)).await;
         let mut map = handles_clone.lock().await;
         if let Some(proc) = map.get_mut(&csid) {
-            if proc.state == BridgeState::Streaming {
+            if timeout_gen_id == Some(proc.generation_id) && proc.state == BridgeState::Streaming {
                 log::warn!("Interrupt timeout for session {csid}, killing process");
                 let _ = proc.child.kill().await;
             }
@@ -501,12 +534,21 @@ pub async fn close_agent_session(
     // Timeout fallback: if process doesn't exit, kill it
     let handles_clone = Arc::clone(handles.inner());
     let csid = chat_session_id.clone();
+    let timeout_gen_id = {
+        let map = handles_clone.lock().await;
+        map.get(&csid).map(|p| p.generation_id)
+    };
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(CLOSE_TIMEOUT_SECS)).await;
         let mut map = handles_clone.lock().await;
         if let Some(proc) = map.get_mut(&csid) {
-            log::warn!("Close timeout for session {csid}, killing process");
-            let _ = proc.child.kill().await;
+            if timeout_gen_id == Some(proc.generation_id) {
+                log::warn!("Close timeout for session {csid}, killing process");
+                let _ = proc.child.kill().await;
+            } else {
+                // Generation mismatch: a new process has been spawned; skip kill and remove
+                return;
+            }
         }
         map.remove(&csid);
     });
