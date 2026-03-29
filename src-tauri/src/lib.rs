@@ -396,14 +396,13 @@ pub fn run() {
             agent_sdk::scan_slash_commands,
             // Session
             session::list_sessions,
-            session::get_session,
+            agent_sdk::get_session,
             session::create_session,
             session::close_session,
             session::restore_session,
             session::list_closed_sessions,
             session::add_message,
             session::update_session_state,
-            session::update_message_parts,
             session::update_session_agent_info,
             // Menu
             menu::set_menu_items_enabled,

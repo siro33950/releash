@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage, ChatSession } from "@/types/session";
 import type { AgentChatState } from "./agentChatReducer";
-import { appendToParts, INITIAL_STATE, reducer } from "./agentChatReducer";
+import { INITIAL_STATE, reducer } from "./agentChatReducer";
 
 function makeSession(overrides?: Partial<ChatSession>): ChatSession {
 	return {
@@ -221,169 +221,6 @@ describe("agentChatReducer", () => {
 		});
 	});
 
-	describe("APPEND_STREAMING", () => {
-		it("appends chunk to matching message", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [{ type: "text", content: "Hello" }],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_STREAMING",
-				messageId: "m1",
-				chunk: " world",
-			});
-			const textPart = next.activeSession?.messages[0].parts[0];
-			expect(textPart?.type).toBe("text");
-			expect((textPart as { content: string }).content).toBe("Hello world");
-		});
-
-		it("does not modify non-matching messages", () => {
-			const msg1 = makeMessage({
-				id: "m1",
-				parts: [{ type: "text", content: "first" }],
-			});
-			const msg2 = makeMessage({
-				id: "m2",
-				role: "agent",
-				parts: [{ type: "text", content: "second" }],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg1, msg2] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_STREAMING",
-				messageId: "m2",
-				chunk: "!",
-			});
-			expect(
-				(next.activeSession?.messages[0].parts[0] as { content: string })
-					.content,
-			).toBe("first");
-			expect(
-				(next.activeSession?.messages[1].parts[0] as { content: string })
-					.content,
-			).toBe("second!");
-		});
-
-		it("does nothing when no active session", () => {
-			const next = reducer(INITIAL_STATE, {
-				type: "APPEND_STREAMING",
-				messageId: "m1",
-				chunk: "data",
-			});
-			expect(next).toBe(INITIAL_STATE);
-		});
-
-		it("duplicates content when same chunk is appended twice", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const step1 = reducer(state, {
-				type: "APPEND_STREAMING",
-				messageId: "m1",
-				chunk: "hello",
-			});
-			const step2 = reducer(step1, {
-				type: "APPEND_STREAMING",
-				messageId: "m1",
-				chunk: "hello",
-			});
-			expect(
-				(step2.activeSession?.messages[0].parts[0] as { content: string })
-					.content,
-			).toBe("hellohello");
-		});
-	});
-
-	describe("APPEND_THINKING", () => {
-		it("appends chunk to thinking part of matching message", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [{ type: "thinking", content: "Let me" }],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_THINKING",
-				messageId: "m1",
-				chunk: " think",
-			});
-			const thinkingPart = next.activeSession?.messages[0].parts[0];
-			expect(thinkingPart?.type).toBe("thinking");
-			expect((thinkingPart as { content: string }).content).toBe(
-				"Let me think",
-			);
-		});
-
-		it("creates new thinking part when parts is empty", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_THINKING",
-				messageId: "m1",
-				chunk: "first chunk",
-			});
-			const thinkingPart = next.activeSession?.messages[0].parts[0];
-			expect(thinkingPart?.type).toBe("thinking");
-			expect((thinkingPart as { content: string }).content).toBe("first chunk");
-		});
-
-		it("does not modify non-matching messages", () => {
-			const msg1 = makeMessage({
-				id: "m1",
-				parts: [{ type: "text", content: "first" }],
-			});
-			const msg2 = makeMessage({
-				id: "m2",
-				role: "agent",
-				parts: [{ type: "thinking", content: "a" }],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg1, msg2] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_THINKING",
-				messageId: "m2",
-				chunk: "b",
-			});
-			expect(next.activeSession?.messages[0].parts[0].type).toBe("text");
-			const thinkingPart = next.activeSession?.messages[1].parts[0];
-			expect((thinkingPart as { content: string }).content).toBe("ab");
-		});
-
-		it("does nothing when no active session", () => {
-			const next = reducer(INITIAL_STATE, {
-				type: "APPEND_THINKING",
-				messageId: "m1",
-				chunk: "data",
-			});
-			expect(next).toBe(INITIAL_STATE);
-		});
-	});
-
 	describe("START_STREAMING / STOP_STREAMING", () => {
 		it("adds sessionId to streamingSessionIds", () => {
 			const next = reducer(INITIAL_STATE, {
@@ -478,187 +315,6 @@ describe("agentChatReducer", () => {
 			const next = reducer(INITIAL_STATE, {
 				type: "UPDATE_SESSION_STATE",
 				state: "done",
-			});
-			expect(next).toBe(INITIAL_STATE);
-		});
-	});
-
-	describe("APPEND_TOOL_USE", () => {
-		it("appends tool_use part to matching message", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_TOOL_USE",
-				messageId: "m1",
-				tool: "Read",
-				input: { file_path: "/src/index.ts" },
-				id: "toolu_001",
-			});
-			expect(next.activeSession?.messages[0].parts).toEqual([
-				{
-					type: "tool_use",
-					tool: "Read",
-					input: { file_path: "/src/index.ts" },
-					id: "toolu_001",
-				},
-			]);
-		});
-
-		it("adds tool_use part to empty parts array", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_TOOL_USE",
-				messageId: "m1",
-				tool: "Grep",
-				input: { pattern: "TODO" },
-				id: "toolu_002",
-			});
-			expect(next.activeSession?.messages[0].parts).toHaveLength(1);
-		});
-
-		it("does nothing when no active session", () => {
-			const next = reducer(INITIAL_STATE, {
-				type: "APPEND_TOOL_USE",
-				messageId: "m1",
-				tool: "Read",
-				input: {},
-				id: "toolu_001",
-			});
-			expect(next).toBe(INITIAL_STATE);
-		});
-	});
-
-	describe("APPEND_TOOL_RESULT", () => {
-		it("appends tool_result part to matching message", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [
-					{
-						type: "tool_use",
-						tool: "Read",
-						input: { file_path: "/src/index.ts" },
-						id: "toolu_001",
-					},
-				],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_TOOL_RESULT",
-				messageId: "m1",
-				content: "file contents here",
-				isError: false,
-			});
-			expect(next.activeSession?.messages[0].parts).toHaveLength(2);
-			expect(next.activeSession?.messages[0].parts[1]).toEqual({
-				type: "tool_result",
-				content: "file contents here",
-				isError: false,
-			});
-		});
-
-		it("handles error results", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_TOOL_RESULT",
-				messageId: "m1",
-				content: "File not found",
-				isError: true,
-			});
-			expect(next.activeSession?.messages[0].parts[0]).toEqual({
-				type: "tool_result",
-				content: "File not found",
-				isError: true,
-			});
-		});
-
-		it("includes toolUseId when provided", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [
-					{
-						type: "tool_use",
-						tool: "Read",
-						input: { file_path: "/src/index.ts" },
-						id: "toolu_001",
-					},
-				],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_TOOL_RESULT",
-				messageId: "m1",
-				content: "file contents here",
-				isError: false,
-				toolUseId: "toolu_001",
-			});
-			expect(next.activeSession?.messages[0].parts[1]).toEqual({
-				type: "tool_result",
-				content: "file contents here",
-				isError: false,
-				toolUseId: "toolu_001",
-			});
-		});
-
-		it("omits toolUseId when not provided", () => {
-			const msg = makeMessage({
-				id: "m1",
-				role: "agent",
-				parts: [],
-			});
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
-			};
-			const next = reducer(state, {
-				type: "APPEND_TOOL_RESULT",
-				messageId: "m1",
-				content: "result",
-				isError: false,
-			});
-			expect(next.activeSession?.messages[0].parts[0]).toEqual({
-				type: "tool_result",
-				content: "result",
-				isError: false,
-			});
-		});
-
-		it("does nothing when no active session", () => {
-			const next = reducer(INITIAL_STATE, {
-				type: "APPEND_TOOL_RESULT",
-				messageId: "m1",
-				content: "result",
-				isError: false,
 			});
 			expect(next).toBe(INITIAL_STATE);
 		});
@@ -783,87 +439,72 @@ describe("agentChatReducer", () => {
 		});
 	});
 
-	describe("appendToParts with parentToolUseId", () => {
-		it("does not merge text parts with different parentToolUseId", () => {
-			const parts = appendToParts([], "text", "main text");
-			const result = appendToParts(parts, "text", "sub text", "parent1");
-			expect(result).toHaveLength(2);
-			expect(result[0].type).toBe("text");
-			expect((result[0] as { content: string }).content).toBe("main text");
-			expect(result[1].type).toBe("text");
-			expect((result[1] as { content: string }).content).toBe("sub text");
-			expect((result[1] as { parentToolUseId?: string }).parentToolUseId).toBe(
-				"parent1",
-			);
-		});
-
-		it("merges text parts with same parentToolUseId", () => {
-			const parts = appendToParts([], "text", "chunk1", "parent1");
-			const result = appendToParts(parts, "text", " chunk2", "parent1");
-			expect(result).toHaveLength(1);
-			expect((result[0] as { content: string }).content).toBe("chunk1 chunk2");
-		});
-
-		it("does not merge when switching from sub-agent to main", () => {
-			const parts = appendToParts([], "text", "sub", "parent1");
-			const result = appendToParts(parts, "text", "main");
-			expect(result).toHaveLength(2);
-		});
-	});
-
-	describe("APPEND_TASK_STATUS", () => {
-		it("appends task_status part to matching message", () => {
+	describe("SET_STREAMING_MESSAGE", () => {
+		it("updates parts of matching message in active session", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
-				parts: [],
+				parts: [{ type: "text", content: "old" }],
 			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
+				activeSession: makeSession({ id: "s1", messages: [msg] }),
 			};
+			const newParts = [
+				{ type: "text" as const, content: "updated" },
+				{ type: "thinking" as const, content: "reasoning" },
+			];
 			const next = reducer(state, {
-				type: "APPEND_TASK_STATUS",
+				type: "SET_STREAMING_MESSAGE",
+				sessionId: "s1",
 				messageId: "m1",
-				taskToolUseId: "task1",
-				status: "started",
-				description: "Search codebase",
+				parts: newParts,
 			});
-			expect(next.activeSession?.messages[0].parts).toHaveLength(1);
-			const part = next.activeSession?.messages[0].parts[0];
-			expect(part?.type).toBe("task_status");
-			if (part?.type === "task_status") {
-				expect(part.taskToolUseId).toBe("task1");
-				expect(part.status).toBe("started");
-				expect(part.description).toBe("Search codebase");
-			}
+			expect(next.activeSession?.messages[0].parts).toEqual(newParts);
 		});
 
-		it("appends task_status part with progress status", () => {
+		it("does nothing when activeSession is null", () => {
+			const next = reducer(INITIAL_STATE, {
+				type: "SET_STREAMING_MESSAGE",
+				sessionId: "s1",
+				messageId: "m1",
+				parts: [{ type: "text", content: "hello" }],
+			});
+			expect(next).toBe(INITIAL_STATE);
+		});
+
+		it("does nothing when sessionId does not match activeSession", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
-				parts: [],
+				parts: [{ type: "text", content: "original" }],
 			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession({ messages: [msg] }),
+				activeSession: makeSession({ id: "s1", messages: [msg] }),
 			};
 			const next = reducer(state, {
-				type: "APPEND_TASK_STATUS",
+				type: "SET_STREAMING_MESSAGE",
+				sessionId: "s2",
 				messageId: "m1",
-				taskToolUseId: "task1",
-				status: "progress",
-				description: "Processing files",
+				parts: [{ type: "text", content: "should not apply" }],
 			});
-			expect(next.activeSession?.messages[0].parts).toHaveLength(1);
-			const part = next.activeSession?.messages[0].parts[0];
-			expect(part?.type).toBe("task_status");
-			if (part?.type === "task_status") {
-				expect(part.taskToolUseId).toBe("task1");
-				expect(part.status).toBe("progress");
-				expect(part.description).toBe("Processing files");
-			}
+			expect(next).toBe(state);
+		});
+
+		it("does nothing when messageId is not found", () => {
+			const msg = makeMessage({ id: "m1", role: "agent" });
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				activeSession: makeSession({ id: "s1", messages: [msg] }),
+			};
+			const next = reducer(state, {
+				type: "SET_STREAMING_MESSAGE",
+				sessionId: "s1",
+				messageId: "nonexistent",
+				parts: [{ type: "text", content: "hello" }],
+			});
+			expect(next).toBe(state);
 		});
 	});
 });

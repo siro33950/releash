@@ -154,6 +154,14 @@ pub struct ChatSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetSessionResponse {
+    #[serde(flatten)]
+    pub session: ChatSession,
+    pub is_streaming: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub id: String,
     pub worktree_path: String,
@@ -193,17 +201,94 @@ impl ChatSession {
     }
 }
 
-fn resolve_data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn resolve_data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {e}"))
 }
 
-fn now_timestamp() -> f64 {
+pub(crate) fn now_timestamp() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+pub fn parts_to_legacy(
+    parts: &[MessagePart],
+) -> (String, Option<String>, Option<Vec<ActivityEntry>>) {
+    let mut content = String::new();
+    let mut thinking = String::new();
+    let mut activities: Vec<ActivityEntry> = Vec::new();
+    for part in parts {
+        match part {
+            MessagePart::Text { content: c, .. } => content.push_str(c),
+            MessagePart::Error { content: c, .. } => content.push_str(c),
+            MessagePart::Thinking { content: c, .. } => thinking.push_str(c),
+            MessagePart::ToolUse {
+                tool, input, id, ..
+            } => {
+                activities.push(ActivityEntry::ToolUse {
+                    tool: tool.clone(),
+                    input: input.clone(),
+                    id: id.clone(),
+                });
+            }
+            MessagePart::ToolResult {
+                content: c,
+                is_error,
+                tool_use_id,
+                ..
+            } => {
+                activities.push(ActivityEntry::ToolResult {
+                    content: c.clone(),
+                    is_error: *is_error,
+                    tool_use_id: tool_use_id.clone(),
+                });
+            }
+            MessagePart::Permission {
+                request,
+                status,
+                answers,
+                ..
+            } => {
+                if status != "pending" {
+                    let tool_name = request
+                        .get("tool_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let summary = answers
+                        .as_ref()
+                        .and_then(|a| a.as_object())
+                        .map(|obj| {
+                            obj.values()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_else(|| status.clone());
+                    activities.push(ActivityEntry::PermissionResult {
+                        tool_name,
+                        status: status.clone(),
+                        summary,
+                    });
+                }
+            }
+            MessagePart::TaskStatus { .. } => {}
+        }
+    }
+    let thinking = if thinking.is_empty() {
+        None
+    } else {
+        Some(thinking)
+    };
+    let activities = if activities.is_empty() {
+        None
+    } else {
+        Some(activities)
+    };
+    (content, thinking, activities)
 }
 
 #[tauri::command]
@@ -214,16 +299,6 @@ pub fn list_sessions(
 ) -> Result<Vec<SessionSummary>, String> {
     let data_dir = resolve_data_dir(&app)?;
     state.list_sessions(&data_dir, &worktree_path)
-}
-
-#[tauri::command]
-pub fn get_session(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
-) -> Result<Option<ChatSession>, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    state.get_session(&data_dir, &session_id)
 }
 
 #[tauri::command]
@@ -332,104 +407,6 @@ pub fn list_closed_sessions(
 ) -> Result<Vec<SessionSummary>, String> {
     let data_dir = resolve_data_dir(&app)?;
     state.list_closed_sessions(&data_dir, &worktree_path)
-}
-
-#[tauri::command]
-pub fn update_message_parts(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
-    message_id: String,
-    parts: Vec<MessagePart>,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    let mut session = state
-        .get_session(&data_dir, &session_id)?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    let msg = session
-        .messages
-        .iter_mut()
-        .find(|m| m.id == message_id)
-        .ok_or_else(|| format!("Message not found: {message_id}"))?;
-
-    // Generate legacy fields from parts for backward compatibility
-    let mut content = String::new();
-    let mut thinking = String::new();
-    let mut activities: Vec<ActivityEntry> = Vec::new();
-    for part in &parts {
-        match part {
-            MessagePart::Text { content: c, .. } => content.push_str(c),
-            MessagePart::Error { content: c, .. } => content.push_str(c),
-            MessagePart::Thinking { content: c, .. } => thinking.push_str(c),
-            MessagePart::ToolUse {
-                tool, input, id, ..
-            } => {
-                activities.push(ActivityEntry::ToolUse {
-                    tool: tool.clone(),
-                    input: input.clone(),
-                    id: id.clone(),
-                });
-            }
-            MessagePart::ToolResult {
-                content: c,
-                is_error,
-                tool_use_id,
-                ..
-            } => {
-                activities.push(ActivityEntry::ToolResult {
-                    content: c.clone(),
-                    is_error: *is_error,
-                    tool_use_id: tool_use_id.clone(),
-                });
-            }
-            MessagePart::Permission {
-                request,
-                status,
-                answers,
-                ..
-            } => {
-                if status != "pending" {
-                    let tool_name = request
-                        .get("tool_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let summary = answers
-                        .as_ref()
-                        .and_then(|a| a.as_object())
-                        .map(|obj| {
-                            obj.values()
-                                .filter_map(|v| v.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_else(|| status.clone());
-                    activities.push(ActivityEntry::PermissionResult {
-                        tool_name,
-                        status: status.clone(),
-                        summary,
-                    });
-                }
-            }
-            MessagePart::TaskStatus { .. } => {}
-        }
-    }
-
-    msg.content = content;
-    msg.thinking = if thinking.is_empty() {
-        None
-    } else {
-        Some(thinking)
-    };
-    msg.activities = if activities.is_empty() {
-        None
-    } else {
-        Some(activities)
-    };
-    msg.parts = Some(parts);
-    session.updated_at = now_timestamp();
-    state.save_session(&data_dir, &session)?;
-    Ok(())
 }
 
 #[tauri::command]

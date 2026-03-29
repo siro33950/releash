@@ -83,6 +83,7 @@ describe("useAgentChat", () => {
 			expect.objectContaining({
 				chatSessionId: "s1",
 				permissionMode: "acceptEdits",
+				streamingMessageId: "msg-2",
 			}),
 		);
 	});
@@ -218,9 +219,10 @@ describe("useAgentChat", () => {
 			createdAt: 1000,
 			updatedAt: 1000,
 		};
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
-			mockSession as never,
-		);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: mockSession,
+			isStreaming: false,
+		} as never);
 
 		await act(async () => {
 			await result.current.selectSession("s2");
@@ -230,55 +232,20 @@ describe("useAgentChat", () => {
 		expect(result.current.activeSession).toEqual(mockSession);
 	});
 
-	it("selectSession merges streaming buffer into session messages", async () => {
+	it("selectSession restores streaming state from backend response", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
-		// Send a message: creates human msg (msg-1) + agent msg (msg-2)
+		// Wait for mount effect
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
-		// Agent message id is "msg-2" (the streaming message)
-		const agentMsgId = "msg-2";
-
-		// Simulate streaming data arriving via SDK messages
-		const sdkCb = listenCallbacks.get("agent-sdk-message");
-		expect(sdkCb).toBeDefined();
-
-		act(() => {
-			sdkCb?.({
-				payload: {
-					type: "stream_event",
-					chat_session_id: "s1",
-					event: {
-						type: "content_block_delta",
-						delta: { type: "text_delta", text: "streamed content" },
-					},
-				},
-			});
-		});
-
-		// Switch to s2
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+		const mockSession = {
 			id: "s2",
-			worktreePath: "/repo",
-			messages: [],
-			state: "idle",
-			createdAt: 2000,
-			updatedAt: 2000,
-		} as never);
-
-		await act(async () => {
-			await result.current.selectSession("s2");
-		});
-
-		// Switch back to s1 - getSession returns empty parts (simulating Rust store)
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
-			id: "s1",
 			worktreePath: "/repo",
 			messages: [
 				{
@@ -288,30 +255,38 @@ describe("useAgentChat", () => {
 					timestamp: 1001,
 				},
 				{
-					id: agentMsgId,
+					id: "msg-2",
 					role: "agent",
-					parts: [],
+					parts: [{ type: "text", content: "streamed content" }],
 					timestamp: 1002,
 				},
 			],
 			state: "active",
 			createdAt: 1000,
 			updatedAt: 1000,
+		};
+
+		// getSession returns merged data from Rust backend (including streaming parts)
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: mockSession,
+			isStreaming: true,
 		} as never);
 
 		await act(async () => {
-			await result.current.selectSession("s1");
+			await result.current.selectSession("s2");
 		});
 
-		// Buffer parts should be merged into the agent message
+		expect(sessionStore.getSession).toHaveBeenCalledWith("s2");
 		const activeSession = result.current.activeSession;
-		expect(activeSession?.id).toBe("s1");
-		const agentMsg = activeSession?.messages.find((m) => m.id === agentMsgId);
+		expect(activeSession?.id).toBe("s2");
+		const agentMsg = activeSession?.messages.find((m) => m.id === "msg-2");
 		const textParts = agentMsg?.parts.filter((p) => p.type === "text");
 		expect(textParts).toHaveLength(1);
 		expect((textParts?.[0] as { content: string }).content).toBe(
 			"streamed content",
 		);
+		// isStreaming should be restored
+		expect(result.current.isStreaming).toBe(true);
 	});
 
 	it("setPermissionMode changes mode used in next sendMessage", async () => {
@@ -546,7 +521,7 @@ describe("useAgentChat", () => {
 			await result.current.refreshSessions();
 		});
 
-		// Mock getSession for the adjacent session
+		// Mock getSession for the adjacent session (returns GetSessionResponse)
 		const s2Full = {
 			id: "s2",
 			worktreePath: "/repo",
@@ -555,7 +530,10 @@ describe("useAgentChat", () => {
 			createdAt: 900,
 			updatedAt: 900,
 		};
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(s2Full as never);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: s2Full,
+			isStreaming: false,
+		} as never);
 
 		await act(async () => {
 			await result.current.closeSession("s1");
@@ -618,9 +596,10 @@ describe("useAgentChat", () => {
 			createdAt: 500,
 			updatedAt: 500,
 		};
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
-			restoredSession as never,
-		);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: restoredSession,
+			isStreaming: false,
+		} as never);
 
 		await act(async () => {
 			await result.current.restoreSession("s-closed");
@@ -650,9 +629,10 @@ describe("useAgentChat", () => {
 			createdAt: 500,
 			updatedAt: 500,
 		};
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce(
-			restoredSession as never,
-		);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: restoredSession,
+			isStreaming: false,
+		} as never);
 		mockInvoke.mockClear();
 
 		await act(async () => {
@@ -721,12 +701,15 @@ describe("useAgentChat", () => {
 
 		// getSession for the first session (selectSession(sessions[0].id))
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
-			id: "s1",
-			worktreePath: "/repo",
-			messages: [],
-			state: "active",
-			createdAt: 1000,
-			updatedAt: 1000,
+			session: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+			isStreaming: false,
 		} as never);
 
 		mockInvoke.mockClear();
@@ -829,5 +812,246 @@ describe("useSessionStore", () => {
 		expect(mod.closeSession).toBeDefined();
 		expect(mod.restoreSession).toBeDefined();
 		expect(mod.listClosedSessions).toBeDefined();
+	});
+});
+
+describe("Worktree switch (unmount/remount) streaming persistence via Rust backend", () => {
+	beforeEach(async () => {
+		mockInvoke.mockClear();
+		addMessageCounter = 0;
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.addMessage).mockImplementation(
+			(_sid, role, content) => {
+				addMessageCounter++;
+				return Promise.resolve({
+					id: `msg-${addMessageCounter}`,
+					role,
+					parts: [{ type: "text", content }],
+					timestamp: 1000 + addMessageCounter,
+				});
+			},
+		);
+	});
+
+	it("getSession with isStreaming restores streaming state on remount", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		// First mount: create session and send a message
+		const { result, unmount } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await result.current.sendMessage("hello");
+		});
+
+		// Unmount (simulates Worktree switch)
+		unmount();
+
+		// Remount (simulates returning to original Worktree)
+		// Rust backend returns session with streaming parts already merged
+		vi.mocked(sessionStore.listSessions).mockResolvedValueOnce([
+			{
+				id: "s1",
+				worktreePath: "/repo",
+				updatedAt: 1000,
+				state: "active",
+				firstMessage: "hello",
+				messageCount: 2,
+				createdAt: 1000,
+			},
+		] as never);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "msg-1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1001,
+					},
+					{
+						id: "msg-2",
+						role: "agent",
+						parts: [{ type: "text", content: "streaming response" }],
+						timestamp: 1002,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+			isStreaming: true,
+		} as never);
+
+		const { result: result2 } = renderHook(() => useAgentChat("/repo"));
+
+		// Wait for initSessions to complete
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		// The agent message should have parts from Rust backend
+		const activeSession = result2.current.activeSession;
+		expect(activeSession?.id).toBe("s1");
+		const agentMsg = activeSession?.messages.find((m) => m.id === "msg-2");
+		const agentTextParts = agentMsg?.parts.filter((p) => p.type === "text");
+		expect(agentTextParts).toHaveLength(1);
+		expect((agentTextParts?.[0] as { content: string }).content).toBe(
+			"streaming response",
+		);
+		// Streaming state should be restored from backend
+		expect(result2.current.isStreaming).toBe(true);
+	});
+
+	it("completed response persisted by Rust survives unmount", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result, unmount } = renderHook(() => useAgentChat("/repo"));
+
+		// Send a message
+		await act(async () => {
+			await result.current.sendMessage("hello");
+		});
+
+		// Unmount
+		unmount();
+
+		// After completion + unmount, getSession returns Rust-persisted data
+		vi.mocked(sessionStore.listSessions).mockResolvedValueOnce([
+			{
+				id: "s1",
+				worktreePath: "/repo",
+				updatedAt: 1000,
+				state: "idle",
+				firstMessage: "hello",
+				messageCount: 2,
+				createdAt: 1000,
+			},
+		] as never);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "msg-1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1001,
+					},
+					{
+						id: "msg-2",
+						role: "agent",
+						parts: [{ type: "text", content: "final response" }],
+						timestamp: 1002,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+			isStreaming: false,
+		} as never);
+
+		const { result: result2 } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const activeSession = result2.current.activeSession;
+		expect(activeSession?.id).toBe("s1");
+		const agentMsg = activeSession?.messages.find((m) => m.id === "msg-2");
+		const textParts = agentMsg?.parts.filter((p) => p.type === "text");
+		expect(textParts).toHaveLength(1);
+		expect((textParts?.[0] as { content: string }).content).toBe(
+			"final response",
+		);
+		expect(result2.current.isStreaming).toBe(false);
+	});
+
+	it("shows completed state when switching back from another session after streaming ends", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Send a message to start streaming
+		await act(async () => {
+			await result.current.sendMessage("hello");
+		});
+
+		// Simulate streaming started
+		expect(result.current.isStreaming).toBe(true);
+
+		// Switch to another session: getSession for session s2
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: {
+				id: "s2",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "msg-3",
+						role: "human",
+						parts: [{ type: "text", content: "other" }],
+						timestamp: 2000,
+					},
+				],
+				state: "idle",
+				createdAt: 2000,
+				updatedAt: 2000,
+			},
+			isStreaming: false,
+		} as never);
+
+		await act(async () => {
+			await result.current.selectSession("s2");
+		});
+
+		// Switch back to session s1 which has completed streaming
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "msg-1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1001,
+					},
+					{
+						id: "msg-2",
+						role: "agent",
+						parts: [{ type: "text", content: "completed response" }],
+						timestamp: 1002,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+			isStreaming: false,
+		} as never);
+
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+
+		expect(result.current.activeSession?.id).toBe("s1");
+		expect(result.current.isStreaming).toBe(false);
+		const agentMsg = result.current.activeSession?.messages.find(
+			(m) => m.id === "msg-2",
+		);
+		expect(agentMsg).toBeDefined();
+		expect((agentMsg?.parts[0] as { content: string }).content).toBe(
+			"completed response",
+		);
 	});
 });
