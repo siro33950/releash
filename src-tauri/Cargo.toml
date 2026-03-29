@@ -47,7 +47,7 @@ rand = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "io-util", "process"] }
 tokio-tungstenite = "0.28"
 hmac = "0.12"
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
