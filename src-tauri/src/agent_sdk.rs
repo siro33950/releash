@@ -136,7 +136,6 @@ fn emit_agent_query_completed(
     );
 }
 
-const INTERRUPT_TIMEOUT_SECS: u64 = 10;
 const CLOSE_TIMEOUT_SECS: u64 = 5;
 
 /// Append text/thinking chunk to streaming parts, merging consecutive same-type parts.
@@ -920,24 +919,6 @@ pub async fn interrupt_agent_query(
             ));
         }
     }
-
-    // Timeout fallback: if turn doesn't complete, kill the process
-    let handles_clone = Arc::clone(handles.inner());
-    let csid = chat_session_id.clone();
-    let timeout_gen_id = {
-        let map = handles_clone.lock().await;
-        map.get(&csid).map(|p| p.generation_id)
-    };
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(INTERRUPT_TIMEOUT_SECS)).await;
-        let mut map = handles_clone.lock().await;
-        if let Some(proc) = map.get_mut(&csid) {
-            if timeout_gen_id == Some(proc.generation_id) && proc.state == BridgeState::Streaming {
-                log::warn!("Interrupt timeout for session {csid}, killing process");
-                let _ = proc.child.kill().await;
-            }
-        }
-    });
 
     Ok(())
 }

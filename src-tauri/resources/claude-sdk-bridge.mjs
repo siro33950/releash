@@ -4,6 +4,8 @@ import crypto from "node:crypto";
 const pendingPermissions = new Map();
 const messageQueue = [];
 let currentQuery = null;
+let currentAbortController = null;
+let currentSessionId = null;
 let messageResolve = null;
 let closed = false;
 let sessionReady = false;
@@ -86,8 +88,8 @@ function handleCommand(cmd) {
 			break;
 		}
 		case "interrupt":
-			if (currentQuery) {
-				currentQuery.interrupt();
+			if (currentAbortController) {
+				currentAbortController.abort();
 			}
 			break;
 		case "permission_response": {
@@ -160,45 +162,84 @@ async function handleInit(cmd) {
 		options.resume = cmd.sessionId;
 	}
 
-	const generator = promptGenerator();
-	currentQuery = query({ prompt: generator, options });
+	while (!closed) {
+		stderrChunks = [];
+		currentAbortController = new AbortController();
+		options.abortController = currentAbortController;
 
-	currentQuery
-		.supportedCommands()
-		.then((commands) => {
-			emit({ type: "supported_commands", commands });
-		})
-		.catch((e) => {
-			process.stderr.write(
-				`bridge: supportedCommands failed: ${e instanceof Error ? e.message : String(e)}\n`,
-			);
-		});
+		if (currentSessionId) {
+			options.resume = currentSessionId;
+		}
 
-	try {
-		for await (const message of currentQuery) {
-			if (!sessionReady && message.session_id) {
-				emit({ type: "session_ready", session_id: message.session_id });
-				sessionReady = true;
+		messageResolve = null;
+		const generator = promptGenerator();
+		currentQuery = query({ prompt: generator, options });
+
+		if (!sessionReady) {
+			currentQuery
+				.supportedCommands()
+				.then((commands) => {
+					emit({ type: "supported_commands", commands });
+				})
+				.catch((e) => {
+					process.stderr.write(
+						`bridge: supportedCommands failed: ${e instanceof Error ? e.message : String(e)}\n`,
+					);
+				});
+		}
+
+		let gotResult = false;
+		try {
+			for await (const message of currentQuery) {
+				if (message.session_id && message.session_id !== currentSessionId) {
+					currentSessionId = message.session_id;
+					emit({ type: "session_ready", session_id: message.session_id });
+					sessionReady = true;
+				}
+				emit(message);
+
+				if (message.type === "result") {
+					gotResult = true;
+					const hasErrors =
+						message.errors && Array.isArray(message.errors) && message.errors.length > 0;
+					emit({
+						type: "turn_complete",
+						session_id: message.session_id || null,
+						exit_code: hasErrors ? 1 : 0,
+					});
+				}
 			}
-			emit(message);
-
-			if (message.type === "result") {
-				const hasErrors =
-					message.errors && Array.isArray(message.errors) && message.errors.length > 0;
+			// abort が throw せず正常完了した場合もループを継続
+			if (currentAbortController.signal.aborted) {
+				pendingPermissions.clear();
+				if (!gotResult) {
+					emit({
+						type: "turn_complete",
+						session_id: currentSessionId || null,
+						exit_code: 0,
+					});
+				}
+				continue;
+			}
+			break;
+		} catch (e) {
+			if (currentAbortController?.signal?.aborted) {
+				pendingPermissions.clear();
 				emit({
 					type: "turn_complete",
-					session_id: message.session_id || null,
-					exit_code: hasErrors ? 1 : 0,
+					session_id: currentSessionId || null,
+					exit_code: 0,
 				});
+				continue;
 			}
+			const stderrText = stderrChunks.join("").trim();
+			emit({
+				type: "error",
+				message: e instanceof Error ? e.message : String(e),
+				stderr: stderrText || undefined,
+			});
+			break;
 		}
-	} catch (e) {
-		const stderrText = stderrChunks.join("").trim();
-		emit({
-			type: "error",
-			message: e instanceof Error ? e.message : String(e),
-			stderr: stderrText || undefined,
-		});
 	}
 
 	process.exit(0);
