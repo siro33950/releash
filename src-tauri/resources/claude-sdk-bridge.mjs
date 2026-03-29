@@ -191,6 +191,11 @@ async function handleInit(cmd) {
 		let gotResult = false;
 		try {
 			for await (const message of currentQuery) {
+				// New turn started after a previous result — reset per-turn flag
+				if (gotResult && message.type !== "result") {
+					gotResult = false;
+				}
+
 				if (message.session_id && message.session_id !== currentSessionId) {
 					currentSessionId = message.session_id;
 					emit({ type: "session_ready", session_id: message.session_id });
