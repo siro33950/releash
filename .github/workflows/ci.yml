@@ -30,7 +30,7 @@ jobs:
           name: ts-coverage
           path: coverage/coverage-final.json
           retention-days: 7
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage/coverage-final.json
@@ -407,7 +407,7 @@ jobs:
           name: rust-coverage
           path: src-tauri/rust-codecov.json
           retention-days: 7
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: src-tauri/rust-codecov.json

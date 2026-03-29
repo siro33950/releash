@@ -56,7 +56,7 @@ jobs:
           workspaces: src-tauri
           key: macos-universal
 
-      - uses: 1password/load-secrets-action@v3
+      - uses: 1password/load-secrets-action@v4
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           APPLE_CERTIFICATE: op://releash/apple-signing/certificate
