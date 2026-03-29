@@ -225,11 +225,13 @@ async function handleInit(cmd) {
 		} catch (e) {
 			if (currentAbortController?.signal?.aborted) {
 				pendingPermissions.clear();
-				emit({
-					type: "turn_complete",
-					session_id: currentSessionId || null,
-					exit_code: 0,
-				});
+				if (!gotResult) {
+					emit({
+						type: "turn_complete",
+						session_id: currentSessionId || null,
+						exit_code: 0,
+					});
+				}
 				continue;
 			}
 			const stderrText = stderrChunks.join("").trim();
