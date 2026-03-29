@@ -84,13 +84,43 @@ export async function listSessions(
 	return invoke<SessionSummary[]>("list_sessions", { worktreePath });
 }
 
+export interface GetSessionResponse {
+	session: ChatSession;
+	isStreaming: boolean;
+}
+
+interface RawGetSessionResponse {
+	// Flattened from Rust GetSessionResponse (#[serde(flatten)])
+	id: string;
+	worktreePath: string;
+	messages: (LegacyChatMessage & { parts?: MessagePart[] })[];
+	state: SessionState;
+	createdAt: number;
+	updatedAt: number;
+	agentSessionId?: string | null;
+	isStreaming: boolean;
+}
+
 export async function getSession(
 	sessionId: string,
-): Promise<ChatSession | null> {
-	const raw = await invoke<LegacyChatSession | null>("get_session", {
+): Promise<GetSessionResponse | null> {
+	const raw = await invoke<RawGetSessionResponse | null>("get_session", {
 		sessionId,
 	});
-	return raw ? convertLegacySession(raw) : null;
+	if (!raw) return null;
+	const session = convertLegacySession({
+		id: raw.id,
+		worktreePath: raw.worktreePath,
+		messages: raw.messages,
+		state: raw.state,
+		createdAt: raw.createdAt,
+		updatedAt: raw.updatedAt,
+		agentSessionId: raw.agentSessionId,
+	});
+	return {
+		session,
+		isStreaming: raw.isStreaming,
+	};
 }
 
 export async function createSession(
@@ -134,18 +164,6 @@ export async function updateSessionState(
 	newState: SessionState,
 ): Promise<void> {
 	return invoke("update_session_state", { sessionId, newState });
-}
-
-export async function updateMessageParts(
-	sessionId: string,
-	messageId: string,
-	parts: MessagePart[],
-): Promise<void> {
-	return invoke("update_message_parts", {
-		sessionId,
-		messageId,
-		parts,
-	});
 }
 
 export async function updateSessionAgentInfo(

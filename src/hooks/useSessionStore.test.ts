@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LegacyChatMessage } from "@/types/session";
 import { legacyToParts } from "./useSessionStore";
 
@@ -116,3 +116,7 @@ describe("legacyToParts", () => {
 		expect(legacyToParts(msg)).toEqual([]);
 	});
 });
+
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: vi.fn().mockResolvedValue(undefined),
+}));

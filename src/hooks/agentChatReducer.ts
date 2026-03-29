@@ -26,46 +26,10 @@ export type AgentChatAction =
 	| { type: "SET_CLOSED_SESSIONS"; sessions: SessionSummary[] }
 	| { type: "SET_ACTIVE_SESSION"; session: ChatSession | null }
 	| { type: "ADD_MESSAGE"; message: ChatMessage }
-	| {
-			type: "APPEND_STREAMING";
-			messageId: string;
-			chunk: string;
-			parentToolUseId?: string;
-	  }
-	| {
-			type: "APPEND_THINKING";
-			messageId: string;
-			chunk: string;
-			parentToolUseId?: string;
-	  }
 	| { type: "START_STREAMING"; sessionId: string }
 	| { type: "STOP_STREAMING"; sessionId: string }
 	| { type: "SET_ERROR"; error: string | null }
 	| { type: "UPDATE_SESSION_STATE"; state: SessionState }
-	| {
-			type: "APPEND_TOOL_USE";
-			messageId: string;
-			tool: string;
-			input: Record<string, unknown>;
-			id: string;
-			parentToolUseId?: string;
-	  }
-	| {
-			type: "APPEND_TOOL_RESULT";
-			messageId: string;
-			content: string;
-			isError: boolean;
-			toolUseId?: string;
-			parentToolUseId?: string;
-	  }
-	| {
-			type: "APPEND_TASK_STATUS";
-			messageId: string;
-			taskToolUseId: string;
-			status: "started" | "completed" | "failed" | "stopped" | "progress";
-			description?: string;
-			summary?: string;
-	  }
 	| { type: "SET_PERMISSION_MODE"; mode: PermissionMode }
 	| { type: "SET_USER_PERMISSION_MODE"; mode: PermissionMode }
 	| { type: "RESTORE_USER_PERMISSION_MODE" }
@@ -81,16 +45,10 @@ export type AgentChatAction =
 			state: "done" | "error";
 	  }
 	| {
-			type: "ADD_PERMISSION_PART";
+			type: "SET_STREAMING_MESSAGE";
+			sessionId: string;
 			messageId: string;
-			request: PermissionRequest;
-	  }
-	| {
-			type: "RESOLVE_PERMISSION_PART";
-			messageId: string;
-			requestId: string;
-			status: "allowed" | "denied";
-			answers?: Record<string, string>;
+			parts: MessagePart[];
 	  };
 
 function updateMessageInSession(
@@ -110,27 +68,6 @@ function updateMessageInSession(
 	const messages = msgs.slice();
 	messages[idx] = updater(msgs[idx]);
 	return { ...state, activeSession: { ...state.activeSession, messages } };
-}
-
-export function appendToParts(
-	parts: MessagePart[],
-	partType: "thinking" | "text",
-	chunk: string,
-	parentToolUseId?: string,
-): MessagePart[] {
-	const last = parts[parts.length - 1];
-	if (last && last.type === partType) {
-		const lastPid =
-			"parentToolUseId" in last ? last.parentToolUseId : undefined;
-		if (lastPid === parentToolUseId) {
-			const updated = { ...last, content: last.content + chunk };
-			return [...parts.slice(0, -1), updated];
-		}
-	}
-	return [
-		...parts,
-		{ type: partType, content: chunk, parentToolUseId } as MessagePart,
-	];
 }
 
 export function reducer(
@@ -164,26 +101,6 @@ export function reducer(
 				},
 			};
 		}
-		case "APPEND_STREAMING":
-			return updateMessageInSession(state, action.messageId, (m) => ({
-				...m,
-				parts: appendToParts(
-					m.parts,
-					"text",
-					action.chunk,
-					action.parentToolUseId,
-				),
-			}));
-		case "APPEND_THINKING":
-			return updateMessageInSession(state, action.messageId, (m) => ({
-				...m,
-				parts: appendToParts(
-					m.parts,
-					"thinking",
-					action.chunk,
-					action.parentToolUseId,
-				),
-			}));
 		case "START_STREAMING": {
 			const { [action.sessionId]: _, ...restFinal } = state.sessionFinalStates;
 			return {
@@ -212,69 +129,6 @@ export function reducer(
 				activeSession: { ...state.activeSession, state: action.state },
 			};
 		}
-		case "APPEND_TOOL_USE": {
-			const part: MessagePart = {
-				type: "tool_use",
-				tool: action.tool,
-				input: action.input,
-				id: action.id,
-				...(action.parentToolUseId && {
-					parentToolUseId: action.parentToolUseId,
-				}),
-			};
-			return updateMessageInSession(state, action.messageId, (m) => ({
-				...m,
-				parts: [...m.parts, part],
-			}));
-		}
-		case "APPEND_TOOL_RESULT": {
-			const part: MessagePart = {
-				type: "tool_result",
-				content: action.content,
-				isError: action.isError,
-				...(action.toolUseId && { toolUseId: action.toolUseId }),
-				...(action.parentToolUseId && {
-					parentToolUseId: action.parentToolUseId,
-				}),
-			};
-			return updateMessageInSession(state, action.messageId, (m) => ({
-				...m,
-				parts: [...m.parts, part],
-			}));
-		}
-		case "APPEND_TASK_STATUS": {
-			const part: MessagePart = {
-				type: "task_status",
-				taskToolUseId: action.taskToolUseId,
-				status: action.status,
-				...(action.description && { description: action.description }),
-				...(action.summary && { summary: action.summary }),
-			};
-			return updateMessageInSession(state, action.messageId, (m) => ({
-				...m,
-				parts: [...m.parts, part],
-			}));
-		}
-		case "ADD_PERMISSION_PART": {
-			const part: MessagePart = {
-				type: "permission",
-				request: action.request,
-				status: "pending",
-			};
-			return updateMessageInSession(state, action.messageId, (m) => ({
-				...m,
-				parts: [...m.parts, part],
-			}));
-		}
-		case "RESOLVE_PERMISSION_PART":
-			return updateMessageInSession(state, action.messageId, (m) => ({
-				...m,
-				parts: m.parts.map((p) =>
-					p.type === "permission" && p.request.request_id === action.requestId
-						? { ...p, status: action.status, answers: action.answers }
-						: p,
-				),
-			}));
 		case "SET_PERMISSION_MODE":
 			return { ...state, permissionMode: action.mode };
 		case "SET_USER_PERMISSION_MODE":
@@ -313,6 +167,14 @@ export function reducer(
 					[action.sessionId]: action.state,
 				},
 			};
+		case "SET_STREAMING_MESSAGE": {
+			if (!state.activeSession || state.activeSession.id !== action.sessionId)
+				return state;
+			return updateMessageInSession(state, action.messageId, (m) => ({
+				...m,
+				parts: action.parts,
+			}));
+		}
 	}
 }
 

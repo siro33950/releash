@@ -32,102 +32,20 @@ vi.mock("./useSessionStore", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./useSessionStore")>();
 	return {
 		...actual,
-		updateMessageParts: vi.fn().mockResolvedValue(undefined),
 		updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
 		updateSessionState: vi.fn().mockResolvedValue(undefined),
 	};
 });
 
-const {
-	useAgentSdkListeners,
-	extractStreamingDelta,
-	extractToolResultContent,
-} = await import("./useAgentSdkListeners");
-
-import type { StreamingBuffer } from "./useAgentSdkListeners";
+const { useAgentSdkListeners } = await import("./useAgentSdkListeners");
 
 function makeRefs() {
 	return {
 		dispatch: vi.fn(),
-		streamingMessageIdsRef: { current: new Map<string, string>() },
 		activeSessionRef: { current: null },
-		streamingBuffersRef: {
-			current: new Map<string, StreamingBuffer>(),
-		},
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
 	};
 }
-
-describe("extractStreamingDelta", () => {
-	it("extracts text from stream_event with text_delta", () => {
-		const msg = {
-			type: "stream_event" as const,
-			event: {
-				type: "content_block_delta" as const,
-				delta: { type: "text_delta", text: "Hello" },
-			},
-		};
-		expect(extractStreamingDelta(msg)).toEqual({ type: "text", text: "Hello" });
-	});
-
-	it("extracts thinking from stream_event with thinking_delta", () => {
-		const msg = {
-			type: "stream_event" as const,
-			event: {
-				type: "content_block_delta" as const,
-				delta: { type: "thinking_delta", thinking: "thinking..." },
-			},
-		};
-		expect(extractStreamingDelta(msg)).toEqual({
-			type: "thinking",
-			thinking: "thinking...",
-		});
-	});
-
-	it("returns null for non-stream_event messages", () => {
-		expect(extractStreamingDelta({ type: "assistant" } as never)).toBeNull();
-		expect(extractStreamingDelta({ type: "result" } as never)).toBeNull();
-		expect(extractStreamingDelta({ type: "user" } as never)).toBeNull();
-	});
-
-	it("returns null for stream_event without content_block_delta", () => {
-		const msg = {
-			type: "stream_event" as const,
-			event: { type: "message_start" },
-		};
-		expect(extractStreamingDelta(msg)).toBeNull();
-	});
-});
-
-describe("extractToolResultContent", () => {
-	it("returns string content directly", () => {
-		expect(extractToolResultContent("hello")).toBe("hello");
-	});
-
-	it("extracts text from array of content blocks", () => {
-		const content = [
-			{ type: "text", text: "line1" },
-			{ type: "text", text: "line2" },
-		];
-		expect(extractToolResultContent(content)).toBe("line1\nline2");
-	});
-
-	it("returns empty string for undefined", () => {
-		expect(extractToolResultContent(undefined)).toBe("");
-	});
-
-	it("returns empty string for empty array", () => {
-		expect(extractToolResultContent([])).toBe("");
-	});
-
-	it("filters non-text blocks", () => {
-		const content = [
-			{ type: "image", text: undefined },
-			{ type: "text", text: "only this" },
-		];
-		expect(extractToolResultContent(content)).toBe("only this");
-	});
-});
 
 describe("useAgentSdkListeners cancelled flag", () => {
 	it("calls unlisten immediately if cleanup happens before listen resolves", async () => {
@@ -181,7 +99,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		}
 	});
 
-	it("registers listeners for agent-sdk-message and agent-query-completed", () => {
+	it("registers listeners for agent-sdk-message, agent-query-completed, streaming-message-updated, agent-streaming-started", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
@@ -190,55 +108,77 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		const eventNames = listenResolvers.map((r) => r.eventName);
 		expect(eventNames).toContain("agent-sdk-message");
 		expect(eventNames).toContain("agent-query-completed");
+		expect(eventNames).toContain("agent-streaming-updated");
+		expect(eventNames).toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-state-changed");
 	});
 });
 
-describe("useAgentSdkListeners callback behavior", () => {
-	it("dispatches APPEND_STREAMING when stream_event with text_delta is received", () => {
+describe("agent-streaming-updated event", () => {
+	it("dispatches SET_STREAMING_MESSAGE when agent-streaming-updated is received", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
-		// Resolve all listeners so they're active
-		for (const { resolve } of listenResolvers) {
-			resolve(vi.fn());
-		}
-
-		const cb = listenCallbacks.get("agent-sdk-message");
+		const cb = listenCallbacks.get("agent-streaming-updated");
 		expect(cb).toBeDefined();
 
-		// Simulate receiving a stream_event with text_delta
+		const parts = [
+			{ type: "text", content: "Hello World" },
+			{ type: "tool_use", tool: "Read", input: { file_path: "/a" }, id: "t1" },
+		];
+
 		cb?.({
 			payload: {
-				type: "stream_event",
-				session_id: "sid-123",
 				chat_session_id: "session-1",
-				event: {
-					type: "content_block_delta",
-					delta: { type: "text_delta", text: "Hello" },
-				},
+				message_id: "msg-001",
+				parts,
 			},
 		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_STREAMING",
+			type: "SET_STREAMING_MESSAGE",
+			sessionId: "session-1",
 			messageId: "msg-001",
-			chunk: "Hello",
+			parts,
 		});
 	});
+});
 
+describe("agent-streaming-started event", () => {
+	it("dispatches START_STREAMING when agent-streaming-started is received", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-streaming-started");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				message_id: "msg-001",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "START_STREAMING",
+			sessionId: "session-1",
+		});
+	});
+});
+
+describe("useAgentSdkListeners callback behavior", () => {
 	it("dispatches STOP_STREAMING when agent-query-completed is received", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-002");
-		refs.streamingBuffersRef.current.set("session-1", {
-			parts: [{ type: "text", content: "response text" }],
-		});
 		refs.activeSessionRef.current = {
 			id: "session-1",
 			worktreePath: "/repo",
@@ -272,166 +212,6 @@ describe("useAgentSdkListeners callback behavior", () => {
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "UPDATE_SESSION_STATE",
 			state: "idle",
-		});
-	});
-
-	it("dispatches APPEND_THINKING when stream_event with thinking_delta is received", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-
-		for (const { resolve } of listenResolvers) {
-			resolve(vi.fn());
-		}
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-		expect(cb).toBeDefined();
-
-		cb?.({
-			payload: {
-				type: "stream_event",
-				session_id: "sid-123",
-				chat_session_id: "session-1",
-				event: {
-					type: "content_block_delta",
-					delta: { type: "thinking_delta", thinking: "Let me think..." },
-				},
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_THINKING",
-			messageId: "msg-001",
-			chunk: "Let me think...",
-		});
-	});
-
-	it("dispatches APPEND_TOOL_USE when assistant message with tool_use is received", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-
-		for (const { resolve } of listenResolvers) {
-			resolve(vi.fn());
-		}
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-		expect(cb).toBeDefined();
-
-		cb?.({
-			payload: {
-				type: "assistant",
-				session_id: "sid-123",
-				chat_session_id: "session-1",
-				message: {
-					content: [
-						{
-							type: "tool_use",
-							id: "toolu_abc",
-							name: "Read",
-							input: { file_path: "/src/main.ts" },
-						},
-					],
-				},
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_TOOL_USE",
-			messageId: "msg-001",
-			tool: "Read",
-			input: { file_path: "/src/main.ts" },
-			id: "toolu_abc",
-		});
-	});
-
-	it("dispatches APPEND_TOOL_RESULT with toolUseId when user message with tool_result is received", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-
-		for (const { resolve } of listenResolvers) {
-			resolve(vi.fn());
-		}
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-		expect(cb).toBeDefined();
-
-		cb?.({
-			payload: {
-				type: "user",
-				session_id: "sid-123",
-				chat_session_id: "session-1",
-				message: {
-					content: [
-						{
-							type: "tool_result",
-							tool_use_id: "toolu_abc",
-							content: "file content here",
-							is_error: false,
-						},
-					],
-				},
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_TOOL_RESULT",
-			messageId: "msg-001",
-			content: "file content here",
-			isError: false,
-			toolUseId: "toolu_abc",
-		});
-	});
-
-	it("dispatches APPEND_TOOL_RESULT with isError true and toolUseId for error results", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-
-		for (const { resolve } of listenResolvers) {
-			resolve(vi.fn());
-		}
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-		expect(cb).toBeDefined();
-
-		cb?.({
-			payload: {
-				type: "user",
-				session_id: "sid-123",
-				chat_session_id: "session-1",
-				message: {
-					content: [
-						{
-							type: "tool_result",
-							tool_use_id: "toolu_abc",
-							content: "Error: file not found",
-							is_error: true,
-						},
-					],
-				},
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_TOOL_RESULT",
-			messageId: "msg-001",
-			content: "Error: file not found",
-			isError: true,
-			toolUseId: "toolu_abc",
 		});
 	});
 
@@ -481,10 +261,6 @@ describe("useAgentSdkListeners callback behavior", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-002");
-		refs.streamingBuffersRef.current.set("session-1", {
-			parts: [{ type: "text", content: "response text" }],
-		});
 		refs.activeSessionRef.current = {
 			id: "session-1",
 			worktreePath: "/repo",
@@ -512,39 +288,6 @@ describe("useAgentSdkListeners callback behavior", () => {
 			sessionId: "session-1",
 			request: null,
 		});
-	});
-
-	it("does NOT dispatch APPEND_STREAMING when no streaming entry for session", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		// No entry in streamingMessageIdsRef for "session-1"
-
-		renderHook(() => useAgentSdkListeners(refs));
-
-		for (const { resolve } of listenResolvers) {
-			resolve(vi.fn());
-		}
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-		expect(cb).toBeDefined();
-
-		cb?.({
-			payload: {
-				type: "stream_event",
-				chat_session_id: "session-1",
-				event: {
-					type: "content_block_delta",
-					delta: { type: "text_delta", text: "Hello" },
-				},
-			},
-		});
-
-		const appendCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) =>
-				(call[0] as { type: string }).type === "APPEND_STREAMING",
-		);
-		expect(appendCalls).toHaveLength(0);
 	});
 });
 
@@ -724,7 +467,6 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -751,7 +493,6 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -779,7 +520,6 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -829,7 +569,6 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -858,244 +597,6 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 				(call[0] as { type: string }).type === "SET_PLAN_MODE_ACTIVE",
 		);
 		expect(planModeCalls).toHaveLength(0);
-	});
-});
-
-describe("streaming buffer accumulation", () => {
-	it("accumulates text delta into streamingBuffersRef", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-		refs.streamingBuffersRef.current.set("session-1", {
-			parts: [],
-		});
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "stream_event",
-				chat_session_id: "session-1",
-				event: {
-					type: "content_block_delta",
-					delta: { type: "text_delta", text: "Hello" },
-				},
-			},
-		});
-		cb?.({
-			payload: {
-				type: "stream_event",
-				chat_session_id: "session-1",
-				event: {
-					type: "content_block_delta",
-					delta: { type: "text_delta", text: " World" },
-				},
-			},
-		});
-
-		const buf = refs.streamingBuffersRef.current.get("session-1");
-		const textParts = buf?.parts.filter((p) => p.type === "text");
-		expect(textParts).toHaveLength(1);
-		expect((textParts?.[0] as { content: string })?.content).toBe(
-			"Hello World",
-		);
-	});
-
-	it("accumulates thinking delta into streamingBuffersRef", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-		refs.streamingBuffersRef.current.set("session-1", {
-			parts: [],
-		});
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "stream_event",
-				chat_session_id: "session-1",
-				event: {
-					type: "content_block_delta",
-					delta: { type: "thinking_delta", thinking: "Let me " },
-				},
-			},
-		});
-		cb?.({
-			payload: {
-				type: "stream_event",
-				chat_session_id: "session-1",
-				event: {
-					type: "content_block_delta",
-					delta: { type: "thinking_delta", thinking: "think..." },
-				},
-			},
-		});
-
-		const buf = refs.streamingBuffersRef.current.get("session-1");
-		const thinkingParts = buf?.parts.filter((p) => p.type === "thinking");
-		expect(thinkingParts).toHaveLength(1);
-		expect((thinkingParts?.[0] as { content: string })?.content).toBe(
-			"Let me think...",
-		);
-	});
-
-	it("accumulates tool_use and tool_result activities into buffer", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-		refs.streamingBuffersRef.current.set("session-1", {
-			parts: [],
-		});
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "assistant",
-				chat_session_id: "session-1",
-				message: {
-					content: [
-						{
-							type: "tool_use",
-							id: "toolu_abc",
-							name: "Read",
-							input: { file_path: "/src/main.ts" },
-						},
-					],
-				},
-			},
-		});
-
-		cb?.({
-			payload: {
-				type: "user",
-				chat_session_id: "session-1",
-				message: {
-					content: [
-						{
-							type: "tool_result",
-							tool_use_id: "toolu_abc",
-							content: "file content",
-							is_error: false,
-						},
-					],
-				},
-			},
-		});
-
-		const buf = refs.streamingBuffersRef.current.get("session-1");
-		const toolParts = buf?.parts.filter(
-			(p) => p.type === "tool_use" || p.type === "tool_result",
-		);
-		expect(toolParts).toHaveLength(2);
-		expect(toolParts?.[0]).toEqual({
-			type: "tool_use",
-			tool: "Read",
-			input: { file_path: "/src/main.ts" },
-			id: "toolu_abc",
-		});
-		expect(toolParts?.[1]).toEqual({
-			type: "tool_result",
-			content: "file content",
-			isError: false,
-			toolUseId: "toolu_abc",
-		});
-	});
-});
-
-describe("non-active session persistence", () => {
-	it("persists message content from buffer for non-active session on completion", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-2", "msg-002");
-		refs.streamingBuffersRef.current.set("session-2", {
-			parts: [
-				{ type: "thinking", content: "some thinking" },
-				{ type: "text", content: "background response" },
-			],
-		});
-		// Active session is session-1, not session-2
-		refs.activeSessionRef.current = {
-			id: "session-1",
-			worktreePath: "/repo",
-			state: "idle",
-			messages: [],
-			createdAt: Date.now(),
-			agentSessionId: null,
-		} as never;
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-query-completed");
-
-		cb?.({
-			payload: {
-				exit_code: 0,
-				stderr: "",
-				chat_session_id: "session-2",
-			},
-		});
-
-		const { updateMessageParts } = await import("./useSessionStore");
-		const calls = vi.mocked(updateMessageParts).mock.calls;
-		const call = calls.find((c) => c[0] === "session-2");
-		expect(call).toBeDefined();
-		expect(call).toEqual([
-			"session-2",
-			"msg-002",
-			[
-				{ type: "thinking", content: "some thinking" },
-				{ type: "text", content: "background response" },
-			],
-		]);
-	});
-
-	it("cleans up buffer after completion", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-		refs.streamingBuffersRef.current.set("session-1", {
-			parts: [{ type: "text", content: "done" }],
-		});
-		refs.activeSessionRef.current = {
-			id: "session-1",
-			worktreePath: "/repo",
-			state: "idle",
-			messages: [{ id: "msg-001", role: "agent", parts: [] }],
-			createdAt: Date.now(),
-			agentSessionId: null,
-		} as never;
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-query-completed");
-
-		cb?.({
-			payload: {
-				exit_code: 0,
-				stderr: "",
-				chat_session_id: "session-1",
-			},
-		});
-
-		expect(refs.streamingBuffersRef.current.has("session-1")).toBe(false);
 	});
 });
 
@@ -1184,338 +685,6 @@ describe("result error display", () => {
 			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
 		);
 		expect(addMsgCalls).toHaveLength(0);
-	});
-});
-
-describe("parent_tool_use_id propagation", () => {
-	it("includes parentToolUseId in APPEND_STREAMING when stream_event has parent_tool_use_id", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "stream_event",
-				session_id: "sid-123",
-				chat_session_id: "session-1",
-				parent_tool_use_id: "toolu_task_001",
-				event: {
-					type: "content_block_delta",
-					delta: { type: "text_delta", text: "Sub-agent output" },
-				},
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_STREAMING",
-			messageId: "msg-001",
-			chunk: "Sub-agent output",
-			parentToolUseId: "toolu_task_001",
-		});
-	});
-
-	it("includes parentToolUseId in APPEND_TOOL_USE when assistant message has parent_tool_use_id", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "assistant",
-				session_id: "sid-123",
-				chat_session_id: "session-1",
-				parent_tool_use_id: "toolu_task_001",
-				message: {
-					content: [
-						{
-							type: "tool_use",
-							id: "toolu_child_001",
-							name: "Read",
-							input: { file_path: "/src/lib.ts" },
-						},
-					],
-				},
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_TOOL_USE",
-			messageId: "msg-001",
-			tool: "Read",
-			input: { file_path: "/src/lib.ts" },
-			id: "toolu_child_001",
-			parentToolUseId: "toolu_task_001",
-		});
-	});
-
-	it("includes parentToolUseId in APPEND_TOOL_RESULT when user message has parent_tool_use_id", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "user",
-				session_id: "sid-123",
-				chat_session_id: "session-1",
-				parent_tool_use_id: "toolu_task_001",
-				message: {
-					content: [
-						{
-							type: "tool_result",
-							tool_use_id: "toolu_child_001",
-							content: "file content",
-							is_error: false,
-						},
-					],
-				},
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_TOOL_RESULT",
-			messageId: "msg-001",
-			content: "file content",
-			isError: false,
-			toolUseId: "toolu_child_001",
-			parentToolUseId: "toolu_task_001",
-		});
-	});
-});
-
-describe("handleTaskMessage dispatch", () => {
-	it("dispatches APPEND_TASK_STATUS with status started on task_started", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "task_started",
-				chat_session_id: "session-1",
-				tool_use_id: "toolu_task_001",
-				description: "Explore codebase",
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_TASK_STATUS",
-			messageId: "msg-001",
-			taskToolUseId: "toolu_task_001",
-			status: "started",
-			description: "Explore codebase",
-			summary: undefined,
-		});
-	});
-
-	it("dispatches APPEND_TASK_STATUS with status completed and summary on task_notification", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "task_notification",
-				chat_session_id: "session-1",
-				tool_use_id: "toolu_task_001",
-				status: "completed",
-				summary: "Found 3 files",
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_TASK_STATUS",
-			messageId: "msg-001",
-			taskToolUseId: "toolu_task_001",
-			status: "completed",
-			description: undefined,
-			summary: "Found 3 files",
-		});
-	});
-
-	it("dispatches APPEND_TASK_STATUS with status progress on task_progress", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "task_progress",
-				chat_session_id: "session-1",
-				tool_use_id: "toolu_task_001",
-				description: "Processing files",
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_TASK_STATUS",
-			messageId: "msg-001",
-			taskToolUseId: "toolu_task_001",
-			status: "progress",
-			description: "Processing files",
-			summary: undefined,
-		});
-	});
-
-	it("dispatches APPEND_TASK_STATUS with status failed on task_notification failure", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
-				subtype: "task_notification",
-				chat_session_id: "session-1",
-				tool_use_id: "toolu_task_001",
-				status: "failed",
-				summary: "Timeout exceeded",
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_TASK_STATUS",
-			messageId: "msg-001",
-			taskToolUseId: "toolu_task_001",
-			status: "failed",
-			description: undefined,
-			summary: "Timeout exceeded",
-		});
-	});
-});
-
-describe("handleBridgeError", () => {
-	it("dispatches APPEND_STREAMING and accumulates buffer when error arrives during streaming", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-		refs.streamingBuffersRef.current.set("session-1", { parts: [] });
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-		expect(cb).toBeDefined();
-
-		cb?.({
-			payload: {
-				type: "error",
-				chat_session_id: "session-1",
-				message: "Bridge crashed",
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_STREAMING",
-			messageId: "msg-001",
-			chunk: "Error: Bridge crashed",
-		});
-
-		const buf = refs.streamingBuffersRef.current.get("session-1");
-		const textParts = buf?.parts.filter((p) => p.type === "text");
-		expect(textParts).toHaveLength(1);
-		expect((textParts?.[0] as { content: string })?.content).toBe(
-			"Error: Bridge crashed",
-		);
-	});
-
-	it("does NOT dispatch APPEND_STREAMING when no streaming messageId for session", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		// No entry in streamingMessageIdsRef for "session-1"
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "error",
-				chat_session_id: "session-1",
-				message: "Some error",
-			},
-		});
-
-		const appendCalls = refs.dispatch.mock.calls.filter(
-			(call: unknown[]) =>
-				(call[0] as { type: string }).type === "APPEND_STREAMING",
-		);
-		expect(appendCalls).toHaveLength(0);
-	});
-
-	it("uses 'Unknown error' fallback when message is not a string", () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.streamingMessageIdsRef.current.set("session-1", "msg-001");
-		refs.streamingBuffersRef.current.set("session-1", { parts: [] });
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "error",
-				chat_session_id: "session-1",
-				// message is not a string (or absent)
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "APPEND_STREAMING",
-			messageId: "msg-001",
-			chunk: "Error: Unknown error",
-		});
 	});
 });
 

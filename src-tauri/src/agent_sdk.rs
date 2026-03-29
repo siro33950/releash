@@ -10,7 +10,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate::session::SessionStore;
+use crate::session::{
+    now_timestamp, resolve_data_dir, GetSessionResponse, MessagePart, SessionStore,
+};
+
+const STREAMING_THROTTLE_MS: u64 = 80;
+const PERSIST_INTERVAL_MS: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BridgeState {
@@ -26,6 +31,8 @@ pub struct AgentProcess {
     pub sdk_session_id: Option<String>,
     pub child: tokio::process::Child,
     pub generation_id: u64,
+    pub streaming_message_id: Option<String>,
+    pub streaming_parts: Vec<crate::session::MessagePart>,
 }
 
 /// Per-session agent process map: chat_session_id → AgentProcess
@@ -54,12 +61,6 @@ fn resolve_bridge_script(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
         .map_err(|e| format!("Failed to resolve resource dir: {e}"))
 }
 
-fn resolve_data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {e}"))
-}
-
 fn get_resume_session_id(
     app: &tauri::AppHandle,
     session_store: &SessionStore,
@@ -74,6 +75,48 @@ fn get_resume_session_id(
                 .flatten()
         })
         .and_then(|s| s.agent_session_id)
+}
+
+fn persist_streaming_parts(
+    session_store: &SessionStore,
+    app: &tauri::AppHandle,
+    chat_session_id: &str,
+    message_id: &str,
+    parts: &[MessagePart],
+) {
+    let data_dir = match resolve_data_dir(app) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!(
+                "Failed to resolve data dir for streaming persist (session {chat_session_id}): {e}"
+            );
+            return;
+        }
+    };
+    let mut session = match session_store.get_session(&data_dir, chat_session_id) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            log::warn!("Session not found for streaming persist: {chat_session_id}");
+            return;
+        }
+        Err(e) => {
+            log::warn!(
+                "Failed to get session for streaming persist (session {chat_session_id}): {e}"
+            );
+            return;
+        }
+    };
+    if let Some(msg) = session.messages.iter_mut().find(|m| m.id == message_id) {
+        let (content, thinking, activities) = crate::session::parts_to_legacy(parts);
+        msg.content = content;
+        msg.thinking = thinking;
+        msg.activities = activities;
+        msg.parts = Some(parts.to_vec());
+        session.updated_at = now_timestamp();
+        if let Err(e) = session_store.save_session(&data_dir, &session) {
+            log::warn!("Failed to persist streaming parts for session {chat_session_id}: {e}");
+        }
+    }
 }
 
 fn emit_agent_query_completed(
@@ -93,15 +136,236 @@ fn emit_agent_query_completed(
     );
 }
 
-fn now_timestamp() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
-}
-
 const INTERRUPT_TIMEOUT_SECS: u64 = 10;
 const CLOSE_TIMEOUT_SECS: u64 = 5;
+
+/// Append text/thinking chunk to streaming parts, merging consecutive same-type parts.
+fn append_to_parts(
+    parts: &mut Vec<MessagePart>,
+    part_type: &str,
+    chunk: &str,
+    parent_tool_use_id: Option<String>,
+) {
+    if let Some(last) = parts.last_mut() {
+        let merge = match (last, part_type) {
+            (
+                MessagePart::Text {
+                    content,
+                    parent_tool_use_id: pid,
+                },
+                "text",
+            ) if *pid == parent_tool_use_id => {
+                content.push_str(chunk);
+                true
+            }
+            (
+                MessagePart::Thinking {
+                    content,
+                    parent_tool_use_id: pid,
+                },
+                "thinking",
+            ) if *pid == parent_tool_use_id => {
+                content.push_str(chunk);
+                true
+            }
+            _ => false,
+        };
+        if merge {
+            return;
+        }
+    }
+    match part_type {
+        "text" => parts.push(MessagePart::Text {
+            content: chunk.to_string(),
+            parent_tool_use_id,
+        }),
+        "thinking" => parts.push(MessagePart::Thinking {
+            content: chunk.to_string(),
+            parent_tool_use_id,
+        }),
+        _ => {}
+    }
+}
+
+/// Extract tool_result content from SDK content blocks.
+fn extract_tool_result_content(content: &serde_json::Value) -> String {
+    if let Some(s) = content.as_str() {
+        return s.to_string();
+    }
+    if let Some(arr) = content.as_array() {
+        return arr
+            .iter()
+            .filter_map(|b| {
+                if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    b.get("text")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    String::new()
+}
+
+/// Parse SDK message and accumulate into streaming_parts.
+/// Returns true if the message was handled (accumulated) and should NOT be forwarded as agent-sdk-message.
+fn accumulate_sdk_message(msg: &serde_json::Value, parts: &mut Vec<MessagePart>) -> bool {
+    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let parent_tool_use_id = msg
+        .get("parent_tool_use_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    match msg_type {
+        "stream_event" => {
+            if let Some(event) = msg.get("event") {
+                let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if event_type == "content_block_delta" {
+                    if let Some(delta) = event.get("delta") {
+                        let delta_type = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if delta_type == "text_delta" {
+                            if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
+                                append_to_parts(parts, "text", text, parent_tool_use_id);
+                                return true;
+                            }
+                        } else if delta_type == "thinking_delta" {
+                            if let Some(thinking) = delta.get("thinking").and_then(|v| v.as_str()) {
+                                append_to_parts(parts, "thinking", thinking, parent_tool_use_id);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        "assistant" => {
+            if let Some(message) = msg.get("message") {
+                if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
+                    for block in content {
+                        let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if block_type == "tool_use" {
+                            let tool = block
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let input = block
+                                .get("input")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Object(Default::default()));
+                            let id = block
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            parts.push(MessagePart::ToolUse {
+                                tool,
+                                input,
+                                id,
+                                parent_tool_use_id: parent_tool_use_id.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            true
+        }
+        "user" => {
+            if let Some(message) = msg.get("message") {
+                if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
+                    for block in content {
+                        let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        if block_type == "tool_result" {
+                            let tool_use_id = block
+                                .get("tool_use_id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let raw_content = block
+                                .get("content")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::String(String::new()));
+                            let content_str = extract_tool_result_content(&raw_content);
+                            let is_error = block
+                                .get("is_error")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            parts.push(MessagePart::ToolResult {
+                                content: content_str,
+                                is_error,
+                                tool_use_id,
+                                parent_tool_use_id: parent_tool_use_id.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            true
+        }
+        "permission_request" => {
+            let request = msg.clone();
+            parts.push(MessagePart::Permission {
+                request,
+                status: "pending".to_string(),
+                answers: None,
+                parent_tool_use_id,
+            });
+            false // Still forward for SET_PENDING_PERMISSION dispatch
+        }
+        "system" => {
+            let subtype = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+            match subtype {
+                "task_started" | "task_notification" | "task_progress" => {
+                    let tool_use_id = msg
+                        .get("tool_use_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let status = match subtype {
+                        "task_started" => "started",
+                        "task_progress" => "progress",
+                        "task_notification" => msg
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("started"),
+                        _ => "started",
+                    };
+                    let description = msg
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let summary = msg
+                        .get("summary")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    parts.push(MessagePart::TaskStatus {
+                        task_tool_use_id: tool_use_id,
+                        status: status.to_string(),
+                        description,
+                        summary,
+                    });
+                    true
+                }
+                _ => false, // permissionMode sync, other system messages → forward
+            }
+        }
+        "error" => {
+            let error_text = msg
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
+            parts.push(MessagePart::Error {
+                content: format!("Error: {}", error_text),
+                parent_tool_use_id,
+            });
+            false // Still forward for handleBridgeError
+        }
+        _ => false,
+    }
+}
 
 async fn spawn_bridge_process(
     app: &tauri::AppHandle,
@@ -179,6 +443,8 @@ async fn spawn_bridge_process(
                 sdk_session_id: session_id,
                 child,
                 generation_id: gen_id,
+                streaming_message_id: None,
+                streaming_parts: Vec::new(),
             },
         );
     }
@@ -193,6 +459,8 @@ async fn spawn_bridge_process(
         use tauri::Emitter;
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
+        let mut last_emit_time = std::time::Instant::now();
+        let mut last_persist_time = std::time::Instant::now();
         while let Ok(Some(line)) = lines.next_line().await {
             if line.is_empty() {
                 continue;
@@ -219,11 +487,17 @@ async fn spawn_bridge_process(
                     "turn_complete" => {
                         let exit_code = msg.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
                         let was_streaming;
+                        let final_parts;
+                        let final_msg_id;
                         {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 was_streaming = proc.state == BridgeState::Streaming;
                                 proc.state = BridgeState::Ready;
+
+                                // Capture and clear streaming buffer
+                                final_parts = std::mem::take(&mut proc.streaming_parts);
+                                final_msg_id = proc.streaming_message_id.take();
 
                                 // User turn succeeded: persist agent_session_id to SessionStore
                                 if was_streaming && exit_code == 0 {
@@ -242,6 +516,23 @@ async fn spawn_bridge_process(
                                 }
                             } else {
                                 was_streaming = false;
+                                final_parts = Vec::new();
+                                final_msg_id = None;
+                            }
+                        }
+
+                        // Final persist of streaming buffer
+                        if was_streaming {
+                            if let Some(ref mid) = final_msg_id {
+                                if !final_parts.is_empty() {
+                                    persist_streaming_parts(
+                                        &session_store_clone,
+                                        &app_stdout,
+                                        &csid_stdout,
+                                        mid,
+                                        &final_parts,
+                                    );
+                                }
                             }
                         }
 
@@ -280,6 +571,16 @@ async fn spawn_bridge_process(
                             .unwrap_or("Unknown bridge error");
                         log::error!("Bridge error [{}]: {}", csid_stdout, error_msg);
 
+                        // Accumulate error into streaming parts
+                        {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                if proc.state == BridgeState::Streaming {
+                                    accumulate_sdk_message(&msg, &mut proc.streaming_parts);
+                                }
+                            }
+                        }
+
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
 
                         // Transition to Crashed for both Streaming and Initializing states
@@ -316,7 +617,84 @@ async fn spawn_bridge_process(
                         }
                     }
                     _ => {
-                        let _ = app_stdout.emit("agent-sdk-message", &msg);
+                        // Accumulate into streaming buffer and emit throttled update
+                        let (
+                            accumulated,
+                            should_emit_update,
+                            should_persist,
+                            emit_parts,
+                            emit_msg_id,
+                        ) = {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                if proc.state == BridgeState::Streaming
+                                    && proc.streaming_message_id.is_some()
+                                {
+                                    let acc =
+                                        accumulate_sdk_message(&msg, &mut proc.streaming_parts);
+                                    if !acc {
+                                        (false, false, false, Vec::new(), None)
+                                    } else {
+                                        let now = std::time::Instant::now();
+                                        let elapsed_emit =
+                                            now.duration_since(last_emit_time).as_millis() as u64;
+                                        let elapsed_persist =
+                                            now.duration_since(last_persist_time).as_millis()
+                                                as u64;
+                                        let should_emit = elapsed_emit >= STREAMING_THROTTLE_MS;
+                                        let should_persist = elapsed_persist >= PERSIST_INTERVAL_MS;
+
+                                        let (parts, mid) = if should_emit || should_persist {
+                                            (
+                                                proc.streaming_parts.clone(),
+                                                proc.streaming_message_id.clone(),
+                                            )
+                                        } else {
+                                            (Vec::new(), None)
+                                        };
+                                        (true, should_emit, should_persist, parts, mid)
+                                    }
+                                } else {
+                                    (false, false, false, Vec::new(), None)
+                                }
+                            } else {
+                                (false, false, false, Vec::new(), None)
+                            }
+                        };
+
+                        // Emit agent-streaming-updated (throttled)
+                        if should_emit_update {
+                            if let Some(ref mid) = emit_msg_id {
+                                last_emit_time = std::time::Instant::now();
+                                let _ = app_stdout.emit(
+                                    "agent-streaming-updated",
+                                    serde_json::json!({
+                                        "chat_session_id": csid_stdout,
+                                        "message_id": mid,
+                                        "parts": emit_parts,
+                                    }),
+                                );
+                            }
+                        }
+
+                        // Periodic persist (1s interval)
+                        if should_persist {
+                            if let Some(ref mid) = emit_msg_id {
+                                last_persist_time = std::time::Instant::now();
+                                persist_streaming_parts(
+                                    &session_store_clone,
+                                    &app_stdout,
+                                    &csid_stdout,
+                                    mid,
+                                    &emit_parts,
+                                );
+                            }
+                        }
+
+                        // Forward non-accumulated messages (meta events) as agent-sdk-message
+                        if !accumulated {
+                            let _ = app_stdout.emit("agent-sdk-message", &msg);
+                        }
                     }
                 }
             }
@@ -362,6 +740,43 @@ async fn spawn_bridge_process(
 }
 
 #[tauri::command]
+pub async fn get_session(
+    state: tauri::State<'_, Arc<SessionStore>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<Option<GetSessionResponse>, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    let session = state.get_session(&data_dir, &session_id)?;
+    match session {
+        None => Ok(None),
+        Some(mut session) => {
+            let map = handles.lock().await;
+            let is_streaming = if let Some(proc) = map.get(&session_id) {
+                let streaming = proc.state == BridgeState::Streaming;
+                if streaming {
+                    if let Some(ref mid) = proc.streaming_message_id {
+                        let parts = proc.streaming_parts.clone();
+                        if !parts.is_empty() {
+                            if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *mid) {
+                                msg.parts = Some(parts);
+                            }
+                        }
+                    }
+                }
+                streaming
+            } else {
+                false
+            };
+            Ok(Some(GetSessionResponse {
+                session,
+                is_streaming,
+            }))
+        }
+    }
+}
+
+#[tauri::command]
 pub async fn start_agent_session(
     app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
@@ -395,6 +810,7 @@ pub async fn start_agent_session(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn execute_agent_query(
     app: tauri::AppHandle,
@@ -404,6 +820,7 @@ pub async fn execute_agent_query(
     chat_session_id: String,
     cwd: String,
     permission_mode: Option<String>,
+    streaming_message_id: String,
 ) -> Result<(), String> {
     // Check if we need to spawn a new process (single lock to avoid TOCTOU)
     let spawn_info = {
@@ -449,20 +866,34 @@ pub async fn execute_agent_query(
     });
     let data = format!("{}\n", msg_cmd);
 
-    let mut map = handles.lock().await;
-    if let Some(proc) = map.get_mut(&chat_session_id) {
-        proc.state = BridgeState::Streaming;
-        proc.stdin
-            .write_all(data.as_bytes())
-            .await
-            .map_err(|e| format!("Failed to write message: {e}"))?;
-        proc.stdin
-            .flush()
-            .await
-            .map_err(|e| format!("Failed to flush message: {e}"))?;
-    } else {
-        return Err(format!("No agent process for session {chat_session_id}"));
+    {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(&chat_session_id) {
+            proc.state = BridgeState::Streaming;
+            proc.streaming_message_id = Some(streaming_message_id.clone());
+            proc.streaming_parts.clear();
+            proc.stdin
+                .write_all(data.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write message: {e}"))?;
+            proc.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Failed to flush message: {e}"))?;
+        } else {
+            return Err(format!("No agent process for session {chat_session_id}"));
+        }
     }
+
+    // Emit agent-streaming-started so frontend can track streaming state
+    use tauri::Emitter;
+    let _ = app.emit(
+        "agent-streaming-started",
+        serde_json::json!({
+            "chat_session_id": chat_session_id,
+            "message_id": streaming_message_id,
+        }),
+    );
 
     Ok(())
 }
@@ -558,6 +989,7 @@ pub async fn close_agent_session(
 
 #[tauri::command]
 pub async fn respond_agent_permission(
+    app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     chat_session_id: String,
     request_id: String,
@@ -572,16 +1004,20 @@ pub async fn respond_agent_permission(
     if let Some(msg) = &message {
         result["message"] = serde_json::Value::String(msg.clone());
     }
-    if let Some(input_json) = &updated_input {
+    let answers_value = if let Some(input_json) = &updated_input {
         match serde_json::from_str::<serde_json::Value>(input_json) {
             Ok(parsed) => {
-                result["updatedInput"] = parsed;
+                result["updatedInput"] = parsed.clone();
+                parsed.get("answers").cloned()
             }
             Err(e) => {
                 log::warn!("Failed to parse updated_input JSON: {e}");
+                None
             }
         }
-    }
+    } else {
+        None
+    };
     let payload = serde_json::json!({
         "type": "permission_response",
         "request_id": request_id,
@@ -589,21 +1025,65 @@ pub async fn respond_agent_permission(
     });
     let data = format!("{}\n", payload);
 
-    let mut map = handles.lock().await;
-    if let Some(proc) = map.get_mut(&chat_session_id) {
-        proc.stdin
-            .write_all(data.as_bytes())
-            .await
-            .map_err(|e| format!("Failed to write permission response: {e}"))?;
-        proc.stdin
-            .flush()
-            .await
-            .map_err(|e| format!("Failed to flush: {e}"))?;
-    } else {
-        return Err(format!(
-            "No active agent process for session {chat_session_id}"
-        ));
+    let emit_parts;
+    let emit_msg_id;
+    {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(&chat_session_id) {
+            proc.stdin
+                .write_all(data.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write permission response: {e}"))?;
+            proc.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Failed to flush: {e}"))?;
+
+            // Update Permission part status in streaming buffer
+            let new_status = if behavior == "allow" {
+                "allowed"
+            } else {
+                "denied"
+            };
+            for part in &mut proc.streaming_parts {
+                if let MessagePart::Permission {
+                    request,
+                    status,
+                    answers,
+                    ..
+                } = part
+                {
+                    if request.get("request_id").and_then(|v| v.as_str()) == Some(&request_id) {
+                        *status = new_status.to_string();
+                        if let Some(ref av) = answers_value {
+                            *answers = Some(av.clone());
+                        }
+                    }
+                }
+            }
+
+            emit_parts = proc.streaming_parts.clone();
+            emit_msg_id = proc.streaming_message_id.clone();
+        } else {
+            return Err(format!(
+                "No active agent process for session {chat_session_id}"
+            ));
+        }
     }
+
+    // Emit agent-streaming-updated with resolved permission
+    if let Some(ref mid) = emit_msg_id {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "agent-streaming-updated",
+            serde_json::json!({
+                "chat_session_id": chat_session_id,
+                "message_id": mid,
+                "parts": emit_parts,
+            }),
+        );
+    }
+
     Ok(())
 }
 
@@ -1325,5 +1805,217 @@ mod tests {
             "zzz-dedup-test should appear exactly once, got: {matches:?}"
         );
         assert_eq!(matches[0].description, "From skill");
+    }
+
+    // --- append_to_parts tests ---
+
+    #[test]
+    fn test_append_merges_consecutive_text() {
+        let mut parts = vec![];
+        append_to_parts(&mut parts, "text", "Hello", None);
+        append_to_parts(&mut parts, "text", " world", None);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::Text { content, .. } => assert_eq!(content, "Hello world"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_append_no_merge_different_type() {
+        let mut parts = vec![];
+        append_to_parts(&mut parts, "text", "Hello", None);
+        append_to_parts(&mut parts, "thinking", "hmm", None);
+        assert_eq!(parts.len(), 2);
+        assert!(matches!(&parts[0], MessagePart::Text { .. }));
+        assert!(matches!(&parts[1], MessagePart::Thinking { .. }));
+    }
+
+    #[test]
+    fn test_append_no_merge_different_parent() {
+        let mut parts = vec![];
+        append_to_parts(&mut parts, "text", "main", None);
+        append_to_parts(&mut parts, "text", "sub", Some("parent1".to_string()));
+        assert_eq!(parts.len(), 2);
+    }
+
+    // --- extract_tool_result_content tests ---
+
+    #[test]
+    fn test_extract_string_content() {
+        let content = serde_json::json!("file contents here");
+        assert_eq!(extract_tool_result_content(&content), "file contents here");
+    }
+
+    #[test]
+    fn test_extract_array_content() {
+        let content = serde_json::json!([
+            {"type": "text", "text": "line1"},
+            {"type": "text", "text": "line2"}
+        ]);
+        assert_eq!(extract_tool_result_content(&content), "line1\nline2");
+    }
+
+    #[test]
+    fn test_extract_empty_on_other() {
+        let content = serde_json::json!(42);
+        assert_eq!(extract_tool_result_content(&content), "");
+    }
+
+    // --- accumulate_sdk_message tests ---
+
+    #[test]
+    fn test_accumulate_text_delta() {
+        let msg = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "Hello"}
+            }
+        });
+        let mut parts = vec![];
+        let handled = accumulate_sdk_message(&msg, &mut parts);
+        assert!(handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::Text { content, .. } => assert_eq!(content, "Hello"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_thinking_delta() {
+        let msg = serde_json::json!({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "Let me think"}
+            }
+        });
+        let mut parts = vec![];
+        let handled = accumulate_sdk_message(&msg, &mut parts);
+        assert!(handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::Thinking { content, .. } => assert_eq!(content, "Let me think"),
+            _ => panic!("expected Thinking"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_tool_use() {
+        let msg = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "tool_use",
+                    "name": "Read",
+                    "input": {"file_path": "/src/main.rs"},
+                    "id": "toolu_001"
+                }]
+            }
+        });
+        let mut parts = vec![];
+        let handled = accumulate_sdk_message(&msg, &mut parts);
+        assert!(handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::ToolUse { tool, id, .. } => {
+                assert_eq!(tool, "Read");
+                assert_eq!(id, "toolu_001");
+            }
+            _ => panic!("expected ToolUse"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_tool_result() {
+        let msg = serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_001",
+                    "content": "file contents",
+                    "is_error": false
+                }]
+            }
+        });
+        let mut parts = vec![];
+        let handled = accumulate_sdk_message(&msg, &mut parts);
+        assert!(handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::ToolResult {
+                content,
+                is_error,
+                tool_use_id,
+                ..
+            } => {
+                assert_eq!(content, "file contents");
+                assert!(!is_error);
+                assert_eq!(tool_use_id.as_deref(), Some("toolu_001"));
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_permission_request() {
+        let msg = serde_json::json!({
+            "type": "permission_request",
+            "request_id": "req-1",
+            "tool_name": "Edit"
+        });
+        let mut parts = vec![];
+        let handled = accumulate_sdk_message(&msg, &mut parts);
+        assert!(!handled);
+        assert_eq!(parts.len(), 1);
+        assert!(matches!(&parts[0], MessagePart::Permission { status, .. } if status == "pending"));
+    }
+
+    #[test]
+    fn test_accumulate_error() {
+        let msg = serde_json::json!({
+            "type": "error",
+            "message": "Something went wrong"
+        });
+        let mut parts = vec![];
+        let handled = accumulate_sdk_message(&msg, &mut parts);
+        assert!(!handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::Error { content, .. } => {
+                assert!(content.contains("Something went wrong"));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_task_status() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "tool_use_id": "task1",
+            "description": "Searching"
+        });
+        let mut parts = vec![];
+        let handled = accumulate_sdk_message(&msg, &mut parts);
+        assert!(handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::TaskStatus {
+                task_tool_use_id,
+                status,
+                description,
+                ..
+            } => {
+                assert_eq!(task_tool_use_id, "task1");
+                assert_eq!(status, "started");
+                assert_eq!(description.as_deref(), Some("Searching"));
+            }
+            _ => panic!("expected TaskStatus"),
+        }
     }
 }

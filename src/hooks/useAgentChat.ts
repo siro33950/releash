@@ -8,10 +8,7 @@ import type {
 	SessionSummary,
 } from "@/types/session";
 import { INITIAL_STATE, reducer } from "./agentChatReducer";
-import {
-	type StreamingBuffer,
-	useAgentSdkListeners,
-} from "./useAgentSdkListeners";
+import { useAgentSdkListeners } from "./useAgentSdkListeners";
 import {
 	addMessage,
 	closeSession as closeSessionApi,
@@ -76,8 +73,6 @@ function deriveAgentState(
 
 export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
-	const streamingMessageIdsRef = useRef<Map<string, string>>(new Map());
-	const streamingBuffersRef = useRef<Map<string, StreamingBuffer>>(new Map());
 	const worktreePathRef = useRef(worktreePath);
 	worktreePathRef.current = worktreePath;
 	const activeSessionRef = useRef(state.activeSession);
@@ -103,26 +98,18 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 
 	const selectSession = useCallback(async (sessionId: string) => {
 		try {
-			const session = await getSession(sessionId);
-			if (session) {
-				// Merge in-flight streaming data from ref buffer.
-				// Backend returns the last-persisted snapshot, which lacks
-				// content accumulated during an ongoing stream, so we overlay
-				// the buffer's latest values onto the matching message.
-				const buffer = streamingBuffersRef.current.get(sessionId);
-				const msgId = streamingMessageIdsRef.current.get(sessionId);
-				if (buffer && msgId) {
-					session.messages = session.messages.map((m) =>
-						m.id === msgId
-							? {
-									...m,
-									parts: buffer.parts,
-								}
-							: m,
-					);
+			const response = await getSession(sessionId);
+			if (response) {
+				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
+				// Sync streaming state from backend
+				if (response.isStreaming) {
+					dispatch({ type: "START_STREAMING", sessionId });
+				} else {
+					dispatch({ type: "STOP_STREAMING", sessionId });
 				}
+			} else {
+				dispatch({ type: "SET_ACTIVE_SESSION", session: null });
 			}
-			dispatch({ type: "SET_ACTIVE_SESSION", session });
 		} catch (e) {
 			dispatch({
 				type: "SET_ERROR",
@@ -134,15 +121,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	const startQuery = useCallback(async (sessionId: string, prompt: string) => {
 		const agentMsg = await addMessage(sessionId, "agent", "");
 		dispatch({ type: "ADD_MESSAGE", message: agentMsg });
-		streamingMessageIdsRef.current.set(sessionId, agentMsg.id);
-		// Keep a ref-based buffer alongside reducer state so that
-		// streaming content is captured even for non-active sessions
-		// (reducer only updates the active session's messages).
-		// This buffer is the source-of-truth for persistence on
-		// agent-query-completed and for merging in selectSession.
-		streamingBuffersRef.current.set(sessionId, {
-			parts: [],
-		});
 		dispatch({ type: "START_STREAMING", sessionId });
 
 		invoke("execute_agent_query", {
@@ -150,18 +128,10 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			chatSessionId: sessionId,
 			cwd: worktreePathRef.current,
 			permissionMode: permissionModeRef.current,
+			streamingMessageId: agentMsg.id,
 		}).catch((e) => {
 			console.error("execute_agent_query failed:", e);
-			const msgId = streamingMessageIdsRef.current.get(sessionId);
-			if (msgId) {
-				dispatch({
-					type: "APPEND_STREAMING",
-					messageId: msgId,
-					chunk: `Error: ${e}`,
-				});
-			}
 			dispatch({ type: "STOP_STREAMING", sessionId });
-			streamingMessageIdsRef.current.delete(sessionId);
 			dispatch({
 				type: "SET_ERROR",
 				error: `エージェント実行に失敗: ${e}`,
@@ -236,8 +206,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 							? remaining[Math.min(idx, remaining.length - 1)]
 							: null;
 					if (nextSession) {
-						const full = await getSession(nextSession.id);
-						dispatch({ type: "SET_ACTIVE_SESSION", session: full });
+						const response = await getSession(nextSession.id);
+						dispatch({
+							type: "SET_ACTIVE_SESSION",
+							session: response?.session ?? null,
+						});
 					} else {
 						dispatch({
 							type: "SET_ACTIVE_SESSION",
@@ -262,8 +235,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		async (sessionId: string) => {
 			try {
 				await restoreSessionApi(sessionId);
-				const full = await getSession(sessionId);
-				dispatch({ type: "SET_ACTIVE_SESSION", session: full });
+				const response = await getSession(sessionId);
+				dispatch({
+					type: "SET_ACTIVE_SESSION",
+					session: response?.session ?? null,
+				});
 				// Start Bridge process for the restored session
 				startAgentProcess(
 					sessionId,
@@ -343,39 +319,13 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				sessionId,
 				request: null,
 			});
-			const msgId = streamingMessageIdsRef.current.get(sessionId);
-			if (msgId) {
-				const status = allow ? "allowed" : "denied";
-				const answers =
-					updatedInput?.answers && typeof updatedInput.answers === "object"
-						? (updatedInput.answers as Record<string, string>)
-						: undefined;
-				dispatch({
-					type: "RESOLVE_PERMISSION_PART",
-					messageId: msgId,
-					requestId,
-					status,
-					answers,
-				});
-				// Also update the streaming buffer so persistence captures the resolved state
-				const buffer = streamingBuffersRef.current.get(sessionId);
-				if (buffer) {
-					buffer.parts = buffer.parts.map((p) =>
-						p.type === "permission" && p.request.request_id === requestId
-							? { ...p, status, ...(answers && { answers }) }
-							: p,
-					);
-				}
-			}
 		},
 		[],
 	);
 
 	useAgentSdkListeners({
 		dispatch,
-		streamingMessageIdsRef,
 		activeSessionRef,
-		streamingBuffersRef,
 		refreshSessions,
 	});
 
