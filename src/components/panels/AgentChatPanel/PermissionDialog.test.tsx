@@ -463,3 +463,125 @@ describe("PermissionDialog — AskUserQuestion", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+describe("AskUserQuestion — markdown rendering", () => {
+	const mdAskRequest = {
+		request_id: "req-ask-md-001",
+		tool_name: "AskUserQuestion",
+		input: {
+			questions: [
+				{
+					question: "Use `react-markdown` for rendering?",
+					header: "Choose a `markdown` library",
+					options: [
+						{
+							label: "Yes",
+							description: "Uses `react-markdown` with **remark-gfm**",
+						},
+						{ label: "No", description: "Plain text only" },
+					],
+					multiSelect: false,
+				},
+			],
+		},
+		tool_use_id: "toolu_ask_md_001",
+	};
+
+	it("renders question text markdown as HTML", () => {
+		render(
+			<PermissionDialog
+				request={mdAskRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+		const dialog = screen.getByTestId("permission-dialog");
+		expect(dialog.querySelector("code")).toBeTruthy();
+		expect(dialog.textContent).toContain("react-markdown");
+	});
+
+	it("renders header markdown as HTML", () => {
+		render(
+			<PermissionDialog
+				request={mdAskRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+		const dialog = screen.getByTestId("permission-dialog");
+		const codes = dialog.querySelectorAll("code");
+		const codeTexts = Array.from(codes).map((c) => c.textContent);
+		expect(codeTexts).toContain("markdown");
+	});
+
+	it("renders option description markdown as HTML", () => {
+		render(
+			<PermissionDialog
+				request={mdAskRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+		const dialog = screen.getByTestId("permission-dialog");
+		expect(dialog.querySelector("strong")).toBeTruthy();
+		expect(dialog.querySelector("strong")?.textContent).toBe("remark-gfm");
+	});
+
+	it("renders resolved question markdown as HTML", async () => {
+		render(
+			<PermissionDialog
+				request={mdAskRequest}
+				status="allowed"
+				resolvedAnswers={{
+					"Use `react-markdown` for rendering?": "Yes",
+				}}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+		const resolved = screen.getByTestId("permission-resolved");
+		const button = resolved.querySelector("button");
+		expect(button).toBeTruthy();
+		await userEvent.click(button as HTMLElement);
+		const codes = resolved.querySelectorAll("code");
+		const codeTexts = Array.from(codes).map((c) => c.textContent);
+		expect(codeTexts).toContain("react-markdown");
+	});
+
+	it("renders resolved answer markdown as HTML", async () => {
+		render(
+			<PermissionDialog
+				request={{
+					...mdAskRequest,
+					input: {
+						questions: [
+							{
+								question: "Pick one",
+								header: "Choice",
+								options: [{ label: "A", description: "Option A" }],
+								multiSelect: false,
+							},
+						],
+					},
+				}}
+				status="allowed"
+				resolvedAnswers={{
+					"Pick one": "Selected `option-A` with **bold**",
+				}}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+			/>,
+		);
+		const resolved = screen.getByTestId("permission-resolved");
+		const button = resolved.querySelector("button");
+		expect(button).toBeTruthy();
+		await userEvent.click(button as HTMLElement);
+		expect(resolved.querySelector("code")).toBeTruthy();
+		expect(resolved.querySelector("code")?.textContent).toBe("option-A");
+		expect(resolved.querySelector("strong")).toBeTruthy();
+		expect(resolved.querySelector("strong")?.textContent).toBe("bold");
+	});
+});

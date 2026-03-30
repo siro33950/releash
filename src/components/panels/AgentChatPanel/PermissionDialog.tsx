@@ -36,6 +36,33 @@ function parseAskQuestions(input: Record<string, unknown>): AskQuestion[] {
 	return Array.isArray(input.questions) ? input.questions : [];
 }
 
+function InlineMarkdown({
+	children,
+	className,
+	"data-testid": dataTestId,
+}: {
+	children: string;
+	className?: string;
+	"data-testid"?: string;
+}) {
+	return (
+		<div
+			data-testid={dataTestId}
+			className={cn(
+				"markdown-preview prose prose-sm dark:prose-invert max-w-none",
+				className,
+			)}
+		>
+			<Markdown
+				remarkPlugins={remarkPluginList}
+				rehypePlugins={rehypePluginList}
+			>
+				{children}
+			</Markdown>
+		</div>
+	);
+}
+
 function PlanContent({
 	plan,
 	allowedPrompts,
@@ -46,17 +73,9 @@ function PlanContent({
 	return (
 		<>
 			{plan && (
-				<div
-					data-testid="plan-markdown"
-					className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words"
-				>
-					<Markdown
-						remarkPlugins={remarkPluginList}
-						rehypePlugins={rehypePluginList}
-					>
-						{plan}
-					</Markdown>
-				</div>
+				<InlineMarkdown data-testid="plan-markdown" className="break-words">
+					{plan}
+				</InlineMarkdown>
 			)}
 			{allowedPrompts.length > 0 && (
 				<div data-testid="allowed-prompts">
@@ -120,9 +139,13 @@ function ResolvedDetail({
 			<div className="mt-1.5 space-y-1">
 				{questions.map((q) => (
 					<div key={q.question} className="text-xs">
-						<p className="text-muted-foreground">{q.question}</p>
+						<InlineMarkdown className="text-muted-foreground">
+							{q.question}
+						</InlineMarkdown>
 						{resolvedAnswers?.[q.question] && (
-							<p className="font-medium">{resolvedAnswers[q.question]}</p>
+							<InlineMarkdown className="font-medium">
+								{resolvedAnswers[q.question]}
+							</InlineMarkdown>
 						)}
 					</div>
 				))}
@@ -261,8 +284,12 @@ export function PermissionDialog({
 			>
 				{questions.map((q) => (
 					<div key={q.question} className="mb-2">
-						<p className="text-xs text-muted-foreground mb-0.5">{q.header}</p>
-						<p className="text-sm font-medium mb-1.5">{q.question}</p>
+						<InlineMarkdown className="text-xs text-muted-foreground mb-0.5">
+							{q.header}
+						</InlineMarkdown>
+						<InlineMarkdown className="text-sm font-medium mb-1.5">
+							{q.question}
+						</InlineMarkdown>
 						<div className="flex flex-wrap gap-1.5">
 							{q.options.map((opt) => {
 								const isSelected = q.multiSelect
@@ -270,20 +297,25 @@ export function PermissionDialog({
 										(answers[q.question] as string[]).includes(opt.label)
 									: answers[q.question] === opt.label;
 								return (
-									<Button
-										key={opt.label}
-										size="xs"
-										variant={isSelected ? "default" : "outline"}
-										onClick={() =>
-											handleSelect(q.question, opt.label, q.multiSelect)
-										}
-										title={opt.description}
-										className={cn(
-											!q.multiSelect && isSelected && "pointer-events-none",
+									<div key={opt.label} className="flex flex-col gap-0.5">
+										<Button
+											size="xs"
+											variant={isSelected ? "default" : "outline"}
+											onClick={() =>
+												handleSelect(q.question, opt.label, q.multiSelect)
+											}
+											className={cn(
+												!q.multiSelect && isSelected && "pointer-events-none",
+											)}
+										>
+											{opt.label}
+										</Button>
+										{opt.description && (
+											<InlineMarkdown className="text-[11px] text-muted-foreground">
+												{opt.description}
+											</InlineMarkdown>
 										)}
-									>
-										{opt.label}
-									</Button>
+									</div>
 								);
 							})}
 							{!q.multiSelect && (
