@@ -138,6 +138,14 @@ fn emit_agent_query_completed(
 
 const CLOSE_TIMEOUT_SECS: u64 = 5;
 
+fn build_set_mode_command(permission_mode: &str) -> String {
+    let cmd = serde_json::json!({
+        "type": "setMode",
+        "permissionMode": permission_mode,
+    });
+    format!("{}\n", cmd)
+}
+
 /// Append text/thinking chunk to streaming parts, merging consecutive same-type parts.
 fn append_to_parts(
     parts: &mut Vec<MessagePart>,
@@ -850,10 +858,13 @@ pub async fn execute_agent_query(
             &chat_session_id,
             resume_sid,
             &cwd,
-            permission_mode,
+            permission_mode.clone(),
         )
         .await?;
     }
+
+    // Sync permissionMode to Bridge before sending message
+    let mode_data = build_set_mode_command(permission_mode.as_deref().unwrap_or("acceptEdits"));
 
     // Send message command.
     // Even if a message is sent while the SDK is still processing an interrupt,
@@ -868,6 +879,16 @@ pub async fn execute_agent_query(
     {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(&chat_session_id) {
+            // Sync permissionMode to Bridge
+            proc.stdin
+                .write_all(mode_data.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write setMode: {e}"))?;
+            proc.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Failed to flush setMode: {e}"))?;
+
             proc.state = BridgeState::Streaming;
             proc.streaming_message_id = Some(streaming_message_id.clone());
             proc.streaming_parts.clear();
@@ -964,6 +985,32 @@ pub async fn close_agent_session(
         }
         map.remove(&csid);
     });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_agent_permission_mode(
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    chat_session_id: String,
+    permission_mode: String,
+) -> Result<(), String> {
+    let data = build_set_mode_command(&permission_mode);
+
+    {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(&chat_session_id) {
+            proc.stdin
+                .write_all(data.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write setMode: {e}"))?;
+            proc.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Failed to flush setMode: {e}"))?;
+        }
+        // If no process exists, silently ignore (process not yet started)
+    }
 
     Ok(())
 }
@@ -1205,6 +1252,28 @@ mod tests {
         assert_eq!(cmd["cwd"], "/repo");
         assert_eq!(cmd["permissionMode"], "acceptEdits");
         assert_eq!(cmd["sessionId"], "sess-abc");
+    }
+
+    #[test]
+    fn set_mode_command_format() {
+        let permission_mode = "bypassPermissions";
+        let cmd = serde_json::json!({
+            "type": "setMode",
+            "permissionMode": permission_mode,
+        });
+        assert_eq!(cmd["type"], "setMode");
+        assert_eq!(cmd["permissionMode"], "bypassPermissions");
+    }
+
+    #[test]
+    fn set_mode_command_with_default() {
+        let permission_mode: Option<String> = None;
+        let cmd = serde_json::json!({
+            "type": "setMode",
+            "permissionMode": permission_mode.as_deref().unwrap_or("acceptEdits"),
+        });
+        assert_eq!(cmd["type"], "setMode");
+        assert_eq!(cmd["permissionMode"], "acceptEdits");
     }
 
     #[test]

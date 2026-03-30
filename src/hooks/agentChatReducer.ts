@@ -8,6 +8,10 @@ import type {
 	SessionSummary,
 } from "@/types/session";
 
+export function resolvePermissionMode(mode: PermissionMode): PermissionMode {
+	return mode === "plan" ? "default" : mode;
+}
+
 export interface AgentChatState {
 	sessions: SessionSummary[];
 	sessionOrder: string[];
@@ -138,11 +142,10 @@ export function reducer(
 				permissionMode: action.mode,
 			};
 		case "RESTORE_USER_PERMISSION_MODE": {
-			const restored =
-				state.userPermissionMode === "plan"
-					? "default"
-					: state.userPermissionMode;
-			return { ...state, permissionMode: restored };
+			return {
+				...state,
+				permissionMode: resolvePermissionMode(state.userPermissionMode),
+			};
 		}
 		case "SET_PENDING_PERMISSION": {
 			if (action.request === null) {

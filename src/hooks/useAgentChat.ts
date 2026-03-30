@@ -81,6 +81,8 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	sessionsRef.current = state.sessions;
 	const permissionModeRef = useRef(state.permissionMode);
 	permissionModeRef.current = state.permissionMode;
+	const userPermissionModeRef = useRef(state.userPermissionMode);
+	userPermissionModeRef.current = state.userPermissionMode;
 
 	const refreshSessions = useCallback(async (): Promise<SessionSummary[]> => {
 		try {
@@ -291,6 +293,16 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 
 	const setPermissionMode = useCallback((mode: PermissionMode) => {
 		dispatch({ type: "SET_USER_PERMISSION_MODE", mode });
+		// Immediately sync to all active Bridge processes
+		const sessionId = activeSessionRef.current?.id;
+		if (sessionId) {
+			invoke("set_agent_permission_mode", {
+				chatSessionId: sessionId,
+				permissionMode: mode,
+			}).catch((e) => {
+				console.error("Failed to set agent permission mode:", e);
+			});
+		}
 	}, []);
 
 	const respondPermission = useCallback(
@@ -326,6 +338,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	useAgentSdkListeners({
 		dispatch,
 		activeSessionRef,
+		userPermissionModeRef,
 		refreshSessions,
 	});
 
