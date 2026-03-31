@@ -1,3 +1,5 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
+import type { AnchorHTMLAttributes } from "react";
 import { useDeferredValue } from "react";
 import Markdown from "react-markdown";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
@@ -6,6 +8,21 @@ import type { MessageRole } from "@/types/session";
 interface StreamMessageProps {
 	content: string;
 	role: MessageRole;
+}
+
+function ExternalLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
+	const { href, children, ...rest } = props;
+	const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+		e.preventDefault();
+		if (href) {
+			openUrl(href).catch(() => {});
+		}
+	};
+	return (
+		<a {...rest} href={href} onClick={handleClick}>
+			{children}
+		</a>
+	);
 }
 
 export function StreamMessage({ content, role }: StreamMessageProps) {
@@ -36,6 +53,7 @@ export function StreamMessage({ content, role }: StreamMessageProps) {
 					<Markdown
 						remarkPlugins={remarkPluginList}
 						rehypePlugins={rehypePluginList}
+						components={{ a: ExternalLink }}
 					>
 						{deferredContent}
 					</Markdown>
