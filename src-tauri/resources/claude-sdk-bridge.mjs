@@ -73,6 +73,8 @@ function toUserMessage(text) {
 	};
 }
 
+let currentPermissionMode = "acceptEdits";
+
 function handleCommand(cmd) {
 	switch (cmd.type) {
 		case "init":
@@ -104,6 +106,13 @@ function handleCommand(cmd) {
 			}
 			break;
 		}
+		case "setMode": {
+			currentPermissionMode = cmd.permissionMode || "acceptEdits";
+			if (currentQuery) {
+				currentQuery.setPermissionMode(currentPermissionMode);
+			}
+			break;
+		}
 		case "close":
 			closed = true;
 			if (messageResolve) {
@@ -116,6 +125,7 @@ function handleCommand(cmd) {
 
 async function handleInit(cmd) {
 	const permissionMode = cmd.permissionMode || "acceptEdits";
+	currentPermissionMode = permissionMode;
 
 	let stderrChunks = [];
 	const options = {
@@ -135,28 +145,29 @@ async function handleInit(cmd) {
 
 	const INTERACTIVE_TOOLS = ["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"];
 
-	if (permissionMode !== "bypassPermissions") {
-		options.canUseTool = (toolName, input, meta) => {
-			if (permissionMode !== "default" && !INTERACTIVE_TOOLS.includes(toolName)) {
-				return { behavior: "allow", updatedInput: input };
-			}
-			return new Promise((resolve) => {
-				const requestId = crypto.randomUUID();
-				pendingPermissions.set(requestId, { resolve, input });
-				emit({
-					type: "permission_request",
-					request_id: requestId,
-					tool_name: toolName,
-					input,
-					tool_use_id: meta.toolUseID,
-					title: meta.title,
-					display_name: meta.displayName,
-					description: meta.description,
-					decision_reason: meta.decisionReason,
-				});
+	options.canUseTool = (toolName, input, meta) => {
+		if (
+			currentPermissionMode === "bypassPermissions" ||
+			(currentPermissionMode !== "default" && !INTERACTIVE_TOOLS.includes(toolName))
+		) {
+			return { behavior: "allow", updatedInput: input };
+		}
+		return new Promise((resolve) => {
+			const requestId = crypto.randomUUID();
+			pendingPermissions.set(requestId, { resolve, input });
+			emit({
+				type: "permission_request",
+				request_id: requestId,
+				tool_name: toolName,
+				input,
+				tool_use_id: meta.toolUseID,
+				title: meta.title,
+				display_name: meta.displayName,
+				description: meta.description,
+				decision_reason: meta.decisionReason,
 			});
-		};
-	}
+		});
+	};
 
 	if (cmd.sessionId) {
 		options.resume = cmd.sessionId;

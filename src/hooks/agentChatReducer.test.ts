@@ -373,6 +373,33 @@ describe("agentChatReducer", () => {
 			const next = reducer(state, { type: "RESTORE_USER_PERMISSION_MODE" });
 			expect(next.permissionMode).toBe("default");
 		});
+
+		it("restores bypassPermissions after Agent changes to plan then default", () => {
+			// Scenario: Bypass → Agent sets Plan → Agent restores default → Bypass
+			let state: AgentChatState = {
+				...INITIAL_STATE,
+			};
+			// User selects bypassPermissions
+			state = reducer(state, {
+				type: "SET_USER_PERMISSION_MODE",
+				mode: "bypassPermissions",
+			});
+			expect(state.permissionMode).toBe("bypassPermissions");
+			expect(state.userPermissionMode).toBe("bypassPermissions");
+
+			// Agent changes to plan
+			state = reducer(state, {
+				type: "SET_PERMISSION_MODE",
+				mode: "plan",
+			});
+			expect(state.permissionMode).toBe("plan");
+			expect(state.userPermissionMode).toBe("bypassPermissions");
+
+			// Agent restores default → should restore to bypassPermissions
+			state = reducer(state, { type: "RESTORE_USER_PERMISSION_MODE" });
+			expect(state.permissionMode).toBe("bypassPermissions");
+			expect(state.userPermissionMode).toBe("bypassPermissions");
+		});
 	});
 
 	describe("SET_PENDING_PERMISSION", () => {

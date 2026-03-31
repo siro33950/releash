@@ -312,6 +312,28 @@ describe("useAgentChat", () => {
 		);
 	});
 
+	it("setPermissionMode immediately invokes set_agent_permission_mode for active session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Create active session first
+		await act(async () => {
+			await result.current.sendMessage("hello");
+		});
+		mockInvoke.mockClear();
+
+		act(() => {
+			result.current.setPermissionMode("bypassPermissions" as never);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("set_agent_permission_mode", {
+			chatSessionId: "s1",
+			permissionMode: "bypassPermissions",
+		});
+	});
+
 	it("respondPermission for ExitPlanMode sends { behavior: allow } without updatedInput", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
@@ -797,6 +819,48 @@ describe("permissionMode sync from SDK system messages", () => {
 			});
 		});
 		expect(result.current.permissionMode).toBe("acceptEdits");
+	});
+
+	it("restores bypassPermissions when SDK returns permissionMode: default after plan override", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {});
+
+		// User selects bypassPermissions
+		act(() => {
+			result.current.setPermissionMode("bypassPermissions");
+		});
+		expect(result.current.permissionMode).toBe("bypassPermissions");
+
+		const sdkCb = listenCallbacks.get("agent-sdk-message");
+		expect(sdkCb).toBeDefined();
+
+		// SDK sends plan mode
+		act(() => {
+			sdkCb?.({
+				payload: {
+					type: "system",
+					subtype: "init",
+					session_id: "sdk-session-abc",
+					permissionMode: "plan",
+				},
+			});
+		});
+		expect(result.current.permissionMode).toBe("plan");
+
+		// SDK sends default → should restore to bypassPermissions
+		act(() => {
+			sdkCb?.({
+				payload: {
+					type: "system",
+					subtype: "status",
+					permissionMode: "default",
+				},
+			});
+		});
+		expect(result.current.permissionMode).toBe("bypassPermissions");
 	});
 });
 

@@ -43,6 +43,9 @@ function makeRefs() {
 	return {
 		dispatch: vi.fn(),
 		activeSessionRef: { current: null },
+		userPermissionModeRef: {
+			current: "acceptEdits" as import("@/types/session").PermissionMode,
+		},
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
 	};
 }
@@ -337,6 +340,32 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "RESTORE_USER_PERMISSION_MODE",
+		});
+	});
+
+	it("invokes set_agent_permission_mode to sync restored mode to Bridge on permissionMode: default", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.userPermissionModeRef.current = "bypassPermissions";
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-sdk-message");
+
+		cb?.({
+			payload: {
+				type: "system",
+				chat_session_id: "session-1",
+				permissionMode: "default",
+			},
+		});
+
+		const { invoke } = await import("@tauri-apps/api/core");
+		expect(invoke).toHaveBeenCalledWith("set_agent_permission_mode", {
+			chatSessionId: "session-1",
+			permissionMode: "bypassPermissions",
 		});
 	});
 
