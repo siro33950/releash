@@ -14,7 +14,6 @@ use crate::session::{
     now_timestamp, resolve_data_dir, GetSessionResponse, MessagePart, SessionStore,
 };
 
-const STREAMING_THROTTLE_MS: u64 = 80;
 const PERSIST_INTERVAL_MS: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -146,41 +145,14 @@ fn build_set_mode_command(permission_mode: &str) -> String {
     format!("{}\n", cmd)
 }
 
-/// Append text/thinking chunk to streaming parts, merging consecutive same-type parts.
+/// Append text/thinking chunk to streaming parts as a new part.
+/// Merging consecutive same-type chunks is handled by the frontend's `mergeDeltaParts`.
 fn append_to_parts(
     parts: &mut Vec<MessagePart>,
     part_type: &str,
     chunk: &str,
     parent_tool_use_id: Option<String>,
 ) {
-    if let Some(last) = parts.last_mut() {
-        let merge = match (last, part_type) {
-            (
-                MessagePart::Text {
-                    content,
-                    parent_tool_use_id: pid,
-                },
-                "text",
-            ) if *pid == parent_tool_use_id => {
-                content.push_str(chunk);
-                true
-            }
-            (
-                MessagePart::Thinking {
-                    content,
-                    parent_tool_use_id: pid,
-                },
-                "thinking",
-            ) if *pid == parent_tool_use_id => {
-                content.push_str(chunk);
-                true
-            }
-            _ => false,
-        };
-        if merge {
-            return;
-        }
-    }
     match part_type {
         "text" => parts.push(MessagePart::Text {
             content: chunk.to_string(),
@@ -192,6 +164,45 @@ fn append_to_parts(
         }),
         _ => {}
     }
+}
+
+/// Consolidate consecutive same-type text/thinking parts for persistence.
+/// During streaming, parts are kept as individual chunks for correct delta extraction.
+/// This function merges them into single parts before persisting.
+fn consolidate_parts(parts: Vec<MessagePart>) -> Vec<MessagePart> {
+    let mut result: Vec<MessagePart> = Vec::with_capacity(parts.len());
+    for part in parts {
+        match (&part, result.last_mut()) {
+            (
+                MessagePart::Text {
+                    content,
+                    parent_tool_use_id,
+                },
+                Some(MessagePart::Text {
+                    content: last_content,
+                    parent_tool_use_id: last_pid,
+                }),
+            ) if parent_tool_use_id == last_pid => {
+                last_content.push_str(content);
+            }
+            (
+                MessagePart::Thinking {
+                    content,
+                    parent_tool_use_id,
+                },
+                Some(MessagePart::Thinking {
+                    content: last_content,
+                    parent_tool_use_id: last_pid,
+                }),
+            ) if parent_tool_use_id == last_pid => {
+                last_content.push_str(content);
+            }
+            _ => {
+                result.push(part);
+            }
+        }
+    }
+    result
 }
 
 /// Extract tool_result content from SDK content blocks.
@@ -215,6 +226,14 @@ fn extract_tool_result_content(content: &serde_json::Value) -> String {
             .join("\n");
     }
     String::new()
+}
+
+/// Returns true if the message should be forwarded as agent-sdk-message.
+/// Non-accumulated messages (meta events) are always forwarded.
+/// permission_request is accumulated (for streaming delta) but ALSO forwarded
+/// for SET_PENDING_PERMISSION dispatch on the frontend.
+fn should_forward_sdk_message(accumulated: bool, msg_type: &str) -> bool {
+    !accumulated || msg_type == "permission_request"
 }
 
 /// Parse SDK message and accumulate into streaming_parts.
@@ -320,7 +339,7 @@ fn accumulate_sdk_message(msg: &serde_json::Value, parts: &mut Vec<MessagePart>)
                 answers: None,
                 parent_tool_use_id,
             });
-            false // Still forward for SET_PENDING_PERMISSION dispatch
+            true
         }
         "system" => {
             let subtype = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
@@ -466,7 +485,6 @@ async fn spawn_bridge_process(
         use tauri::Emitter;
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
-        let mut last_emit_time = std::time::Instant::now();
         let mut last_persist_time = std::time::Instant::now();
         while let Ok(Some(line)) = lines.next_line().await {
             if line.is_empty() {
@@ -502,8 +520,9 @@ async fn spawn_bridge_process(
                                 was_streaming = proc.state == BridgeState::Streaming;
                                 proc.state = BridgeState::Ready;
 
-                                // Capture and clear streaming buffer
-                                final_parts = std::mem::take(&mut proc.streaming_parts);
+                                // Capture and clear streaming buffer, consolidating text/thinking chunks
+                                final_parts =
+                                    consolidate_parts(std::mem::take(&mut proc.streaming_parts));
                                 final_msg_id = proc.streaming_message_id.take();
 
                                 // User turn succeeded: persist agent_session_id to SessionStore
@@ -624,61 +643,54 @@ async fn spawn_bridge_process(
                         }
                     }
                     _ => {
-                        // Accumulate into streaming buffer and emit throttled update
-                        let (
-                            accumulated,
-                            should_emit_update,
-                            should_persist,
-                            emit_parts,
-                            emit_msg_id,
-                        ) = {
+                        // Accumulate into streaming buffer and emit delta update
+                        let (accumulated, delta_parts, emit_msg_id, should_persist, persist_parts) = {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 if proc.state == BridgeState::Streaming
                                     && proc.streaming_message_id.is_some()
                                 {
+                                    let prev_len = proc.streaming_parts.len();
                                     let acc =
                                         accumulate_sdk_message(&msg, &mut proc.streaming_parts);
                                     if !acc {
-                                        (false, false, false, Vec::new(), None)
+                                        (false, Vec::new(), None, false, Vec::new())
                                     } else {
+                                        // Extract only newly added parts as delta
+                                        let delta: Vec<MessagePart> =
+                                            proc.streaming_parts[prev_len..].to_vec();
+                                        let mid = proc.streaming_message_id.clone();
+
                                         let now = std::time::Instant::now();
-                                        let elapsed_emit =
-                                            now.duration_since(last_emit_time).as_millis() as u64;
                                         let elapsed_persist =
                                             now.duration_since(last_persist_time).as_millis()
                                                 as u64;
-                                        let should_emit = elapsed_emit >= STREAMING_THROTTLE_MS;
                                         let should_persist = elapsed_persist >= PERSIST_INTERVAL_MS;
-
-                                        let (parts, mid) = if should_emit || should_persist {
-                                            (
-                                                proc.streaming_parts.clone(),
-                                                proc.streaming_message_id.clone(),
-                                            )
+                                        let persist_parts = if should_persist {
+                                            consolidate_parts(proc.streaming_parts.clone())
                                         } else {
-                                            (Vec::new(), None)
+                                            Vec::new()
                                         };
-                                        (true, should_emit, should_persist, parts, mid)
+
+                                        (true, delta, mid, should_persist, persist_parts)
                                     }
                                 } else {
-                                    (false, false, false, Vec::new(), None)
+                                    (false, Vec::new(), None, false, Vec::new())
                                 }
                             } else {
-                                (false, false, false, Vec::new(), None)
+                                (false, Vec::new(), None, false, Vec::new())
                             }
                         };
 
-                        // Emit agent-streaming-updated (throttled)
-                        if should_emit_update {
+                        // Emit agent-streaming-updated with delta parts (no throttle)
+                        if !delta_parts.is_empty() {
                             if let Some(ref mid) = emit_msg_id {
-                                last_emit_time = std::time::Instant::now();
                                 let _ = app_stdout.emit(
                                     "agent-streaming-updated",
                                     serde_json::json!({
                                         "chat_session_id": csid_stdout,
                                         "message_id": mid,
-                                        "parts": emit_parts,
+                                        "parts": delta_parts,
                                     }),
                                 );
                             }
@@ -693,13 +705,14 @@ async fn spawn_bridge_process(
                                     &app_stdout,
                                     &csid_stdout,
                                     mid,
-                                    &emit_parts,
+                                    &persist_parts,
                                 );
                             }
                         }
 
-                        // Forward non-accumulated messages (meta events) as agent-sdk-message
-                        if !accumulated {
+                        // Forward non-accumulated messages (meta events) as agent-sdk-message.
+                        // permission_request needs both delta emit AND forwarding for SET_PENDING_PERMISSION.
+                        if should_forward_sdk_message(accumulated, msg_type) {
                             let _ = app_stdout.emit("agent-sdk-message", &msg);
                         }
                     }
@@ -763,7 +776,7 @@ pub async fn get_session(
                 let streaming = proc.state == BridgeState::Streaming;
                 if streaming {
                     if let Some(ref mid) = proc.streaming_message_id {
-                        let parts = proc.streaming_parts.clone();
+                        let parts = consolidate_parts(proc.streaming_parts.clone());
                         if !parts.is_empty() {
                             if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *mid) {
                                 msg.parts = Some(parts);
@@ -1053,7 +1066,7 @@ pub async fn respond_agent_permission(
     });
     let data = format!("{}\n", payload);
 
-    let emit_parts;
+    let updated_permission_part: Option<MessagePart>;
     let emit_msg_id;
     {
         let mut map = handles.lock().await;
@@ -1073,6 +1086,7 @@ pub async fn respond_agent_permission(
             } else {
                 "denied"
             };
+            let mut found_part = None;
             for part in &mut proc.streaming_parts {
                 if let MessagePart::Permission {
                     request,
@@ -1086,11 +1100,12 @@ pub async fn respond_agent_permission(
                         if let Some(ref av) = answers_value {
                             *answers = Some(av.clone());
                         }
+                        found_part = Some(part.clone());
                     }
                 }
             }
 
-            emit_parts = proc.streaming_parts.clone();
+            updated_permission_part = found_part;
             emit_msg_id = proc.streaming_message_id.clone();
         } else {
             return Err(format!(
@@ -1099,15 +1114,15 @@ pub async fn respond_agent_permission(
         }
     }
 
-    // Emit agent-streaming-updated with resolved permission
-    if let Some(ref mid) = emit_msg_id {
+    // Emit agent-streaming-updated with the updated permission part as delta
+    if let (Some(ref mid), Some(ref part)) = (&emit_msg_id, &updated_permission_part) {
         use tauri::Emitter;
         let _ = app.emit(
             "agent-streaming-updated",
             serde_json::json!({
                 "chat_session_id": chat_session_id,
                 "message_id": mid,
-                "parts": emit_parts,
+                "parts": [part],
             }),
         );
     }
@@ -1860,13 +1875,17 @@ mod tests {
     // --- append_to_parts tests ---
 
     #[test]
-    fn test_append_merges_consecutive_text() {
+    fn test_append_pushes_separate_parts() {
         let mut parts = vec![];
         append_to_parts(&mut parts, "text", "Hello", None);
         append_to_parts(&mut parts, "text", " world", None);
-        assert_eq!(parts.len(), 1);
+        assert_eq!(parts.len(), 2);
         match &parts[0] {
-            MessagePart::Text { content, .. } => assert_eq!(content, "Hello world"),
+            MessagePart::Text { content, .. } => assert_eq!(content, "Hello"),
+            _ => panic!("expected Text"),
+        }
+        match &parts[1] {
+            MessagePart::Text { content, .. } => assert_eq!(content, " world"),
             _ => panic!("expected Text"),
         }
     }
@@ -2019,9 +2038,21 @@ mod tests {
         });
         let mut parts = vec![];
         let handled = accumulate_sdk_message(&msg, &mut parts);
-        assert!(!handled);
+        assert!(handled);
         assert_eq!(parts.len(), 1);
         assert!(matches!(&parts[0], MessagePart::Permission { status, .. } if status == "pending"));
+    }
+
+    #[test]
+    fn test_should_forward_sdk_message() {
+        // Non-accumulated (meta events) → always forward
+        assert!(should_forward_sdk_message(false, "session_ready"));
+        assert!(should_forward_sdk_message(false, "error"));
+        // Accumulated → NOT forward (delta emit only)
+        assert!(!should_forward_sdk_message(true, "assistant"));
+        assert!(!should_forward_sdk_message(true, "stream_event"));
+        // permission_request → accumulated=true but still forward
+        assert!(should_forward_sdk_message(true, "permission_request"));
     }
 
     #[test]
@@ -2066,6 +2097,109 @@ mod tests {
                 assert_eq!(description.as_deref(), Some("Searching"));
             }
             _ => panic!("expected TaskStatus"),
+        }
+    }
+
+    // --- consolidate_parts tests ---
+
+    #[test]
+    fn test_consolidate_merges_consecutive_text() {
+        let parts = vec![
+            MessagePart::Text {
+                content: "Hello".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Text {
+                content: " world".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let result = consolidate_parts(parts);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            MessagePart::Text { content, .. } => assert_eq!(content, "Hello world"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_consolidate_no_merge_different_types() {
+        let parts = vec![
+            MessagePart::Text {
+                content: "Hello".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Thinking {
+                content: "hmm".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let result = consolidate_parts(parts);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_consolidate_no_merge_different_parent() {
+        let parts = vec![
+            MessagePart::Text {
+                content: "main".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Text {
+                content: "sub".to_string(),
+                parent_tool_use_id: Some("parent1".to_string()),
+            },
+        ];
+        let result = consolidate_parts(parts);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_consolidate_preserves_non_text_parts() {
+        let parts = vec![
+            MessagePart::Text {
+                content: "Hello".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::ToolUse {
+                tool: "Read".to_string(),
+                input: serde_json::json!({}),
+                id: "t1".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Text {
+                content: "World".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let result = consolidate_parts(parts);
+        assert_eq!(result.len(), 3);
+        assert!(matches!(&result[0], MessagePart::Text { content, .. } if content == "Hello"));
+        assert!(matches!(&result[1], MessagePart::ToolUse { .. }));
+        assert!(matches!(&result[2], MessagePart::Text { content, .. } if content == "World"));
+    }
+
+    #[test]
+    fn test_consolidate_merges_multiple_consecutive_chunks() {
+        let parts = vec![
+            MessagePart::Text {
+                content: "a".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Text {
+                content: "b".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Text {
+                content: "c".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        let result = consolidate_parts(parts);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            MessagePart::Text { content, .. } => assert_eq!(content, "abc"),
+            _ => panic!("expected Text"),
         }
     }
 }
