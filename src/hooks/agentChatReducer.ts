@@ -55,6 +55,52 @@ export type AgentChatAction =
 			parts: MessagePart[];
 	  };
 
+/**
+ * Merge delta parts into existing parts.
+ * - text/thinking: merge into the last existing part if same type and parentToolUseId
+ * - permission: update existing part by request_id if found, otherwise append
+ * - other types: always append
+ */
+export function mergeDeltaParts(
+	existing: MessagePart[],
+	delta: MessagePart[],
+): MessagePart[] {
+	if (delta.length === 0) return existing;
+	const result = existing.slice();
+	for (const part of delta) {
+		if (part.type === "text" || part.type === "thinking") {
+			const last = result.length > 0 ? result[result.length - 1] : undefined;
+			if (
+				last &&
+				(last.type === "text" || last.type === "thinking") &&
+				last.type === part.type &&
+				last.parentToolUseId === part.parentToolUseId
+			) {
+				result[result.length - 1] = {
+					...last,
+					content: last.content + part.content,
+				};
+			} else {
+				result.push(part);
+			}
+		} else if (part.type === "permission") {
+			const idx = result.findIndex(
+				(p) =>
+					p.type === "permission" &&
+					p.request.request_id === part.request.request_id,
+			);
+			if (idx !== -1) {
+				result[idx] = part;
+			} else {
+				result.push(part);
+			}
+		} else {
+			result.push(part);
+		}
+	}
+	return result;
+}
+
 function updateMessageInSession(
 	state: AgentChatState,
 	messageId: string,
@@ -175,7 +221,7 @@ export function reducer(
 				return state;
 			return updateMessageInSession(state, action.messageId, (m) => ({
 				...m,
-				parts: action.parts,
+				parts: mergeDeltaParts(m.parts, action.parts),
 			}));
 		}
 	}

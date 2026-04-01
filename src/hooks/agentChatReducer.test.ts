@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage, ChatSession } from "@/types/session";
 import type { AgentChatState } from "./agentChatReducer";
-import { INITIAL_STATE, reducer } from "./agentChatReducer";
+import { INITIAL_STATE, mergeDeltaParts, reducer } from "./agentChatReducer";
 
 function makeSession(overrides?: Partial<ChatSession>): ChatSession {
 	return {
@@ -467,7 +467,7 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("SET_STREAMING_MESSAGE", () => {
-		it("updates parts of matching message in active session", () => {
+		it("appends delta parts to existing parts in active session", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
@@ -477,17 +477,20 @@ describe("agentChatReducer", () => {
 				...INITIAL_STATE,
 				activeSession: makeSession({ id: "s1", messages: [msg] }),
 			};
-			const newParts = [
-				{ type: "text" as const, content: "updated" },
+			const deltaParts = [
+				{ type: "text" as const, content: " updated" },
 				{ type: "thinking" as const, content: "reasoning" },
 			];
 			const next = reducer(state, {
 				type: "SET_STREAMING_MESSAGE",
 				sessionId: "s1",
 				messageId: "m1",
-				parts: newParts,
+				parts: deltaParts,
 			});
-			expect(next.activeSession?.messages[0].parts).toEqual(newParts);
+			expect(next.activeSession?.messages[0].parts).toEqual([
+				{ type: "text", content: "old updated" },
+				{ type: "thinking", content: "reasoning" },
+			]);
 		});
 
 		it("does nothing when activeSession is null", () => {
@@ -532,6 +535,120 @@ describe("agentChatReducer", () => {
 				parts: [{ type: "text", content: "hello" }],
 			});
 			expect(next).toBe(state);
+		});
+	});
+
+	describe("mergeDeltaParts", () => {
+		it("merges consecutive text delta into last text part", () => {
+			const existing = [{ type: "text" as const, content: "Hello" }];
+			const delta = [{ type: "text" as const, content: " World" }];
+			const result = mergeDeltaParts(existing, delta);
+			expect(result).toEqual([{ type: "text", content: "Hello World" }]);
+		});
+
+		it("appends text delta when last part is different type", () => {
+			const existing = [{ type: "thinking" as const, content: "thinking..." }];
+			const delta = [{ type: "text" as const, content: "answer" }];
+			const result = mergeDeltaParts(existing, delta);
+			expect(result).toHaveLength(2);
+			expect(result[1]).toEqual({ type: "text", content: "answer" });
+		});
+
+		it("adds new permission part", () => {
+			const existing: import("@/types/session").MessagePart[] = [];
+			const delta: import("@/types/session").MessagePart[] = [
+				{
+					type: "permission",
+					request: {
+						request_id: "req-1",
+						tool_name: "ExitPlanMode",
+						input: {},
+						tool_use_id: "toolu_001",
+					},
+					status: "pending",
+				},
+			];
+			const result = mergeDeltaParts(existing, delta);
+			expect(result).toHaveLength(1);
+			expect(result[0]).toEqual({
+				type: "permission",
+				request: {
+					request_id: "req-1",
+					tool_name: "ExitPlanMode",
+					input: {},
+					tool_use_id: "toolu_001",
+				},
+				status: "pending",
+			});
+		});
+
+		it("updates existing permission part by request_id", () => {
+			const existing: import("@/types/session").MessagePart[] = [
+				{
+					type: "permission",
+					request: {
+						request_id: "req-1",
+						tool_name: "ExitPlanMode",
+						input: {},
+						tool_use_id: "toolu_001",
+					},
+					status: "pending",
+				},
+			];
+			const delta: import("@/types/session").MessagePart[] = [
+				{
+					type: "permission",
+					request: {
+						request_id: "req-1",
+						tool_name: "ExitPlanMode",
+						input: {},
+						tool_use_id: "toolu_001",
+					},
+					status: "allowed",
+				},
+			];
+			const result = mergeDeltaParts(existing, delta);
+			expect(result).toHaveLength(1);
+			expect(result[0]).toEqual({
+				type: "permission",
+				request: {
+					request_id: "req-1",
+					tool_name: "ExitPlanMode",
+					input: {},
+					tool_use_id: "toolu_001",
+				},
+				status: "allowed",
+			});
+		});
+
+		it("appends tool_use parts", () => {
+			const existing = [{ type: "text" as const, content: "hello" }];
+			const delta: import("@/types/session").MessagePart[] = [
+				{
+					type: "tool_use",
+					tool: "Edit",
+					input: { file_path: "/src/main.rs" },
+					id: "toolu_001",
+				},
+			];
+			const result = mergeDeltaParts(existing, delta);
+			expect(result).toHaveLength(2);
+			expect(result[1].type).toBe("tool_use");
+		});
+
+		it("returns existing when delta is empty", () => {
+			const existing = [{ type: "text" as const, content: "hello" }];
+			const result = mergeDeltaParts(existing, []);
+			expect(result).toBe(existing);
+		});
+
+		it("does not merge text with different parentToolUseId", () => {
+			const existing = [{ type: "text" as const, content: "main" }];
+			const delta = [
+				{ type: "text" as const, content: "sub", parentToolUseId: "parent1" },
+			];
+			const result = mergeDeltaParts(existing, delta);
+			expect(result).toHaveLength(2);
 		});
 	});
 });
