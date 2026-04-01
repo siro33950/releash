@@ -71,22 +71,34 @@ export function buildToolPairings(parts: MessagePart[]): ToolPairingResult {
 	const taskToolUseIdToIndex = new Map<string, number>();
 	for (let i = 0; i < parts.length; i++) {
 		const p = parts[i];
-		if (p.type === "tool_use" && (p.tool === "Task" || p.tool === "Agent")) {
-			const input = p.input as Record<string, unknown>;
+		const input =
+			p.type === "tool_use" ? (p.input as Record<string, unknown>) : undefined;
+		if (
+			p.type === "tool_use" &&
+			(p.tool === "Task" ||
+				p.tool === "Agent" ||
+				input?.run_in_background === true)
+		) {
 			const group: TaskGroup = {
 				toolUseIndex: i,
 				toolUseId: p.id,
 				description:
-					typeof input.description === "string" ? input.description : undefined,
+					typeof input?.description === "string"
+						? input.description
+						: typeof input?.command === "string"
+							? input.command.length > 80
+								? `${input.command.slice(0, 80)}…`
+								: input.command
+							: undefined,
 				subagentType:
-					typeof input.subagent_type === "string"
+					typeof input?.subagent_type === "string"
 						? input.subagent_type
 						: undefined,
 				childIndices: [],
 				statusParts: [],
 				resultIndex: undefined,
 				isCompleted: false,
-				isBackground: input.run_in_background === true,
+				isBackground: input?.run_in_background === true,
 			};
 			taskGroups.set(i, group);
 			taskToolUseIdToIndex.set(p.id, i);

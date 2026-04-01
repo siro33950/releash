@@ -493,4 +493,108 @@ describe("buildToolPairings", () => {
 		expect(group?.isBackground).toBe(false);
 		expect(group?.isCompleted).toBe(true);
 	});
+
+	it("creates TaskGroup for Bash with run_in_background: true", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Bash",
+				input: {
+					command: "sleep 10 && echo done",
+					run_in_background: true,
+				},
+				id: "bash1",
+			},
+			{
+				type: "tool_result",
+				content: "Command running in background with ID: abc123",
+				isError: false,
+				toolUseId: "bash1",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(false);
+		expect(group?.description).toBe("sleep 10 && echo done");
+	});
+
+	it("uses command as description for Bash background task", () => {
+		const longCommand = "a".repeat(100);
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Bash",
+				input: { command: longCommand, run_in_background: true },
+				id: "bash1",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group?.description).toBe(`${"a".repeat(80)}…`);
+	});
+
+	it("does not create TaskGroup for Bash without run_in_background", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Bash",
+				input: { command: "echo hello" },
+				id: "bash1",
+			},
+			{
+				type: "tool_result",
+				content: "hello",
+				isError: false,
+				toolUseId: "bash1",
+			},
+		];
+		const result = buildToolPairings(parts);
+		expect(result.taskGroups.size).toBe(0);
+	});
+
+	it("completes Bash background task on task_status completed", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Bash",
+				input: { command: "sleep 10", run_in_background: true },
+				id: "bash1",
+			},
+			{
+				type: "tool_result",
+				content: "Command running in background with ID: abc123",
+				isError: false,
+				toolUseId: "bash1",
+			},
+			{
+				type: "task_status",
+				taskToolUseId: "bash1",
+				status: "completed",
+				summary: "Done",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(true);
+		expect(group?.completionStatusIndex).toBe(2);
+	});
+
+	it("creates TaskGroup for any tool with run_in_background: true", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "CustomTool",
+				input: { run_in_background: true },
+				id: "ct1",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+	});
 });

@@ -35,6 +35,10 @@ pub struct AgentProcess {
     /// Retained after turn_complete so post-turn background task events
     /// can still be accumulated and emitted via `agent-streaming-updated`.
     pub last_message_id: Option<String>,
+    /// Maps background task_id (agentId) → tool_use_id.
+    /// Populated from ToolResult content ("agentId: XXX"), used to fill
+    /// missing tool_use_id in task_notification messages from the SDK.
+    pub task_id_map: HashMap<String, String>,
 }
 
 /// Per-session agent process map: chat_session_id → AgentProcess
@@ -239,9 +243,32 @@ fn should_forward_sdk_message(accumulated: bool, msg_type: &str) -> bool {
     !accumulated || msg_type == "permission_request"
 }
 
+/// Extract background task ID from tool_result content.
+/// Handles both Task tool ("agentId: a72ca50") and Bash tool ("with ID: b8625ae") formats.
+fn extract_agent_id(content: &str) -> Option<&str> {
+    // Try known prefixes in order
+    for prefix in &["agentId: ", "with ID: "] {
+        if let Some(pos) = content.find(prefix) {
+            let start = pos + prefix.len();
+            let rest = &content[start..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+                .unwrap_or(rest.len());
+            if end > 0 {
+                return Some(&rest[..end]);
+            }
+        }
+    }
+    None
+}
+
 /// Parse SDK message and accumulate into streaming_parts.
 /// Returns true if the message was handled (accumulated) and should NOT be forwarded as agent-sdk-message.
-fn accumulate_sdk_message(msg: &serde_json::Value, parts: &mut Vec<MessagePart>) -> bool {
+fn accumulate_sdk_message(
+    msg: &serde_json::Value,
+    parts: &mut Vec<MessagePart>,
+    task_id_map: &mut HashMap<String, String>,
+) -> bool {
     let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let parent_tool_use_id = msg
         .get("parent_tool_use_id")
@@ -322,6 +349,12 @@ fn accumulate_sdk_message(msg: &serde_json::Value, parts: &mut Vec<MessagePart>)
                                 .get("is_error")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
+                            // Extract agentId from background task tool_result
+                            if let Some(tuid) = &tool_use_id {
+                                if let Some(agent_id) = extract_agent_id(&content_str) {
+                                    task_id_map.insert(agent_id.to_string(), tuid.clone());
+                                }
+                            }
                             parts.push(MessagePart::ToolResult {
                                 content: content_str,
                                 is_error,
@@ -348,11 +381,19 @@ fn accumulate_sdk_message(msg: &serde_json::Value, parts: &mut Vec<MessagePart>)
             let subtype = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
             match subtype {
                 "task_started" | "task_notification" | "task_progress" => {
-                    let tool_use_id = msg
+                    let mut tool_use_id = msg
                         .get("tool_use_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
+                    // SDK task_notification omits tool_use_id; resolve via task_id mapping
+                    if tool_use_id.is_empty() {
+                        if let Some(task_id) = msg.get("task_id").and_then(|v| v.as_str()) {
+                            if let Some(mapped) = task_id_map.get(task_id) {
+                                tool_use_id = mapped.clone();
+                            }
+                        }
+                    }
                     let status = match subtype {
                         "task_started" => "started",
                         "task_progress" => "progress",
@@ -475,6 +516,7 @@ async fn spawn_bridge_process(
                 streaming_message_id: None,
                 streaming_parts: Vec::new(),
                 last_message_id: None,
+                task_id_map: HashMap::new(),
             },
         );
     }
@@ -530,8 +572,13 @@ async fn spawn_bridge_process(
                                 raw_parts = proc.streaming_parts.clone();
                                 final_msg_id = proc.streaming_message_id.take();
 
-                                // Retain message ID for post-turn_complete background task events
-                                proc.last_message_id = final_msg_id.clone();
+                                // Retain message ID for post-turn_complete background task events.
+                                // Only update if we have a real ID — a second turn_complete
+                                // (from background task result) would yield None and must not
+                                // overwrite the ID set by the first turn_complete.
+                                if final_msg_id.is_some() {
+                                    proc.last_message_id = final_msg_id.clone();
+                                }
 
                                 // User turn succeeded: persist agent_session_id to SessionStore
                                 if was_streaming && exit_code == 0 {
@@ -613,7 +660,11 @@ async fn spawn_bridge_process(
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 if proc.state == BridgeState::Streaming {
-                                    accumulate_sdk_message(&msg, &mut proc.streaming_parts);
+                                    accumulate_sdk_message(
+                                        &msg,
+                                        &mut proc.streaming_parts,
+                                        &mut proc.task_id_map,
+                                    );
                                 }
                             }
                         }
@@ -668,8 +719,11 @@ async fn spawn_bridge_process(
                                     && proc.streaming_message_id.is_some()
                                 {
                                     let prev_len = proc.streaming_parts.len();
-                                    let acc =
-                                        accumulate_sdk_message(&msg, &mut proc.streaming_parts);
+                                    let acc = accumulate_sdk_message(
+                                        &msg,
+                                        &mut proc.streaming_parts,
+                                        &mut proc.task_id_map,
+                                    );
                                     if !acc {
                                         (false, Vec::new(), None, false, Vec::new())
                                     } else {
@@ -696,8 +750,11 @@ async fn spawn_bridge_process(
                                     // (task_notification, task_progress, etc.)
                                     // Accumulate and emit immediately (no throttle needed).
                                     let prev_len = proc.streaming_parts.len();
-                                    let acc =
-                                        accumulate_sdk_message(&msg, &mut proc.streaming_parts);
+                                    let acc = accumulate_sdk_message(
+                                        &msg,
+                                        &mut proc.streaming_parts,
+                                        &mut proc.task_id_map,
+                                    );
                                     if !acc {
                                         (false, Vec::new(), None, false, Vec::new())
                                     } else {
@@ -1994,7 +2051,7 @@ mod tests {
             }
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts);
+        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2013,7 +2070,7 @@ mod tests {
             }
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts);
+        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2036,7 +2093,7 @@ mod tests {
             }
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts);
+        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2062,7 +2119,7 @@ mod tests {
             }
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts);
+        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2088,7 +2145,7 @@ mod tests {
             "tool_name": "Edit"
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts);
+        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         assert!(matches!(&parts[0], MessagePart::Permission { status, .. } if status == "pending"));
@@ -2113,7 +2170,7 @@ mod tests {
             "message": "Something went wrong"
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts);
+        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(!handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2133,7 +2190,7 @@ mod tests {
             "description": "Searching"
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts);
+        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2146,6 +2203,99 @@ mod tests {
                 assert_eq!(task_tool_use_id, "task1");
                 assert_eq!(status, "started");
                 assert_eq!(description.as_deref(), Some("Searching"));
+            }
+            _ => panic!("expected TaskStatus"),
+        }
+    }
+
+    #[test]
+    fn test_extract_agent_id() {
+        // Task tool format: "agentId: <id>"
+        assert_eq!(
+            extract_agent_id("Async agent launched successfully.\nagentId: a72ca50 (internal ID)"),
+            Some("a72ca50")
+        );
+        assert_eq!(
+            extract_agent_id("agentId: abc-123_def"),
+            Some("abc-123_def")
+        );
+        // Bash tool format: "with ID: <id>"
+        assert_eq!(
+            extract_agent_id(
+                "Command running in background with ID: b8625ae. Output is being written to: /tmp/tasks/b8625ae.output"
+            ),
+            Some("b8625ae")
+        );
+        assert_eq!(
+            extract_agent_id("with ID: task-abc_123"),
+            Some("task-abc_123")
+        );
+        // No match
+        assert_eq!(extract_agent_id("no agent id here"), None);
+        assert_eq!(extract_agent_id("agentId: "), None);
+        assert_eq!(extract_agent_id("with ID: "), None);
+    }
+
+    #[test]
+    fn test_task_notification_resolves_tool_use_id_from_map() {
+        // Step 1: tool_result with agentId populates the map
+        let tool_result_msg = serde_json::json!({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_abc123",
+                    "content": [{
+                        "type": "text",
+                        "text": "Async agent launched successfully.\nagentId: task42 (internal ID)"
+                    }]
+                }]
+            }
+        });
+        let mut parts = vec![];
+        let mut task_id_map = HashMap::new();
+        accumulate_sdk_message(&tool_result_msg, &mut parts, &mut task_id_map);
+        assert_eq!(task_id_map.get("task42"), Some(&"toolu_abc123".to_string()));
+
+        // Step 2: task_notification without tool_use_id resolves from map
+        let notification_msg = serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task42",
+            "status": "completed",
+            "summary": "Agent completed"
+        });
+        accumulate_sdk_message(&notification_msg, &mut parts, &mut task_id_map);
+        let task_status = parts
+            .iter()
+            .find(|p| matches!(p, MessagePart::TaskStatus { status, .. } if status == "completed"))
+            .expect("should have a completed TaskStatus");
+        match task_status {
+            MessagePart::TaskStatus {
+                task_tool_use_id, ..
+            } => {
+                assert_eq!(task_tool_use_id, "toolu_abc123");
+            }
+            _ => panic!("expected TaskStatus"),
+        }
+    }
+
+    #[test]
+    fn test_task_notification_without_map_entry_stays_empty() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "unknown_task",
+            "status": "completed"
+        });
+        let mut parts = vec![];
+        let mut task_id_map = HashMap::new();
+        accumulate_sdk_message(&msg, &mut parts, &mut task_id_map);
+        match &parts[0] {
+            MessagePart::TaskStatus {
+                task_tool_use_id, ..
+            } => {
+                assert_eq!(task_tool_use_id, "");
             }
             _ => panic!("expected TaskStatus"),
         }
