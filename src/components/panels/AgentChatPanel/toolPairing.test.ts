@@ -447,6 +447,98 @@ describe("buildToolPairings", () => {
 		expect(group?.completionStatusIndex).toBe(3);
 	});
 
+	it("keeps background Agent task incomplete when tool_result is paired", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Agent",
+				input: {
+					description: "Explore codebase",
+					subagent_type: "Explore",
+					run_in_background: true,
+				},
+				id: "agent_bg1",
+			},
+			{
+				type: "tool_result",
+				content: "agent done",
+				isError: false,
+				toolUseId: "agent_bg1",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(false);
+		expect(group?.resultIndex).toBe(1);
+	});
+
+	it("completes background Agent task on task_status completed", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Agent",
+				input: {
+					description: "Explore codebase",
+					subagent_type: "Explore",
+					run_in_background: true,
+				},
+				id: "agent_bg1",
+			},
+			{
+				type: "tool_result",
+				content: "agent done",
+				isError: false,
+				toolUseId: "agent_bg1",
+			},
+			{
+				type: "task_status",
+				taskToolUseId: "agent_bg1",
+				status: "completed",
+				summary: "Done",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(true);
+		expect(group?.completionStatusIndex).toBe(2);
+	});
+
+	it("completes background Agent task on task_status failed", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Agent",
+				input: {
+					description: "Explore codebase",
+					subagent_type: "Explore",
+					run_in_background: true,
+				},
+				id: "agent_bg1",
+			},
+			{
+				type: "tool_result",
+				content: "agent done",
+				isError: false,
+				toolUseId: "agent_bg1",
+			},
+			{
+				type: "task_status",
+				taskToolUseId: "agent_bg1",
+				status: "failed",
+				summary: "Error occurred",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(true);
+	});
+
 	it("does not set completionStatusIndex for foreground task", () => {
 		const parts: MessagePart[] = [
 			{

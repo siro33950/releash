@@ -1013,6 +1013,7 @@ pub async fn execute_agent_query(
             proc.streaming_message_id = Some(streaming_message_id.clone());
             proc.streaming_parts.clear();
             proc.last_message_id = None;
+            proc.task_id_map.clear();
             proc.stdin
                 .write_all(data.as_bytes())
                 .await

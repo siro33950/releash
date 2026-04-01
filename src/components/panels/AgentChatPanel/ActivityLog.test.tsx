@@ -498,6 +498,72 @@ describe("TaskToolActivity", () => {
 		expect(screen.queryByTestId("activity-tool-use-1")).toBeNull();
 	});
 
+	it("shows spinner for background task even when not streaming", () => {
+		const group = makeTaskGroup({
+			isBackground: true,
+			isCompleted: false,
+			childIndices: [1],
+		});
+		const parts: MessagePart[] = [
+			...baseParts,
+			{
+				type: "tool_use",
+				tool: "Read",
+				input: { file_path: "/src/main.ts" },
+				id: "toolu_child_001",
+				parentToolUseId: "toolu_task_001",
+			},
+		];
+		render(
+			<TaskToolActivity
+				group={group}
+				parts={parts}
+				pairedResults={new Map()}
+				isStreaming={false}
+			/>,
+		);
+
+		const el = screen.getByTestId("activity-task-0");
+		expect(el.querySelector(".animate-spin")).not.toBeNull();
+	});
+
+	it("hides spinner for completed background task", () => {
+		const group = makeTaskGroup({
+			isBackground: true,
+			isCompleted: true,
+			childIndices: [1],
+			statusParts: [
+				{
+					type: "task_status",
+					taskToolUseId: "toolu_task_001",
+					status: "completed",
+					summary: "Done",
+				},
+			],
+		});
+		const parts: MessagePart[] = [
+			...baseParts,
+			{
+				type: "tool_use",
+				tool: "Read",
+				input: { file_path: "/src/main.ts" },
+				id: "toolu_child_001",
+				parentToolUseId: "toolu_task_001",
+			},
+		];
+		render(
+			<TaskToolActivity
+				group={group}
+				parts={parts}
+				pairedResults={new Map()}
+				isStreaming={false}
+			/>,
+		);
+
+		const el = screen.getByTestId("activity-task-0");
+		expect(el.querySelector(".animate-spin")).toBeNull();
+	});
+
 	it("toggles expand/collapse on label click", () => {
 		const group = makeTaskGroup({
 			isCompleted: true,
