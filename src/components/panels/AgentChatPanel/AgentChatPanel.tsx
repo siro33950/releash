@@ -28,7 +28,7 @@ import { MODES } from "./ModeSelector";
 import { PermissionDialog } from "./PermissionDialog";
 import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
 import { StreamMessage } from "./StreamMessage";
-import { buildToolPairings } from "./toolPairing";
+import { buildToolPairings, type TaskGroup } from "./toolPairing";
 
 interface AgentMessagePartsProps {
 	msg: ChatMessage;
@@ -50,14 +50,63 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 	const { pairedResults, skippedResultIndices, taskGroups, taskChildIndices } =
 		useMemo(() => buildToolPairings(msg.parts), [msg.parts]);
 
+	const {
+		backgroundCompletionMap,
+		runningBackgroundTasks,
+		backgroundToolUseIndices,
+	} = useMemo(() => {
+		const completionMap = new Map<number, TaskGroup>();
+		const running: TaskGroup[] = [];
+		const bgIndices = new Set<number>();
+
+		for (const [idx, group] of taskGroups) {
+			if (!group.isBackground) continue;
+			bgIndices.add(idx);
+			if (group.isCompleted && group.completionStatusIndex !== undefined) {
+				completionMap.set(group.completionStatusIndex, group);
+			} else if (!group.isCompleted) {
+				running.push(group);
+			}
+		}
+
+		return {
+			backgroundCompletionMap: completionMap,
+			runningBackgroundTasks: running,
+			backgroundToolUseIndices: bgIndices,
+		};
+	}, [taskGroups]);
+
 	return (
 		<>
 			{/* biome-ignore lint/suspicious/useIterableCallbackReturn: switch is exhaustive for MessagePart */}
 			{msg.parts.map((part, i) => {
 				const key = `${msg.id}-p${i}`;
 
+				// バックグラウンドタスクのtool_use位置はスキップ（最下部 or completion位置で表示）
+				if (backgroundToolUseIndices.has(i)) return null;
+
+				// 完了バックグラウンドタスク: completion status位置に表示
+				// NOTE: taskChildIndices.has(i) より前に判定（completionStatusIndexはtaskChildIndicesに含まれるため）
+				{
+					const bgCompletedGroup = backgroundCompletionMap.get(i);
+					if (bgCompletedGroup) {
+						return (
+							<div key={key} className="px-5 py-0.5 text-xs">
+								<TaskToolActivity
+									group={bgCompletedGroup}
+									parts={msg.parts}
+									pairedResults={pairedResults}
+									isStreaming={isLastAgentStreaming}
+									basePath={worktreePath}
+								/>
+							</div>
+						);
+					}
+				}
+
 				if (taskChildIndices.has(i) || part.type === "task_status") return null;
 
+				// フォアグラウンドタスク（既存動作）
 				{
 					const taskGroup = taskGroups.get(i);
 					if (taskGroup) {
@@ -131,6 +180,20 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 						);
 				}
 			})}
+			{runningBackgroundTasks.map((group) => (
+				<div
+					key={`${msg.id}-bg-${group.toolUseId}`}
+					className="px-5 py-0.5 text-xs"
+				>
+					<TaskToolActivity
+						group={group}
+						parts={msg.parts}
+						pairedResults={pairedResults}
+						isStreaming={isLastAgentStreaming}
+						basePath={worktreePath}
+					/>
+				</div>
+			))}
 		</>
 	);
 });
