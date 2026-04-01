@@ -341,7 +341,9 @@ export function TaskToolActivity({
 	basePath,
 }: TaskToolActivityProps) {
 	const [isExpanded, setIsExpanded] = useState(false);
-	const isRunning = isStreaming && !group.isCompleted;
+	const isRunning = group.isBackground
+		? !group.isCompleted
+		: isStreaming && !group.isCompleted;
 
 	const label = group.description
 		? group.subagentType

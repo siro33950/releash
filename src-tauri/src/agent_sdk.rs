@@ -32,6 +32,9 @@ pub struct AgentProcess {
     pub generation_id: u64,
     pub streaming_message_id: Option<String>,
     pub streaming_parts: Vec<crate::session::MessagePart>,
+    /// Retained after turn_complete so post-turn background task events
+    /// can still be accumulated and emitted via `agent-streaming-updated`.
+    pub last_message_id: Option<String>,
 }
 
 /// Per-session agent process map: chat_session_id → AgentProcess
@@ -471,6 +474,7 @@ async fn spawn_bridge_process(
                 generation_id: gen_id,
                 streaming_message_id: None,
                 streaming_parts: Vec::new(),
+                last_message_id: None,
             },
         );
     }
@@ -520,9 +524,14 @@ async fn spawn_bridge_process(
                                 was_streaming = proc.state == BridgeState::Streaming;
                                 proc.state = BridgeState::Ready;
 
-                                // Capture and clear streaming buffer (consolidate outside lock)
-                                raw_parts = std::mem::take(&mut proc.streaming_parts);
+                                // Capture streaming buffer for consolidation outside lock.
+                                // Keep parts in buffer so post-turn_complete background task
+                                // events can append to them (cleared at next query start).
+                                raw_parts = proc.streaming_parts.clone();
                                 final_msg_id = proc.streaming_message_id.take();
+
+                                // Retain message ID for post-turn_complete background task events
+                                proc.last_message_id = final_msg_id.clone();
 
                                 // User turn succeeded: persist agent_session_id to SessionStore
                                 if was_streaming && exit_code == 0 {
@@ -681,6 +690,24 @@ async fn spawn_bridge_process(
                                         };
 
                                         (true, delta, mid, should_persist, raw_persist_parts)
+                                    }
+                                } else if proc.last_message_id.is_some() {
+                                    // Post-turn_complete: background task events
+                                    // (task_notification, task_progress, etc.)
+                                    // Accumulate and emit immediately (no throttle needed).
+                                    let prev_len = proc.streaming_parts.len();
+                                    let acc =
+                                        accumulate_sdk_message(&msg, &mut proc.streaming_parts);
+                                    if !acc {
+                                        (false, Vec::new(), None, false, Vec::new())
+                                    } else {
+                                        let delta: Vec<MessagePart> =
+                                            proc.streaming_parts[prev_len..].to_vec();
+                                        let mid = proc.last_message_id.clone();
+
+                                        // Always persist post-turn events immediately
+                                        let raw_persist_parts = proc.streaming_parts.clone();
+                                        (true, delta, mid, true, raw_persist_parts)
                                     }
                                 } else {
                                     (false, Vec::new(), None, false, Vec::new())
@@ -928,6 +955,7 @@ pub async fn execute_agent_query(
             proc.state = BridgeState::Streaming;
             proc.streaming_message_id = Some(streaming_message_id.clone());
             proc.streaming_parts.clear();
+            proc.last_message_id = None;
             proc.stdin
                 .write_all(data.as_bytes())
                 .await

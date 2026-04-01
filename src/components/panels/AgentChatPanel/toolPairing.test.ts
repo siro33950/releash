@@ -266,4 +266,231 @@ describe("buildToolPairings", () => {
 		expect(group?.isCompleted).toBe(false);
 		expect(group?.childIndices).toContain(2);
 	});
+
+	it("keeps background task incomplete when tool_result is paired", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Task",
+				input: {
+					description: "Run in bg",
+					subagent_type: "Bash",
+					run_in_background: true,
+				},
+				id: "bg1",
+			},
+			{
+				type: "tool_result",
+				content: "output_file: /tmp/bg.out",
+				isError: false,
+				toolUseId: "bg1",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(false);
+		expect(group?.resultIndex).toBe(1);
+	});
+
+	it("completes background task only on task_status completed/failed/stopped", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Task",
+				input: {
+					description: "Run in bg",
+					run_in_background: true,
+				},
+				id: "bg1",
+			},
+			{
+				type: "tool_result",
+				content: "output_file: /tmp/bg.out",
+				isError: false,
+				toolUseId: "bg1",
+			},
+			{
+				type: "task_status",
+				taskToolUseId: "bg1",
+				status: "completed",
+				summary: "Done",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(true);
+	});
+
+	it("completes background task on task_status failed", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Task",
+				input: {
+					description: "Run in bg",
+					run_in_background: true,
+				},
+				id: "bg1",
+			},
+			{
+				type: "tool_result",
+				content: "output_file: /tmp/bg.out",
+				isError: false,
+				toolUseId: "bg1",
+			},
+			{
+				type: "task_status",
+				taskToolUseId: "bg1",
+				status: "failed",
+				summary: "Error occurred",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(true);
+	});
+
+	it("completes background task on task_status stopped", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Task",
+				input: {
+					description: "Run in bg",
+					run_in_background: true,
+				},
+				id: "bg1",
+			},
+			{
+				type: "tool_result",
+				content: "output_file: /tmp/bg.out",
+				isError: false,
+				toolUseId: "bg1",
+			},
+			{
+				type: "task_status",
+				taskToolUseId: "bg1",
+				status: "stopped",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(true);
+	});
+
+	it("keeps background task incomplete on task_status progress", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Task",
+				input: { description: "Run in bg", run_in_background: true },
+				id: "bg1",
+			},
+			{
+				type: "tool_result",
+				content: "output_file: /tmp/bg.out",
+				isError: false,
+				toolUseId: "bg1",
+			},
+			{
+				type: "task_status",
+				taskToolUseId: "bg1",
+				status: "progress",
+				summary: "50% done",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(false);
+		expect(group?.statusParts).toHaveLength(1);
+		expect(group?.statusParts[0].status).toBe("progress");
+		expect(group?.completionStatusIndex).toBeUndefined();
+	});
+
+	it("records completionStatusIndex for completed background task", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Task",
+				input: { description: "Run in bg", run_in_background: true },
+				id: "bg1",
+			},
+			{
+				type: "tool_result",
+				content: "output_file: /tmp/bg.out",
+				isError: false,
+				toolUseId: "bg1",
+			},
+			{ type: "text", content: "Main query continues..." },
+			{
+				type: "task_status",
+				taskToolUseId: "bg1",
+				status: "completed",
+				summary: "Done",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(true);
+		expect(group?.isCompleted).toBe(true);
+		expect(group?.completionStatusIndex).toBe(3);
+	});
+
+	it("does not set completionStatusIndex for foreground task", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Task",
+				input: { description: "Foreground task" },
+				id: "fg1",
+			},
+			{
+				type: "task_status",
+				taskToolUseId: "fg1",
+				status: "completed",
+			},
+			{
+				type: "tool_result",
+				content: "done",
+				isError: false,
+				toolUseId: "fg1",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group?.completionStatusIndex).toBeUndefined();
+	});
+
+	it("marks foreground task as not background", () => {
+		const parts: MessagePart[] = [
+			{
+				type: "tool_use",
+				tool: "Task",
+				input: { description: "Foreground task" },
+				id: "fg1",
+			},
+			{
+				type: "tool_result",
+				content: "done",
+				isError: false,
+				toolUseId: "fg1",
+			},
+		];
+		const result = buildToolPairings(parts);
+		const group = result.taskGroups.get(0);
+		expect(group).toBeDefined();
+		expect(group?.isBackground).toBe(false);
+		expect(group?.isCompleted).toBe(true);
+	});
 });

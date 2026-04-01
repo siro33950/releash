@@ -9,6 +9,8 @@ export interface TaskGroup {
 	statusParts: Extract<MessagePart, { type: "task_status" }>[];
 	resultIndex?: number;
 	isCompleted: boolean;
+	isBackground: boolean;
+	completionStatusIndex?: number;
 }
 
 interface ToolPairingResult {
@@ -84,6 +86,7 @@ export function buildToolPairings(parts: MessagePart[]): ToolPairingResult {
 				statusParts: [],
 				resultIndex: undefined,
 				isCompleted: false,
+				isBackground: input.run_in_background === true,
 			};
 			taskGroups.set(i, group);
 			taskToolUseIdToIndex.set(p.id, i);
@@ -106,6 +109,9 @@ export function buildToolPairings(parts: MessagePart[]): ToolPairingResult {
 							p.status === "stopped"
 						) {
 							group.isCompleted = true;
+							if (group.isBackground) {
+								group.completionStatusIndex = i;
+							}
 						}
 					}
 					taskChildIndices.add(i);
@@ -137,7 +143,9 @@ export function buildToolPairings(parts: MessagePart[]): ToolPairingResult {
 				if (resultIdx !== undefined) {
 					group.resultIndex = resultIdx;
 					taskChildIndices.add(resultIdx);
-					group.isCompleted = true;
+					if (!group.isBackground) {
+						group.isCompleted = true;
+					}
 				}
 			}
 		}

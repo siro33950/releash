@@ -408,6 +408,8 @@ describe("TaskToolActivity", () => {
 			statusParts: [],
 			resultIndex: undefined,
 			isCompleted: false,
+			isBackground: false,
+			completionStatusIndex: undefined,
 			...overrides,
 		};
 	}
