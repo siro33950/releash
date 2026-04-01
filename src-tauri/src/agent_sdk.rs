@@ -512,7 +512,7 @@ async fn spawn_bridge_process(
                     "turn_complete" => {
                         let exit_code = msg.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
                         let was_streaming;
-                        let final_parts;
+                        let raw_parts;
                         let final_msg_id;
                         {
                             let mut map = handles_stdout.lock().await;
@@ -520,9 +520,8 @@ async fn spawn_bridge_process(
                                 was_streaming = proc.state == BridgeState::Streaming;
                                 proc.state = BridgeState::Ready;
 
-                                // Capture and clear streaming buffer, consolidating text/thinking chunks
-                                final_parts =
-                                    consolidate_parts(std::mem::take(&mut proc.streaming_parts));
+                                // Capture and clear streaming buffer (consolidate outside lock)
+                                raw_parts = std::mem::take(&mut proc.streaming_parts);
                                 final_msg_id = proc.streaming_message_id.take();
 
                                 // User turn succeeded: persist agent_session_id to SessionStore
@@ -542,10 +541,13 @@ async fn spawn_bridge_process(
                                 }
                             } else {
                                 was_streaming = false;
-                                final_parts = Vec::new();
+                                raw_parts = Vec::new();
                                 final_msg_id = None;
                             }
                         }
+
+                        // Consolidate text/thinking chunks outside lock
+                        let final_parts = consolidate_parts(raw_parts);
 
                         // Final persist of streaming buffer
                         if was_streaming {
@@ -644,7 +646,13 @@ async fn spawn_bridge_process(
                     }
                     _ => {
                         // Accumulate into streaming buffer and emit delta update
-                        let (accumulated, delta_parts, emit_msg_id, should_persist, persist_parts) = {
+                        let (
+                            accumulated,
+                            delta_parts,
+                            emit_msg_id,
+                            should_persist,
+                            raw_persist_parts,
+                        ) = {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 if proc.state == BridgeState::Streaming
@@ -666,13 +674,13 @@ async fn spawn_bridge_process(
                                             now.duration_since(last_persist_time).as_millis()
                                                 as u64;
                                         let should_persist = elapsed_persist >= PERSIST_INTERVAL_MS;
-                                        let persist_parts = if should_persist {
-                                            consolidate_parts(proc.streaming_parts.clone())
+                                        let raw_persist_parts = if should_persist {
+                                            proc.streaming_parts.clone()
                                         } else {
                                             Vec::new()
                                         };
 
-                                        (true, delta, mid, should_persist, persist_parts)
+                                        (true, delta, mid, should_persist, raw_persist_parts)
                                     }
                                 } else {
                                     (false, Vec::new(), None, false, Vec::new())
@@ -696,10 +704,11 @@ async fn spawn_bridge_process(
                             }
                         }
 
-                        // Periodic persist (1s interval)
+                        // Periodic persist (1s interval) — consolidate outside lock
                         if should_persist {
                             if let Some(ref mid) = emit_msg_id {
                                 last_persist_time = std::time::Instant::now();
+                                let persist_parts = consolidate_parts(raw_persist_parts);
                                 persist_streaming_parts(
                                     &session_store_clone,
                                     &app_stdout,
@@ -771,23 +780,37 @@ pub async fn get_session(
     match session {
         None => Ok(None),
         Some(mut session) => {
-            let map = handles.lock().await;
-            let is_streaming = if let Some(proc) = map.get(&session_id) {
-                let streaming = proc.state == BridgeState::Streaming;
-                if streaming {
-                    if let Some(ref mid) = proc.streaming_message_id {
-                        let parts = consolidate_parts(proc.streaming_parts.clone());
-                        if !parts.is_empty() {
-                            if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *mid) {
-                                msg.parts = Some(parts);
-                            }
+            // Acquire lock briefly to read state and clone streaming parts
+            let (is_streaming, raw_parts, streaming_mid) = {
+                let map = handles.lock().await;
+                if let Some(proc) = map.get(&session_id) {
+                    let streaming = proc.state == BridgeState::Streaming;
+                    if streaming {
+                        (
+                            true,
+                            proc.streaming_parts.clone(),
+                            proc.streaming_message_id.clone(),
+                        )
+                    } else {
+                        (false, Vec::new(), None)
+                    }
+                } else {
+                    (false, Vec::new(), None)
+                }
+            };
+
+            // Consolidate outside lock to avoid blocking other sessions
+            if is_streaming {
+                if let Some(ref mid) = streaming_mid {
+                    let parts = consolidate_parts(raw_parts);
+                    if !parts.is_empty() {
+                        if let Some(msg) = session.messages.iter_mut().find(|m| m.id == *mid) {
+                            msg.parts = Some(parts);
                         }
                     }
                 }
-                streaming
-            } else {
-                false
-            };
+            }
+
             Ok(Some(GetSessionResponse {
                 session,
                 is_streaming,

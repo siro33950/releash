@@ -55,7 +55,8 @@ Feature: Plan mode対話ツールのUI表示
 
 **対象コンポーネント**:
 - `src-tauri/src/agent_sdk.rs`: `agent-streaming-updated`イベントのペイロードを`streaming_parts`全体のクローンから、新規追加された差分partsのみの送信に変更。80msスロットル制御を撤廃し、メッセージ到着ごとに即時emitする。
-- `src/hooks/useAgentSdkListeners.ts`: `agent-streaming-updated`の受信処理を、差分partsを既存partsに追記するロジックに変更。
+- `src/hooks/useAgentSdkListeners.ts`: `agent-streaming-updated`の受信処理で差分partsを`SET_STREAMING_MESSAGE`アクションとしてdispatch。
+- `src/hooks/agentChatReducer.ts`: `SET_STREAMING_MESSAGE`ハンドラで`mergeDeltaParts()`により差分partsを既存partsにマージ。
 
 **検討した代替案**:
 - permission_request受信時のみスロットルをバイパス: permission以外の即時性問題に対応できず、根本解決にならない
