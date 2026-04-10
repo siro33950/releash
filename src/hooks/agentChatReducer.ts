@@ -6,6 +6,7 @@ import type {
 	PermissionRequest,
 	SessionState,
 	SessionSummary,
+	TurnPhase,
 } from "@/types/session";
 
 export function resolvePermissionMode(mode: PermissionMode): PermissionMode {
@@ -17,8 +18,7 @@ export interface AgentChatState {
 	sessionOrder: string[];
 	closedSessions: SessionSummary[];
 	activeSession: ChatSession | null;
-	streamingSessionIds: string[];
-	sessionFinalStates: Record<string, "done" | "error">;
+	turnPhases: Record<string, TurnPhase>;
 	error: string | null;
 	permissionMode: PermissionMode;
 	userPermissionMode: PermissionMode;
@@ -30,8 +30,11 @@ export type AgentChatAction =
 	| { type: "SET_CLOSED_SESSIONS"; sessions: SessionSummary[] }
 	| { type: "SET_ACTIVE_SESSION"; session: ChatSession | null }
 	| { type: "ADD_MESSAGE"; message: ChatMessage }
-	| { type: "START_STREAMING"; sessionId: string }
-	| { type: "STOP_STREAMING"; sessionId: string }
+	| {
+			type: "SET_TURN_PHASE";
+			sessionId: string;
+			turnPhase: TurnPhase;
+	  }
 	| { type: "SET_ERROR"; error: string | null }
 	| { type: "UPDATE_SESSION_STATE"; state: SessionState }
 	| { type: "SET_PERMISSION_MODE"; mode: PermissionMode }
@@ -43,11 +46,6 @@ export type AgentChatAction =
 			request: PermissionRequest | null;
 	  }
 	| { type: "REORDER_SESSIONS"; sessionOrder: string[] }
-	| {
-			type: "SET_SESSION_FINAL_STATE";
-			sessionId: string;
-			state: "done" | "error";
-	  }
 	| {
 			type: "SET_STREAMING_MESSAGE";
 			sessionId: string;
@@ -151,24 +149,13 @@ export function reducer(
 				},
 			};
 		}
-		case "START_STREAMING": {
-			const { [action.sessionId]: _, ...restFinal } = state.sessionFinalStates;
+		case "SET_TURN_PHASE":
 			return {
 				...state,
-				streamingSessionIds: state.streamingSessionIds.includes(
-					action.sessionId,
-				)
-					? state.streamingSessionIds
-					: [...state.streamingSessionIds, action.sessionId],
-				sessionFinalStates: restFinal,
-			};
-		}
-		case "STOP_STREAMING":
-			return {
-				...state,
-				streamingSessionIds: state.streamingSessionIds.filter(
-					(id) => id !== action.sessionId,
-				),
+				turnPhases: {
+					...state.turnPhases,
+					[action.sessionId]: action.turnPhase,
+				},
 			};
 		case "SET_ERROR":
 			return { ...state, error: action.error };
@@ -208,14 +195,6 @@ export function reducer(
 		}
 		case "REORDER_SESSIONS":
 			return { ...state, sessionOrder: action.sessionOrder };
-		case "SET_SESSION_FINAL_STATE":
-			return {
-				...state,
-				sessionFinalStates: {
-					...state.sessionFinalStates,
-					[action.sessionId]: action.state,
-				},
-			};
 		case "SET_STREAMING_MESSAGE": {
 			if (!state.activeSession || state.activeSession.id !== action.sessionId)
 				return state;
@@ -232,8 +211,7 @@ export const INITIAL_STATE: AgentChatState = {
 	sessionOrder: [],
 	closedSessions: [],
 	activeSession: null,
-	streamingSessionIds: [],
-	sessionFinalStates: {},
+	turnPhases: {},
 	error: null,
 	permissionMode: "acceptEdits",
 	userPermissionMode: "acceptEdits",

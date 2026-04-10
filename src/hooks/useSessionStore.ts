@@ -7,6 +7,7 @@ import type {
 	MessageRole,
 	SessionState,
 	SessionSummary,
+	TurnPhase,
 } from "@/types/session";
 
 interface LegacyChatSession {
@@ -86,7 +87,7 @@ export async function listSessions(
 
 export interface GetSessionResponse {
 	session: ChatSession;
-	isStreaming: boolean;
+	turnPhase: TurnPhase;
 }
 
 interface RawGetSessionResponse {
@@ -98,7 +99,7 @@ interface RawGetSessionResponse {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
-	isStreaming: boolean;
+	turnPhase: TurnPhase;
 }
 
 export async function getSession(
@@ -119,7 +120,7 @@ export async function getSession(
 	});
 	return {
 		session,
-		isStreaming: raw.isStreaming,
+		turnPhase: raw.turnPhase,
 	};
 }
 

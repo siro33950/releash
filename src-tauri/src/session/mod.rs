@@ -152,12 +152,12 @@ pub struct ChatSession {
     pub agent_session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetSessionResponse {
     #[serde(flatten)]
     pub session: ChatSession,
-    pub is_streaming: bool,
+    pub turn_phase: crate::agent_sdk::TurnPhase,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

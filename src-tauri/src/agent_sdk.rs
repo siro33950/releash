@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+use serde::Serialize;
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -24,9 +25,22 @@ pub enum BridgeState {
     Crashed,
 }
 
+/// SDK's turn lifecycle phase, exposed to the frontend as the single source of truth.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnPhase {
+    /// Waiting for user input / turn completed
+    Idle,
+    /// Actively processing a user prompt (SDK iterator yielding before `result`)
+    Streaming,
+    /// SDK blocked on `canUseTool` promise — waiting for permission response
+    WaitingPermission,
+}
+
 pub struct AgentProcess {
     pub stdin: tokio::process::ChildStdin,
     pub state: BridgeState,
+    pub turn_phase: TurnPhase,
     pub sdk_session_id: Option<String>,
     pub child: tokio::process::Child,
     pub generation_id: u64,
@@ -125,19 +139,19 @@ fn persist_streaming_parts(
     }
 }
 
-fn emit_agent_query_completed(
+fn emit_session_state_changed(
     app: &tauri::AppHandle,
-    exit_code: i64,
-    stderr: &str,
     chat_session_id: &str,
+    turn_phase: TurnPhase,
+    exit_code: Option<i64>,
 ) {
     use tauri::Emitter;
     let _ = app.emit(
-        "agent-query-completed",
+        "agent-session-state-changed",
         serde_json::json!({
-            "exit_code": exit_code,
-            "stderr": stderr,
             "chat_session_id": chat_session_id,
+            "turn_phase": turn_phase,
+            "exit_code": exit_code,
         }),
     );
 }
@@ -510,6 +524,7 @@ async fn spawn_bridge_process(
             AgentProcess {
                 stdin,
                 state: BridgeState::Initializing,
+                turn_phase: TurnPhase::Idle,
                 sdk_session_id: session_id,
                 child,
                 generation_id: gen_id,
@@ -565,6 +580,7 @@ async fn spawn_bridge_process(
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 was_streaming = proc.state == BridgeState::Streaming;
                                 proc.state = BridgeState::Ready;
+                                proc.turn_phase = TurnPhase::Idle;
 
                                 // Capture streaming buffer for consolidation outside lock.
                                 // Keep parts in buffer so post-turn_complete background task
@@ -636,15 +652,13 @@ async fn spawn_bridge_process(
                             }
                         }
 
-                        // Emit agent-query-completed only for user turns (was Streaming)
+                        // Emit state change only for user turns (was Streaming)
                         if was_streaming {
-                            let stderr_text =
-                                msg.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
-                            emit_agent_query_completed(
+                            emit_session_state_changed(
                                 &app_stdout,
-                                exit_code,
-                                stderr_text,
                                 &csid_stdout,
+                                TurnPhase::Idle,
+                                Some(exit_code),
                             );
                         }
                     }
@@ -679,6 +693,7 @@ async fn spawn_bridge_process(
                                 let wi = proc.state == BridgeState::Initializing;
                                 if ws || wi {
                                     proc.state = BridgeState::Crashed;
+                                    proc.turn_phase = TurnPhase::Idle;
                                 }
                                 (ws, wi)
                             } else {
@@ -686,7 +701,12 @@ async fn spawn_bridge_process(
                             }
                         };
                         if was_streaming {
-                            emit_agent_query_completed(&app_stdout, 1, error_msg, &csid_stdout);
+                            emit_session_state_changed(
+                                &app_stdout,
+                                &csid_stdout,
+                                TurnPhase::Idle,
+                                Some(1),
+                            );
                         }
                         // Init error → clear stale agent_session_id to prevent infinite resume loop
                         if was_initializing {
@@ -808,6 +828,22 @@ async fn spawn_bridge_process(
                         if should_forward_sdk_message(accumulated, msg_type) {
                             let _ = app_stdout.emit("agent-sdk-message", &msg);
                         }
+
+                        // Transition to WaitingPermission when permission_request arrives
+                        if msg_type == "permission_request" {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                if proc.state == BridgeState::Streaming {
+                                    proc.turn_phase = TurnPhase::WaitingPermission;
+                                    emit_session_state_changed(
+                                        &app_stdout,
+                                        &csid_stdout,
+                                        TurnPhase::WaitingPermission,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -820,11 +856,11 @@ async fn spawn_bridge_process(
             })
         };
         if was_streaming {
-            emit_agent_query_completed(
+            emit_session_state_changed(
                 &app_stdout,
-                -1,
-                "Bridge process exited unexpectedly",
                 &csid_stdout,
+                TurnPhase::Idle,
+                Some(-1),
             );
         }
         {
@@ -832,6 +868,7 @@ async fn spawn_bridge_process(
             if let Some(proc) = map.get_mut(&csid_stdout) {
                 if proc.generation_id == captured_gen_id {
                     proc.state = BridgeState::Crashed;
+                    proc.turn_phase = TurnPhase::Idle;
                 }
             }
         }
@@ -864,27 +901,27 @@ pub async fn get_session(
     match session {
         None => Ok(None),
         Some(mut session) => {
-            // Acquire lock briefly to read state and clone streaming parts
-            let (is_streaming, raw_parts, streaming_mid) = {
+            // Acquire lock briefly to read turn_phase and clone streaming parts
+            let (turn_phase, raw_parts, streaming_mid) = {
                 let map = handles.lock().await;
                 if let Some(proc) = map.get(&session_id) {
-                    let streaming = proc.state == BridgeState::Streaming;
-                    if streaming {
+                    let phase = proc.turn_phase;
+                    if proc.state == BridgeState::Streaming {
                         (
-                            true,
+                            phase,
                             proc.streaming_parts.clone(),
                             proc.streaming_message_id.clone(),
                         )
                     } else {
-                        (false, Vec::new(), None)
+                        (phase, Vec::new(), None)
                     }
                 } else {
-                    (false, Vec::new(), None)
+                    (TurnPhase::Idle, Vec::new(), None)
                 }
             };
 
             // Consolidate outside lock to avoid blocking other sessions
-            if is_streaming {
+            if turn_phase == TurnPhase::Streaming || turn_phase == TurnPhase::WaitingPermission {
                 if let Some(ref mid) = streaming_mid {
                     let parts = consolidate_parts(raw_parts);
                     if !parts.is_empty() {
@@ -897,7 +934,7 @@ pub async fn get_session(
 
             Ok(Some(GetSessionResponse {
                 session,
-                is_streaming,
+                turn_phase,
             }))
         }
     }
@@ -1010,6 +1047,7 @@ pub async fn execute_agent_query(
                 .map_err(|e| format!("Failed to flush setMode: {e}"))?;
 
             proc.state = BridgeState::Streaming;
+            proc.turn_phase = TurnPhase::Streaming;
             proc.streaming_message_id = Some(streaming_message_id.clone());
             proc.streaming_parts.clear();
             proc.last_message_id = None;
@@ -1027,14 +1065,12 @@ pub async fn execute_agent_query(
         }
     }
 
-    // Emit agent-streaming-started so frontend can track streaming state
-    use tauri::Emitter;
-    let _ = app.emit(
-        "agent-streaming-started",
-        serde_json::json!({
-            "chat_session_id": chat_session_id,
-            "message_id": streaming_message_id,
-        }),
+    // Emit state change so frontend can track turn phase
+    emit_session_state_changed(
+        &app,
+        &chat_session_id,
+        TurnPhase::Streaming,
+        None,
     );
 
     Ok(())
@@ -1177,6 +1213,7 @@ pub async fn respond_agent_permission(
 
     let updated_permission_part: Option<MessagePart>;
     let emit_msg_id;
+    let did_transition_to_streaming;
     {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(&chat_session_id) {
@@ -1188,6 +1225,12 @@ pub async fn respond_agent_permission(
                 .flush()
                 .await
                 .map_err(|e| format!("Failed to flush: {e}"))?;
+
+            // Transition back to Streaming after permission response
+            did_transition_to_streaming = proc.turn_phase == TurnPhase::WaitingPermission;
+            if did_transition_to_streaming {
+                proc.turn_phase = TurnPhase::Streaming;
+            }
 
             // Update Permission part status in streaming buffer
             let new_status = if behavior == "allow" {
@@ -1233,6 +1276,16 @@ pub async fn respond_agent_permission(
                 "message_id": mid,
                 "parts": [part],
             }),
+        );
+    }
+
+    // Emit state change only if we actually transitioned: WaitingPermission → Streaming
+    if did_transition_to_streaming {
+        emit_session_state_changed(
+            &app,
+            &chat_session_id,
+            TurnPhase::Streaming,
+            None,
         );
     }
 

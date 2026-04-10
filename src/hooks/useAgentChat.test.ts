@@ -221,7 +221,7 @@ describe("useAgentChat", () => {
 		};
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: mockSession,
-			isStreaming: false,
+			turnPhase: "idle",
 		} as never);
 
 		await act(async () => {
@@ -269,7 +269,7 @@ describe("useAgentChat", () => {
 		// getSession returns merged data from Rust backend (including streaming parts)
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: mockSession,
-			isStreaming: true,
+			turnPhase: "streaming",
 		} as never);
 
 		await act(async () => {
@@ -554,7 +554,7 @@ describe("useAgentChat", () => {
 		};
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: s2Full,
-			isStreaming: false,
+			turnPhase: "idle",
 		} as never);
 
 		await act(async () => {
@@ -620,7 +620,7 @@ describe("useAgentChat", () => {
 		};
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: restoredSession,
-			isStreaming: false,
+			turnPhase: "idle",
 		} as never);
 
 		await act(async () => {
@@ -653,7 +653,7 @@ describe("useAgentChat", () => {
 		};
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: restoredSession,
-			isStreaming: false,
+			turnPhase: "idle",
 		} as never);
 		mockInvoke.mockClear();
 
@@ -731,7 +731,7 @@ describe("useAgentChat", () => {
 				createdAt: 1000,
 				updatedAt: 1000,
 			},
-			isStreaming: false,
+			turnPhase: "idle",
 		} as never);
 
 		mockInvoke.mockClear();
@@ -947,7 +947,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				createdAt: 1000,
 				updatedAt: 1000,
 			},
-			isStreaming: true,
+			turnPhase: "streaming",
 		} as never);
 
 		const { result: result2 } = renderHook(() => useAgentChat("/repo"));
@@ -1019,7 +1019,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				createdAt: 1000,
 				updatedAt: 1000,
 			},
-			isStreaming: false,
+			turnPhase: "idle",
 		} as never);
 
 		const { result: result2 } = renderHook(() => useAgentChat("/repo"));
@@ -1046,12 +1046,42 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
-		// Send a message to start streaming
+		// Wait for mount effect
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
-		// Simulate streaming started
+		// Select session s1 with streaming turnPhase (simulates ongoing streaming)
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "msg-1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1001,
+					},
+					{
+						id: "msg-2",
+						role: "agent",
+						parts: [{ type: "text", content: "partial" }],
+						timestamp: 1002,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+			turnPhase: "streaming",
+		} as never);
+
+		await act(async () => {
+			await result.current.selectSession("s1");
+		});
+
+		// Streaming state should be restored from backend
 		expect(result.current.isStreaming).toBe(true);
 
 		// Switch to another session: getSession for session s2
@@ -1071,7 +1101,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				createdAt: 2000,
 				updatedAt: 2000,
 			},
-			isStreaming: false,
+			turnPhase: "idle",
 		} as never);
 
 		await act(async () => {
@@ -1101,7 +1131,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				createdAt: 1000,
 				updatedAt: 1000,
 			},
-			isStreaming: false,
+			turnPhase: "idle",
 		} as never);
 
 		await act(async () => {

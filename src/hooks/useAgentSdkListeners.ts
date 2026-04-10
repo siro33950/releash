@@ -8,6 +8,7 @@ import type {
 	PermissionMode,
 	PermissionRequest,
 	SessionState,
+	TurnPhase,
 } from "@/types/session";
 import {
 	type AgentChatAction,
@@ -40,20 +41,16 @@ type SdkMessage =
 			[key: string]: unknown;
 	  };
 
-interface QueryCompleted {
-	exit_code: number;
-	stderr: string;
-	chat_session_id?: string;
+interface SessionStateChanged {
+	chat_session_id: string;
+	turn_phase: TurnPhase;
+	exit_code: number | null;
 }
 
 interface StreamingMessageUpdated {
 	chat_session_id: string;
 	message_id: string;
 	parts: MessagePart[];
-}
-
-interface StreamingStarted {
-	chat_session_id: string;
 }
 
 export interface AgentSdkListenerRefs {
@@ -261,70 +258,42 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		};
 	}, [dispatch]);
 
-	// Listen to agent-streaming-started from Rust backend
+	// Listen to agent-session-state-changed (unified state event from Rust)
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
 		let cancelled = false;
 
-		listen<StreamingStarted>("agent-streaming-started", (event) => {
-			const { chat_session_id } = event.payload;
-			dispatch({ type: "START_STREAMING", sessionId: chat_session_id });
-		}).then((fn) => {
-			if (cancelled) {
-				fn();
-			} else {
-				unlisten = fn;
-			}
-		});
+		listen<SessionStateChanged>("agent-session-state-changed", (event) => {
+			const { chat_session_id, turn_phase, exit_code } = event.payload;
 
-		return () => {
-			cancelled = true;
-			unlisten?.();
-		};
-	}, [dispatch]);
+			dispatch({
+				type: "SET_TURN_PHASE",
+				sessionId: chat_session_id,
+				turnPhase: turn_phase,
+			});
 
-	// Listen to agent-query-completed for completion/error handling
-	useEffect(() => {
-		let unlisten: UnlistenFn | null = null;
-		let cancelled = false;
-
-		listen<QueryCompleted>("agent-query-completed", (event) => {
-			const info = event.payload;
-			const chatSessionId = info.chat_session_id;
-
-			if (chatSessionId) {
-				dispatch({
-					type: "STOP_STREAMING",
-					sessionId: chatSessionId,
-				});
-				dispatch({
-					type: "SET_SESSION_FINAL_STATE",
-					sessionId: chatSessionId,
-					state: info.exit_code === 0 ? "done" : "error",
-				});
+			// Turn completed (idle with exit_code): update session state and clear permissions
+			if (turn_phase === "idle" && exit_code != null) {
 				dispatch({
 					type: "SET_PENDING_PERMISSION",
-					sessionId: chatSessionId,
+					sessionId: chat_session_id,
 					request: null,
 				});
-			}
 
-			// Update session state
-			const session = activeSessionRef.current;
-			const newState: SessionState = info.exit_code === 0 ? "idle" : "error";
-			if (chatSessionId && session && session.id === chatSessionId) {
-				dispatch({ type: "UPDATE_SESSION_STATE", state: newState });
-			}
+				const session = activeSessionRef.current;
+				const newState: SessionState = exit_code === 0 ? "idle" : "error";
+				if (session && session.id === chat_session_id) {
+					dispatch({ type: "UPDATE_SESSION_STATE", state: newState });
+				}
 
-			if (chatSessionId) {
-				updateSessionState(chatSessionId, newState).catch((e) =>
+				updateSessionState(chat_session_id, newState).catch((e) =>
 					console.error("Failed to update session state:", e),
 				);
-			}
 
-			refreshSessions().catch((e) =>
-				console.error("Failed to refresh sessions:", e),
-			);
+				refreshSessions().catch((e) =>
+					console.error("Failed to refresh sessions:", e),
+				);
+			}
 		}).then((fn) => {
 			if (cancelled) {
 				fn();

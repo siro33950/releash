@@ -19,6 +19,8 @@ export type MessageRole = "human" | "agent" | "system";
 
 export type SessionState = "active" | "idle" | "done" | "error" | "closed";
 
+export type TurnPhase = "idle" | "streaming" | "waiting_permission";
+
 export type MessagePart =
 	| { type: "thinking"; content: string; parentToolUseId?: string }
 	| { type: "text"; content: string; parentToolUseId?: string }

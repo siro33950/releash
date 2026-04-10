@@ -4,8 +4,8 @@ import type { AgentState } from "@/types/protocol";
 import type {
 	ChatSession,
 	PermissionMode,
-	PermissionRequest,
 	SessionSummary,
+	TurnPhase,
 } from "@/types/session";
 import { INITIAL_STATE, reducer } from "./agentChatReducer";
 import { useAgentSdkListeners } from "./useAgentSdkListeners";
@@ -59,16 +59,15 @@ function startAgentProcess(
 	});
 }
 
-function deriveAgentState(
-	sessionId: string,
-	streamingSessionIds: string[],
-	pendingPermissions: Record<string, PermissionRequest>,
-	sessionFinalStates: Record<string, "done" | "error">,
-): AgentState {
-	if (streamingSessionIds.includes(sessionId)) {
-		return sessionId in pendingPermissions ? "waiting" : "running";
+function deriveAgentState(turnPhase: TurnPhase): AgentState {
+	switch (turnPhase) {
+		case "streaming":
+			return "running";
+		case "waiting_permission":
+			return "waiting";
+		case "idle":
+			return "done";
 	}
-	return sessionFinalStates[sessionId] ?? "done";
 }
 
 export function useAgentChat(worktreePath: string): UseAgentChatResult {
@@ -103,12 +102,12 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			const response = await getSession(sessionId);
 			if (response) {
 				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
-				// Sync streaming state from backend
-				if (response.isStreaming) {
-					dispatch({ type: "START_STREAMING", sessionId });
-				} else {
-					dispatch({ type: "STOP_STREAMING", sessionId });
-				}
+				// Sync turn phase from backend
+				dispatch({
+					type: "SET_TURN_PHASE",
+					sessionId,
+					turnPhase: response.turnPhase,
+				});
 			} else {
 				dispatch({ type: "SET_ACTIVE_SESSION", session: null });
 			}
@@ -123,7 +122,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	const startQuery = useCallback(async (sessionId: string, prompt: string) => {
 		const agentMsg = await addMessage(sessionId, "agent", "");
 		dispatch({ type: "ADD_MESSAGE", message: agentMsg });
-		dispatch({ type: "START_STREAMING", sessionId });
 
 		invoke("execute_agent_query", {
 			prompt,
@@ -133,7 +131,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			streamingMessageId: agentMsg.id,
 		}).catch((e) => {
 			console.error("execute_agent_query failed:", e);
-			dispatch({ type: "STOP_STREAMING", sessionId });
 			dispatch({
 				type: "SET_ERROR",
 				error: `エージェント実行に失敗: ${e}`,
@@ -160,10 +157,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 
 				await refreshSessions();
 			} catch (e) {
-				const sessionId = activeSessionRef.current?.id;
-				if (sessionId) {
-					dispatch({ type: "STOP_STREAMING", sessionId });
-				}
 				dispatch({
 					type: "SET_ERROR",
 					error: `メッセージ送信に失敗: ${e}`,
@@ -375,9 +368,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		}
 	}, [worktreePath, initSessions, refreshClosedSessions]);
 
-	const isStreaming = state.streamingSessionIds.includes(
-		state.activeSession?.id ?? "",
-	);
+	const activeTurnPhase: TurnPhase =
+		state.turnPhases[state.activeSession?.id ?? ""] ?? "idle";
+	const isStreaming =
+		activeTurnPhase === "streaming" || activeTurnPhase === "waiting_permission";
+
 	const orderedSessions = useMemo(() => {
 		const sessionMap = new Map(state.sessions.map((s) => [s.id, s]));
 		return state.sessionOrder
@@ -388,23 +383,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	const sessionAgentStates = useMemo(() => {
 		const map = new Map<string, AgentState>();
 		for (const s of state.sessions) {
-			map.set(
-				s.id,
-				deriveAgentState(
-					s.id,
-					state.streamingSessionIds,
-					state.pendingPermissions,
-					state.sessionFinalStates,
-				),
-			);
+			const phase: TurnPhase = state.turnPhases[s.id] ?? "idle";
+			map.set(s.id, deriveAgentState(phase));
 		}
 		return map;
-	}, [
-		state.sessions,
-		state.streamingSessionIds,
-		state.pendingPermissions,
-		state.sessionFinalStates,
-	]);
+	}, [state.sessions, state.turnPhases]);
 
 	return {
 		sessions: state.sessions,
