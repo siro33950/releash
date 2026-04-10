@@ -209,6 +209,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 		closedSessions,
 		activeSession,
 		isStreaming,
+		activityStatus,
 		error,
 		permissionMode,
 		sessionAgentStates,
@@ -293,8 +294,6 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 		lastAgentPartsLen,
 		shimmerLineCount,
 	]);
-
-	const isInputDisabled = isStreaming;
 
 	const cycleMode = useCallback(() => {
 		const currentIndex = MODES.findIndex((m) => m.value === permissionMode);
@@ -496,6 +495,11 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 						)}
 					</div>
 					<div className="shrink-0">
+						{activityStatus && (
+							<div className="px-4 pb-1 text-xs text-muted-foreground animate-pulse truncate">
+								{activityStatus.label}
+							</div>
+						)}
 						{error && (
 							<div className="px-2 pb-2">
 								<div className="bg-destructive/10 text-destructive rounded-lg px-3 py-2 text-sm">
@@ -506,7 +510,6 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 						<MessageInput
 							onSend={sendMessage}
 							onInterrupt={interrupt}
-							disabled={isInputDisabled}
 							isStreaming={isStreaming}
 							onCycleMode={cycleMode}
 							mode={permissionMode}

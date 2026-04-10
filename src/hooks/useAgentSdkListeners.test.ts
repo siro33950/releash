@@ -47,6 +47,10 @@ function makeRefs() {
 			current: "acceptEdits" as import("@/types/session").PermissionMode,
 		},
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
+		pendingMessageRef: { current: null } as {
+			current: { sessionId: string; content: string } | null;
+		},
+		startQuery: vi.fn().mockResolvedValue(undefined),
 	};
 }
 

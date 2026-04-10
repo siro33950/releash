@@ -6,7 +6,6 @@ import { MessageInput } from "./MessageInput";
 const defaultProps = {
 	onSend: vi.fn(),
 	onInterrupt: vi.fn(),
-	disabled: false,
 	isStreaming: false,
 	mode: "acceptEdits" as const,
 	onModeChange: vi.fn(),
@@ -89,10 +88,18 @@ describe("MessageInput", () => {
 		expect(onInterrupt).toHaveBeenCalled();
 	});
 
-	it("disables textarea when disabled prop is true", () => {
-		render(<MessageInput {...defaultProps} disabled={true} />);
+	it("shows send button when streaming with text input", () => {
+		render(<MessageInput {...defaultProps} isStreaming={true} />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
-		expect(textarea.hasAttribute("disabled")).toBe(true);
+		fireEvent.change(textarea, { target: { value: "Hello" } });
+		expect(screen.getByLabelText("Send message")).toBeDefined();
+		expect(screen.queryByLabelText("Interrupt agent")).toBeNull();
+	});
+
+	it("textarea is always enabled even during streaming", () => {
+		render(<MessageInput {...defaultProps} isStreaming={true} />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		expect(textarea.hasAttribute("disabled")).toBe(false);
 	});
 
 	it("calls onCycleMode on Shift+Tab", () => {

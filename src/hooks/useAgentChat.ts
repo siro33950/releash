@@ -2,8 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { AgentState } from "@/types/protocol";
 import type {
+	ChatMessage,
 	ChatSession,
 	PermissionMode,
+	SessionState,
 	SessionSummary,
 	TurnPhase,
 } from "@/types/session";
@@ -19,12 +21,15 @@ import {
 	restoreSession as restoreSessionApi,
 } from "./useSessionStore";
 
+export type ActivityStatus = { label: string } | null;
+
 export interface UseAgentChatResult {
 	sessions: SessionSummary[];
 	orderedSessions: SessionSummary[];
 	closedSessions: SessionSummary[];
 	activeSession: ChatSession | null;
 	isStreaming: boolean;
+	activityStatus: ActivityStatus;
 	error: string | null;
 	permissionMode: PermissionMode;
 	sessionAgentStates: Map<string, AgentState>;
@@ -59,14 +64,82 @@ function startAgentProcess(
 	});
 }
 
-function deriveAgentState(turnPhase: TurnPhase): AgentState {
+function deriveAgentState(
+	turnPhase: TurnPhase,
+	sessionState?: SessionState,
+): AgentState {
 	switch (turnPhase) {
 		case "streaming":
 			return "running";
 		case "waiting_permission":
 			return "waiting";
 		case "idle":
-			return "done";
+			return sessionState === "error" ? "error" : "done";
+	}
+}
+
+function deriveActivityStatus(
+	messages: ChatMessage[] | undefined,
+	turnPhase: TurnPhase,
+): ActivityStatus {
+	if (turnPhase === "idle") return null;
+	if (!messages || messages.length === 0) return null;
+	const lastMsg = messages[messages.length - 1];
+	if (lastMsg.role !== "agent") return null;
+	if (lastMsg.parts.length === 0) return { label: "Thinking..." };
+
+	const lastPart = lastMsg.parts[lastMsg.parts.length - 1];
+	switch (lastPart.type) {
+		case "thinking":
+			return { label: "Thinking..." };
+		case "text":
+			return { label: "Writing..." };
+		case "tool_use": {
+			const tool = (
+				lastPart as { tool: string; input?: Record<string, unknown> }
+			).tool;
+			const filePath = (lastPart as { input?: Record<string, unknown> }).input
+				?.file_path as string | undefined;
+			const fileName = filePath?.split("/").pop();
+			switch (tool) {
+				case "Read":
+					return {
+						label: fileName ? `Reading ${fileName}` : "Reading file...",
+					};
+				case "Write":
+					return {
+						label: fileName ? `Writing ${fileName}` : "Writing file...",
+					};
+				case "Edit":
+					return {
+						label: fileName ? `Editing ${fileName}` : "Editing file...",
+					};
+				case "Bash":
+					return { label: "Running command..." };
+				case "Grep":
+					return { label: "Searching..." };
+				case "Glob":
+					return { label: "Finding files..." };
+				case "Task":
+					return { label: "Running background task..." };
+				case "WebFetch":
+					return { label: "Fetching web content..." };
+				case "WebSearch":
+					return { label: "Searching the web..." };
+				default:
+					return { label: `Using ${tool}...` };
+			}
+		}
+		case "tool_result":
+			return { label: "Processing result..." };
+		case "permission":
+			return { label: "Waiting for permission..." };
+		case "task_status":
+			return { label: "Running background task..." };
+		case "error":
+			return null;
+		default:
+			return { label: "Working..." };
 	}
 }
 
@@ -82,6 +155,12 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	permissionModeRef.current = state.permissionMode;
 	const userPermissionModeRef = useRef(state.userPermissionMode);
 	userPermissionModeRef.current = state.userPermissionMode;
+	const turnPhasesRef = useRef(state.turnPhases);
+	turnPhasesRef.current = state.turnPhases;
+	const pendingMessageRef = useRef<{
+		sessionId: string;
+		content: string;
+	} | null>(null);
 
 	const refreshSessions = useCallback(async (): Promise<SessionSummary[]> => {
 		try {
@@ -138,6 +217,14 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		});
 	}, []);
 
+	const interrupt = useCallback(() => {
+		const sessionId = activeSessionRef.current?.id;
+		if (!sessionId) return;
+		invoke("interrupt_agent_query", { chatSessionId: sessionId }).catch((e) => {
+			console.error("Failed to interrupt agent query:", e);
+		});
+	}, []);
+
 	const sendMessage = useCallback(
 		async (content: string) => {
 			const trimmed = content.trim();
@@ -153,7 +240,20 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				const message = await addMessage(session.id, "human", trimmed);
 				dispatch({ type: "ADD_MESSAGE", message });
 
-				await startQuery(session.id, trimmed);
+				const currentPhase = turnPhasesRef.current[session.id] ?? "idle";
+				if (
+					currentPhase === "streaming" ||
+					currentPhase === "waiting_permission"
+				) {
+					// Streaming: interrupt and queue pending message
+					pendingMessageRef.current = {
+						sessionId: session.id,
+						content: trimmed,
+					};
+					interrupt();
+				} else {
+					await startQuery(session.id, trimmed);
+				}
 
 				await refreshSessions();
 			} catch (e) {
@@ -163,7 +263,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				});
 			}
 		},
-		[refreshSessions, startQuery],
+		[refreshSessions, startQuery, interrupt],
 	);
 
 	const refreshClosedSessions = useCallback(async () => {
@@ -272,14 +372,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		}
 	}, [refreshSessions]);
 
-	const interrupt = useCallback(() => {
-		const sessionId = activeSessionRef.current?.id;
-		if (!sessionId) return;
-		invoke("interrupt_agent_query", { chatSessionId: sessionId }).catch((e) => {
-			console.error("Failed to interrupt agent query:", e);
-		});
-	}, []);
-
 	const reorderSessions = useCallback((sessionOrder: string[]) => {
 		dispatch({ type: "REORDER_SESSIONS", sessionOrder });
 	}, []);
@@ -333,6 +425,8 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		activeSessionRef,
 		userPermissionModeRef,
 		refreshSessions,
+		pendingMessageRef,
+		startQuery,
 	});
 
 	const initSessions = useCallback(async () => {
@@ -384,10 +478,15 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		const map = new Map<string, AgentState>();
 		for (const s of state.sessions) {
 			const phase: TurnPhase = state.turnPhases[s.id] ?? "idle";
-			map.set(s.id, deriveAgentState(phase));
+			map.set(s.id, deriveAgentState(phase, s.state));
 		}
 		return map;
 	}, [state.sessions, state.turnPhases]);
+
+	const activityStatus = useMemo(
+		() => deriveActivityStatus(state.activeSession?.messages, activeTurnPhase),
+		[state.activeSession?.messages, activeTurnPhase],
+	);
 
 	return {
 		sessions: state.sessions,
@@ -395,6 +494,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		closedSessions: state.closedSessions,
 		activeSession: state.activeSession,
 		isStreaming,
+		activityStatus,
 		error: state.error,
 		permissionMode: state.permissionMode,
 		sessionAgentStates,

@@ -58,6 +58,11 @@ export interface AgentSdkListenerRefs {
 	activeSessionRef: MutableRefObject<ChatSession | null>;
 	userPermissionModeRef: MutableRefObject<PermissionMode>;
 	refreshSessions: () => Promise<unknown>;
+	pendingMessageRef: MutableRefObject<{
+		sessionId: string;
+		content: string;
+	} | null>;
+	startQuery: (sessionId: string, prompt: string) => Promise<void>;
 }
 
 function handleSupportedCommands(msg: SdkMessage): void {
@@ -195,8 +200,14 @@ function handleResultErrors(
 }
 
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
-	const { dispatch, activeSessionRef, userPermissionModeRef, refreshSessions } =
-		refs;
+	const {
+		dispatch,
+		activeSessionRef,
+		userPermissionModeRef,
+		refreshSessions,
+		pendingMessageRef,
+		startQuery,
+	} = refs;
 
 	// Listen to SDK messages for meta events (permissions, commands, system messages)
 	useEffect(() => {
@@ -293,6 +304,15 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				refreshSessions().catch((e) =>
 					console.error("Failed to refresh sessions:", e),
 				);
+
+				// Consume pending message if queued (interrupt + new message flow)
+				const pending = pendingMessageRef.current;
+				if (pending && pending.sessionId === chat_session_id) {
+					pendingMessageRef.current = null;
+					startQuery(pending.sessionId, pending.content).catch((e) =>
+						console.error("Failed to start pending query:", e),
+					);
+				}
 			}
 		}).then((fn) => {
 			if (cancelled) {
@@ -306,5 +326,11 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, activeSessionRef, refreshSessions]);
+	}, [
+		dispatch,
+		activeSessionRef,
+		refreshSessions,
+		pendingMessageRef,
+		startQuery,
+	]);
 }
