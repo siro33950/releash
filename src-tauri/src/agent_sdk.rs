@@ -669,17 +669,40 @@ async fn spawn_bridge_process(
                             .unwrap_or("Unknown bridge error");
                         log::error!("Bridge error [{}]: {}", csid_stdout, error_msg);
 
-                        // Accumulate error into streaming parts
-                        {
+                        // Accumulate error into streaming parts and extract delta
+                        let (error_delta, error_emit_msg_id) = {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 if proc.state == BridgeState::Streaming {
+                                    let prev_len = proc.streaming_parts.len();
                                     accumulate_sdk_message(
                                         &msg,
                                         &mut proc.streaming_parts,
                                         &mut proc.task_id_map,
                                     );
+                                    let delta = proc.streaming_parts[prev_len..].to_vec();
+                                    let mid = proc.streaming_message_id.clone();
+                                    (delta, mid)
+                                } else {
+                                    (Vec::new(), None)
                                 }
+                            } else {
+                                (Vec::new(), None)
+                            }
+                        };
+
+                        // Emit error delta so UI can display the error message
+                        if !error_delta.is_empty() {
+                            if let Some(ref mid) = error_emit_msg_id {
+                                use tauri::Emitter;
+                                let _ = app_stdout.emit(
+                                    "agent-streaming-updated",
+                                    serde_json::json!({
+                                        "chat_session_id": csid_stdout,
+                                        "message_id": mid,
+                                        "parts": error_delta,
+                                    }),
+                                );
                             }
                         }
 
