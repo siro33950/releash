@@ -53,16 +53,20 @@ interface StreamingMessageUpdated {
 	parts: MessagePart[];
 }
 
+interface PendingMessageConsumed {
+	chat_session_id: string;
+	agent_message: {
+		id: string;
+		role: "agent";
+		timestamp: number;
+	};
+}
+
 export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	activeSessionRef: MutableRefObject<ChatSession | null>;
 	userPermissionModeRef: MutableRefObject<PermissionMode>;
 	refreshSessions: () => Promise<unknown>;
-	pendingMessageRef: MutableRefObject<{
-		sessionId: string;
-		content: string;
-	} | null>;
-	startQuery: (sessionId: string, prompt: string) => Promise<void>;
 }
 
 function handleSupportedCommands(msg: SdkMessage): void {
@@ -200,14 +204,8 @@ function handleResultErrors(
 }
 
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
-	const {
-		dispatch,
-		activeSessionRef,
-		userPermissionModeRef,
-		refreshSessions,
-		pendingMessageRef,
-		startQuery,
-	} = refs;
+	const { dispatch, activeSessionRef, userPermissionModeRef, refreshSessions } =
+		refs;
 
 	// Listen to SDK messages for meta events (permissions, commands, system messages)
 	useEffect(() => {
@@ -304,15 +302,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				refreshSessions().catch((e) =>
 					console.error("Failed to refresh sessions:", e),
 				);
-
-				// Consume pending message if queued (interrupt + new message flow)
-				const pending = pendingMessageRef.current;
-				if (pending && pending.sessionId === chat_session_id) {
-					pendingMessageRef.current = null;
-					startQuery(pending.sessionId, pending.content).catch((e) =>
-						console.error("Failed to start pending query:", e),
-					);
-				}
 			}
 		}).then((fn) => {
 			if (cancelled) {
@@ -326,11 +315,39 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [
-		dispatch,
-		activeSessionRef,
-		refreshSessions,
-		pendingMessageRef,
-		startQuery,
-	]);
+	}, [dispatch, activeSessionRef, refreshSessions]);
+
+	// Listen to agent-pending-message-consumed (Rust auto-consumed pending message after turn_complete)
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<PendingMessageConsumed>(
+			"agent-pending-message-consumed",
+			(event) => {
+				const { chat_session_id, agent_message } = event.payload;
+				if (activeSessionRef.current?.id !== chat_session_id) return;
+				dispatch({
+					type: "ADD_MESSAGE",
+					message: {
+						id: agent_message.id,
+						role: agent_message.role,
+						parts: [],
+						timestamp: agent_message.timestamp,
+					},
+				});
+			},
+		).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [dispatch, activeSessionRef]);
 }

@@ -12,13 +12,14 @@ import type {
 import { INITIAL_STATE, reducer } from "./agentChatReducer";
 import { useAgentSdkListeners } from "./useAgentSdkListeners";
 import {
-	addMessage,
 	closeSession as closeSessionApi,
 	createSession,
 	getSession,
+	initAgentSessions,
 	listClosedSessions,
 	listSessions,
 	restoreSession as restoreSessionApi,
+	sendAgentMessage,
 } from "./useSessionStore";
 
 export type ActivityStatus = { label: string } | null;
@@ -157,10 +158,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	userPermissionModeRef.current = state.userPermissionMode;
 	const turnPhasesRef = useRef(state.turnPhases);
 	turnPhasesRef.current = state.turnPhases;
-	const pendingMessageRef = useRef<{
-		sessionId: string;
-		content: string;
-	} | null>(null);
 
 	const refreshSessions = useCallback(async (): Promise<SessionSummary[]> => {
 		try {
@@ -198,25 +195,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		}
 	}, []);
 
-	const startQuery = useCallback(async (sessionId: string, prompt: string) => {
-		const agentMsg = await addMessage(sessionId, "agent", "");
-		dispatch({ type: "ADD_MESSAGE", message: agentMsg });
-
-		invoke("execute_agent_query", {
-			prompt,
-			chatSessionId: sessionId,
-			cwd: worktreePathRef.current,
-			permissionMode: permissionModeRef.current,
-			streamingMessageId: agentMsg.id,
-		}).catch((e) => {
-			console.error("execute_agent_query failed:", e);
-			dispatch({
-				type: "SET_ERROR",
-				error: `エージェント実行に失敗: ${e}`,
-			});
-		});
-	}, []);
-
 	const interrupt = useCallback(() => {
 		const sessionId = activeSessionRef.current?.id;
 		if (!sessionId) return;
@@ -225,46 +203,33 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		});
 	}, []);
 
-	const sendMessage = useCallback(
-		async (content: string) => {
-			const trimmed = content.trim();
-			if (!trimmed) return;
+	const sendMessage = useCallback(async (content: string) => {
+		const trimmed = content.trim();
+		if (!trimmed) return;
 
-			try {
-				let session = activeSessionRef.current;
-				if (!session) {
-					session = await createSession(worktreePathRef.current);
-					dispatch({ type: "SET_ACTIVE_SESSION", session });
-				}
-
-				const message = await addMessage(session.id, "human", trimmed);
-				dispatch({ type: "ADD_MESSAGE", message });
-
-				const currentPhase = turnPhasesRef.current[session.id] ?? "idle";
-				if (
-					currentPhase === "streaming" ||
-					currentPhase === "waiting_permission"
-				) {
-					// Streaming: interrupt and queue pending message
-					pendingMessageRef.current = {
-						sessionId: session.id,
-						content: trimmed,
-					};
-					interrupt();
-				} else {
-					await startQuery(session.id, trimmed);
-				}
-
-				await refreshSessions();
-			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `メッセージ送信に失敗: ${e}`,
-				});
+		try {
+			const isNewSession = !activeSessionRef.current;
+			const response = await sendAgentMessage(
+				activeSessionRef.current?.id ?? null,
+				worktreePathRef.current,
+				trimmed,
+				permissionModeRef.current,
+			);
+			if (isNewSession) {
+				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
 			}
-		},
-		[refreshSessions, startQuery, interrupt],
-	);
+			dispatch({ type: "ADD_MESSAGE", message: response.humanMessage });
+			if (response.agentMessage) {
+				dispatch({ type: "ADD_MESSAGE", message: response.agentMessage });
+			}
+			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
+		} catch (e) {
+			dispatch({
+				type: "SET_ERROR",
+				error: `メッセージ送信に失敗: ${e}`,
+			});
+		}
+	}, []);
 
 	const refreshClosedSessions = useCallback(async () => {
 		try {
@@ -425,26 +390,33 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		activeSessionRef,
 		userPermissionModeRef,
 		refreshSessions,
-		pendingMessageRef,
-		startQuery,
 	});
 
 	const initSessions = useCallback(async () => {
-		const sessions = await refreshSessions();
-		// Start Bridge processes for all existing sessions
-		for (const session of sessions) {
-			startAgentProcess(
-				session.id,
+		try {
+			const response = await initAgentSessions(
 				worktreePathRef.current,
 				permissionModeRef.current,
 			);
+			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
+			if (response.activeSession) {
+				dispatch({
+					type: "SET_ACTIVE_SESSION",
+					session: response.activeSession.session,
+				});
+				dispatch({
+					type: "SET_TURN_PHASE",
+					sessionId: response.activeSession.session.id,
+					turnPhase: response.activeSession.turnPhase,
+				});
+			}
+		} catch (e) {
+			dispatch({
+				type: "SET_ERROR",
+				error: `セッション初期化に失敗: ${e}`,
+			});
 		}
-		if (sessions.length > 0) {
-			await selectSession(sessions[0].id);
-		} else {
-			await createNewSession();
-		}
-	}, [refreshSessions, selectSession, createNewSession]);
+	}, []);
 
 	// Load sessions on mount
 	useEffect(() => {

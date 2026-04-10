@@ -75,7 +75,7 @@ export function RightSidebarBottom({
 		reset,
 	} = useReviewExecution(rootPath, threads, settings);
 
-	const isRunning = status === "starting" || status === "running";
+	const isRunning = status === "running";
 	const isFinished =
 		status === "completed" || status === "error" || status === "cancelled";
 	const reviewDisabled = settings.reviewAgent === "none";

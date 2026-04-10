@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useCallback } from "react";
 import type { DiffBase, DiffMode } from "@/types/settings";
 
@@ -174,17 +173,8 @@ export function useWorktreeGitActions({
 }: UseWorktreeGitActionsParams): WorktreeGitActions {
 	const handleGitStageAll = useCallback(async () => {
 		try {
-			const status = await invoke<{ changed: Array<{ path: string }> }>(
-				"get_git_status",
-				{ repoPath: rootPath },
-			);
-			if (status.changed.length > 0) {
-				await stage(
-					rootPath,
-					status.changed.map((f) => f.path),
-				);
-				refreshGit();
-			}
+			await stage(rootPath, []);
+			refreshGit();
 		} catch (e) {
 			dispatchGit({ type: "SET_GIT_ERROR", error: String(e) });
 		}
@@ -192,17 +182,8 @@ export function useWorktreeGitActions({
 
 	const handleGitUnstageAll = useCallback(async () => {
 		try {
-			const status = await invoke<{ staged: Array<{ path: string }> }>(
-				"get_git_status",
-				{ repoPath: rootPath },
-			);
-			if (status.staged.length > 0) {
-				await unstage(
-					rootPath,
-					status.staged.map((f) => f.path),
-				);
-				refreshGit();
-			}
+			await unstage(rootPath, []);
+			refreshGit();
 		} catch (e) {
 			dispatchGit({ type: "SET_GIT_ERROR", error: String(e) });
 		}
@@ -228,17 +209,8 @@ export function useWorktreeGitActions({
 	const executeDiscardAll = useCallback(async () => {
 		dispatchUI({ type: "SET_DISCARD_CONFIRM", show: false });
 		try {
-			const status = await invoke<{ changed: Array<{ path: string }> }>(
-				"get_git_status",
-				{ repoPath: rootPath },
-			);
-			if (status.changed.length > 0) {
-				await discard(
-					rootPath,
-					status.changed.map((f) => f.path),
-				);
-				refreshGit();
-			}
+			await discard(rootPath, []);
+			refreshGit();
 		} catch (e) {
 			dispatchGit({ type: "SET_GIT_ERROR", error: String(e) });
 		}

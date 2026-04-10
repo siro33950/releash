@@ -47,10 +47,6 @@ function makeRefs() {
 			current: "acceptEdits" as import("@/types/session").PermissionMode,
 		},
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
-		pendingMessageRef: { current: null } as {
-			current: { sessionId: string; content: string } | null;
-		},
-		startQuery: vi.fn().mockResolvedValue(undefined),
 	};
 }
 
@@ -106,7 +102,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		}
 	});
 
-	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated", () => {
+	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
@@ -116,6 +112,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).toContain("agent-sdk-message");
 		expect(eventNames).toContain("agent-session-state-changed");
 		expect(eventNames).toContain("agent-streaming-updated");
+		expect(eventNames).toContain("agent-pending-message-consumed");
 		expect(eventNames).not.toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-query-completed");
 	});
@@ -778,5 +775,70 @@ describe("supported_commands handling", () => {
 		});
 
 		expect(setSlashCommands).not.toHaveBeenCalled();
+	});
+});
+
+describe("agent-pending-message-consumed event", () => {
+	it("dispatches ADD_MESSAGE when pending message is consumed for active session", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-1" } as never;
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-pending-message-consumed");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				agent_message: {
+					id: "msg-agent-001",
+					role: "agent",
+					timestamp: 1234567,
+				},
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "ADD_MESSAGE",
+			message: {
+				id: "msg-agent-001",
+				role: "agent",
+				parts: [],
+				timestamp: 1234567,
+			},
+		});
+	});
+
+	it("does not dispatch ADD_MESSAGE when pending message is consumed for non-active session", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-2" } as never;
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-pending-message-consumed");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				agent_message: {
+					id: "msg-agent-001",
+					role: "agent",
+					timestamp: 1234567,
+				},
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(0);
 	});
 });

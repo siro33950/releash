@@ -35,26 +35,51 @@ vi.mock("./useSessionStore", () => ({
 	closeSession: vi.fn().mockResolvedValue(undefined),
 	restoreSession: vi.fn().mockResolvedValue(undefined),
 	listClosedSessions: vi.fn().mockResolvedValue([]),
+	sendAgentMessage: vi.fn().mockResolvedValue({
+		session: {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 1000,
+			updatedAt: 1000,
+		},
+		humanMessage: {
+			id: "msg-1",
+			role: "human",
+			parts: [{ type: "text", content: "hello" }],
+			timestamp: 1001,
+		},
+		agentMessage: {
+			id: "msg-2",
+			role: "agent",
+			parts: [],
+			timestamp: 1002,
+		},
+		sessions: [],
+	}),
+	initAgentSessions: vi.fn().mockResolvedValue({
+		sessions: [],
+		activeSession: {
+			session: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+			turnPhase: "idle",
+		},
+	}),
 }));
-
-let addMessageCounter = 0;
 
 describe("useAgentChat", () => {
 	beforeEach(async () => {
 		mockInvoke.mockClear();
-		addMessageCounter = 0;
 		const sessionStore = await import("./useSessionStore");
-		vi.mocked(sessionStore.addMessage).mockImplementation(
-			(_sid, role, content) => {
-				addMessageCounter++;
-				return Promise.resolve({
-					id: `msg-${addMessageCounter}`,
-					role,
-					parts: [{ type: "text", content }],
-					timestamp: 1000 + addMessageCounter,
-				});
-			},
-		);
+		vi.mocked(sessionStore.sendAgentMessage).mockClear();
+		vi.mocked(sessionStore.initAgentSessions).mockClear();
 	});
 
 	it("should define the hook", async () => {
@@ -68,9 +93,10 @@ describe("useAgentChat", () => {
 		expect((mod as Record<string, unknown>).buildClaudeCommand).toBeUndefined();
 	});
 
-	it("sendMessage passes permissionMode to invoke", async () => {
+	it("sendMessage calls sendAgentMessage with permissionMode", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
@@ -78,13 +104,11 @@ describe("useAgentChat", () => {
 			await result.current.sendMessage("hello");
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith(
-			"execute_agent_query",
-			expect.objectContaining({
-				chatSessionId: "s1",
-				permissionMode: "acceptEdits",
-				streamingMessageId: "msg-2",
-			}),
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			null,
+			"/repo",
+			"hello",
+			"acceptEdits",
 		);
 	});
 
@@ -137,7 +161,7 @@ describe("useAgentChat", () => {
 		});
 	});
 
-	it("sendMessage calls createSession when no active session", async () => {
+	it("sendMessage creates session via Rust when no active session", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
@@ -148,10 +172,16 @@ describe("useAgentChat", () => {
 			await result.current.sendMessage("hello");
 		});
 
-		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo");
+		// sendAgentMessage is called with null chatSessionId (Rust creates session)
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			null,
+			"/repo",
+			"hello",
+			"acceptEdits",
+		);
 	});
 
-	it("sendMessage does not call createSession on second message", async () => {
+	it("sendMessage passes existing session id on second message", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
@@ -162,13 +192,18 @@ describe("useAgentChat", () => {
 			await result.current.sendMessage("first");
 		});
 
-		vi.mocked(sessionStore.createSession).mockClear();
+		vi.mocked(sessionStore.sendAgentMessage).mockClear();
 
 		await act(async () => {
 			await result.current.sendMessage("second");
 		});
 
-		expect(sessionStore.createSession).not.toHaveBeenCalled();
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			"s1",
+			"/repo",
+			"second",
+			"acceptEdits",
+		);
 	});
 
 	it("interrupt invokes interrupt_agent_query with chatSessionId", async () => {
@@ -199,7 +234,7 @@ describe("useAgentChat", () => {
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
-		// Wait for mount effect (auto-creates session when no sessions exist)
+		// Wait for mount effect
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
@@ -292,6 +327,7 @@ describe("useAgentChat", () => {
 	it("setPermissionMode changes mode used in next sendMessage", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
@@ -303,12 +339,11 @@ describe("useAgentChat", () => {
 			await result.current.sendMessage("hello");
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith(
-			"execute_agent_query",
-			expect.objectContaining({
-				chatSessionId: "s1",
-				permissionMode: "plan",
-			}),
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			null,
+			"/repo",
+			"hello",
+			"plan",
 		);
 	});
 
@@ -396,7 +431,7 @@ describe("useAgentChat", () => {
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
-		// Wait for mount effect (auto-creates session when no sessions exist)
+		// Wait for mount effect
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
@@ -451,7 +486,7 @@ describe("useAgentChat", () => {
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
-		// Wait for mount effect (auto-creates session when no sessions exist)
+		// Wait for mount effect
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
@@ -575,7 +610,7 @@ describe("useAgentChat", () => {
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
-		// Wait for mount effect (auto-creates session when no sessions exist)
+		// Wait for mount effect
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
@@ -598,7 +633,7 @@ describe("useAgentChat", () => {
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
-		// Wait for mount effect (auto-creates session when no sessions exist)
+		// Wait for mount effect
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
@@ -678,7 +713,7 @@ describe("useAgentChat", () => {
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
-		// Wait for mount effect (auto-creates session when no sessions exist)
+		// Wait for mount effect
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
@@ -694,47 +729,44 @@ describe("useAgentChat", () => {
 		expect(result.current.error).toContain("セッション復元に失敗");
 	});
 
-	it("initSessions starts agent process for each existing session", async () => {
+	it("initSessions calls initAgentSessions on mount", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
 
-		// listSessions returns multiple sessions
-		vi.mocked(sessionStore.listSessions).mockResolvedValueOnce([
-			{
-				id: "s1",
-				worktreePath: "/repo",
-				updatedAt: 1000,
-				state: "active",
-				firstMessage: "hi",
-				messageCount: 1,
-				createdAt: 1000,
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [
+				{
+					id: "s1",
+					worktreePath: "/repo",
+					updatedAt: 1000,
+					state: "active",
+					firstMessage: "hi",
+					messageCount: 1,
+					createdAt: 1000,
+				},
+				{
+					id: "s2",
+					worktreePath: "/repo",
+					updatedAt: 900,
+					state: "active",
+					firstMessage: "hello",
+					messageCount: 1,
+					createdAt: 900,
+				},
+			],
+			activeSession: {
+				session: {
+					id: "s1",
+					worktreePath: "/repo",
+					messages: [],
+					state: "active",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+				turnPhase: "idle",
 			},
-			{
-				id: "s2",
-				worktreePath: "/repo",
-				updatedAt: 900,
-				state: "active",
-				firstMessage: "hello",
-				messageCount: 1,
-				createdAt: 900,
-			},
-		] as never);
-
-		// getSession for the first session (selectSession(sessions[0].id))
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
-			session: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [],
-				state: "active",
-				createdAt: 1000,
-				updatedAt: 1000,
-			},
-			turnPhase: "idle",
 		} as never);
-
-		mockInvoke.mockClear();
 
 		renderHook(() => useAgentChat("/repo"));
 
@@ -743,15 +775,9 @@ describe("useAgentChat", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
-		const startCalls = mockInvoke.mock.calls.filter(
-			(call: unknown[]) => call[0] === "start_agent_session",
-		);
-		expect(startCalls).toHaveLength(2);
-		expect(startCalls[0][1]).toEqual(
-			expect.objectContaining({ chatSessionId: "s1" }),
-		);
-		expect(startCalls[1][1]).toEqual(
-			expect.objectContaining({ chatSessionId: "s2" }),
+		expect(sessionStore.initAgentSessions).toHaveBeenCalledWith(
+			"/repo",
+			"acceptEdits",
 		);
 	});
 });
@@ -876,25 +902,17 @@ describe("useSessionStore", () => {
 		expect(mod.closeSession).toBeDefined();
 		expect(mod.restoreSession).toBeDefined();
 		expect(mod.listClosedSessions).toBeDefined();
+		expect(mod.sendAgentMessage).toBeDefined();
+		expect(mod.initAgentSessions).toBeDefined();
 	});
 });
 
 describe("Worktree switch (unmount/remount) streaming persistence via Rust backend", () => {
 	beforeEach(async () => {
 		mockInvoke.mockClear();
-		addMessageCounter = 0;
 		const sessionStore = await import("./useSessionStore");
-		vi.mocked(sessionStore.addMessage).mockImplementation(
-			(_sid, role, content) => {
-				addMessageCounter++;
-				return Promise.resolve({
-					id: `msg-${addMessageCounter}`,
-					role,
-					parts: [{ type: "text", content }],
-					timestamp: 1000 + addMessageCounter,
-				});
-			},
-		);
+		vi.mocked(sessionStore.sendAgentMessage).mockClear();
+		vi.mocked(sessionStore.initAgentSessions).mockClear();
 	});
 
 	it("getSession with isStreaming restores streaming state on remount", async () => {
@@ -912,42 +930,43 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 		// Unmount (simulates Worktree switch)
 		unmount();
 
-		// Remount (simulates returning to original Worktree)
-		// Rust backend returns session with streaming parts already merged
-		vi.mocked(sessionStore.listSessions).mockResolvedValueOnce([
-			{
-				id: "s1",
-				worktreePath: "/repo",
-				updatedAt: 1000,
-				state: "active",
-				firstMessage: "hello",
-				messageCount: 2,
-				createdAt: 1000,
+		// Remount: Rust backend returns session with streaming parts already merged
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [
+				{
+					id: "s1",
+					worktreePath: "/repo",
+					updatedAt: 1000,
+					state: "active",
+					firstMessage: "hello",
+					messageCount: 2,
+					createdAt: 1000,
+				},
+			],
+			activeSession: {
+				session: {
+					id: "s1",
+					worktreePath: "/repo",
+					messages: [
+						{
+							id: "msg-1",
+							role: "human",
+							parts: [{ type: "text", content: "hello" }],
+							timestamp: 1001,
+						},
+						{
+							id: "msg-2",
+							role: "agent",
+							parts: [{ type: "text", content: "streaming response" }],
+							timestamp: 1002,
+						},
+					],
+					state: "active",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+				turnPhase: "streaming",
 			},
-		] as never);
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
-			session: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [
-					{
-						id: "msg-1",
-						role: "human",
-						parts: [{ type: "text", content: "hello" }],
-						timestamp: 1001,
-					},
-					{
-						id: "msg-2",
-						role: "agent",
-						parts: [{ type: "text", content: "streaming response" }],
-						timestamp: 1002,
-					},
-				],
-				state: "active",
-				createdAt: 1000,
-				updatedAt: 1000,
-			},
-			turnPhase: "streaming",
 		} as never);
 
 		const { result: result2 } = renderHook(() => useAgentChat("/repo"));
@@ -985,41 +1004,43 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 		// Unmount
 		unmount();
 
-		// After completion + unmount, getSession returns Rust-persisted data
-		vi.mocked(sessionStore.listSessions).mockResolvedValueOnce([
-			{
-				id: "s1",
-				worktreePath: "/repo",
-				updatedAt: 1000,
-				state: "idle",
-				firstMessage: "hello",
-				messageCount: 2,
-				createdAt: 1000,
+		// After completion + unmount, initAgentSessions returns Rust-persisted data
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [
+				{
+					id: "s1",
+					worktreePath: "/repo",
+					updatedAt: 1000,
+					state: "idle",
+					firstMessage: "hello",
+					messageCount: 2,
+					createdAt: 1000,
+				},
+			],
+			activeSession: {
+				session: {
+					id: "s1",
+					worktreePath: "/repo",
+					messages: [
+						{
+							id: "msg-1",
+							role: "human",
+							parts: [{ type: "text", content: "hello" }],
+							timestamp: 1001,
+						},
+						{
+							id: "msg-2",
+							role: "agent",
+							parts: [{ type: "text", content: "final response" }],
+							timestamp: 1002,
+						},
+					],
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+				turnPhase: "idle",
 			},
-		] as never);
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
-			session: {
-				id: "s1",
-				worktreePath: "/repo",
-				messages: [
-					{
-						id: "msg-1",
-						role: "human",
-						parts: [{ type: "text", content: "hello" }],
-						timestamp: 1001,
-					},
-					{
-						id: "msg-2",
-						role: "agent",
-						parts: [{ type: "text", content: "final response" }],
-						timestamp: 1002,
-					},
-				],
-				state: "idle",
-				createdAt: 1000,
-				updatedAt: 1000,
-			},
-			turnPhase: "idle",
 		} as never);
 
 		const { result: result2 } = renderHook(() => useAgentChat("/repo"));

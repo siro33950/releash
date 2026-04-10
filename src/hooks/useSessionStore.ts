@@ -160,6 +160,77 @@ export async function addMessage(
 	return convertLegacyMessage(raw);
 }
 
+interface RawSendMessageResponse {
+	session: LegacyChatSession;
+	humanMessage: LegacyChatMessage & { parts?: MessagePart[] };
+	agentMessage: (LegacyChatMessage & { parts?: MessagePart[] }) | null;
+	sessions: SessionSummary[];
+}
+
+export interface SendMessageResponse {
+	session: ChatSession;
+	humanMessage: ChatMessage;
+	agentMessage: ChatMessage | null;
+	sessions: SessionSummary[];
+}
+
+export async function sendAgentMessage(
+	chatSessionId: string | null,
+	worktreePath: string,
+	content: string,
+	permissionMode: string,
+): Promise<SendMessageResponse> {
+	const raw = await invoke<RawSendMessageResponse>("send_agent_message", {
+		chatSessionId,
+		worktreePath,
+		content,
+		permissionMode,
+	});
+	return {
+		session: convertLegacySession(raw.session),
+		humanMessage: convertLegacyMessage(raw.humanMessage),
+		agentMessage: raw.agentMessage
+			? convertLegacyMessage(raw.agentMessage)
+			: null,
+		sessions: raw.sessions,
+	};
+}
+
+interface RawInitSessionsResponse {
+	sessions: SessionSummary[];
+	activeSession: RawGetSessionResponse | null;
+}
+
+export interface InitSessionsResponse {
+	sessions: SessionSummary[];
+	activeSession: GetSessionResponse | null;
+}
+
+export async function initAgentSessions(
+	worktreePath: string,
+	permissionMode: string,
+): Promise<InitSessionsResponse> {
+	const raw = await invoke<RawInitSessionsResponse>("init_agent_sessions", {
+		worktreePath,
+		permissionMode,
+	});
+	const activeSession = raw.activeSession
+		? {
+				session: convertLegacySession({
+					id: raw.activeSession.id,
+					worktreePath: raw.activeSession.worktreePath,
+					messages: raw.activeSession.messages,
+					state: raw.activeSession.state,
+					createdAt: raw.activeSession.createdAt,
+					updatedAt: raw.activeSession.updatedAt,
+					agentSessionId: raw.activeSession.agentSessionId,
+				}),
+				turnPhase: raw.activeSession.turnPhase,
+			}
+		: null;
+	return { sessions: raw.sessions, activeSession };
+}
+
 export async function updateSessionState(
 	sessionId: string,
 	newState: SessionState,
