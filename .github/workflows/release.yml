@@ -17,7 +17,7 @@ jobs:
     outputs:
       release-id: ${{ steps.create.outputs.release-id }}
     steps:
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@v9
         id: create
         with:
           script: |
