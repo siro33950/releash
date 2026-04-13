@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::session::{
     add_message_internal, create_session_internal, now_timestamp, resolve_data_dir, ChatMessage,
-    ChatSession, GetSessionResponse, MessagePart, MessageRole, SessionSummary, SessionStore,
+    ChatSession, GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
 };
 
 const PERSIST_INTERVAL_MS: u64 = 1000;
@@ -907,12 +907,7 @@ async fn spawn_bridge_process(
             })
         };
         if was_streaming {
-            emit_session_state_changed(
-                &app_stdout,
-                &csid_stdout,
-                TurnPhase::Idle,
-                Some(-1),
-            );
+            emit_session_state_changed(&app_stdout, &csid_stdout, TurnPhase::Idle, Some(-1));
         }
         {
             let mut map = handles_stdout.lock().await;
@@ -1230,9 +1225,7 @@ async fn consume_pending_message(
                 return;
             }
         } else {
-            log::error!(
-                "consume_pending_message: no agent process for session {chat_session_id}"
-            );
+            log::error!("consume_pending_message: no agent process for session {chat_session_id}");
             return;
         }
     }
@@ -1471,12 +1464,7 @@ pub async fn respond_agent_permission(
 
     // Emit state change only if we actually transitioned: WaitingPermission → Streaming
     if did_transition_to_streaming {
-        emit_session_state_changed(
-            &app,
-            &chat_session_id,
-            TurnPhase::Streaming,
-            None,
-        );
+        emit_session_state_changed(&app, &chat_session_id, TurnPhase::Streaming, None);
     }
 
     Ok(())
@@ -1512,29 +1500,18 @@ pub async fn send_agent_message(
             .get_session(&data_dir, sid)?
             .ok_or_else(|| format!("Session not found: {sid}"))?
     } else {
-        let s = create_session_internal(&session_store, &data_dir, &worktree_path)?;
-        // Prewarm: start agent process in background
-        let app_c = app.clone();
-        let h_c = Arc::clone(handles.inner());
-        let ss_c = Arc::clone(session_store.inner());
-        let sid_c = s.id.clone();
-        let cwd_c = worktree_path.clone();
-        let pm_c = pm.clone();
-        tokio::spawn(async move {
-            if let Err(e) =
-                start_agent_session_internal(&app_c, &h_c, &ss_c, &sid_c, &cwd_c, Some(pm_c))
-                    .await
-            {
-                log::error!("Failed to prewarm agent session {sid_c}: {e}");
-            }
-        });
-        s
+        create_session_internal(&session_store, &data_dir, &worktree_path)?
     };
     let sid = session.id.clone();
 
     // 2. Add human message
-    let human_message =
-        add_message_internal(&session_store, &data_dir, &sid, MessageRole::Human, &content)?;
+    let human_message = add_message_internal(
+        &session_store,
+        &data_dir,
+        &sid,
+        MessageRole::Human,
+        &content,
+    )?;
 
     // 3. Check turn phase
     let current_phase = {
@@ -1544,45 +1521,44 @@ pub async fn send_agent_message(
             .unwrap_or(TurnPhase::Idle)
     };
 
-    let agent_message = if current_phase == TurnPhase::Streaming
-        || current_phase == TurnPhase::WaitingPermission
-    {
-        // 4a. Queue pending message + interrupt
-        {
-            let mut map = handles.lock().await;
-            if let Some(proc) = map.get_mut(&sid) {
-                proc.pending_message = Some(PendingMessage {
-                    content: content.clone(),
-                    permission_mode: pm.clone(),
-                });
-                proc.stdin
-                    .write_all(b"{\"type\":\"interrupt\"}\n")
-                    .await
-                    .map_err(|e| format!("Failed to write interrupt: {e}"))?;
-                proc.stdin
-                    .flush()
-                    .await
-                    .map_err(|e| format!("Failed to flush: {e}"))?;
+    let agent_message =
+        if current_phase == TurnPhase::Streaming || current_phase == TurnPhase::WaitingPermission {
+            // 4a. Queue pending message + interrupt
+            {
+                let mut map = handles.lock().await;
+                if let Some(proc) = map.get_mut(&sid) {
+                    proc.pending_message = Some(PendingMessage {
+                        content: content.clone(),
+                        permission_mode: pm.clone(),
+                    });
+                    proc.stdin
+                        .write_all(b"{\"type\":\"interrupt\"}\n")
+                        .await
+                        .map_err(|e| format!("Failed to write interrupt: {e}"))?;
+                    proc.stdin
+                        .flush()
+                        .await
+                        .map_err(|e| format!("Failed to flush: {e}"))?;
+                }
             }
-        }
-        None
-    } else {
-        // 4b. Create agent message + start turn
-        let agent_msg =
-            add_message_internal(&session_store, &data_dir, &sid, MessageRole::Agent, "")?;
-        start_agent_turn(
-            &app,
-            handles.inner(),
-            session_store.inner(),
-            &sid,
-            &worktree_path,
-            &pm,
-            &content,
-            &agent_msg.id,
-        )
-        .await?;
-        Some(agent_msg)
-    };
+            None
+        } else {
+            // 4b. Create agent message + start turn
+            let agent_msg =
+                add_message_internal(&session_store, &data_dir, &sid, MessageRole::Agent, "")?;
+            start_agent_turn(
+                &app,
+                handles.inner(),
+                session_store.inner(),
+                &sid,
+                &worktree_path,
+                &pm,
+                &content,
+                &agent_msg.id,
+            )
+            .await?;
+            Some(agent_msg)
+        };
 
     // 5. Get updated session and list
     let updated_session = session_store
@@ -1656,8 +1632,7 @@ pub async fn init_agent_sessions(
             let pm_c = pm.clone();
             tokio::spawn(async move {
                 if let Err(e) =
-                    start_agent_session_internal(&app_c, &h_c, &ss_c, &sid, &cwd, Some(pm_c))
-                        .await
+                    start_agent_session_internal(&app_c, &h_c, &ss_c, &sid, &cwd, Some(pm_c)).await
                 {
                     log::error!("Failed to start agent session {sid}: {e}");
                 }

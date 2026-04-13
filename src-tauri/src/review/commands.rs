@@ -33,7 +33,9 @@ pub fn cancel_review(
     orchestrator: State<'_, Arc<ReviewOrchestrator>>,
     review_session_id: String,
 ) -> Result<(), String> {
-    orchestrator.cancel_review(&app, &review_session_id)
+    orchestrator
+        .cancel_review(&app, &review_session_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -46,8 +48,9 @@ pub fn get_review_status(
 
 #[tauri::command]
 pub fn reset_review(
+    app: AppHandle,
     orchestrator: State<'_, Arc<ReviewOrchestrator>>,
     review_session_id: String,
 ) {
-    orchestrator.reset(&review_session_id);
+    orchestrator.reset(&app, &review_session_id);
 }

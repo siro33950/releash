@@ -255,6 +255,17 @@ impl OneShotPtyManager {
         self.entries.lock().get(&pty_id).map(|e| e.info.clone())
     }
 
+    pub fn get_buffered_output(&self, pty_id: u64) -> Option<String> {
+        let entries = self.entries.lock();
+        entries.get(&pty_id).and_then(|e| {
+            if e.output.is_empty() {
+                None
+            } else {
+                Some(e.output.clone())
+            }
+        })
+    }
+
     pub fn list_active_for_worktree(&self, worktree_path: &str) -> Vec<FindOneShotPtyResult> {
         self.entries
             .lock()

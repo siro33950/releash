@@ -217,10 +217,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			);
 			if (isNewSession) {
 				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
-			}
-			dispatch({ type: "ADD_MESSAGE", message: response.humanMessage });
-			if (response.agentMessage) {
-				dispatch({ type: "ADD_MESSAGE", message: response.agentMessage });
+			} else {
+				dispatch({ type: "ADD_MESSAGE", message: response.humanMessage });
+				if (response.agentMessage) {
+					dispatch({ type: "ADD_MESSAGE", message: response.agentMessage });
+				}
 			}
 			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
 		} catch (e) {
@@ -271,6 +272,13 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 							type: "SET_ACTIVE_SESSION",
 							session: response?.session ?? null,
 						});
+						if (response) {
+							dispatch({
+								type: "SET_TURN_PHASE",
+								sessionId: nextSession.id,
+								turnPhase: response.turnPhase,
+							});
+						}
 					} else {
 						dispatch({
 							type: "SET_ACTIVE_SESSION",
@@ -300,6 +308,13 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 					type: "SET_ACTIVE_SESSION",
 					session: response?.session ?? null,
 				});
+				if (response) {
+					dispatch({
+						type: "SET_TURN_PHASE",
+						sessionId,
+						turnPhase: response.turnPhase,
+					});
+				}
 				// Start Bridge process for the restored session
 				startAgentProcess(
 					sessionId,

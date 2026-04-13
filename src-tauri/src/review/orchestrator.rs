@@ -9,6 +9,21 @@ use crate::pty::oneshot::{OneShotPtyManager, OneShotStatus};
 use crate::pty::PtyOutput;
 use crate::review_prompt::PerFileReviewTask;
 
+#[derive(Debug)]
+pub enum ReviewOrchestratorError {
+    NotFound,
+}
+
+impl std::fmt::Display for ReviewOrchestratorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "Review session not found"),
+        }
+    }
+}
+
+impl std::error::Error for ReviewOrchestratorError {}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewStatus {
@@ -185,14 +200,18 @@ impl ReviewOrchestrator {
         session_id
     }
 
-    pub fn cancel_review(&self, app: &AppHandle, session_id: &str) -> Result<(), String> {
+    pub fn cancel_review(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+    ) -> Result<(), ReviewOrchestratorError> {
         let pty_ids: Vec<u64> = {
             let mut state = self.state.lock();
             let ptys = {
                 let session = state
                     .sessions
                     .get_mut(session_id)
-                    .ok_or("Review session not found")?;
+                    .ok_or(ReviewOrchestratorError::NotFound)?;
                 session.cancelled = true;
                 session.task_queue.clear();
                 let ptys: Vec<u64> = session.pty_to_file.keys().copied().collect();
@@ -222,12 +241,28 @@ impl ReviewOrchestrator {
         Some(build_status(session))
     }
 
-    pub fn reset(&self, session_id: &str) {
+    pub fn reset(&self, app: &AppHandle, session_id: &str) {
+        let pty_ids = self.reset_internal(session_id);
+
+        if !pty_ids.is_empty() {
+            if let Some(pty_mgr) = app.try_state::<Arc<OneShotPtyManager>>() {
+                for pty_id in pty_ids {
+                    let _ = pty_mgr.cancel(app, pty_id);
+                }
+            }
+        }
+    }
+
+    fn reset_internal(&self, session_id: &str) -> Vec<u64> {
         let mut state = self.state.lock();
         if let Some(session) = state.sessions.remove(session_id) {
-            for pty_id in session.pty_to_file.keys() {
-                state.pty_to_session.remove(pty_id);
+            let ptys: Vec<u64> = session.pty_to_file.keys().copied().collect();
+            for &pty_id in &ptys {
+                state.pty_to_session.remove(&pty_id);
             }
+            ptys
+        } else {
+            Vec::new()
         }
     }
 
@@ -385,7 +420,12 @@ impl ReviewOrchestrator {
                     }
                 }
 
-                // 4. Handle race condition: PTY may have completed during spawn
+                // 4. Flush buffered output that arrived before mapping was registered
+                if let Some(buffered) = pty_mgr.get_buffered_output(info.pty_id) {
+                    self.handle_pty_output(app, info.pty_id, &buffered);
+                }
+
+                // 5. Handle race condition: PTY may have completed during spawn
                 if let Some(current) = pty_mgr.get_status(info.pty_id) {
                     if matches!(
                         current.status,
@@ -409,7 +449,7 @@ impl ReviewOrchestrator {
     }
 
     fn mark_file_error(&self, app: &AppHandle, session_id: &str, file_path: &str) {
-        {
+        let should_spawn_next = {
             let mut state = self.state.lock();
             if let Some(session) = state.sessions.get_mut(session_id) {
                 if let Some(idx) = session
@@ -421,9 +461,16 @@ impl ReviewOrchestrator {
                 }
                 session.done_count += 1;
                 session.error_count += 1;
+                session.done_count < session.total_count && !session.task_queue.is_empty()
+            } else {
+                false
             }
-        }
+        };
         self.emit_state_changed(app, session_id);
+
+        if should_spawn_next {
+            self.spawn_next_batch(app, session_id, 1);
+        }
     }
 
     fn emit_state_changed(&self, app: &AppHandle, session_id: &str) {
@@ -658,7 +705,7 @@ mod tests {
             );
         }
         assert!(orchestrator.get_status("/repo").is_some());
-        orchestrator.reset("/repo");
+        orchestrator.reset_internal("/repo");
         assert!(orchestrator.get_status("/repo").is_none());
     }
 }
