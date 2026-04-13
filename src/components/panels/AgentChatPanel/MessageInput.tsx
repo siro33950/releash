@@ -10,7 +10,6 @@ import { SlashCommandPopup } from "./SlashCommandPopup";
 interface MessageInputProps {
 	onSend: (content: string) => void;
 	onInterrupt: () => void;
-	disabled: boolean;
 	isStreaming: boolean;
 	onCycleMode?: () => void;
 	mode: PermissionMode;
@@ -20,7 +19,6 @@ interface MessageInputProps {
 export function MessageInput({
 	onSend,
 	onInterrupt,
-	disabled,
 	isStreaming,
 	onCycleMode,
 	mode,
@@ -58,7 +56,7 @@ export function MessageInput({
 
 	const handleSubmit = useCallback(() => {
 		const trimmed = value.trim();
-		if (!trimmed || disabled) return;
+		if (!trimmed) return;
 		onSend(trimmed);
 		setValue("");
 		setSlashPopupDismissed(false);
@@ -66,7 +64,7 @@ export function MessageInput({
 		if (textareaRef.current) {
 			textareaRef.current.style.height = "auto";
 		}
-	}, [value, disabled, onSend]);
+	}, [value, onSend]);
 
 	const handleKeyDown = useCallback(
 		(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -139,7 +137,7 @@ export function MessageInput({
 		[],
 	);
 
-	const canSend = value.trim().length > 0 && !disabled;
+	const canSend = value.trim().length > 0;
 
 	return (
 		<SlashCommandPopup
@@ -159,9 +157,8 @@ export function MessageInput({
 					onChange={handleChange}
 					onKeyDown={handleKeyDown}
 					placeholder="Send a message..."
-					disabled={disabled}
 					rows={1}
-					className="w-full resize-none bg-transparent border-none px-3 pt-3 pb-1 text-sm focus:outline-none disabled:opacity-50 min-h-[36px] max-h-[200px]"
+					className="w-full resize-none bg-transparent border-none px-3 pt-3 pb-1 text-sm focus:outline-none min-h-[36px] max-h-[200px]"
 				/>
 				<div className="flex items-center justify-between px-2 pb-2">
 					<ModeSelector
@@ -169,7 +166,7 @@ export function MessageInput({
 						onModeChange={onModeChange}
 						disabled={false}
 					/>
-					{isStreaming ? (
+					{isStreaming && !canSend ? (
 						<Button
 							size="icon"
 							variant="destructive"

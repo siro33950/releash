@@ -188,6 +188,38 @@ export function buildReviewCommand(
 		.trim();
 }
 
+/**
+ * Build a command template with {prompt} placeholder for Rust-side substitution.
+ * Returns null if no review agent is configured.
+ */
+export function buildReviewCommandTemplate(
+	settings: AppSettings,
+): string | null {
+	const { reviewAgent, reviewModel, customReviewCommand } = settings;
+
+	if (reviewAgent === "none") {
+		return null;
+	}
+
+	if (reviewAgent === "custom") {
+		return customReviewCommand || null;
+	}
+
+	const config = AGENT_CONFIGS[reviewAgent];
+	if (!config.reviewCommand) return null;
+
+	const allowedModels = AGENT_MODELS[reviewAgent].map((m) => m.value);
+	const safeModel =
+		reviewModel && allowedModels.includes(reviewModel) ? reviewModel : "";
+	const modelFlagValue =
+		safeModel && config.modelFlag ? `${config.modelFlag} ${safeModel}` : "";
+
+	return config.reviewCommand
+		.replace("{model_flag}", modelFlagValue)
+		.replace(/\s{2,}/g, " ")
+		.trim();
+}
+
 export function buildThreadCommand(
 	settings: AppSettings,
 	prompt: string,

@@ -32,8 +32,7 @@ describe("agentChatReducer", () => {
 			sessionOrder: [],
 			closedSessions: [],
 			activeSession: null,
-			streamingSessionIds: [],
-			sessionFinalStates: {},
+			turnPhases: {},
 			error: null,
 			permissionMode: "acceptEdits",
 			userPermissionMode: "acceptEdits",
@@ -221,61 +220,44 @@ describe("agentChatReducer", () => {
 		});
 	});
 
-	describe("START_STREAMING / STOP_STREAMING", () => {
-		it("adds sessionId to streamingSessionIds", () => {
+	describe("SET_TURN_PHASE", () => {
+		it("sets turn phase for a session", () => {
 			const next = reducer(INITIAL_STATE, {
-				type: "START_STREAMING",
+				type: "SET_TURN_PHASE",
 				sessionId: "s1",
+				turnPhase: "streaming",
 			});
-			expect(next.streamingSessionIds).toEqual(["s1"]);
+			expect(next.turnPhases).toEqual({ s1: "streaming" });
 		});
 
-		it("does not duplicate sessionId", () => {
+		it("overwrites existing turn phase", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				streamingSessionIds: ["s1"],
+				turnPhases: { s1: "streaming" },
 			};
 			const next = reducer(state, {
-				type: "START_STREAMING",
+				type: "SET_TURN_PHASE",
 				sessionId: "s1",
+				turnPhase: "idle",
 			});
-			expect(next.streamingSessionIds).toEqual(["s1"]);
+			expect(next.turnPhases).toEqual({ s1: "idle" });
 		});
 
 		it("supports multiple concurrent sessions", () => {
 			const step1 = reducer(INITIAL_STATE, {
-				type: "START_STREAMING",
+				type: "SET_TURN_PHASE",
 				sessionId: "s1",
+				turnPhase: "streaming",
 			});
 			const step2 = reducer(step1, {
-				type: "START_STREAMING",
+				type: "SET_TURN_PHASE",
 				sessionId: "s2",
+				turnPhase: "waiting_permission",
 			});
-			expect(step2.streamingSessionIds).toEqual(["s1", "s2"]);
-		});
-
-		it("removes sessionId from streamingSessionIds", () => {
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				streamingSessionIds: ["s1", "s2"],
-			};
-			const next = reducer(state, {
-				type: "STOP_STREAMING",
-				sessionId: "s1",
+			expect(step2.turnPhases).toEqual({
+				s1: "streaming",
+				s2: "waiting_permission",
 			});
-			expect(next.streamingSessionIds).toEqual(["s2"]);
-		});
-
-		it("does nothing when stopping non-streaming session", () => {
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				streamingSessionIds: ["s1"],
-			};
-			const next = reducer(state, {
-				type: "STOP_STREAMING",
-				sessionId: "s2",
-			});
-			expect(next.streamingSessionIds).toEqual(["s1"]);
 		});
 	});
 

@@ -51,24 +51,20 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 	};
 }
 
-function makeTask(filePath: string) {
-	return { file_path: filePath, prompt: `Review ${filePath}` };
+/** Emit a review-state-changed event via the captured listener */
+function emitReviewStateChanged(payload: {
+	status: string;
+	file_states: { file_path: string; status: string; pty_id: number | null }[];
+	progress: { done: number; total: number; error_count: number };
+}) {
+	const listener = capturedListeners.get("review-state-changed");
+	listener?.({ payload: payload as unknown as Record<string, unknown> });
 }
 
-/** Emit a pty-output event via the captured listener */
-function emitPtyOutput(pty_id: number, data: string) {
-	const listener = capturedListeners.get("pty-output");
-	listener?.({ payload: { pty_id, data } });
-}
-
-/** Emit a oneshot-pty-status-changed event via the captured listener */
-function emitPtyStatus(
-	pty_id: number,
-	status: string,
-	exit_code: number | null = null,
-) {
-	const listener = capturedListeners.get("oneshot-pty-status-changed");
-	listener?.({ payload: { pty_id, status, exit_code } });
+/** Emit a review-file-output event via the captured listener */
+function emitReviewFileOutput(file_path: string, data: string) {
+	const listener = capturedListeners.get("review-file-output");
+	listener?.({ payload: { file_path, data } });
 }
 
 // ---------------------------------------------------------------------------
@@ -79,8 +75,8 @@ describe("useReviewExecution", () => {
 	beforeEach(() => {
 		mockInvoke.mockReset();
 		capturedListeners = new Map();
-		// list_oneshot_ptys on mount (returns empty array = no recovery)
-		mockInvoke.mockResolvedValueOnce([]);
+		// get_review_status on mount (returns null = no active session)
+		mockInvoke.mockResolvedValueOnce(null);
 		mockInvoke.mockResolvedValue(undefined);
 	});
 
@@ -107,40 +103,50 @@ describe("useReviewExecution", () => {
 		expect(result.current.fileStates).toEqual([]);
 	});
 
-	it("should transition to running on successful startReview", async () => {
-		const tasks = [makeTask("src/a.ts")];
-		mockInvoke
-			.mockResolvedValueOnce(tasks) // get_per_file_review_tasks
-			.mockResolvedValueOnce({
-				// spawn_oneshot_pty
-				pty_id: 42,
-				session_key: "sess-1",
-				status: "running",
-			});
+	it("should call start_review on startReview", async () => {
+		// start_review returns session id
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
 			await result.current.startReview();
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"start_review",
+			expect.objectContaining({
+				worktreePath: WORKTREE,
+				commandTemplate: expect.any(String),
+				concurrency: 5,
+			}),
+		);
+	});
+
+	it("should transition to running when Rust emits running state", async () => {
+		mockInvoke.mockResolvedValueOnce("session-1");
+
+		const { result } = await renderReviewHook();
+
+		await act(async () => {
+			await result.current.startReview();
+		});
+
+		act(() => {
+			emitReviewStateChanged({
+				status: "running",
+				file_states: [{ file_path: "src/a.ts", status: "running", pty_id: 42 }],
+				progress: { done: 0, total: 1, error_count: 0 },
+			});
 		});
 
 		expect(result.current.status).toBe("running");
 		expect(result.current.fileStates.length).toBe(1);
 		expect(result.current.fileStates[0].filePath).toBe("src/a.ts");
-		expect(mockInvoke).toHaveBeenCalledWith("get_per_file_review_tasks", {
-			worktreePath: WORKTREE,
-		});
-		expect(mockInvoke).toHaveBeenCalledWith(
-			"spawn_oneshot_pty",
-			expect.objectContaining({
-				worktreePath: WORKTREE,
-				label: "review:src/a.ts",
-			}),
-		);
 	});
 
-	it("should set error status when get_per_file_review_tasks fails", async () => {
-		mockInvoke.mockRejectedValueOnce(new Error("task fail"));
+	it("should set error status when start_review invoke fails", async () => {
+		mockInvoke.mockRejectedValueOnce(new Error("start fail"));
 
 		const { result } = await renderReviewHook();
 
@@ -148,24 +154,6 @@ describe("useReviewExecution", () => {
 			await result.current.startReview();
 		});
 
-		expect(result.current.status).toBe("error");
-	});
-
-	it("should set error status when spawn_oneshot_pty fails", async () => {
-		mockInvoke
-			.mockResolvedValueOnce([makeTask("src/a.ts")]) // get_per_file_review_tasks
-			.mockRejectedValueOnce(new Error("spawn fail")); // spawn_oneshot_pty
-
-		const { result } = await renderReviewHook();
-
-		await act(async () => {
-			await result.current.startReview();
-		});
-
-		// spawnNextTask is async, wait for it to complete
-		await act(async () => {});
-
-		// Single file failed → all done → error
 		expect(result.current.status).toBe("error");
 	});
 
@@ -177,17 +165,15 @@ describe("useReviewExecution", () => {
 		});
 
 		expect(result.current.status).toBe("idle");
-		// Only the mount-time list_oneshot_ptys (which didn't fire for null path)
+		// start_review should not have been called
+		const startCalls = mockInvoke.mock.calls.filter(
+			(c) => c[0] === "start_review",
+		);
+		expect(startCalls).toHaveLength(0);
 	});
 
-	it("should accumulate pty output per file", async () => {
-		mockInvoke
-			.mockResolvedValueOnce([makeTask("src/a.ts")])
-			.mockResolvedValueOnce({
-				pty_id: 10,
-				session_key: "s",
-				status: "running",
-			});
+	it("should accumulate file output per file", async () => {
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result } = await renderReviewHook();
 
@@ -195,11 +181,20 @@ describe("useReviewExecution", () => {
 			await result.current.startReview();
 		});
 
+		// Rust emits running state with file
 		act(() => {
-			emitPtyOutput(10, "hello ");
+			emitReviewStateChanged({
+				status: "running",
+				file_states: [{ file_path: "src/a.ts", status: "running", pty_id: 10 }],
+				progress: { done: 0, total: 1, error_count: 0 },
+			});
+		});
+
+		act(() => {
+			emitReviewFileOutput("src/a.ts", "hello ");
 		});
 		act(() => {
-			emitPtyOutput(10, "world");
+			emitReviewFileOutput("src/a.ts", "world");
 		});
 
 		const fileState = result.current.fileStates.find(
@@ -208,14 +203,8 @@ describe("useReviewExecution", () => {
 		expect(fileState?.output).toBe("hello world");
 	});
 
-	it("should transition to completed when all files done", async () => {
-		mockInvoke
-			.mockResolvedValueOnce([makeTask("src/a.ts")])
-			.mockResolvedValueOnce({
-				pty_id: 10,
-				session_key: "s",
-				status: "running",
-			});
+	it("should transition to completed via event", async () => {
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result } = await renderReviewHook();
 
@@ -224,21 +213,27 @@ describe("useReviewExecution", () => {
 		});
 
 		act(() => {
-			emitPtyStatus(10, "completed", 0);
+			emitReviewStateChanged({
+				status: "running",
+				file_states: [{ file_path: "src/a.ts", status: "running", pty_id: 10 }],
+				progress: { done: 0, total: 1, error_count: 0 },
+			});
+		});
+
+		act(() => {
+			emitReviewStateChanged({
+				status: "completed",
+				file_states: [{ file_path: "src/a.ts", status: "done", pty_id: 10 }],
+				progress: { done: 1, total: 1, error_count: 0 },
+			});
 		});
 
 		expect(result.current.status).toBe("completed");
 		expect(result.current.progress).toEqual({ done: 1, total: 1 });
 	});
 
-	it("should transition to error on timeout status", async () => {
-		mockInvoke
-			.mockResolvedValueOnce([makeTask("src/a.ts")])
-			.mockResolvedValueOnce({
-				pty_id: 10,
-				session_key: "s",
-				status: "running",
-			});
+	it("should transition to error via event when error_count > 0", async () => {
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result } = await renderReviewHook();
 
@@ -247,20 +242,18 @@ describe("useReviewExecution", () => {
 		});
 
 		act(() => {
-			emitPtyStatus(10, "timeout");
+			emitReviewStateChanged({
+				status: "error",
+				file_states: [{ file_path: "src/a.ts", status: "error", pty_id: 10 }],
+				progress: { done: 1, total: 1, error_count: 1 },
+			});
 		});
 
 		expect(result.current.status).toBe("error");
 	});
 
-	it("should cancel all running PTYs on cancelReview", async () => {
-		mockInvoke
-			.mockResolvedValueOnce([makeTask("src/a.ts")])
-			.mockResolvedValueOnce({
-				pty_id: 10,
-				session_key: "s",
-				status: "running",
-			});
+	it("should call cancel_review on cancelReview", async () => {
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result } = await renderReviewHook();
 
@@ -272,25 +265,58 @@ describe("useReviewExecution", () => {
 			await result.current.cancelReview();
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("cancel_oneshot_pty", {
-			ptyId: 10,
+		expect(mockInvoke).toHaveBeenCalledWith("cancel_review", {
+			reviewSessionId: WORKTREE,
 		});
-		expect(result.current.status).toBe("cancelled");
 	});
 
-	it("should reset to idle", async () => {
-		mockInvoke
-			.mockResolvedValueOnce([makeTask("src/a.ts")])
-			.mockResolvedValueOnce({
-				pty_id: 10,
-				session_key: "s",
-				status: "running",
-			});
+	it("should transition to cancelled via event after cancel", async () => {
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result } = await renderReviewHook();
 
 		await act(async () => {
 			await result.current.startReview();
+		});
+
+		act(() => {
+			emitReviewStateChanged({
+				status: "running",
+				file_states: [{ file_path: "src/a.ts", status: "running", pty_id: 10 }],
+				progress: { done: 0, total: 1, error_count: 0 },
+			});
+		});
+
+		await act(async () => {
+			await result.current.cancelReview();
+		});
+
+		act(() => {
+			emitReviewStateChanged({
+				status: "cancelled",
+				file_states: [{ file_path: "src/a.ts", status: "error", pty_id: 10 }],
+				progress: { done: 0, total: 1, error_count: 0 },
+			});
+		});
+
+		expect(result.current.status).toBe("cancelled");
+	});
+
+	it("should reset to idle", async () => {
+		mockInvoke.mockResolvedValueOnce("session-1");
+
+		const { result } = await renderReviewHook();
+
+		await act(async () => {
+			await result.current.startReview();
+		});
+
+		act(() => {
+			emitReviewStateChanged({
+				status: "running",
+				file_states: [{ file_path: "src/a.ts", status: "running", pty_id: 10 }],
+				progress: { done: 0, total: 1, error_count: 0 },
+			});
 		});
 
 		expect(result.current.status).toBe("running");
@@ -301,22 +327,13 @@ describe("useReviewExecution", () => {
 
 		expect(result.current.status).toBe("idle");
 		expect(result.current.fileStates).toEqual([]);
+		expect(mockInvoke).toHaveBeenCalledWith("reset_review", {
+			reviewSessionId: WORKTREE,
+		});
 	});
 
 	it("should track progress across multiple files", async () => {
-		const tasks = [makeTask("src/a.ts"), makeTask("src/b.ts")];
-		mockInvoke
-			.mockResolvedValueOnce(tasks)
-			.mockResolvedValueOnce({
-				pty_id: 10,
-				session_key: "s1",
-				status: "running",
-			})
-			.mockResolvedValueOnce({
-				pty_id: 11,
-				session_key: "s2",
-				status: "running",
-			});
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result } = await renderReviewHook();
 
@@ -324,17 +341,42 @@ describe("useReviewExecution", () => {
 			await result.current.startReview();
 		});
 
+		act(() => {
+			emitReviewStateChanged({
+				status: "running",
+				file_states: [
+					{ file_path: "src/a.ts", status: "running", pty_id: 10 },
+					{ file_path: "src/b.ts", status: "pending", pty_id: null },
+				],
+				progress: { done: 0, total: 2, error_count: 0 },
+			});
+		});
+
 		expect(result.current.progress).toEqual({ done: 0, total: 2 });
 
 		act(() => {
-			emitPtyStatus(10, "completed", 0);
+			emitReviewStateChanged({
+				status: "running",
+				file_states: [
+					{ file_path: "src/a.ts", status: "done", pty_id: 10 },
+					{ file_path: "src/b.ts", status: "running", pty_id: 11 },
+				],
+				progress: { done: 1, total: 2, error_count: 0 },
+			});
 		});
 
 		expect(result.current.progress?.done).toBe(1);
 		expect(result.current.status).toBe("running");
 
 		act(() => {
-			emitPtyStatus(11, "completed", 0);
+			emitReviewStateChanged({
+				status: "completed",
+				file_states: [
+					{ file_path: "src/a.ts", status: "done", pty_id: 10 },
+					{ file_path: "src/b.ts", status: "done", pty_id: 11 },
+				],
+				progress: { done: 2, total: 2, error_count: 0 },
+			});
 		});
 
 		expect(result.current.progress).toEqual({ done: 2, total: 2 });
@@ -342,19 +384,7 @@ describe("useReviewExecution", () => {
 	});
 
 	it("should complete with error if any file fails", async () => {
-		const tasks = [makeTask("src/a.ts"), makeTask("src/b.ts")];
-		mockInvoke
-			.mockResolvedValueOnce(tasks)
-			.mockResolvedValueOnce({
-				pty_id: 10,
-				session_key: "s1",
-				status: "running",
-			})
-			.mockResolvedValueOnce({
-				pty_id: 11,
-				session_key: "s2",
-				status: "running",
-			});
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result } = await renderReviewHook();
 
@@ -363,10 +393,14 @@ describe("useReviewExecution", () => {
 		});
 
 		act(() => {
-			emitPtyStatus(10, "completed", 0);
-		});
-		act(() => {
-			emitPtyStatus(11, "error");
+			emitReviewStateChanged({
+				status: "error",
+				file_states: [
+					{ file_path: "src/a.ts", status: "done", pty_id: 10 },
+					{ file_path: "src/b.ts", status: "error", pty_id: 11 },
+				],
+				progress: { done: 2, total: 2, error_count: 1 },
+			});
 		});
 
 		expect(result.current.status).toBe("error");
@@ -382,8 +416,9 @@ describe("useReviewExecution", () => {
 		expect(bState?.status).toBe("error");
 	});
 
-	it("should handle empty task list as completed", async () => {
-		mockInvoke.mockResolvedValueOnce([]); // no changed files
+	it("should handle no-tasks as completed with empty summary", async () => {
+		// start_review returns null (no tasks to review)
+		mockInvoke.mockResolvedValueOnce(null);
 
 		const { result } = await renderReviewHook();
 
@@ -424,13 +459,7 @@ describe("useReviewExecution", () => {
 			}),
 		];
 
-		mockInvoke
-			.mockResolvedValueOnce([makeTask("src/a.ts")])
-			.mockResolvedValueOnce({
-				pty_id: 10,
-				session_key: "s",
-				status: "running",
-			});
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result, rerender } = await renderReviewHook(WORKTREE, []);
 
@@ -438,11 +467,15 @@ describe("useReviewExecution", () => {
 			await result.current.startReview();
 		});
 
-		// Provide threads and complete
+		// Provide threads and complete via event
 		rerender({ wt: WORKTREE, threads });
 
 		act(() => {
-			emitPtyStatus(10, "completed", 0);
+			emitReviewStateChanged({
+				status: "completed",
+				file_states: [{ file_path: "src/a.ts", status: "done", pty_id: 10 }],
+				progress: { done: 1, total: 1, error_count: 0 },
+			});
 		});
 
 		// Wait for summary computation useEffect
@@ -465,18 +498,17 @@ describe("useReviewExecution", () => {
 		);
 		await act(async () => {});
 
-		// get_per_file_review_tasks returns tasks but buildReviewCommand returns null
-		mockInvoke.mockResolvedValueOnce([makeTask("src/a.ts")]);
-
 		await act(async () => {
 			await result.current.startReview();
 		});
 
-		// spawnNextTask is async (uses ref), wait for it to complete
-		await act(async () => {});
-
-		// All tasks fail (buildReviewCommand returns null for "none") → error
+		// buildReviewCommandTemplate returns null for "none" → error
 		expect(result.current.status).toBe("error");
+		// start_review should not have been called
+		const startCalls = mockInvoke.mock.calls.filter(
+			(c) => c[0] === "start_review",
+		);
+		expect(startCalls).toHaveLength(0);
 	});
 
 	// -----------------------------------------------------------------------
@@ -485,15 +517,11 @@ describe("useReviewExecution", () => {
 
 	it("should restore running review on mount", async () => {
 		mockInvoke.mockReset();
-		mockInvoke.mockResolvedValueOnce([
-			{
-				pty_id: 100,
-				label: "review:src/a.ts",
-				status: "running",
-				started_at: 1000,
-				buffered_output: "partial output",
-			},
-		]);
+		mockInvoke.mockResolvedValueOnce({
+			status: "running",
+			file_states: [{ file_path: "src/a.ts", status: "running", pty_id: 100 }],
+			progress: { done: 0, total: 1, error_count: 0 },
+		});
 		mockInvoke.mockResolvedValue(undefined);
 
 		const { result } = await renderReviewHook();
@@ -501,135 +529,56 @@ describe("useReviewExecution", () => {
 		expect(result.current.status).toBe("running");
 		expect(result.current.fileStates.length).toBe(1);
 		expect(result.current.fileStates[0].filePath).toBe("src/a.ts");
-		expect(result.current.fileStates[0].output).toBe("partial output");
+		expect(result.current.fileStates[0].status).toBe("running");
 	});
 
 	it("should restore completed review on mount", async () => {
 		mockInvoke.mockReset();
-		mockInvoke.mockResolvedValueOnce([
-			{
-				pty_id: 200,
-				label: "review:src/b.ts",
-				status: "completed",
-				started_at: 2000,
-				buffered_output: "done output",
-			},
-		]);
+		mockInvoke.mockResolvedValueOnce({
+			status: "completed",
+			file_states: [{ file_path: "src/b.ts", status: "done", pty_id: 200 }],
+			progress: { done: 1, total: 1, error_count: 0 },
+		});
 		mockInvoke.mockResolvedValue(undefined);
 
 		const { result } = await renderReviewHook();
 
 		expect(result.current.status).toBe("completed");
 		expect(result.current.fileStates[0].status).toBe("done");
-		expect(result.current.fileStates[0].output).toBe("done output");
 	});
 
 	it("should stay idle when no review found on mount", async () => {
-		// Default beforeEach already returns [] for list_oneshot_ptys
+		// Default beforeEach already returns null for get_review_status
 		const { result } = await renderReviewHook();
 
 		expect(result.current.status).toBe("idle");
 		expect(result.current.fileStates).toEqual([]);
 	});
 
-	it("should prevent double start", async () => {
-		let resolveTasks = (_v: unknown) => {};
-		mockInvoke.mockReturnValueOnce(
-			new Promise((r) => {
-				resolveTasks = r;
-			}),
-		);
+	it("should stay idle when get_review_status returns idle status", async () => {
+		mockInvoke.mockReset();
+		mockInvoke.mockResolvedValueOnce({
+			status: "idle",
+			file_states: [],
+			progress: { done: 0, total: 0, error_count: 0 },
+		});
+		mockInvoke.mockResolvedValue(undefined);
 
 		const { result } = await renderReviewHook();
 
-		// Start first review (still pending)
-		act(() => {
-			result.current.startReview();
-		});
-
-		// Try to start second review while first is pending
-		act(() => {
-			result.current.startReview();
-		});
-
-		// Resolve the first
-		await act(async () => {
-			resolveTasks([]);
-		});
-
-		// get_per_file_review_tasks should only be called once
-		const taskCalls = mockInvoke.mock.calls.filter(
-			(c) => c[0] === "get_per_file_review_tasks",
-		);
-		expect(taskCalls.length).toBe(1);
+		expect(result.current.status).toBe("idle");
 	});
 
-	it("should spawn next task from queue when one completes (concurrency control)", async () => {
-		const concurrencySettings = { ...SETTINGS, reviewConcurrency: 1 };
-		const { useReviewExecution } = await import("./useReviewExecution");
+	it("should not register listeners when worktreePath is null", async () => {
+		await renderReviewHook(null);
 
-		// Reset mock for this specific test
-		mockInvoke.mockReset();
-		mockInvoke.mockResolvedValueOnce([]); // list_oneshot_ptys on mount
-		mockInvoke.mockResolvedValue(undefined); // default for cleanup/cancel calls
-
-		const tasks = [makeTask("src/a.ts"), makeTask("src/b.ts")];
-
-		mockInvoke
-			.mockResolvedValueOnce(tasks) // get_per_file_review_tasks
-			.mockResolvedValueOnce({
-				// spawn first
-				pty_id: 10,
-				session_key: "s1",
-				status: "running",
-			});
-
-		const { result } = renderHook(() =>
-			useReviewExecution(WORKTREE, [], concurrencySettings),
-		);
-		await act(async () => {});
-
-		await act(async () => {
-			await result.current.startReview();
-		});
-
-		// Only first file should be running (concurrency = 1)
-		expect(result.current.fileStates[0].status).toBe("running");
-		expect(result.current.fileStates[1].status).toBe("pending");
-
-		// Complete first → should spawn second
-		mockInvoke.mockResolvedValueOnce({
-			pty_id: 11,
-			session_key: "s2",
-			status: "running",
-		});
-
-		await act(async () => {
-			emitPtyStatus(10, "completed", 0);
-		});
-
-		// Wait for spawn
-		await act(async () => {});
-
-		expect(result.current.fileStates[0].status).toBe("done");
-		expect(
-			mockInvoke.mock.calls.filter((c) => c[0] === "spawn_oneshot_pty").length,
-		).toBe(2);
+		// No listeners should be registered for review events
+		expect(capturedListeners.has("review-state-changed")).toBe(false);
+		expect(capturedListeners.has("review-file-output")).toBe(false);
 	});
 
-	it("should not cancel PTYs on unmount (keep running for recovery)", async () => {
-		mockInvoke
-			.mockResolvedValueOnce([makeTask("src/a.ts"), makeTask("src/b.ts")])
-			.mockResolvedValueOnce({
-				pty_id: 50,
-				session_key: "s1",
-				status: "running",
-			})
-			.mockResolvedValueOnce({
-				pty_id: 51,
-				session_key: "s2",
-				status: "running",
-			});
+	it("should not update state after unmount", async () => {
+		mockInvoke.mockResolvedValueOnce("session-1");
 
 		const { result, unmount } = await renderReviewHook();
 
@@ -637,41 +586,60 @@ describe("useReviewExecution", () => {
 			await result.current.startReview();
 		});
 
-		expect(result.current.status).toBe("running");
-
-		// Clear mock to isolate unmount calls
-		mockInvoke.mockClear();
-		mockInvoke.mockResolvedValue(undefined);
-
-		unmount();
-
-		// PTYs should NOT be cancelled — they keep running for mount-time recovery
-		const cancelCalls = mockInvoke.mock.calls.filter(
-			(c) => c[0] === "cancel_oneshot_pty",
-		);
-		expect(cancelCalls).toHaveLength(0);
-	});
-
-	it("should not update state after unmount via syncState", async () => {
-		mockInvoke
-			.mockResolvedValueOnce([makeTask("src/a.ts")])
-			.mockResolvedValueOnce({
-				pty_id: 60,
-				session_key: "s",
+		act(() => {
+			emitReviewStateChanged({
 				status: "running",
+				file_states: [{ file_path: "src/a.ts", status: "running", pty_id: 60 }],
+				progress: { done: 0, total: 1, error_count: 0 },
 			});
-
-		const { result, unmount } = await renderReviewHook();
-
-		await act(async () => {
-			await result.current.startReview();
 		});
 
 		unmount();
 
 		// Emitting events after unmount should not throw
 		expect(() => {
-			emitPtyStatus(60, "completed", 0);
+			emitReviewStateChanged({
+				status: "completed",
+				file_states: [{ file_path: "src/a.ts", status: "done", pty_id: 60 }],
+				progress: { done: 1, total: 1, error_count: 0 },
+			});
 		}).not.toThrow();
+	});
+
+	it("should preserve output on state change events", async () => {
+		mockInvoke.mockResolvedValueOnce("session-1");
+
+		const { result } = await renderReviewHook();
+
+		await act(async () => {
+			await result.current.startReview();
+		});
+
+		// Rust emits running state
+		act(() => {
+			emitReviewStateChanged({
+				status: "running",
+				file_states: [{ file_path: "src/a.ts", status: "running", pty_id: 10 }],
+				progress: { done: 0, total: 1, error_count: 0 },
+			});
+		});
+
+		// Output arrives
+		act(() => {
+			emitReviewFileOutput("src/a.ts", "some output");
+		});
+
+		expect(result.current.fileStates[0].output).toBe("some output");
+
+		// State changes again (e.g., file completes) — output should be preserved
+		act(() => {
+			emitReviewStateChanged({
+				status: "completed",
+				file_states: [{ file_path: "src/a.ts", status: "done", pty_id: 10 }],
+				progress: { done: 1, total: 1, error_count: 0 },
+			});
+		});
+
+		expect(result.current.fileStates[0].output).toBe("some output");
 	});
 });

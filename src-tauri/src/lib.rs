@@ -14,6 +14,7 @@ mod protocol;
 mod pty;
 mod qr_code;
 mod repo_registry;
+mod review;
 mod review_prompt;
 mod search;
 mod sentry_integration;
@@ -88,6 +89,8 @@ pub fn run() {
             app.manage(Arc::new(pty::oneshot::OneShotPtyManager::new(Arc::clone(
                 pty_mgr.inner(),
             ))));
+            app.manage(Arc::new(review::ReviewOrchestrator::new()));
+            review::ReviewOrchestrator::register_listeners(app.handle());
 
             let data_dir = app.path().app_data_dir()?;
             let config_path = data_dir.join("releash.toml");
@@ -367,6 +370,11 @@ pub fn run() {
             // Review prompt
             review_prompt::get_review_prompt,
             review_prompt::get_per_file_review_tasks,
+            // Review orchestration
+            review::commands::start_review,
+            review::commands::cancel_review,
+            review::commands::get_review_status,
+            review::commands::reset_review,
             // Thread AI
             thread_ai::build_thread_ai_prompt,
             thread_ai::build_thread_summarize_prompt,
@@ -394,6 +402,8 @@ pub fn run() {
             agent_sdk::close_agent_session,
             agent_sdk::set_agent_permission_mode,
             agent_sdk::respond_agent_permission,
+            agent_sdk::send_agent_message,
+            agent_sdk::init_agent_sessions,
             agent_sdk::scan_slash_commands,
             // Session
             session::list_sessions,

@@ -152,12 +152,12 @@ pub struct ChatSession {
     pub agent_session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetSessionResponse {
     #[serde(flatten)]
     pub session: ChatSession,
-    pub is_streaming: bool,
+    pub turn_phase: crate::agent_sdk::TurnPhase,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,6 +301,53 @@ pub fn list_sessions(
     state.list_sessions(&data_dir, &worktree_path)
 }
 
+/// Internal (non-command) version of create_session, callable from agent_sdk.
+pub fn create_session_internal(
+    session_store: &SessionStore,
+    data_dir: &std::path::Path,
+    worktree_path: &str,
+) -> Result<ChatSession, String> {
+    let now = now_timestamp();
+    let session = ChatSession {
+        id: uuid::Uuid::new_v4().to_string(),
+        worktree_path: worktree_path.to_string(),
+        messages: Vec::new(),
+        state: SessionState::Active,
+        created_at: now,
+        updated_at: now,
+        agent_session_id: None,
+    };
+    session_store.save_session(data_dir, &session)?;
+    Ok(session)
+}
+
+/// Internal (non-command) version of add_message, callable from agent_sdk.
+pub fn add_message_internal(
+    session_store: &SessionStore,
+    data_dir: &std::path::Path,
+    session_id: &str,
+    role: MessageRole,
+    content: &str,
+) -> Result<ChatMessage, String> {
+    let mut session = session_store
+        .get_session(data_dir, session_id)?
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    let now = now_timestamp();
+    let message = ChatMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        role,
+        content: content.to_string(),
+        thinking: None,
+        activities: None,
+        parts: None,
+        timestamp: now,
+    };
+    session.messages.push(message.clone());
+    session.updated_at = now;
+    session_store.save_session(data_dir, &session)?;
+    Ok(message)
+}
+
 #[tauri::command]
 pub fn create_session(
     state: State<'_, Arc<SessionStore>>,
@@ -308,18 +355,7 @@ pub fn create_session(
     worktree_path: String,
 ) -> Result<ChatSession, String> {
     let data_dir = resolve_data_dir(&app)?;
-    let now = now_timestamp();
-    let session = ChatSession {
-        id: uuid::Uuid::new_v4().to_string(),
-        worktree_path,
-        messages: Vec::new(),
-        state: SessionState::Active,
-        created_at: now,
-        updated_at: now,
-        agent_session_id: None,
-    };
-    state.save_session(&data_dir, &session)?;
-    Ok(session)
+    create_session_internal(&state, &data_dir, &worktree_path)
 }
 
 #[tauri::command]
@@ -331,23 +367,7 @@ pub fn add_message(
     content: String,
 ) -> Result<ChatMessage, String> {
     let data_dir = resolve_data_dir(&app)?;
-    let mut session = state
-        .get_session(&data_dir, &session_id)?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    let now = now_timestamp();
-    let message = ChatMessage {
-        id: uuid::Uuid::new_v4().to_string(),
-        role,
-        content,
-        thinking: None,
-        activities: None,
-        parts: None,
-        timestamp: now,
-    };
-    session.messages.push(message.clone());
-    session.updated_at = now;
-    state.save_session(&data_dir, &session)?;
-    Ok(message)
+    add_message_internal(&state, &data_dir, &session_id, role, &content)
 }
 
 #[tauri::command]

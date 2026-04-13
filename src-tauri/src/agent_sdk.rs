@@ -5,13 +5,15 @@ use std::sync::Arc;
 
 static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+use serde::Serialize;
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::session::{
-    now_timestamp, resolve_data_dir, GetSessionResponse, MessagePart, SessionStore,
+    add_message_internal, create_session_internal, now_timestamp, resolve_data_dir, ChatMessage,
+    ChatSession, GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
 };
 
 const PERSIST_INTERVAL_MS: u64 = 1000;
@@ -24,9 +26,28 @@ pub enum BridgeState {
     Crashed,
 }
 
+/// SDK's turn lifecycle phase, exposed to the frontend as the single source of truth.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnPhase {
+    /// Waiting for user input / turn completed
+    Idle,
+    /// Actively processing a user prompt (SDK iterator yielding before `result`)
+    Streaming,
+    /// SDK blocked on `canUseTool` promise — waiting for permission response
+    WaitingPermission,
+}
+
+/// A message queued while the agent is streaming, consumed on turn_complete.
+pub struct PendingMessage {
+    pub content: String,
+    pub permission_mode: String,
+}
+
 pub struct AgentProcess {
     pub stdin: tokio::process::ChildStdin,
     pub state: BridgeState,
+    pub turn_phase: TurnPhase,
     pub sdk_session_id: Option<String>,
     pub child: tokio::process::Child,
     pub generation_id: u64,
@@ -39,6 +60,9 @@ pub struct AgentProcess {
     /// Populated from ToolResult content ("agentId: XXX"), used to fill
     /// missing tool_use_id in task_notification messages from the SDK.
     pub task_id_map: HashMap<String, String>,
+    /// Pending message queued by send_agent_message during streaming.
+    /// Auto-consumed on turn_complete by the stdout reader.
+    pub pending_message: Option<PendingMessage>,
 }
 
 /// Per-session agent process map: chat_session_id → AgentProcess
@@ -125,19 +149,19 @@ fn persist_streaming_parts(
     }
 }
 
-fn emit_agent_query_completed(
+fn emit_session_state_changed(
     app: &tauri::AppHandle,
-    exit_code: i64,
-    stderr: &str,
     chat_session_id: &str,
+    turn_phase: TurnPhase,
+    exit_code: Option<i64>,
 ) {
     use tauri::Emitter;
     let _ = app.emit(
-        "agent-query-completed",
+        "agent-session-state-changed",
         serde_json::json!({
-            "exit_code": exit_code,
-            "stderr": stderr,
             "chat_session_id": chat_session_id,
+            "turn_phase": turn_phase,
+            "exit_code": exit_code,
         }),
     );
 }
@@ -510,6 +534,7 @@ async fn spawn_bridge_process(
             AgentProcess {
                 stdin,
                 state: BridgeState::Initializing,
+                turn_phase: TurnPhase::Idle,
                 sdk_session_id: session_id,
                 child,
                 generation_id: gen_id,
@@ -517,6 +542,7 @@ async fn spawn_bridge_process(
                 streaming_parts: Vec::new(),
                 last_message_id: None,
                 task_id_map: HashMap::new(),
+                pending_message: None,
             },
         );
     }
@@ -565,6 +591,7 @@ async fn spawn_bridge_process(
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 was_streaming = proc.state == BridgeState::Streaming;
                                 proc.state = BridgeState::Ready;
+                                proc.turn_phase = TurnPhase::Idle;
 
                                 // Capture streaming buffer for consolidation outside lock.
                                 // Keep parts in buffer so post-turn_complete background task
@@ -636,16 +663,31 @@ async fn spawn_bridge_process(
                             }
                         }
 
-                        // Emit agent-query-completed only for user turns (was Streaming)
+                        // Emit state change only for user turns (was Streaming)
                         if was_streaming {
-                            let stderr_text =
-                                msg.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
-                            emit_agent_query_completed(
+                            emit_session_state_changed(
                                 &app_stdout,
-                                exit_code,
-                                stderr_text,
                                 &csid_stdout,
+                                TurnPhase::Idle,
+                                Some(exit_code),
                             );
+
+                            // Auto-consume pending message queued by send_agent_message.
+                            // Spawn a separate task to avoid oversized async state machine in stdout reader.
+                            let has_pending = {
+                                let map = handles_stdout.lock().await;
+                                map.get(&csid_stdout)
+                                    .is_some_and(|p| p.pending_message.is_some())
+                            };
+                            if has_pending {
+                                let app_p = app_stdout.clone();
+                                let h_p = Arc::clone(&handles_stdout);
+                                let ss_p = Arc::clone(&session_store_clone);
+                                let csid_p = csid_stdout.clone();
+                                tokio::spawn(async move {
+                                    consume_pending_message(&app_p, &h_p, &ss_p, &csid_p).await;
+                                });
+                            }
                         }
                     }
                     "error" => {
@@ -655,17 +697,40 @@ async fn spawn_bridge_process(
                             .unwrap_or("Unknown bridge error");
                         log::error!("Bridge error [{}]: {}", csid_stdout, error_msg);
 
-                        // Accumulate error into streaming parts
-                        {
+                        // Accumulate error into streaming parts and extract delta
+                        let (error_delta, error_emit_msg_id) = {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 if proc.state == BridgeState::Streaming {
+                                    let prev_len = proc.streaming_parts.len();
                                     accumulate_sdk_message(
                                         &msg,
                                         &mut proc.streaming_parts,
                                         &mut proc.task_id_map,
                                     );
+                                    let delta = proc.streaming_parts[prev_len..].to_vec();
+                                    let mid = proc.streaming_message_id.clone();
+                                    (delta, mid)
+                                } else {
+                                    (Vec::new(), None)
                                 }
+                            } else {
+                                (Vec::new(), None)
+                            }
+                        };
+
+                        // Emit error delta so UI can display the error message
+                        if !error_delta.is_empty() {
+                            if let Some(ref mid) = error_emit_msg_id {
+                                use tauri::Emitter;
+                                let _ = app_stdout.emit(
+                                    "agent-streaming-updated",
+                                    serde_json::json!({
+                                        "chat_session_id": csid_stdout,
+                                        "message_id": mid,
+                                        "parts": error_delta,
+                                    }),
+                                );
                             }
                         }
 
@@ -679,6 +744,7 @@ async fn spawn_bridge_process(
                                 let wi = proc.state == BridgeState::Initializing;
                                 if ws || wi {
                                     proc.state = BridgeState::Crashed;
+                                    proc.turn_phase = TurnPhase::Idle;
                                 }
                                 (ws, wi)
                             } else {
@@ -686,7 +752,12 @@ async fn spawn_bridge_process(
                             }
                         };
                         if was_streaming {
-                            emit_agent_query_completed(&app_stdout, 1, error_msg, &csid_stdout);
+                            emit_session_state_changed(
+                                &app_stdout,
+                                &csid_stdout,
+                                TurnPhase::Idle,
+                                Some(1),
+                            );
                         }
                         // Init error → clear stale agent_session_id to prevent infinite resume loop
                         if was_initializing {
@@ -808,6 +879,22 @@ async fn spawn_bridge_process(
                         if should_forward_sdk_message(accumulated, msg_type) {
                             let _ = app_stdout.emit("agent-sdk-message", &msg);
                         }
+
+                        // Transition to WaitingPermission when permission_request arrives
+                        if msg_type == "permission_request" {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                if proc.state == BridgeState::Streaming {
+                                    proc.turn_phase = TurnPhase::WaitingPermission;
+                                    emit_session_state_changed(
+                                        &app_stdout,
+                                        &csid_stdout,
+                                        TurnPhase::WaitingPermission,
+                                        None,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -820,18 +907,14 @@ async fn spawn_bridge_process(
             })
         };
         if was_streaming {
-            emit_agent_query_completed(
-                &app_stdout,
-                -1,
-                "Bridge process exited unexpectedly",
-                &csid_stdout,
-            );
+            emit_session_state_changed(&app_stdout, &csid_stdout, TurnPhase::Idle, Some(-1));
         }
         {
             let mut map = handles_stdout.lock().await;
             if let Some(proc) = map.get_mut(&csid_stdout) {
                 if proc.generation_id == captured_gen_id {
                     proc.state = BridgeState::Crashed;
+                    proc.turn_phase = TurnPhase::Idle;
                 }
             }
         }
@@ -852,39 +935,36 @@ async fn spawn_bridge_process(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn get_session(
-    state: tauri::State<'_, Arc<SessionStore>>,
-    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    app: tauri::AppHandle,
-    session_id: String,
+async fn get_session_internal(
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    app: &tauri::AppHandle,
+    session_id: &str,
 ) -> Result<Option<GetSessionResponse>, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    let session = state.get_session(&data_dir, &session_id)?;
+    let data_dir = resolve_data_dir(app)?;
+    let session = session_store.get_session(&data_dir, session_id)?;
     match session {
         None => Ok(None),
         Some(mut session) => {
-            // Acquire lock briefly to read state and clone streaming parts
-            let (is_streaming, raw_parts, streaming_mid) = {
+            let (turn_phase, raw_parts, streaming_mid) = {
                 let map = handles.lock().await;
-                if let Some(proc) = map.get(&session_id) {
-                    let streaming = proc.state == BridgeState::Streaming;
-                    if streaming {
+                if let Some(proc) = map.get(session_id) {
+                    let phase = proc.turn_phase;
+                    if proc.state == BridgeState::Streaming {
                         (
-                            true,
+                            phase,
                             proc.streaming_parts.clone(),
                             proc.streaming_message_id.clone(),
                         )
                     } else {
-                        (false, Vec::new(), None)
+                        (phase, Vec::new(), None)
                     }
                 } else {
-                    (false, Vec::new(), None)
+                    (TurnPhase::Idle, Vec::new(), None)
                 }
             };
 
-            // Consolidate outside lock to avoid blocking other sessions
-            if is_streaming {
+            if turn_phase == TurnPhase::Streaming || turn_phase == TurnPhase::WaitingPermission {
                 if let Some(ref mid) = streaming_mid {
                     let parts = consolidate_parts(raw_parts);
                     if !parts.is_empty() {
@@ -897,10 +977,52 @@ pub async fn get_session(
 
             Ok(Some(GetSessionResponse {
                 session,
-                is_streaming,
+                turn_phase,
             }))
         }
     }
+}
+
+#[tauri::command]
+pub async fn get_session(
+    state: tauri::State<'_, Arc<SessionStore>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<Option<GetSessionResponse>, String> {
+    get_session_internal(state.inner(), handles.inner(), &app, &session_id).await
+}
+
+async fn start_agent_session_internal(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    cwd: &str,
+    permission_mode: Option<String>,
+) -> Result<(), String> {
+    {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get(chat_session_id) {
+            if proc.state != BridgeState::Crashed {
+                return Ok(());
+            }
+        }
+        map.remove(chat_session_id);
+    }
+
+    let resume_sid = get_resume_session_id(app, session_store, chat_session_id);
+
+    spawn_bridge_process(
+        app,
+        handles,
+        session_store,
+        chat_session_id,
+        resume_sid,
+        cwd,
+        permission_mode,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -912,59 +1034,38 @@ pub async fn start_agent_session(
     cwd: String,
     permission_mode: Option<String>,
 ) -> Result<(), String> {
-    // If process already exists and is not crashed, do nothing; otherwise remove crashed entry
-    {
-        let mut map = handles.lock().await;
-        if let Some(proc) = map.get(&chat_session_id) {
-            if proc.state != BridgeState::Crashed {
-                return Ok(());
-            }
-        }
-        map.remove(&chat_session_id);
-    }
-
-    let resume_sid = get_resume_session_id(&app, session_store.inner(), &chat_session_id);
-
-    spawn_bridge_process(
+    start_agent_session_internal(
         &app,
         handles.inner(),
         session_store.inner(),
         &chat_session_id,
-        resume_sid,
         &cwd,
         permission_mode,
     )
     .await
 }
 
+/// Core logic for starting a new agent turn: spawn Bridge if needed, send prompt.
+/// Used by execute_agent_query (Tauri command), send_agent_message, and pending message consumption.
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn execute_agent_query(
-    app: tauri::AppHandle,
-    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    session_store: tauri::State<'_, Arc<SessionStore>>,
-    prompt: String,
-    chat_session_id: String,
-    cwd: String,
-    permission_mode: Option<String>,
-    streaming_message_id: String,
+async fn start_agent_turn(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    cwd: &str,
+    permission_mode: &str,
+    prompt: &str,
+    streaming_message_id: &str,
 ) -> Result<(), String> {
     // Check if we need to spawn a new process (single lock to avoid TOCTOU)
     let spawn_info = {
         let mut map = handles.lock().await;
-        match map.get(&chat_session_id) {
-            None => Some(get_resume_session_id(
-                &app,
-                session_store.inner(),
-                &chat_session_id,
-            )),
+        match map.get(chat_session_id) {
+            None => Some(get_resume_session_id(app, session_store, chat_session_id)),
             Some(proc) if proc.state == BridgeState::Crashed => {
-                map.remove(&chat_session_id);
-                Some(get_resume_session_id(
-                    &app,
-                    session_store.inner(),
-                    &chat_session_id,
-                ))
+                map.remove(chat_session_id);
+                Some(get_resume_session_id(app, session_store, chat_session_id))
             }
             _ => None,
         }
@@ -972,19 +1073,19 @@ pub async fn execute_agent_query(
 
     if let Some(resume_sid) = spawn_info {
         spawn_bridge_process(
-            &app,
-            handles.inner(),
-            session_store.inner(),
-            &chat_session_id,
+            app,
+            handles,
+            session_store,
+            chat_session_id,
             resume_sid,
-            &cwd,
-            permission_mode.clone(),
+            cwd,
+            Some(permission_mode.to_string()),
         )
         .await?;
     }
 
     // Sync permissionMode to Bridge before sending message
-    let mode_data = build_set_mode_command(permission_mode.as_deref().unwrap_or("acceptEdits"));
+    let mode_data = build_set_mode_command(permission_mode);
 
     // Send message command.
     // Even if a message is sent while the SDK is still processing an interrupt,
@@ -998,7 +1099,7 @@ pub async fn execute_agent_query(
 
     {
         let mut map = handles.lock().await;
-        if let Some(proc) = map.get_mut(&chat_session_id) {
+        if let Some(proc) = map.get_mut(chat_session_id) {
             // Sync permissionMode to Bridge
             proc.stdin
                 .write_all(mode_data.as_bytes())
@@ -1010,7 +1111,8 @@ pub async fn execute_agent_query(
                 .map_err(|e| format!("Failed to flush setMode: {e}"))?;
 
             proc.state = BridgeState::Streaming;
-            proc.streaming_message_id = Some(streaming_message_id.clone());
+            proc.turn_phase = TurnPhase::Streaming;
+            proc.streaming_message_id = Some(streaming_message_id.to_string());
             proc.streaming_parts.clear();
             proc.last_message_id = None;
             proc.task_id_map.clear();
@@ -1027,17 +1129,134 @@ pub async fn execute_agent_query(
         }
     }
 
-    // Emit agent-streaming-started so frontend can track streaming state
-    use tauri::Emitter;
-    let _ = app.emit(
-        "agent-streaming-started",
-        serde_json::json!({
-            "chat_session_id": chat_session_id,
-            "message_id": streaming_message_id,
-        }),
-    );
+    // Emit state change so frontend can track turn phase
+    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None);
 
     Ok(())
+}
+
+/// Consume a pending message that was queued by `send_agent_message` during streaming.
+/// Called from the stdout reader after `turn_complete` via `tokio::spawn`.
+///
+/// Unlike `start_agent_turn`, this skips the spawn-if-needed check because the Bridge
+/// process is guaranteed to be running (it just emitted `turn_complete`).
+async fn consume_pending_message(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+) {
+    // 1. Take pending message from process
+    let pending = {
+        let mut map = handles.lock().await;
+        map.get_mut(chat_session_id)
+            .and_then(|p| p.pending_message.take())
+    };
+    let Some(pending) = pending else {
+        return;
+    };
+
+    // 2. Add empty agent message
+    let data_dir = match resolve_data_dir(app) {
+        Ok(d) => d,
+        Err(e) => {
+            log::error!("consume_pending_message: failed to resolve data dir: {e}");
+            return;
+        }
+    };
+    let agent_msg = match add_message_internal(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        MessageRole::Agent,
+        "",
+    ) {
+        Ok(msg) => msg,
+        Err(e) => {
+            log::error!("consume_pending_message: failed to add agent message: {e}");
+            return;
+        }
+    };
+
+    // 3. Emit event so UI can update with the new agent message
+    {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "agent-pending-message-consumed",
+            serde_json::json!({
+                "chat_session_id": chat_session_id,
+                "agent_message": agent_msg,
+            }),
+        );
+    }
+
+    // 4. Sync permissionMode + send message directly to the running Bridge.
+    //    The process is guaranteed running since it just emitted turn_complete.
+    let mode_data = build_set_mode_command(&pending.permission_mode);
+    let msg_cmd = serde_json::json!({
+        "type": "message",
+        "prompt": pending.content,
+    });
+    let data = format!("{}\n", msg_cmd);
+
+    {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(chat_session_id) {
+            if let Err(e) = proc.stdin.write_all(mode_data.as_bytes()).await {
+                log::error!("consume_pending_message: failed to write setMode: {e}");
+                return;
+            }
+            if let Err(e) = proc.stdin.flush().await {
+                log::error!("consume_pending_message: failed to flush setMode: {e}");
+                return;
+            }
+            proc.state = BridgeState::Streaming;
+            proc.turn_phase = TurnPhase::Streaming;
+            proc.streaming_message_id = Some(agent_msg.id.clone());
+            proc.streaming_parts.clear();
+            proc.last_message_id = None;
+            proc.task_id_map.clear();
+            if let Err(e) = proc.stdin.write_all(data.as_bytes()).await {
+                log::error!("consume_pending_message: failed to write message: {e}");
+                return;
+            }
+            if let Err(e) = proc.stdin.flush().await {
+                log::error!("consume_pending_message: failed to flush message: {e}");
+                return;
+            }
+        } else {
+            log::error!("consume_pending_message: no agent process for session {chat_session_id}");
+            return;
+        }
+    }
+
+    // 5. Emit state change
+    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn execute_agent_query(
+    app: tauri::AppHandle,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    prompt: String,
+    chat_session_id: String,
+    cwd: String,
+    permission_mode: Option<String>,
+    streaming_message_id: String,
+) -> Result<(), String> {
+    start_agent_turn(
+        &app,
+        handles.inner(),
+        session_store.inner(),
+        &chat_session_id,
+        &cwd,
+        permission_mode.as_deref().unwrap_or("acceptEdits"),
+        &prompt,
+        &streaming_message_id,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1177,6 +1396,7 @@ pub async fn respond_agent_permission(
 
     let updated_permission_part: Option<MessagePart>;
     let emit_msg_id;
+    let did_transition_to_streaming;
     {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(&chat_session_id) {
@@ -1188,6 +1408,12 @@ pub async fn respond_agent_permission(
                 .flush()
                 .await
                 .map_err(|e| format!("Failed to flush: {e}"))?;
+
+            // Transition back to Streaming after permission response
+            did_transition_to_streaming = proc.turn_phase == TurnPhase::WaitingPermission;
+            if did_transition_to_streaming {
+                proc.turn_phase = TurnPhase::Streaming;
+            }
 
             // Update Permission part status in streaming buffer
             let new_status = if behavior == "allow" {
@@ -1236,7 +1462,197 @@ pub async fn respond_agent_permission(
         );
     }
 
+    // Emit state change only if we actually transitioned: WaitingPermission → Streaming
+    if did_transition_to_streaming {
+        emit_session_state_changed(&app, &chat_session_id, TurnPhase::Streaming, None);
+    }
+
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendMessageResponse {
+    pub session: ChatSession,
+    pub human_message: ChatMessage,
+    pub agent_message: Option<ChatMessage>,
+    pub sessions: Vec<SessionSummary>,
+}
+
+/// Unified command to send a message: handles session creation, message persistence,
+/// turn phase check (interrupt if streaming, start query if idle), and pending message queuing.
+#[tauri::command]
+pub async fn send_agent_message(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    chat_session_id: Option<String>,
+    worktree_path: String,
+    content: String,
+    permission_mode: Option<String>,
+) -> Result<SendMessageResponse, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    let pm = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
+
+    // 1. Create or get session
+    let session = if let Some(ref sid) = chat_session_id {
+        session_store
+            .get_session(&data_dir, sid)?
+            .ok_or_else(|| format!("Session not found: {sid}"))?
+    } else {
+        create_session_internal(&session_store, &data_dir, &worktree_path)?
+    };
+    let sid = session.id.clone();
+
+    // 2. Add human message
+    let human_message = add_message_internal(
+        &session_store,
+        &data_dir,
+        &sid,
+        MessageRole::Human,
+        &content,
+    )?;
+
+    // 3. Check turn phase
+    let current_phase = {
+        let map = handles.lock().await;
+        map.get(&sid)
+            .map(|p| p.turn_phase)
+            .unwrap_or(TurnPhase::Idle)
+    };
+
+    let agent_message =
+        if current_phase == TurnPhase::Streaming || current_phase == TurnPhase::WaitingPermission {
+            // 4a. Queue pending message + interrupt
+            {
+                let mut map = handles.lock().await;
+                if let Some(proc) = map.get_mut(&sid) {
+                    proc.pending_message = Some(PendingMessage {
+                        content: content.clone(),
+                        permission_mode: pm.clone(),
+                    });
+                    proc.stdin
+                        .write_all(b"{\"type\":\"interrupt\"}\n")
+                        .await
+                        .map_err(|e| format!("Failed to write interrupt: {e}"))?;
+                    proc.stdin
+                        .flush()
+                        .await
+                        .map_err(|e| format!("Failed to flush: {e}"))?;
+                }
+            }
+            None
+        } else {
+            // 4b. Create agent message + start turn
+            let agent_msg =
+                add_message_internal(&session_store, &data_dir, &sid, MessageRole::Agent, "")?;
+            start_agent_turn(
+                &app,
+                handles.inner(),
+                session_store.inner(),
+                &sid,
+                &worktree_path,
+                &pm,
+                &content,
+                &agent_msg.id,
+            )
+            .await?;
+            Some(agent_msg)
+        };
+
+    // 5. Get updated session and list
+    let updated_session = session_store
+        .get_session(&data_dir, &sid)?
+        .ok_or_else(|| format!("Session not found: {sid}"))?;
+    let sessions = session_store.list_sessions(&data_dir, &worktree_path)?;
+
+    Ok(SendMessageResponse {
+        session: updated_session,
+        human_message,
+        agent_message,
+        sessions,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitSessionsResponse {
+    pub sessions: Vec<SessionSummary>,
+    pub active_session: Option<GetSessionResponse>,
+}
+
+/// Unified command for session initialization: lists sessions, starts Bridge processes,
+/// creates a new session if empty, returns sessions + active session.
+#[tauri::command]
+pub async fn init_agent_sessions(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    worktree_path: String,
+    permission_mode: Option<String>,
+) -> Result<InitSessionsResponse, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    let pm = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
+
+    let mut sessions = session_store.list_sessions(&data_dir, &worktree_path)?;
+
+    if sessions.is_empty() {
+        // Create new session + start agent process
+        let session = create_session_internal(&session_store, &data_dir, &worktree_path)?;
+        start_agent_session_internal(
+            &app,
+            handles.inner(),
+            session_store.inner(),
+            &session.id,
+            &worktree_path,
+            Some(pm),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            log::error!("Failed to start new agent session: {e}");
+        });
+
+        sessions = session_store.list_sessions(&data_dir, &worktree_path)?;
+        let response = GetSessionResponse {
+            session,
+            turn_phase: TurnPhase::Idle,
+        };
+        Ok(InitSessionsResponse {
+            sessions,
+            active_session: Some(response),
+        })
+    } else {
+        // Start agent processes for all sessions (fire-and-forget)
+        for s in &sessions {
+            let app_c = app.clone();
+            let h_c = Arc::clone(handles.inner());
+            let ss_c = Arc::clone(session_store.inner());
+            let sid = s.id.clone();
+            let cwd = worktree_path.clone();
+            let pm_c = pm.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    start_agent_session_internal(&app_c, &h_c, &ss_c, &sid, &cwd, Some(pm_c)).await
+                {
+                    log::error!("Failed to start agent session {sid}: {e}");
+                }
+            });
+        }
+
+        // Get first session as active
+        let active = get_session_internal(
+            session_store.inner(),
+            handles.inner(),
+            &app,
+            &sessions[0].id,
+        )
+        .await?;
+
+        Ok(InitSessionsResponse {
+            sessions,
+            active_session: active,
+        })
+    }
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]

@@ -14,18 +14,17 @@ pub fn get_review_prompt() -> String {
     DEFAULT_REVIEW_PROMPT.to_string()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PerFileReviewTask {
     pub file_path: String,
     pub prompt: String,
 }
 
-#[tauri::command]
-pub fn get_per_file_review_tasks(
-    worktree_path: String,
-    thread_store: State<'_, Arc<ThreadStore>>,
+pub fn get_per_file_review_tasks_internal(
+    worktree_path: &str,
+    thread_store: &ThreadStore,
 ) -> Result<Vec<PerFileReviewTask>, String> {
-    let diff = get_review_diff(&worktree_path, None, None, None)
+    let diff = get_review_diff(worktree_path, None, None, None)
         .map_err(|e| format!("failed to get review diff: {e}"))?;
 
     if diff.changed_files.is_empty() {
@@ -61,7 +60,7 @@ pub fn get_per_file_review_tasks(
         .map(|file| {
             // Get existing threads for this file
             let file_threads =
-                thread_store.get_filtered(&worktree_path, Some(&file.path), None, None);
+                thread_store.get_filtered(worktree_path, Some(&file.path), None, None);
             let existing_comments = if file_threads.is_empty() {
                 "None".to_string()
             } else {
@@ -87,7 +86,7 @@ pub fn get_per_file_review_tasks(
             };
 
             let prompt = PER_FILE_REVIEW_TEMPLATE
-                .replace("{{WORKTREE}}", &worktree_path)
+                .replace("{{WORKTREE}}", worktree_path)
                 .replace("{{FILE_PATH}}", &file.path)
                 .replace("{{CHANGE_SUMMARY}}", &change_summary)
                 .replace("{{EXISTING_COMMENTS}}", &existing_comments);
@@ -100,6 +99,14 @@ pub fn get_per_file_review_tasks(
         .collect();
 
     Ok(tasks)
+}
+
+#[tauri::command]
+pub fn get_per_file_review_tasks(
+    worktree_path: String,
+    thread_store: State<'_, Arc<ThreadStore>>,
+) -> Result<Vec<PerFileReviewTask>, String> {
+    get_per_file_review_tasks_internal(&worktree_path, &thread_store)
 }
 
 #[cfg(test)]

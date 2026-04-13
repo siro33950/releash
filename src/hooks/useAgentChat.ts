@@ -2,22 +2,27 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { AgentState } from "@/types/protocol";
 import type {
+	ChatMessage,
 	ChatSession,
 	PermissionMode,
-	PermissionRequest,
+	SessionState,
 	SessionSummary,
+	TurnPhase,
 } from "@/types/session";
 import { INITIAL_STATE, reducer } from "./agentChatReducer";
 import { useAgentSdkListeners } from "./useAgentSdkListeners";
 import {
-	addMessage,
 	closeSession as closeSessionApi,
 	createSession,
 	getSession,
+	initAgentSessions,
 	listClosedSessions,
 	listSessions,
 	restoreSession as restoreSessionApi,
+	sendAgentMessage,
 } from "./useSessionStore";
+
+export type ActivityStatus = { label: string } | null;
 
 export interface UseAgentChatResult {
 	sessions: SessionSummary[];
@@ -25,6 +30,7 @@ export interface UseAgentChatResult {
 	closedSessions: SessionSummary[];
 	activeSession: ChatSession | null;
 	isStreaming: boolean;
+	activityStatus: ActivityStatus;
 	error: string | null;
 	permissionMode: PermissionMode;
 	sessionAgentStates: Map<string, AgentState>;
@@ -60,15 +66,82 @@ function startAgentProcess(
 }
 
 function deriveAgentState(
-	sessionId: string,
-	streamingSessionIds: string[],
-	pendingPermissions: Record<string, PermissionRequest>,
-	sessionFinalStates: Record<string, "done" | "error">,
+	turnPhase: TurnPhase,
+	sessionState?: SessionState,
 ): AgentState {
-	if (streamingSessionIds.includes(sessionId)) {
-		return sessionId in pendingPermissions ? "waiting" : "running";
+	switch (turnPhase) {
+		case "streaming":
+			return "running";
+		case "waiting_permission":
+			return "waiting";
+		case "idle":
+			return sessionState === "error" ? "error" : "done";
 	}
-	return sessionFinalStates[sessionId] ?? "done";
+}
+
+function deriveActivityStatus(
+	messages: ChatMessage[] | undefined,
+	turnPhase: TurnPhase,
+): ActivityStatus {
+	if (turnPhase === "idle") return null;
+	if (!messages || messages.length === 0) return null;
+	const lastMsg = messages[messages.length - 1];
+	if (lastMsg.role !== "agent") return null;
+	if (lastMsg.parts.length === 0) return { label: "Thinking..." };
+
+	const lastPart = lastMsg.parts[lastMsg.parts.length - 1];
+	switch (lastPart.type) {
+		case "thinking":
+			return { label: "Thinking..." };
+		case "text":
+			return { label: "Writing..." };
+		case "tool_use": {
+			const tool = (
+				lastPart as { tool: string; input?: Record<string, unknown> }
+			).tool;
+			const filePath = (lastPart as { input?: Record<string, unknown> }).input
+				?.file_path as string | undefined;
+			const fileName = filePath?.split("/").pop();
+			switch (tool) {
+				case "Read":
+					return {
+						label: fileName ? `Reading ${fileName}` : "Reading file...",
+					};
+				case "Write":
+					return {
+						label: fileName ? `Writing ${fileName}` : "Writing file...",
+					};
+				case "Edit":
+					return {
+						label: fileName ? `Editing ${fileName}` : "Editing file...",
+					};
+				case "Bash":
+					return { label: "Running command..." };
+				case "Grep":
+					return { label: "Searching..." };
+				case "Glob":
+					return { label: "Finding files..." };
+				case "Task":
+					return { label: "Running background task..." };
+				case "WebFetch":
+					return { label: "Fetching web content..." };
+				case "WebSearch":
+					return { label: "Searching the web..." };
+				default:
+					return { label: `Using ${tool}...` };
+			}
+		}
+		case "tool_result":
+			return { label: "Processing result..." };
+		case "permission":
+			return { label: "Waiting for permission..." };
+		case "task_status":
+			return { label: "Running background task..." };
+		case "error":
+			return null;
+		default:
+			return { label: "Working..." };
+	}
 }
 
 export function useAgentChat(worktreePath: string): UseAgentChatResult {
@@ -83,6 +156,8 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	permissionModeRef.current = state.permissionMode;
 	const userPermissionModeRef = useRef(state.userPermissionMode);
 	userPermissionModeRef.current = state.userPermissionMode;
+	const turnPhasesRef = useRef(state.turnPhases);
+	turnPhasesRef.current = state.turnPhases;
 
 	const refreshSessions = useCallback(async (): Promise<SessionSummary[]> => {
 		try {
@@ -103,12 +178,12 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			const response = await getSession(sessionId);
 			if (response) {
 				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
-				// Sync streaming state from backend
-				if (response.isStreaming) {
-					dispatch({ type: "START_STREAMING", sessionId });
-				} else {
-					dispatch({ type: "STOP_STREAMING", sessionId });
-				}
+				// Sync turn phase from backend
+				dispatch({
+					type: "SET_TURN_PHASE",
+					sessionId,
+					turnPhase: response.turnPhase,
+				});
 			} else {
 				dispatch({ type: "SET_ACTIVE_SESSION", session: null });
 			}
@@ -120,58 +195,42 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		}
 	}, []);
 
-	const startQuery = useCallback(async (sessionId: string, prompt: string) => {
-		const agentMsg = await addMessage(sessionId, "agent", "");
-		dispatch({ type: "ADD_MESSAGE", message: agentMsg });
-		dispatch({ type: "START_STREAMING", sessionId });
-
-		invoke("execute_agent_query", {
-			prompt,
-			chatSessionId: sessionId,
-			cwd: worktreePathRef.current,
-			permissionMode: permissionModeRef.current,
-			streamingMessageId: agentMsg.id,
-		}).catch((e) => {
-			console.error("execute_agent_query failed:", e);
-			dispatch({ type: "STOP_STREAMING", sessionId });
-			dispatch({
-				type: "SET_ERROR",
-				error: `エージェント実行に失敗: ${e}`,
-			});
+	const interrupt = useCallback(() => {
+		const sessionId = activeSessionRef.current?.id;
+		if (!sessionId) return;
+		invoke("interrupt_agent_query", { chatSessionId: sessionId }).catch((e) => {
+			console.error("Failed to interrupt agent query:", e);
 		});
 	}, []);
 
-	const sendMessage = useCallback(
-		async (content: string) => {
-			const trimmed = content.trim();
-			if (!trimmed) return;
+	const sendMessage = useCallback(async (content: string) => {
+		const trimmed = content.trim();
+		if (!trimmed) return;
 
-			try {
-				let session = activeSessionRef.current;
-				if (!session) {
-					session = await createSession(worktreePathRef.current);
-					dispatch({ type: "SET_ACTIVE_SESSION", session });
+		try {
+			const isNewSession = !activeSessionRef.current;
+			const response = await sendAgentMessage(
+				activeSessionRef.current?.id ?? null,
+				worktreePathRef.current,
+				trimmed,
+				permissionModeRef.current,
+			);
+			if (isNewSession) {
+				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
+			} else {
+				dispatch({ type: "ADD_MESSAGE", message: response.humanMessage });
+				if (response.agentMessage) {
+					dispatch({ type: "ADD_MESSAGE", message: response.agentMessage });
 				}
-
-				const message = await addMessage(session.id, "human", trimmed);
-				dispatch({ type: "ADD_MESSAGE", message });
-
-				await startQuery(session.id, trimmed);
-
-				await refreshSessions();
-			} catch (e) {
-				const sessionId = activeSessionRef.current?.id;
-				if (sessionId) {
-					dispatch({ type: "STOP_STREAMING", sessionId });
-				}
-				dispatch({
-					type: "SET_ERROR",
-					error: `メッセージ送信に失敗: ${e}`,
-				});
 			}
-		},
-		[refreshSessions, startQuery],
-	);
+			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
+		} catch (e) {
+			dispatch({
+				type: "SET_ERROR",
+				error: `メッセージ送信に失敗: ${e}`,
+			});
+		}
+	}, []);
 
 	const refreshClosedSessions = useCallback(async () => {
 		try {
@@ -213,6 +272,13 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 							type: "SET_ACTIVE_SESSION",
 							session: response?.session ?? null,
 						});
+						if (response) {
+							dispatch({
+								type: "SET_TURN_PHASE",
+								sessionId: nextSession.id,
+								turnPhase: response.turnPhase,
+							});
+						}
 					} else {
 						dispatch({
 							type: "SET_ACTIVE_SESSION",
@@ -242,6 +308,13 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 					type: "SET_ACTIVE_SESSION",
 					session: response?.session ?? null,
 				});
+				if (response) {
+					dispatch({
+						type: "SET_TURN_PHASE",
+						sessionId,
+						turnPhase: response.turnPhase,
+					});
+				}
 				// Start Bridge process for the restored session
 				startAgentProcess(
 					sessionId,
@@ -278,14 +351,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			});
 		}
 	}, [refreshSessions]);
-
-	const interrupt = useCallback(() => {
-		const sessionId = activeSessionRef.current?.id;
-		if (!sessionId) return;
-		invoke("interrupt_agent_query", { chatSessionId: sessionId }).catch((e) => {
-			console.error("Failed to interrupt agent query:", e);
-		});
-	}, []);
 
 	const reorderSessions = useCallback((sessionOrder: string[]) => {
 		dispatch({ type: "REORDER_SESSIONS", sessionOrder });
@@ -343,21 +408,30 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	});
 
 	const initSessions = useCallback(async () => {
-		const sessions = await refreshSessions();
-		// Start Bridge processes for all existing sessions
-		for (const session of sessions) {
-			startAgentProcess(
-				session.id,
+		try {
+			const response = await initAgentSessions(
 				worktreePathRef.current,
 				permissionModeRef.current,
 			);
+			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
+			if (response.activeSession) {
+				dispatch({
+					type: "SET_ACTIVE_SESSION",
+					session: response.activeSession.session,
+				});
+				dispatch({
+					type: "SET_TURN_PHASE",
+					sessionId: response.activeSession.session.id,
+					turnPhase: response.activeSession.turnPhase,
+				});
+			}
+		} catch (e) {
+			dispatch({
+				type: "SET_ERROR",
+				error: `セッション初期化に失敗: ${e}`,
+			});
 		}
-		if (sessions.length > 0) {
-			await selectSession(sessions[0].id);
-		} else {
-			await createNewSession();
-		}
-	}, [refreshSessions, selectSession, createNewSession]);
+	}, []);
 
 	// Load sessions on mount
 	useEffect(() => {
@@ -375,9 +449,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		}
 	}, [worktreePath, initSessions, refreshClosedSessions]);
 
-	const isStreaming = state.streamingSessionIds.includes(
-		state.activeSession?.id ?? "",
-	);
+	const activeTurnPhase: TurnPhase =
+		state.turnPhases[state.activeSession?.id ?? ""] ?? "idle";
+	const isStreaming =
+		activeTurnPhase === "streaming" || activeTurnPhase === "waiting_permission";
+
 	const orderedSessions = useMemo(() => {
 		const sessionMap = new Map(state.sessions.map((s) => [s.id, s]));
 		return state.sessionOrder
@@ -388,23 +464,16 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	const sessionAgentStates = useMemo(() => {
 		const map = new Map<string, AgentState>();
 		for (const s of state.sessions) {
-			map.set(
-				s.id,
-				deriveAgentState(
-					s.id,
-					state.streamingSessionIds,
-					state.pendingPermissions,
-					state.sessionFinalStates,
-				),
-			);
+			const phase: TurnPhase = state.turnPhases[s.id] ?? "idle";
+			map.set(s.id, deriveAgentState(phase, s.state));
 		}
 		return map;
-	}, [
-		state.sessions,
-		state.streamingSessionIds,
-		state.pendingPermissions,
-		state.sessionFinalStates,
-	]);
+	}, [state.sessions, state.turnPhases]);
+
+	const activityStatus = useMemo(
+		() => deriveActivityStatus(state.activeSession?.messages, activeTurnPhase),
+		[state.activeSession?.messages, activeTurnPhase],
+	);
 
 	return {
 		sessions: state.sessions,
@@ -412,6 +481,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		closedSessions: state.closedSessions,
 		activeSession: state.activeSession,
 		isStreaming,
+		activityStatus,
 		error: state.error,
 		permissionMode: state.permissionMode,
 		sessionAgentStates,

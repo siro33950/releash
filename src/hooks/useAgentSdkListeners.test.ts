@@ -102,7 +102,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		}
 	});
 
-	it("registers listeners for agent-sdk-message, agent-query-completed, streaming-message-updated, agent-streaming-started", () => {
+	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
@@ -110,10 +110,11 @@ describe("useAgentSdkListeners cancelled flag", () => {
 
 		const eventNames = listenResolvers.map((r) => r.eventName);
 		expect(eventNames).toContain("agent-sdk-message");
-		expect(eventNames).toContain("agent-query-completed");
+		expect(eventNames).toContain("agent-session-state-changed");
 		expect(eventNames).toContain("agent-streaming-updated");
-		expect(eventNames).toContain("agent-streaming-started");
-		expect(eventNames).not.toContain("agent-state-changed");
+		expect(eventNames).toContain("agent-pending-message-consumed");
+		expect(eventNames).not.toContain("agent-streaming-started");
+		expect(eventNames).not.toContain("agent-query-completed");
 	});
 });
 
@@ -151,8 +152,8 @@ describe("agent-streaming-updated event", () => {
 	});
 });
 
-describe("agent-streaming-started event", () => {
-	it("dispatches START_STREAMING when agent-streaming-started is received", () => {
+describe("agent-session-state-changed event", () => {
+	it("dispatches SET_TURN_PHASE when streaming phase is received", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -160,25 +161,25 @@ describe("agent-streaming-started event", () => {
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
-		const cb = listenCallbacks.get("agent-streaming-started");
+		const cb = listenCallbacks.get("agent-session-state-changed");
 		expect(cb).toBeDefined();
 
 		cb?.({
 			payload: {
 				chat_session_id: "session-1",
-				message_id: "msg-001",
+				turn_phase: "streaming",
+				exit_code: null,
 			},
 		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "START_STREAMING",
+			type: "SET_TURN_PHASE",
 			sessionId: "session-1",
+			turnPhase: "streaming",
 		});
 	});
-});
 
-describe("useAgentSdkListeners callback behavior", () => {
-	it("dispatches STOP_STREAMING when agent-query-completed is received", () => {
+	it("dispatches SET_TURN_PHASE and UPDATE_SESSION_STATE on idle with exit_code", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -197,20 +198,21 @@ describe("useAgentSdkListeners callback behavior", () => {
 			resolve(vi.fn());
 		}
 
-		const cb = listenCallbacks.get("agent-query-completed");
+		const cb = listenCallbacks.get("agent-session-state-changed");
 		expect(cb).toBeDefined();
 
 		cb?.({
 			payload: {
-				exit_code: 0,
-				stderr: "",
 				chat_session_id: "session-1",
+				turn_phase: "idle",
+				exit_code: 0,
 			},
 		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "STOP_STREAMING",
+			type: "SET_TURN_PHASE",
 			sessionId: "session-1",
+			turnPhase: "idle",
 		});
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "UPDATE_SESSION_STATE",
@@ -260,7 +262,7 @@ describe("useAgentSdkListeners callback behavior", () => {
 		});
 	});
 
-	it("dispatches SET_PENDING_PERMISSION null on agent-query-completed", () => {
+	it("dispatches SET_PENDING_PERMISSION null on idle state change", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
@@ -279,11 +281,15 @@ describe("useAgentSdkListeners callback behavior", () => {
 			resolve(vi.fn());
 		}
 
-		const cb = listenCallbacks.get("agent-query-completed");
+		const cb = listenCallbacks.get("agent-session-state-changed");
 		expect(cb).toBeDefined();
 
 		cb?.({
-			payload: { exit_code: 0, stderr: "", chat_session_id: "session-1" },
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "idle",
+				exit_code: 0,
+			},
 		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
@@ -769,5 +775,70 @@ describe("supported_commands handling", () => {
 		});
 
 		expect(setSlashCommands).not.toHaveBeenCalled();
+	});
+});
+
+describe("agent-pending-message-consumed event", () => {
+	it("dispatches ADD_MESSAGE when pending message is consumed for active session", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-1" } as never;
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-pending-message-consumed");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				agent_message: {
+					id: "msg-agent-001",
+					role: "agent",
+					timestamp: 1234567,
+				},
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "ADD_MESSAGE",
+			message: {
+				id: "msg-agent-001",
+				role: "agent",
+				parts: [],
+				timestamp: 1234567,
+			},
+		});
+	});
+
+	it("does not dispatch ADD_MESSAGE when pending message is consumed for non-active session", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-2" } as never;
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-pending-message-consumed");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				agent_message: {
+					id: "msg-agent-001",
+					role: "agent",
+					timestamp: 1234567,
+				},
+			},
+		});
+
+		const addMsgCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
+		);
+		expect(addMsgCalls).toHaveLength(0);
 	});
 });

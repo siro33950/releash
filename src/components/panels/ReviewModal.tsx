@@ -34,16 +34,13 @@ export function StatusIndicator({
 	progress?: { done: number; total: number } | null;
 }) {
 	switch (status) {
-		case "starting":
 		case "running":
 			return (
 				<span className="flex items-center gap-1.5 text-xs text-blue-400">
 					<Loader2 className="h-3.5 w-3.5 animate-spin" />
 					{progress
 						? `Reviewing (${progress.done}/${progress.total})`
-						: status === "starting"
-							? "Starting..."
-							: "Reviewing..."}
+						: "Reviewing..."}
 				</span>
 			);
 		case "completed":
@@ -129,7 +126,7 @@ export function ReviewModal({
 	onCancel,
 	onRetry,
 }: ReviewModalProps) {
-	const isRunning = status === "starting" || status === "running";
+	const isRunning = status === "running";
 	const hasFiles = fileStates.length > 0;
 
 	const [selectedFile, setSelectedFile] = useState<string | null>(null);
