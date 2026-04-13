@@ -396,15 +396,14 @@ impl ReviewOrchestrator {
 
         match pty_mgr.spawn_oneshot(app, &command, &worktree_path, &label, None) {
             Ok(info) => {
-                // 3. Register pty_id mapping (re-acquire lock)
-                {
+                // 3. Snapshot output offset, then register pty_id mapping (re-acquire lock)
+                let output_snapshot_offset = pty_mgr.get_output_len(info.pty_id);
+                let mapped = {
                     let mut state = self.state.lock();
                     if let Some(session) = state.sessions.get_mut(session_id) {
                         if session.cancelled {
-                            let _ = pty_mgr.cancel(app, info.pty_id);
-                            return false;
-                        }
-                        if let Some(idx) = session
+                            false
+                        } else if let Some(idx) = session
                             .file_states
                             .iter()
                             .position(|f| f.file_path == task.file_path)
@@ -416,12 +415,29 @@ impl ReviewOrchestrator {
                             state
                                 .pty_to_session
                                 .insert(info.pty_id, session_id.to_string());
+                            true
+                        } else {
+                            false
                         }
+                    } else {
+                        false
                     }
+                };
+
+                if !mapped {
+                    let _ = pty_mgr.cancel(app, info.pty_id);
+                    return false;
                 }
 
                 // 4. Flush buffered output that arrived before mapping was registered
-                if let Some(buffered) = pty_mgr.get_buffered_output(info.pty_id) {
+                //    Use snapshot offset to avoid replaying data already sent via live listener
+                if output_snapshot_offset == 0 {
+                    if let Some(buffered) = pty_mgr.get_buffered_output(info.pty_id) {
+                        self.handle_pty_output(app, info.pty_id, &buffered);
+                    }
+                } else if let Some(buffered) =
+                    pty_mgr.get_buffered_output_from(info.pty_id, output_snapshot_offset)
+                {
                     self.handle_pty_output(app, info.pty_id, &buffered);
                 }
 
