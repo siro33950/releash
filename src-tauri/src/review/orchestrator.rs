@@ -24,6 +24,16 @@ impl std::fmt::Display for ReviewOrchestratorError {
 
 impl std::error::Error for ReviewOrchestratorError {}
 
+/// Result of attempting to spawn a single review task.
+enum SpawnResult {
+    /// PTY was successfully started.
+    Spawned,
+    /// Task was popped but spawn failed; contains the file path for error marking.
+    Failed(String),
+    /// No task available or session not in spawnable state.
+    QueueEmpty,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewStatus {
@@ -352,22 +362,34 @@ impl ReviewOrchestrator {
     // -----------------------------------------------------------------------
 
     fn spawn_next_batch(&self, app: &AppHandle, session_id: &str, count: usize) {
-        for _ in 0..count {
-            if !self.spawn_single_task(app, session_id) {
-                break;
+        let mut remaining = count;
+        while remaining > 0 {
+            match self.spawn_single_task(app, session_id) {
+                SpawnResult::Spawned => {
+                    remaining -= 1;
+                }
+                SpawnResult::Failed(file_path) => {
+                    // Mark error and continue iteratively (no recursion)
+                    self.mark_file_error(app, session_id, &file_path);
+                    // Don't decrement remaining — the failed task didn't consume a slot
+                }
+                SpawnResult::QueueEmpty => {
+                    break;
+                }
             }
         }
     }
 
-    /// Spawn a single task from the queue. Returns `true` if a task was popped
-    /// (even if spawn failed), `false` if no task was available.
-    fn spawn_single_task(&self, app: &AppHandle, session_id: &str) -> bool {
+    /// Spawn a single task from the queue.
+    /// Returns `Spawned` if PTY was started, `Failed(file_path)` if spawn failed,
+    /// or `QueueEmpty` if no task was available.
+    fn spawn_single_task(&self, app: &AppHandle, session_id: &str) -> SpawnResult {
         // 1. Pop task from queue (lock held briefly)
         let spawn_info = {
             let mut state = self.state.lock();
             let session = match state.sessions.get_mut(session_id) {
                 Some(s) if !s.cancelled && s.active_count < s.concurrency => s,
-                _ => return false,
+                _ => return SpawnResult::QueueEmpty,
             };
             session.task_queue.pop_front().map(|task| {
                 (
@@ -380,7 +402,7 @@ impl ReviewOrchestrator {
 
         let (task, command_template, worktree_path) = match spawn_info {
             Some(info) => info,
-            None => return false,
+            None => return SpawnResult::QueueEmpty,
         };
 
         // 2. Build command and spawn PTY (NO LOCK HELD — spawn_oneshot emits events)
@@ -389,8 +411,7 @@ impl ReviewOrchestrator {
         let pty_mgr = match app.try_state::<Arc<OneShotPtyManager>>() {
             Some(m) => m,
             None => {
-                self.mark_file_error(app, session_id, &task.file_path);
-                return true;
+                return SpawnResult::Failed(task.file_path);
             }
         };
 
@@ -426,7 +447,7 @@ impl ReviewOrchestrator {
 
                 if !mapped {
                     let _ = pty_mgr.cancel(app, info.pty_id);
-                    return false;
+                    return SpawnResult::QueueEmpty;
                 }
 
                 // 4. Flush buffered output that arrived before mapping was registered
@@ -455,17 +476,14 @@ impl ReviewOrchestrator {
                 }
 
                 self.emit_state_changed(app, session_id);
-                true
+                SpawnResult::Spawned
             }
-            Err(_) => {
-                self.mark_file_error(app, session_id, &task.file_path);
-                true
-            }
+            Err(_) => SpawnResult::Failed(task.file_path),
         }
     }
 
     fn mark_file_error(&self, app: &AppHandle, session_id: &str, file_path: &str) {
-        let should_spawn_next = {
+        {
             let mut state = self.state.lock();
             if let Some(session) = state.sessions.get_mut(session_id) {
                 if let Some(idx) = session
@@ -477,16 +495,9 @@ impl ReviewOrchestrator {
                 }
                 session.done_count += 1;
                 session.error_count += 1;
-                session.done_count < session.total_count && !session.task_queue.is_empty()
-            } else {
-                false
             }
-        };
-        self.emit_state_changed(app, session_id);
-
-        if should_spawn_next {
-            self.spawn_next_batch(app, session_id, 1);
         }
+        self.emit_state_changed(app, session_id);
     }
 
     fn emit_state_changed(&self, app: &AppHandle, session_id: &str) {
