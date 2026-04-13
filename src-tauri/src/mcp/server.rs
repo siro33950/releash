@@ -222,6 +222,7 @@ pub struct ExploreSymbolParams {
 #[derive(Clone)]
 pub struct ReleashMcpServer {
     state: Arc<McpSharedState>,
+    #[allow(dead_code)]
     tool_router: ToolRouter<ReleashMcpServer>,
 }
 
