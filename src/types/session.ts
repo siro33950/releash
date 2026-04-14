@@ -111,6 +111,7 @@ export interface ChatSession {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
+	permissionMode: PermissionMode;
 }
 
 export function getTextContent(parts: MessagePart[]): string {
@@ -129,4 +130,5 @@ export interface SessionSummary {
 	firstMessage: string;
 	messageCount: number;
 	agentSessionId?: string | null;
+	permissionMode: PermissionMode;
 }

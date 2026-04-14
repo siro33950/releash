@@ -5,6 +5,7 @@ import type {
 	LegacyChatMessage,
 	MessagePart,
 	MessageRole,
+	PermissionMode,
 	SessionState,
 	SessionSummary,
 	TurnPhase,
@@ -18,6 +19,7 @@ interface LegacyChatSession {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
+	permissionMode?: PermissionMode;
 }
 
 export function legacyToParts(msg: LegacyChatMessage): MessagePart[] {
@@ -76,6 +78,7 @@ function convertLegacySession(session: LegacyChatSession): ChatSession {
 	return {
 		...session,
 		messages: session.messages.map(convertLegacyMessage),
+		permissionMode: session.permissionMode ?? "acceptEdits",
 	};
 }
 
@@ -99,6 +102,7 @@ interface RawGetSessionResponse {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
+	permissionMode?: PermissionMode;
 	turnPhase: TurnPhase;
 }
 
@@ -117,6 +121,7 @@ export async function getSession(
 		createdAt: raw.createdAt,
 		updatedAt: raw.updatedAt,
 		agentSessionId: raw.agentSessionId,
+		permissionMode: raw.permissionMode,
 	});
 	return {
 		session,
@@ -208,11 +213,9 @@ export interface InitSessionsResponse {
 
 export async function initAgentSessions(
 	worktreePath: string,
-	permissionMode: string,
 ): Promise<InitSessionsResponse> {
 	const raw = await invoke<RawInitSessionsResponse>("init_agent_sessions", {
 		worktreePath,
-		permissionMode,
 	});
 	const activeSession = raw.activeSession
 		? {
@@ -224,6 +227,7 @@ export async function initAgentSessions(
 					createdAt: raw.activeSession.createdAt,
 					updatedAt: raw.activeSession.updatedAt,
 					agentSessionId: raw.activeSession.agentSessionId,
+					permissionMode: raw.activeSession.permissionMode,
 				}),
 				turnPhase: raw.activeSession.turnPhase,
 			}

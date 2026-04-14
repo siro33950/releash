@@ -43,9 +43,6 @@ function makeRefs() {
 	return {
 		dispatch: vi.fn(),
 		activeSessionRef: { current: null },
-		userPermissionModeRef: {
-			current: "acceptEdits" as import("@/types/session").PermissionMode,
-		},
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
 	};
 }
@@ -102,7 +99,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		}
 	});
 
-	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed", () => {
+	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed, agent-permission-mode-changed", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
@@ -113,6 +110,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).toContain("agent-session-state-changed");
 		expect(eventNames).toContain("agent-streaming-updated");
 		expect(eventNames).toContain("agent-pending-message-consumed");
+		expect(eventNames).toContain("agent-permission-mode-changed");
 		expect(eventNames).not.toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-query-completed");
 	});
@@ -300,23 +298,23 @@ describe("agent-session-state-changed event", () => {
 	});
 });
 
-describe("SET_PERMISSION_MODE from SDK system messages", () => {
-	it("dispatches SET_PERMISSION_MODE when system init message has permissionMode", () => {
+describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
+	it("dispatches SET_PERMISSION_MODE when agent-permission-mode-changed is received for active session", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-1" } as never;
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
-		const cb = listenCallbacks.get("agent-sdk-message");
+		const cb = listenCallbacks.get("agent-permission-mode-changed");
+		expect(cb).toBeDefined();
 
 		cb?.({
 			payload: {
-				type: "system",
-				subtype: "init",
-				session_id: "sdk-session-abc",
-				permissionMode: "plan",
+				chat_session_id: "session-1",
+				permission_mode: "plan",
 			},
 		});
 
@@ -326,53 +324,30 @@ describe("SET_PERMISSION_MODE from SDK system messages", () => {
 		});
 	});
 
-	it("dispatches RESTORE_USER_PERMISSION_MODE when system message has permissionMode: default", () => {
+	it("does not dispatch SET_PERMISSION_MODE when agent-permission-mode-changed is for non-active session", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-2" } as never;
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
 
-		const cb = listenCallbacks.get("agent-sdk-message");
+		const cb = listenCallbacks.get("agent-permission-mode-changed");
+		expect(cb).toBeDefined();
 
 		cb?.({
 			payload: {
-				type: "system",
-				subtype: "status",
-				permissionMode: "default",
-			},
-		});
-
-		expect(refs.dispatch).toHaveBeenCalledWith({
-			type: "RESTORE_USER_PERMISSION_MODE",
-		});
-	});
-
-	it("invokes set_agent_permission_mode to sync restored mode to Bridge on permissionMode: default", async () => {
-		listenResolvers = [];
-		listenCallbacks.clear();
-		const refs = makeRefs();
-		refs.userPermissionModeRef.current = "bypassPermissions";
-
-		renderHook(() => useAgentSdkListeners(refs));
-		for (const { resolve } of listenResolvers) resolve(vi.fn());
-
-		const cb = listenCallbacks.get("agent-sdk-message");
-
-		cb?.({
-			payload: {
-				type: "system",
 				chat_session_id: "session-1",
-				permissionMode: "default",
+				permission_mode: "plan",
 			},
 		});
 
-		const { invoke } = await import("@tauri-apps/api/core");
-		expect(invoke).toHaveBeenCalledWith("set_agent_permission_mode", {
-			chatSessionId: "session-1",
-			permissionMode: "bypassPermissions",
-		});
+		const permModeCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) =>
+				(call[0] as { type: string }).type === "SET_PERMISSION_MODE",
+		);
+		expect(permModeCalls).toHaveLength(0);
 	});
 
 	it("does not dispatch SET_PERMISSION_MODE when system message has no permissionMode", () => {
