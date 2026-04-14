@@ -710,6 +710,7 @@
 	color: var(--foreground);
 	font-size: 14px;
 	line-height: 1.7;
+	contain: inline-size;
 }
 
 .markdown-preview h1,
@@ -775,6 +776,9 @@
 	border-collapse: collapse;
 	margin: 0.8em 0;
 	width: auto;
+	display: block;
+	overflow-x: auto;
+	max-width: 100%;
 }
 .markdown-preview th,
 .markdown-preview td {
@@ -812,6 +816,7 @@
 	border-radius: var(--radius);
 	background: var(--muted);
 	overflow-x: auto;
+	max-width: 100%;
 }
 .markdown-preview pre code {
 	padding: 0;

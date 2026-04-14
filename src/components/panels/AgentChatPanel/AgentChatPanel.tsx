@@ -12,6 +12,7 @@ import {
 	PopoverContent,
 	PopoverTrigger,
 } from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { loadSlashCommands } from "@/hooks/useSlashCommands";
@@ -456,10 +457,10 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 					</Popover>
 				</div>
 				<div className="flex flex-col flex-1 min-h-0">
-					<div
-						ref={scrollRef}
+					<ScrollArea
+						viewportRef={scrollRef}
 						onScroll={handleScroll}
-						className="flex-1 min-h-0 overflow-y-auto select-text"
+						className="flex-1 min-h-0 select-text"
 					>
 						{activeSession && (
 							<div className="py-2">
@@ -493,7 +494,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 								<div ref={scrollAnchorRef} />
 							</div>
 						)}
-					</div>
+					</ScrollArea>
 					<div className="shrink-0">
 						{activityStatus && (
 							<div className="px-4 pb-1 text-xs text-muted-foreground animate-pulse truncate">
