@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Dispatch, MutableRefObject } from "react";
 import { useEffect } from "react";
@@ -10,10 +9,7 @@ import type {
 	SessionState,
 	TurnPhase,
 } from "@/types/session";
-import {
-	type AgentChatAction,
-	resolvePermissionMode,
-} from "./agentChatReducer";
+import type { AgentChatAction } from "./agentChatReducer";
 import { updateSessionState } from "./useSessionStore";
 import { setSlashCommands } from "./useSlashCommands";
 
@@ -65,7 +61,6 @@ interface PendingMessageConsumed {
 export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	activeSessionRef: MutableRefObject<ChatSession | null>;
-	userPermissionModeRef: MutableRefObject<PermissionMode>;
 	refreshSessions: () => Promise<unknown>;
 }
 
@@ -107,38 +102,6 @@ function handlePermissionRequest(
 		sessionId: chatSessionId,
 		request: req,
 	});
-}
-
-function handlePermissionModeSync(
-	msg: SdkMessage,
-	chatSessionId: string | undefined,
-	dispatch: Dispatch<AgentChatAction>,
-	userPermissionModeRef: MutableRefObject<PermissionMode>,
-): void {
-	if (
-		msg.type === "system" &&
-		"permissionMode" in msg &&
-		typeof msg.permissionMode === "string"
-	) {
-		const sdkMode = msg.permissionMode as PermissionMode;
-		if (sdkMode === "default") {
-			dispatch({ type: "RESTORE_USER_PERMISSION_MODE" });
-			// Sync restored userPermissionMode back to Bridge
-			if (chatSessionId) {
-				const restoredMode = resolvePermissionMode(
-					userPermissionModeRef.current,
-				);
-				invoke("set_agent_permission_mode", {
-					chatSessionId,
-					permissionMode: restoredMode,
-				}).catch((e) => {
-					console.error("Failed to sync restored permission mode:", e);
-				});
-			}
-		} else {
-			dispatch({ type: "SET_PERMISSION_MODE", mode: sdkMode });
-		}
-	}
 }
 
 function handleSystemMessage(
@@ -204,8 +167,7 @@ function handleResultErrors(
 }
 
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
-	const { dispatch, activeSessionRef, userPermissionModeRef, refreshSessions } =
-		refs;
+	const { dispatch, activeSessionRef, refreshSessions } = refs;
 
 	// Listen to SDK messages for meta events (permissions, commands, system messages)
 	useEffect(() => {
@@ -218,12 +180,6 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 
 			handleSupportedCommands(msg);
 			handlePermissionRequest(msg, chatSessionId, dispatch);
-			handlePermissionModeSync(
-				msg,
-				chatSessionId,
-				dispatch,
-				userPermissionModeRef,
-			);
 			handleSystemMessage(msg, chatSessionId, dispatch, activeSessionRef);
 			handleResultErrors(msg, chatSessionId, dispatch, activeSessionRef);
 		}).then((fn) => {
@@ -238,7 +194,38 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, activeSessionRef, userPermissionModeRef]);
+	}, [dispatch, activeSessionRef]);
+
+	// Listen to agent-permission-mode-changed from Rust backend
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<{ chat_session_id: string; permission_mode: string }>(
+			"agent-permission-mode-changed",
+			(event) => {
+				const { chat_session_id, permission_mode } = event.payload;
+				// Only update if the event is for the active session
+				if (activeSessionRef.current?.id === chat_session_id) {
+					dispatch({
+						type: "SET_PERMISSION_MODE",
+						mode: permission_mode as PermissionMode,
+					});
+				}
+			},
+		).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [dispatch, activeSessionRef]);
 
 	// Listen to agent-streaming-updated from Rust backend
 	useEffect(() => {

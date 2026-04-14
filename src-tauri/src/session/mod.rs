@@ -150,6 +150,12 @@ pub struct ChatSession {
     pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
+    #[serde(default = "default_permission_mode")]
+    pub permission_mode: String,
+}
+
+fn default_permission_mode() -> String {
+    "acceptEdits".to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -172,6 +178,7 @@ pub struct SessionSummary {
     pub message_count: usize,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
+    pub permission_mode: String,
 }
 
 impl ChatSession {
@@ -197,6 +204,7 @@ impl ChatSession {
             first_message,
             message_count: self.messages.len(),
             agent_session_id: self.agent_session_id.clone(),
+            permission_mode: self.permission_mode.clone(),
         }
     }
 }
@@ -316,6 +324,7 @@ pub fn create_session_internal(
         created_at: now,
         updated_at: now,
         agent_session_id: None,
+        permission_mode: default_permission_mode(),
     };
     session_store.save_session(data_dir, &session)?;
     Ok(session)
@@ -468,6 +477,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
         };
         let summary = session.to_summary();
         assert_eq!(summary.id, "s1");
@@ -494,6 +504,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message.len(), 100 + "…".len());
@@ -520,6 +531,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
         };
         let summary = session.to_summary();
         // 100 chars of "あ" (300 bytes) + "…" (3 bytes)
@@ -538,6 +550,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message, "");
@@ -651,6 +664,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
         };
         let json = serde_json::to_string(&session).unwrap();
         let back: ChatSession = serde_json::from_str(&json).unwrap();

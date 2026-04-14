@@ -154,8 +154,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	sessionsRef.current = state.sessions;
 	const permissionModeRef = useRef(state.permissionMode);
 	permissionModeRef.current = state.permissionMode;
-	const userPermissionModeRef = useRef(state.userPermissionMode);
-	userPermissionModeRef.current = state.userPermissionMode;
 	const turnPhasesRef = useRef(state.turnPhases);
 	turnPhasesRef.current = state.turnPhases;
 
@@ -183,6 +181,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 					type: "SET_TURN_PHASE",
 					sessionId,
 					turnPhase: response.turnPhase,
+				});
+				// Restore permission mode from session
+				dispatch({
+					type: "SET_PERMISSION_MODE",
+					mode: response.session.permissionMode,
 				});
 			} else {
 				dispatch({ type: "SET_ACTIVE_SESSION", session: null });
@@ -278,6 +281,10 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 								sessionId: nextSession.id,
 								turnPhase: response.turnPhase,
 							});
+							dispatch({
+								type: "SET_PERMISSION_MODE",
+								mode: response.session.permissionMode,
+							});
 						}
 					} else {
 						dispatch({
@@ -314,13 +321,17 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 						sessionId,
 						turnPhase: response.turnPhase,
 					});
+					dispatch({
+						type: "SET_PERMISSION_MODE",
+						mode: response.session.permissionMode,
+					});
+					// Start Bridge process for the restored session
+					startAgentProcess(
+						sessionId,
+						worktreePathRef.current,
+						response.session.permissionMode,
+					);
 				}
-				// Start Bridge process for the restored session
-				startAgentProcess(
-					sessionId,
-					worktreePathRef.current,
-					permissionModeRef.current,
-				);
 				await refreshSessions();
 				await refreshClosedSessions();
 			} catch (e) {
@@ -337,11 +348,12 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		try {
 			const session = await createSession(worktreePathRef.current);
 			dispatch({ type: "SET_ACTIVE_SESSION", session });
+			dispatch({ type: "SET_PERMISSION_MODE", mode: session.permissionMode });
 			// Prewarm: start agent process in background
 			startAgentProcess(
 				session.id,
 				worktreePathRef.current,
-				permissionModeRef.current,
+				session.permissionMode,
 			);
 			await refreshSessions();
 		} catch (e) {
@@ -357,8 +369,8 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	}, []);
 
 	const setPermissionMode = useCallback((mode: PermissionMode) => {
-		dispatch({ type: "SET_USER_PERMISSION_MODE", mode });
-		// Immediately sync to all active Bridge processes
+		dispatch({ type: "SET_PERMISSION_MODE", mode });
+		// Persist to Rust and sync to Bridge
 		const sessionId = activeSessionRef.current?.id;
 		if (sessionId) {
 			invoke("set_agent_permission_mode", {
@@ -403,16 +415,12 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	useAgentSdkListeners({
 		dispatch,
 		activeSessionRef,
-		userPermissionModeRef,
 		refreshSessions,
 	});
 
 	const initSessions = useCallback(async () => {
 		try {
-			const response = await initAgentSessions(
-				worktreePathRef.current,
-				permissionModeRef.current,
-			);
+			const response = await initAgentSessions(worktreePathRef.current);
 			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
 			if (response.activeSession) {
 				dispatch({
@@ -423,6 +431,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 					type: "SET_TURN_PHASE",
 					sessionId: response.activeSession.session.id,
 					turnPhase: response.activeSession.turnPhase,
+				});
+				// Restore permission mode from active session
+				dispatch({
+					type: "SET_PERMISSION_MODE",
+					mode: response.activeSession.session.permissionMode,
 				});
 			}
 		} catch (e) {
@@ -444,6 +457,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		if (prevWorktreePathRef.current !== worktreePath) {
 			prevWorktreePathRef.current = worktreePath;
 			dispatch({ type: "SET_ACTIVE_SESSION", session: null });
+			dispatch({ type: "SET_PERMISSION_MODE", mode: "acceptEdits" });
 			initSessions();
 			refreshClosedSessions();
 		}

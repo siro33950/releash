@@ -11,6 +11,7 @@ function makeSession(overrides?: Partial<ChatSession>): ChatSession {
 		state: "active",
 		createdAt: 1000,
 		updatedAt: 1000,
+		permissionMode: "acceptEdits" as const,
 		...overrides,
 	};
 }
@@ -34,8 +35,7 @@ describe("agentChatReducer", () => {
 			activeSession: null,
 			turnPhases: {},
 			error: null,
-			permissionMode: "acceptEdits",
-			userPermissionMode: "acceptEdits",
+			permissionMode: "acceptEdits" as const,
 			pendingPermissions: {},
 		});
 	});
@@ -51,6 +51,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1000,
 					firstMessage: "hello",
 					messageCount: 1,
+					permissionMode: "acceptEdits" as const,
 				},
 			];
 			const next = reducer(INITIAL_STATE, {
@@ -74,6 +75,7 @@ describe("agentChatReducer", () => {
 						updatedAt: 1000,
 						firstMessage: "first",
 						messageCount: 1,
+						permissionMode: "acceptEdits" as const,
 					},
 					{
 						id: "s2",
@@ -83,6 +85,7 @@ describe("agentChatReducer", () => {
 						updatedAt: 900,
 						firstMessage: "second",
 						messageCount: 1,
+						permissionMode: "acceptEdits" as const,
 					},
 				],
 			};
@@ -96,6 +99,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1100,
 					firstMessage: "third",
 					messageCount: 1,
+					permissionMode: "acceptEdits" as const,
 				},
 			];
 			const next = reducer(state, {
@@ -119,6 +123,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1000,
 					firstMessage: "first",
 					messageCount: 1,
+					permissionMode: "acceptEdits" as const,
 				},
 				{
 					id: "s3",
@@ -128,6 +133,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1100,
 					firstMessage: "third",
 					messageCount: 1,
+					permissionMode: "acceptEdits" as const,
 				},
 			];
 			const next = reducer(state, { type: "SET_SESSIONS", sessions });
@@ -160,6 +166,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1000,
 					firstMessage: "hello",
 					messageCount: 1,
+					permissionMode: "acceptEdits" as const,
 				},
 			];
 			const next = reducer(INITIAL_STATE, {
@@ -321,66 +328,6 @@ describe("agentChatReducer", () => {
 				mode: "plan",
 			});
 			expect(next.permissionMode).toBe("plan");
-		});
-	});
-
-	describe("SET_USER_PERMISSION_MODE", () => {
-		it("updates both userPermissionMode and permissionMode", () => {
-			const next = reducer(INITIAL_STATE, {
-				type: "SET_USER_PERMISSION_MODE",
-				mode: "bypassPermissions",
-			});
-			expect(next.userPermissionMode).toBe("bypassPermissions");
-			expect(next.permissionMode).toBe("bypassPermissions");
-		});
-	});
-
-	describe("RESTORE_USER_PERMISSION_MODE", () => {
-		it("restores permissionMode from userPermissionMode", () => {
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				userPermissionMode: "acceptEdits",
-				permissionMode: "plan",
-			};
-			const next = reducer(state, { type: "RESTORE_USER_PERMISSION_MODE" });
-			expect(next.permissionMode).toBe("acceptEdits");
-		});
-
-		it("falls back to default when userPermissionMode is plan", () => {
-			const state: AgentChatState = {
-				...INITIAL_STATE,
-				userPermissionMode: "plan",
-				permissionMode: "plan",
-			};
-			const next = reducer(state, { type: "RESTORE_USER_PERMISSION_MODE" });
-			expect(next.permissionMode).toBe("default");
-		});
-
-		it("restores bypassPermissions after Agent changes to plan then default", () => {
-			// Scenario: Bypass → Agent sets Plan → Agent restores default → Bypass
-			let state: AgentChatState = {
-				...INITIAL_STATE,
-			};
-			// User selects bypassPermissions
-			state = reducer(state, {
-				type: "SET_USER_PERMISSION_MODE",
-				mode: "bypassPermissions",
-			});
-			expect(state.permissionMode).toBe("bypassPermissions");
-			expect(state.userPermissionMode).toBe("bypassPermissions");
-
-			// Agent changes to plan
-			state = reducer(state, {
-				type: "SET_PERMISSION_MODE",
-				mode: "plan",
-			});
-			expect(state.permissionMode).toBe("plan");
-			expect(state.userPermissionMode).toBe("bypassPermissions");
-
-			// Agent restores default → should restore to bypassPermissions
-			state = reducer(state, { type: "RESTORE_USER_PERMISSION_MODE" });
-			expect(state.permissionMode).toBe("bypassPermissions");
-			expect(state.userPermissionMode).toBe("bypassPermissions");
 		});
 	});
 

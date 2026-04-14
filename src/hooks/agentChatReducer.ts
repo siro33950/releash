@@ -9,10 +9,6 @@ import type {
 	TurnPhase,
 } from "@/types/session";
 
-export function resolvePermissionMode(mode: PermissionMode): PermissionMode {
-	return mode === "plan" ? "default" : mode;
-}
-
 export interface AgentChatState {
 	sessions: SessionSummary[];
 	sessionOrder: string[];
@@ -21,7 +17,6 @@ export interface AgentChatState {
 	turnPhases: Record<string, TurnPhase>;
 	error: string | null;
 	permissionMode: PermissionMode;
-	userPermissionMode: PermissionMode;
 	pendingPermissions: Record<string, PermissionRequest>;
 }
 
@@ -38,8 +33,6 @@ export type AgentChatAction =
 	| { type: "SET_ERROR"; error: string | null }
 	| { type: "UPDATE_SESSION_STATE"; state: SessionState }
 	| { type: "SET_PERMISSION_MODE"; mode: PermissionMode }
-	| { type: "SET_USER_PERMISSION_MODE"; mode: PermissionMode }
-	| { type: "RESTORE_USER_PERMISSION_MODE" }
 	| {
 			type: "SET_PENDING_PERMISSION";
 			sessionId: string;
@@ -168,18 +161,6 @@ export function reducer(
 		}
 		case "SET_PERMISSION_MODE":
 			return { ...state, permissionMode: action.mode };
-		case "SET_USER_PERMISSION_MODE":
-			return {
-				...state,
-				userPermissionMode: action.mode,
-				permissionMode: action.mode,
-			};
-		case "RESTORE_USER_PERMISSION_MODE": {
-			return {
-				...state,
-				permissionMode: resolvePermissionMode(state.userPermissionMode),
-			};
-		}
 		case "SET_PENDING_PERMISSION": {
 			if (action.request === null) {
 				const { [action.sessionId]: _, ...rest } = state.pendingPermissions;
@@ -214,6 +195,5 @@ export const INITIAL_STATE: AgentChatState = {
 	turnPhases: {},
 	error: null,
 	permissionMode: "acceptEdits",
-	userPermissionMode: "acceptEdits",
 	pendingPermissions: {},
 };

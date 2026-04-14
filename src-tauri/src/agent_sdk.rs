@@ -63,6 +63,10 @@ pub struct AgentProcess {
     /// Pending message queued by send_agent_message during streaming.
     /// Auto-consumed on turn_complete by the stdout reader.
     pub pending_message: Option<PendingMessage>,
+    /// Runtime permission mode tracked from SDK notifications.
+    /// Unlike `ChatSession.permission_mode` (persisted, excludes transient "plan"),
+    /// this reflects the actual SDK state including "plan" mode.
+    pub current_permission_mode: String,
 }
 
 /// Per-session agent process map: chat_session_id → AgentProcess
@@ -167,6 +171,27 @@ fn emit_session_state_changed(
 }
 
 const CLOSE_TIMEOUT_SECS: u64 = 5;
+
+/// Resolve permission mode: "plan" → "default" (= acceptEdits), others unchanged.
+/// Called when SDK sends permissionMode: "default" (after Plan approval).
+fn resolve_permission_mode(mode: &str) -> &str {
+    if mode == "plan" {
+        "default"
+    } else {
+        mode
+    }
+}
+
+fn emit_permission_mode_changed(app: &tauri::AppHandle, chat_session_id: &str, mode: &str) {
+    use tauri::Emitter;
+    let _ = app.emit(
+        "agent-permission-mode-changed",
+        serde_json::json!({
+            "chat_session_id": chat_session_id,
+            "permission_mode": mode,
+        }),
+    );
+}
 
 fn build_set_mode_command(permission_mode: &str) -> String {
     let cmd = serde_json::json!({
@@ -509,10 +534,12 @@ async fn spawn_bridge_process(
         .ok_or_else(|| "Failed to capture stderr".to_string())?;
 
     // Send init command
+    let initial_permission_mode =
+        permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
     let init_cmd = serde_json::json!({
         "type": "init",
         "cwd": cwd,
-        "permissionMode": permission_mode.unwrap_or_else(|| "acceptEdits".to_string()),
+        "permissionMode": initial_permission_mode,
         "sessionId": session_id,
     });
     let init_data = format!("{}\n", init_cmd);
@@ -543,6 +570,7 @@ async fn spawn_bridge_process(
                 last_message_id: None,
                 task_id_map: HashMap::new(),
                 pending_message: None,
+                current_permission_mode: initial_permission_mode.clone(),
             },
         );
     }
@@ -874,6 +902,67 @@ async fn spawn_bridge_process(
                             }
                         }
 
+                        // Handle permissionMode sync from SDK on Rust side
+                        if msg_type == "system" {
+                            if let Some(sdk_mode) =
+                                msg.get("permissionMode").and_then(|v| v.as_str())
+                            {
+                                if sdk_mode == "default" {
+                                    // Plan approval: resolve persisted permission_mode
+                                    let data_dir_result = resolve_data_dir(&app_stdout);
+                                    if let Ok(data_dir) = data_dir_result {
+                                        if let Ok(Some(session)) =
+                                            session_store_clone.get_session(&data_dir, &csid_stdout)
+                                        {
+                                            let restored =
+                                                resolve_permission_mode(&session.permission_mode);
+                                            // Send restored mode to Bridge
+                                            let mode_data = build_set_mode_command(restored);
+                                            let mut map = handles_stdout.lock().await;
+                                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                                let _ = proc
+                                                    .stdin
+                                                    .write_all(mode_data.as_bytes())
+                                                    .await;
+                                                let _ = proc.stdin.flush().await;
+                                                proc.current_permission_mode =
+                                                    restored.to_string();
+                                            }
+                                            drop(map);
+                                            // Persist resolved mode if it changed (plan → default)
+                                            if restored != session.permission_mode {
+                                                let _ = session_store_clone.update_permission_mode(
+                                                    &data_dir,
+                                                    &csid_stdout,
+                                                    restored,
+                                                );
+                                            }
+                                            // Notify frontend
+                                            emit_permission_mode_changed(
+                                                &app_stdout,
+                                                &csid_stdout,
+                                                restored,
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // SDK changed mode (e.g., to "plan") — update runtime state & notify frontend
+                                    {
+                                        let mut map = handles_stdout.lock().await;
+                                        if let Some(proc) = map.get_mut(&csid_stdout) {
+                                            proc.current_permission_mode =
+                                                sdk_mode.to_string();
+                                        }
+                                    }
+                                    emit_permission_mode_changed(
+                                        &app_stdout,
+                                        &csid_stdout,
+                                        sdk_mode,
+                                    );
+                                }
+                            }
+                        }
+
                         // Forward non-accumulated messages (meta events) as agent-sdk-message.
                         // permission_request needs both delta emit AND forwarding for SET_PENDING_PERMISSION.
                         if should_forward_sdk_message(accumulated, msg_type) {
@@ -949,6 +1038,8 @@ async fn get_session_internal(
             let (turn_phase, raw_parts, streaming_mid) = {
                 let map = handles.lock().await;
                 if let Some(proc) = map.get(session_id) {
+                    // Override persisted mode with runtime mode (includes transient "plan")
+                    session.permission_mode = proc.current_permission_mode.clone();
                     let phase = proc.turn_phase;
                     if proc.state == BridgeState::Streaming {
                         (
@@ -1110,6 +1201,7 @@ async fn start_agent_turn(
                 .await
                 .map_err(|e| format!("Failed to flush setMode: {e}"))?;
 
+            proc.current_permission_mode = permission_mode.to_string();
             proc.state = BridgeState::Streaming;
             proc.turn_phase = TurnPhase::Streaming;
             proc.streaming_message_id = Some(streaming_message_id.to_string());
@@ -1210,6 +1302,7 @@ async fn consume_pending_message(
                 log::error!("consume_pending_message: failed to flush setMode: {e}");
                 return;
             }
+            proc.current_permission_mode = pending.permission_mode.clone();
             proc.state = BridgeState::Streaming;
             proc.turn_phase = TurnPhase::Streaming;
             proc.streaming_message_id = Some(agent_msg.id.clone());
@@ -1332,11 +1425,17 @@ pub async fn close_agent_session(
 
 #[tauri::command]
 pub async fn set_agent_permission_mode(
+    app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     chat_session_id: String,
     permission_mode: String,
 ) -> Result<(), String> {
     let data = build_set_mode_command(&permission_mode);
+
+    // Persist to SessionStore
+    let data_dir = resolve_data_dir(&app)?;
+    session_store.update_permission_mode(&data_dir, &chat_session_id, &permission_mode)?;
 
     {
         let mut map = handles.lock().await;
@@ -1349,6 +1448,7 @@ pub async fn set_agent_permission_mode(
                 .flush()
                 .await
                 .map_err(|e| format!("Failed to flush setMode: {e}"))?;
+            proc.current_permission_mode = permission_mode.clone();
         }
         // If no process exists, silently ignore (process not yet started)
     }
@@ -1589,23 +1689,22 @@ pub async fn init_agent_sessions(
     session_store: tauri::State<'_, Arc<SessionStore>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     worktree_path: String,
-    permission_mode: Option<String>,
 ) -> Result<InitSessionsResponse, String> {
     let data_dir = resolve_data_dir(&app)?;
-    let pm = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
 
     let mut sessions = session_store.list_sessions(&data_dir, &worktree_path)?;
 
     if sessions.is_empty() {
-        // Create new session + start agent process
+        // Create new session + start agent process (new session uses default permission_mode)
         let session = create_session_internal(&session_store, &data_dir, &worktree_path)?;
+        let session_pm = session.permission_mode.clone();
         start_agent_session_internal(
             &app,
             handles.inner(),
             session_store.inner(),
             &session.id,
             &worktree_path,
-            Some(pm),
+            Some(session_pm),
         )
         .await
         .unwrap_or_else(|e| {
@@ -1622,14 +1721,14 @@ pub async fn init_agent_sessions(
             active_session: Some(response),
         })
     } else {
-        // Start agent processes for all sessions (fire-and-forget)
+        // Start agent processes for all sessions with their persisted permission_mode
         for s in &sessions {
             let app_c = app.clone();
             let h_c = Arc::clone(handles.inner());
             let ss_c = Arc::clone(session_store.inner());
             let sid = s.id.clone();
             let cwd = worktree_path.clone();
-            let pm_c = pm.clone();
+            let pm_c = s.permission_mode.clone();
             tokio::spawn(async move {
                 if let Err(e) =
                     start_agent_session_internal(&app_c, &h_c, &ss_c, &sid, &cwd, Some(pm_c)).await
@@ -2819,5 +2918,25 @@ mod tests {
             MessagePart::Text { content, .. } => assert_eq!(content, "abc"),
             _ => panic!("expected Text"),
         }
+    }
+
+    #[test]
+    fn resolve_permission_mode_plan_returns_default() {
+        assert_eq!(resolve_permission_mode("plan"), "default");
+    }
+
+    #[test]
+    fn resolve_permission_mode_accept_edits_unchanged() {
+        assert_eq!(resolve_permission_mode("acceptEdits"), "acceptEdits");
+    }
+
+    #[test]
+    fn resolve_permission_mode_bypass_unchanged() {
+        assert_eq!(resolve_permission_mode("bypassPermissions"), "bypassPermissions");
+    }
+
+    #[test]
+    fn resolve_permission_mode_default_unchanged() {
+        assert_eq!(resolve_permission_mode("default"), "default");
     }
 }

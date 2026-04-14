@@ -109,6 +109,24 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn update_permission_mode(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        permission_mode: &str,
+    ) -> Result<(), String> {
+        self.ensure_loaded(app_data_dir)?;
+        let mut session = {
+            let cache = self.cache.read();
+            cache
+                .get(session_id)
+                .cloned()
+                .ok_or_else(|| format!("Session not found: {session_id}"))?
+        };
+        session.permission_mode = permission_mode.to_string();
+        self.save_session(app_data_dir, &session)
+    }
+
     fn ensure_loaded(&self, app_data_dir: &Path) -> Result<(), String> {
         if self.loaded.load(Ordering::Acquire) {
             return Ok(());
@@ -177,6 +195,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
         }
     }
 
@@ -325,6 +344,31 @@ mod tests {
         let sessions = store.list_sessions(tmp.path(), "/repo").unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, UUID1);
+    }
+
+    #[test]
+    fn update_permission_mode_persists() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let session = make_session(UUID1, "/repo");
+        assert_eq!(session.permission_mode, "acceptEdits");
+
+        store.save_session(tmp.path(), &session).unwrap();
+        store
+            .update_permission_mode(tmp.path(), UUID1, "plan")
+            .unwrap();
+
+        let loaded = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
+        assert_eq!(loaded.permission_mode, "plan");
+    }
+
+    #[test]
+    fn update_permission_mode_nonexistent_session_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let result = store.update_permission_mode(tmp.path(), UUID1, "plan");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Session not found"));
     }
 
     #[test]
