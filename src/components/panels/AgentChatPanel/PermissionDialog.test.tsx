@@ -251,7 +251,7 @@ const askRequest = {
 };
 
 describe("PermissionDialog — AskUserQuestion", () => {
-	it("displays question text and options", () => {
+	it("displays question text and options as vertical list with radio buttons", () => {
 		render(
 			<PermissionDialog
 				request={askRequest}
@@ -266,6 +266,23 @@ describe("PermissionDialog — AskUserQuestion", () => {
 		expect(screen.getByText("Library")).toBeInTheDocument();
 		expect(screen.getByText("React")).toBeInTheDocument();
 		expect(screen.getByText("Vue")).toBeInTheDocument();
+		// Radio buttons are rendered for single-select
+		const radios = screen.getAllByRole("radio");
+		// 2 options + 1 Other = 3 radio items
+		expect(radios).toHaveLength(3);
+	});
+
+	it("displays each option with label and description as a pair", () => {
+		render(
+			<PermissionDialog
+				request={askRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+		expect(screen.getByText("Popular UI framework")).toBeInTheDocument();
+		expect(screen.getByText("Progressive framework")).toBeInTheDocument();
 	});
 
 	it("hides Allow/Deny buttons for AskUserQuestion", () => {
@@ -311,6 +328,28 @@ describe("PermissionDialog — AskUserQuestion", () => {
 		expect(onAnswer).toHaveBeenCalledWith("req-ask-001", {
 			"Which library should we use?": "React",
 		});
+	});
+
+	it("visually distinguishes the selected option (single select)", async () => {
+		render(
+			<PermissionDialog
+				request={askRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+
+		const radios = screen.getAllByRole("radio");
+		// Initially no radio is checked
+		for (const radio of radios) {
+			expect(radio).not.toBeChecked();
+		}
+
+		await userEvent.click(screen.getByText("React"));
+		// The first radio (React) should now be checked
+		expect(radios[0]).toBeChecked();
+		expect(radios[1]).not.toBeChecked();
 	});
 
 	it("handles multiple questions", async () => {
@@ -376,7 +415,7 @@ describe("PermissionDialog — AskUserQuestion", () => {
 		expect(screen.getByText("Deny")).toBeInTheDocument();
 	});
 
-	it("displays an Other button for each question", () => {
+	it("displays Other option in the same radio list", () => {
 		render(
 			<PermissionDialog
 				request={askRequest}
@@ -386,6 +425,9 @@ describe("PermissionDialog — AskUserQuestion", () => {
 			/>,
 		);
 		expect(screen.getByText("Other")).toBeInTheDocument();
+		// Other is a radio item in the same group
+		const radios = screen.getAllByRole("radio");
+		expect(radios).toHaveLength(3);
 	});
 
 	it("shows text input when Other is clicked", async () => {
@@ -461,6 +503,129 @@ describe("PermissionDialog — AskUserQuestion", () => {
 		expect(
 			screen.queryByLabelText("Other input for Which library should we use?"),
 		).not.toBeInTheDocument();
+	});
+});
+
+describe("AskUserQuestion — multiSelect", () => {
+	const multiSelectRequest = {
+		request_id: "req-ask-multi-001",
+		tool_name: "AskUserQuestion",
+		input: {
+			questions: [
+				{
+					question: "Which features do you want?",
+					header: "Features",
+					options: [
+						{ label: "Auth", description: "Authentication" },
+						{ label: "DB", description: "Database" },
+						{ label: "API", description: "REST API" },
+					],
+					multiSelect: true,
+				},
+			],
+		},
+		tool_use_id: "toolu_ask_multi_001",
+	};
+
+	it("renders checkboxes for multi-select questions", () => {
+		render(
+			<PermissionDialog
+				request={multiSelectRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+		const checkboxes = screen.getAllByRole("checkbox");
+		expect(checkboxes).toHaveLength(3);
+	});
+
+	it("displays each option with label and description", () => {
+		render(
+			<PermissionDialog
+				request={multiSelectRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+		expect(screen.getByText("Auth")).toBeInTheDocument();
+		expect(screen.getByText("Authentication")).toBeInTheDocument();
+		expect(screen.getByText("DB")).toBeInTheDocument();
+		expect(screen.getByText("Database")).toBeInTheDocument();
+		expect(screen.getByText("API")).toBeInTheDocument();
+		expect(screen.getByText("REST API")).toBeInTheDocument();
+	});
+
+	it("allows selecting multiple checkboxes and visually distinguishes them", async () => {
+		render(
+			<PermissionDialog
+				request={multiSelectRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+
+		const checkboxes = screen.getAllByRole("checkbox");
+
+		await userEvent.click(screen.getByText("Auth"));
+		await userEvent.click(screen.getByText("API"));
+
+		expect(checkboxes[0]).toBeChecked();
+		expect(checkboxes[1]).not.toBeChecked();
+		expect(checkboxes[2]).toBeChecked();
+	});
+
+	it("submits comma-separated values for multi-select", async () => {
+		const onAnswer = vi.fn();
+		render(
+			<PermissionDialog
+				request={multiSelectRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={onAnswer}
+			/>,
+		);
+
+		await userEvent.click(screen.getByText("Auth"));
+		await userEvent.click(screen.getByText("DB"));
+		expect(screen.getByText("Submit")).not.toBeDisabled();
+
+		await userEvent.click(screen.getByText("Submit"));
+		expect(onAnswer).toHaveBeenCalledWith("req-ask-multi-001", {
+			"Which features do you want?": "Auth, DB",
+		});
+	});
+
+	it("can toggle checkbox off", async () => {
+		render(
+			<PermissionDialog
+				request={multiSelectRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+
+		await userEvent.click(screen.getByText("Auth"));
+		const checkboxes = screen.getAllByRole("checkbox");
+		expect(checkboxes[0]).toBeChecked();
+
+		await userEvent.click(screen.getByText("Auth"));
+		expect(checkboxes[0]).not.toBeChecked();
+	});
+
+	it("does not show Other option for multi-select", () => {
+		render(
+			<PermissionDialog
+				request={multiSelectRequest}
+				onAllow={vi.fn()}
+				onDeny={vi.fn()}
+				onAnswer={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByText("Other")).not.toBeInTheDocument();
 	});
 });
 

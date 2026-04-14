@@ -2,6 +2,8 @@ import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import { cn } from "@/lib/utils";
 import type { PermissionRequest } from "@/types/session";
@@ -290,64 +292,93 @@ export function PermissionDialog({
 						<InlineMarkdown className="text-sm font-medium mb-1.5">
 							{q.question}
 						</InlineMarkdown>
-						<div className="flex flex-wrap gap-1.5">
-							{q.options.map((opt) => {
-								const isSelected = q.multiSelect
-									? Array.isArray(answers[q.question]) &&
-										(answers[q.question] as string[]).includes(opt.label)
-									: answers[q.question] === opt.label;
-								return (
-									<div key={opt.label} className="flex flex-col gap-0.5">
-										<Button
-											size="xs"
-											variant={isSelected ? "default" : "outline"}
-											onClick={() =>
-												handleSelect(q.question, opt.label, q.multiSelect)
-											}
-											className={cn(
-												!q.multiSelect && isSelected && "pointer-events-none",
-											)}
+						{q.multiSelect ? (
+							<fieldset
+								className="space-y-2 border-0 p-0 m-0"
+								aria-label={q.header}
+							>
+								{q.options.map((opt) => {
+									const isChecked =
+										Array.isArray(answers[q.question]) &&
+										(answers[q.question] as string[]).includes(opt.label);
+									return (
+										// biome-ignore lint/a11y/noLabelWithoutControl: Radix Checkbox renders an internal button element
+										<label
+											key={opt.label}
+											className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50"
 										>
-											{opt.label}
-										</Button>
-										{opt.description && (
-											<InlineMarkdown className="text-[11px] text-muted-foreground">
-												{opt.description}
-											</InlineMarkdown>
+											<Checkbox
+												checked={isChecked}
+												onCheckedChange={() =>
+													handleSelect(q.question, opt.label, true)
+												}
+												className="mt-0.5"
+											/>
+											<div className="flex flex-col">
+												<span className="text-sm font-medium">{opt.label}</span>
+												{opt.description && (
+													<InlineMarkdown className="text-xs text-muted-foreground">
+														{opt.description}
+													</InlineMarkdown>
+												)}
+											</div>
+										</label>
+									);
+								})}
+							</fieldset>
+						) : (
+							<RadioGroup
+								value={
+									typeof answers[q.question] === "string"
+										? (answers[q.question] as string)
+										: undefined
+								}
+								onValueChange={(value) =>
+									handleSelect(q.question, value, false)
+								}
+								className="space-y-2"
+							>
+								{q.options.map((opt) => (
+									// biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element
+									<label
+										key={opt.label}
+										className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50"
+									>
+										<RadioGroupItem value={opt.label} className="mt-0.5" />
+										<div className="flex flex-col">
+											<span className="text-sm font-medium">{opt.label}</span>
+											{opt.description && (
+												<InlineMarkdown className="text-xs text-muted-foreground">
+													{opt.description}
+												</InlineMarkdown>
+											)}
+										</div>
+									</label>
+								))}
+								{/* biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element */}
+								<label className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50">
+									<RadioGroupItem value={OTHER_LABEL} className="mt-0.5" />
+									<div className="flex flex-col flex-1">
+										<span className="text-sm font-medium">Other</span>
+										{answers[q.question] === OTHER_LABEL && (
+											<input
+												type="text"
+												aria-label={`Other input for ${q.question}`}
+												value={otherTexts[q.question] ?? ""}
+												onClick={(e) => e.stopPropagation()}
+												onChange={(e) =>
+													setOtherTexts((prev) => ({
+														...prev,
+														[q.question]: e.target.value,
+													}))
+												}
+												className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-ring"
+												placeholder="Type your answer..."
+											/>
 										)}
 									</div>
-								);
-							})}
-							{!q.multiSelect && (
-								<Button
-									size="xs"
-									variant={
-										answers[q.question] === OTHER_LABEL ? "default" : "outline"
-									}
-									onClick={() => handleSelect(q.question, OTHER_LABEL, false)}
-									className={cn(
-										answers[q.question] === OTHER_LABEL &&
-											"pointer-events-none",
-									)}
-								>
-									Other
-								</Button>
-							)}
-						</div>
-						{answers[q.question] === OTHER_LABEL && (
-							<input
-								type="text"
-								aria-label={`Other input for ${q.question}`}
-								value={otherTexts[q.question] ?? ""}
-								onChange={(e) =>
-									setOtherTexts((prev) => ({
-										...prev,
-										[q.question]: e.target.value,
-									}))
-								}
-								className="mt-1.5 w-full rounded-md border border-border bg-background px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-ring"
-								placeholder="Type your answer..."
-							/>
+								</label>
+							</RadioGroup>
 						)}
 					</div>
 				))}
