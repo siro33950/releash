@@ -15,7 +15,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { loadSlashCommands } from "@/hooks/useSlashCommands";
-import type { ChatMessage } from "@/types/session";
+import type { ChatMessage, MessagePart } from "@/types/session";
 import { getTextContent } from "@/types/session";
 import {
 	ActivityItem,
@@ -29,6 +29,24 @@ import { PermissionDialog } from "./PermissionDialog";
 import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
 import { StreamMessage } from "./StreamMessage";
 import { buildToolPairings, type TaskGroup } from "./toolPairing";
+
+type SystemNotificationPart = Extract<
+	MessagePart,
+	{ type: "system_notification" }
+>;
+
+function SystemNotificationItem({ part }: { part: SystemNotificationPart }) {
+	const isInProgress = part.status === "in_progress";
+	return (
+		<div className="px-5 py-0.5 text-xs text-muted-foreground">
+			<span className={isInProgress ? "animate-pulse" : ""}>
+				{isInProgress ? "⏳ " : part.status === "error" ? "❌ " : "✓ "}
+				{part.label}
+			</span>
+			{part.detail && <span className="ml-1 opacity-70">({part.detail})</span>}
+		</div>
+	);
+}
 
 interface AgentMessagePartsProps {
 	msg: ChatMessage;
@@ -178,6 +196,8 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 								}
 							/>
 						);
+					case "system_notification":
+						return <SystemNotificationItem key={key} part={part} />;
 				}
 			})}
 			{runningBackgroundTasks.map((group) => (
@@ -268,6 +288,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 			case "tool_use":
 			case "tool_result":
 			case "task_status":
+			case "system_notification":
 				return 2;
 			case "text":
 				return 1;

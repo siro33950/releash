@@ -92,6 +92,26 @@ export function mergeDeltaParts(
 			} else {
 				result.push(part);
 			}
+		} else if (part.type === "system_notification") {
+			// Update existing notification in-place (compaction/hook completion)
+			const idx = result.findIndex((p) => {
+				if (p.type !== "system_notification") return false;
+				if (p.notificationType !== part.notificationType) return false;
+				// Hook: match by hookId
+				if (part.notificationType === "hook" && part.hookId) {
+					return p.hookId === part.hookId;
+				}
+				// Compaction: match by notificationType (only one active at a time)
+				if (part.notificationType === "compaction") {
+					return p.status === "in_progress";
+				}
+				return false;
+			});
+			if (idx !== -1) {
+				result[idx] = part;
+			} else {
+				result.push(part);
+			}
 		} else {
 			result.push(part);
 		}

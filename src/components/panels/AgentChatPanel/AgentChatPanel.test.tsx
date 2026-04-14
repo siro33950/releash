@@ -874,6 +874,164 @@ describe("AgentChatPanel Task tool rendering", () => {
 	});
 });
 
+describe("SystemNotificationItem rendering", () => {
+	it("shows ⏳ with animate-pulse when status is in_progress", () => {
+		mockUseAgentChat({
+			isStreaming: true,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "system_notification",
+								notificationType: "compaction",
+								status: "in_progress",
+								label: "Compacting conversation...",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		const el = screen.getByText(/Compacting conversation/);
+		expect(el).toBeDefined();
+		expect(el.textContent).toContain("⏳");
+		expect(el.className).toContain("animate-pulse");
+	});
+
+	it("shows ✓ when status is completed", () => {
+		mockUseAgentChat({
+			isStreaming: false,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "system_notification",
+								notificationType: "compaction",
+								status: "completed",
+								label: "Conversation compacted",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		const el = screen.getByText(/Conversation compacted/);
+		expect(el).toBeDefined();
+		expect(el.textContent).toContain("✓");
+		expect(el.className).not.toContain("animate-pulse");
+	});
+
+	it("shows ❌ when status is error", () => {
+		mockUseAgentChat({
+			isStreaming: false,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "system_notification",
+								notificationType: "hook",
+								status: "error",
+								label: "pre-commit (PromptSubmit)",
+								hookId: "hook-1",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		const el = screen.getByText(/pre-commit/);
+		expect(el).toBeDefined();
+		expect(el.textContent).toContain("❌");
+	});
+
+	it("shows detail in parentheses when detail is provided", () => {
+		mockUseAgentChat({
+			isStreaming: false,
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+					{
+						id: "m2",
+						role: "agent",
+						parts: [
+							{
+								type: "system_notification",
+								notificationType: "compaction",
+								status: "completed",
+								label: "Conversation compacted",
+								detail: "trigger=auto, 50000 tokens",
+							},
+						],
+						timestamp: 1001,
+					},
+				],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+			},
+		});
+		render(<AgentChatPanel worktreePath="/repo" />);
+		expect(
+			screen.getByText("(trigger=auto, 50000 tokens)"),
+		).toBeDefined();
+	});
+});
+
 describe("AgentChatPanel session history", () => {
 	it("renders history button", () => {
 		mockUseAgentChat();
