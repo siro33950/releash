@@ -1,8 +1,9 @@
 import { ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 import Markdown from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import { cn } from "@/lib/utils";
@@ -41,14 +42,17 @@ function parseAskQuestions(input: Record<string, unknown>): AskQuestion[] {
 function InlineMarkdown({
 	children,
 	className,
+	id,
 	"data-testid": dataTestId,
 }: {
 	children: string;
 	className?: string;
+	id?: string;
 	"data-testid"?: string;
 }) {
 	return (
 		<div
+			id={id}
 			data-testid={dataTestId}
 			className={cn(
 				"markdown-preview prose prose-sm dark:prose-invert max-w-none",
@@ -178,6 +182,7 @@ export function PermissionDialog({
 	const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
 	const [otherTexts, setOtherTexts] = useState<Record<string, string>>({});
 	const [isExpanded, setIsExpanded] = useState(false);
+	const questionIdBase = useId();
 	if (status !== "pending") {
 		const isAllowed = status === "allowed";
 		let label: string;
@@ -284,36 +289,75 @@ export function PermissionDialog({
 				data-testid="permission-dialog"
 				className="mx-3 my-1.5 rounded-md border border-border bg-muted/50 p-3"
 			>
-				{questions.map((q) => (
-					<div key={q.question} className="mb-2">
-						<InlineMarkdown className="text-xs text-muted-foreground mb-0.5">
-							{q.header}
-						</InlineMarkdown>
-						<InlineMarkdown className="text-sm font-medium mb-1.5">
-							{q.question}
-						</InlineMarkdown>
-						{q.multiSelect ? (
-							<fieldset
-								className="space-y-2 border-0 p-0 m-0"
-								aria-label={q.header}
+				{questions.map((q, qIndex) => {
+					const questionId = `${questionIdBase}-q-${qIndex}`;
+					return (
+						<div key={q.question} className="mb-2">
+							<InlineMarkdown className="text-xs text-muted-foreground mb-0.5">
+								{q.header}
+							</InlineMarkdown>
+							<InlineMarkdown
+								id={questionId}
+								className="text-sm font-medium mb-1.5"
 							>
-								{q.options.map((opt) => {
-									const isChecked =
-										Array.isArray(answers[q.question]) &&
-										(answers[q.question] as string[]).includes(opt.label);
-									return (
-										// biome-ignore lint/a11y/noLabelWithoutControl: Radix Checkbox renders an internal button element
+								{q.question}
+							</InlineMarkdown>
+							{q.multiSelect ? (
+								<fieldset
+									className="space-y-2 border-0 p-0 m-0"
+									aria-labelledby={questionId}
+								>
+									{q.options.map((opt) => {
+										const isChecked =
+											Array.isArray(answers[q.question]) &&
+											(answers[q.question] as string[]).includes(opt.label);
+										return (
+											// biome-ignore lint/a11y/noLabelWithoutControl: Radix Checkbox renders an internal button element
+											<label
+												key={opt.label}
+												className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50"
+											>
+												<Checkbox
+													checked={isChecked}
+													onCheckedChange={() =>
+														handleSelect(q.question, opt.label, true)
+													}
+													className="mt-0.5"
+												/>
+												<div className="flex flex-col">
+													<span className="text-sm font-medium">
+														{opt.label}
+													</span>
+													{opt.description && (
+														<InlineMarkdown className="text-xs text-muted-foreground">
+															{opt.description}
+														</InlineMarkdown>
+													)}
+												</div>
+											</label>
+										);
+									})}
+								</fieldset>
+							) : (
+								<RadioGroup
+									value={
+										typeof answers[q.question] === "string"
+											? (answers[q.question] as string)
+											: undefined
+									}
+									onValueChange={(value) =>
+										handleSelect(q.question, value, false)
+									}
+									className="space-y-2"
+									aria-labelledby={questionId}
+								>
+									{q.options.map((opt) => (
+										// biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element
 										<label
 											key={opt.label}
 											className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50"
 										>
-											<Checkbox
-												checked={isChecked}
-												onCheckedChange={() =>
-													handleSelect(q.question, opt.label, true)
-												}
-												className="mt-0.5"
-											/>
+											<RadioGroupItem value={opt.label} className="mt-0.5" />
 											<div className="flex flex-col">
 												<span className="text-sm font-medium">{opt.label}</span>
 												{opt.description && (
@@ -323,65 +367,35 @@ export function PermissionDialog({
 												)}
 											</div>
 										</label>
-									);
-								})}
-							</fieldset>
-						) : (
-							<RadioGroup
-								value={
-									typeof answers[q.question] === "string"
-										? (answers[q.question] as string)
-										: undefined
-								}
-								onValueChange={(value) =>
-									handleSelect(q.question, value, false)
-								}
-								className="space-y-2"
-							>
-								{q.options.map((opt) => (
-									// biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element
-									<label
-										key={opt.label}
-										className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50"
-									>
-										<RadioGroupItem value={opt.label} className="mt-0.5" />
-										<div className="flex flex-col">
-											<span className="text-sm font-medium">{opt.label}</span>
-											{opt.description && (
-												<InlineMarkdown className="text-xs text-muted-foreground">
-													{opt.description}
-												</InlineMarkdown>
+									))}
+									{/* biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element */}
+									<label className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50">
+										<RadioGroupItem value={OTHER_LABEL} className="mt-0.5" />
+										<div className="flex flex-col flex-1">
+											<span className="text-sm font-medium">Other</span>
+											{answers[q.question] === OTHER_LABEL && (
+												<Input
+													type="text"
+													aria-label={`Other input for ${q.question}`}
+													value={otherTexts[q.question] ?? ""}
+													onClick={(e) => e.stopPropagation()}
+													onChange={(e) =>
+														setOtherTexts((prev) => ({
+															...prev,
+															[q.question]: e.target.value,
+														}))
+													}
+													className="mt-1 h-auto text-sm"
+													placeholder="Type your answer..."
+												/>
 											)}
 										</div>
 									</label>
-								))}
-								{/* biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element */}
-								<label className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50">
-									<RadioGroupItem value={OTHER_LABEL} className="mt-0.5" />
-									<div className="flex flex-col flex-1">
-										<span className="text-sm font-medium">Other</span>
-										{answers[q.question] === OTHER_LABEL && (
-											<input
-												type="text"
-												aria-label={`Other input for ${q.question}`}
-												value={otherTexts[q.question] ?? ""}
-												onClick={(e) => e.stopPropagation()}
-												onChange={(e) =>
-													setOtherTexts((prev) => ({
-														...prev,
-														[q.question]: e.target.value,
-													}))
-												}
-												className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-ring"
-												placeholder="Type your answer..."
-											/>
-										)}
-									</div>
-								</label>
-							</RadioGroup>
-						)}
-					</div>
-				))}
+								</RadioGroup>
+							)}
+						</div>
+					);
+				})}
 				<Button
 					size="xs"
 					onClick={handleSubmit}
