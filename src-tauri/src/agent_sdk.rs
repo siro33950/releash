@@ -534,8 +534,7 @@ async fn spawn_bridge_process(
         .ok_or_else(|| "Failed to capture stderr".to_string())?;
 
     // Send init command
-    let initial_permission_mode =
-        permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
+    let initial_permission_mode = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
     let init_cmd = serde_json::json!({
         "type": "init",
         "cwd": cwd,
@@ -925,8 +924,7 @@ async fn spawn_bridge_process(
                                                     .write_all(mode_data.as_bytes())
                                                     .await;
                                                 let _ = proc.stdin.flush().await;
-                                                proc.current_permission_mode =
-                                                    restored.to_string();
+                                                proc.current_permission_mode = restored.to_string();
                                             }
                                             drop(map);
                                             // Persist resolved mode if it changed (plan → default)
@@ -950,8 +948,7 @@ async fn spawn_bridge_process(
                                     {
                                         let mut map = handles_stdout.lock().await;
                                         if let Some(proc) = map.get_mut(&csid_stdout) {
-                                            proc.current_permission_mode =
-                                                sdk_mode.to_string();
+                                            proc.current_permission_mode = sdk_mode.to_string();
                                         }
                                     }
                                     emit_permission_mode_changed(
@@ -2932,7 +2929,10 @@ mod tests {
 
     #[test]
     fn resolve_permission_mode_bypass_unchanged() {
-        assert_eq!(resolve_permission_mode("bypassPermissions"), "bypassPermissions");
+        assert_eq!(
+            resolve_permission_mode("bypassPermissions"),
+            "bypassPermissions"
+        );
     }
 
     #[test]
