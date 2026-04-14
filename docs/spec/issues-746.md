@@ -114,12 +114,12 @@ TypeScript:
 **開始→完了の同一part更新メカニズム**:
 
 Compaction:
-- `status=compacting` 受信時: `SystemNotification { notification_type: "compaction", status: "in_progress", ... }` をpushし、streaming_parts内のインデックスを `compaction_part_index: Option<usize>` として `AgentProcess` 構造体に記録
-- `compact_boundary` 受信時: 記録したインデックスの既存partを `status: "completed"` に更新（新しいpartは追加しない）。deltaとして更新後のpartを送信
+- `status=compacting` 受信時: `SystemNotification { notification_type: "compaction", status: "in_progress", ... }` を `streaming_parts` にpush
+- `compact_boundary` 受信時: `streaming_parts` を逆走査し、`notification_type == "compaction" && status == "in_progress"` に一致する最新のpartを `status: "completed"` に更新。deltaとして更新後のpartを送信。該当partがなければcompleted状態で新規push
 
 Hook:
-- `hook_started` 受信時: `hook_id` をキーにpushし、`hook_part_indices: HashMap<String, usize>` に `AgentProcess` 構造体で記録
-- `hook_response` 受信時: `hook_id` で既存partを検索し、status/label/detailを更新。deltaとして更新後のpartを送信
+- `hook_started` 受信時: `hook_id` 付きの `SystemNotification` を `streaming_parts` にpush（`hook_id` が空文字または未設定の場合は `None` として保存）
+- `hook_response` 受信時: `streaming_parts` を逆走査し、`notification_type == "hook" && status == "in_progress" && hook_id` が一致するpartを検索してstatus/detailを更新。deltaとして更新後のpartを送信。該当partがなければ新規push
 
 **非表示メッセージ（既存処理を維持）**:
 - `init`: `accumulate_sdk_message` で `false` を返す（既存）

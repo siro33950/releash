@@ -508,19 +508,22 @@ fn accumulate_sdk_message(
                     let hook_id = msg
                         .get("hook_id")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                        .filter(|id| !id.is_empty())
+                        .map(|id| id.to_string());
                     parts.push(MessagePart::SystemNotification {
                         notification_type: "hook".to_string(),
                         status: "in_progress".to_string(),
                         label: format!("{hook_name} ({hook_event})"),
                         detail: None,
-                        hook_id: Some(hook_id),
+                        hook_id: hook_id.clone(),
                     });
                     (true, None)
                 }
                 "hook_response" => {
-                    let hook_id = msg.get("hook_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let hook_id = msg
+                        .get("hook_id")
+                        .and_then(|v| v.as_str())
+                        .filter(|id| !id.is_empty());
                     let outcome = msg
                         .get("outcome")
                         .and_then(|v| v.as_str())
@@ -550,7 +553,7 @@ fn accumulate_sdk_message(
                         {
                             if notification_type == "hook"
                                 && status == "in_progress"
-                                && hid.as_deref() == Some(hook_id)
+                                && hid.as_deref() == hook_id
                             {
                                 *status = new_status.to_string();
                                 *d = Some(detail.clone());
@@ -576,7 +579,7 @@ fn accumulate_sdk_message(
                             status: new_status.to_string(),
                             label: format!("{hook_name} ({hook_event})"),
                             detail: Some(detail),
-                            hook_id: Some(hook_id.to_string()),
+                            hook_id: hook_id.map(|id| id.to_string()),
                         });
                         (true, None)
                     }
