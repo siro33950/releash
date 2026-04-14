@@ -287,12 +287,15 @@ fn extract_agent_id(content: &str) -> Option<&str> {
 }
 
 /// Parse SDK message and accumulate into streaming_parts.
-/// Returns true if the message was handled (accumulated) and should NOT be forwarded as agent-sdk-message.
+/// Returns (accumulated, updated_parts):
+/// - accumulated: true if the message was handled and should NOT be forwarded as agent-sdk-message.
+/// - updated_parts: Some(parts) when an existing part was updated in-place (e.g. compaction/hook completion).
+///   These must be emitted as delta since they are not captured by the `parts[prev_len..]` diff.
 fn accumulate_sdk_message(
     msg: &serde_json::Value,
     parts: &mut Vec<MessagePart>,
     task_id_map: &mut HashMap<String, String>,
-) -> bool {
+) -> (bool, Option<Vec<MessagePart>>) {
     let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let parent_tool_use_id = msg
         .get("parent_tool_use_id")
@@ -309,18 +312,18 @@ fn accumulate_sdk_message(
                         if delta_type == "text_delta" {
                             if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
                                 append_to_parts(parts, "text", text, parent_tool_use_id);
-                                return true;
+                                return (true, None);
                             }
                         } else if delta_type == "thinking_delta" {
                             if let Some(thinking) = delta.get("thinking").and_then(|v| v.as_str()) {
                                 append_to_parts(parts, "thinking", thinking, parent_tool_use_id);
-                                return true;
+                                return (true, None);
                             }
                         }
                     }
                 }
             }
-            false
+            (false, None)
         }
         "assistant" => {
             if let Some(message) = msg.get("message") {
@@ -352,7 +355,7 @@ fn accumulate_sdk_message(
                     }
                 }
             }
-            true
+            (true, None)
         }
         "user" => {
             if let Some(message) = msg.get("message") {
@@ -389,7 +392,7 @@ fn accumulate_sdk_message(
                     }
                 }
             }
-            true
+            (true, None)
         }
         "permission_request" => {
             let request = msg.clone();
@@ -399,7 +402,7 @@ fn accumulate_sdk_message(
                 answers: None,
                 parent_tool_use_id,
             });
-            true
+            (true, None)
         }
         "system" => {
             let subtype = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
@@ -441,9 +444,210 @@ fn accumulate_sdk_message(
                         description,
                         summary,
                     });
-                    true
+                    (true, None)
                 }
-                _ => false, // permissionMode sync, other system messages → forward
+                "init" => (false, None), // init message → forward (not accumulated)
+                "compact_boundary" => {
+                    // Compaction completed: find the in-progress compaction part and update it
+                    let trigger = msg
+                        .get("compact_metadata")
+                        .and_then(|m| m.get("trigger"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let pre_tokens = msg
+                        .get("compact_metadata")
+                        .and_then(|m| m.get("pre_summary_token_count"))
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "?".to_string());
+                    let detail = format!("trigger={trigger}, {pre_tokens} tokens");
+
+                    // Walk parts in reverse to find the in-progress compaction notification
+                    let mut updated_part = None;
+                    for part in parts.iter_mut().rev() {
+                        if let MessagePart::SystemNotification {
+                            notification_type,
+                            status,
+                            label,
+                            detail: d,
+                            ..
+                        } = part
+                        {
+                            if notification_type == "compaction" && status == "in_progress" {
+                                *status = "completed".to_string();
+                                *label = "Conversation compacted".to_string();
+                                *d = Some(detail.clone());
+                                updated_part = Some(part.clone());
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(p) = updated_part {
+                        (true, Some(vec![p]))
+                    } else {
+                        // No in-progress compaction found, add a completed one directly
+                        parts.push(MessagePart::SystemNotification {
+                            notification_type: "compaction".to_string(),
+                            status: "completed".to_string(),
+                            label: "Conversation compacted".to_string(),
+                            detail: Some(detail),
+                            hook_id: None,
+                        });
+                        (true, None)
+                    }
+                }
+                "hook_started" => {
+                    let hook_name = msg
+                        .get("hook_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let hook_event = msg
+                        .get("hook_event")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let hook_id = msg
+                        .get("hook_id")
+                        .and_then(|v| v.as_str())
+                        .filter(|id| !id.is_empty())
+                        .map(|id| id.to_string());
+                    parts.push(MessagePart::SystemNotification {
+                        notification_type: "hook".to_string(),
+                        status: "in_progress".to_string(),
+                        label: format!("{hook_name} ({hook_event})"),
+                        detail: None,
+                        hook_id: hook_id.clone(),
+                    });
+                    (true, None)
+                }
+                "hook_response" => {
+                    let hook_id = msg
+                        .get("hook_id")
+                        .and_then(|v| v.as_str())
+                        .filter(|id| !id.is_empty());
+                    let outcome = msg
+                        .get("outcome")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let exit_code = msg
+                        .get("exit_code")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "?".to_string());
+                    let new_status = if outcome == "error" {
+                        "error"
+                    } else {
+                        "completed"
+                    };
+                    let detail = format!("outcome={outcome}, exit_code={exit_code}");
+
+                    // Walk parts in reverse to find the matching hook_started notification
+                    let mut updated_part = None;
+                    for part in parts.iter_mut().rev() {
+                        if let MessagePart::SystemNotification {
+                            notification_type,
+                            status,
+                            detail: d,
+                            hook_id: hid,
+                            ..
+                        } = part
+                        {
+                            if notification_type == "hook"
+                                && status == "in_progress"
+                                && hid.as_deref() == hook_id
+                            {
+                                *status = new_status.to_string();
+                                *d = Some(detail.clone());
+                                updated_part = Some(part.clone());
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(p) = updated_part {
+                        (true, Some(vec![p]))
+                    } else {
+                        // No matching hook_started found, add a standalone completed entry
+                        let hook_name = msg
+                            .get("hook_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let hook_event = msg
+                            .get("hook_event")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        parts.push(MessagePart::SystemNotification {
+                            notification_type: "hook".to_string(),
+                            status: new_status.to_string(),
+                            label: format!("{hook_name} ({hook_event})"),
+                            detail: Some(detail),
+                            hook_id: hook_id.map(|id| id.to_string()),
+                        });
+                        (true, None)
+                    }
+                }
+                "files_persisted" => {
+                    let file_paths = msg
+                        .get("filePaths")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    parts.push(MessagePart::SystemNotification {
+                        notification_type: "files_persisted".to_string(),
+                        status: "completed".to_string(),
+                        label: "Files persisted".to_string(),
+                        detail: if file_paths.is_empty() {
+                            None
+                        } else {
+                            Some(file_paths)
+                        },
+                        hook_id: None,
+                    });
+                    (true, None)
+                }
+                "local_command_output" => {
+                    let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let truncated = if content.chars().count() > 200 {
+                        // Truncate at char boundary
+                        match content.char_indices().nth(200) {
+                            Some((byte_pos, _)) => format!("{}…", &content[..byte_pos]),
+                            None => content.to_string(),
+                        }
+                    } else {
+                        content.to_string()
+                    };
+                    parts.push(MessagePart::SystemNotification {
+                        notification_type: "local_command_output".to_string(),
+                        status: "completed".to_string(),
+                        label: "Command output".to_string(),
+                        detail: if truncated.is_empty() {
+                            None
+                        } else {
+                            Some(truncated)
+                        },
+                        hook_id: None,
+                    });
+                    (true, None)
+                }
+                _ => {
+                    // Check for status=compacting (subtype may be empty/"" for status messages)
+                    let status = msg.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    if status == "compacting" {
+                        parts.push(MessagePart::SystemNotification {
+                            notification_type: "compaction".to_string(),
+                            status: "in_progress".to_string(),
+                            label: "Compacting conversation...".to_string(),
+                            detail: None,
+                            hook_id: None,
+                        });
+                        (true, None)
+                    } else {
+                        (false, None) // permissionMode sync, other system messages → forward
+                    }
+                }
             }
         }
         "error" => {
@@ -455,9 +659,9 @@ fn accumulate_sdk_message(
                 content: format!("Error: {}", error_text),
                 parent_tool_use_id,
             });
-            false // Still forward for handleBridgeError
+            (false, None) // Still forward for handleBridgeError
         }
-        _ => false,
+        _ => (false, None),
     }
 }
 
@@ -790,7 +994,7 @@ async fn spawn_bridge_process(
                                     && proc.streaming_message_id.is_some()
                                 {
                                     let prev_len = proc.streaming_parts.len();
-                                    let acc = accumulate_sdk_message(
+                                    let (acc, updated_parts) = accumulate_sdk_message(
                                         &msg,
                                         &mut proc.streaming_parts,
                                         &mut proc.task_id_map,
@@ -799,8 +1003,12 @@ async fn spawn_bridge_process(
                                         (false, Vec::new(), None, false, Vec::new())
                                     } else {
                                         // Extract only newly added parts as delta
-                                        let delta: Vec<MessagePart> =
+                                        let mut delta: Vec<MessagePart> =
                                             proc.streaming_parts[prev_len..].to_vec();
+                                        // Include in-place updated parts in the delta
+                                        if let Some(up) = updated_parts {
+                                            delta.extend(up);
+                                        }
                                         let mid = proc.streaming_message_id.clone();
 
                                         let now = std::time::Instant::now();
@@ -821,7 +1029,7 @@ async fn spawn_bridge_process(
                                     // (task_notification, task_progress, etc.)
                                     // Accumulate and emit immediately (no throttle needed).
                                     let prev_len = proc.streaming_parts.len();
-                                    let acc = accumulate_sdk_message(
+                                    let (acc, updated_parts) = accumulate_sdk_message(
                                         &msg,
                                         &mut proc.streaming_parts,
                                         &mut proc.task_id_map,
@@ -829,8 +1037,11 @@ async fn spawn_bridge_process(
                                     if !acc {
                                         (false, Vec::new(), None, false, Vec::new())
                                     } else {
-                                        let delta: Vec<MessagePart> =
+                                        let mut delta: Vec<MessagePart> =
                                             proc.streaming_parts[prev_len..].to_vec();
+                                        if let Some(up) = updated_parts {
+                                            delta.extend(up);
+                                        }
                                         let mid = proc.last_message_id.clone();
 
                                         // Always persist post-turn events immediately
@@ -2468,7 +2679,7 @@ mod tests {
             }
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2487,7 +2698,7 @@ mod tests {
             }
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2510,7 +2721,7 @@ mod tests {
             }
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2536,7 +2747,7 @@ mod tests {
             }
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2562,7 +2773,7 @@ mod tests {
             "tool_name": "Edit"
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         assert!(matches!(&parts[0], MessagePart::Permission { status, .. } if status == "pending"));
@@ -2587,7 +2798,7 @@ mod tests {
             "message": "Something went wrong"
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(!handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2607,7 +2818,7 @@ mod tests {
             "description": "Searching"
         });
         let mut parts = vec![];
-        let handled = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
         assert!(handled);
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2716,6 +2927,334 @@ mod tests {
             }
             _ => panic!("expected TaskStatus"),
         }
+    }
+
+    // --- SystemNotification accumulate tests ---
+
+    #[test]
+    fn test_accumulate_compaction_start() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "status": "compacting"
+        });
+        let mut parts = vec![];
+        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        assert!(updated.is_none());
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::SystemNotification {
+                notification_type,
+                status,
+                label,
+                detail,
+                hook_id,
+            } => {
+                assert_eq!(notification_type, "compaction");
+                assert_eq!(status, "in_progress");
+                assert_eq!(label, "Compacting conversation...");
+                assert_eq!(*detail, None);
+                assert_eq!(*hook_id, None);
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_compaction_complete_updates_existing() {
+        let mut parts = vec![MessagePart::SystemNotification {
+            notification_type: "compaction".to_string(),
+            status: "in_progress".to_string(),
+            label: "Compacting conversation...".to_string(),
+            detail: None,
+            hook_id: None,
+        }];
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "compact_metadata": {
+                "trigger": "auto",
+                "pre_summary_token_count": 50000
+            }
+        });
+        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        assert!(updated.is_some());
+        let updated_parts = updated.unwrap();
+        assert_eq!(updated_parts.len(), 1);
+        // Verify the part was updated in-place
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::SystemNotification {
+                notification_type,
+                status,
+                label,
+                detail,
+                ..
+            } => {
+                assert_eq!(notification_type, "compaction");
+                assert_eq!(status, "completed");
+                assert_eq!(label, "Conversation compacted");
+                assert!(detail.as_ref().unwrap().contains("trigger=auto"));
+                assert!(detail.as_ref().unwrap().contains("50000 tokens"));
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_compaction_complete_without_start() {
+        let mut parts = vec![];
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "compact_metadata": {
+                "trigger": "manual",
+                "pre_summary_token_count": 10000
+            }
+        });
+        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        assert!(updated.is_none()); // No existing part to update, new one pushed
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::SystemNotification { status, label, .. } => {
+                assert_eq!(status, "completed");
+                assert_eq!(label, "Conversation compacted");
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_hook_started() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "hook_started",
+            "hook_name": "SessionEnd",
+            "hook_event": "StopSession",
+            "hook_id": "hook-001"
+        });
+        let mut parts = vec![];
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::SystemNotification {
+                notification_type,
+                status,
+                label,
+                hook_id,
+                ..
+            } => {
+                assert_eq!(notification_type, "hook");
+                assert_eq!(status, "in_progress");
+                assert_eq!(label, "SessionEnd (StopSession)");
+                assert_eq!(hook_id.as_deref(), Some("hook-001"));
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_hook_response_updates_existing() {
+        let mut parts = vec![MessagePart::SystemNotification {
+            notification_type: "hook".to_string(),
+            status: "in_progress".to_string(),
+            label: "SessionEnd (StopSession)".to_string(),
+            detail: None,
+            hook_id: Some("hook-001".to_string()),
+        }];
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "hook_response",
+            "hook_id": "hook-001",
+            "outcome": "success",
+            "exit_code": 0
+        });
+        let (handled, updated) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        assert!(updated.is_some());
+        assert_eq!(parts.len(), 1); // Updated in-place
+        match &parts[0] {
+            MessagePart::SystemNotification { status, detail, .. } => {
+                assert_eq!(status, "completed");
+                assert!(detail.as_ref().unwrap().contains("outcome=success"));
+                assert!(detail.as_ref().unwrap().contains("exit_code=0"));
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_hook_response_error_status() {
+        let mut parts = vec![MessagePart::SystemNotification {
+            notification_type: "hook".to_string(),
+            status: "in_progress".to_string(),
+            label: "PreCompact (Compact)".to_string(),
+            detail: None,
+            hook_id: Some("hook-err".to_string()),
+        }];
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "hook_response",
+            "hook_id": "hook-err",
+            "outcome": "error",
+            "exit_code": 1
+        });
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        match &parts[0] {
+            MessagePart::SystemNotification { status, .. } => {
+                assert_eq!(status, "error");
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_files_persisted() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "files_persisted",
+            "filePaths": ["CLAUDE.md", "src/main.rs"]
+        });
+        let mut parts = vec![];
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::SystemNotification {
+                notification_type,
+                status,
+                label,
+                detail,
+                ..
+            } => {
+                assert_eq!(notification_type, "files_persisted");
+                assert_eq!(status, "completed");
+                assert_eq!(label, "Files persisted");
+                assert_eq!(detail.as_deref(), Some("CLAUDE.md, src/main.rs"));
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_local_command_output() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "local_command_output",
+            "content": "npm test output here"
+        });
+        let mut parts = vec![];
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            MessagePart::SystemNotification {
+                notification_type,
+                status,
+                label,
+                detail,
+                ..
+            } => {
+                assert_eq!(notification_type, "local_command_output");
+                assert_eq!(status, "completed");
+                assert_eq!(label, "Command output");
+                assert_eq!(detail.as_deref(), Some("npm test output here"));
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_local_command_output_truncates_long_content() {
+        let long_content = "a".repeat(300);
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "local_command_output",
+            "content": long_content
+        });
+        let mut parts = vec![];
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        match &parts[0] {
+            MessagePart::SystemNotification { detail, .. } => {
+                let d = detail.as_ref().unwrap();
+                assert!(d.len() <= 200 + "…".len());
+                assert!(d.ends_with('…'));
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_local_command_output_truncates_multibyte() {
+        let long_content = "あ".repeat(201);
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "local_command_output",
+            "content": long_content
+        });
+        let mut parts = vec![];
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        match &parts[0] {
+            MessagePart::SystemNotification { detail, .. } => {
+                let d = detail.as_ref().unwrap();
+                assert!(d.ends_with('…'));
+                let without_ellipsis = d.trim_end_matches('…');
+                assert_eq!(without_ellipsis.chars().count(), 200);
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_local_command_output_no_truncate_short_multibyte() {
+        let content = "あ".repeat(100);
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "local_command_output",
+            "content": content
+        });
+        let mut parts = vec![];
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(handled);
+        match &parts[0] {
+            MessagePart::SystemNotification { detail, .. } => {
+                let d = detail.as_ref().unwrap();
+                assert!(!d.ends_with('…'));
+                assert_eq!(d.chars().count(), 100);
+            }
+            _ => panic!("expected SystemNotification"),
+        }
+    }
+
+    #[test]
+    fn test_accumulate_init_not_handled() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "sess-123"
+        });
+        let mut parts = vec![];
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(!handled);
+        assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn test_accumulate_permission_mode_status_not_handled() {
+        let msg = serde_json::json!({
+            "type": "system",
+            "permissionMode": "acceptEdits"
+        });
+        let mut parts = vec![];
+        let (handled, _) = accumulate_sdk_message(&msg, &mut parts, &mut HashMap::new());
+        assert!(!handled);
+        assert!(parts.is_empty());
     }
 
     // --- consolidate_parts tests ---

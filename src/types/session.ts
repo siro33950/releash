@@ -52,6 +52,18 @@ export type MessagePart =
 			status: "started" | "completed" | "failed" | "stopped" | "progress";
 			description?: string;
 			summary?: string;
+	  }
+	| {
+			type: "system_notification";
+			notificationType:
+				| "compaction"
+				| "hook"
+				| "files_persisted"
+				| "local_command_output";
+			status: "in_progress" | "completed" | "error";
+			label: string;
+			detail?: string;
+			hookId?: string;
 	  };
 
 export type ActivityEntry =

@@ -632,5 +632,80 @@ describe("agentChatReducer", () => {
 			const result = mergeDeltaParts(existing, delta);
 			expect(result).toHaveLength(2);
 		});
+
+		it("updates existing compaction notification in-place", () => {
+			const existing = [
+				{
+					type: "system_notification" as const,
+					notificationType: "compaction" as const,
+					status: "in_progress" as const,
+					label: "Compacting conversation...",
+				},
+			];
+			const delta = [
+				{
+					type: "system_notification" as const,
+					notificationType: "compaction" as const,
+					status: "completed" as const,
+					label: "Conversation compacted",
+					detail: "trigger=auto, 50000 tokens",
+				},
+			];
+			const result = mergeDeltaParts(existing, delta);
+			expect(result).toHaveLength(1);
+			expect(result[0]).toEqual({
+				type: "system_notification",
+				notificationType: "compaction",
+				status: "completed",
+				label: "Conversation compacted",
+				detail: "trigger=auto, 50000 tokens",
+			});
+		});
+
+		it("updates existing hook notification by hookId", () => {
+			const existing = [
+				{
+					type: "system_notification" as const,
+					notificationType: "hook" as const,
+					status: "in_progress" as const,
+					label: "SessionEnd (StopSession)",
+					hookId: "hook-001",
+				},
+			];
+			const delta = [
+				{
+					type: "system_notification" as const,
+					notificationType: "hook" as const,
+					status: "completed" as const,
+					label: "SessionEnd (StopSession)",
+					detail: "outcome=success, exit_code=0",
+					hookId: "hook-001",
+				},
+			];
+			const result = mergeDeltaParts(existing, delta);
+			expect(result).toHaveLength(1);
+			expect(result[0]).toEqual(
+				expect.objectContaining({
+					status: "completed",
+					detail: "outcome=success, exit_code=0",
+				}),
+			);
+		});
+
+		it("appends new system_notification when no match found", () => {
+			const existing = [{ type: "text" as const, content: "hello" }];
+			const delta = [
+				{
+					type: "system_notification" as const,
+					notificationType: "files_persisted" as const,
+					status: "completed" as const,
+					label: "Files persisted",
+					detail: "CLAUDE.md",
+				},
+			];
+			const result = mergeDeltaParts(existing, delta);
+			expect(result).toHaveLength(2);
+			expect(result[1].type).toBe("system_notification");
+		});
 	});
 });

@@ -81,6 +81,16 @@ pub enum MessagePart {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         summary: Option<String>,
     },
+    SystemNotification {
+        #[serde(rename = "notificationType")]
+        notification_type: String,
+        status: String,
+        label: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        detail: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default, rename = "hookId")]
+        hook_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,6 +286,7 @@ pub fn parts_to_legacy(
                 }
             }
             MessagePart::TaskStatus { .. } => {}
+            MessagePart::SystemNotification { .. } => {}
         }
     }
     let thinking = if thinking.is_empty() {
@@ -928,6 +939,54 @@ mod tests {
         } else {
             panic!("Expected Text variant");
         }
+    }
+
+    #[test]
+    fn system_notification_serde_roundtrip() {
+        let part = MessagePart::SystemNotification {
+            notification_type: "compaction".to_string(),
+            status: "completed".to_string(),
+            label: "Conversation compacted".to_string(),
+            detail: Some("trigger=auto, 50000 tokens".to_string()),
+            hook_id: None,
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "system_notification");
+        assert_eq!(v["notificationType"], "compaction");
+        assert_eq!(v["status"], "completed");
+        assert_eq!(v["label"], "Conversation compacted");
+        assert_eq!(v["detail"], "trigger=auto, 50000 tokens");
+        assert!(v.get("hookId").is_none());
+        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, part);
+    }
+
+    #[test]
+    fn system_notification_with_hook_id_serde_roundtrip() {
+        let part = MessagePart::SystemNotification {
+            notification_type: "hook".to_string(),
+            status: "in_progress".to_string(),
+            label: "SessionEnd (StopSession)".to_string(),
+            detail: None,
+            hook_id: Some("hook-001".to_string()),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["hookId"], "hook-001");
+        assert!(v.get("detail").is_none());
+        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, part);
+    }
+
+    #[test]
+    fn old_json_without_system_notification_deserializes() {
+        // Backward compat: old session JSON without system_notification parts
+        let json = r#"[{"type":"text","content":"hello"},{"type":"task_status","taskToolUseId":"t1","status":"started"}]"#;
+        let parts: Vec<MessagePart> = serde_json::from_str(json).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert!(matches!(&parts[0], MessagePart::Text { .. }));
+        assert!(matches!(&parts[1], MessagePart::TaskStatus { .. }));
     }
 
     #[test]
