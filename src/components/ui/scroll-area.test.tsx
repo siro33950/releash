@@ -36,8 +36,8 @@ describe("ScrollArea", () => {
 		const viewport = container.querySelector(
 			'[data-slot="scroll-area-viewport"]',
 		);
-		expect(viewport).not.toBeNull();
-		fireEvent.scroll(viewport!);
+		if (!viewport) throw new Error("viewport not found");
+		fireEvent.scroll(viewport);
 		expect(onScroll).toHaveBeenCalledTimes(1);
 	});
 
