@@ -1026,9 +1026,7 @@ describe("SystemNotificationItem rendering", () => {
 			},
 		});
 		render(<AgentChatPanel worktreePath="/repo" />);
-		expect(
-			screen.getByText("(trigger=auto, 50000 tokens)"),
-		).toBeDefined();
+		expect(screen.getByText("(trigger=auto, 50000 tokens)")).toBeDefined();
 	});
 });
 
