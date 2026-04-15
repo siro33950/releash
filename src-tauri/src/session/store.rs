@@ -196,6 +196,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
         }
     }
 

@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -17,6 +17,29 @@ use crate::session::{
 };
 
 const PERSIST_INTERVAL_MS: u64 = 1000;
+
+fn available_models_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("available_models.json")
+}
+
+fn save_available_models(app_data_dir: &Path, models: &[ModelInfo]) -> Result<(), String> {
+    std::fs::create_dir_all(app_data_dir).map_err(|e| format!("Failed to create data dir: {e}"))?;
+    let file = available_models_path(app_data_dir);
+    let json =
+        serde_json::to_string(models).map_err(|e| format!("Failed to serialize models: {e}"))?;
+    let tmp = file.with_extension("json.tmp");
+    std::fs::write(&tmp, json).map_err(|e| format!("Failed to write models temp file: {e}"))?;
+    std::fs::rename(&tmp, &file).map_err(|e| format!("Failed to rename models temp file: {e}"))?;
+    Ok(())
+}
+
+fn load_available_models(app_data_dir: &Path) -> Vec<ModelInfo> {
+    let file = available_models_path(app_data_dir);
+    match std::fs::read_to_string(&file) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BridgeState {
@@ -44,6 +67,14 @@ pub struct PendingMessage {
     pub permission_mode: String,
 }
 
+/// Model information from Agent SDK.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub value: String,
+    pub display_name: String,
+}
+
 pub struct AgentProcess {
     pub stdin: tokio::process::ChildStdin,
     pub state: BridgeState,
@@ -67,6 +98,37 @@ pub struct AgentProcess {
     /// Unlike `ChatSession.permission_mode` (persisted, excludes transient "plan"),
     /// this reflects the actual SDK state including "plan" mode.
     pub current_permission_mode: String,
+    /// Available models from Agent SDK.
+    pub available_models: Vec<ModelInfo>,
+    /// Currently selected model for this session (None = SDK default).
+    pub selected_model: Option<String>,
+}
+
+impl AgentProcess {
+    /// Write setMode + setModel commands to the Bridge stdin before a turn starts.
+    async fn sync_pre_turn_settings(&mut self, permission_mode: &str) -> Result<(), String> {
+        let mode_data = build_set_mode_command(permission_mode);
+        self.stdin
+            .write_all(mode_data.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write setMode: {e}"))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|e| format!("Failed to flush setMode: {e}"))?;
+
+        let model_data = build_set_model_command(self.selected_model.as_deref());
+        self.stdin
+            .write_all(model_data.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write setModel: {e}"))?;
+        self.stdin
+            .flush()
+            .await
+            .map_err(|e| format!("Failed to flush setModel: {e}"))?;
+
+        Ok(())
+    }
 }
 
 /// Per-session agent process map: chat_session_id → AgentProcess
@@ -93,22 +155,6 @@ fn resolve_bridge_script(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
         .resource_dir()
         .map(|d| d.join("resources").join("claude-sdk-bridge.bundled.mjs"))
         .map_err(|e| format!("Failed to resolve resource dir: {e}"))
-}
-
-fn get_resume_session_id(
-    app: &tauri::AppHandle,
-    session_store: &SessionStore,
-    chat_session_id: &str,
-) -> Option<String> {
-    resolve_data_dir(app)
-        .ok()
-        .and_then(|data_dir| {
-            session_store
-                .get_session(&data_dir, chat_session_id)
-                .ok()
-                .flatten()
-        })
-        .and_then(|s| s.agent_session_id)
 }
 
 fn persist_streaming_parts(
@@ -197,6 +243,14 @@ fn build_set_mode_command(permission_mode: &str) -> String {
     let cmd = serde_json::json!({
         "type": "setMode",
         "permissionMode": permission_mode,
+    });
+    format!("{}\n", cmd)
+}
+
+fn build_set_model_command(model_id: Option<&str>) -> String {
+    let cmd = serde_json::json!({
+        "type": "setModel",
+        "modelId": model_id,
     });
     format!("{}\n", cmd)
 }
@@ -690,6 +744,7 @@ fn accumulate_sdk_message(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn spawn_bridge_process(
     app: &tauri::AppHandle,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -698,6 +753,7 @@ async fn spawn_bridge_process(
     session_id: Option<String>,
     cwd: &str,
     permission_mode: Option<String>,
+    selected_model: Option<String>,
 ) -> Result<(), String> {
     let bridge_path = resolve_bridge_script(app)?;
     if !bridge_path.exists() {
@@ -774,6 +830,8 @@ async fn spawn_bridge_process(
                 task_id_map: HashMap::new(),
                 pending_message: None,
                 current_permission_mode: initial_permission_mode.clone(),
+                available_models: Vec::new(),
+                selected_model,
             },
         );
     }
@@ -811,6 +869,55 @@ async fn spawn_bridge_process(
                             }
                         }
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
+                    }
+                    "supported_models" => {
+                        // Parse models from Bridge and store in AgentProcess
+                        let models: Vec<ModelInfo> = msg
+                            .get("models")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|m| {
+                                        let value =
+                                            m.get("value").and_then(|v| v.as_str())?.to_string();
+                                        let display_name = m
+                                            .get("displayName")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or(&value)
+                                            .to_string();
+                                        Some(ModelInfo {
+                                            value,
+                                            display_name,
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        let selected_model = {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                proc.available_models = models.clone();
+                                proc.selected_model.clone()
+                            } else {
+                                None
+                            }
+                        };
+
+                        // Persist models globally
+                        if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
+                            let _ = save_available_models(&data_dir, &models);
+                        }
+
+                        // Emit models to frontend
+                        let _ = app_stdout.emit(
+                            "agent-models-updated",
+                            serde_json::json!({
+                                "chat_session_id": csid_stdout,
+                                "available_models": models,
+                                "selected_model": selected_model,
+                            }),
+                        );
                     }
                     "turn_complete" => {
                         let exit_code = msg.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1243,23 +1350,29 @@ async fn get_session_internal(
     match session {
         None => Ok(None),
         Some(mut session) => {
-            let (turn_phase, raw_parts, streaming_mid) = {
+            let (turn_phase, raw_parts, streaming_mid, proc_models) = {
                 let map = handles.lock().await;
                 if let Some(proc) = map.get(session_id) {
                     // Override persisted mode with runtime mode (includes transient "plan")
                     session.permission_mode = proc.current_permission_mode.clone();
                     let phase = proc.turn_phase;
+                    let models = if !proc.available_models.is_empty() {
+                        proc.available_models.clone()
+                    } else {
+                        Vec::new()
+                    };
                     if proc.state == BridgeState::Streaming {
                         (
                             phase,
                             proc.streaming_parts.clone(),
                             proc.streaming_message_id.clone(),
+                            models,
                         )
                     } else {
-                        (phase, Vec::new(), None)
+                        (phase, Vec::new(), None, models)
                     }
                 } else {
-                    (TurnPhase::Idle, Vec::new(), None)
+                    (TurnPhase::Idle, Vec::new(), None, Vec::new())
                 }
             };
 
@@ -1274,9 +1387,17 @@ async fn get_session_internal(
                 }
             }
 
+            // Use process models (latest from SDK) if available, otherwise fall back to global cache
+            let available_models = if !proc_models.is_empty() {
+                proc_models
+            } else {
+                load_available_models(&data_dir)
+            };
+
             Ok(Some(GetSessionResponse {
                 session,
                 turn_phase,
+                available_models,
             }))
         }
     }
@@ -1290,6 +1411,24 @@ pub async fn get_session(
     session_id: String,
 ) -> Result<Option<GetSessionResponse>, String> {
     get_session_internal(state.inner(), handles.inner(), &app, &session_id).await
+}
+
+/// Retrieve persisted session fields needed for spawning a Bridge process.
+fn get_persisted_spawn_info(
+    app: &tauri::AppHandle,
+    session_store: &SessionStore,
+    chat_session_id: &str,
+) -> (Option<String>, Option<String>) {
+    resolve_data_dir(app)
+        .ok()
+        .and_then(|data_dir| {
+            session_store
+                .get_session(&data_dir, chat_session_id)
+                .ok()
+                .flatten()
+        })
+        .map(|s| (s.agent_session_id, s.selected_model))
+        .unwrap_or((None, None))
 }
 
 async fn start_agent_session_internal(
@@ -1310,7 +1449,8 @@ async fn start_agent_session_internal(
         map.remove(chat_session_id);
     }
 
-    let resume_sid = get_resume_session_id(app, session_store, chat_session_id);
+    let (resume_sid, selected_model) =
+        get_persisted_spawn_info(app, session_store, chat_session_id);
 
     spawn_bridge_process(
         app,
@@ -1320,6 +1460,7 @@ async fn start_agent_session_internal(
         resume_sid,
         cwd,
         permission_mode,
+        selected_model,
     )
     .await
 }
@@ -1358,19 +1499,22 @@ async fn start_agent_turn(
     streaming_message_id: &str,
 ) -> Result<(), String> {
     // Check if we need to spawn a new process (single lock to avoid TOCTOU)
-    let spawn_info = {
+    let needs_spawn = {
         let mut map = handles.lock().await;
         match map.get(chat_session_id) {
-            None => Some(get_resume_session_id(app, session_store, chat_session_id)),
+            None => true,
             Some(proc) if proc.state == BridgeState::Crashed => {
                 map.remove(chat_session_id);
-                Some(get_resume_session_id(app, session_store, chat_session_id))
+                true
             }
-            _ => None,
+            _ => false,
         }
     };
 
-    if let Some(resume_sid) = spawn_info {
+    if needs_spawn {
+        let (resume_sid, selected_model) =
+            get_persisted_spawn_info(app, session_store, chat_session_id);
+
         spawn_bridge_process(
             app,
             handles,
@@ -1379,12 +1523,10 @@ async fn start_agent_turn(
             resume_sid,
             cwd,
             Some(permission_mode.to_string()),
+            selected_model,
         )
         .await?;
     }
-
-    // Sync permissionMode to Bridge before sending message
-    let mode_data = build_set_mode_command(permission_mode);
 
     // Send message command.
     // Even if a message is sent while the SDK is still processing an interrupt,
@@ -1399,15 +1541,7 @@ async fn start_agent_turn(
     {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(chat_session_id) {
-            // Sync permissionMode to Bridge
-            proc.stdin
-                .write_all(mode_data.as_bytes())
-                .await
-                .map_err(|e| format!("Failed to write setMode: {e}"))?;
-            proc.stdin
-                .flush()
-                .await
-                .map_err(|e| format!("Failed to flush setMode: {e}"))?;
+            proc.sync_pre_turn_settings(permission_mode).await?;
 
             proc.current_permission_mode = permission_mode.to_string();
             proc.state = BridgeState::Streaming;
@@ -1490,9 +1624,8 @@ async fn consume_pending_message(
         );
     }
 
-    // 4. Sync permissionMode + send message directly to the running Bridge.
+    // 4. Sync permissionMode + selected_model + send message directly to the running Bridge.
     //    The process is guaranteed running since it just emitted turn_complete.
-    let mode_data = build_set_mode_command(&pending.permission_mode);
     let msg_cmd = serde_json::json!({
         "type": "message",
         "prompt": pending.content,
@@ -1502,12 +1635,8 @@ async fn consume_pending_message(
     {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(chat_session_id) {
-            if let Err(e) = proc.stdin.write_all(mode_data.as_bytes()).await {
-                log::error!("consume_pending_message: failed to write setMode: {e}");
-                return;
-            }
-            if let Err(e) = proc.stdin.flush().await {
-                log::error!("consume_pending_message: failed to flush setMode: {e}");
+            if let Err(e) = proc.sync_pre_turn_settings(&pending.permission_mode).await {
+                log::error!("consume_pending_message: {e}");
                 return;
             }
             proc.current_permission_mode = pending.permission_mode.clone();
@@ -1659,6 +1788,60 @@ pub async fn set_agent_permission_mode(
             proc.current_permission_mode = permission_mode.clone();
         }
         // If no process exists, silently ignore (process not yet started)
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_agent_model(
+    app: tauri::AppHandle,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    chat_session_id: String,
+    model_id: Option<String>,
+) -> Result<(), String> {
+    // 1. Send setModel command to Bridge + update process state (single lock)
+    let data = build_set_model_command(model_id.as_deref());
+    let available_models = {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(&chat_session_id) {
+            proc.stdin
+                .write_all(data.as_bytes())
+                .await
+                .map_err(|e| format!("Failed to write setModel: {e}"))?;
+            proc.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Failed to flush setModel: {e}"))?;
+            proc.selected_model = model_id.clone();
+            Some(proc.available_models.clone())
+        } else {
+            None
+        }
+    };
+
+    // 2. Persist to ChatSession
+    let data_dir = resolve_data_dir(&app)?;
+    let mut session = session_store
+        .get_session(&data_dir, &chat_session_id)?
+        .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
+    session.selected_model = model_id.clone();
+    session.updated_at = now_timestamp();
+    session_store.save_session(&data_dir, &session)?;
+
+    // 3. Always emit event to keep frontend in sync (use global cache when process not running)
+    {
+        use tauri::Emitter;
+        let models = available_models.unwrap_or_else(|| load_available_models(&data_dir));
+        let _ = app.emit(
+            "agent-models-updated",
+            serde_json::json!({
+                "chat_session_id": chat_session_id,
+                "available_models": models,
+                "selected_model": model_id,
+            }),
+        );
     }
 
     Ok(())
@@ -1921,6 +2104,7 @@ pub async fn init_agent_sessions(
 
         sessions = session_store.list_sessions(&data_dir, &worktree_path)?;
         let response = GetSessionResponse {
+            available_models: load_available_models(&data_dir),
             session,
             turn_phase: TurnPhase::Idle,
         };
@@ -2121,6 +2305,22 @@ mod tests {
         });
         assert_eq!(cmd["type"], "setMode");
         assert_eq!(cmd["permissionMode"], "acceptEdits");
+    }
+
+    #[test]
+    fn set_model_command_format() {
+        let result = build_set_model_command(Some("claude-opus"));
+        let cmd: serde_json::Value = serde_json::from_str(result.trim()).unwrap();
+        assert_eq!(cmd["type"], "setModel");
+        assert_eq!(cmd["modelId"], "claude-opus");
+    }
+
+    #[test]
+    fn set_model_command_with_none() {
+        let result = build_set_model_command(None);
+        let cmd: serde_json::Value = serde_json::from_str(result.trim()).unwrap();
+        assert_eq!(cmd["type"], "setModel");
+        assert!(cmd["modelId"].is_null());
     }
 
     #[test]

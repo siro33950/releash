@@ -37,6 +37,8 @@ describe("agentChatReducer", () => {
 			error: null,
 			permissionMode: "acceptEdits" as const,
 			pendingPermissions: {},
+			availableModels: [],
+			sessionModels: {},
 		});
 	});
 
@@ -653,6 +655,98 @@ describe("agentChatReducer", () => {
 			const result = mergeDeltaParts(existing, delta);
 			expect(result).toHaveLength(2);
 			expect(result[1].type).toBe("system_notification");
+		});
+	});
+
+	describe("SET_AVAILABLE_MODELS", () => {
+		it("stores available models globally", () => {
+			const models = [
+				{ value: "claude-4", displayName: "Claude 4" },
+				{ value: "claude-3.5", displayName: "Claude 3.5" },
+			];
+			const next = reducer(INITIAL_STATE, {
+				type: "SET_AVAILABLE_MODELS",
+				models,
+			});
+			expect(next.availableModels).toBe(models);
+		});
+	});
+
+	describe("SET_SESSION_MODEL", () => {
+		it("sets selected model for a session", () => {
+			const next = reducer(INITIAL_STATE, {
+				type: "SET_SESSION_MODEL",
+				sessionId: "s1",
+				modelId: "claude-4",
+			});
+			expect(next.sessionModels.s1).toBe("claude-4");
+		});
+
+		it("clears model selection with null (SDK default)", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionModels: { s1: "claude-4" },
+			};
+			const next = reducer(state, {
+				type: "SET_SESSION_MODEL",
+				sessionId: "s1",
+				modelId: null,
+			});
+			expect(next.sessionModels.s1).toBeNull();
+		});
+
+		it("stores models for multiple sessions independently", () => {
+			let state = reducer(INITIAL_STATE, {
+				type: "SET_SESSION_MODEL",
+				sessionId: "s1",
+				modelId: "claude-4",
+			});
+			state = reducer(state, {
+				type: "SET_SESSION_MODEL",
+				sessionId: "s2",
+				modelId: "claude-3.5",
+			});
+			expect(state.sessionModels.s1).toBe("claude-4");
+			expect(state.sessionModels.s2).toBe("claude-3.5");
+		});
+	});
+
+	describe("CLEANUP_SESSION", () => {
+		it("removes session entries from all Record fields", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				turnPhases: { s1: "streaming", s2: "idle" },
+				pendingPermissions: {
+					s1: {
+						request_id: "req-1",
+						tool_name: "Edit",
+						input: {},
+						tool_use_id: "toolu_001",
+					},
+				},
+				sessionModels: { s1: "claude-4", s2: null },
+			};
+			const next = reducer(state, {
+				type: "CLEANUP_SESSION",
+				sessionId: "s1",
+			});
+			expect(next.turnPhases).toEqual({ s2: "idle" });
+			expect(next.pendingPermissions).toEqual({});
+			expect(next.sessionModels).toEqual({ s2: null });
+		});
+
+		it("is a no-op when session ID does not exist in any Record", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				turnPhases: { s1: "idle" },
+				sessionModels: { s1: "claude-4" },
+			};
+			const next = reducer(state, {
+				type: "CLEANUP_SESSION",
+				sessionId: "nonexistent",
+			});
+			expect(next.turnPhases).toEqual({ s1: "idle" });
+			expect(next.sessionModels).toEqual({ s1: "claude-4" });
 		});
 	});
 });

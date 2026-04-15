@@ -162,6 +162,8 @@ pub struct ChatSession {
     pub agent_session_id: Option<String>,
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub selected_model: Option<String>,
 }
 
 fn default_permission_mode() -> String {
@@ -174,6 +176,7 @@ pub struct GetSessionResponse {
     #[serde(flatten)]
     pub session: ChatSession,
     pub turn_phase: crate::agent_sdk::TurnPhase,
+    pub available_models: Vec<crate::agent_sdk::ModelInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,6 +339,7 @@ pub fn create_session_internal(
         updated_at: now,
         agent_session_id: None,
         permission_mode: default_permission_mode(),
+        selected_model: None,
     };
     session_store.save_session(data_dir, &session)?;
     Ok(session)
@@ -489,10 +493,12 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.id, "s1");
         assert_eq!(summary.first_message, "Hello agent");
+        // Verify selected_model not in summary (summary doesn't expose model)
         assert_eq!(summary.message_count, 1);
     }
 
@@ -516,6 +522,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message.len(), 100 + "…".len());
@@ -543,6 +550,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
         };
         let summary = session.to_summary();
         // 100 chars of "あ" (300 bytes) + "…" (3 bytes)
@@ -562,6 +570,7 @@ mod tests {
             updated_at: 1000.0,
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message, "");
@@ -676,6 +685,7 @@ mod tests {
             updated_at: 1001.0,
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         let back: ChatSession = serde_json::from_str(&json).unwrap();
@@ -683,6 +693,32 @@ mod tests {
         assert_eq!(back.messages.len(), 2);
         assert_eq!(back.messages[0].role, MessageRole::Human);
         assert_eq!(back.messages[1].role, MessageRole::Agent);
+    }
+
+    #[test]
+    fn chat_session_without_selected_model_deserializes() {
+        let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0}"#;
+        let session: ChatSession = serde_json::from_str(json).unwrap();
+        assert_eq!(session.selected_model, None);
+    }
+
+    #[test]
+    fn chat_session_roundtrip_with_selected_model() {
+        let session = ChatSession {
+            id: "s1".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![],
+            state: SessionState::Active,
+            created_at: 1000.0,
+            updated_at: 1001.0,
+            agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: Some("claude-opus-4-6".to_string()),
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("selectedModel"));
+        let back: ChatSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.selected_model, Some("claude-opus-4-6".to_string()));
     }
 
     #[test]

@@ -73,6 +73,8 @@ vi.mock("./useSessionStore", () => ({
 				permissionMode: "acceptEdits",
 			},
 			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
 		},
 	}),
 }));
@@ -261,6 +263,8 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: mockSession,
 			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
 		} as never);
 
 		await act(async () => {
@@ -269,6 +273,43 @@ describe("useAgentChat", () => {
 
 		expect(sessionStore.getSession).toHaveBeenCalledWith("s2");
 		expect(result.current.activeSession).toEqual(mockSession);
+	});
+
+	it("selectSession restores model selection from backend response", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Wait for mount effect
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const mockSession = {
+			id: "s2",
+			worktreePath: "/repo",
+			messages: [],
+			state: "idle",
+			createdAt: 1000,
+			updatedAt: 1000,
+		};
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: mockSession,
+			turnPhase: "idle",
+			selectedModel: "claude-4",
+			availableModels: [{ value: "claude-4", displayName: "Claude 4" }],
+		} as never);
+
+		await act(async () => {
+			await result.current.selectSession("s2");
+		});
+
+		expect(result.current.selectedModel).toBe("claude-4");
+		expect(result.current.availableModels).toEqual([
+			{ value: "claude-4", displayName: "Claude 4" },
+		]);
 	});
 
 	it("selectSession restores streaming state from backend response", async () => {
@@ -310,6 +351,8 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: mockSession,
 			turnPhase: "streaming",
+			selectedModel: null,
+			availableModels: [],
 		} as never);
 
 		await act(async () => {
@@ -372,6 +415,87 @@ describe("useAgentChat", () => {
 			chatSessionId: "s1",
 			permissionMode: "bypassPermissions",
 		});
+	});
+
+	it("setModel invokes set_agent_model with chatSessionId and modelId for active session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Create active session first
+		await act(async () => {
+			await result.current.sendMessage("hello");
+		});
+		mockInvoke.mockClear();
+
+		act(() => {
+			result.current.setModel("claude-4");
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
+			chatSessionId: "s1",
+			modelId: "claude-4",
+		});
+	});
+
+	it("setModel invokes set_agent_model with null modelId for Auto selection", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Create active session first
+		await act(async () => {
+			await result.current.sendMessage("hello");
+		});
+		mockInvoke.mockClear();
+
+		act(() => {
+			result.current.setModel(null);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
+			chatSessionId: "s1",
+			modelId: null,
+		});
+	});
+
+	it("sendMessage after setModel invokes sendAgentMessage for the active session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Create active session via first message
+		await act(async () => {
+			await result.current.sendMessage("first");
+		});
+		mockInvoke.mockClear();
+		vi.mocked(sessionStore.sendAgentMessage).mockClear();
+
+		// Select model
+		act(() => {
+			result.current.setModel("claude-4");
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
+			chatSessionId: "s1",
+			modelId: "claude-4",
+		});
+
+		// Send second message — model sync is handled by Rust's start_agent_turn
+		await act(async () => {
+			await result.current.sendMessage("second");
+		});
+
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			"s1",
+			"/repo",
+			"second",
+			"acceptEdits",
+		);
 	});
 
 	it("respondPermission for ExitPlanMode sends { behavior: allow } without updatedInput", async () => {
@@ -523,6 +647,8 @@ describe("useAgentChat", () => {
 				permissionMode: "acceptEdits",
 			}),
 		);
+		// R4-02: New session starts with default model (null)
+		expect(result.current.selectedModel).toBeNull();
 	});
 
 	it("closeSession on non-active session keeps activeSession unchanged", async () => {
@@ -597,6 +723,8 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: s2Full,
 			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
 		} as never);
 
 		await act(async () => {
@@ -664,6 +792,8 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: restoredSession,
 			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
 		} as never);
 
 		await act(async () => {
@@ -698,6 +828,8 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: restoredSession,
 			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
 		} as never);
 		mockInvoke.mockClear();
 
@@ -775,6 +907,8 @@ describe("useAgentChat", () => {
 					permissionMode: "acceptEdits",
 				},
 				turnPhase: "idle",
+				selectedModel: null,
+				availableModels: [],
 			},
 		} as never);
 
@@ -786,6 +920,50 @@ describe("useAgentChat", () => {
 		});
 
 		expect(sessionStore.initAgentSessions).toHaveBeenCalledWith("/repo");
+	});
+
+	it("initSessions restores model selection from backend response", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [
+				{
+					id: "s1",
+					worktreePath: "/repo",
+					updatedAt: 1000,
+					state: "active",
+					firstMessage: "hi",
+					messageCount: 1,
+					createdAt: 1000,
+				},
+			],
+			activeSession: {
+				session: {
+					id: "s1",
+					worktreePath: "/repo",
+					messages: [],
+					state: "active",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+				turnPhase: "idle",
+				selectedModel: "claude-4",
+				availableModels: [{ value: "claude-4", displayName: "Claude 4" }],
+			},
+		} as never);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		expect(result.current.selectedModel).toBe("claude-4");
+		expect(result.current.availableModels).toEqual([
+			{ value: "claude-4", displayName: "Claude 4" },
+		]);
 	});
 });
 
@@ -1254,6 +1432,8 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 					permissionMode: "acceptEdits",
 				},
 				turnPhase: "streaming",
+				selectedModel: null,
+				availableModels: [],
 			},
 		} as never);
 
@@ -1329,6 +1509,8 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 					permissionMode: "acceptEdits",
 				},
 				turnPhase: "idle",
+				selectedModel: null,
+				availableModels: [],
 			},
 		} as never);
 
@@ -1386,6 +1568,8 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				permissionMode: "acceptEdits",
 			},
 			turnPhase: "streaming",
+			selectedModel: null,
+			availableModels: [],
 		} as never);
 
 		await act(async () => {
@@ -1414,6 +1598,8 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				permissionMode: "acceptEdits",
 			},
 			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
 		} as never);
 
 		await act(async () => {
@@ -1445,6 +1631,8 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				permissionMode: "acceptEdits",
 			},
 			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
 		} as never);
 
 		await act(async () => {

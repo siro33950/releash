@@ -9,6 +9,7 @@ let currentSessionId = null;
 let messageResolve = null;
 let closed = false;
 let sessionReady = false;
+let currentModelId = null;
 
 /**
  * AsyncGenerator that yields prompts to the SDK.
@@ -75,6 +76,20 @@ function toUserMessage(text) {
 
 let currentPermissionMode = "acceptEdits";
 
+function applyModelSafely(modelId) {
+	try {
+		currentQuery?.setModel(modelId ?? undefined);
+	} catch (e) {
+		process.stderr.write(
+			`bridge: setModel failed: ${e instanceof Error ? e.message : String(e)}\n`,
+		);
+		emit({
+			type: "error",
+			message: `Failed to apply model: ${e instanceof Error ? e.message : String(e)}`,
+		});
+	}
+}
+
 function handleCommand(cmd) {
 	switch (cmd.type) {
 		case "init":
@@ -111,6 +126,11 @@ function handleCommand(cmd) {
 			if (currentQuery) {
 				currentQuery.setPermissionMode(currentPermissionMode);
 			}
+			break;
+		}
+		case "setModel": {
+			currentModelId = cmd.modelId || null;
+			applyModelSafely(cmd.modelId || null);
 			break;
 		}
 		case "close":
@@ -197,6 +217,22 @@ async function handleInit(cmd) {
 						`bridge: supportedCommands failed: ${e instanceof Error ? e.message : String(e)}\n`,
 					);
 				});
+			currentQuery
+				.initializationResult()
+				.then((result) => {
+					if (result && result.models) {
+						emit({ type: "supported_models", models: result.models });
+					}
+				})
+				.catch((e) => {
+					process.stderr.write(
+						`bridge: initializationResult failed: ${e instanceof Error ? e.message : String(e)}\n`,
+					);
+				});
+		}
+
+		if (currentModelId) {
+			applyModelSafely(currentModelId);
 		}
 
 		let gotResult = false;

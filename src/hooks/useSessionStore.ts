@@ -5,6 +5,7 @@ import type {
 	LegacyChatMessage,
 	MessagePart,
 	MessageRole,
+	ModelInfo,
 	PermissionMode,
 	SessionState,
 	SessionSummary,
@@ -91,6 +92,8 @@ export async function listSessions(
 export interface GetSessionResponse {
 	session: ChatSession;
 	turnPhase: TurnPhase;
+	selectedModel: string | null;
+	availableModels: ModelInfo[];
 }
 
 interface RawGetSessionResponse {
@@ -103,6 +106,8 @@ interface RawGetSessionResponse {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode?: PermissionMode;
+	selectedModel?: string | null;
+	availableModels?: ModelInfo[];
 	turnPhase: TurnPhase;
 }
 
@@ -126,6 +131,8 @@ export async function getSession(
 	return {
 		session,
 		turnPhase: raw.turnPhase,
+		selectedModel: raw.selectedModel ?? null,
+		availableModels: raw.availableModels ?? [],
 	};
 }
 
@@ -230,6 +237,8 @@ export async function initAgentSessions(
 					permissionMode: raw.activeSession.permissionMode,
 				}),
 				turnPhase: raw.activeSession.turnPhase,
+				selectedModel: raw.activeSession.selectedModel ?? null,
+				availableModels: raw.activeSession.availableModels ?? [],
 			}
 		: null;
 	return { sessions: raw.sessions, activeSession };

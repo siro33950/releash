@@ -50,6 +50,9 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		setPermissionMode: vi.fn(),
 		respondPermission: vi.fn(),
 		permissionMode: "acceptEdits",
+		availableModels: [],
+		selectedModel: null,
+		setModel: vi.fn(),
 		...overrides,
 	});
 }

@@ -5,6 +5,11 @@ Tauri + React + Monaco Editor のデスクトップGitエディタ。
 
 ## アーキテクチャ
 
+### ロジック配置の原則
+- **全てのロジックはRustに実装し、フロントエンドはインターフェースに徹する（例外なし）**
+- フロントエンドの責務: 表示、入力受付、Tauriコマンド呼び出し、表示用フォーマット
+- 新機能のロジックは必ずTauriコマンドとして実装し、フロントからは `invoke` で呼ぶ
+
 ### デスクトップアプリ（メイン）
 - **フロントエンド**: React 19 + TypeScript + TailwindCSS 4 + Monaco Editor
 - **バックエンド**: Rust (Tauri 2) + git2 + tokio
