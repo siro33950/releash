@@ -324,7 +324,7 @@ export function PermissionDialog({
 													}
 													className="mt-0.5"
 												/>
-												<div className="flex flex-col">
+												<div className="flex flex-col flex-1 min-w-0">
 													<span className="text-sm font-medium">
 														{opt.label}
 													</span>
@@ -358,7 +358,7 @@ export function PermissionDialog({
 											className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50"
 										>
 											<RadioGroupItem value={opt.label} className="mt-0.5" />
-											<div className="flex flex-col">
+											<div className="flex flex-col flex-1 min-w-0">
 												<span className="text-sm font-medium">{opt.label}</span>
 												{opt.description && (
 													<InlineMarkdown className="text-xs text-muted-foreground">
@@ -371,7 +371,7 @@ export function PermissionDialog({
 									{/* biome-ignore lint/a11y/noLabelWithoutControl: Radix RadioGroupItem renders an internal button element */}
 									<label className="flex items-start gap-2.5 cursor-pointer rounded-md border border-border px-3 py-2 hover:bg-accent/50">
 										<RadioGroupItem value={OTHER_LABEL} className="mt-0.5" />
-										<div className="flex flex-col flex-1">
+										<div className="flex flex-col flex-1 min-w-0">
 											<span className="text-sm font-medium">Other</span>
 											{answers[q.question] === OTHER_LABEL && (
 												<Input
