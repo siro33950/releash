@@ -76,6 +76,20 @@ function toUserMessage(text) {
 
 let currentPermissionMode = "acceptEdits";
 
+function applyModelSafely(modelId) {
+	try {
+		currentQuery?.setModel(modelId ?? undefined);
+	} catch (e) {
+		process.stderr.write(
+			`bridge: setModel failed: ${e instanceof Error ? e.message : String(e)}\n`,
+		);
+		emit({
+			type: "error",
+			message: `Failed to apply model: ${e instanceof Error ? e.message : String(e)}`,
+		});
+	}
+}
+
 function handleCommand(cmd) {
 	switch (cmd.type) {
 		case "init":
@@ -116,9 +130,7 @@ function handleCommand(cmd) {
 		}
 		case "setModel": {
 			currentModelId = cmd.modelId || null;
-			if (currentQuery) {
-				currentQuery.setModel(cmd.modelId || undefined);
-			}
+			applyModelSafely(cmd.modelId || null);
 			break;
 		}
 		case "close":
@@ -220,7 +232,7 @@ async function handleInit(cmd) {
 		}
 
 		if (currentModelId) {
-			currentQuery.setModel(currentModelId);
+			applyModelSafely(currentModelId);
 		}
 
 		let gotResult = false;

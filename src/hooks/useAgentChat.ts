@@ -99,12 +99,10 @@ function dispatchSessionMeta(
 		sessionId,
 		modelId: response.selectedModel,
 	});
-	if (response.availableModels.length > 0) {
-		dispatch({
-			type: "SET_AVAILABLE_MODELS",
-			models: response.availableModels,
-		});
-	}
+	dispatch({
+		type: "SET_AVAILABLE_MODELS",
+		models: response.availableModels,
+	});
 }
 
 function deriveAgentState(

@@ -4,8 +4,8 @@
 **ゴール**: AgentChatの入力欄にモデル選択ドロップダウンを追加し、使用するAIモデルをチャット中に切り替えられるようにする
 **背景**: コード生成・レビュー・質問応答など用途によって最適なモデルが異なるため、ユーザーがその場でモデルを選択できる必要がある
 **制約**:
-- モデルリストはAgent SDK の `supportedModels()` APIから動的に取得する
-- モデル切り替えはAgent SDK の `setModel()` メソッド、または `query()` の `model` オプションで実現する
+- モデルリストはAgent SDK の `initializationResult().models` から動的に取得する
+- モデル切り替えはAgent SDK の `setModel()` メソッドで実現する
 - 参考UI: Cursorのモデル選択ドロップダウン（Auto, GPT, Claude, Gemini等の切り替え）
 
 ## 振る舞い定義
@@ -96,7 +96,7 @@ Feature: AgentChat モデル選択
 - `src-tauri/src/lib.rs`: 新コマンド `set_agent_model` を登録
 
 ### 3. フロントエンド（UIインターフェースのみ）
-- `src/types/session.ts`: `ModelInfo` 型を追加（`{ value: string, displayName: string, description: string }`）
+- `src/types/session.ts`: `ModelInfo` 型を追加（`{ value: string, displayName: string }`）
 - `src/components/panels/AgentChatPanel/ModelSelector.tsx` (新規): `ModeSelector` と同じ shadcn/ui `DropdownMenu` パターン。props: `models`, `currentModelId`, `onModelChange`, `disabled`。デフォルト表示: "Auto"
 - `src/components/panels/AgentChatPanel/MessageInput.tsx`: `ModelSelector` を `ModeSelector` と送信ボタンの間に配置
 - `src/hooks/useAgentSdkListeners.ts`: `agent-models-updated` イベントのリスナーを追加。受け取った値をそのまま状態に反映（判断ロジックなし）
