@@ -23,11 +23,10 @@ fn available_models_path(app_data_dir: &Path) -> PathBuf {
 }
 
 fn save_available_models(app_data_dir: &Path, models: &[ModelInfo]) -> Result<(), String> {
-    std::fs::create_dir_all(app_data_dir)
-        .map_err(|e| format!("Failed to create data dir: {e}"))?;
+    std::fs::create_dir_all(app_data_dir).map_err(|e| format!("Failed to create data dir: {e}"))?;
     let file = available_models_path(app_data_dir);
-    let json = serde_json::to_string(models)
-        .map_err(|e| format!("Failed to serialize models: {e}"))?;
+    let json =
+        serde_json::to_string(models).map_err(|e| format!("Failed to serialize models: {e}"))?;
     let tmp = file.with_extension("json.tmp");
     std::fs::write(&tmp, json).map_err(|e| format!("Failed to write models temp file: {e}"))?;
     std::fs::rename(&tmp, &file).map_err(|e| format!("Failed to rename models temp file: {e}"))?;

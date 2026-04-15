@@ -77,7 +77,7 @@ function dispatchSessionMeta(
 	dispatch: React.Dispatch<AgentChatAction>,
 	sessionId: string,
 	response: {
-		session: { permissionMode?: string };
+		session: { permissionMode?: PermissionMode };
 		turnPhase: TurnPhase;
 		selectedModel: string | null;
 		availableModels: ModelInfo[];
