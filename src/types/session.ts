@@ -4,6 +4,11 @@ export type PermissionMode =
 	| "plan"
 	| "bypassPermissions";
 
+export interface ModelInfo {
+	value: string;
+	displayName: string;
+}
+
 export interface PermissionRequest {
 	request_id: string;
 	tool_name: string;

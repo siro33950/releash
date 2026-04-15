@@ -401,6 +401,7 @@ pub fn run() {
             agent_sdk::interrupt_agent_query,
             agent_sdk::close_agent_session,
             agent_sdk::set_agent_permission_mode,
+            agent_sdk::set_agent_model,
             agent_sdk::respond_agent_permission,
             agent_sdk::send_agent_message,
             agent_sdk::init_agent_sessions,

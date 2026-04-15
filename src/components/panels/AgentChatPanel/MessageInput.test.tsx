@@ -9,6 +9,9 @@ const defaultProps = {
 	isStreaming: false,
 	mode: "acceptEdits" as const,
 	onModeChange: vi.fn(),
+	models: [],
+	currentModelId: null,
+	onModelChange: vi.fn(),
 };
 
 describe("MessageInput", () => {
@@ -132,6 +135,31 @@ describe("MessageInput", () => {
 		expect(screen.getByTestId("mode-selector-trigger")).toBeDefined();
 		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent(
 			"Code",
+		);
+	});
+
+	it("renders ModelSelector inside the input container", () => {
+		render(<MessageInput {...defaultProps} />);
+		expect(screen.getByTestId("model-selector-trigger")).toBeDefined();
+		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
+			"Auto",
+		);
+	});
+
+	it("renders ModelSelector with selected model name", () => {
+		const models = [
+			{ value: "claude-opus", displayName: "Claude Opus" },
+			{ value: "claude-sonnet", displayName: "Claude Sonnet" },
+		];
+		render(
+			<MessageInput
+				{...defaultProps}
+				models={models}
+				currentModelId="claude-opus"
+			/>,
+		);
+		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
+			"Claude Opus",
 		);
 	});
 });

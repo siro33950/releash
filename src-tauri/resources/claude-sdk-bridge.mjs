@@ -9,6 +9,7 @@ let currentSessionId = null;
 let messageResolve = null;
 let closed = false;
 let sessionReady = false;
+let currentModelId = null;
 
 /**
  * AsyncGenerator that yields prompts to the SDK.
@@ -113,6 +114,13 @@ function handleCommand(cmd) {
 			}
 			break;
 		}
+		case "setModel": {
+			currentModelId = cmd.modelId || null;
+			if (currentQuery) {
+				currentQuery.setModel(cmd.modelId || undefined);
+			}
+			break;
+		}
 		case "close":
 			closed = true;
 			if (messageResolve) {
@@ -197,6 +205,22 @@ async function handleInit(cmd) {
 						`bridge: supportedCommands failed: ${e instanceof Error ? e.message : String(e)}\n`,
 					);
 				});
+			currentQuery
+				.initializationResult()
+				.then((result) => {
+					if (result && result.models) {
+						emit({ type: "supported_models", models: result.models });
+					}
+				})
+				.catch((e) => {
+					process.stderr.write(
+						`bridge: initializationResult failed: ${e instanceof Error ? e.message : String(e)}\n`,
+					);
+				});
+		}
+
+		if (currentModelId) {
+			currentQuery.setModel(currentModelId);
 		}
 
 		let gotResult = false;

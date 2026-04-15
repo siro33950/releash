@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import type {
 	ChatSession,
 	MessagePart,
+	ModelInfo,
 	PermissionMode,
 	PermissionRequest,
 	SessionState,
@@ -56,6 +57,12 @@ interface PendingMessageConsumed {
 		role: "agent";
 		timestamp: number;
 	};
+}
+
+interface ModelsUpdated {
+	chat_session_id: string;
+	available_models: ModelInfo[];
+	selected_model: string | null;
 }
 
 export interface AgentSdkListenerRefs {
@@ -337,4 +344,35 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			unlisten?.();
 		};
 	}, [dispatch, activeSessionRef]);
+
+	// Listen to agent-models-updated from Rust backend
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<ModelsUpdated>("agent-models-updated", (event) => {
+			const { chat_session_id, available_models, selected_model } =
+				event.payload;
+			dispatch({
+				type: "SET_AVAILABLE_MODELS",
+				models: available_models,
+			});
+			dispatch({
+				type: "SET_SESSION_MODEL",
+				sessionId: chat_session_id,
+				modelId: selected_model,
+			});
+		}).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [dispatch]);
 }

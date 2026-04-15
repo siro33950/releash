@@ -244,6 +244,9 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 		setPermissionMode,
 		respondPermission,
 		refreshClosedSessions,
+		availableModels,
+		selectedModel,
+		setModel,
 	} = useAgentChat(worktreePath);
 
 	const [historyOpen, setHistoryOpen] = useState(false);
@@ -536,6 +539,9 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 							onCycleMode={cycleMode}
 							mode={permissionMode}
 							onModeChange={setPermissionMode}
+							models={availableModels}
+							currentModelId={selectedModel}
+							onModelChange={setModel}
 						/>
 					</div>
 				</div>

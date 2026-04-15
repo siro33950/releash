@@ -3,7 +3,8 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { SlashCommand } from "@/hooks/useSlashCommands";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
-import type { PermissionMode } from "@/types/session";
+import type { ModelInfo, PermissionMode } from "@/types/session";
+import { ModelSelector } from "./ModelSelector";
 import { ModeSelector } from "./ModeSelector";
 import { SlashCommandPopup } from "./SlashCommandPopup";
 
@@ -14,6 +15,9 @@ interface MessageInputProps {
 	onCycleMode?: () => void;
 	mode: PermissionMode;
 	onModeChange: (mode: PermissionMode) => void;
+	models: ModelInfo[];
+	currentModelId: string | null;
+	onModelChange: (modelId: string | null) => void;
 }
 
 export function MessageInput({
@@ -23,6 +27,9 @@ export function MessageInput({
 	onCycleMode,
 	mode,
 	onModeChange,
+	models,
+	currentModelId,
+	onModelChange,
 }: MessageInputProps) {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -161,11 +168,19 @@ export function MessageInput({
 					className="w-full resize-none bg-transparent border-none px-3 pt-3 pb-1 text-sm focus:outline-none min-h-[36px] max-h-[200px]"
 				/>
 				<div className="flex items-center justify-between px-2 pb-2">
-					<ModeSelector
-						mode={mode}
-						onModeChange={onModeChange}
-						disabled={false}
-					/>
+					<div className="flex items-center gap-1">
+						<ModeSelector
+							mode={mode}
+							onModeChange={onModeChange}
+							disabled={false}
+						/>
+						<ModelSelector
+							models={models}
+							currentModelId={currentModelId}
+							onModelChange={onModelChange}
+							disabled={false}
+						/>
+					</div>
 					{isStreaming && !canSend ? (
 						<Button
 							size="icon"

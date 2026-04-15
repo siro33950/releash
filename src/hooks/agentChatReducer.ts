@@ -2,6 +2,7 @@ import type {
 	ChatMessage,
 	ChatSession,
 	MessagePart,
+	ModelInfo,
 	PermissionMode,
 	PermissionRequest,
 	SessionState,
@@ -18,6 +19,8 @@ export interface AgentChatState {
 	error: string | null;
 	permissionMode: PermissionMode;
 	pendingPermissions: Record<string, PermissionRequest>;
+	availableModels: ModelInfo[];
+	sessionModels: Record<string, string | null>;
 }
 
 export type AgentChatAction =
@@ -44,7 +47,14 @@ export type AgentChatAction =
 			sessionId: string;
 			messageId: string;
 			parts: MessagePart[];
-	  };
+	  }
+	| { type: "SET_AVAILABLE_MODELS"; models: ModelInfo[] }
+	| {
+			type: "SET_SESSION_MODEL";
+			sessionId: string;
+			modelId: string | null;
+	  }
+	| { type: "CLEANUP_SESSION"; sessionId: string };
 
 /**
  * Merge delta parts into existing parts.
@@ -204,6 +214,32 @@ export function reducer(
 				parts: mergeDeltaParts(m.parts, action.parts),
 			}));
 		}
+		case "SET_AVAILABLE_MODELS":
+			return {
+				...state,
+				availableModels: action.models,
+			};
+		case "SET_SESSION_MODEL":
+			return {
+				...state,
+				sessionModels: {
+					...state.sessionModels,
+					[action.sessionId]: action.modelId,
+				},
+			};
+		case "CLEANUP_SESSION": {
+			const { [action.sessionId]: _tp, ...restTurnPhases } = state.turnPhases;
+			const { [action.sessionId]: _pp, ...restPendingPermissions } =
+				state.pendingPermissions;
+			const { [action.sessionId]: _sm, ...restSessionModels } =
+				state.sessionModels;
+			return {
+				...state,
+				turnPhases: restTurnPhases,
+				pendingPermissions: restPendingPermissions,
+				sessionModels: restSessionModels,
+			};
+		}
 	}
 }
 
@@ -216,4 +252,6 @@ export const INITIAL_STATE: AgentChatState = {
 	error: null,
 	permissionMode: "acceptEdits",
 	pendingPermissions: {},
+	availableModels: [],
+	sessionModels: {},
 };

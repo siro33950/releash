@@ -38,6 +38,9 @@ vi.mock("@/hooks/useAgentChat", () => ({
 		reorderSessions: vi.fn(),
 		setPermissionMode: vi.fn(),
 		respondPermission: vi.fn(),
+		availableModels: [],
+		selectedModel: null,
+		setModel: vi.fn(),
 	}),
 }));
 

@@ -4,12 +4,17 @@ import type { AgentState } from "@/types/protocol";
 import type {
 	ChatMessage,
 	ChatSession,
+	ModelInfo,
 	PermissionMode,
 	SessionState,
 	SessionSummary,
 	TurnPhase,
 } from "@/types/session";
-import { INITIAL_STATE, reducer } from "./agentChatReducer";
+import {
+	type AgentChatAction,
+	INITIAL_STATE,
+	reducer,
+} from "./agentChatReducer";
 import { useAgentSdkListeners } from "./useAgentSdkListeners";
 import {
 	closeSession as closeSessionApi,
@@ -49,6 +54,9 @@ export interface UseAgentChatResult {
 		allow: boolean,
 		updatedInput?: Record<string, unknown>,
 	) => void;
+	availableModels: ModelInfo[];
+	selectedModel: string | null;
+	setModel: (modelId: string | null) => void;
 }
 
 function startAgentProcess(
@@ -63,6 +71,40 @@ function startAgentProcess(
 	}).catch((e) => {
 		console.error(`Failed to start agent session ${chatSessionId}:`, e);
 	});
+}
+
+function dispatchSessionMeta(
+	dispatch: React.Dispatch<AgentChatAction>,
+	sessionId: string,
+	response: {
+		session: { permissionMode?: string };
+		turnPhase: TurnPhase;
+		selectedModel: string | null;
+		availableModels: ModelInfo[];
+	},
+) {
+	dispatch({
+		type: "SET_TURN_PHASE",
+		sessionId,
+		turnPhase: response.turnPhase,
+	});
+	if (response.session.permissionMode) {
+		dispatch({
+			type: "SET_PERMISSION_MODE",
+			mode: response.session.permissionMode,
+		});
+	}
+	dispatch({
+		type: "SET_SESSION_MODEL",
+		sessionId,
+		modelId: response.selectedModel,
+	});
+	if (response.availableModels.length > 0) {
+		dispatch({
+			type: "SET_AVAILABLE_MODELS",
+			models: response.availableModels,
+		});
+	}
 }
 
 function deriveAgentState(
@@ -176,17 +218,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			const response = await getSession(sessionId);
 			if (response) {
 				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
-				// Sync turn phase from backend
-				dispatch({
-					type: "SET_TURN_PHASE",
-					sessionId,
-					turnPhase: response.turnPhase,
-				});
-				// Restore permission mode from session
-				dispatch({
-					type: "SET_PERMISSION_MODE",
-					mode: response.session.permissionMode,
-				});
+				dispatchSessionMeta(dispatch, sessionId, response);
 			} else {
 				dispatch({ type: "SET_ACTIVE_SESSION", session: null });
 			}
@@ -262,6 +294,8 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 
 				await closeSessionApi(sessionId);
 
+				dispatch({ type: "CLEANUP_SESSION", sessionId });
+
 				const isActive = activeSessionRef.current?.id === sessionId;
 				if (isActive) {
 					const remaining = sessions.filter((s) => s.id !== sessionId);
@@ -276,15 +310,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 							session: response?.session ?? null,
 						});
 						if (response) {
-							dispatch({
-								type: "SET_TURN_PHASE",
-								sessionId: nextSession.id,
-								turnPhase: response.turnPhase,
-							});
-							dispatch({
-								type: "SET_PERMISSION_MODE",
-								mode: response.session.permissionMode,
-							});
+							dispatchSessionMeta(dispatch, nextSession.id, response);
 						}
 					} else {
 						dispatch({
@@ -316,15 +342,7 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 					session: response?.session ?? null,
 				});
 				if (response) {
-					dispatch({
-						type: "SET_TURN_PHASE",
-						sessionId,
-						turnPhase: response.turnPhase,
-					});
-					dispatch({
-						type: "SET_PERMISSION_MODE",
-						mode: response.session.permissionMode,
-					});
+					dispatchSessionMeta(dispatch, sessionId, response);
 					// Start Bridge process for the restored session
 					startAgentProcess(
 						sessionId,
@@ -412,6 +430,17 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		[],
 	);
 
+	const setModel = useCallback((modelId: string | null) => {
+		const sessionId = activeSessionRef.current?.id;
+		if (!sessionId) return;
+		invoke("set_agent_model", {
+			chatSessionId: sessionId,
+			modelId,
+		}).catch((e) => {
+			console.error("Failed to set agent model:", e);
+		});
+	}, []);
+
 	useAgentSdkListeners({
 		dispatch,
 		activeSessionRef,
@@ -427,16 +456,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 					type: "SET_ACTIVE_SESSION",
 					session: response.activeSession.session,
 				});
-				dispatch({
-					type: "SET_TURN_PHASE",
-					sessionId: response.activeSession.session.id,
-					turnPhase: response.activeSession.turnPhase,
-				});
-				// Restore permission mode from active session
-				dispatch({
-					type: "SET_PERMISSION_MODE",
-					mode: response.activeSession.session.permissionMode,
-				});
+				dispatchSessionMeta(
+					dispatch,
+					response.activeSession.session.id,
+					response.activeSession,
+				);
 			}
 		} catch (e) {
 			dispatch({
@@ -489,6 +513,9 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		[state.activeSession?.messages, activeTurnPhase],
 	);
 
+	const selectedModel =
+		state.sessionModels[state.activeSession?.id ?? ""] ?? null;
+
 	return {
 		sessions: state.sessions,
 		orderedSessions,
@@ -510,5 +537,8 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		reorderSessions,
 		setPermissionMode,
 		respondPermission,
+		availableModels: state.availableModels,
+		selectedModel,
+		setModel,
 	};
 }

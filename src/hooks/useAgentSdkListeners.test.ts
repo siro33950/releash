@@ -99,7 +99,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		}
 	});
 
-	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed, agent-permission-mode-changed", () => {
+	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed, agent-permission-mode-changed, agent-models-updated", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
@@ -111,6 +111,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).toContain("agent-streaming-updated");
 		expect(eventNames).toContain("agent-pending-message-consumed");
 		expect(eventNames).toContain("agent-permission-mode-changed");
+		expect(eventNames).toContain("agent-models-updated");
 		expect(eventNames).not.toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-query-completed");
 	});
@@ -815,5 +816,66 @@ describe("agent-pending-message-consumed event", () => {
 			(call: unknown[]) => (call[0] as { type: string }).type === "ADD_MESSAGE",
 		);
 		expect(addMsgCalls).toHaveLength(0);
+	});
+});
+
+describe("agent-models-updated event", () => {
+	it("dispatches SET_AVAILABLE_MODELS and SET_SESSION_MODEL when agent-models-updated is received", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-models-updated");
+		expect(cb).toBeDefined();
+
+		const models = [
+			{ value: "claude-4", displayName: "Claude 4" },
+			{ value: "claude-3.5-sonnet", displayName: "Claude 3.5 Sonnet" },
+		];
+
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				available_models: models,
+				selected_model: "claude-4",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_AVAILABLE_MODELS",
+			models,
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_SESSION_MODEL",
+			sessionId: "session-1",
+			modelId: "claude-4",
+		});
+	});
+
+	it("dispatches SET_SESSION_MODEL with null when no model is selected", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-models-updated");
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				available_models: [],
+				selected_model: null,
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_SESSION_MODEL",
+			sessionId: "session-1",
+			modelId: null,
+		});
 	});
 });
