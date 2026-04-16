@@ -27,18 +27,32 @@ pub struct BranchDiffSummary {
 }
 
 /// Returns a summary of files changed between the merge-base of the current branch
-/// and the working tree (including staged changes). Used by the Source Control panel
-/// to show a flat file list in "branch-base" diff mode.
+/// and the working tree (including staged changes, including untracked files).
+/// Used by the Source Control panel to show a flat file list in "branch-base" diff mode.
+///
+/// For an unborn branch (initial commit not yet created), returns an empty summary
+/// so callers can display a consistent empty state instead of propagating an error.
 pub fn get_branch_diff_summary(
     repo_path: &str,
     base_branch: Option<&str>,
 ) -> Result<BranchDiffSummary, GitError> {
     let repo = Repository::open(repo_path)?;
+    if is_unborn_branch(&repo)? {
+        return Ok(BranchDiffSummary {
+            base_branch: String::new(),
+            changed_files: Vec::new(),
+            stats: DiffStats {
+                additions: 0,
+                deletions: 0,
+            },
+        });
+    }
     let (base_ref, base_commit) = find_base_commit(&repo, base_branch)?;
     let base_tree = base_commit.tree()?;
 
     let mut opts = git2::DiffOptions::new();
-    opts.include_untracked(false);
+    opts.include_untracked(true);
+    opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
     let mut find_opts = git2::DiffFindOptions::new();
@@ -133,16 +147,22 @@ pub fn get_branch_diff_summary(
 
 /// Returns a map of file paths to their hunk ranges (new_start, new_lines).
 /// Used by MCP `check_diagnostics` tool's `diff_context` filter mode.
+///
+/// For an unborn branch, returns an empty map.
 pub fn get_hunk_ranges(
     repo_path: &str,
     base_branch: Option<&str>,
 ) -> Result<HashMap<String, Vec<(u32, u32)>>, GitError> {
     let repo = Repository::open(repo_path)?;
+    if is_unborn_branch(&repo)? {
+        return Ok(HashMap::new());
+    }
     let (_base_ref, base_commit) = find_base_commit(&repo, base_branch)?;
     let base_tree = base_commit.tree()?;
 
     let mut opts = git2::DiffOptions::new();
-    opts.include_untracked(false);
+    opts.include_untracked(true);
+    opts.recurse_untracked_dirs(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
 
@@ -182,6 +202,15 @@ pub fn is_line_in_hunk_ranges(line_1based: u32, ranges: &[(u32, u32)]) -> bool {
     ranges
         .iter()
         .any(|&(start, lines)| line_1based >= start && line_1based < start.saturating_add(lines))
+}
+
+/// Returns true when the repository has no commits yet (HEAD points to an unborn branch).
+fn is_unborn_branch(repo: &Repository) -> Result<bool, GitError> {
+    match repo.head() {
+        Ok(_) => Ok(false),
+        Err(e) if e.code() == git2::ErrorCode::UnbornBranch => Ok(true),
+        Err(e) => Err(GitError::from(e)),
+    }
 }
 
 pub(crate) fn find_base_commit<'a>(
@@ -413,5 +442,44 @@ mod tests {
         assert!(summary.changed_files.is_empty());
         assert_eq!(summary.stats.additions, 0);
         assert_eq!(summary.stats.deletions, 0);
+    }
+
+    #[test]
+    fn test_get_branch_diff_summary_includes_untracked_file() {
+        let (_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "existing.txt", "content\n", "add existing");
+
+        setup_feature_branch(&repo);
+        // Create an untracked file (no index add, no commit)
+        let workdir = repo.workdir().unwrap();
+        std::fs::write(workdir.join("untracked.txt"), "hello\n").unwrap();
+
+        let summary = get_branch_diff_summary(&repo_path_str(&repo), None).unwrap();
+        let untracked = summary
+            .changed_files
+            .iter()
+            .find(|f| f.path == "untracked.txt")
+            .expect("untracked.txt should be included in the branch diff");
+        assert_eq!(untracked.status, "added");
+    }
+
+    #[test]
+    fn test_get_branch_diff_summary_unborn_branch_returns_empty() {
+        let (_dir, repo) = create_test_repo();
+        // No initial commit: HEAD points to an unborn branch
+        let summary = get_branch_diff_summary(&repo_path_str(&repo), None).unwrap();
+        assert!(summary.changed_files.is_empty());
+        assert_eq!(summary.stats.additions, 0);
+        assert_eq!(summary.stats.deletions, 0);
+        assert_eq!(summary.base_branch, "");
+    }
+
+    #[test]
+    fn test_get_hunk_ranges_unborn_branch_returns_empty() {
+        let (_dir, repo) = create_test_repo();
+        // No initial commit: HEAD points to an unborn branch
+        let ranges = get_hunk_ranges(&repo_path_str(&repo), None).unwrap();
+        assert!(ranges.is_empty());
     }
 }

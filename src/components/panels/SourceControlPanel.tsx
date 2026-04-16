@@ -134,7 +134,15 @@ export function SourceControlPanel({
 		files: branchDiffFiles,
 		loading: branchDiffLoading,
 		error: branchDiffError,
+		refresh: refreshBranchDiff,
 	} = useBranchDiffFiles(rootPath, isBranchBase, baseBranch);
+
+	const handleRefresh = useCallback(() => {
+		refreshStatus();
+		if (isBranchBase) {
+			refreshBranchDiff();
+		}
+	}, [refreshStatus, isBranchBase, refreshBranchDiff]);
 
 	const [form, dispatch] = useReducer(commitFormReducer, initialCommitForm);
 	const {
@@ -270,7 +278,7 @@ export function SourceControlPanel({
 				<button
 					type="button"
 					className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-sidebar-secondary-foreground/10 transition-colors shrink-0"
-					onClick={refreshStatus}
+					onClick={handleRefresh}
 					title="Refresh"
 				>
 					<RefreshCw className="h-3.5 w-3.5" />

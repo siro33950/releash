@@ -43,9 +43,10 @@ import { useWorktreeMenuHandlers } from "@/screens/useWorktreeMenuHandlers";
 import type { AgentStateSync } from "@/types/protocol";
 import type { AppSettings, DiffBase, DiffMode } from "@/types/settings";
 import { getThreadOrigin } from "@/types/thread";
-import type {
-	InternalWorktreeState,
-	WorkspaceState,
+import {
+	type InternalWorktreeState,
+	normalizeRightBottomActiveTab,
+	type WorkspaceState,
 } from "@/types/workspace-state";
 
 export type { InternalWorktreeState } from "@/types/workspace-state";
@@ -110,8 +111,10 @@ export function useWorktreeState({
 		initialWorkspaceState?.layout.rightBottomCollapsed ?? false,
 	);
 
-	const [rightBottomActiveTab, setRightBottomActiveTab] = useState(
-		initialWorkspaceState?.layout.rightBottomActiveTab ?? "terminal",
+	const [rightBottomActiveTab, setRightBottomActiveTab] = useState<string>(
+		normalizeRightBottomActiveTab(
+			initialWorkspaceState?.layout.rightBottomActiveTab,
+		),
 	);
 
 	const { branch } = useCurrentBranch(rootPath);

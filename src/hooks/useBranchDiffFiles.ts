@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface BranchDiffStats {
 	additions: number;
@@ -40,11 +40,14 @@ export function useBranchDiffFiles(
 	const [files, setFiles] = useState<BranchDiffChangedFile[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const requestIdRef = useRef(0);
 
 	const fetch = useCallback(async () => {
+		const requestId = ++requestIdRef.current;
 		if (!rootPath || !enabled) {
 			setFiles([]);
 			setError(null);
+			setLoading(false);
 			return;
 		}
 		setLoading(true);
@@ -57,12 +60,16 @@ export function useBranchDiffFiles(
 					baseBranch,
 				},
 			);
+			if (requestId !== requestIdRef.current) return;
 			setFiles(result.changed_files);
 		} catch (e) {
+			if (requestId !== requestIdRef.current) return;
 			setFiles([]);
 			setError(e instanceof Error ? e.message : String(e));
 		} finally {
-			setLoading(false);
+			if (requestId === requestIdRef.current) {
+				setLoading(false);
+			}
 		}
 	}, [rootPath, enabled, baseBranch]);
 
