@@ -1,32 +1,25 @@
 import {
-	Check,
 	ChevronDown,
 	ChevronUp,
 	Copy,
-	Loader2,
 	MessageSquare,
-	Play,
 	Send,
 	Terminal,
-	X,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { CommentList } from "@/components/panels/CommentList";
-import { ReviewModal } from "@/components/panels/ReviewModal";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useReviewExecution } from "@/hooks/useReviewExecution";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
-import type { AppSettings, Theme } from "@/types/settings";
+import type { Theme } from "@/types/settings";
 import type { Thread } from "@/types/thread";
 
-export type RightBottomTab = "terminal" | "review";
+export type RightBottomTab = "terminal" | "comments";
 
 interface RightSidebarBottomProps {
 	rootPath: string;
 	theme?: Theme;
-	settings: AppSettings;
 	threads: Thread[];
 	onThreadClick?: (filePath: string, lineNumber: number) => void;
 	onDeleteThread?: (id: string) => void;
@@ -36,8 +29,6 @@ interface RightSidebarBottomProps {
 	onToggleShowResolved?: () => void;
 	onToggleCollapse?: () => void;
 	collapsed?: boolean;
-	aiTaskThreadIds?: Set<string>;
-	onOpenThreadAILog?: (threadId: string) => void;
 	initialActiveTab?: RightBottomTab;
 	onActiveTabChange?: (tab: RightBottomTab) => void;
 }
@@ -45,7 +36,6 @@ interface RightSidebarBottomProps {
 export function RightSidebarBottom({
 	rootPath,
 	theme,
-	settings,
 	threads,
 	onThreadClick,
 	onDeleteThread,
@@ -55,43 +45,12 @@ export function RightSidebarBottom({
 	onToggleShowResolved,
 	onToggleCollapse,
 	collapsed,
-	aiTaskThreadIds,
-	onOpenThreadAILog,
 	initialActiveTab,
 	onActiveTabChange,
 }: RightSidebarBottomProps) {
 	const [activeTab, setActiveTab] = useState<RightBottomTab>(
 		initialActiveTab ?? "terminal",
 	);
-	const [reviewModalOpen, setReviewModalOpen] = useState(false);
-
-	const {
-		status,
-		summary,
-		progress,
-		fileStates,
-		startReview,
-		cancelReview,
-		reset,
-	} = useReviewExecution(rootPath, threads, settings);
-
-	const isRunning = status === "running";
-	const isFinished =
-		status === "completed" || status === "error" || status === "cancelled";
-	const reviewDisabled = settings.reviewAgent === "none";
-
-	const handleStartReview = () => {
-		if (isFinished) reset();
-		startReview();
-	};
-
-	const reviewDot = isRunning
-		? "bg-blue-400 animate-pulse"
-		: status === "completed"
-			? "bg-green-400"
-			: status === "error"
-				? "bg-destructive"
-				: null;
 
 	const unresolvedThreads = useMemo(
 		() => threads.filter((t) => !t.resolved),
@@ -135,13 +94,10 @@ export function RightSidebarBottom({
 								<Terminal className="size-3.5" />
 							</span>
 						</TabsTrigger>
-						<TabsTrigger value="review" aria-label="Review">
+						<TabsTrigger value="comments" aria-label="Comments">
 							<span className="inline-flex items-center gap-1.5">
 								<MessageSquare className="size-3.5" />
-								{reviewDot && (
-									<span className={`size-1.5 rounded-full ${reviewDot}`} />
-								)}
-								{!reviewDot && unresolvedThreads.length > 0 && (
+								{unresolvedThreads.length > 0 && (
 									<span className="px-1 text-[10px] bg-primary/20 text-primary rounded">
 										{unresolvedThreads.length}
 									</span>
@@ -158,7 +114,7 @@ export function RightSidebarBottom({
 					<TerminalPanel cwd={rootPath} theme={theme} />
 				</TabsContent>
 				<TabsContent
-					value="review"
+					value="comments"
 					className="flex-1 overflow-hidden flex flex-col"
 				>
 					<div className="flex-1 min-h-0 overflow-hidden">
@@ -169,34 +125,9 @@ export function RightSidebarBottom({
 							onResolveThread={onResolveThread}
 							showResolvedThreads={showResolvedThreads}
 							onToggleShowResolved={onToggleShowResolved}
-							aiTaskThreadIds={aiTaskThreadIds}
-							onOpenThreadAILog={onOpenThreadAILog}
 						/>
 					</div>
 					<div className="shrink-0 px-3 py-2 border-t border-border flex items-center gap-2">
-						{!reviewDisabled && (
-							<Button
-								variant="ghost"
-								size="xs"
-								className="flex-1"
-								onClick={
-									status === "idle"
-										? handleStartReview
-										: () => setReviewModalOpen(true)
-								}
-								disabled={false}
-							>
-								{status === "idle" && <Play className="size-3" />}
-								{isRunning && <Loader2 className="size-3 animate-spin" />}
-								{status === "completed" && (
-									<Check className="size-3 text-green-400" />
-								)}
-								{(status === "error" || status === "cancelled") && (
-									<X className="size-3 text-destructive" />
-								)}
-								AI Review
-							</Button>
-						)}
 						<Button
 							variant="ghost"
 							size="icon-xs"
@@ -220,16 +151,6 @@ export function RightSidebarBottom({
 					</div>
 				</TabsContent>
 			</Tabs>
-			<ReviewModal
-				open={reviewModalOpen}
-				onOpenChange={setReviewModalOpen}
-				status={status}
-				summary={summary}
-				progress={progress}
-				fileStates={fileStates}
-				onCancel={cancelReview}
-				onRetry={handleStartReview}
-			/>
 		</div>
 	);
 }

@@ -587,7 +587,6 @@ mod tests {
                     entries: vec![ThreadEntry {
                         id: "e1".to_string(),
                         content: "fix this".to_string(),
-                        is_ai: false,
                         action: None,
                         author_name: None,
                         author_avatar_url: None,
@@ -605,14 +604,12 @@ mod tests {
                 line_number: 10,
                 end_line: None,
                 content: "new thread".to_string(),
-                is_ai: false,
                 severity: None,
                 author_name: None,
             }),
             WsMessage::AddThreadEntry(AddThreadEntry {
                 thread_id: "t1".to_string(),
                 content: "reply".to_string(),
-                is_ai: false,
                 author_name: None,
             }),
             WsMessage::ResolveThread(ResolveThread {

@@ -255,56 +255,6 @@ impl OneShotPtyManager {
         self.entries.lock().get(&pty_id).map(|e| e.info.clone())
     }
 
-    pub fn get_buffered_output(&self, pty_id: u64) -> Option<String> {
-        let entries = self.entries.lock();
-        entries.get(&pty_id).and_then(|e| {
-            if e.output.is_empty() {
-                self.pty_manager
-                    .find_session(&e.info.session_key)
-                    .map(|s| s.buffered_output)
-                    .filter(|o| !o.is_empty())
-            } else {
-                Some(e.output.clone())
-            }
-        })
-    }
-
-    /// Returns the current length of the accumulated output for a given pty_id.
-    /// Used by the orchestrator to take a snapshot offset before registering
-    /// the pty-to-session mapping, so that the backfill replay only covers
-    /// output that arrived *before* the mapping was registered.
-    pub fn get_output_len(&self, pty_id: u64) -> usize {
-        self.entries
-            .lock()
-            .get(&pty_id)
-            .map(|e| e.output.len())
-            .unwrap_or(0)
-    }
-
-    /// Returns buffered output starting from `offset` bytes.
-    /// If the entry output is shorter than `offset` (e.g. due to truncation),
-    /// returns `None`.
-    pub fn get_buffered_output_from(&self, pty_id: u64, offset: usize) -> Option<String> {
-        let entries = self.entries.lock();
-        entries.get(&pty_id).and_then(|e| {
-            if offset == 0 {
-                // Same as get_buffered_output: fallback to PtyManager buffer
-                if e.output.is_empty() {
-                    self.pty_manager
-                        .find_session(&e.info.session_key)
-                        .map(|s| s.buffered_output)
-                        .filter(|o| !o.is_empty())
-                } else {
-                    Some(e.output.clone())
-                }
-            } else if offset < e.output.len() {
-                Some(e.output[offset..].to_string())
-            } else {
-                None
-            }
-        })
-    }
-
     pub fn list_active_for_worktree(&self, worktree_path: &str) -> Vec<FindOneShotPtyResult> {
         self.entries
             .lock()

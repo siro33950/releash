@@ -14,13 +14,10 @@ mod protocol;
 mod pty;
 mod qr_code;
 mod repo_registry;
-mod review;
-mod review_prompt;
 mod search;
 mod sentry_integration;
 mod session;
 mod shell_integration;
-mod thread_ai;
 mod thread_store;
 mod tls;
 mod tray;
@@ -87,8 +84,6 @@ pub fn run() {
             app.manage(Arc::new(pty::oneshot::OneShotPtyManager::new(Arc::clone(
                 pty_mgr.inner(),
             ))));
-            app.manage(Arc::new(review::ReviewOrchestrator::new()));
-            review::ReviewOrchestrator::register_listeners(app.handle());
 
             let data_dir = app.path().app_data_dir()?;
             let config_path = data_dir.join("releash.toml");
@@ -226,6 +221,7 @@ pub fn run() {
             git::commands::get_binary_staged_content,
             git::commands::get_file_at_branch_base,
             git::commands::get_binary_file_at_branch_base,
+            git::commands::get_branch_diff_summary,
             // Git: ブランチ
             git::commands::list_branches,
             git::commands::get_current_branch,
@@ -252,8 +248,6 @@ pub fn run() {
             git::commands::list_branches_with_status,
             git::commands::create_worktree,
             git::commands::remove_worktree,
-            // Git: レビュー差分
-            git::commands::get_review_diff_summary,
             // Git: 設定・ユーティリティ
             git::commands::get_cwd,
             git::commands::get_repo_git_dir,
@@ -270,8 +264,6 @@ pub fn run() {
             git_host::get_cached_issues,
             git_host::get_pr_files,
             git_host::get_pr_review_comments,
-            git_host::reply_to_pr_review_comment,
-            git_host::post_pr_comment,
             // Notion
             notion::query_notion_tasks,
             notion::fetch_notion_label_options,
@@ -358,17 +350,6 @@ pub fn run() {
             // Workspace state
             workspace_state_store::load_workspace_state,
             workspace_state_store::save_workspace_state,
-            // Review prompt
-            review_prompt::get_review_prompt,
-            review_prompt::get_per_file_review_tasks,
-            // Review orchestration
-            review::commands::start_review,
-            review::commands::cancel_review,
-            review::commands::get_review_status,
-            review::commands::reset_review,
-            // Thread AI
-            thread_ai::build_thread_ai_prompt,
-            thread_ai::build_thread_summarize_prompt,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,

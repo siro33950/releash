@@ -15,7 +15,6 @@ import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { AgentTab } from "@/components/panels/AgentTab";
 import { EditorTabContent } from "@/components/panels/EditorTabContent";
 import { EmptyState } from "@/components/panels/EmptyState";
-import { PostToPrPreview } from "@/components/panels/PostToPrPreview";
 import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
 import {
 	type RightBottomTab,
@@ -29,7 +28,6 @@ import { SearchPanel } from "@/components/panels/SearchPanel";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { SourceControlPanel } from "@/components/panels/SourceControlPanel";
 import { SymbolOutlinePanel } from "@/components/panels/SymbolOutlinePanel";
-import { ThreadAIModal } from "@/components/panels/ThreadAIModal";
 import { UnsavedChangesDialog } from "@/components/panels/UnsavedChangesDialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -409,13 +407,12 @@ function WorktreeContent({
 									}
 								>
 									<div
-										data-testid="review"
+										data-testid="comments"
 										className="h-full overflow-hidden border-t border-border"
 									>
 										<RightSidebarBottom
 											rootPath={rootPath}
 											theme={settings.theme}
-											settings={settings}
 											threads={s.threads}
 											onThreadClick={handleThreadClick}
 											onDeleteThread={s.removeThread}
@@ -425,8 +422,6 @@ function WorktreeContent({
 											onToggleShowResolved={s.toggleShowResolvedThreads}
 											onToggleCollapse={handleToggleRightBottom}
 											collapsed={s.rightBottomCollapsed}
-											aiTaskThreadIds={s.aiTaskThreadIds}
-											onOpenThreadAILog={s.handleOpenThreadAIModal}
 											initialActiveTab={
 												s.rightBottomActiveTab as RightBottomTab
 											}
@@ -495,20 +490,6 @@ function WorktreeContent({
 					settings={settings}
 					onSave={onSettingsSave}
 					repoPaths={[rootPath]}
-				/>
-				<PostToPrPreview
-					open={!!s.pendingPostToPr}
-					summary={s.pendingPostToPr?.summary ?? ""}
-					loading={s.postToPrLoading}
-					onPost={s.handlePostToPrConfirm}
-					onCancel={s.handlePostToPrCancel}
-				/>
-				<ThreadAIModal
-					open={s.threadAIModalOpen}
-					onOpenChange={s.setThreadAIModalOpen}
-					tasks={s.threadAI.taskMap}
-					onCancelTask={s.threadAI.cancelTask}
-					initialThreadId={s.threadAIInitialThreadId}
 				/>
 			</EditorContext.Provider>
 		</GitStatusProvider>

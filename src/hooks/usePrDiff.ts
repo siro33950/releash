@@ -17,10 +17,6 @@ export interface PrFileDiff {
 	modifiedContent: string;
 }
 
-interface PostedComment {
-	id: number;
-}
-
 interface UsePrDiffResult {
 	files: PrFile[];
 	loading: boolean;
@@ -31,11 +27,6 @@ interface UsePrDiffResult {
 	fileDiffLoading: boolean;
 	reviewThreads: Thread[];
 	reviewThreadsLoading: boolean;
-	replyToThread: (
-		threadId: string,
-		body: string,
-	) => Promise<PostedComment | null>;
-	postPrComment: (body: string) => Promise<PostedComment | null>;
 }
 
 export function usePrDiff(
@@ -170,45 +161,6 @@ export function usePrDiff(
 		setSelectedFile(filename);
 	}, []);
 
-	const replyToThread = useCallback(
-		async (threadId: string, body: string): Promise<PostedComment | null> => {
-			if (!prNumber) return null;
-			const thread = reviewThreads.find((t) => t.id === threadId);
-			if (!thread) return null;
-			const firstEntry = thread.entries[0];
-			if (!firstEntry?.prCommentId) return null;
-			try {
-				return await invoke<PostedComment>("reply_to_pr_review_comment", {
-					repoPath: rootPath,
-					prNumber,
-					commentId: firstEntry.prCommentId,
-					body,
-				});
-			} catch (err) {
-				console.error("Failed to reply to PR review comment:", err);
-				return null;
-			}
-		},
-		[rootPath, prNumber, reviewThreads],
-	);
-
-	const postPrComment = useCallback(
-		async (body: string): Promise<PostedComment | null> => {
-			if (!prNumber) return null;
-			try {
-				return await invoke<PostedComment>("post_pr_comment", {
-					repoPath: rootPath,
-					prNumber,
-					body,
-				});
-			} catch (err) {
-				console.error("Failed to post PR comment:", err);
-				return null;
-			}
-		},
-		[rootPath, prNumber],
-	);
-
 	return {
 		files,
 		loading,
@@ -219,7 +171,5 @@ export function usePrDiff(
 		fileDiffLoading,
 		reviewThreads,
 		reviewThreadsLoading,
-		replyToThread,
-		postPrComment,
 	};
 }

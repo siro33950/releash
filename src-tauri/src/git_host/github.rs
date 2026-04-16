@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::types::{
-    GitHostProvider, IssueInfo, PostedComment, PrDetail, PrFile, PrInfo, PrReviewComment,
-};
+use super::types::{GitHostProvider, IssueInfo, PrDetail, PrFile, PrInfo, PrReviewComment};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -100,45 +98,6 @@ impl GitHostProvider for GitHubProvider {
             Some(stdout) => parse_pr_review_comments(&stdout),
             None => Vec::new(),
         }
-    }
-
-    fn reply_to_pr_review_comment(
-        &self,
-        repo_path: &str,
-        pr_number: u64,
-        comment_id: u64,
-        body: &str,
-    ) -> Option<PostedComment> {
-        let output = run_gh_with_timeout(
-            &[
-                "api",
-                &format!(
-                    "repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments/{comment_id}/replies"
-                ),
-                "-f",
-                &format!("body={body}"),
-            ],
-            repo_path,
-        )?;
-        parse_posted_comment(&output)
-    }
-
-    fn post_pr_comment(
-        &self,
-        repo_path: &str,
-        pr_number: u64,
-        body: &str,
-    ) -> Option<PostedComment> {
-        let output = run_gh_with_timeout(
-            &[
-                "api",
-                &format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments"),
-                "-f",
-                &format!("body={body}"),
-            ],
-            repo_path,
-        )?;
-        parse_posted_comment(&output)
     }
 
     fn list_issues(&self, repo_path: &str) -> Vec<IssueInfo> {
@@ -306,12 +265,6 @@ fn parse_pr_review_comments(json_str: &str) -> Vec<PrReviewComment> {
         }
     }
     all
-}
-
-fn parse_posted_comment(json_str: &str) -> Option<PostedComment> {
-    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
-    let id = value.get("id")?.as_u64()?;
-    Some(PostedComment { id })
 }
 
 fn parse_gh_merged_pr_output(json_str: &str) -> Vec<String> {
@@ -790,23 +743,5 @@ mod tests {
         assert!(!timed_out, "concurrent read should prevent deadlock");
         let buf = reader.join().unwrap();
         assert_eq!(buf.len(), 70 * 1024);
-    }
-
-    #[test]
-    fn parse_posted_comment_valid_json() {
-        let json = r#"{"id": 12345, "body": "reply content", "user": {"login": "user1"}}"#;
-        let result = parse_posted_comment(json).unwrap();
-        assert_eq!(result.id, 12345);
-    }
-
-    #[test]
-    fn parse_posted_comment_missing_id() {
-        let json = r#"{"body": "no id"}"#;
-        assert!(parse_posted_comment(json).is_none());
-    }
-
-    #[test]
-    fn parse_posted_comment_invalid_json() {
-        assert!(parse_posted_comment("not json").is_none());
     }
 }

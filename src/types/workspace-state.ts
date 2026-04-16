@@ -2,6 +2,21 @@ export function worktreeNameFromPath(rootPath: string): string {
 	return rootPath.split("/").pop() ?? rootPath;
 }
 
+export type RightBottomActiveTab = "terminal" | "comments";
+
+/**
+ * Normalizes a raw `rightBottomActiveTab` value (possibly a legacy string) into
+ * the current union type. Legacy `"review"` is migrated to `"comments"`, and
+ * any unknown value falls back to `"terminal"`.
+ */
+export function normalizeRightBottomActiveTab(
+	value: string | null | undefined,
+): RightBottomActiveTab {
+	if (value === "comments" || value === "review") return "comments";
+	if (value === "terminal") return "terminal";
+	return "terminal";
+}
+
 export interface WorkspaceState {
 	version: 1;
 	tabs: {
@@ -14,7 +29,7 @@ export interface WorkspaceState {
 		leftNavCollapsed: boolean;
 		rightCollapsed: boolean;
 		rightBottomCollapsed: boolean;
-		rightBottomActiveTab?: "terminal" | "review";
+		rightBottomActiveTab?: RightBottomActiveTab;
 	};
 }
 
@@ -44,9 +59,9 @@ export function buildWorkspaceState(
 			leftNavCollapsed: !leftNavVisible,
 			rightCollapsed: !rightVisible,
 			rightBottomCollapsed: internal.rightBottomCollapsed,
-			rightBottomActiveTab: internal.rightBottomActiveTab as
-				| "terminal"
-				| "review",
+			rightBottomActiveTab: normalizeRightBottomActiveTab(
+				internal.rightBottomActiveTab,
+			),
 		},
 	};
 }

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useBaseBranch } from "@/hooks/useBaseBranch";
-import type { ReviewChangedFile } from "@/hooks/useReviewDiffFiles";
+import type { BranchDiffChangedFile } from "@/hooks/useBranchDiffFiles";
 import type { GitFileStatus } from "@/types/git";
 import { SourceControlPanel } from "./SourceControlPanel";
 
@@ -29,8 +29,8 @@ const mockEditorContext = {
 	setDiffBase: vi.fn(),
 };
 
-const mockReviewDiffFiles = {
-	files: [] as ReviewChangedFile[],
+const mockBranchDiffFiles = {
+	files: [] as BranchDiffChangedFile[],
 	loading: false,
 	error: null as string | null,
 	refresh: vi.fn(),
@@ -60,8 +60,8 @@ vi.mock("@/hooks/useBaseBranch", () => ({
 	}),
 }));
 
-vi.mock("@/hooks/useReviewDiffFiles", () => ({
-	useReviewDiffFiles: () => mockReviewDiffFiles,
+vi.mock("@/hooks/useBranchDiffFiles", () => ({
+	useBranchDiffFiles: () => mockBranchDiffFiles,
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -88,9 +88,9 @@ describe("SourceControlPanel", () => {
 		mockGitStatus.stagedFiles = [];
 		mockGitStatus.changedFiles = [];
 		mockEditorContext.diffBase = "staged";
-		mockReviewDiffFiles.files = [];
-		mockReviewDiffFiles.loading = false;
-		mockReviewDiffFiles.error = null;
+		mockBranchDiffFiles.files = [];
+		mockBranchDiffFiles.loading = false;
+		mockBranchDiffFiles.error = null;
 		mockGitActions.stage.mockResolvedValue(undefined);
 		mockGitActions.unstage.mockResolvedValue(undefined);
 		mockGitActions.discard.mockResolvedValue(undefined);
@@ -345,7 +345,7 @@ describe("SourceControlPanel", () => {
 	describe("branch-base mode", () => {
 		it("should show flat file list in branch-base mode", () => {
 			mockEditorContext.diffBase = "branch-base";
-			mockReviewDiffFiles.files = [
+			mockBranchDiffFiles.files = [
 				{
 					path: "src/app.tsx",
 					old_path: null,
@@ -373,8 +373,8 @@ describe("SourceControlPanel", () => {
 
 		it("should show error state when review diff fails", () => {
 			mockEditorContext.diffBase = "branch-base";
-			mockReviewDiffFiles.files = [];
-			mockReviewDiffFiles.error = "failed to resolve base branch";
+			mockBranchDiffFiles.files = [];
+			mockBranchDiffFiles.error = "failed to resolve base branch";
 			render(<SourceControlPanel rootPath="/test/repo" />);
 
 			expect(screen.getByText("Failed to load changes")).toBeInTheDocument();
@@ -385,7 +385,7 @@ describe("SourceControlPanel", () => {
 
 		it("should show empty state when no changes from base branch", () => {
 			mockEditorContext.diffBase = "branch-base";
-			mockReviewDiffFiles.files = [];
+			mockBranchDiffFiles.files = [];
 			render(<SourceControlPanel rootPath="/test/repo" />);
 
 			expect(
@@ -412,7 +412,7 @@ describe("SourceControlPanel", () => {
 
 		it("should call onSelectFile when clicking a branch-base file", () => {
 			mockEditorContext.diffBase = "branch-base";
-			mockReviewDiffFiles.files = [
+			mockBranchDiffFiles.files = [
 				{
 					path: "src/app.tsx",
 					old_path: null,
@@ -436,7 +436,7 @@ describe("SourceControlPanel", () => {
 
 		it("should show file stats in branch-base mode", () => {
 			mockEditorContext.diffBase = "branch-base";
-			mockReviewDiffFiles.files = [
+			mockBranchDiffFiles.files = [
 				{
 					path: "file.txt",
 					old_path: null,

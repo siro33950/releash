@@ -22,7 +22,6 @@ import { useLspMonaco } from "@/hooks/useLspMonaco";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
 import { usePrDetail } from "@/hooks/usePrDetail";
 import { usePrDiff } from "@/hooks/usePrDiff";
-import { useThreadAI } from "@/hooks/useThreadAI";
 import { useThreads } from "@/hooks/useThreads";
 import { useWorkspaceStatus } from "@/hooks/useWorkspaceStatus";
 import {
@@ -42,9 +41,10 @@ import {
 import { useWorktreeMenuHandlers } from "@/screens/useWorktreeMenuHandlers";
 import type { AppSettings, DiffBase, DiffMode } from "@/types/settings";
 import { getThreadOrigin } from "@/types/thread";
-import type {
-	InternalWorktreeState,
-	WorkspaceState,
+import {
+	type InternalWorktreeState,
+	normalizeRightBottomActiveTab,
+	type WorkspaceState,
 } from "@/types/workspace-state";
 
 export type { InternalWorktreeState } from "@/types/workspace-state";
@@ -109,8 +109,10 @@ export function useWorktreeState({
 		initialWorkspaceState?.layout.rightBottomCollapsed ?? false,
 	);
 
-	const [rightBottomActiveTab, setRightBottomActiveTab] = useState(
-		initialWorkspaceState?.layout.rightBottomActiveTab ?? "terminal",
+	const [rightBottomActiveTab, setRightBottomActiveTab] = useState<string>(
+		normalizeRightBottomActiveTab(
+			initialWorkspaceState?.layout.rightBottomActiveTab,
+		),
 	);
 
 	const { branch } = useCurrentBranch(rootPath);
@@ -136,7 +138,7 @@ export function useWorktreeState({
 		prDetail?.base_ref_name ?? null,
 		prDetail?.head_ref_name ?? null,
 	);
-	const { replyToThread, postPrComment, reviewThreads } = prDiff;
+	const { reviewThreads } = prDiff;
 
 	const [dismissedPrThreadIds, setDismissedPrThreadIds] = useState(
 		() => new Set<string>(),
@@ -155,111 +157,6 @@ export function useWorktreeState({
 			);
 		return [...threads, ...prOnly];
 	}, [threads, reviewThreads, dismissedPrThreadIds, resolvedPrThreadIds]);
-
-	// Track which threads are using summarize mode
-	const summarizeThreadIdsRef = useRef<Set<string>>(new Set());
-
-	const [pendingPostToPr, setPendingPostToPr] = useState<{
-		threadId: string;
-		summary: string;
-	} | null>(null);
-	const [postToPrLoading, setPostToPrLoading] = useState(false);
-	const [threadAIModalOpen, setThreadAIModalOpen] = useState(false);
-	const [threadAIInitialThreadId, setThreadAIInitialThreadId] = useState<
-		string | null
-	>(null);
-
-	const handleAICompleted = useCallback((threadId: string, output: string) => {
-		// AI posts its response via MCP add_thread_entry tool.
-		// UI updates automatically via threads-changed event.
-		if (summarizeThreadIdsRef.current.has(threadId)) {
-			summarizeThreadIdsRef.current.delete(threadId);
-			// For summarize, show the post-to-PR preview.
-			const summary = output.trim();
-			if (summary) {
-				setPendingPostToPr({ threadId, summary });
-			}
-		}
-	}, []);
-	const threadAI = useThreadAI(rootPath, settings, {
-		onCompleted: handleAICompleted,
-	});
-	const { askAI, summarizeForPr, removeTask, taskMap } = threadAI;
-
-	const aiRunningThreadIds = useMemo(() => {
-		const ids = new Set<string>();
-		for (const [threadId, task] of taskMap) {
-			if (task.status === "running") {
-				ids.add(threadId);
-			}
-		}
-		return ids;
-	}, [taskMap]);
-
-	const aiTaskThreadIds = useMemo(() => new Set(taskMap.keys()), [taskMap]);
-
-	const handleAskAI = useCallback(
-		(threadId: string) => {
-			askAI(threadId, prNumber ?? undefined);
-		},
-		[askAI, prNumber],
-	);
-
-	const handleOpenThreadAIModal = useCallback((threadId?: string) => {
-		setThreadAIInitialThreadId(threadId ?? null);
-		setThreadAIModalOpen(true);
-	}, []);
-
-	const handlePostToPr = useCallback(
-		(threadId: string) => {
-			summarizeThreadIdsRef.current.add(threadId);
-			summarizeForPr(threadId, prNumber ?? undefined);
-		},
-		[summarizeForPr, prNumber],
-	);
-
-	const handlePostToPrConfirm = useCallback(
-		async (editedSummary: string) => {
-			if (!pendingPostToPr) return;
-			setPostToPrLoading(true);
-			try {
-				const thread = mergedThreads.find(
-					(t) => t.id === pendingPostToPr.threadId,
-				);
-				let postedComment: { id: number } | null = null;
-				if (thread?.entries[0]?.prCommentId) {
-					postedComment = await replyToThread(
-						pendingPostToPr.threadId,
-						editedSummary,
-					);
-				} else {
-					postedComment = await postPrComment(editedSummary);
-				}
-				if (!postedComment) {
-					console.error("Failed to post comment to PR");
-					return;
-				}
-				addEntry(
-					pendingPostToPr.threadId,
-					"Posted to PR",
-					false,
-					undefined,
-					"posted-to-pr",
-					postedComment.id,
-				);
-				setPendingPostToPr(null);
-			} catch (e) {
-				console.error("Failed to post to PR:", e);
-			} finally {
-				setPostToPrLoading(false);
-			}
-		},
-		[pendingPostToPr, mergedThreads, replyToThread, postPrComment, addEntry],
-	);
-
-	const handlePostToPrCancel = useCallback(() => {
-		setPendingPostToPr(null);
-	}, []);
 
 	const { stage, unstage, push, discard, stageHunk, createBranch } =
 		useGitActions();
@@ -476,11 +373,8 @@ export function useWorktreeState({
 		handleSendToTerminal,
 		handleSendThread,
 		handleCopyThread,
-		handleImplementThread,
 		handleThreadClick,
 	} = useWorktreeThreads({
-		addEntry,
-		resolveThread,
 		activeTabPath,
 		handleOpenFile,
 		terminalRef,
@@ -633,10 +527,8 @@ export function useWorktreeState({
 
 	const closingTab = closingTabPath ? getFileContent(closingTabPath) : null;
 
-	// Wrap delete/resolve to also clean up AI tasks
 	const handleDeleteThread = useCallback(
 		(threadId: string) => {
-			removeTask(threadId);
 			const thread = mergedThreads.find((t) => t.id === threadId);
 			if (thread && getThreadOrigin(thread) === "pr") {
 				setDismissedPrThreadIds((prev) => new Set(prev).add(threadId));
@@ -644,12 +536,11 @@ export function useWorktreeState({
 				removeThread(threadId);
 			}
 		},
-		[removeThread, removeTask, mergedThreads],
+		[removeThread, mergedThreads],
 	);
 
 	const handleResolveThread = useCallback(
 		(threadId: string) => {
-			removeTask(threadId);
 			const thread = mergedThreads.find((t) => t.id === threadId);
 			if (thread && getThreadOrigin(thread) === "pr") {
 				setResolvedPrThreadIds((prev) => {
@@ -665,7 +556,7 @@ export function useWorktreeState({
 				resolveThread(threadId);
 			}
 		},
-		[resolveThread, removeTask, mergedThreads],
+		[resolveThread, mergedThreads],
 	);
 
 	// --- EditorContext value ---
@@ -686,27 +577,19 @@ export function useWorktreeState({
 				endLine?,
 				fileContent?,
 			) => {
-				const thread = await createThread(
+				await createThread(
 					filePath,
 					lineNumber,
 					content,
 					endLine,
 					undefined,
 					undefined,
-					undefined,
 					fileContent,
 				);
-				handleAskAI(thread.id);
 			},
 			addEntry,
 			deleteThread: handleDeleteThread,
 			resolveThread: handleResolveThread,
-			implementThread: handleImplementThread,
-			onPostToPr: prNumber ? handlePostToPr : undefined,
-			aiRunningThreadIds,
-			aiTaskThreadIds,
-			onOpenThreadAIModal: handleOpenThreadAIModal,
-			onAskAI: handleAskAI,
 			updateEntry,
 			sendThread: handleSendThread,
 			copyThread: handleCopyThread,
@@ -738,13 +621,6 @@ export function useWorktreeState({
 			addEntry,
 			handleDeleteThread,
 			handleResolveThread,
-			handleImplementThread,
-			handleAskAI,
-			prNumber,
-			handlePostToPr,
-			aiRunningThreadIds,
-			aiTaskThreadIds,
-			handleOpenThreadAIModal,
 			updateEntry,
 			handleSendThread,
 			handleCopyThread,
@@ -869,17 +745,7 @@ export function useWorktreeState({
 		lspStatus,
 		lspCrashCount,
 		lspRetryManually,
-		threadAI,
-		threadAIModalOpen,
-		setThreadAIModalOpen,
-		threadAIInitialThreadId,
-		aiTaskThreadIds,
-		handleOpenThreadAIModal,
 		addEntry,
-		pendingPostToPr,
-		postToPrLoading,
-		handlePostToPrConfirm,
-		handlePostToPrCancel,
 		rightBottomCollapsed,
 		setRightBottomCollapsed,
 		rightBottomActiveTab,

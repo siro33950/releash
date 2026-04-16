@@ -44,12 +44,6 @@ export function EditorTabContent({
 		addEntry,
 		deleteThread,
 		resolveThread,
-		implementThread,
-		onPostToPr,
-		aiRunningThreadIds,
-		aiTaskThreadIds,
-		onOpenThreadAIModal,
-		onAskAI,
 		updateEntry,
 		copyThread,
 		recalculateAnchorsForFile,
@@ -282,12 +276,6 @@ export function EditorTabContent({
 					onAddEntry={handleAddEntry}
 					onDeleteThread={deleteThread}
 					onResolveThread={resolveThread}
-					onImplementThread={implementThread}
-					onPostToPr={onPostToPr}
-					aiRunningThreadIds={aiRunningThreadIds}
-					aiTaskThreadIds={aiTaskThreadIds}
-					onOpenThreadAIModal={onOpenThreadAIModal}
-					onAskAI={onAskAI}
 					onUpdateEntry={updateEntry}
 					onCopyThread={copyThread}
 					getThreadsForLine={getThreadsForLine}

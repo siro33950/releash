@@ -152,11 +152,7 @@ export function RemoteThreadList({
 																{entry.authorName}:
 															</span>
 														)}
-														<span
-															className={
-																entry.isAi ? "text-info" : "text-foreground"
-															}
-														>
+														<span className="text-foreground">
 															{entry.content}
 														</span>
 													</div>

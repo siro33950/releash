@@ -61,7 +61,6 @@ function commentToEntry(comment: PrReviewComment): ThreadEntry {
 	return {
 		id: `pr-entry-${comment.id}`,
 		content: comment.body,
-		isAi: false,
 		authorName: comment.author.login,
 		...(comment.author.avatar_url != null && {
 			authorAvatarUrl: comment.author.avatar_url,

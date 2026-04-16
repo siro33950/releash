@@ -7,8 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use types::{
-    GitHostProvider, IssueInfo, PostedComment, PrDetail, PrFile, PrReviewComment, PrStatus,
-    ProviderStatus,
+    GitHostProvider, IssueInfo, PrDetail, PrFile, PrReviewComment, PrStatus, ProviderStatus,
 };
 
 const PR_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -168,7 +167,6 @@ fn comment_to_entry(comment: &PrReviewComment) -> ThreadEntry {
     ThreadEntry {
         id: format!("pr-entry-{}", comment.id),
         content: comment.body.clone(),
-        is_ai: false,
         action: None,
         author_name: Some(comment.author.login.clone()),
         author_avatar_url: comment.author.avatar_url.clone(),
@@ -361,48 +359,6 @@ pub async fn get_pr_review_comments(
     tokio::task::spawn_blocking(move || fetch_pr_review_comments_inner(&repo_path, pr_number))
         .await
         .map_err(|e| format!("task join error: {e}"))
-}
-
-fn reply_to_pr_review_comment_inner(
-    repo_path: &str,
-    pr_number: u64,
-    comment_id: u64,
-    body: &str,
-) -> Option<PostedComment> {
-    let provider = create_provider(repo_path)?;
-    provider.reply_to_pr_review_comment(repo_path, pr_number, comment_id, body)
-}
-
-#[tauri::command]
-pub async fn reply_to_pr_review_comment(
-    repo_path: String,
-    pr_number: u64,
-    comment_id: u64,
-    body: String,
-) -> Result<PostedComment, String> {
-    tokio::task::spawn_blocking(move || {
-        reply_to_pr_review_comment_inner(&repo_path, pr_number, comment_id, &body)
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
-    .ok_or_else(|| "Failed to post reply".to_string())
-}
-
-fn post_pr_comment_inner(repo_path: &str, pr_number: u64, body: &str) -> Option<PostedComment> {
-    let provider = create_provider(repo_path)?;
-    provider.post_pr_comment(repo_path, pr_number, body)
-}
-
-#[tauri::command]
-pub async fn post_pr_comment(
-    repo_path: String,
-    pr_number: u64,
-    body: String,
-) -> Result<PostedComment, String> {
-    tokio::task::spawn_blocking(move || post_pr_comment_inner(&repo_path, pr_number, &body))
-        .await
-        .map_err(|e| format!("task join error: {e}"))?
-        .ok_or_else(|| "Failed to post comment".to_string())
 }
 
 #[tauri::command]

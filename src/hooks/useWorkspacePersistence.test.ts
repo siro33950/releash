@@ -506,14 +506,14 @@ describe("useWorkspacePersistence", () => {
 		act(() => {
 			result.current.internalStateMapRef.current.set(
 				"/repoA",
-				makeInternalState({ rightBottomActiveTab: "review" }),
+				makeInternalState({ rightBottomActiveTab: "comments" }),
 			);
 		});
 
 		rerender({ selectedRootPath: "/repoB" });
 
 		const savedState = mockUpdateState.mock.calls[0][1] as WorkspaceState;
-		expect(savedState.layout.rightBottomActiveTab).toBe("review");
+		expect(savedState.layout.rightBottomActiveTab).toBe("comments");
 	});
 
 	it("右下パネルのタブ選択がWorktreeごとに独立している", () => {
@@ -524,7 +524,7 @@ describe("useWorkspacePersistence", () => {
 				leftNavCollapsed: false,
 				rightCollapsed: false,
 				rightBottomCollapsed: false,
-				rightBottomActiveTab: "review",
+				rightBottomActiveTab: "comments",
 			},
 		});
 		const stateB = makeState({
@@ -566,7 +566,7 @@ describe("useWorkspacePersistence", () => {
 		act(() => {
 			result.current.internalStateMapRef.current.set(
 				"/repoA",
-				makeInternalState({ rightBottomActiveTab: "review" }),
+				makeInternalState({ rightBottomActiveTab: "comments" }),
 			);
 		});
 		rerender({ selectedRootPath: "/repoB" });

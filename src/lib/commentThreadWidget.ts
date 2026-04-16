@@ -12,28 +12,13 @@ export interface CommentThreadOptions {
 	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
 	onCopyThread?: (thread: Thread) => void;
 	onResolveThread?: (threadId: string) => void;
-	onImplementThread?: (threadId: string) => void;
-	onPostToPr?: (threadId: string) => void;
-	aiRunningThreadIds?: Set<string>;
-	aiTaskThreadIds?: Set<string>;
-	onOpenThreadAIModal?: (threadId?: string) => void;
 }
 
 export interface CommentThreadZone {
 	zoneId: string;
 	domNode: HTMLElement;
 	dispose: () => void;
-	update: (
-		partial: Partial<
-			Pick<
-				CommentThreadOptions,
-				| "aiRunningThreadIds"
-				| "aiTaskThreadIds"
-				| "onOpenThreadAIModal"
-				| "thread"
-			>
-		>,
-	) => void;
+	update: (partial: Partial<Pick<CommentThreadOptions, "thread">>) => void;
 }
 
 const HEADER_HEIGHT = 32;
@@ -41,25 +26,15 @@ const ITEM_HEIGHT = 52;
 const ITEM_MAX_VISIBLE = 4;
 const INPUT_AREA_HEIGHT = 88;
 const ACTIONS_HEIGHT = 40;
-const CONCLUSION_HEIGHT = 40;
 const PADDING = 8;
 
-function computeInitialHeight(
-	entryCount: number,
-	hasConclusionActions: boolean,
-): number {
+function computeInitialHeight(entryCount: number): number {
 	const itemsHeight =
 		entryCount > 0
 			? Math.min(entryCount * ITEM_HEIGHT, ITEM_MAX_VISIBLE * ITEM_HEIGHT)
 			: 0;
-	const conclusionHeight = hasConclusionActions ? CONCLUSION_HEIGHT : 0;
 	return (
-		HEADER_HEIGHT +
-		itemsHeight +
-		INPUT_AREA_HEIGHT +
-		ACTIONS_HEIGHT +
-		conclusionHeight +
-		PADDING
+		HEADER_HEIGHT + itemsHeight + INPUT_AREA_HEIGHT + ACTIONS_HEIGHT + PADDING
 	);
 }
 
@@ -80,17 +55,9 @@ export function createCommentThread(
 		onUpdateEntry,
 		onCopyThread,
 		onResolveThread,
-		onImplementThread,
-		onPostToPr,
-		aiRunningThreadIds,
-		aiTaskThreadIds,
-		onOpenThreadAIModal,
 	} = options;
 
 	let currentThread = thread;
-	let currentAiRunningThreadIds = aiRunningThreadIds;
-	let currentAiTaskThreadIds = aiTaskThreadIds;
-	let currentOnOpenThreadAIModal = onOpenThreadAIModal;
 
 	// VSCode ZoneWidget 方式:
 	// ViewZone = 空のdomNodeでスペース確保のみ
@@ -171,11 +138,6 @@ export function createCommentThread(
 				onUpdateEntry,
 				onCopyThread,
 				onResolveThread,
-				onImplementThread,
-				onPostToPr,
-				aiRunningThreadIds: currentAiRunningThreadIds,
-				aiTaskThreadIds: currentAiTaskThreadIds,
-				onOpenThreadAIModal: currentOnOpenThreadAIModal,
 			}),
 		);
 	};
@@ -186,10 +148,7 @@ export function createCommentThread(
 	const afterLineNumber = thread.endLine ?? thread.lineNumber;
 	const zoneConfig: Monaco.editor.IViewZone = {
 		afterLineNumber,
-		heightInPx: computeInitialHeight(
-			thread.entries.length,
-			!!(onImplementThread || onPostToPr),
-		),
+		heightInPx: computeInitialHeight(thread.entries.length),
 		domNode: zoneDomNode,
 		suppressMouseDown: true,
 		onDomNodeTop: (top: number) => {
@@ -235,17 +194,7 @@ export function createCommentThread(
 		});
 	};
 
-	const update = (
-		partial: Partial<
-			Pick<
-				CommentThreadOptions,
-				| "aiRunningThreadIds"
-				| "aiTaskThreadIds"
-				| "onOpenThreadAIModal"
-				| "thread"
-			>
-		>,
-	) => {
+	const update = (partial: Partial<Pick<CommentThreadOptions, "thread">>) => {
 		if (partial.thread !== undefined) {
 			currentThread = partial.thread;
 			const newAfterLine = partial.thread.endLine ?? partial.thread.lineNumber;
@@ -255,15 +204,6 @@ export function createCommentThread(
 					accessor.layoutZone(zoneId);
 				});
 			}
-		}
-		if (partial.aiRunningThreadIds !== undefined) {
-			currentAiRunningThreadIds = partial.aiRunningThreadIds;
-		}
-		if (partial.aiTaskThreadIds !== undefined) {
-			currentAiTaskThreadIds = partial.aiTaskThreadIds;
-		}
-		if (partial.onOpenThreadAIModal !== undefined) {
-			currentOnOpenThreadAIModal = partial.onOpenThreadAIModal;
 		}
 		renderWidget();
 	};

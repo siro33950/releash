@@ -2,7 +2,6 @@ import { useCallback, useMemo } from "react";
 import { computeHunks } from "@/lib/computeHunks";
 import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
-import { formatImplementPrompt } from "@/lib/formatImplementPrompt";
 import { generatePatch } from "@/lib/generatePatch";
 import type { LineComment } from "@/types/comment";
 import type { WsMessage } from "@/types/protocol";
@@ -20,7 +19,6 @@ function lineCommentToThread(c: LineComment): Thread {
 			{
 				id: c.id,
 				content: c.content,
-				isAi: c.target === "review",
 				createdAt: c.createdAt,
 			},
 		],
@@ -226,40 +224,6 @@ export function useRemoteAppActions({
 		navigator.clipboard.writeText(text).catch(() => {});
 	}, []);
 
-	const handleImplementThread = useCallback(
-		(threadId: string) => {
-			const prompt = formatImplementPrompt(threadId);
-			if (activePtyId != null) {
-				send({
-					type: "pty_input",
-					payload: { pty_id: activePtyId, data: prompt },
-				});
-				send({
-					type: "pty_input",
-					payload: { pty_id: activePtyId, data: "\r" },
-				});
-			}
-		},
-		[send, activePtyId],
-	);
-
-	const handleAskAI = useCallback(
-		(threadId: string) => {
-			const text = `Use the get_thread tool with thread_id="${threadId}" to read the thread, then answer the question.`;
-			if (activePtyId != null) {
-				send({
-					type: "pty_input",
-					payload: { pty_id: activePtyId, data: text },
-				});
-				send({
-					type: "pty_input",
-					payload: { pty_id: activePtyId, data: "\r" },
-				});
-			}
-		},
-		[send, activePtyId],
-	);
-
 	const hasDiffChanges = useMemo(() => {
 		if (!content) return false;
 		return content.original !== content.modified;
@@ -311,8 +275,6 @@ export function useRemoteAppActions({
 		handleCopyComment,
 		handleSendThreadsToTerminal,
 		handleCopyThread,
-		handleImplementThread,
-		handleAskAI,
 		hasDiffChanges,
 		handleStageAll,
 		handleUnstageAll,

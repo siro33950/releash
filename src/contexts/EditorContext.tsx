@@ -25,13 +25,7 @@ export interface EditorContextValue {
 	addEntry: (threadId: string, content: string) => void;
 	deleteThread: (threadId: string) => void;
 	resolveThread?: (threadId: string) => void;
-	implementThread?: (threadId: string) => void;
 	updateEntry: (threadId: string, entryId: string, content: string) => void;
-	onPostToPr?: (threadId: string) => void;
-	aiRunningThreadIds?: Set<string>;
-	aiTaskThreadIds?: Set<string>;
-	onOpenThreadAIModal?: (threadId?: string) => void;
-	onAskAI?: (threadId: string) => void;
 	sendThread?: (thread: Thread) => void;
 	copyThread?: (thread: Thread) => void;
 

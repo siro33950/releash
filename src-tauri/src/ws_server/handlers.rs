@@ -725,7 +725,6 @@ pub(super) async fn handle_create_thread(
         entries: vec![ThreadEntry {
             id: uuid::Uuid::new_v4().to_string(),
             content: req.content.clone(),
-            is_ai: req.is_ai,
             action: None,
             author_name: req.author_name.clone(),
             author_avatar_url: None,
@@ -775,7 +774,6 @@ pub(super) async fn handle_add_thread_entry(
     let entry = ThreadEntry {
         id: uuid::Uuid::new_v4().to_string(),
         content: req.content.clone(),
-        is_ai: req.is_ai,
         action: None,
         author_name: req.author_name.clone(),
         author_avatar_url: None,

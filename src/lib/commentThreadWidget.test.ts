@@ -10,7 +10,6 @@ function makeEntry(overrides: Partial<ThreadEntry> = {}): ThreadEntry {
 	return {
 		id: "e-1",
 		content: "Test comment",
-		isAi: false,
 		createdAt: Date.now(),
 		...overrides,
 	};

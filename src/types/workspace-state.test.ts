@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildWorkspaceState, worktreeNameFromPath } from "./workspace-state";
+import {
+	buildWorkspaceState,
+	normalizeRightBottomActiveTab,
+	worktreeNameFromPath,
+} from "./workspace-state";
 
 describe("worktreeNameFromPath", () => {
 	it("通常パスから末尾のディレクトリ名を返す", () => {
@@ -110,10 +114,60 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: null,
 			activeView: "git",
 			rightBottomCollapsed: false,
+			rightBottomActiveTab: "comments",
+		};
+
+		const result = buildWorkspaceState(internal, "editor", true, true);
+		expect(result.layout.rightBottomActiveTab).toBe("comments");
+	});
+
+	it('旧 rightBottomActiveTab="review" は "comments" にマイグレーションされる', () => {
+		const internal = {
+			tabs: [],
+			activeEditorPath: null,
+			activeView: "git",
+			rightBottomCollapsed: false,
 			rightBottomActiveTab: "review",
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
-		expect(result.layout.rightBottomActiveTab).toBe("review");
+		expect(result.layout.rightBottomActiveTab).toBe("comments");
+	});
+
+	it('不明な rightBottomActiveTab は "terminal" にフォールバックする', () => {
+		const internal = {
+			tabs: [],
+			activeEditorPath: null,
+			activeView: "git",
+			rightBottomCollapsed: false,
+			rightBottomActiveTab: "unknown-tab",
+		};
+
+		const result = buildWorkspaceState(internal, "editor", true, true);
+		expect(result.layout.rightBottomActiveTab).toBe("terminal");
+	});
+});
+
+describe("normalizeRightBottomActiveTab", () => {
+	it('"terminal" はそのまま返る', () => {
+		expect(normalizeRightBottomActiveTab("terminal")).toBe("terminal");
+	});
+
+	it('"comments" はそのまま返る', () => {
+		expect(normalizeRightBottomActiveTab("comments")).toBe("comments");
+	});
+
+	it('旧値 "review" は "comments" に移行される', () => {
+		expect(normalizeRightBottomActiveTab("review")).toBe("comments");
+	});
+
+	it('undefined/null/空文字は "terminal" にフォールバックする', () => {
+		expect(normalizeRightBottomActiveTab(undefined)).toBe("terminal");
+		expect(normalizeRightBottomActiveTab(null)).toBe("terminal");
+		expect(normalizeRightBottomActiveTab("")).toBe("terminal");
+	});
+
+	it('未知の値は "terminal" にフォールバックする', () => {
+		expect(normalizeRightBottomActiveTab("xyz")).toBe("terminal");
 	});
 });

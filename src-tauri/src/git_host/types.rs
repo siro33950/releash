@@ -126,11 +126,6 @@ pub struct PrReviewCommentAuthor {
     pub avatar_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PostedComment {
-    pub id: u64,
-}
-
 pub trait GitHostProvider: Send + Sync {
     fn detect_open_prs(&self, repo_path: &str) -> HashMap<String, PrInfo>;
     fn detect_merged_prs(&self, repo_path: &str) -> Vec<String>;
@@ -138,13 +133,4 @@ pub trait GitHostProvider: Send + Sync {
     fn list_issues(&self, repo_path: &str) -> Vec<IssueInfo>;
     fn get_pr_files(&self, repo_path: &str, pr_number: u64) -> Vec<PrFile>;
     fn get_pr_review_comments(&self, repo_path: &str, pr_number: u64) -> Vec<PrReviewComment>;
-    fn reply_to_pr_review_comment(
-        &self,
-        repo_path: &str,
-        pr_number: u64,
-        comment_id: u64,
-        body: &str,
-    ) -> Option<PostedComment>;
-    fn post_pr_comment(&self, repo_path: &str, pr_number: u64, body: &str)
-        -> Option<PostedComment>;
 }
