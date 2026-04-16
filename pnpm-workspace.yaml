@@ -1,6 +1,0 @@
-packages:
-  - '.'
-
-onlyBuiltDependencies:
-  - '@sentry/cli'
-  - esbuild
