@@ -432,10 +432,10 @@ pub fn run() {
                     }
                 }
             }
-            tauri::RunEvent::ExitRequested { api, .. } => {
-                if !tray::QUIT_REQUESTED.load(Ordering::SeqCst) {
-                    api.prevent_exit();
-                }
+            tauri::RunEvent::ExitRequested { api, .. }
+                if !tray::QUIT_REQUESTED.load(Ordering::SeqCst) =>
+            {
+                api.prevent_exit();
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
