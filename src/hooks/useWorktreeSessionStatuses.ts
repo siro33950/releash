@@ -27,6 +27,7 @@ export function useWorktreeSessionStatuses(
 		let unlisten: UnlistenFn | null = null;
 
 		const subscribe = async () => {
+			let subscribed = false;
 			try {
 				unlisten = await listen<SessionStatus>(
 					"session-status-changed",
@@ -40,6 +41,7 @@ export function useWorktreeSessionStatuses(
 						});
 					},
 				);
+				subscribed = true;
 
 				if (!mounted) {
 					unlisten?.();
@@ -48,16 +50,26 @@ export function useWorktreeSessionStatuses(
 
 				const initial = await invoke<SessionStatus[]>("list_session_statuses");
 				if (mounted) {
-					const map = new Map<string, SessionStatus>();
-					for (const s of initial) {
-						if (s.worktree_id === worktreePath) {
-							map.set(s.chat_session_id, s);
+					// listen 登録後・invoke await 中に届いた最新イベントを尊重するため、
+					// 既存 state と last_activity_at で比較し、エントリごとに新しい方を採用する。
+					const initialList = Array.isArray(initial) ? initial : [];
+					setStatuses((prev) => {
+						const next = new Map(prev);
+						for (const s of initialList) {
+							if (s.worktree_id !== worktreePath) continue;
+							const current = next.get(s.chat_session_id);
+							if (!current || current.last_activity_at <= s.last_activity_at) {
+								next.set(s.chat_session_id, s);
+							}
 						}
-					}
-					setStatuses(map);
+						return next;
+					});
 				}
 			} catch {
-				if (mounted) {
+				// listen が成功した後の invoke 失敗では listener が入れた最新 state を
+				// 消さないために state を触らない。listen そのものが失敗した場合のみ
+				// 空にリセットする。
+				if (mounted && !subscribed) {
 					setStatuses(new Map());
 				}
 			}

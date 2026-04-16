@@ -1412,22 +1412,37 @@ async fn spawn_bridge_process(
                 }
             }
         }
-        // EOF — process exited; verify generation to avoid acting on stale events
-        let was_streaming = {
+        // EOF — process exited; verify generation to avoid acting on stale events.
+        // Streaming 中の終了だけでなく、Initializing (session_ready 前) の終了も
+        // AgentStatusCenter に Error として伝搬させる。Initializing の場合は
+        // turn_id=-1 を伴う Idle emit は行わない（streaming が無かったため）。
+        let exit_state = {
             let map = handles_stdout.lock().await;
-            map.get(&csid_stdout).is_some_and(|p| {
-                p.generation_id == captured_gen_id && p.state == BridgeState::Streaming
-            })
+            map.get(&csid_stdout)
+                .filter(|p| p.generation_id == captured_gen_id)
+                .map(|p| p.state)
         };
-        if was_streaming {
-            emit_session_state_changed(&app_stdout, &csid_stdout, TurnPhase::Idle, Some(-1));
-            notify_status_transition(
-                &app_stdout,
-                &session_store_clone,
-                &csid_stdout,
-                TurnPhase::Idle,
-                Some(crate::session::SessionState::Error),
-            );
+        match exit_state {
+            Some(BridgeState::Streaming) => {
+                emit_session_state_changed(&app_stdout, &csid_stdout, TurnPhase::Idle, Some(-1));
+                notify_status_transition(
+                    &app_stdout,
+                    &session_store_clone,
+                    &csid_stdout,
+                    TurnPhase::Idle,
+                    Some(crate::session::SessionState::Error),
+                );
+            }
+            Some(BridgeState::Initializing) => {
+                notify_status_transition(
+                    &app_stdout,
+                    &session_store_clone,
+                    &csid_stdout,
+                    TurnPhase::Idle,
+                    Some(crate::session::SessionState::Error),
+                );
+            }
+            _ => {}
         }
         {
             let mut map = handles_stdout.lock().await;

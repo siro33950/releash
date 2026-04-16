@@ -26,6 +26,7 @@ export function useSessionStatus(
 		let unlisten: UnlistenFn | null = null;
 
 		const subscribe = async () => {
+			let subscribed = false;
 			try {
 				unlisten = await listen<SessionStatus>(
 					"session-status-changed",
@@ -36,6 +37,7 @@ export function useSessionStatus(
 						}
 					},
 				);
+				subscribed = true;
 
 				if (!mounted) {
 					unlisten?.();
@@ -47,10 +49,21 @@ export function useSessionStatus(
 					{ chatSessionId },
 				);
 				if (mounted) {
-					setStatus(initial ?? null);
+					// listen 登録後・invoke await 中に届いた最新イベントを尊重するため、
+					// last_activity_at で新旧比較し、新しい方だけを state に反映する。
+					setStatus((prev) => {
+						if (!prev) return initial ?? null;
+						if (!initial) return prev;
+						return prev.last_activity_at > initial.last_activity_at
+							? prev
+							: initial;
+					});
 				}
 			} catch {
-				if (mounted) {
+				// listen が成功した後の invoke 失敗では listener が入れた最新 state を
+				// 消さないために state を触らない。listen そのものが失敗した場合のみ
+				// null に戻す。
+				if (mounted && !subscribed) {
 					setStatus(null);
 				}
 			}

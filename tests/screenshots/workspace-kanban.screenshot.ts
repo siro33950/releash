@@ -99,12 +99,18 @@ test.describe("Workspace Kanban Board", () => {
 	test("card - agent running state", async ({ page }) => {
 		await setupWorkspaceManager(page, {
 			list_branches_with_status: [kanbanBranchesFull[3]], // agent_state: running
-			get_agent_states: {
-				"feat/agent-running": {
-					state: "running",
-					timestamp: 9999999999,
+			list_workspace_statuses: [
+				{
+					worktree_id: "/test/repo-worktrees/feat-agent-done",
+					worktree_path: "/test/repo-worktrees/feat-agent-done",
+					aggregated_state: "running",
+					running_count: 1,
+					waiting_count: 0,
+					error_count: 0,
+					session_count: 1,
+					last_activity_at: 9999999999,
 				},
-			},
+			],
 		});
 		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
@@ -116,12 +122,18 @@ test.describe("Workspace Kanban Board", () => {
 	test("card - agent done state", async ({ page }) => {
 		await setupWorkspaceManager(page, {
 			list_branches_with_status: [kanbanBranchesFull[4]], // agent_state: done
-			get_agent_states: {
-				"feat/agent-done": {
-					state: "done",
-					timestamp: 9999999999,
+			list_workspace_statuses: [
+				{
+					worktree_id: "/test/repo-worktrees/feat-in-review",
+					worktree_path: "/test/repo-worktrees/feat-in-review",
+					aggregated_state: "done",
+					running_count: 0,
+					waiting_count: 0,
+					error_count: 0,
+					session_count: 1,
+					last_activity_at: 9999999999,
 				},
-			},
+			],
 		});
 		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
@@ -177,32 +189,72 @@ test.describe("Workspace Kanban Board", () => {
 			{
 				...kanbanBranchesFull[3],
 				name: "feat/agent-1",
+				worktree_path: "/test/repo-worktrees/feat-agent-1",
 				agent_state: "running" as const,
 			},
 			{
 				...kanbanBranchesFull[4],
 				name: "feat/agent-2",
+				worktree_path: "/test/repo-worktrees/feat-agent-2",
 				agent_state: "done" as const,
 			},
 			{
 				...kanbanBranchesFull[2],
 				name: "feat/agent-3",
+				worktree_path: "/test/repo-worktrees/feat-agent-3",
 				agent_state: "error" as const,
 			},
 			{
 				...kanbanBranchesFull[3],
 				name: "feat/agent-4",
+				worktree_path: "/test/repo-worktrees/feat-agent-4",
 				agent_state: "waiting" as const,
 			},
 		];
 		await setupWorkspaceManager(page, {
 			list_branches_with_status: agentBranches,
-			get_agent_states: {
-				"feat/agent-1": { state: "running", timestamp: 9999999999 },
-				"feat/agent-2": { state: "done", timestamp: 9999999999 },
-				"feat/agent-3": { state: "error", timestamp: 9999999999 },
-				"feat/agent-4": { state: "waiting", timestamp: 9999999999 },
-			},
+			list_workspace_statuses: [
+				{
+					worktree_id: "/test/repo-worktrees/feat-agent-1",
+					worktree_path: "/test/repo-worktrees/feat-agent-1",
+					aggregated_state: "running",
+					running_count: 1,
+					waiting_count: 0,
+					error_count: 0,
+					session_count: 1,
+					last_activity_at: 9999999999,
+				},
+				{
+					worktree_id: "/test/repo-worktrees/feat-agent-2",
+					worktree_path: "/test/repo-worktrees/feat-agent-2",
+					aggregated_state: "done",
+					running_count: 0,
+					waiting_count: 0,
+					error_count: 0,
+					session_count: 1,
+					last_activity_at: 9999999999,
+				},
+				{
+					worktree_id: "/test/repo-worktrees/feat-agent-3",
+					worktree_path: "/test/repo-worktrees/feat-agent-3",
+					aggregated_state: "error",
+					running_count: 0,
+					waiting_count: 0,
+					error_count: 1,
+					session_count: 1,
+					last_activity_at: 9999999999,
+				},
+				{
+					worktree_id: "/test/repo-worktrees/feat-agent-4",
+					worktree_path: "/test/repo-worktrees/feat-agent-4",
+					aggregated_state: "waiting",
+					running_count: 0,
+					waiting_count: 1,
+					error_count: 0,
+					session_count: 1,
+					last_activity_at: 9999999999,
+				},
+			],
 		});
 		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
