@@ -110,10 +110,10 @@ describe("buildWorkspaceState", () => {
 			activeEditorPath: null,
 			activeView: "git",
 			rightBottomCollapsed: false,
-			rightBottomActiveTab: "review",
+			rightBottomActiveTab: "comments",
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
-		expect(result.layout.rightBottomActiveTab).toBe("review");
+		expect(result.layout.rightBottomActiveTab).toBe("comments");
 	});
 });

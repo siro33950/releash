@@ -159,9 +159,9 @@ export interface CommentItem {
 	content: string;
 	status: "unsent" | "sent";
 	created_at: number;
-	author?: { type: "human" | "ai"; name: string };
+	author?: { type: "human"; name: string };
 	resolved?: boolean;
-	target?: "ai" | "review" | "local";
+	target?: "local";
 }
 
 export interface DeleteComment {
@@ -190,7 +190,6 @@ export interface CreateThread {
 	line_number: number;
 	end_line?: number;
 	content: string;
-	is_ai?: boolean;
 	severity?: string;
 	author_name?: string;
 }
@@ -198,7 +197,6 @@ export interface CreateThread {
 export interface AddThreadEntry {
 	thread_id: string;
 	content: string;
-	is_ai?: boolean;
 	author_name?: string;
 }
 

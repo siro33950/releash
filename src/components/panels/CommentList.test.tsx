@@ -13,7 +13,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 			{
 				id: "e-1",
 				content: "test comment",
-				isAi: false,
 				createdAt: Date.now(),
 			},
 		],
@@ -42,7 +41,6 @@ describe("CommentList", () => {
 							{
 								id: "e-1",
 								content: "fix this bug",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],
@@ -78,7 +76,6 @@ describe("CommentList", () => {
 							{
 								id: "e-1",
 								content: "click me",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],
@@ -101,7 +98,6 @@ describe("CommentList", () => {
 							{
 								id: "e-1",
 								content: "active one",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],
@@ -114,7 +110,6 @@ describe("CommentList", () => {
 							{
 								id: "e-2",
 								content: "resolved one",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],
@@ -138,7 +133,6 @@ describe("CommentList", () => {
 							{
 								id: "e-1",
 								content: "active one",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],
@@ -151,7 +145,6 @@ describe("CommentList", () => {
 							{
 								id: "e-2",
 								content: "resolved one",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],
@@ -219,7 +212,6 @@ describe("CommentList", () => {
 							{
 								id: "e-1",
 								content: "delete me",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],
@@ -252,7 +244,6 @@ describe("CommentList", () => {
 							{
 								id: "e-1",
 								content: "resolve me",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],
@@ -280,7 +271,6 @@ describe("CommentList", () => {
 							{
 								id: "e-1",
 								content: "already done",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],
@@ -352,7 +342,6 @@ describe("CommentList", () => {
 							{
 								id: "e-1",
 								content: "no actions",
-								isAi: false,
 								createdAt: Date.now(),
 							},
 						],

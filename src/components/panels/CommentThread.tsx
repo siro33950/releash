@@ -1,14 +1,4 @@
-import {
-	Check,
-	Copy,
-	Loader2,
-	MessageSquareShare,
-	Pencil,
-	Play,
-	ScrollText,
-	Trash2,
-	X,
-} from "lucide-react";
+import { Check, Copy, Pencil, Trash2, X } from "lucide-react";
 import {
 	type KeyboardEvent,
 	type MouseEvent,
@@ -29,11 +19,6 @@ export interface CommentThreadProps {
 	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
 	onCopyThread?: (thread: Thread) => void;
 	onResolveThread?: (threadId: string) => void;
-	onImplementThread?: (threadId: string) => void;
-	onPostToPr?: (threadId: string) => void;
-	aiRunningThreadIds?: Set<string>;
-	aiTaskThreadIds?: Set<string>;
-	onOpenThreadAIModal?: (threadId?: string) => void;
 }
 
 function SeverityBadge({ severity }: { severity: string }) {
@@ -120,9 +105,7 @@ function EntryItem({
 	};
 
 	const isAction = entry.action != null;
-	const label = entry.isAi
-		? (entry.authorName ?? "AI")
-		: (entry.authorName ?? undefined);
+	const label = entry.authorName ?? undefined;
 
 	return (
 		<div
@@ -132,7 +115,6 @@ function EntryItem({
 				<div className="comment-thread-item-meta">
 					<div className="comment-thread-item-meta-left">
 						{isFirstEntry && severity && <SeverityBadge severity={severity} />}
-						{entry.isAi && <span className="comment-thread-ai-badge">AI</span>}
 						{label && <span className="comment-thread-author">{label}</span>}
 						<span className="comment-thread-time">
 							{formatRelativeTime(entry.createdAt)}
@@ -246,11 +228,6 @@ export function CommentThread({
 	onUpdateEntry,
 	onCopyThread,
 	onResolveThread,
-	onImplementThread,
-	onPostToPr,
-	aiRunningThreadIds,
-	aiTaskThreadIds,
-	onOpenThreadAIModal,
 }: CommentThreadProps) {
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -288,8 +265,6 @@ export function CommentThread({
 		(a, b) => a.createdAt - b.createdAt,
 	);
 
-	const isRunning = aiRunningThreadIds?.has(thread.id) ?? false;
-
 	return (
 		<>
 			<div className="comment-thread-header">
@@ -323,32 +298,6 @@ export function CommentThread({
 					))}
 				</div>
 			)}
-			{isRunning && (
-				<button
-					type="button"
-					className="comment-thread-ai-thinking"
-					onClick={(e) => {
-						e.stopPropagation();
-						onOpenThreadAIModal?.(thread.id);
-					}}
-				>
-					<Loader2 className="h-3 w-3 animate-spin" />
-					AI is thinking...
-				</button>
-			)}
-			{!isRunning && aiTaskThreadIds?.has(thread.id) && (
-				<button
-					type="button"
-					className="comment-thread-ai-log"
-					onClick={(e) => {
-						e.stopPropagation();
-						onOpenThreadAIModal?.(thread.id);
-					}}
-				>
-					<ScrollText className="h-3 w-3" />
-					View AI Log
-				</button>
-			)}
 			<div className="comment-thread-reply">
 				<textarea
 					ref={textareaRef}
@@ -373,36 +322,6 @@ export function CommentThread({
 					</button>
 				</div>
 			</div>
-			{(onImplementThread || onPostToPr) && (
-				<div className="comment-thread-conclusion">
-					{onImplementThread && (
-						<button
-							type="button"
-							className="comment-thread-conclusion-btn"
-							onClick={(e) => {
-								e.stopPropagation();
-								onImplementThread(thread.id);
-							}}
-						>
-							<Play className="h-3.5 w-3.5" />
-							Implement
-						</button>
-					)}
-					{onPostToPr && (
-						<button
-							type="button"
-							className="comment-thread-conclusion-btn"
-							onClick={(e) => {
-								e.stopPropagation();
-								onPostToPr(thread.id);
-							}}
-						>
-							<MessageSquareShare className="h-3.5 w-3.5" />
-							Post to PR
-						</button>
-					)}
-				</div>
-			)}
 		</>
 	);
 }

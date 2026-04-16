@@ -67,19 +67,11 @@ fn migrate_comments_to_threads(comments: Vec<CommentItem>, worktree_name: &str) 
     root_comments
         .into_iter()
         .map(|root| {
-            let is_ai = root.target == "review";
-            let author_name = if is_ai {
-                Some("AI Review".to_string())
-            } else {
-                None
-            };
-
             let mut entries = vec![ThreadEntry {
                 id: format!("{}-e0", root.id),
                 content: root.content.clone(),
-                is_ai,
                 action: None,
-                author_name: author_name.clone(),
+                author_name: None,
                 author_avatar_url: None,
                 pr_comment_id: None,
                 created_at: root.created_at,
@@ -96,13 +88,8 @@ fn migrate_comments_to_threads(comments: Vec<CommentItem>, worktree_name: &str) 
                     entries.push(ThreadEntry {
                         id: format!("{}-e{}", root.id, i + 1),
                         content: child.content,
-                        is_ai: child.target == "review",
                         action: None,
-                        author_name: if child.target == "review" {
-                            Some("AI Review".to_string())
-                        } else {
-                            None
-                        },
+                        author_name: None,
                         author_avatar_url: None,
                         pr_comment_id: None,
                         created_at: child.created_at,
@@ -512,7 +499,6 @@ mod tests {
             entries: vec![ThreadEntry {
                 id: format!("{id}-e0"),
                 content: content.to_string(),
-                is_ai: false,
                 action: None,
                 author_name: None,
                 author_avatar_url: None,
@@ -530,7 +516,6 @@ mod tests {
         ThreadEntry {
             id: id.to_string(),
             content: content.to_string(),
-            is_ai: false,
             action: None,
             author_name: None,
             author_avatar_url: None,
@@ -725,11 +710,11 @@ mod tests {
                 "id": "c3",
                 "file_path": "src/lib.rs",
                 "line_number": 5,
-                "content": "AI review finding",
+                "content": "another root",
                 "status": "sent",
                 "created_at": 3000.0,
                 "resolved": false,
-                "target": "review"
+                "target": "local"
             }
         ]"#;
         let comments_dir = dir.path().join("comments");
@@ -745,13 +730,11 @@ mod tests {
         let t1 = threads.iter().find(|t| t.id == "c1").unwrap();
         assert_eq!(t1.entries.len(), 2);
         assert_eq!(t1.entries[0].content, "root comment");
-        assert!(!t1.entries[0].is_ai);
         assert_eq!(t1.entries[1].content, "reply to root");
 
         let t2 = threads.iter().find(|t| t.id == "c3").unwrap();
         assert_eq!(t2.entries.len(), 1);
-        assert!(t2.entries[0].is_ai);
-        assert_eq!(t2.entries[0].author_name.as_deref(), Some("AI Review"));
+        assert_eq!(t2.entries[0].content, "another root");
 
         // Verify new format was saved
         assert!(threads_file(dir.path(), "wt1").exists());

@@ -5,7 +5,7 @@ export interface CommentRange {
 
 export type CommentSeverity = "info" | "warning" | "error" | "suggestion";
 
-export type CommentTarget = "ai" | "review" | "local";
+export type CommentTarget = "local";
 
 export interface LineComment {
 	id: string;
@@ -39,8 +39,7 @@ function normalizeStatus(value: string): "unsent" | "sent" {
 	return value === "sent" ? "sent" : "unsent";
 }
 
-function normalizeTarget(value: string): CommentTarget {
-	if (value === "ai" || value === "review" || value === "local") return value;
+function normalizeTarget(_value: string): CommentTarget {
 	return "local";
 }
 

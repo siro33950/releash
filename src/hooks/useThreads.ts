@@ -6,7 +6,6 @@ import type { Thread, ThreadEntry, ThreadSeverity } from "@/types/thread";
 
 function makeEntry(
 	content: string,
-	isAi: boolean,
 	authorName?: string,
 	action?: "implement" | "posted-to-pr",
 	prCommentId?: number,
@@ -14,7 +13,6 @@ function makeEntry(
 	return {
 		id: crypto.randomUUID(),
 		content,
-		isAi,
 		...(authorName != null && { authorName }),
 		...(action != null && { action }),
 		...(prCommentId != null && { prCommentId }),
@@ -68,11 +66,10 @@ export function useThreads(worktreeName: string) {
 			content: string,
 			endLine?: number,
 			severity?: ThreadSeverity,
-			isAi?: boolean,
 			authorName?: string,
 			fileContent?: string,
 		) => {
-			const entry = makeEntry(content, isAi ?? false, authorName);
+			const entry = makeEntry(content, authorName);
 			const anchor =
 				fileContent != null
 					? createLineAnchor(fileContent, lineNumber)
@@ -108,18 +105,11 @@ export function useThreads(worktreeName: string) {
 		async (
 			threadId: string,
 			content: string,
-			isAi?: boolean,
 			authorName?: string,
 			action?: "implement" | "posted-to-pr",
 			prCommentId?: number,
 		) => {
-			const entry = makeEntry(
-				content,
-				isAi ?? false,
-				authorName,
-				action,
-				prCommentId,
-			);
+			const entry = makeEntry(content, authorName, action, prCommentId);
 			try {
 				const latest = await invoke<Thread[]>("add_thread_entry", {
 					worktreeName: worktreeNameRef.current,

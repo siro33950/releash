@@ -14,7 +14,7 @@ export interface WorkspaceState {
 		leftNavCollapsed: boolean;
 		rightCollapsed: boolean;
 		rightBottomCollapsed: boolean;
-		rightBottomActiveTab?: "terminal" | "review";
+		rightBottomActiveTab?: "terminal" | "comments";
 	};
 }
 
@@ -46,7 +46,7 @@ export function buildWorkspaceState(
 			rightBottomCollapsed: internal.rightBottomCollapsed,
 			rightBottomActiveTab: internal.rightBottomActiveTab as
 				| "terminal"
-				| "review",
+				| "comments",
 		},
 	};
 }

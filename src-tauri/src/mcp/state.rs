@@ -24,6 +24,7 @@ pub struct McpSharedState {
     pub comment_store: Arc<CommentStore>,
     pub thread_store: Arc<ThreadStore>,
     pub app_handle: Option<tauri::AppHandle>,
+    #[allow(dead_code)] // Retained: may be needed by future MCP tools
     pub app_data_dir: Option<PathBuf>,
 }
 

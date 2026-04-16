@@ -15,8 +15,6 @@ export interface AgentConfig {
 	command: string;
 	bypassFlag: string;
 	label: string;
-	reviewCommand: string | null;
-	threadCommand: string | null;
 	modelFlag: string;
 }
 
@@ -56,61 +54,42 @@ export const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
 		command: "",
 		bypassFlag: "",
 		label: "None",
-		reviewCommand: null,
-		threadCommand: null,
 		modelFlag: "",
 	},
 	claude: {
 		command: "claude",
 		bypassFlag: "--dangerously-skip-permissions",
 		label: "Claude Code",
-		reviewCommand:
-			'echo "{prompt}" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__worktrees_list,mcp__releash__post_review_comment,mcp__releash__get_review_comments,mcp__releash__resolve_comment,mcp__releash__review_diff,mcp__releash__read_file,mcp__releash__check_diagnostics,mcp__releash__get_file_symbols,mcp__releash__explore_symbol" {model_flag}',
-		threadCommand:
-			'echo "{prompt}" | claude -p --verbose --output-format stream-json --permission-mode bypassPermissions --allowedTools "Read,Bash,Glob,Grep,mcp__releash__get_thread,mcp__releash__add_thread_entry,mcp__releash__list_threads,mcp__releash__read_file,mcp__releash__review_diff,mcp__releash__check_diagnostics,mcp__releash__get_file_symbols,mcp__releash__explore_symbol" {model_flag}',
 		modelFlag: "--model",
 	},
 	codex: {
 		command: "codex",
 		bypassFlag: "--dangerously-bypass-approvals-and-sandbox",
 		label: "Codex",
-		reviewCommand:
-			'codex exec --sandbox read-only --ask-for-approval never --json {model_flag} "{prompt}"',
-		threadCommand: null,
 		modelFlag: "--model",
 	},
 	gemini: {
 		command: "gemini",
 		bypassFlag: "--approval-mode=yolo",
 		label: "Gemini CLI",
-		reviewCommand:
-			'gemini -p --sandbox --output-format json {model_flag} "{prompt}"',
-		threadCommand: null,
 		modelFlag: "--model",
 	},
 	aider: {
 		command: "aider",
 		bypassFlag: "--yes-always",
 		label: "Aider",
-		reviewCommand: 'aider --message --yes-always {model_flag} "{prompt}"',
-		threadCommand: null,
 		modelFlag: "--model",
 	},
 	cursor: {
 		command: "cursor-agent",
 		bypassFlag: "",
 		label: "Cursor",
-		reviewCommand:
-			'cursor-agent -p --output-format json {model_flag} "{prompt}"',
-		threadCommand: null,
 		modelFlag: "--model",
 	},
 	custom: {
 		command: "",
 		bypassFlag: "",
 		label: "Custom",
-		reviewCommand: null,
-		threadCommand: null,
 		modelFlag: "",
 	},
 };
@@ -123,13 +102,9 @@ export interface AppSettings {
 	agent: AgentType;
 	agentAutoApprove: boolean;
 	terminalStartupCommand: string;
-	reviewAgent: AgentType;
-	reviewModel: string;
-	customReviewCommand: string;
 	autoUpdate: boolean;
 	telemetryEnabled: boolean;
 	enableCrashReporting: boolean;
-	reviewConcurrency: number;
 	agentMaxConcurrent: number;
 }
 
@@ -141,116 +116,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	agent: "none",
 	agentAutoApprove: false,
 	terminalStartupCommand: "",
-	reviewAgent: "claude",
-	reviewModel: "",
-	customReviewCommand: "",
 	autoUpdate: true,
 	telemetryEnabled: true,
 	enableCrashReporting: true,
-	reviewConcurrency: 5,
 	agentMaxConcurrent: 0,
 };
-
-export function buildReviewCommand(
-	settings: AppSettings,
-	prompt: string,
-): string | null {
-	const { reviewAgent, reviewModel, customReviewCommand } = settings;
-
-	if (reviewAgent === "none") {
-		return null;
-	}
-
-	const escapedPrompt = prompt
-		.replace(/\\/g, "\\\\")
-		.replace(/"/g, '\\"')
-		.replace(/\$/g, "\\$")
-		.replace(/`/g, "\\`");
-
-	if (reviewAgent === "custom") {
-		if (!customReviewCommand) return null;
-		return customReviewCommand.replace("{prompt}", () => escapedPrompt);
-	}
-
-	const config = AGENT_CONFIGS[reviewAgent];
-	if (!config.reviewCommand) return null;
-
-	const allowedModels = AGENT_MODELS[reviewAgent].map((m) => m.value);
-	const safeModel =
-		reviewModel && allowedModels.includes(reviewModel) ? reviewModel : "";
-	const modelFlagValue =
-		safeModel && config.modelFlag ? `${config.modelFlag} ${safeModel}` : "";
-
-	return config.reviewCommand
-		.replace("{model_flag}", modelFlagValue)
-		.replace(/\s{2,}/g, " ")
-		.replace("{prompt}", () => escapedPrompt)
-		.trim();
-}
-
-/**
- * Build a command template with {prompt} placeholder for Rust-side substitution.
- * Returns null if no review agent is configured.
- */
-export function buildReviewCommandTemplate(
-	settings: AppSettings,
-): string | null {
-	const { reviewAgent, reviewModel, customReviewCommand } = settings;
-
-	if (reviewAgent === "none") {
-		return null;
-	}
-
-	if (reviewAgent === "custom") {
-		return customReviewCommand || null;
-	}
-
-	const config = AGENT_CONFIGS[reviewAgent];
-	if (!config.reviewCommand) return null;
-
-	const allowedModels = AGENT_MODELS[reviewAgent].map((m) => m.value);
-	const safeModel =
-		reviewModel && allowedModels.includes(reviewModel) ? reviewModel : "";
-	const modelFlagValue =
-		safeModel && config.modelFlag ? `${config.modelFlag} ${safeModel}` : "";
-
-	return config.reviewCommand
-		.replace("{model_flag}", modelFlagValue)
-		.replace(/\s{2,}/g, " ")
-		.trim();
-}
-
-export function buildThreadCommand(
-	settings: AppSettings,
-	prompt: string,
-): string | null {
-	const { reviewAgent, reviewModel } = settings;
-
-	if (reviewAgent === "none" || reviewAgent === "custom") {
-		return null;
-	}
-
-	const escapedPrompt = prompt
-		.replace(/\\/g, "\\\\")
-		.replace(/"/g, '\\"')
-		.replace(/\$/g, "\\$")
-		.replace(/`/g, "\\`");
-
-	const config = AGENT_CONFIGS[reviewAgent];
-	if (!config.threadCommand) return null;
-
-	const allowedModels = AGENT_MODELS[reviewAgent].map((m) => m.value);
-	const safeModel =
-		reviewModel && allowedModels.includes(reviewModel) ? reviewModel : "";
-	const modelFlagValue =
-		safeModel && config.modelFlag ? `${config.modelFlag} ${safeModel}` : "";
-
-	return config.threadCommand
-		.replace("{model_flag}", modelFlagValue)
-		.replace(/\s{2,}/g, " ")
-		.replace("{prompt}", () => escapedPrompt)
-		.trim();
-}
 
 export function buildTerminalCommand(settings: AppSettings): string {
 	const { agent, agentAutoApprove, terminalStartupCommand } = settings;

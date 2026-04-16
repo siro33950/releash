@@ -20,12 +20,12 @@ import { useEditorContext } from "@/contexts/EditorContext";
 import { useGitStatusContext } from "@/contexts/GitStatusContext";
 import { useAheadBehind } from "@/hooks/useAheadBehind";
 import { useBaseBranch } from "@/hooks/useBaseBranch";
+import {
+	type BranchDiffChangedFile,
+	useBranchDiffFiles,
+} from "@/hooks/useBranchDiffFiles";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useGitActions } from "@/hooks/useGitActions";
-import {
-	type ReviewChangedFile,
-	useReviewDiffFiles,
-} from "@/hooks/useReviewDiffFiles";
 import { formatGitError } from "@/lib/errorHandler";
 import type { DiffBase } from "@/types/settings";
 import { EmptyState } from "./EmptyState";
@@ -131,10 +131,10 @@ export function SourceControlPanel({
 	const { baseBranch } = useBaseBranch(rootPath, branch);
 	const isBranchBase = diffBase === "branch-base";
 	const {
-		files: reviewFiles,
-		loading: reviewLoading,
-		error: reviewError,
-	} = useReviewDiffFiles(rootPath, isBranchBase, baseBranch);
+		files: branchDiffFiles,
+		loading: branchDiffLoading,
+		error: branchDiffError,
+	} = useBranchDiffFiles(rootPath, isBranchBase, baseBranch);
 
 	const [form, dispatch] = useReducer(commitFormReducer, initialCommitForm);
 	const {
@@ -148,7 +148,7 @@ export function SourceControlPanel({
 	} = form;
 
 	const totalChanges = isBranchBase
-		? reviewFiles.length
+		? branchDiffFiles.length
 		: stagedFiles.length + changedFiles.length;
 
 	const handleStage = useCallback(
@@ -281,9 +281,9 @@ export function SourceControlPanel({
 			<ScrollArea className="flex-1 min-h-0 [&>[data-slot=scroll-area-viewport]>div]:block!">
 				{isBranchBase ? (
 					<BranchBaseFileList
-						files={reviewFiles}
-						loading={reviewLoading}
-						error={reviewError}
+						files={branchDiffFiles}
+						loading={branchDiffLoading}
+						error={branchDiffError}
 						rootPath={rootPath}
 						onSelectFile={onSelectFile}
 					/>
@@ -445,7 +445,7 @@ export function SourceControlPanel({
 	);
 }
 
-function mapReviewStatus(status: string): string {
+function mapBranchDiffStatus(status: string): string {
 	if (status === "added") return "new";
 	if (status === "copied") return "modified";
 	return status;
@@ -458,7 +458,7 @@ function BranchBaseFileList({
 	rootPath,
 	onSelectFile,
 }: {
-	files: ReviewChangedFile[];
+	files: BranchDiffChangedFile[];
 	loading: boolean;
 	error: string | null;
 	rootPath: string;
@@ -498,7 +498,7 @@ function BranchBaseFileList({
 			chevronClassName="h-3.5 w-3.5"
 		>
 			{files.map((file) => {
-				const displayStatus = mapReviewStatus(file.status);
+				const displayStatus = mapBranchDiffStatus(file.status);
 				const { dir, name } = formatPath(file.path);
 				return (
 					<button

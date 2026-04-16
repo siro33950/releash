@@ -1,6 +1,6 @@
 export type ThreadSeverity = "info" | "warning" | "error" | "suggestion";
 
-export type ThreadOrigin = "local" | "ai-review" | "pr";
+export type ThreadOrigin = "local" | "pr";
 
 export interface LineAnchor {
 	targetLine: string;
@@ -12,7 +12,6 @@ export interface LineAnchor {
 export interface ThreadEntry {
 	id: string;
 	content: string;
-	isAi: boolean;
 	action?: "implement" | "posted-to-pr";
 	authorName?: string;
 	authorAvatarUrl?: string;
@@ -36,6 +35,5 @@ export function getThreadOrigin(thread: Thread): ThreadOrigin {
 	const first = thread.entries[0];
 	if (!first) return "local";
 	if (first.prCommentId != null) return "pr";
-	if (first.isAi) return "ai-review";
 	return "local";
 }

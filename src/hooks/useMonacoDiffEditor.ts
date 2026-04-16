@@ -47,12 +47,6 @@ interface UseMonacoDiffEditorOptions {
 	onAddEntry?: (threadId: string, content: string) => void;
 	onDeleteThread?: (threadId: string) => void;
 	onResolveThread?: (threadId: string) => void;
-	onImplementThread?: (threadId: string) => void;
-	onPostToPr?: (threadId: string) => void;
-	onAskAI?: (threadId: string) => void;
-	aiRunningThreadIds?: Set<string>;
-	aiTaskThreadIds?: Set<string>;
-	onOpenThreadAIModal?: (threadId?: string) => void;
 	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
 	onCopyThread?: (thread: Thread) => void;
 	getThreadsForLine?: (lineNumber: number) => Thread[];
@@ -166,12 +160,6 @@ export function useMonacoDiffEditor(
 		onAddEntry,
 		onDeleteThread,
 		onResolveThread,
-		onImplementThread,
-		onPostToPr,
-		onAskAI,
-		aiRunningThreadIds,
-		aiTaskThreadIds,
-		onOpenThreadAIModal,
 		onUpdateEntry,
 		onCopyThread,
 		getThreadsForLine,
@@ -199,12 +187,6 @@ export function useMonacoDiffEditor(
 	const onAddEntryRef = useRef(onAddEntry);
 	const onDeleteThreadRef = useRef(onDeleteThread);
 	const onResolveThreadRef = useRef(onResolveThread);
-	const onImplementThreadRef = useRef(onImplementThread);
-	const onPostToPrRef = useRef(onPostToPr);
-	const onAskAIRef = useRef(onAskAI);
-	const aiRunningThreadIdsRef = useRef(aiRunningThreadIds);
-	const aiTaskThreadIdsRef = useRef(aiTaskThreadIds);
-	const onOpenThreadAIModalRef = useRef(onOpenThreadAIModal);
 	const onUpdateEntryRef = useRef(onUpdateEntry);
 	const onCopyThreadRef = useRef(onCopyThread);
 	const getThreadsForLineRef = useRef(getThreadsForLine);
@@ -232,12 +214,6 @@ export function useMonacoDiffEditor(
 	onAddEntryRef.current = onAddEntry;
 	onDeleteThreadRef.current = onDeleteThread;
 	onResolveThreadRef.current = onResolveThread;
-	onImplementThreadRef.current = onImplementThread;
-	onPostToPrRef.current = onPostToPr;
-	onAskAIRef.current = onAskAI;
-	aiRunningThreadIdsRef.current = aiRunningThreadIds;
-	aiTaskThreadIdsRef.current = aiTaskThreadIds;
-	onOpenThreadAIModalRef.current = onOpenThreadAIModal;
 	onUpdateEntryRef.current = onUpdateEntry;
 	onCopyThreadRef.current = onCopyThread;
 	getThreadsForLineRef.current = getThreadsForLine;
@@ -426,7 +402,6 @@ export function useMonacoDiffEditor(
 							ed.focus();
 						} else {
 							await onAddEntryRef.current?.(thread.id, content);
-							onAskAIRef.current?.(thread.id);
 							const textarea = zone.domNode.querySelector<HTMLTextAreaElement>(
 								".comment-thread-textarea",
 							);
@@ -441,12 +416,6 @@ export function useMonacoDiffEditor(
 					},
 					onDeleteThread: (threadId) => onDeleteThreadRef.current?.(threadId),
 					onResolveThread: (threadId) => onResolveThreadRef.current?.(threadId),
-					onImplementThread: (threadId) =>
-						onImplementThreadRef.current?.(threadId),
-					onPostToPr: (threadId) => onPostToPrRef.current?.(threadId),
-					aiRunningThreadIds: aiRunningThreadIdsRef.current,
-					aiTaskThreadIds: aiTaskThreadIdsRef.current,
-					onOpenThreadAIModal: (tid) => onOpenThreadAIModalRef.current?.(tid),
 					onUpdateEntry: (threadId, entryId, content) =>
 						onUpdateEntryRef.current?.(threadId, entryId, content),
 					onCopyThread: (t) => onCopyThreadRef.current?.(t),
@@ -778,7 +747,6 @@ export function useMonacoDiffEditor(
 						thread,
 						onSubmit: async (content) => {
 							await onAddEntryRef.current?.(thread.id, content);
-							onAskAIRef.current?.(thread.id);
 							const textarea = zone.domNode.querySelector<HTMLTextAreaElement>(
 								".comment-thread-textarea",
 							);
@@ -793,12 +761,6 @@ export function useMonacoDiffEditor(
 						onDeleteThread: (threadId) => onDeleteThreadRef.current?.(threadId),
 						onResolveThread: (threadId) =>
 							onResolveThreadRef.current?.(threadId),
-						onImplementThread: (threadId) =>
-							onImplementThreadRef.current?.(threadId),
-						onPostToPr: (threadId) => onPostToPrRef.current?.(threadId),
-						aiRunningThreadIds: aiRunningThreadIdsRef.current,
-						aiTaskThreadIds: aiTaskThreadIdsRef.current,
-						onOpenThreadAIModal: (tid) => onOpenThreadAIModalRef.current?.(tid),
 						onUpdateEntry: (threadId, entryId, content) =>
 							onUpdateEntryRef.current?.(threadId, entryId, content),
 						onCopyThread: (t) => onCopyThreadRef.current?.(t),
@@ -837,15 +799,6 @@ export function useMonacoDiffEditor(
 			widget.update({ thread });
 		}
 	}, [getThreadsForLine]);
-
-	// Update open widget when aiRunningThreadIds / aiTaskThreadIds changes
-	useEffect(() => {
-		commentInputWidgetRef.current?.update({
-			aiRunningThreadIds,
-			aiTaskThreadIds,
-			onOpenThreadAIModal,
-		});
-	}, [aiRunningThreadIds, aiTaskThreadIds, onOpenThreadAIModal]);
 
 	return {
 		diffEditorRef,

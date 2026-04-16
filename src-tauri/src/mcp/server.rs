@@ -6,9 +6,7 @@ use rmcp::model::*;
 use rmcp::schemars;
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 
-use tauri::{Emitter, Manager};
-
-use crate::protocol::thread::{Thread, ThreadEntry};
+use tauri::Manager;
 
 use super::state::McpSharedState;
 
@@ -79,47 +77,10 @@ pub struct CreateWorkspaceParams {
 }
 
 // ---------------------------------------------------------------------------
-// Review tool parameter types
+// Diagnostics filter modes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PostReviewCommentParams {
-    /// Worktree path (from worktrees_list)
-    pub worktree: String,
-    /// File path relative to repository root
-    pub file_path: String,
-    /// Line number
-    pub line_number: u32,
-    /// End line (for range comments)
-    pub end_line: Option<u32>,
-    /// Comment content
-    pub content: String,
-    /// Severity: "info", "warning", "error", "suggestion"
-    pub severity: Option<String>,
-}
-
-const VALID_SEVERITIES: &[&str] = &["info", "warning", "error", "suggestion"];
 const VALID_FILTER_MODES: &[&str] = &["diff_context", "file", "nofilter"];
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct GetReviewCommentsParams {
-    /// Worktree path (from worktrees_list)
-    pub worktree: String,
-    /// Filter by file path
-    pub file_path: Option<String>,
-    /// Filter by severity
-    pub severity: Option<String>,
-    /// Filter by resolved status
-    pub resolved: Option<bool>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ResolveCommentParams {
-    /// Worktree path (from worktrees_list)
-    pub worktree: String,
-    /// Comment ID to resolve/unresolve
-    pub comment_id: String,
-}
 
 // ---------------------------------------------------------------------------
 // Thread tool parameter types (Phase D-1)
@@ -143,30 +104,6 @@ pub struct ListThreadsParams {
     pub severity: Option<String>,
     /// Filter by resolved status
     pub resolved: Option<bool>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct AddThreadEntryParams {
-    /// Worktree path (from worktrees_list)
-    pub worktree: String,
-    /// Thread ID to add entry to
-    pub thread_id: String,
-    /// Entry content (message text)
-    pub content: String,
-    /// Whether the entry is from AI
-    pub is_ai: bool,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ReviewDiffParams {
-    /// Worktree path (from worktrees_list)
-    pub worktree: String,
-    /// Base branch to diff against (auto-detected from config if omitted)
-    pub base_branch: Option<String>,
-    /// File paths to include full diff for. If omitted, returns summary only (file list + stats, no hunks).
-    pub paths: Option<Vec<String>>,
-    /// Maximum diff lines (additions + deletions) per file. Files exceeding this limit return stats only (hunks omitted, truncated=true). Use read_file to review truncated files. Defaults to 500.
-    pub max_lines_per_file: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -339,117 +276,6 @@ impl ReleashMcpServer {
     }
 
     // -----------------------------------------------------------------------
-    // Review tools
-    // -----------------------------------------------------------------------
-
-    #[tool(
-        description = "Post a review comment on a specific file and line. The comment is stored as a thread and broadcast to the UI."
-    )]
-    async fn post_review_comment(
-        &self,
-        Parameters(params): Parameters<PostReviewCommentParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let worktree_path = self.resolve_worktree(&params.worktree)?;
-
-        if let Some(ref s) = params.severity {
-            if !VALID_SEVERITIES.contains(&s.as_str()) {
-                return Err(McpError::invalid_params(
-                    format!(
-                        "Invalid severity: {s}. Must be one of: info, warning, error, suggestion"
-                    ),
-                    None,
-                ));
-            }
-        }
-
-        let thread_id = uuid::Uuid::new_v4().to_string();
-        let entry_id = uuid::Uuid::new_v4().to_string();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-            * 1000.0;
-
-        let thread = Thread {
-            id: thread_id.clone(),
-            file_path: params.file_path.clone(),
-            line_number: params.line_number,
-            end_line: params.end_line,
-            entries: vec![ThreadEntry {
-                id: entry_id,
-                content: params.content.clone(),
-                is_ai: true,
-                action: None,
-                author_name: Some("AI Review".to_string()),
-                author_avatar_url: None,
-                pr_comment_id: None,
-                created_at: now,
-            }],
-            resolved: false,
-            severity: params.severity.clone(),
-            anchor: None,
-            created_at: now,
-        };
-
-        self.state
-            .thread_store
-            .add_thread(&worktree_path, thread)
-            .map_err(|e| McpError::internal_error(e, None))?;
-
-        self.persist_and_emit_threads_changed(&worktree_path)?;
-
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Comment posted: {thread_id}"
-        ))]))
-    }
-
-    #[tool(
-        description = "Deprecated: use list_threads instead. Get review comments, optionally filtered by file_path, severity, or resolved status."
-    )]
-    async fn get_review_comments(
-        &self,
-        Parameters(params): Parameters<GetReviewCommentsParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let worktree_path = self.resolve_worktree(&params.worktree)?;
-
-        let threads = self.state.thread_store.get_filtered(
-            &worktree_path,
-            params.file_path.as_deref(),
-            params.severity.as_deref(),
-            params.resolved,
-        );
-
-        // Return threads serialized as JSON
-        let json = serde_json::to_string_pretty(&threads).map_err(WorktreeError::from)?;
-
-        Ok(CallToolResult::success(vec![Content::text(json)]))
-    }
-
-    #[tool(description = "Toggle the resolved status of a review comment (thread) by its ID.")]
-    async fn resolve_comment(
-        &self,
-        Parameters(params): Parameters<ResolveCommentParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let worktree_path = self.resolve_worktree(&params.worktree)?;
-
-        let resolved = self
-            .state
-            .thread_store
-            .resolve_thread(&worktree_path, &params.comment_id)
-            .ok_or_else(|| {
-                McpError::invalid_params(format!("Thread not found: {}", params.comment_id), None)
-            })?;
-
-        self.persist_and_emit_threads_changed(&worktree_path)?;
-
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Thread {} {}",
-            params.comment_id,
-            if resolved { "resolved" } else { "unresolved" }
-        ))]))
-    }
-
-    // -----------------------------------------------------------------------
     // Thread tools (Phase D-1)
     // -----------------------------------------------------------------------
 
@@ -494,87 +320,9 @@ impl ReleashMcpServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    #[tool(
-        description = "Add an entry (message) to an existing thread. Use is_ai=true for AI-generated responses."
-    )]
-    async fn add_thread_entry(
-        &self,
-        Parameters(params): Parameters<AddThreadEntryParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let worktree_path = self.resolve_worktree(&params.worktree)?;
-
-        let entry_id = uuid::Uuid::new_v4().to_string();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-            * 1000.0;
-
-        let entry = ThreadEntry {
-            id: entry_id.clone(),
-            content: params.content.clone(),
-            is_ai: params.is_ai,
-            action: None,
-            author_name: if params.is_ai {
-                Some("AI".to_string())
-            } else {
-                None
-            },
-            author_avatar_url: None,
-            pr_comment_id: None,
-            created_at: now,
-        };
-
-        let added = self
-            .state
-            .thread_store
-            .add_entry(&worktree_path, &params.thread_id, entry);
-
-        if !added {
-            return Err(McpError::invalid_params(
-                format!("Thread not found: {}", params.thread_id),
-                None,
-            ));
-        }
-
-        self.persist_and_emit_threads_changed(&worktree_path)?;
-
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Entry added: {entry_id}"
-        ))]))
-    }
-
     // -----------------------------------------------------------------------
-    // Code review data tools
+    // File read tool
     // -----------------------------------------------------------------------
-
-    #[tool(
-        description = "Get the diff of a worktree compared to its base branch. Two modes: (1) Summary mode (paths omitted) — returns file list with per-file stats (additions/deletions), no hunks. (2) Detail mode (paths specified) — returns full diff with hunks for the specified files only. Files exceeding max_lines_per_file (default: 500) return stats only with truncated=true; use read_file to review those files."
-    )]
-    async fn review_diff(
-        &self,
-        Parameters(params): Parameters<ReviewDiffParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let worktree_path = self.resolve_worktree(&params.worktree)?;
-        let base = params.base_branch.clone();
-        let paths = params.paths.clone();
-        let max_lines = params.max_lines_per_file.unwrap_or(500) as usize;
-
-        let review_diff = tokio::task::spawn_blocking(move || {
-            crate::git::review::get_review_diff(
-                &worktree_path,
-                base.as_deref(),
-                paths.as_deref(),
-                Some(max_lines),
-            )
-        })
-        .await
-        .map_err(WorktreeError::from)?
-        .map_err(WorktreeError::from)?;
-
-        let json = serde_json::to_string_pretty(&review_diff).map_err(WorktreeError::from)?;
-        Ok(CallToolResult::success(vec![Content::text(json)]))
-    }
 
     #[tool(
         description = "Read a file from a worktree. Optionally specify a git_ref (e.g. 'HEAD', 'main') to read the file at that revision instead of the working copy."
@@ -680,7 +428,7 @@ impl ReleashMcpServer {
             let base = params.base_branch.clone();
             Some(
                 tokio::task::spawn_blocking(move || {
-                    crate::git::review::get_hunk_ranges(&wt, base.as_deref())
+                    crate::git::branch_diff::get_hunk_ranges(&wt, base.as_deref())
                 })
                 .await
                 .map_err(WorktreeError::from)?
@@ -735,7 +483,10 @@ impl ReleashMcpServer {
                                 .and_then(|l| l.as_u64())
                                 .map(|line_0based| {
                                     let line_1based = (line_0based as u32) + 1;
-                                    crate::git::review::is_line_in_hunk_ranges(line_1based, ranges)
+                                    crate::git::branch_diff::is_line_in_hunk_ranges(
+                                        line_1based,
+                                        ranges,
+                                    )
                                 })
                                 .unwrap_or(false)
                         })
@@ -920,38 +671,6 @@ impl ReleashMcpServer {
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
-
-    fn persist_and_emit_threads_changed(&self, worktree_path: &str) -> Result<(), McpError> {
-        if let (Some(app), Some(data_dir)) = (
-            self.state.app_handle.as_ref(),
-            self.state.app_data_dir.as_ref(),
-        ) {
-            let threads = self.state.thread_store.get_all(worktree_path);
-            self.state
-                .thread_store
-                .save(data_dir, worktree_path)
-                .map_err(|e| {
-                    McpError::internal_error(format!("Failed to save threads: {e}"), None)
-                })?;
-            app.emit(
-                "threads-changed",
-                crate::thread_store::ThreadsChangedPayload {
-                    worktree_name: worktree_path.to_string(),
-                    source: "mcp".to_string(),
-                    threads: threads.clone(),
-                },
-            )
-            .map_err(|e| {
-                McpError::internal_error(format!("Failed to emit threads-changed: {e}"), None)
-            })?;
-            self.state
-                .broadcaster
-                .try_send(crate::protocol::WsMessage::ThreadsSync(
-                    crate::protocol::thread::ThreadsSync { threads },
-                ));
-        }
-        Ok(())
-    }
 
     fn get_lsp_and_app(&self) -> Result<(Arc<crate::lsp::LspManager>, tauri::AppHandle), McpError> {
         let app = self

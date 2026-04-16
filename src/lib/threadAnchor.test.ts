@@ -151,7 +151,6 @@ describe("recalculateThreadAnchors", () => {
 				{
 					id: "e1",
 					content: "test",
-					isAi: false,
 					createdAt: Date.now(),
 				},
 			],

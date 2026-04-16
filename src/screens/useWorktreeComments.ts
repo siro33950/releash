@@ -3,20 +3,11 @@ import { useCallback } from "react";
 import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPanel";
 import { formatCommentForClipboard } from "@/lib/formatCommentForClipboard";
 import { formatCommentsForTerminal } from "@/lib/formatCommentsForTerminal";
-import { formatImplementPrompt } from "@/lib/formatImplementPrompt";
 import { trackEvent } from "@/lib/telemetry";
 import type { Thread } from "@/types/thread";
 import type { EditorAction } from "./useWorktreeGitActions";
 
 interface UseWorktreeThreadsParams {
-	addEntry: (
-		threadId: string,
-		content: string,
-		isAi?: boolean,
-		authorName?: string,
-		action?: "implement" | "posted-to-pr",
-	) => void;
-	resolveThread: (threadId: string) => void;
 	activeTabPath: string | null;
 	handleOpenFile: (path: string) => Promise<void>;
 	terminalRef: RefObject<TerminalTabPanelHandle | null>;
@@ -25,8 +16,6 @@ interface UseWorktreeThreadsParams {
 }
 
 export function useWorktreeThreads({
-	addEntry,
-	resolveThread,
 	activeTabPath,
 	handleOpenFile,
 	terminalRef,
@@ -63,31 +52,6 @@ export function useWorktreeThreads({
 		trackEvent("comment_copied");
 	}, []);
 
-	const handleImplementThread = useCallback(
-		async (threadId: string) => {
-			if (!terminalRef.current) return;
-			const prompt = formatImplementPrompt(threadId);
-			terminalRef.current.writeToTerminal(prompt);
-			terminalRef.current.writeToTerminal("\r");
-			try {
-				await Promise.resolve(
-					addEntry(
-						threadId,
-						"Sent to agent for implementation",
-						false,
-						undefined,
-						"implement",
-					),
-				);
-				await Promise.resolve(resolveThread(threadId));
-				trackEvent("thread_implemented");
-			} catch (err) {
-				console.error("Failed to implement thread:", err);
-			}
-		},
-		[addEntry, resolveThread, terminalRef],
-	);
-
 	const handleThreadClick = useCallback(
 		(threadFilePath: string, lineNumber: number) => {
 			const absolutePath = threadFilePath.startsWith("/")
@@ -113,7 +77,6 @@ export function useWorktreeThreads({
 		handleSendToTerminal,
 		handleSendThread,
 		handleCopyThread,
-		handleImplementThread,
 		handleThreadClick,
 	};
 }

@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 pub struct ThreadEntry {
     pub id: String,
     pub content: String,
-    #[serde(default, alias = "is_ai")]
-    pub is_ai: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     #[serde(
@@ -79,8 +77,6 @@ pub struct CreateThread {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_line: Option<u32>,
     pub content: String,
-    #[serde(default)]
-    pub is_ai: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub severity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,8 +87,6 @@ pub struct CreateThread {
 pub struct AddThreadEntry {
     pub thread_id: String,
     pub content: String,
-    #[serde(default)]
-    pub is_ai: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_name: Option<String>,
 }

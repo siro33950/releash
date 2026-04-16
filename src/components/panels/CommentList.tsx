@@ -8,7 +8,6 @@ import {
 	Info,
 	Lightbulb,
 	MessageSquare,
-	ScrollText,
 	Trash2,
 	XCircle,
 } from "lucide-react";
@@ -26,8 +25,6 @@ export interface CommentListProps {
 	onResolveThread?: (threadId: string) => void;
 	showResolvedThreads?: boolean;
 	onToggleShowResolved?: () => void;
-	aiTaskThreadIds?: Set<string>;
-	onOpenThreadAILog?: (threadId: string) => void;
 }
 
 function SeverityIcon({ severity }: { severity?: ThreadSeverity }) {
@@ -56,8 +53,6 @@ export function CommentList({
 	onResolveThread,
 	showResolvedThreads = false,
 	onToggleShowResolved,
-	aiTaskThreadIds,
-	onOpenThreadAILog,
 }: CommentListProps) {
 	const resolvedCount = threads.filter((t) => t.resolved).length;
 
@@ -223,34 +218,8 @@ export function CommentList({
 															{entryCount} replies
 														</span>
 													)}
-													{(onResolveThread ||
-														onDeleteThread ||
-														(onOpenThreadAILog &&
-															aiTaskThreadIds?.has(thread.id))) && (
+													{(onResolveThread || onDeleteThread) && (
 														<div className="hidden group-hover:flex items-center gap-0.5 ml-auto">
-															{onOpenThreadAILog &&
-																aiTaskThreadIds?.has(thread.id) && (
-																	// biome-ignore lint/a11y/useSemanticElements: nested inside role="button", cannot use <button>
-																	<span
-																		role="button"
-																		tabIndex={0}
-																		className="p-0.5 rounded hover:bg-blue-500/20 text-muted-foreground hover:text-blue-400 transition-colors"
-																		aria-label="View AI log"
-																		onClick={(e) => {
-																			e.stopPropagation();
-																			onOpenThreadAILog(thread.id);
-																		}}
-																		onKeyDown={(e) => {
-																			if (e.key === "Enter" || e.key === " ") {
-																				e.preventDefault();
-																				e.stopPropagation();
-																				onOpenThreadAILog(thread.id);
-																			}
-																		}}
-																	>
-																		<ScrollText className="h-3 w-3" />
-																	</span>
-																)}
 															{onResolveThread && !thread.resolved && (
 																// biome-ignore lint/a11y/useSemanticElements: nested inside role="button", cannot use <button>
 																<span

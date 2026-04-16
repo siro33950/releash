@@ -33,12 +33,6 @@ export interface DiffViewerSectionProps {
 	onAddEntry?: (threadId: string, content: string) => void;
 	onDeleteThread?: (threadId: string) => void;
 	onResolveThread?: (threadId: string) => void;
-	onImplementThread?: (threadId: string) => void;
-	onPostToPr?: (threadId: string) => void;
-	aiRunningThreadIds?: Set<string>;
-	aiTaskThreadIds?: Set<string>;
-	onOpenThreadAIModal?: (threadId?: string) => void;
-	onAskAI?: (threadId: string) => void;
 	onUpdateEntry?: (threadId: string, entryId: string, content: string) => void;
 	onCopyThread?: (thread: Thread) => void;
 	getThreadsForLine: (lineNumber: number) => Thread[];
@@ -67,12 +61,6 @@ export function DiffViewerSection({
 	onAddEntry,
 	onDeleteThread,
 	onResolveThread,
-	onImplementThread,
-	onPostToPr,
-	aiRunningThreadIds,
-	aiTaskThreadIds,
-	onOpenThreadAIModal,
-	onAskAI,
 	onUpdateEntry,
 	onCopyThread,
 	getThreadsForLine,
@@ -124,12 +112,6 @@ export function DiffViewerSection({
 				onAddEntry={onAddEntry}
 				onDeleteThread={onDeleteThread}
 				onResolveThread={onResolveThread}
-				onImplementThread={onImplementThread}
-				onPostToPr={onPostToPr}
-				aiRunningThreadIds={aiRunningThreadIds}
-				aiTaskThreadIds={aiTaskThreadIds}
-				onOpenThreadAIModal={onOpenThreadAIModal}
-				onAskAI={onAskAI}
 				onUpdateEntry={onUpdateEntry}
 				onCopyThread={onCopyThread}
 				getThreadsForLine={getThreadsForLine}

@@ -17,7 +17,6 @@ function makeThread(
 			{
 				id: `${id}-e0`,
 				content: `content of ${id}`,
-				isAi: false,
 				createdAt: Date.now(),
 			},
 		],
