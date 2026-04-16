@@ -1,3 +1,5 @@
+import type { AgentState } from "./protocol";
+
 export type PermissionMode =
 	| "acceptEdits"
 	| "default"
@@ -136,4 +138,35 @@ export interface SessionSummary {
 	messageCount: number;
 	agentSessionId?: string | null;
 	permissionMode: PermissionMode;
+}
+
+/**
+ * Rust の `agent_status::SessionStatus` に対応するステータス。
+ * ChatSession 単位で Rust が算出する派生ステータスをそのまま消費する。
+ */
+export interface SessionStatus {
+	chat_session_id: string;
+	worktree_id: string;
+	worktree_path: string;
+	pty_id: string | null;
+	agent_state: AgentState;
+	turn_phase: TurnPhase;
+	session_state: SessionState;
+	pending_permission: boolean;
+	last_activity_at: number;
+}
+
+/**
+ * Rust の `agent_status::WorkspaceStatus` に対応する集約ステータス。
+ * 1 worktree 配下の全 SessionStatus を集約した結果。
+ */
+export interface WorkspaceStatus {
+	worktree_id: string;
+	worktree_path: string;
+	aggregated_state: AgentState;
+	running_count: number;
+	waiting_count: number;
+	error_count: number;
+	session_count: number;
+	last_activity_at: number;
 }

@@ -1,10 +1,10 @@
 mod agent_sdk;
+mod agent_status;
 mod comment_store;
 mod config;
 mod focus_tracker;
 mod git;
 mod git_host;
-mod hook_listener;
 mod lsp;
 mod mcp;
 mod menu;
@@ -31,12 +31,10 @@ mod workspace_state_store;
 mod ws_bridge;
 mod ws_server;
 
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use config::{load_or_create_config, AppConfig};
-use protocol::AgentStateSync;
 use tauri::Manager;
 use tauri_plugin_aptabase::EventTracker;
 
@@ -119,13 +117,9 @@ pub fn run() {
                 }
             }
 
-            let agent_states: hook_listener::AgentStatesMap = Arc::new(parking_lot::Mutex::new(
-                HashMap::<String, AgentStateSync>::new(),
-            ));
-            app.manage(agent_states.clone());
-
             let focus_tracker =
                 Arc::new(parking_lot::Mutex::new(focus_tracker::FocusTracker::new()));
+            app.manage(focus_tracker.clone());
 
             let ft = focus_tracker.clone();
             let window = app.get_webview_window("main");
@@ -145,19 +139,13 @@ pub fn run() {
                 });
             }
 
-            let hook_state = hook_listener::HookListenerState {
-                app_config: app_config.clone(),
-                app_handle: app.handle().clone(),
-                broadcaster: app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone(),
-                agent_states,
-                focus_tracker,
-                repo_paths: Arc::clone(app.state::<repo_registry::SharedRepoPaths>().inner()),
-            };
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = hook_listener::start_hook_listener(hook_state).await {
-                    log::error!("Hook listener failed to start: {e}");
-                }
-            });
+            // AgentStatusCenter を構築・登録
+            let broadcaster = app.state::<Arc<ws_bridge::WsBroadcaster>>().inner().clone();
+            let agent_status_center = Arc::new(agent_status::AgentStatusCenter::new(
+                app.handle().clone(),
+                broadcaster,
+            ));
+            app.manage(agent_status_center);
 
             menu::setup_menu(app)?;
             tray::setup_tray(app)?;
@@ -317,8 +305,11 @@ pub fn run() {
             config::get_mcp_config,
             config::update_mcp_config,
             config::regenerate_mcp_token,
-            // Hook Listener
-            hook_listener::get_agent_states,
+            // Agent Status (Rust 中央管理)
+            agent_status::get_session_status,
+            agent_status::get_workspace_status,
+            agent_status::list_workspace_statuses,
+            agent_status::list_session_statuses,
             // ネットワーク
             vpn_detect::detect_vpn_tunnel,
             vpn_detect::get_network_info,
@@ -441,10 +432,10 @@ pub fn run() {
                     }
                 }
             }
-            tauri::RunEvent::ExitRequested { api, .. } => {
-                if !tray::QUIT_REQUESTED.load(Ordering::SeqCst) {
-                    api.prevent_exit();
-                }
+            tauri::RunEvent::ExitRequested { api, .. }
+                if !tray::QUIT_REQUESTED.load(Ordering::SeqCst) =>
+            {
+                api.prevent_exit();
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {

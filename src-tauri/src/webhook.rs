@@ -1,6 +1,34 @@
 use std::time::Duration;
 
+use crate::config::{DesktopNotifyMode, NotifySection};
+use crate::focus_tracker::FocusTracker;
 use crate::protocol::{AgentState, AgentStateSync};
+
+/// 通知を送出すべきかを判定する。
+/// - state ごとの on_* フラグで有効/無効
+/// - desktop_mode が WhenInactive の場合、focus_tracker.is_inactive() を併用
+pub fn should_notify(
+    notify: &NotifySection,
+    state: &AgentState,
+    focus_tracker: &parking_lot::Mutex<FocusTracker>,
+) -> bool {
+    let enabled = match state {
+        AgentState::Running => notify.on_running,
+        AgentState::Done => notify.on_done,
+        AgentState::Error => notify.on_error,
+        AgentState::Waiting => notify.on_waiting,
+    };
+    if !enabled {
+        return false;
+    }
+
+    match notify.desktop_mode {
+        DesktopNotifyMode::Always => true,
+        DesktopNotifyMode::WhenInactive => focus_tracker
+            .lock()
+            .is_inactive(notify.inactive_timeout_minutes),
+    }
+}
 
 pub fn is_discord_webhook(url: &str) -> bool {
     url.contains("discord.com/api/webhooks/") || url.contains("discordapp.com/api/webhooks/")
@@ -285,5 +313,64 @@ mod tests {
     async fn empty_url_returns_immediately() {
         let event = make_event(AgentState::Running, None);
         send_webhook("", &event).await;
+    }
+
+    // --- should_notify ---
+
+    fn make_notify(
+        on_running: bool,
+        on_done: bool,
+        on_error: bool,
+        on_waiting: bool,
+    ) -> NotifySection {
+        NotifySection {
+            webhook_url: "https://example.com/hook".to_string(),
+            on_running,
+            on_done,
+            on_error,
+            on_waiting,
+            desktop_mode: DesktopNotifyMode::Always,
+            inactive_timeout_minutes: 2,
+        }
+    }
+
+    #[test]
+    fn should_notify_filters_disabled_state() {
+        let ft = parking_lot::Mutex::new(FocusTracker::new());
+        let notify = make_notify(false, true, true, true);
+        assert!(!should_notify(&notify, &AgentState::Running, &ft));
+        assert!(should_notify(&notify, &AgentState::Done, &ft));
+        assert!(should_notify(&notify, &AgentState::Error, &ft));
+        assert!(should_notify(&notify, &AgentState::Waiting, &ft));
+    }
+
+    #[test]
+    fn should_notify_always_sends_when_focused() {
+        let ft = parking_lot::Mutex::new(FocusTracker::new());
+        let notify = make_notify(true, true, true, true);
+        assert!(should_notify(&notify, &AgentState::Done, &ft));
+    }
+
+    #[test]
+    fn should_notify_when_inactive_blocks_focused() {
+        let ft = parking_lot::Mutex::new(FocusTracker::new());
+        let notify = NotifySection {
+            desktop_mode: DesktopNotifyMode::WhenInactive,
+            ..make_notify(true, true, true, true)
+        };
+        // フォーカス中なのでblockされる
+        assert!(!should_notify(&notify, &AgentState::Done, &ft));
+    }
+
+    #[test]
+    fn should_notify_when_inactive_allows_after_timeout() {
+        let ft = parking_lot::Mutex::new(FocusTracker::new());
+        ft.lock().on_blur();
+        let notify = NotifySection {
+            desktop_mode: DesktopNotifyMode::WhenInactive,
+            inactive_timeout_minutes: 0,
+            ..make_notify(true, true, true, true)
+        };
+        assert!(should_notify(&notify, &AgentState::Done, &ft));
     }
 }

@@ -5,7 +5,6 @@ use parking_lot::RwLock;
 
 use crate::comment_store::CommentStore;
 use crate::config::AppConfig;
-use crate::hook_listener::AgentStatesMap;
 use crate::pty::PtyManager;
 use crate::thread_store::ThreadStore;
 use crate::ws_bridge::WsBroadcaster;
@@ -18,8 +17,6 @@ pub struct McpSharedState {
     pub app_config: Arc<AppConfig>,
     #[allow(dead_code)] // Used in Phase I (mobile WebSocket broadcast)
     pub broadcaster: Arc<WsBroadcaster>,
-    #[allow(dead_code)]
-    pub agent_states: AgentStatesMap,
     #[allow(dead_code)] // Retained for backward compatibility during migration
     pub comment_store: Arc<CommentStore>,
     pub thread_store: Arc<ThreadStore>,
@@ -30,7 +27,6 @@ pub struct McpSharedState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn make_state() -> McpSharedState {
@@ -40,7 +36,6 @@ mod tests {
         ));
         let pty_manager = Arc::new(PtyManager::default());
         let broadcaster = Arc::new(WsBroadcaster::default());
-        let agent_states: AgentStatesMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let comment_store = Arc::new(CommentStore::default());
         let thread_store = Arc::new(ThreadStore::default());
 
@@ -49,7 +44,6 @@ mod tests {
             pty_manager,
             app_config,
             broadcaster,
-            agent_states,
             comment_store,
             thread_store,
             app_handle: None,
@@ -66,7 +60,6 @@ mod tests {
         assert!(Arc::ptr_eq(&state.pty_manager, &cloned.pty_manager));
         assert!(Arc::ptr_eq(&state.app_config, &cloned.app_config));
         assert!(Arc::ptr_eq(&state.broadcaster, &cloned.broadcaster));
-        assert!(Arc::ptr_eq(&state.agent_states, &cloned.agent_states));
         assert!(Arc::ptr_eq(&state.comment_store, &cloned.comment_store));
         assert!(Arc::ptr_eq(&state.thread_store, &cloned.thread_store));
     }

@@ -6,7 +6,6 @@ import type {
 	ChatSession,
 	ModelInfo,
 	PermissionMode,
-	SessionState,
 	SessionSummary,
 	TurnPhase,
 } from "@/types/session";
@@ -26,6 +25,7 @@ import {
 	restoreSession as restoreSessionApi,
 	sendAgentMessage,
 } from "./useSessionStore";
+import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
 
 export type ActivityStatus = { label: string } | null;
 
@@ -103,20 +103,6 @@ function dispatchSessionMeta(
 		type: "SET_AVAILABLE_MODELS",
 		models: response.availableModels,
 	});
-}
-
-function deriveAgentState(
-	turnPhase: TurnPhase,
-	sessionState?: SessionState,
-): AgentState {
-	switch (turnPhase) {
-		case "streaming":
-			return "running";
-		case "waiting_permission":
-			return "waiting";
-		case "idle":
-			return sessionState === "error" ? "error" : "done";
-	}
 }
 
 function deriveActivityStatus(
@@ -497,14 +483,16 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 			.filter((s): s is SessionSummary => !!s);
 	}, [state.sessions, state.sessionOrder]);
 
+	// Rust 中央管理 (AgentStatusCenter) から SessionStatus を購読し、
+	// session_id → agent_state の Map を生成する。フロント側で派生計算は行わない。
+	const worktreeSessionStatuses = useWorktreeSessionStatuses(worktreePath);
 	const sessionAgentStates = useMemo(() => {
 		const map = new Map<string, AgentState>();
-		for (const s of state.sessions) {
-			const phase: TurnPhase = state.turnPhases[s.id] ?? "idle";
-			map.set(s.id, deriveAgentState(phase, s.state));
+		for (const [sessionId, status] of worktreeSessionStatuses) {
+			map.set(sessionId, status.agent_state);
 		}
 		return map;
-	}, [state.sessions, state.turnPhases]);
+	}, [worktreeSessionStatuses]);
 
 	const activityStatus = useMemo(
 		() => deriveActivityStatus(state.activeSession?.messages, activeTurnPhase),

@@ -1,10 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { agentStateKey, aggregateAgentState } from "@/lib/agentStateUtils";
 import { normalizePath } from "@/lib/normalizePath";
 import type { PrStatus, WorktreeBranch } from "@/types/git";
-import type { AgentStateSync } from "@/types/protocol";
+import type { WorkspaceStatus } from "@/types/session";
 
 const POLL_INTERVAL = 120_000;
 
@@ -22,7 +21,8 @@ export function useWorktreeList(repoPath: string) {
 	const [loading, setLoading] = useState(true);
 	const refreshSeqRef = useRef(0);
 	const prevBranchesRef = useRef("");
-	const agentStatesRef = useRef<Map<string, AgentStateSync>>(new Map());
+	// Rust 中央管理 (AgentStatusCenter) から取得した worktree 集約状態。
+	const workspaceStatusesRef = useRef<Map<string, WorkspaceStatus>>(new Map());
 
 	const enrichWithPrStatus = useCallback(
 		async (cards: WorktreeBranch[]): Promise<WorktreeBranch[]> => {
@@ -65,19 +65,34 @@ export function useWorktreeList(repoPath: string) {
 					},
 				);
 				const enriched = await enrichWithPrStatus(cards);
-				const agentStatesRecord = await invoke<Record<string, AgentStateSync>>(
-					"get_agent_states",
-				).catch((): Record<string, AgentStateSync> => ({}));
-				const agentStatesMap = new Map(Object.entries(agentStatesRecord));
-				agentStatesRef.current = agentStatesMap;
+				// list_workspace_statuses の失敗では既存 ref を保持し、
+				// 全 agent_state を失わないようにする（一時的な invoke 失敗で UI が
+				// 逆戻りするのを防ぐ）。
+				const workspaceStatuses = await invoke<WorkspaceStatus[]>(
+					"list_workspace_statuses",
+				).catch((): WorkspaceStatus[] | null => null);
+				if (Array.isArray(workspaceStatuses)) {
+					// 成功時は最新スナップショットで既存 ref をマージし、
+					// refresh の await 中に "workspace-status-changed" イベントで
+					// 入った新しいエントリを last_activity_at で守る。
+					const nextMap = new Map(workspaceStatusesRef.current);
+					for (const ws of workspaceStatuses) {
+						const key = normalizePath(ws.worktree_id);
+						const current = nextMap.get(key);
+						if (!current || current.last_activity_at <= ws.last_activity_at) {
+							nextMap.set(key, ws);
+						}
+					}
+					workspaceStatusesRef.current = nextMap;
+				}
 
+				// setBranches 直前時点の最新 ref を使う。refresh の await 中に
+				// "workspace-status-changed" イベントで更新された最新値を取りこぼさない。
+				const latestStatusMap = workspaceStatusesRef.current;
 				const withAgentState = enriched.map((b) => {
 					if (!b.worktree_path) return b;
-					const bestState = aggregateAgentState(
-						agentStatesMap,
-						b.worktree_path,
-					);
-					return bestState ? { ...b, agent_state: bestState } : b;
+					const ws = latestStatusMap.get(normalizePath(b.worktree_path));
+					return ws ? { ...b, agent_state: ws.aggregated_state } : b;
 				});
 				const filtered = withAgentState.filter(
 					(b) => b.worktree_path != null && !b.is_default,
@@ -144,27 +159,22 @@ export function useWorktreeList(repoPath: string) {
 	}, [refresh]);
 
 	useEffect(() => {
-		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
-			const payload = event.payload;
-			const key = agentStateKey(payload.worktree_path, payload.pty_id);
-			agentStatesRef.current.set(key, payload);
+		const unlisten = listen<WorkspaceStatus>(
+			"workspace-status-changed",
+			(event) => {
+				const payload = event.payload;
+				const key = normalizePath(payload.worktree_id);
+				workspaceStatusesRef.current.set(key, payload);
 
-			setBranches((prev) =>
-				prev.map((b) => {
-					if (!b.worktree_path) return b;
-					if (
-						normalizePath(b.worktree_path) !==
-						normalizePath(payload.worktree_path)
-					)
-						return b;
-					const bestState = aggregateAgentState(
-						agentStatesRef.current,
-						b.worktree_path,
-					);
-					return bestState ? { ...b, agent_state: bestState } : b;
-				}),
-			);
-		});
+				setBranches((prev) =>
+					prev.map((b) => {
+						if (!b.worktree_path) return b;
+						if (normalizePath(b.worktree_path) !== key) return b;
+						return { ...b, agent_state: payload.aggregated_state };
+					}),
+				);
+			},
+		);
 		return () => {
 			unlisten.then((fn) => fn());
 		};

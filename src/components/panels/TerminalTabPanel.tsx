@@ -18,7 +18,8 @@ import { useTerminalPanes } from "@/hooks/useTerminalPanes";
 import { highestPriorityState } from "@/lib/agentStateUtils";
 import { normalizePath } from "@/lib/normalizePath";
 import { countLeaves, getAllLeaves } from "@/lib/paneTree";
-import type { AgentState, AgentStateSync } from "@/types/protocol";
+import type { AgentState } from "@/types/protocol";
+import type { SessionStatus } from "@/types/session";
 import type { Theme } from "@/types/settings";
 import type { SplitDirection } from "@/types/terminal-pane";
 
@@ -79,18 +80,22 @@ export const TerminalTabPanel = forwardRef<
 		[updatePaneSessionKey],
 	);
 
-	// agent-state-changed イベントリスナー
+	// Rust 中央管理 (AgentStatusCenter) から SessionStatus を購読する。
+	// pty_id ごとの agent_state を Map に保持し、表示は Rust 由来の値をそのまま使う。
 	useEffect(() => {
-		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
-			const { worktree_path, state, pty_id } = event.payload;
-			if (!cwd || normalizePath(worktree_path) !== normalizePath(cwd)) return;
-			if (!pty_id) return;
-			setAgentStateByPtyId((prev) => {
-				const next = new Map(prev);
-				next.set(pty_id, state);
-				return next;
-			});
-		});
+		const unlisten = listen<SessionStatus>(
+			"session-status-changed",
+			(event) => {
+				const { worktree_id, agent_state, pty_id } = event.payload;
+				if (!cwd || normalizePath(worktree_id) !== normalizePath(cwd)) return;
+				if (!pty_id) return;
+				setAgentStateByPtyId((prev) => {
+					const next = new Map(prev);
+					next.set(pty_id, agent_state);
+					return next;
+				});
+			},
+		);
 		return () => {
 			unlisten.then((fn) => fn());
 		};

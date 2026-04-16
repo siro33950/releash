@@ -65,7 +65,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	get_cached_pr_status: { open_prs: {}, merged_branches: [] } satisfies PrStatus,
 	get_cached_issues: [],
 	fetch_issues: [],
-	get_agent_states: {},
+	list_workspace_statuses: [],
 	get_releash_base: null,
 	get_default_branch: "main",
 

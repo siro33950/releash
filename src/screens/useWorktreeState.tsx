@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import {
 	useCallback,
 	useEffect,
@@ -25,7 +24,7 @@ import { usePrDetail } from "@/hooks/usePrDetail";
 import { usePrDiff } from "@/hooks/usePrDiff";
 import { useThreadAI } from "@/hooks/useThreadAI";
 import { useThreads } from "@/hooks/useThreads";
-import { agentStateKey, aggregateAgentState } from "@/lib/agentStateUtils";
+import { useWorkspaceStatus } from "@/hooks/useWorkspaceStatus";
 import {
 	registerDefinitionProviders,
 	setLspActive,
@@ -41,7 +40,6 @@ import {
 	useWorktreeGitActions,
 } from "@/screens/useWorktreeGitActions";
 import { useWorktreeMenuHandlers } from "@/screens/useWorktreeMenuHandlers";
-import type { AgentStateSync } from "@/types/protocol";
 import type { AppSettings, DiffBase, DiffMode } from "@/types/settings";
 import { getThreadOrigin } from "@/types/thread";
 import type {
@@ -117,9 +115,6 @@ export function useWorktreeState({
 
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
-	const [agentStatesMap, setAgentStatesMap] = useState<
-		Map<string, AgentStateSync>
-	>(new Map());
 	const {
 		threads,
 		createThread,
@@ -413,31 +408,10 @@ export function useWorktreeState({
 		if (branch != null) setReady(true);
 	}, [branch]);
 
-	useEffect(() => {
-		const unlisten = listen<AgentStateSync>("agent-state-changed", (event) => {
-			if (
-				normalizePath(event.payload.worktree_path) === normalizePath(rootPath)
-			) {
-				setAgentStatesMap((prev) => {
-					const key = agentStateKey(
-						event.payload.worktree_path,
-						event.payload.pty_id,
-					);
-					const next = new Map(prev);
-					next.set(key, event.payload);
-					return next;
-				});
-			}
-		});
-		return () => {
-			unlisten.then((f) => f());
-		};
-	}, [rootPath]);
-
-	const agentState = useMemo(
-		() => aggregateAgentState(agentStatesMap, rootPath),
-		[agentStatesMap, rootPath],
-	);
+	// Rust 中央管理 (AgentStatusCenter) から worktree 集約状態を購読する。
+	// 派生計算はすべて Rust 側 (`AgentStatusCenter::aggregate`) で完結する。
+	const workspaceStatus = useWorkspaceStatus(rootPath);
+	const agentState = workspaceStatus?.aggregated_state;
 
 	// --- Refs ---
 	const rootPathRef = useRef(rootPath);
