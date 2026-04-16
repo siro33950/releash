@@ -58,10 +58,16 @@ test.describe("StatusBar", () => {
 		await setupTauriMock(page, config);
 		await waitForApp(page);
 
-		// agent-state-changed イベントを発火
-		await emitTauriEvent(page, "agent-state-changed", {
+		// workspace-status-changed イベントを発火（Rust 中央管理からの通知）
+		await emitTauriEvent(page, "workspace-status-changed", {
+			worktree_id: "/test/repo",
 			worktree_path: "/test/repo",
-			state: "running",
+			aggregated_state: "running",
+			running_count: 1,
+			waiting_count: 0,
+			error_count: 0,
+			session_count: 1,
+			last_activity_at: 1000,
 		});
 
 		// WorkspaceListのブランチアイテムに running 状態のアイコンが表示される
