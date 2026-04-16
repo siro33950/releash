@@ -216,6 +216,73 @@ fn emit_session_state_changed(
     );
 }
 
+/// 状態遷移時に AgentStatusCenter へ通知し、必要に応じて Webhook 送信を行う統一エントリ。
+/// session_store から ChatSession を引いて worktree_path / SessionState を取得する。
+/// `session_state_override` を渡すと、ストア値より優先される（Bridge crash 時など）。
+fn notify_status_transition(
+    app: &tauri::AppHandle,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    turn_phase: TurnPhase,
+    session_state_override: Option<crate::session::SessionState>,
+) {
+    use crate::agent_status::{current_timestamp, AgentStatusCenter, SessionStatus, TurnPhaseRepr};
+    use crate::config::AppConfig;
+    use crate::focus_tracker::FocusTracker;
+
+    let data_dir = match resolve_data_dir(app) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let session = match session_store.get_session(&data_dir, chat_session_id) {
+        Ok(Some(s)) => s,
+        _ => return,
+    };
+    let worktree_path = session.worktree_path.clone();
+    let session_state = session_state_override.unwrap_or_else(|| session.state.clone());
+
+    let agent_state = AgentStatusCenter::derive_agent_state(turn_phase, session_state.clone());
+
+    if let Some(center) = app.try_state::<Arc<AgentStatusCenter>>() {
+        let status = SessionStatus {
+            chat_session_id: chat_session_id.to_string(),
+            worktree_id: worktree_path.clone(),
+            worktree_path: worktree_path.clone(),
+            pty_id: None,
+            agent_state: agent_state.clone(),
+            turn_phase: TurnPhaseRepr::from(turn_phase),
+            session_state,
+            pending_permission: matches!(turn_phase, TurnPhase::WaitingPermission),
+            last_activity_at: current_timestamp(),
+        };
+        center.update_session(status);
+    }
+
+    // Webhook 送信（Slack/Discord）
+    if let (Some(cfg_state), Some(ft_state)) = (
+        app.try_state::<Arc<AppConfig>>(),
+        app.try_state::<Arc<parking_lot::Mutex<FocusTracker>>>(),
+    ) {
+        if let Ok(cfg) = cfg_state.get_config() {
+            let notify = cfg.server.notify.clone();
+            let url = notify.webhook_url.clone();
+            if !url.is_empty() && crate::webhook::should_notify(&notify, &agent_state, &ft_state) {
+                let sync = crate::protocol::AgentStateSync {
+                    worktree_path: worktree_path.clone(),
+                    state: agent_state,
+                    exit_code: None,
+                    timestamp: current_timestamp(),
+                    session_id: Some(chat_session_id.to_string()),
+                    pty_id: None,
+                };
+                tokio::spawn(async move {
+                    crate::webhook::send_webhook(&url, &sync).await;
+                });
+            }
+        }
+    }
+}
+
 const CLOSE_TIMEOUT_SECS: u64 = 5;
 
 /// Resolve permission mode: "plan" → "default" (= acceptEdits), others unchanged.
@@ -836,6 +903,9 @@ async fn spawn_bridge_process(
         );
     }
 
+    // 初期 SessionStatus を AgentStatusCenter に登録（Idle で初期化）
+    notify_status_transition(app, session_store, chat_session_id, TurnPhase::Idle, None);
+
     // Spawn stdout reader (process-lifetime)
     let handles_stdout = Arc::clone(handles);
     let session_store_clone = Arc::clone(session_store);
@@ -1009,6 +1079,19 @@ async fn spawn_bridge_process(
                                 TurnPhase::Idle,
                                 Some(exit_code),
                             );
+                            // AgentStatusCenter にも通知（exit_code 非0 なら Error 扱い）
+                            let override_state = if exit_code != 0 {
+                                Some(crate::session::SessionState::Error)
+                            } else {
+                                None
+                            };
+                            notify_status_transition(
+                                &app_stdout,
+                                &session_store_clone,
+                                &csid_stdout,
+                                TurnPhase::Idle,
+                                override_state,
+                            );
 
                             // Auto-consume pending message queued by send_agent_message.
                             // Spawn a separate task to avoid oversized async state machine in stdout reader.
@@ -1095,6 +1178,16 @@ async fn spawn_bridge_process(
                                 &csid_stdout,
                                 TurnPhase::Idle,
                                 Some(1),
+                            );
+                        }
+                        // Bridge crash: AgentStatusCenter に Error として通知
+                        if was_streaming || was_initializing {
+                            notify_status_transition(
+                                &app_stdout,
+                                &session_store_clone,
+                                &csid_stdout,
+                                TurnPhase::Idle,
+                                Some(crate::session::SessionState::Error),
                             );
                         }
                         // Init error → clear stale agent_session_id to prevent infinite resume loop
@@ -1286,17 +1379,33 @@ async fn spawn_bridge_process(
 
                         // Transition to WaitingPermission when permission_request arrives
                         if msg_type == "permission_request" {
-                            let mut map = handles_stdout.lock().await;
-                            if let Some(proc) = map.get_mut(&csid_stdout) {
-                                if proc.state == BridgeState::Streaming {
-                                    proc.turn_phase = TurnPhase::WaitingPermission;
-                                    emit_session_state_changed(
-                                        &app_stdout,
-                                        &csid_stdout,
-                                        TurnPhase::WaitingPermission,
-                                        None,
-                                    );
+                            let did_transition = {
+                                let mut map = handles_stdout.lock().await;
+                                if let Some(proc) = map.get_mut(&csid_stdout) {
+                                    if proc.state == BridgeState::Streaming {
+                                        proc.turn_phase = TurnPhase::WaitingPermission;
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
                                 }
+                            };
+                            if did_transition {
+                                emit_session_state_changed(
+                                    &app_stdout,
+                                    &csid_stdout,
+                                    TurnPhase::WaitingPermission,
+                                    None,
+                                );
+                                notify_status_transition(
+                                    &app_stdout,
+                                    &session_store_clone,
+                                    &csid_stdout,
+                                    TurnPhase::WaitingPermission,
+                                    None,
+                                );
                             }
                         }
                     }
@@ -1312,6 +1421,13 @@ async fn spawn_bridge_process(
         };
         if was_streaming {
             emit_session_state_changed(&app_stdout, &csid_stdout, TurnPhase::Idle, Some(-1));
+            notify_status_transition(
+                &app_stdout,
+                &session_store_clone,
+                &csid_stdout,
+                TurnPhase::Idle,
+                Some(crate::session::SessionState::Error),
+            );
         }
         {
             let mut map = handles_stdout.lock().await;
@@ -1565,6 +1681,13 @@ async fn start_agent_turn(
 
     // Emit state change so frontend can track turn phase
     emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None);
+    notify_status_transition(
+        app,
+        session_store,
+        chat_session_id,
+        TurnPhase::Streaming,
+        None,
+    );
 
     Ok(())
 }
@@ -1662,6 +1785,13 @@ async fn consume_pending_message(
 
     // 5. Emit state change
     emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None);
+    notify_status_transition(
+        app,
+        session_store,
+        chat_session_id,
+        TurnPhase::Streaming,
+        None,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1848,8 +1978,10 @@ pub async fn set_agent_model(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn respond_agent_permission(
     app: tauri::AppHandle,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     chat_session_id: String,
     request_id: String,
@@ -1956,6 +2088,13 @@ pub async fn respond_agent_permission(
     // Emit state change only if we actually transitioned: WaitingPermission → Streaming
     if did_transition_to_streaming {
         emit_session_state_changed(&app, &chat_session_id, TurnPhase::Streaming, None);
+        notify_status_transition(
+            &app,
+            session_store.inner(),
+            &chat_session_id,
+            TurnPhase::Streaming,
+            None,
+        );
     }
 
     Ok(())

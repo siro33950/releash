@@ -1062,8 +1062,6 @@ mod tests {
         ));
         let pty_manager = Arc::new(crate::pty::PtyManager::default());
         let broadcaster = Arc::new(crate::ws_bridge::WsBroadcaster::default());
-        let agent_states: crate::hook_listener::AgentStatesMap =
-            Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
         let comment_store = Arc::new(crate::comment_store::CommentStore::default());
         let thread_store = Arc::new(crate::thread_store::ThreadStore::default());
 
@@ -1072,7 +1070,6 @@ mod tests {
             pty_manager,
             app_config,
             broadcaster,
-            agent_states,
             comment_store,
             thread_store,
             app_handle: None,

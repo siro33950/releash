@@ -1,7 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import { normalizePath } from "@/lib/normalizePath";
-import type { AgentStateSync } from "@/types/protocol";
+import type { WorkspaceStatus } from "@/types/session";
 import type { WorktreeTab } from "@/types/workspace-tab";
 
 function fallbackBranchName(rootPath: string): string {
@@ -73,14 +73,17 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 
 		const setupListener = async () => {
 			try {
-				const off = await listen<AgentStateSync>(
-					"agent-state-changed",
+				// Rust 中央管理 (AgentStatusCenter) から workspace 集約状態を購読する。
+				const off = await listen<WorkspaceStatus>(
+					"workspace-status-changed",
 					(event) => {
-						const worktreePath = normalizePath(event.payload.worktree_path);
-						const { state } = event.payload;
+						const worktreePath = normalizePath(event.payload.worktree_id);
+						const aggregated = event.payload.aggregated_state;
 						setWorktrees((prev) =>
 							prev.map((t) =>
-								t.rootPath === worktreePath ? { ...t, agentState: state } : t,
+								t.rootPath === worktreePath
+									? { ...t, agentState: aggregated }
+									: t,
 							),
 						);
 					},
@@ -91,7 +94,7 @@ export function useWorkspaceNavigation(): UseWorkspaceNavigationReturn {
 				}
 				unlisten = off;
 			} catch (err) {
-				console.warn("agent-state-changed listener setup failed:", err);
+				console.warn("workspace-status-changed listener setup failed:", err);
 			}
 		};
 

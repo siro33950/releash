@@ -175,20 +175,26 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
             .map_err(|e| format!("Failed to send worktree list: {e}"))?;
     }
 
-    // --- 初期データ送信: agent_states ---
+    // --- 初期データ送信: 全 SessionStatus を AgentStateSync 互換形式で送信 ---
     if let Some(app) = &state.app_handle {
         use tauri::Manager;
-        if let Some(agent_states) = app.try_state::<crate::hook_listener::AgentStatesMap>() {
-            let agent_msgs: Vec<String> = {
-                let states = agent_states.lock();
-                states
-                    .values()
-                    .filter_map(|sync| {
-                        let msg = WsMessage::AgentStateSync(sync.clone());
-                        serialize_message(&msg).ok()
-                    })
-                    .collect()
-            };
+        if let Some(center) = app.try_state::<Arc<crate::agent_status::AgentStatusCenter>>() {
+            let agent_msgs: Vec<String> = center
+                .list_sessions()
+                .into_iter()
+                .filter_map(|status| {
+                    let sync = AgentStateSync {
+                        worktree_path: status.worktree_path,
+                        state: status.agent_state,
+                        exit_code: None,
+                        timestamp: status.last_activity_at,
+                        session_id: Some(status.chat_session_id),
+                        pty_id: status.pty_id,
+                    };
+                    let msg = WsMessage::AgentStateSync(sync);
+                    serialize_message(&msg).ok()
+                })
+                .collect();
             for json in agent_msgs {
                 let _ = write.send(Message::text(json)).await;
             }
