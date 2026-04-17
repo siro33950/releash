@@ -55,13 +55,20 @@ function InlineMarkdown({
 			id={id}
 			data-testid={dataTestId}
 			className={cn(
-				"markdown-preview prose prose-sm dark:prose-invert max-w-none",
+				"markdown-preview prose prose-sm dark:prose-invert max-w-none break-words",
 				className,
 			)}
 		>
 			<Markdown
 				remarkPlugins={remarkPluginList}
 				rehypePlugins={rehypePluginList}
+				components={{
+					table: ({ children: c, ...props }) => (
+						<div style={{ overflowX: "auto", maxWidth: "100%" }}>
+							<table {...props}>{c}</table>
+						</div>
+					),
+				}}
 			>
 				{children}
 			</Markdown>
@@ -79,9 +86,7 @@ function PlanContent({
 	return (
 		<>
 			{plan && (
-				<InlineMarkdown data-testid="plan-markdown" className="break-words">
-					{plan}
-				</InlineMarkdown>
+				<InlineMarkdown data-testid="plan-markdown">{plan}</InlineMarkdown>
 			)}
 			{allowedPrompts.length > 0 && (
 				<div data-testid="allowed-prompts">
@@ -287,7 +292,7 @@ export function PermissionDialog({
 		return (
 			<div
 				data-testid="permission-dialog"
-				className="mx-3 my-1.5 rounded-md border border-border bg-muted/50 p-3"
+				className="mx-3 my-1.5 rounded-md border border-border bg-muted/50 p-3 overflow-hidden"
 			>
 				{questions.map((q, qIndex) => {
 					const questionId = `${questionIdBase}-q-${qIndex}`;
@@ -414,7 +419,7 @@ export function PermissionDialog({
 		return (
 			<div
 				data-testid="permission-dialog"
-				className="mx-3 my-1.5 rounded-md border border-border bg-muted/50 p-3"
+				className="mx-3 my-1.5 rounded-md border border-border bg-muted/50 p-3 overflow-hidden"
 			>
 				<p className="text-sm font-medium mb-2">Plan Review</p>
 				<div className="space-y-2 mb-2">
