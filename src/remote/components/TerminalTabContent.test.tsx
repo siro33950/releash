@@ -11,8 +11,8 @@ describe("TerminalTabContent", () => {
 	const defaultProps = {
 		status: "connected" as const,
 		ptySessions: [
-			{ ptyId: 1, cols: 80, kind: "terminal" as const },
-			{ ptyId: 2, cols: 120, label: "dev-server", kind: "terminal" as const },
+			{ ptyId: 1, cols: 80 },
+			{ ptyId: 2, cols: 120, label: "dev-server" },
 		],
 		activePtyId: 1,
 		ptySpawning: false,
@@ -45,7 +45,7 @@ describe("TerminalTabContent", () => {
 		render(
 			<TerminalTabContent
 				{...defaultProps}
-				ptySessions={[{ ptyId: 1, cols: 80, kind: "terminal" as const }]}
+				ptySessions={[{ ptyId: 1, cols: 80 }]}
 			/>,
 		);
 		expect(screen.getByRole("tab")).toBeInTheDocument();
@@ -92,121 +92,11 @@ describe("TerminalTabContent", () => {
 		expect(defaultProps.setActivePtyId).toHaveBeenCalledWith(2);
 	});
 
-	it("agent mode 時に + ボタンが非表示", () => {
-		render(
-			<TerminalTabContent {...defaultProps} mode="agent" activeTab="agent" />,
-		);
-		expect(screen.queryByLabelText("Add terminal")).not.toBeInTheDocument();
-	});
-
-	it("agent mode + 空リストで Spawn ボタン非表示", () => {
+	it("空リストで No terminal sessions と Start Terminal ボタンが表示される", () => {
 		render(
 			<TerminalTabContent
 				{...defaultProps}
 				ptySessions={[]}
-				mode="agent"
-				activeTab="agent"
-			/>,
-		);
-		expect(screen.queryByText("Start Terminal")).not.toBeInTheDocument();
-		expect(screen.getByText("No agent sessions")).toBeInTheDocument();
-	});
-
-	it("agent mode でラベル未設定時に Agent N と表示される", () => {
-		render(
-			<TerminalTabContent
-				{...defaultProps}
-				ptySessions={[
-					{ ptyId: 1, cols: 80, kind: "agent" as const },
-					{ ptyId: 2, cols: 120, label: "my-agent", kind: "agent" as const },
-				]}
-				mode="agent"
-				activeTab="agent"
-			/>,
-		);
-		expect(screen.getByText("Agent 1")).toBeInTheDocument();
-		expect(screen.getByText("my-agent")).toBeInTheDocument();
-		expect(screen.getByLabelText("Close Agent 1")).toBeInTheDocument();
-		expect(screen.getByLabelText("Close my-agent")).toBeInTheDocument();
-		expect(screen.getByRole("tablist")).toHaveAttribute(
-			"aria-label",
-			"Agent Tabs",
-		);
-	});
-
-	it("agentStates が渡された場合に AgentStateIcon が表示される", () => {
-		const agentStates = new Map([
-			[
-				"/repo::1",
-				{
-					worktree_path: "/repo",
-					state: "running" as const,
-					exit_code: null,
-					timestamp: Date.now(),
-					session_id: null,
-					pty_id: "1",
-				},
-			],
-		]);
-		render(
-			<TerminalTabContent
-				{...defaultProps}
-				ptySessions={[
-					{ ptyId: 1, cols: 80, worktreePath: "/repo", kind: "agent" as const },
-				]}
-				agentStates={agentStates}
-				mode="agent"
-				activeTab="agent"
-			/>,
-		);
-		expect(screen.getByTitle("running")).toBeInTheDocument();
-	});
-
-	it("agentStates が渡されていない場合は AgentStateIcon が表示されない", () => {
-		render(<TerminalTabContent {...defaultProps} />);
-		expect(screen.queryByTitle("running")).not.toBeInTheDocument();
-	});
-
-	it("terminal mode で Terminal セッションのみ表示され Agent セッションが混入しない", () => {
-		render(
-			<TerminalTabContent
-				{...defaultProps}
-				ptySessions={[
-					{ ptyId: 1, cols: 80, kind: "terminal" as const },
-					{ ptyId: 2, cols: 80, kind: "terminal" as const, label: "dev" },
-				]}
-				mode="terminal"
-				activeTab="terminal"
-			/>,
-		);
-		expect(screen.getByText("Terminal 1")).toBeInTheDocument();
-		expect(screen.getByText("dev")).toBeInTheDocument();
-		expect(screen.queryByText(/Agent/)).not.toBeInTheDocument();
-	});
-
-	it("agent mode で Agent セッションのみ表示され Terminal セッションが混入しない", () => {
-		render(
-			<TerminalTabContent
-				{...defaultProps}
-				ptySessions={[
-					{ ptyId: 3, cols: 80, kind: "agent" as const },
-					{ ptyId: 4, cols: 80, kind: "agent" as const, label: "claude" },
-				]}
-				mode="agent"
-				activeTab="agent"
-			/>,
-		);
-		expect(screen.getByText("Agent 3")).toBeInTheDocument();
-		expect(screen.getByText("claude")).toBeInTheDocument();
-		expect(screen.queryByText(/Terminal \d/)).not.toBeInTheDocument();
-	});
-
-	it("terminal mode + 空リストで No terminal sessions と Start Terminal ボタンが表示される", () => {
-		render(
-			<TerminalTabContent
-				{...defaultProps}
-				ptySessions={[]}
-				mode="terminal"
 				activeTab="terminal"
 			/>,
 		);

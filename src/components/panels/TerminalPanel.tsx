@@ -31,7 +31,6 @@ export interface TerminalPanelProps {
 	theme?: Theme;
 	terminalStartupCommand?: string;
 	sessionKey?: string;
-	agentType?: string;
 	label?: string;
 	onPtyReady?: (ptyId: number, sessionKey: string) => void;
 	onSplitVertical?: () => void;
@@ -51,7 +50,6 @@ export const TerminalPanel = forwardRef<
 		theme,
 		terminalStartupCommand,
 		sessionKey,
-		agentType,
 		label,
 		onPtyReady,
 		onSplitVertical,
@@ -70,7 +68,6 @@ export const TerminalPanel = forwardRef<
 		theme,
 		terminalStartupCommand,
 		sessionKey,
-		agentType,
 		label,
 		onPtyReady,
 	);

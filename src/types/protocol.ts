@@ -44,7 +44,6 @@ export interface PtyReady {
 	rows: number;
 	label?: string;
 	worktree_path?: string;
-	kind?: "agent" | "terminal" | "one_shot";
 }
 
 export interface PtyOutputRequest {

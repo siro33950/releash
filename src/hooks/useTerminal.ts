@@ -3,7 +3,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { FitAddon } from "@xterm/addon-fit";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { type RefObject, useCallback, useEffect, useRef } from "react";
-import { trackEvent } from "@/lib/telemetry";
 import type { Theme } from "@/types/settings";
 
 interface PtyOutput {
@@ -97,7 +96,6 @@ export function useTerminal(
 	theme?: Theme,
 	terminalStartupCommand?: string,
 	sessionKey?: string,
-	agentType?: string,
 	label?: string,
 	onPtyReady?: (ptyId: number, sessionKey: string) => void,
 ) {
@@ -110,8 +108,6 @@ export function useTerminal(
 	themeRef.current = theme;
 	const startupCommandRef = useRef(terminalStartupCommand);
 	startupCommandRef.current = terminalStartupCommand;
-	const agentTypeRef = useRef(agentType);
-	agentTypeRef.current = agentType;
 	const onPtyReadyRef = useRef(onPtyReady);
 	onPtyReadyRef.current = onPtyReady;
 
@@ -196,7 +192,7 @@ export function useTerminal(
 				sessionKey: effectiveSessionKey,
 				worktreePath: worktreePath ?? "",
 				label: label ?? null,
-				kind: agentTypeRef.current ? "agent" : "terminal",
+				kind: "terminal",
 			});
 
 			// standalone 用: cwd → UUID キャッシュ更新（管理ペインでは不要）
@@ -249,9 +245,6 @@ export function useTerminal(
 			if (result.is_new && startupCommandRef.current) {
 				const cmd = startupCommandRef.current.trim();
 				if (cmd) {
-					trackEvent("agent_started", {
-						agent_type: agentTypeRef.current ?? "unknown",
-					});
 					invoke("write_pty", {
 						ptyId: result.pty_id,
 						data: `${cmd}\n`,

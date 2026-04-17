@@ -89,7 +89,7 @@ export function useRemoteAppActions({
 			setSelectedPath(null);
 			setBranchName(null);
 			resetPty();
-			setActiveTab("agent");
+			setActiveTab("terminal");
 			setTerminalMounted(true);
 		},
 		[
@@ -256,7 +256,7 @@ export function useRemoteAppActions({
 	const handleTabChange = useCallback(
 		(tab: Tab) => {
 			setActiveTab(tab);
-			if (tab === "terminal" || tab === "agent") setTerminalMounted(true);
+			if (tab === "terminal") setTerminalMounted(true);
 		},
 		[setActiveTab, setTerminalMounted],
 	);

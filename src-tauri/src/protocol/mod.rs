@@ -421,7 +421,6 @@ mod tests {
                 rows: 24,
                 label: None,
                 worktree_path: None,
-                kind: None,
             }),
             WsMessage::PtyOutputRequest(PtyOutputRequest { pty_id: 1 }),
             WsMessage::GitStatusSync(GitStatusSync { files: vec![] }),
@@ -659,38 +658,15 @@ mod tests {
             rows: 24,
             label: Some("build".to_string()),
             worktree_path: Some("/repo/wt".to_string()),
-            kind: Some(crate::pty::PtyKind::Terminal),
         });
         let json = serialize_message(&msg).unwrap();
         assert!(json.contains("\"label\":\"build\""));
         assert!(json.contains("\"worktree_path\":\"/repo/wt\""));
-        assert!(json.contains("\"kind\":\"terminal\""));
         let back = deserialize_message(&json).unwrap();
         match back {
             WsMessage::PtyReady(r) => {
                 assert_eq!(r.label.unwrap(), "build");
                 assert_eq!(r.worktree_path.unwrap(), "/repo/wt");
-                assert_eq!(r.kind.unwrap(), crate::pty::PtyKind::Terminal);
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn roundtrip_pty_ready_with_agent_kind() {
-        let msg = WsMessage::PtyReady(PtyReady {
-            pty_id: 3,
-            cols: 80,
-            rows: 24,
-            label: Some("agent".to_string()),
-            worktree_path: None,
-            kind: Some(crate::pty::PtyKind::Agent),
-        });
-        let json = serialize_message(&msg).unwrap();
-        let back = deserialize_message(&json).unwrap();
-        match back {
-            WsMessage::PtyReady(r) => {
-                assert_eq!(r.kind.unwrap(), crate::pty::PtyKind::Agent);
             }
             _ => panic!("unexpected variant"),
         }
@@ -719,7 +695,6 @@ mod tests {
                 assert_eq!(r.pty_id, 1);
                 assert!(r.label.is_none());
                 assert!(r.worktree_path.is_none());
-                assert!(r.kind.is_none());
             }
             _ => panic!("unexpected variant"),
         }
