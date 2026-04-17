@@ -209,7 +209,6 @@ pub fn run() {
             pty::get_or_spawn_pty,
             pty::kill_ptys_by_worktree,
             pty::gc_ptys_for_worktree,
-            pty::batch_spawn_agent_ptys,
             // ファイル監視
             watcher::start_watching,
             watcher::start_git_dir_watching,

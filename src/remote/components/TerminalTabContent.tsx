@@ -1,7 +1,5 @@
 import { useRef } from "react";
-import { AgentStateIcon } from "@/components/ui/agent-state-icon";
-import { agentStateKey } from "@/lib/agentStateUtils";
-import type { AgentStateSync, WsMessage } from "@/types/protocol";
+import type { WsMessage } from "@/types/protocol";
 import type { Subscribe } from "../hooks/useMessageBus";
 import type { PtySession } from "../hooks/usePtyManagement";
 import type { ConnectionStatus } from "../hooks/useWebSocket";
@@ -21,8 +19,6 @@ interface TerminalTabContentProps {
 	setActivePtyId: (id: number) => void;
 	spawnPty: (label?: string) => void;
 	killPty: (ptyId: number) => void;
-	mode?: "terminal" | "agent";
-	agentStates?: Map<string, AgentStateSync>;
 }
 
 export function TerminalTabContent({
@@ -39,8 +35,6 @@ export function TerminalTabContent({
 	setActivePtyId,
 	spawnPty,
 	killPty,
-	mode = "terminal",
-	agentStates,
 }: TerminalTabContentProps) {
 	const tabRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
@@ -56,7 +50,7 @@ export function TerminalTabContent({
 			<>
 				<div
 					role="tablist"
-					aria-label={mode === "agent" ? "Agent Tabs" : "Terminal Tabs"}
+					aria-label="Terminal Tabs"
 					className="flex items-center gap-1 px-2 py-1 border-b border-border bg-card shrink-0 overflow-x-auto"
 				>
 					{ptySessions.map((s) => (
@@ -96,19 +90,7 @@ export function TerminalTabContent({
 								}
 							}}
 						>
-							{agentStates && (
-								<AgentStateIcon
-									state={
-										agentStates.get(
-											agentStateKey(s.worktreePath ?? "", String(s.ptyId)),
-										)?.state
-									}
-								/>
-							)}
-							<span>
-								{s.label ??
-									`${mode === "agent" ? "Agent" : "Terminal"} ${s.ptyId}`}
-							</span>
+							<span>{s.label ?? `Terminal ${s.ptyId}`}</span>
 							<button
 								type="button"
 								className={`ml-0.5 rounded-sm hover:bg-black/20 inline-flex items-center ${
@@ -122,23 +104,21 @@ export function TerminalTabContent({
 									e.stopPropagation();
 									killPty(s.ptyId);
 								}}
-								aria-label={`Close ${s.label ?? `${mode === "agent" ? "Agent" : "Terminal"} ${s.ptyId}`}`}
+								aria-label={`Close ${s.label ?? `Terminal ${s.ptyId}`}`}
 							>
 								&#x2715;
 							</button>
 						</div>
 					))}
-					{mode === "terminal" && (
-						<button
-							type="button"
-							className="px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary rounded transition-colors shrink-0"
-							onClick={() => spawnPty()}
-							disabled={ptySpawning || !selectedWorktree}
-							aria-label="Add terminal"
-						>
-							+
-						</button>
-					)}
+					<button
+						type="button"
+						className="px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary rounded transition-colors shrink-0"
+						onClick={() => spawnPty()}
+						disabled={ptySpawning || !selectedWorktree}
+						aria-label="Add terminal"
+					>
+						+
+					</button>
 				</div>
 				{activePtyId != null && (
 					<div
@@ -156,7 +136,7 @@ export function TerminalTabContent({
 							}
 							send={send}
 							subscribe={subscribe}
-							visible={activeTab === mode}
+							visible={activeTab === "terminal"}
 						/>
 					</div>
 				)}
@@ -165,17 +145,10 @@ export function TerminalTabContent({
 	}
 
 	if (
-		activeTab === mode &&
+		activeTab === "terminal" &&
 		status === "connected" &&
 		ptySessions.length === 0
 	) {
-		if (mode === "agent") {
-			return (
-				<div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
-					<p>No agent sessions</p>
-				</div>
-			);
-		}
 		return (
 			<div className="flex flex-col items-center justify-center h-full gap-3 text-muted-foreground">
 				<p>No terminal sessions</p>
@@ -197,7 +170,7 @@ export function TerminalTabContent({
 		);
 	}
 
-	if (activeTab === mode && status !== "connected") {
+	if (activeTab === "terminal" && status !== "connected") {
 		return (
 			<div className="flex items-center justify-center h-full text-muted-foreground">
 				<p>Not connected</p>

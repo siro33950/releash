@@ -11,7 +11,7 @@ interface PaneTreeRendererProps {
 	cwd?: string | null;
 	theme?: Theme;
 	terminalStartupCommand?: string;
-	agentType?: string;
+
 	onFocus: (paneId: string) => void;
 	onClose: (paneId: string) => void;
 	onSplit: (paneId: string, direction: SplitDirection) => void;
@@ -41,7 +41,7 @@ export function PaneTreeRenderer({
 	cwd,
 	theme,
 	terminalStartupCommand,
-	agentType,
+
 	onFocus,
 	onClose,
 	onSplit,
@@ -61,7 +61,6 @@ export function PaneTreeRenderer({
 				cwd={cwd}
 				theme={theme}
 				terminalStartupCommand={terminalStartupCommand}
-				agentType={agentType}
 				onFocus={onFocus}
 				onClose={onClose}
 				onSplit={onSplit}
@@ -94,7 +93,6 @@ export function PaneTreeRenderer({
 					cwd={cwd}
 					theme={theme}
 					terminalStartupCommand={terminalStartupCommand}
-					agentType={agentType}
 					onFocus={onFocus}
 					onClose={onClose}
 					onSplit={onSplit}
@@ -119,7 +117,7 @@ interface PaneTreePanelProps {
 	cwd?: string | null;
 	theme?: Theme;
 	terminalStartupCommand?: string;
-	agentType?: string;
+
 	onFocus: (paneId: string) => void;
 	onClose: (paneId: string) => void;
 	onSplit: (paneId: string, direction: SplitDirection) => void;
@@ -151,7 +149,7 @@ function PaneTreePanel({
 	cwd,
 	theme,
 	terminalStartupCommand,
-	agentType,
+
 	onFocus,
 	onClose,
 	onSplit,
@@ -172,7 +170,6 @@ function PaneTreePanel({
 					cwd={cwd}
 					theme={theme}
 					terminalStartupCommand={terminalStartupCommand}
-					agentType={agentType}
 					onFocus={onFocus}
 					onClose={onClose}
 					onSplit={onSplit}

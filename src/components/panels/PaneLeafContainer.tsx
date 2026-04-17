@@ -14,7 +14,7 @@ interface PaneLeafContainerProps {
 	cwd?: string | null;
 	theme?: Theme;
 	terminalStartupCommand?: string;
-	agentType?: string;
+
 	onFocus: (paneId: string) => void;
 	onClose: (paneId: string) => void;
 	onSplit: (paneId: string, direction: SplitDirection) => void;
@@ -44,7 +44,7 @@ export function PaneLeafContainer({
 	cwd,
 	theme,
 	terminalStartupCommand,
-	agentType,
+
 	onFocus,
 	onClose,
 	onSplit,
@@ -188,7 +188,6 @@ export function PaneLeafContainer({
 					cwd={cwd}
 					theme={theme}
 					terminalStartupCommand={terminalStartupCommand}
-					agentType={agentType}
 					label={pane.label}
 					sessionKey={pane.sessionKey ?? undefined}
 					onPtyReady={handlePtyReady}

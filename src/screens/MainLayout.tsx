@@ -12,7 +12,7 @@ import { BranchSelector } from "@/components/layout/BranchSelector";
 
 import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
-import { AgentTab } from "@/components/panels/AgentTab";
+import { AgentChatPanel } from "@/components/panels/AgentChatPanel";
 import { EditorTabContent } from "@/components/panels/EditorTabContent";
 import { EmptyState } from "@/components/panels/EmptyState";
 import { PullRequestPanel } from "@/components/panels/PullRequestPanel";
@@ -57,7 +57,6 @@ import {
 	SavingConflictDialog,
 } from "@/screens/WorktreeViewDialogs";
 import type { AppSettings } from "@/types/settings";
-import { buildTerminalCommand } from "@/types/settings";
 import type { Thread } from "@/types/thread";
 import type { WorkspaceState } from "@/types/workspace-state";
 
@@ -296,13 +295,7 @@ function WorktreeContent({
 							forceMount
 							className="h-full m-0 data-[state=inactive]:hidden"
 						>
-							<AgentTab
-								ref={s.terminalRef}
-								rootPath={rootPath}
-								theme={settings.theme}
-								terminalStartupCommand={buildTerminalCommand(settings)}
-								agentType={settings.agent}
-							/>
+							<AgentChatPanel worktreePath={rootPath} />
 						</TabsContent>
 						{s.editorDragOver && (
 							<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none">
@@ -507,7 +500,7 @@ export function MainLayout({
 
 	const [leftNavVisible, setLeftNavVisible] = useState(true);
 	const [rightVisible, setRightVisible] = useState(true);
-	const [centerTab, setCenterTab] = useState("agent");
+	const [centerTab, setCenterTab] = useState("editor");
 	const switchToEditor = useCallback(() => setCenterTab("editor"), []);
 
 	// --- Workspace state persistence ---

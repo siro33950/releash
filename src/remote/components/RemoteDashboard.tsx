@@ -6,20 +6,13 @@ import {
 	RefreshCw,
 } from "lucide-react";
 import { useMemo } from "react";
-import { AgentStateIcon } from "@/components/ui/agent-state-icon";
-import { aggregateAgentState } from "@/lib/agentStateUtils";
-import type {
-	AgentState,
-	AgentStateSync,
-	WorktreeEntryMsg,
-} from "@/types/protocol";
+import type { WorktreeEntryMsg } from "@/types/protocol";
 
 interface RemoteDashboardProps {
 	worktrees: WorktreeEntryMsg[];
 	loading: boolean;
 	onRefresh: () => void;
 	onSelect?: (worktreePath: string) => void;
-	agentStates?: Map<string, AgentStateSync>;
 }
 
 function repoDisplayName(repoPath: string): string {
@@ -28,11 +21,9 @@ function repoDisplayName(repoPath: string): string {
 
 function WorktreeCard({
 	wt,
-	agentState,
 	onSelect,
 }: {
 	wt: WorktreeEntryMsg;
-	agentState?: AgentState;
 	onSelect?: (path: string) => void;
 }) {
 	return (
@@ -57,7 +48,6 @@ function WorktreeCard({
 						main
 					</span>
 				)}
-				{agentState && <AgentStateIcon state={agentState} />}
 			</div>
 			<div className="text-xs">
 				{wt.dirty_count > 0 ? (
@@ -75,7 +65,6 @@ export function RemoteDashboard({
 	loading,
 	onRefresh,
 	onSelect,
-	agentStates,
 }: RemoteDashboardProps) {
 	const grouped = useMemo(() => {
 		const map = new Map<string, WorktreeEntryMsg[]>();
@@ -134,16 +123,7 @@ export function RemoteDashboard({
 							)}
 							<div className="grid gap-3">
 								{repoWorktrees.map((wt) => (
-									<WorktreeCard
-										key={wt.path}
-										wt={wt}
-										agentState={
-											agentStates
-												? aggregateAgentState(agentStates, wt.path)
-												: undefined
-										}
-										onSelect={onSelect}
-									/>
+									<WorktreeCard key={wt.path} wt={wt} onSelect={onSelect} />
 								))}
 							</div>
 						</div>

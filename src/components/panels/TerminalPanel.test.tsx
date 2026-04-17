@@ -38,7 +38,6 @@ describe("TerminalPanel", () => {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
 		);
 	});
 
@@ -48,7 +47,6 @@ describe("TerminalPanel", () => {
 
 		expect(mockUseTerminal).toHaveBeenCalledWith(
 			expect.objectContaining({ current: expect.any(HTMLDivElement) }),
-			undefined,
 			undefined,
 			undefined,
 			undefined,

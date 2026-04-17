@@ -1,5 +1,4 @@
 import {
-	Bot,
 	FileDiff,
 	GitBranch,
 	MessageSquare,
@@ -16,7 +15,6 @@ import { RemoteSourceControl } from "./components/RemoteSourceControl";
 import { RemoteThreadList } from "./components/RemoteThreadList";
 import { TabBar } from "./components/TabBar";
 import { TerminalTabContent } from "./components/TerminalTabContent";
-import { useAgentState } from "./hooks/useAgentState";
 import { useBrowserBackGuard } from "./hooks/useBrowserBackGuard";
 import { useMessageBus } from "./hooks/useMessageBus";
 import { usePtyManagement } from "./hooks/usePtyManagement";
@@ -31,7 +29,6 @@ import { useRemoteWorktrees } from "./hooks/useRemoteWorktrees";
 import { useWebSocket } from "./hooks/useWebSocket";
 
 const tabs: { id: Tab; label: string; icon: typeof GitBranch }[] = [
-	{ id: "agent", label: "Agent", icon: Bot },
 	{ id: "terminal", label: "Terminal", icon: Terminal },
 	{ id: "changes", label: "Changes", icon: GitBranch },
 	{ id: "diff", label: "Diff", icon: FileDiff },
@@ -67,15 +64,12 @@ export function RemoteApp() {
 	} = useRemoteNavigation({ subscribe });
 
 	const {
-		terminalSessions,
-		agentSessions,
+		ptySessions,
 		activePtyId,
-		activeAgentPtyId,
 		ptySpawning,
 		ptySpawnError,
 		terminalMounted,
 		setActivePtyId,
-		setActiveAgentPtyId,
 		setTerminalMounted,
 		spawnPty,
 		killPty,
@@ -119,8 +113,6 @@ export function RemoteApp() {
 		resolveThread,
 		deleteThread,
 	} = useRemoteThreads({ subscribe, send });
-	const { agentStates } = useAgentState({ subscribe });
-
 	const {
 		worktrees,
 		loading: worktreesLoading,
@@ -199,7 +191,6 @@ export function RemoteApp() {
 						loading={worktreesLoading}
 						onRefresh={refreshWorktrees}
 						onSelect={handleSelectWorktree}
-						agentStates={agentStates}
 					/>
 				</main>
 			) : (
@@ -291,7 +282,7 @@ export function RemoteApp() {
 						>
 							<TerminalTabContent
 								status={status}
-								ptySessions={terminalSessions}
+								ptySessions={ptySessions}
 								activePtyId={activePtyId}
 								ptySpawning={ptySpawning}
 								ptySpawnError={ptySpawnError}
@@ -303,30 +294,6 @@ export function RemoteApp() {
 								setActivePtyId={setActivePtyId}
 								spawnPty={spawnPty}
 								killPty={killPty}
-							/>
-						</div>
-
-						<div
-							className="absolute inset-0 flex flex-col"
-							style={{
-								visibility: activeTab === "agent" ? "visible" : "hidden",
-								pointerEvents: activeTab === "agent" ? "auto" : "none",
-							}}
-						>
-							<TerminalTabContent
-								status={status}
-								ptySessions={agentSessions}
-								activePtyId={activeAgentPtyId}
-								terminalMounted={terminalMounted}
-								selectedWorktree={selectedWorktree}
-								activeTab={activeTab}
-								send={send}
-								subscribe={subscribe}
-								setActivePtyId={setActiveAgentPtyId}
-								spawnPty={spawnPty}
-								killPty={killPty}
-								mode="agent"
-								agentStates={agentStates}
 							/>
 						</div>
 					</main>

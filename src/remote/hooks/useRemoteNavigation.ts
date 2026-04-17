@@ -2,13 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Subscribe } from "./useMessageBus";
 import type { DiffBase } from "./useRemoteFileContent";
 
-export type Tab =
-	| "changes"
-	| "diff"
-	| "terminal"
-	| "agent"
-	| "comments"
-	| "threads";
+export type Tab = "changes" | "diff" | "terminal" | "comments" | "threads";
 
 interface UseRemoteNavigationOptions {
 	subscribe: Subscribe;
@@ -17,7 +11,7 @@ interface UseRemoteNavigationOptions {
 export function useRemoteNavigation({ subscribe }: UseRemoteNavigationOptions) {
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 	const [selectedWorktree, setSelectedWorktree] = useState<string | null>(null);
-	const [activeTab, setActiveTab] = useState<Tab>("agent");
+	const [activeTab, setActiveTab] = useState<Tab>("terminal");
 	const [diffBase, setDiffBase] = useState<DiffBase>("branch-base");
 	const [worktreeLoading, setWorktreeLoading] = useState(false);
 
