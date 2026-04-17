@@ -53,7 +53,14 @@ export function StreamMessage({ content, role }: StreamMessageProps) {
 					<Markdown
 						remarkPlugins={remarkPluginList}
 						rehypePlugins={rehypePluginList}
-						components={{ a: ExternalLink }}
+						components={{
+							a: ExternalLink,
+							table: ({ children: c, ...props }) => (
+								<div style={{ overflowX: "auto", maxWidth: "100%" }}>
+									<table {...props}>{c}</table>
+								</div>
+							),
+						}}
 					>
 						{deferredContent}
 					</Markdown>
