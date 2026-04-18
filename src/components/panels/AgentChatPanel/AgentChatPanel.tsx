@@ -634,6 +634,7 @@ export function AgentChatPanel({
 							models={availableModels}
 							currentModelId={selectedModel}
 							onModelChange={setModel}
+							worktreePath={worktreePath}
 						/>
 					</div>
 				</div>

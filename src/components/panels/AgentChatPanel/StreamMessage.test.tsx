@@ -1,8 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessageRole } from "@/types/session";
 import { StreamMessage } from "./StreamMessage";
+
+const mockInvoke = vi.mocked(invoke);
 
 const mockOpenUrl = vi.fn().mockResolvedValue(undefined);
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -16,13 +19,42 @@ const system: MessageRole = "system";
 describe("StreamMessage", () => {
 	beforeEach(() => {
 		mockOpenUrl.mockClear();
+		mockInvoke.mockReset();
+		const displayFixtures: Record<
+			string,
+			Array<{ type: string; value: string }>
+		> = {
+			"Hello agent": [{ type: "text", value: "Hello agent" }],
+			"**not bold**": [{ type: "text", value: "**not bold**" }],
+			"Check @src/main.rs for details": [
+				{ type: "text", value: "Check " },
+				{ type: "mention", value: "@src/main.rs" },
+				{ type: "text", value: " for details" },
+			],
+			"Compare @src/a.rs and @src/b.rs:L1-L5": [
+				{ type: "text", value: "Compare " },
+				{ type: "mention", value: "@src/a.rs" },
+				{ type: "text", value: " and " },
+				{ type: "mention", value: "@src/b.rs:L1-L5" },
+			],
+			"No mentions here": [{ type: "text", value: "No mentions here" }],
+		};
+		mockInvoke.mockImplementation(async (cmd: string, args?: unknown) => {
+			if (cmd === "parse_display_mentions") {
+				const { content } = args as { content: string };
+				return displayFixtures[content] ?? [{ type: "text", value: content }];
+			}
+			return undefined;
+		});
 	});
 
-	it("renders human message", () => {
+	it("renders human message", async () => {
 		render(<StreamMessage content="Hello agent" role={human} />);
 		const el = screen.getByTestId("stream-message-human");
 		expect(el).toBeDefined();
-		expect(el.textContent).toContain("Hello agent");
+		await waitFor(() => {
+			expect(el.textContent).toContain("Hello agent");
+		});
 	});
 
 	it("renders agent message", () => {
@@ -52,11 +84,13 @@ describe("StreamMessage", () => {
 		expect(code).not.toBeNull();
 	});
 
-	it("renders human messages as plain text (no markdown)", () => {
+	it("renders human messages as plain text (no markdown)", async () => {
 		render(<StreamMessage content="**not bold**" role={human} />);
 		const el = screen.getByTestId("stream-message-human");
-		expect(el.querySelector("strong")).toBeNull();
-		expect(el.textContent).toContain("**not bold**");
+		await waitFor(() => {
+			expect(el.querySelector("strong")).toBeNull();
+			expect(el.textContent).toContain("**not bold**");
+		});
 	});
 
 	it("does not show separator for any messages", () => {
@@ -156,7 +190,42 @@ describe("StreamMessage", () => {
 		const el = screen.getByTestId("stream-message-human");
 		const imgs = el.querySelectorAll("img");
 		expect(imgs.length).toBe(1);
-		const p = el.querySelector("p");
-		expect(p).toBeNull();
+	});
+
+	it("renders @mention as badge in human messages", async () => {
+		render(
+			<StreamMessage content="Check @src/main.rs for details" role={human} />,
+		);
+		const el = screen.getByTestId("stream-message-human");
+		await waitFor(() => {
+			const badge = el.querySelector(".font-mono");
+			expect(badge).not.toBeNull();
+			expect(badge?.textContent).toBe("@src/main.rs");
+		});
+	});
+
+	it("renders multiple @mentions as badges", async () => {
+		render(
+			<StreamMessage
+				content="Compare @src/a.rs and @src/b.rs:L1-L5"
+				role={human}
+			/>,
+		);
+		const el = screen.getByTestId("stream-message-human");
+		await waitFor(() => {
+			const badges = el.querySelectorAll(".font-mono");
+			expect(badges.length).toBe(2);
+			expect(badges[0].textContent).toBe("@src/a.rs");
+			expect(badges[1].textContent).toBe("@src/b.rs:L1-L5");
+		});
+	});
+
+	it("renders human message without mentions as plain text", async () => {
+		render(<StreamMessage content="No mentions here" role={human} />);
+		const el = screen.getByTestId("stream-message-human");
+		await waitFor(() => {
+			expect(el.querySelectorAll(".font-mono").length).toBe(0);
+			expect(el.textContent).toContain("No mentions here");
+		});
 	});
 });

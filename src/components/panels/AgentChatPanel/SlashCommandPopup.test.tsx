@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { SlashCommand } from "@/hooks/useSlashCommands";
 import { SlashCommandPopup } from "./SlashCommandPopup";
@@ -12,18 +13,24 @@ const commands: SlashCommand[] = [
 function renderPopup(
 	props: Partial<React.ComponentProps<typeof SlashCommandPopup>> = {},
 ) {
-	return render(
-		<SlashCommandPopup
-			open={true}
-			commands={commands}
-			selectedIndex={0}
-			onSelect={vi.fn()}
-			onClose={vi.fn()}
-			{...props}
-		>
-			<div data-testid="anchor">Anchor</div>
-		</SlashCommandPopup>,
+	const anchorRef = createRef<HTMLDivElement>();
+	const result = render(
+		<>
+			<div ref={anchorRef} data-testid="anchor">
+				Anchor
+			</div>
+			<SlashCommandPopup
+				open={true}
+				commands={commands}
+				selectedIndex={0}
+				onSelect={vi.fn()}
+				onClose={vi.fn()}
+				anchorRef={anchorRef}
+				{...props}
+			/>
+		</>,
 	);
+	return result;
 }
 
 describe("SlashCommandPopup", () => {
@@ -68,7 +75,7 @@ describe("SlashCommandPopup", () => {
 		expect(screen.queryByTestId("slash-command-list")).toBeNull();
 	});
 
-	it("renders anchor children", () => {
+	it("renders anchor element", () => {
 		renderPopup();
 		expect(screen.getByTestId("anchor")).toBeDefined();
 	});

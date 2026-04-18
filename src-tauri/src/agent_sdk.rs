@@ -66,6 +66,7 @@ pub struct PendingMessage {
     pub content: String,
     pub permission_mode: String,
     pub images: Vec<ImageAttachment>,
+    pub worktree_path: String,
 }
 
 /// Model information from Agent SDK.
@@ -1762,9 +1763,13 @@ async fn consume_pending_message(
         );
     }
 
+    // 3b. Resolve @file mentions in the pending content
+    let resolved_prompt =
+        crate::file_mention::resolve_mentions_or_fallback(&pending.worktree_path, &pending.content);
+
     // 4. Sync permissionMode + selected_model + send message directly to the running Bridge.
     //    The process is guaranteed running since it just emitted turn_complete.
-    let msg_cmd = build_message_cmd(&pending.content, &pending.images);
+    let msg_cmd = build_message_cmd(&resolved_prompt, &pending.images);
     let data = format!("{}\n", msg_cmd);
 
     {
@@ -2198,6 +2203,7 @@ pub async fn send_agent_message(
                         content: content.clone(),
                         permission_mode: pm.clone(),
                         images: images.clone(),
+                        worktree_path: worktree_path.clone(),
                     });
                     proc.stdin
                         .write_all(b"{\"type\":\"interrupt\"}\n")
@@ -2220,6 +2226,9 @@ pub async fn send_agent_message(
                 "",
                 None,
             )?;
+            // Resolve @file mentions: parse mentions, read files, build context prompt
+            let resolved_prompt =
+                crate::file_mention::resolve_mentions_or_fallback(&worktree_path, &content);
             start_agent_turn(
                 &app,
                 handles.inner(),
@@ -2227,7 +2236,7 @@ pub async fn send_agent_message(
                 &sid,
                 &worktree_path,
                 &pm,
-                &content,
+                &resolved_prompt,
                 &agent_msg.id,
                 &images,
             )

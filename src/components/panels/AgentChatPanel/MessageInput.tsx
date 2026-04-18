@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ArrowUp, Square, X } from "lucide-react";
 import {
 	useCallback,
+	useEffect,
 	useImperativeHandle,
 	useMemo,
 	useRef,
@@ -15,8 +16,10 @@ import type {
 	ModelInfo,
 	PermissionMode,
 } from "@/types/session";
+import { MentionPopup } from "./MentionPopup";
 import { ModelSelector } from "./ModelSelector";
 import { ModeSelector } from "./ModeSelector";
+import { findMentionTrigger, handlePopupKeyDown } from "./popupInputUtils";
 import { SlashCommandPopup } from "./SlashCommandPopup";
 
 interface AttachedImage {
@@ -40,6 +43,7 @@ interface MessageInputProps {
 	currentModelId: string | null;
 	onModelChange: (modelId: string | null) => void;
 	ref?: React.Ref<MessageInputHandle>;
+	worktreePath?: string;
 }
 
 export function MessageInput({
@@ -53,6 +57,7 @@ export function MessageInput({
 	currentModelId,
 	onModelChange,
 	ref,
+	worktreePath,
 }: MessageInputProps) {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -60,6 +65,15 @@ export function MessageInput({
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
 	const imageIdCounterRef = useRef(0);
+
+	// Mention state
+	const [mentionDismissed, setMentionDismissed] = useState(false);
+	const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
+	const [mentionFiles, setMentionFiles] = useState<string[]>([]);
+	const [mentionTrigger, setMentionTrigger] = useState<{
+		start: number;
+		query: string;
+	} | null>(null);
 
 	const allCommands = useSlashCommands();
 
@@ -114,6 +128,44 @@ export function MessageInput({
 	}, [showSlashPopup, slashQuery, allCommands]);
 
 	const popupOpen = showSlashPopup && filteredCommands.length > 0;
+	const mentionPopupOpen =
+		!mentionDismissed && mentionTrigger !== null && mentionFiles.length > 0;
+	const mentionQuery = mentionTrigger?.query ?? null;
+
+	// Fetch mention candidates when trigger changes (debounced)
+	useEffect(() => {
+		if (mentionQuery === null || mentionDismissed || !worktreePath) {
+			setMentionFiles([]);
+			return;
+		}
+
+		setMentionFiles([]);
+		setMentionSelectedIndex(0);
+
+		let cancelled = false;
+		const timer = setTimeout(() => {
+			invoke<string[]>("list_mentionable_files", {
+				worktreePath,
+				query: mentionQuery,
+			})
+				.then((files) => {
+					if (!cancelled) {
+						setMentionFiles(files);
+						setMentionSelectedIndex(0);
+					}
+				})
+				.catch(() => {
+					if (!cancelled) {
+						setMentionFiles([]);
+					}
+				});
+		}, 150);
+
+		return () => {
+			cancelled = true;
+			clearTimeout(timer);
+		};
+	}, [mentionQuery, mentionDismissed, worktreePath]);
 
 	const handleSelectCommand = useCallback((cmd: SlashCommand) => {
 		setValue(`/${cmd.name} `);
@@ -139,6 +191,31 @@ export function MessageInput({
 		setAttachedImages((prev) => prev.filter((img) => img.id !== id));
 	}, []);
 
+	const handleSelectMention = useCallback(
+		(filePath: string) => {
+			if (!mentionTrigger) return;
+			// Replace @query with @filePath
+			const before = value.slice(0, mentionTrigger.start);
+			const after = value
+				.slice(mentionTrigger.start + 1 + mentionTrigger.query.length)
+				.replace(/^\s/, "");
+			const newValue = `${before}@${filePath} ${after}`;
+			setValue(newValue);
+			setMentionTrigger(null);
+			setMentionDismissed(true);
+			setMentionSelectedIndex(0);
+			const caret = before.length + 1 + filePath.length + 1; // "@" + path + " "
+			const el = textareaRef.current;
+			if (el) {
+				el.focus();
+				requestAnimationFrame(() => {
+					el.setSelectionRange(caret, caret);
+				});
+			}
+		},
+		[mentionTrigger, value],
+	);
+
 	const handleSubmit = useCallback(() => {
 		const trimmed = value.trim();
 		const hasImages = attachedImages.length > 0;
@@ -155,6 +232,9 @@ export function MessageInput({
 		setAttachedImages([]);
 		setSlashPopupDismissed(false);
 		setSelectedIndex(0);
+		setMentionTrigger(null);
+		setMentionDismissed(false);
+		setMentionSelectedIndex(0);
 		if (textareaRef.current) {
 			textareaRef.current.style.height = "auto";
 		}
@@ -162,40 +242,40 @@ export function MessageInput({
 
 	const handleKeyDown = useCallback(
 		(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+			// Mention popup keyboard handling (takes priority when open)
+			if (mentionPopupOpen) {
+				if (
+					handlePopupKeyDown(
+						e,
+						mentionFiles.length,
+						setMentionSelectedIndex,
+						() => {
+							if (mentionFiles[mentionSelectedIndex]) {
+								handleSelectMention(mentionFiles[mentionSelectedIndex]);
+							}
+						},
+						() => setMentionDismissed(true),
+					)
+				)
+					return;
+			}
+
+			// Slash command popup keyboard handling
 			if (popupOpen) {
-				if (e.key === "ArrowDown") {
-					e.preventDefault();
-					setSelectedIndex((i) =>
-						i >= filteredCommands.length - 1 ? 0 : i + 1,
-					);
+				if (
+					handlePopupKeyDown(
+						e,
+						filteredCommands.length,
+						setSelectedIndex,
+						() => {
+							if (filteredCommands[selectedIndex]) {
+								handleSelectCommand(filteredCommands[selectedIndex]);
+							}
+						},
+						() => setSlashPopupDismissed(true),
+					)
+				)
 					return;
-				}
-				if (e.key === "ArrowUp") {
-					e.preventDefault();
-					setSelectedIndex((i) =>
-						i <= 0 ? filteredCommands.length - 1 : i - 1,
-					);
-					return;
-				}
-				if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
-					e.preventDefault();
-					if (filteredCommands[selectedIndex]) {
-						handleSelectCommand(filteredCommands[selectedIndex]);
-					}
-					return;
-				}
-				if (e.key === "Tab" && !e.shiftKey) {
-					e.preventDefault();
-					if (filteredCommands[selectedIndex]) {
-						handleSelectCommand(filteredCommands[selectedIndex]);
-					}
-					return;
-				}
-				if (e.key === "Escape") {
-					e.preventDefault();
-					setSlashPopupDismissed(true);
-					return;
-				}
 			}
 
 			if (e.key === "Tab" && e.shiftKey) {
@@ -215,6 +295,10 @@ export function MessageInput({
 			filteredCommands,
 			selectedIndex,
 			handleSelectCommand,
+			mentionPopupOpen,
+			mentionFiles,
+			mentionSelectedIndex,
+			handleSelectMention,
 		],
 	);
 
@@ -224,6 +308,17 @@ export function MessageInput({
 			setValue(newValue);
 			setSlashPopupDismissed(false);
 			setSelectedIndex(0);
+
+			// Detect mention trigger
+			const cursorPos = e.target.selectionStart ?? newValue.length;
+			const trigger = findMentionTrigger(newValue, cursorPos);
+			if (trigger) {
+				setMentionTrigger(trigger);
+				setMentionDismissed(false);
+			} else {
+				setMentionTrigger(null);
+			}
+
 			const el = e.target;
 			el.style.height = "auto";
 			el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
@@ -251,18 +346,14 @@ export function MessageInput({
 	);
 
 	const canSend = value.trim().length > 0 || attachedImages.length > 0;
+	const inputRef = useRef<HTMLDivElement>(null);
 
 	return (
-		<SlashCommandPopup
-			open={popupOpen}
-			commands={filteredCommands}
-			selectedIndex={selectedIndex}
-			onSelect={handleSelectCommand}
-			onClose={() => setSlashPopupDismissed(true)}
-		>
+		<>
 			<div
+				ref={inputRef}
 				data-testid="message-input"
-				className="mx-3 my-2 border rounded-lg focus-within:ring-1 focus-within:ring-ring"
+				className="relative mx-3 my-2 border rounded-lg focus-within:ring-1 focus-within:ring-ring"
 			>
 				{attachedImages.length > 0 && (
 					<div
@@ -340,6 +431,22 @@ export function MessageInput({
 					)}
 				</div>
 			</div>
-		</SlashCommandPopup>
+			<SlashCommandPopup
+				open={popupOpen}
+				commands={filteredCommands}
+				selectedIndex={selectedIndex}
+				onSelect={handleSelectCommand}
+				onClose={() => setSlashPopupDismissed(true)}
+				anchorRef={inputRef}
+			/>
+			<MentionPopup
+				open={mentionPopupOpen}
+				files={mentionFiles}
+				selectedIndex={mentionSelectedIndex}
+				onSelect={handleSelectMention}
+				onClose={() => setMentionDismissed(true)}
+				anchorRef={inputRef}
+			/>
+		</>
 	);
 }
