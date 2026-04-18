@@ -236,7 +236,6 @@ fn build_mcp_state(app: &tauri::AppHandle) -> Result<McpSharedState, String> {
         broadcaster: Arc::clone(&broadcaster),
         comment_store: Arc::clone(comment_store.inner()),
         thread_store: Arc::clone(thread_store.inner()),
-        app_handle: Some(app.clone()),
         app_data_dir,
     })
 }

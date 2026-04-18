@@ -20,7 +20,6 @@ pub struct McpSharedState {
     #[allow(dead_code)] // Retained for backward compatibility during migration
     pub comment_store: Arc<CommentStore>,
     pub thread_store: Arc<ThreadStore>,
-    pub app_handle: Option<tauri::AppHandle>,
     #[allow(dead_code)] // Retained: may be needed by future MCP tools
     pub app_data_dir: Option<PathBuf>,
 }
@@ -47,7 +46,6 @@ mod tests {
             broadcaster,
             comment_store,
             thread_store,
-            app_handle: None,
             app_data_dir: None,
         }
     }

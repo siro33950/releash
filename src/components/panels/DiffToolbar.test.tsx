@@ -4,15 +4,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import type { DiffToolbarProps } from "./DiffToolbar";
 import { DiffToolbar } from "./DiffToolbar";
 
-vi.mock("@/contexts/EditorContext", () => ({
-	useEditorContext: () => ({
-		lspStatus: "idle" as const,
-		lspError: null,
-		lspCrashCount: 0,
-		lspRetryManually: vi.fn(),
-	}),
-}));
-
 // Radix UI Popover/Tooltip require pointer capture APIs not available in jsdom
 if (typeof Element.prototype.hasPointerCapture !== "function") {
 	Element.prototype.hasPointerCapture = () => false;

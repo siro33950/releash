@@ -1,17 +1,9 @@
-import {
-	FileDiff,
-	GitBranch,
-	MessageSquare,
-	MessageSquareDashed,
-	Terminal,
-} from "lucide-react";
+import { MessageSquare, MessageSquareDashed, Terminal } from "lucide-react";
 import { useState } from "react";
 import { ConnectionForm } from "./components/ConnectionForm";
-import { DiffTabContent } from "./components/DiffTabContent";
 import { RemoteAppHeader } from "./components/RemoteAppHeader";
 import { RemoteCommentList } from "./components/RemoteCommentList";
 import { RemoteDashboard } from "./components/RemoteDashboard";
-import { RemoteSourceControl } from "./components/RemoteSourceControl";
 import { RemoteThreadList } from "./components/RemoteThreadList";
 import { TabBar } from "./components/TabBar";
 import { TerminalTabContent } from "./components/TerminalTabContent";
@@ -20,18 +12,13 @@ import { useMessageBus } from "./hooks/useMessageBus";
 import { usePtyManagement } from "./hooks/usePtyManagement";
 import { useRemoteAppActions } from "./hooks/useRemoteAppActions";
 import { useRemoteContent } from "./hooks/useRemoteContent";
-import { useRemoteFileContent } from "./hooks/useRemoteFileContent";
-import { useRemoteGitActions } from "./hooks/useRemoteGitActions";
-import { useRemoteGitStatus } from "./hooks/useRemoteGitStatus";
 import { type Tab, useRemoteNavigation } from "./hooks/useRemoteNavigation";
 import { useRemoteThreads } from "./hooks/useRemoteThreads";
 import { useRemoteWorktrees } from "./hooks/useRemoteWorktrees";
 import { useWebSocket } from "./hooks/useWebSocket";
 
-const tabs: { id: Tab; label: string; icon: typeof GitBranch }[] = [
+const tabs: { id: Tab; label: string; icon: typeof Terminal }[] = [
 	{ id: "terminal", label: "Terminal", icon: Terminal },
-	{ id: "changes", label: "Changes", icon: GitBranch },
-	{ id: "diff", label: "Diff", icon: FileDiff },
 	{ id: "comments", label: "Comments", icon: MessageSquare },
 	{ id: "threads", label: "Threads", icon: MessageSquareDashed },
 ];
@@ -51,15 +38,11 @@ export function RemoteApp() {
 	});
 
 	const {
-		selectedPath,
 		selectedWorktree,
 		worktreeLoading,
 		activeTab,
-		diffBase,
-		setSelectedPath,
 		setSelectedWorktree,
 		setActiveTab,
-		setDiffBase,
 		selectWorktreeOptimistic,
 	} = useRemoteNavigation({ subscribe });
 
@@ -81,32 +64,10 @@ export function RemoteApp() {
 		branchName,
 		setComments,
 		setBranchName,
-		addComment,
 		deleteComment,
 		updateComment,
 	} = useRemoteContent({ subscribe, send });
 
-	const { stagedFiles, changedFiles } = useRemoteGitStatus({ subscribe });
-	const { content, loading, requestContent } = useRemoteFileContent({
-		subscribe,
-		send,
-	});
-	const {
-		stage,
-		unstage,
-		stageHunk,
-		commit,
-		push,
-		committing,
-		pushing,
-		pushResult,
-		clearPushResult,
-		error,
-		clearError,
-	} = useRemoteGitActions({
-		send,
-		subscribe,
-	});
 	const {
 		threads,
 		addEntry: addThreadEntry,
@@ -129,40 +90,25 @@ export function RemoteApp() {
 		handleBackToWorktreesAction,
 		handleConnect,
 		handleDisconnect,
-		handleSelectFile,
-		handleDiffBaseChange,
-		handleNavigateToDiff,
-		handleRefreshStatus,
 		handleSendToTerminal,
 		handleSendComment,
 		handleCopyComment,
 		handleSendThreadsToTerminal,
 		handleCopyThread,
-		hasDiffChanges,
-		handleStageAll,
-		handleUnstageAll,
 		handleTabChange,
 	} = useRemoteAppActions({
 		send,
 		disconnect,
 		setConnection,
-		selectedPath,
-		selectedWorktree,
-		diffBase,
-		content,
 		activePtyId,
-		setSelectedPath,
 		setSelectedWorktree,
 		setActiveTab,
-		setDiffBase,
 		setTerminalMounted,
 		setComments,
 		setBranchName,
 		selectWorktreeOptimistic,
 		selectWorktree,
 		resetPty,
-		requestContent,
-		stageHunk,
 	});
 
 	const { navigateBack: handleBackToWorktrees } = useBrowserBackGuard({
@@ -201,49 +147,6 @@ export function RemoteApp() {
 								<div className="animate-spin size-6 border-2 border-muted-foreground border-t-primary rounded-full" />
 							</div>
 						)}
-						<div
-							className="absolute inset-0"
-							style={{ display: activeTab === "changes" ? undefined : "none" }}
-						>
-							<RemoteSourceControl
-								stagedFiles={stagedFiles}
-								changedFiles={changedFiles}
-								selectedPath={selectedPath}
-								onSelectFile={handleSelectFile}
-								onStage={stage}
-								onUnstage={unstage}
-								onCommit={commit}
-								onPush={push}
-								committing={committing}
-								pushing={pushing}
-								pushResult={pushResult}
-								onClearPushResult={clearPushResult}
-								error={error}
-								onClearError={clearError}
-								onNavigateToDiff={handleNavigateToDiff}
-								onRefresh={handleRefreshStatus}
-							/>
-						</div>
-
-						<div
-							className="absolute inset-0 flex flex-col"
-							style={{ display: activeTab === "diff" ? undefined : "none" }}
-						>
-							<DiffTabContent
-								status={status}
-								selectedPath={selectedPath}
-								diffBase={diffBase}
-								hasDiffChanges={hasDiffChanges}
-								stagedFiles={stagedFiles}
-								content={content}
-								loading={loading}
-								onDiffBaseChange={handleDiffBaseChange}
-								onStageAll={handleStageAll}
-								onUnstageAll={handleUnstageAll}
-								onStageHunk={stageHunk}
-								onAddComment={addComment}
-							/>
-						</div>
 
 						<div
 							className="absolute inset-0"

@@ -1,5 +1,5 @@
 use super::error::GitError;
-use super::types::{AheadBehind, BranchInfo, WorktreeBranch, WorktreeEntry};
+use super::types::{BranchInfo, WorktreeBranch, WorktreeEntry};
 
 async fn blocking<T, F>(f: F) -> Result<T, GitError>
 where
@@ -21,11 +21,6 @@ pub async fn list_branches(repo_path: String) -> Result<Vec<BranchInfo>, GitErro
 #[tauri::command]
 pub async fn get_current_branch(repo_path: String) -> Result<String, GitError> {
     blocking(move || super::branch::get_current_branch(repo_path)).await
-}
-
-#[tauri::command]
-pub async fn get_current_branch_ahead_behind(repo_path: String) -> Result<AheadBehind, GitError> {
-    blocking(move || super::branch::get_current_branch_ahead_behind(repo_path)).await
 }
 
 #[tauri::command]
@@ -180,23 +175,6 @@ pub async fn git_unstage_hunk(repo_path: String, patch: String) -> Result<(), Gi
     blocking(move || super::stage::git_unstage_hunk(repo_path, patch)).await
 }
 
-#[tauri::command]
-pub async fn git_discard(repo_path: String, paths: Vec<String>) -> Result<(), GitError> {
-    blocking(move || super::stage::git_discard(repo_path, paths)).await
-}
-
-// ── commit ──
-
-#[tauri::command]
-pub async fn git_commit(repo_path: String, message: String) -> Result<String, GitError> {
-    blocking(move || super::commit::git_commit(repo_path, message)).await
-}
-
-#[tauri::command]
-pub async fn git_push(repo_path: String) -> Result<String, GitError> {
-    blocking(move || super::commit::git_push(repo_path)).await
-}
-
 // ── diff ──
 
 #[tauri::command]
@@ -207,14 +185,6 @@ pub async fn get_file_at_ref(file_path: String, git_ref: String) -> Result<Strin
 #[tauri::command]
 pub async fn get_staged_content(file_path: String) -> Result<String, GitError> {
     blocking(move || super::diff::get_staged_content(file_path)).await
-}
-
-#[tauri::command]
-pub async fn get_binary_file_at_ref(
-    file_path: String,
-    git_ref: String,
-) -> Result<String, GitError> {
-    blocking(move || super::diff::get_binary_file_at_ref(file_path, git_ref)).await
 }
 
 #[tauri::command]

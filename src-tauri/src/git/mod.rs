@@ -4,7 +4,6 @@ pub mod types;
 pub(crate) mod branch;
 pub(crate) mod branch_diff;
 pub(crate) mod commands;
-pub(crate) mod commit;
 pub(crate) mod config;
 pub(crate) mod diff;
 pub(crate) mod log;
@@ -14,10 +13,6 @@ pub(crate) mod util;
 pub(crate) mod worktree;
 
 pub(crate) use branch::get_current_branch;
-pub(crate) use commit::{git_commit, git_push};
-pub(crate) use diff::{get_file_at_branch_base, get_staged_content};
-pub(crate) use stage::{git_stage, git_stage_hunk, git_unstage};
-pub(crate) use status::get_git_status;
 pub(crate) use worktree::{get_main_repo_path, list_branches_with_status, list_worktrees};
 
 #[cfg(test)]

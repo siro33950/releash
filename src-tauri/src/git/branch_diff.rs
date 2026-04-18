@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use super::error::GitError;
 use git2::Repository;
 use serde::{Deserialize, Serialize};
@@ -145,65 +143,6 @@ pub fn get_branch_diff_summary(
     })
 }
 
-/// Returns a map of file paths to their hunk ranges (new_start, new_lines).
-/// Used by MCP `check_diagnostics` tool's `diff_context` filter mode.
-///
-/// For an unborn branch, returns an empty map.
-pub fn get_hunk_ranges(
-    repo_path: &str,
-    base_branch: Option<&str>,
-) -> Result<HashMap<String, Vec<(u32, u32)>>, GitError> {
-    let repo = Repository::open(repo_path)?;
-    if is_unborn_branch(&repo)? {
-        return Ok(HashMap::new());
-    }
-    let (_base_ref, base_commit) = find_base_commit(&repo, base_branch)?;
-    let base_tree = base_commit.tree()?;
-
-    let mut opts = git2::DiffOptions::new();
-    opts.include_untracked(true);
-    opts.recurse_untracked_dirs(true);
-
-    let diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
-
-    let mut result: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
-    let num_deltas = diff.deltas().len();
-
-    for i in 0..num_deltas {
-        let delta = diff
-            .get_delta(i)
-            .ok_or_else(|| GitError::Custom(format!("invalid delta index: {i}")))?;
-
-        let path = delta
-            .new_file()
-            .path()
-            .or_else(|| delta.old_file().path())
-            .map(|p| p.to_string_lossy().to_string())
-            .ok_or_else(|| GitError::Custom(format!("delta {i} has no file path")))?;
-
-        if let Some(patch) = git2::Patch::from_diff(&diff, i)? {
-            let mut ranges = Vec::new();
-            for h in 0..patch.num_hunks() {
-                let (hunk, _) = patch.hunk(h)?;
-                ranges.push((hunk.new_start(), hunk.new_lines()));
-            }
-            if !ranges.is_empty() {
-                result.insert(path, ranges);
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-/// Check if a 1-based line number falls within any of the given hunk ranges.
-/// Each range is (new_start, new_lines) where new_start is 1-based.
-pub fn is_line_in_hunk_ranges(line_1based: u32, ranges: &[(u32, u32)]) -> bool {
-    ranges
-        .iter()
-        .any(|&(start, lines)| line_1based >= start && line_1based < start.saturating_add(lines))
-}
-
 /// Returns true when the repository has no commits yet (HEAD points to an unborn branch).
 fn is_unborn_branch(repo: &Repository) -> Result<bool, GitError> {
     match repo.head() {
@@ -292,104 +231,6 @@ mod tests {
             .unwrap();
     }
 
-    // --- Tests for get_hunk_ranges ---
-
-    #[test]
-    fn test_get_hunk_ranges_single_file() {
-        let (_dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        add_and_commit(
-            &repo,
-            "file.txt",
-            "line1\nline2\nline3\nline4\nline5\n",
-            "add file",
-        );
-
-        setup_feature_branch(&repo);
-        add_and_commit(
-            &repo,
-            "file.txt",
-            "line1\nmodified\nline3\nline4\nline5\n",
-            "modify line2",
-        );
-
-        let ranges = get_hunk_ranges(&repo_path_str(&repo), None).unwrap();
-        assert!(ranges.contains_key("file.txt"));
-        let file_ranges = &ranges["file.txt"];
-        assert!(!file_ranges.is_empty());
-        // The hunk should cover line 2 area
-        let (start, _lines) = file_ranges[0];
-        assert!(start >= 1);
-    }
-
-    #[test]
-    fn test_get_hunk_ranges_multiple_files() {
-        let (_dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        add_and_commit(&repo, "a.txt", "aaa\n", "add a");
-        add_and_commit(&repo, "b.txt", "bbb\n", "add b");
-
-        setup_feature_branch(&repo);
-        add_and_commit(&repo, "a.txt", "modified a\n", "modify a");
-        add_and_commit(&repo, "b.txt", "modified b\n", "modify b");
-
-        let ranges = get_hunk_ranges(&repo_path_str(&repo), None).unwrap();
-        assert!(ranges.contains_key("a.txt"));
-        assert!(ranges.contains_key("b.txt"));
-    }
-
-    #[test]
-    fn test_get_hunk_ranges_no_changes() {
-        let (_dir, repo) = create_test_repo();
-        create_initial_commit(&repo);
-        add_and_commit(&repo, "file.txt", "content\n", "add file");
-
-        setup_feature_branch(&repo);
-        // No changes on feature branch
-        let ranges = get_hunk_ranges(&repo_path_str(&repo), None).unwrap();
-        assert!(ranges.is_empty());
-    }
-
-    // --- Tests for is_line_in_hunk_ranges ---
-
-    #[test]
-    fn test_is_line_in_hunk_ranges_inside() {
-        let ranges = vec![(10, 5)]; // lines 10..14
-        assert!(is_line_in_hunk_ranges(10, &ranges));
-        assert!(is_line_in_hunk_ranges(14, &ranges));
-    }
-
-    #[test]
-    fn test_is_line_in_hunk_ranges_outside() {
-        let ranges = vec![(10, 5)]; // lines 10..14
-        assert!(!is_line_in_hunk_ranges(9, &ranges));
-        assert!(!is_line_in_hunk_ranges(15, &ranges));
-    }
-
-    #[test]
-    fn test_is_line_in_hunk_ranges_multiple_ranges() {
-        let ranges = vec![(5, 3), (20, 2)]; // lines 5..7 and 20..21
-        assert!(is_line_in_hunk_ranges(5, &ranges));
-        assert!(is_line_in_hunk_ranges(7, &ranges));
-        assert!(!is_line_in_hunk_ranges(8, &ranges));
-        assert!(is_line_in_hunk_ranges(20, &ranges));
-        assert!(is_line_in_hunk_ranges(21, &ranges));
-        assert!(!is_line_in_hunk_ranges(22, &ranges));
-    }
-
-    #[test]
-    fn test_is_line_in_hunk_ranges_empty() {
-        assert!(!is_line_in_hunk_ranges(1, &[]));
-    }
-
-    #[test]
-    fn test_is_line_in_hunk_ranges_single_line_hunk() {
-        let ranges = vec![(5, 1)]; // only line 5
-        assert!(!is_line_in_hunk_ranges(4, &ranges));
-        assert!(is_line_in_hunk_ranges(5, &ranges));
-        assert!(!is_line_in_hunk_ranges(6, &ranges));
-    }
-
     // --- Tests for get_branch_diff_summary ---
 
     #[test]
@@ -473,13 +314,5 @@ mod tests {
         assert_eq!(summary.stats.additions, 0);
         assert_eq!(summary.stats.deletions, 0);
         assert_eq!(summary.base_branch, "");
-    }
-
-    #[test]
-    fn test_get_hunk_ranges_unborn_branch_returns_empty() {
-        let (_dir, repo) = create_test_repo();
-        // No initial commit: HEAD points to an unborn branch
-        let ranges = get_hunk_ranges(&repo_path_str(&repo), None).unwrap();
-        assert!(ranges.is_empty());
     }
 }

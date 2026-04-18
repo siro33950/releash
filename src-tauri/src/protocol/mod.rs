@@ -3,8 +3,6 @@ mod auth;
 mod branch;
 mod comment;
 mod error;
-mod file;
-mod git;
 mod pty;
 pub mod thread;
 mod worktree;
@@ -14,8 +12,6 @@ pub use auth::*;
 pub use branch::*;
 pub use comment::*;
 pub use error::*;
-pub use file::*;
-pub use git::*;
 pub use pty::*;
 pub use thread::*;
 pub use worktree::*;
@@ -47,35 +43,7 @@ pub enum WsMessage {
     #[serde(rename = "pty_output_request")]
     PtyOutputRequest(PtyOutputRequest),
 
-    // ファイル・Diff
-    #[serde(rename = "git_status_sync")]
-    GitStatusSync(GitStatusSync),
-    #[serde(rename = "file_content_request")]
-    FileContentRequest(FileContentRequest),
-    #[serde(rename = "file_content_response")]
-    FileContentResponse(FileContentResponse),
-    #[serde(rename = "file_change")]
-    FileChange(FileChange),
-
-    // Git操作
-    #[serde(rename = "git_status_request")]
-    GitStatusRequest(GitStatusRequest),
-    #[serde(rename = "git_stage")]
-    GitStage(GitStage),
-    #[serde(rename = "git_unstage")]
-    GitUnstage(GitUnstage),
-    #[serde(rename = "git_stage_result")]
-    GitStageResult(GitStageResult),
-    #[serde(rename = "git_stage_hunk")]
-    GitStageHunk(GitStageHunk),
-    #[serde(rename = "git_commit_request")]
-    GitCommitRequest(GitCommitRequest),
-    #[serde(rename = "git_commit_result")]
-    GitCommitResult(GitCommitResult),
-    #[serde(rename = "git_push_request")]
-    GitPushRequest(GitPushRequest),
-    #[serde(rename = "git_push_result")]
-    GitPushResult(GitPushResult),
+    // ブランチ情報
     #[serde(rename = "branch_info_request")]
     BranchInfoRequest(BranchInfoRequest),
     #[serde(rename = "branch_info_response")]
@@ -224,73 +192,6 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_git_status_sync() {
-        let msg = WsMessage::GitStatusSync(GitStatusSync {
-            files: vec![
-                GitFileStatusMsg {
-                    path: "src/main.rs".to_string(),
-                    index_status: "modified".to_string(),
-                    worktree_status: "none".to_string(),
-                },
-                GitFileStatusMsg {
-                    path: "README.md".to_string(),
-                    index_status: "none".to_string(),
-                    worktree_status: "new".to_string(),
-                },
-            ],
-        });
-        let json = serialize_message(&msg).unwrap();
-        let deserialized = deserialize_message(&json).unwrap();
-        match deserialized {
-            WsMessage::GitStatusSync(s) => assert_eq!(s.files.len(), 2),
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn roundtrip_file_content_response() {
-        let msg = WsMessage::FileContentResponse(FileContentResponse {
-            path: "lib.rs".to_string(),
-            original: "fn old() {}".to_string(),
-            modified: "fn new() {}".to_string(),
-            staged: None,
-        });
-        let json = serialize_message(&msg).unwrap();
-        let deserialized = deserialize_message(&json).unwrap();
-        match deserialized {
-            WsMessage::FileContentResponse(f) => {
-                assert_eq!(f.path, "lib.rs");
-                assert_eq!(f.original, "fn old() {}");
-                assert_eq!(f.modified, "fn new() {}");
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn roundtrip_git_stage_result() {
-        let msg = WsMessage::GitStageResult(GitStageResult {
-            success: true,
-            error: None,
-            files: vec![GitFileStatusMsg {
-                path: "a.txt".to_string(),
-                index_status: "new".to_string(),
-                worktree_status: "none".to_string(),
-            }],
-        });
-        let json = serialize_message(&msg).unwrap();
-        let deserialized = deserialize_message(&json).unwrap();
-        match deserialized {
-            WsMessage::GitStageResult(r) => {
-                assert!(r.success);
-                assert!(r.error.is_none());
-                assert_eq!(r.files.len(), 1);
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
     fn roundtrip_error() {
         let msg = WsMessage::Error(ErrorMsg {
             code: "UNAUTHORIZED".to_string(),
@@ -308,81 +209,9 @@ mod tests {
     }
 
     #[test]
-    fn file_content_request_default_diff_base() {
-        let json = r#"{"type":"file_content_request","payload":{"path":"test.rs"}}"#;
-        let msg = deserialize_message(json).unwrap();
-        match msg {
-            WsMessage::FileContentRequest(req) => {
-                assert_eq!(req.path, "test.rs");
-                assert_eq!(req.diff_base, "HEAD");
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn file_content_request_staged_diff_base() {
-        let json =
-            r#"{"type":"file_content_request","payload":{"path":"a.rs","diff_base":"staged"}}"#;
-        let msg = deserialize_message(json).unwrap();
-        match msg {
-            WsMessage::FileContentRequest(req) => {
-                assert_eq!(req.diff_base, "staged");
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
     fn deserialize_unknown_type_fails() {
         let json = r#"{"type":"unknown_type","payload":{}}"#;
         assert!(deserialize_message(json).is_err());
-    }
-
-    #[test]
-    fn roundtrip_git_stage_hunk() {
-        let msg = WsMessage::GitStageHunk(GitStageHunk {
-            patch: "--- a/f\n+++ b/f\n".to_string(),
-        });
-        let json = serialize_message(&msg).unwrap();
-        let deserialized = deserialize_message(&json).unwrap();
-        match deserialized {
-            WsMessage::GitStageHunk(h) => {
-                assert_eq!(h.patch, "--- a/f\n+++ b/f\n");
-            }
-            _ => panic!("unexpected variant"),
-        }
-    }
-
-    #[test]
-    fn file_content_response_omits_none_staged() {
-        let msg = WsMessage::FileContentResponse(FileContentResponse {
-            path: "f".to_string(),
-            original: "".to_string(),
-            modified: "".to_string(),
-            staged: None,
-        });
-        let json = serialize_message(&msg).unwrap();
-        assert!(!json.contains("\"staged\""));
-    }
-
-    #[test]
-    fn file_content_response_includes_staged() {
-        let msg = WsMessage::FileContentResponse(FileContentResponse {
-            path: "f".to_string(),
-            original: "a".to_string(),
-            modified: "b".to_string(),
-            staged: Some("s".to_string()),
-        });
-        let json = serialize_message(&msg).unwrap();
-        assert!(json.contains("\"staged\":\"s\""));
-        let deserialized = deserialize_message(&json).unwrap();
-        match deserialized {
-            WsMessage::FileContentResponse(r) => {
-                assert_eq!(r.staged.unwrap(), "s");
-            }
-            _ => panic!("unexpected variant"),
-        }
     }
 
     #[test]
@@ -423,50 +252,6 @@ mod tests {
                 worktree_path: None,
             }),
             WsMessage::PtyOutputRequest(PtyOutputRequest { pty_id: 1 }),
-            WsMessage::GitStatusSync(GitStatusSync { files: vec![] }),
-            WsMessage::FileContentRequest(FileContentRequest {
-                path: "f".to_string(),
-                diff_base: "HEAD".to_string(),
-            }),
-            WsMessage::FileContentResponse(FileContentResponse {
-                path: "f".to_string(),
-                original: "".to_string(),
-                modified: "".to_string(),
-                staged: None,
-            }),
-            WsMessage::FileChange(FileChange {
-                path: "f".to_string(),
-                kind: "modify".to_string(),
-            }),
-            WsMessage::GitStatusRequest(GitStatusRequest {}),
-            WsMessage::GitStage(GitStage {
-                paths: vec!["a".to_string()],
-            }),
-            WsMessage::GitUnstage(GitUnstage {
-                paths: vec!["b".to_string()],
-            }),
-            WsMessage::GitStageResult(GitStageResult {
-                success: true,
-                error: None,
-                files: vec![],
-            }),
-            WsMessage::GitStageHunk(GitStageHunk {
-                patch: "p".to_string(),
-            }),
-            WsMessage::GitCommitRequest(GitCommitRequest {
-                message: "msg".to_string(),
-            }),
-            WsMessage::GitCommitResult(GitCommitResult {
-                success: true,
-                hash: Some("abc123".to_string()),
-                error: None,
-            }),
-            WsMessage::GitPushRequest(GitPushRequest {}),
-            WsMessage::GitPushResult(GitPushResult {
-                success: true,
-                output: Some("ok".to_string()),
-                error: None,
-            }),
             WsMessage::BranchInfoRequest(BranchInfoRequest {}),
             WsMessage::BranchInfoResponse(BranchInfoResponse {
                 branch: "main".to_string(),

@@ -47,20 +47,6 @@ pub(crate) fn validate_relative_path(path: &str, repo_root: &str) -> Result<Path
     Ok(resolved)
 }
 
-pub(super) fn validate_patch_paths(patch: &str, repo_root: &str) -> Result<(), String> {
-    for line in patch.lines() {
-        let path = line
-            .strip_prefix("--- a/")
-            .or_else(|| line.strip_prefix("+++ b/"));
-        if let Some(p) = path {
-            if p != "/dev/null" {
-                validate_relative_path(p, repo_root)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,33 +78,6 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
         let result = validate_relative_path("src/main.rs", dir.path().to_str().unwrap());
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_patch_paths_rejects_traversal() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let patch = "--- a/../../etc/passwd\n+++ b/../../etc/shadow\n";
-        let result = validate_patch_paths(patch, dir.path().to_str().unwrap());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_patch_paths_accepts_valid_paths() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/lib.rs"), "").unwrap();
-        let patch = "--- a/src/lib.rs\n+++ b/src/lib.rs\n";
-        let result = validate_patch_paths(patch, dir.path().to_str().unwrap());
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_validate_patch_paths_allows_dev_null() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("new_file.rs"), "").unwrap();
-        let patch = "--- /dev/null\n+++ b/new_file.rs\n";
-        let result = validate_patch_paths(patch, dir.path().to_str().unwrap());
         assert!(result.is_ok());
     }
 

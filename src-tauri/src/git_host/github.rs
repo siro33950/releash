@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::types::{GitHostProvider, IssueInfo, PrDetail, PrFile, PrInfo, PrReviewComment};
+use super::types::{GitHostProvider, IssueInfo, PrInfo, PrReviewComment};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -45,39 +45,6 @@ impl GitHostProvider for GitHubProvider {
         );
         match output {
             Some(stdout) => parse_gh_merged_pr_output(&stdout),
-            None => Vec::new(),
-        }
-    }
-
-    fn get_pr_detail(&self, repo_path: &str, pr_number: u64) -> Option<PrDetail> {
-        let number_str = pr_number.to_string();
-        let output = run_gh_with_timeout(
-            &[
-                "pr",
-                "view",
-                &number_str,
-                "--json",
-                "number,title,body,state,url,author,createdAt,headRefName,baseRefName,additions,deletions,changedFiles,comments,reviews",
-            ],
-            repo_path,
-        )?;
-        parse_gh_pr_detail(&output)
-    }
-
-    fn get_pr_files(&self, repo_path: &str, pr_number: u64) -> Vec<PrFile> {
-        let number_str = pr_number.to_string();
-        let output = run_gh_with_timeout(
-            &[
-                "api",
-                &format!("repos/{{owner}}/{{repo}}/pulls/{number_str}/files"),
-                "--paginate",
-                "--jq",
-                "[.[] | {filename, status, additions, deletions}]",
-            ],
-            repo_path,
-        );
-        match output {
-            Some(stdout) => parse_pr_files(&stdout),
             None => Vec::new(),
         }
     }
@@ -222,29 +189,8 @@ fn parse_gh_pr_list_output(json_str: &str) -> HashMap<String, PrInfo> {
     map
 }
 
-fn parse_gh_pr_detail(json_str: &str) -> Option<PrDetail> {
-    serde_json::from_str(json_str).ok()
-}
-
 fn parse_gh_issue_list_output(json_str: &str) -> Vec<IssueInfo> {
     serde_json::from_str(json_str).unwrap_or_default()
-}
-
-fn parse_pr_files(json_str: &str) -> Vec<PrFile> {
-    if let Ok(files) = serde_json::from_str::<Vec<PrFile>>(json_str) {
-        return files;
-    }
-    let mut all = Vec::new();
-    for line in json_str.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(page) = serde_json::from_str::<Vec<PrFile>>(line) {
-            all.extend(page);
-        }
-    }
-    all
 }
 
 fn parse_pr_review_comments(json_str: &str) -> Vec<PrReviewComment> {
@@ -332,80 +278,6 @@ mod tests {
     fn parse_merged_prs_invalid() {
         let branches = parse_gh_merged_pr_output("invalid");
         assert!(branches.is_empty());
-    }
-
-    #[test]
-    fn parse_pr_detail_valid_json() {
-        let json = serde_json::json!({
-            "number": 42,
-            "title": "Add feature",
-            "body": "## Description\nSome changes",
-            "state": "OPEN",
-            "url": "https://github.com/owner/repo/pull/42",
-            "author": {"login": "user1"},
-            "createdAt": "2024-01-01T00:00:00Z",
-            "headRefName": "feat/login",
-            "baseRefName": "main",
-            "additions": 10,
-            "deletions": 3,
-            "changedFiles": 2,
-            "comments": [
-                {"author": {"login": "reviewer1"}, "body": "LGTM", "createdAt": "2024-01-02T00:00:00Z"}
-            ],
-            "reviews": [
-                {"author": {"login": "reviewer1"}, "body": "Approved!", "state": "APPROVED", "submittedAt": "2024-01-02T00:00:00Z"}
-            ]
-        })
-        .to_string();
-        let detail = parse_gh_pr_detail(&json).unwrap();
-        assert_eq!(detail.number, 42);
-        assert_eq!(detail.title, "Add feature");
-        assert_eq!(detail.state, "OPEN");
-        assert_eq!(detail.head_ref_name, "feat/login");
-        assert_eq!(detail.base_ref_name, "main");
-        assert_eq!(detail.additions, 10);
-        assert_eq!(detail.deletions, 3);
-        assert_eq!(detail.changed_files, 2);
-        assert_eq!(detail.comments.len(), 1);
-        assert_eq!(detail.comments[0].author.login, "reviewer1");
-        assert_eq!(detail.reviews.len(), 1);
-        assert_eq!(detail.reviews[0].state, "APPROVED");
-    }
-
-    #[test]
-    fn parse_pr_detail_empty_comments_and_reviews() {
-        let json = serde_json::json!({
-            "number": 1,
-            "title": "Fix bug",
-            "body": "",
-            "state": "MERGED",
-            "url": "https://github.com/owner/repo/pull/1",
-            "author": {"login": "dev"},
-            "createdAt": "2024-01-01T00:00:00Z",
-            "headRefName": "fix/bug",
-            "baseRefName": "main",
-            "additions": 0,
-            "deletions": 0,
-            "changedFiles": 0,
-            "comments": [],
-            "reviews": []
-        })
-        .to_string();
-        let detail = parse_gh_pr_detail(&json).unwrap();
-        assert_eq!(detail.number, 1);
-        assert!(detail.comments.is_empty());
-        assert!(detail.reviews.is_empty());
-    }
-
-    #[test]
-    fn parse_pr_detail_invalid_json() {
-        assert!(parse_gh_pr_detail("not json").is_none());
-    }
-
-    #[test]
-    fn parse_pr_detail_missing_fields() {
-        let json = serde_json::json!({"number": 1, "title": "Partial"}).to_string();
-        assert!(parse_gh_pr_detail(&json).is_none());
     }
 
     #[test]
@@ -521,41 +393,6 @@ mod tests {
         assert_eq!(issues[1].number, 312);
         assert!(issues[1].milestone.is_none());
         assert_eq!(issues[1].labels.len(), 1);
-    }
-
-    #[test]
-    fn parse_pr_files_valid_json() {
-        let json = serde_json::json!([
-            {"filename": "src/main.rs", "status": "modified", "additions": 10, "deletions": 3},
-            {"filename": "src/new.rs", "status": "added", "additions": 50, "deletions": 0}
-        ])
-        .to_string();
-        let files = parse_pr_files(&json);
-        assert_eq!(files.len(), 2);
-        assert_eq!(files[0].filename, "src/main.rs");
-        assert_eq!(files[0].status, "modified");
-        assert_eq!(files[1].status, "added");
-    }
-
-    #[test]
-    fn parse_pr_files_empty() {
-        let files = parse_pr_files("[]");
-        assert!(files.is_empty());
-    }
-
-    #[test]
-    fn parse_pr_files_paginated_output() {
-        let page1 = serde_json::json!([
-            {"filename": "a.rs", "status": "modified", "additions": 1, "deletions": 0}
-        ]);
-        let page2 = serde_json::json!([
-            {"filename": "b.rs", "status": "added", "additions": 5, "deletions": 0}
-        ]);
-        let paginated = format!("{}\n{}", page1, page2);
-        let files = parse_pr_files(&paginated);
-        assert_eq!(files.len(), 2);
-        assert_eq!(files[0].filename, "a.rs");
-        assert_eq!(files[1].filename, "b.rs");
     }
 
     /// run_gh_with_timeout と同じパターン（try_wait ポーリング + 後から stdout 読み取り）で

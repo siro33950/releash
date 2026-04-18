@@ -6,12 +6,9 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use types::{
-    GitHostProvider, IssueInfo, PrDetail, PrFile, PrReviewComment, PrStatus, ProviderStatus,
-};
+use types::{GitHostProvider, IssueInfo, PrReviewComment, PrStatus, ProviderStatus};
 
 const PR_CACHE_TTL: Duration = Duration::from_secs(30);
-const PR_DETAIL_CACHE_TTL: Duration = Duration::from_secs(60);
 const ISSUE_CACHE_TTL: Duration = Duration::from_secs(30);
 
 struct CacheEntry {
@@ -24,23 +21,6 @@ pub struct PrCache {
 }
 
 impl PrCache {
-    pub fn new() -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-        }
-    }
-}
-
-struct PrDetailCacheEntry {
-    value: PrDetail,
-    fetched_at: Instant,
-}
-
-pub struct PrDetailCache {
-    entries: Mutex<HashMap<String, PrDetailCacheEntry>>,
-}
-
-impl PrDetailCache {
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
@@ -231,50 +211,6 @@ pub async fn fetch_pr_status(repo_path: String) -> Result<PrStatus, String> {
         .map_err(|e| format!("task join error: {e}"))
 }
 
-fn fetch_pr_detail_inner(repo_path: &str, pr_number: u64) -> Option<PrDetail> {
-    let provider = create_provider(repo_path)?;
-    provider.get_pr_detail(repo_path, pr_number)
-}
-
-fn fetch_pr_detail_with_cache(
-    cache: &PrDetailCache,
-    repo_path: &str,
-    pr_number: u64,
-) -> Option<PrDetail> {
-    let key = format!("{repo_path}::{pr_number}");
-    if let Ok(map) = cache.entries.lock() {
-        if let Some(entry) = map.get(&key) {
-            if entry.fetched_at.elapsed() < PR_DETAIL_CACHE_TTL {
-                return Some(entry.value.clone());
-            }
-        }
-    }
-    let detail = fetch_pr_detail_inner(repo_path, pr_number)?;
-    if let Ok(mut map) = cache.entries.lock() {
-        map.retain(|_, entry| entry.fetched_at.elapsed() < PR_DETAIL_CACHE_TTL);
-        map.insert(
-            key,
-            PrDetailCacheEntry {
-                value: detail.clone(),
-                fetched_at: Instant::now(),
-            },
-        );
-    }
-    Some(detail)
-}
-
-#[tauri::command]
-pub async fn get_pr_detail(
-    cache: tauri::State<'_, Arc<PrDetailCache>>,
-    repo_path: String,
-    pr_number: u64,
-) -> Result<Option<PrDetail>, String> {
-    let cache = Arc::clone(&cache);
-    tokio::task::spawn_blocking(move || fetch_pr_detail_with_cache(&cache, &repo_path, pr_number))
-        .await
-        .map_err(|e| format!("task join error: {e}"))
-}
-
 #[tauri::command]
 pub async fn get_cached_pr_status(
     cache: tauri::State<'_, Arc<PrCache>>,
@@ -325,21 +261,6 @@ pub async fn fetch_issues(repo_path: String) -> Result<Vec<IssueInfo>, String> {
         .map_err(|e| format!("task join error: {e}"))
 }
 
-fn fetch_pr_files_inner(repo_path: &str, pr_number: u64) -> Vec<PrFile> {
-    let provider = create_provider(repo_path);
-    match provider {
-        Some(p) => p.get_pr_files(repo_path, pr_number),
-        None => Vec::new(),
-    }
-}
-
-#[tauri::command]
-pub async fn get_pr_files(repo_path: String, pr_number: u64) -> Result<Vec<PrFile>, String> {
-    tokio::task::spawn_blocking(move || fetch_pr_files_inner(&repo_path, pr_number))
-        .await
-        .map_err(|e| format!("task join error: {e}"))
-}
-
 pub(crate) fn fetch_pr_review_comments_inner(
     repo_path: &str,
     pr_number: u64,
@@ -349,16 +270,6 @@ pub(crate) fn fetch_pr_review_comments_inner(
         Some(p) => p.get_pr_review_comments(repo_path, pr_number),
         None => Vec::new(),
     }
-}
-
-#[tauri::command]
-pub async fn get_pr_review_comments(
-    repo_path: String,
-    pr_number: u64,
-) -> Result<Vec<PrReviewComment>, String> {
-    tokio::task::spawn_blocking(move || fetch_pr_review_comments_inner(&repo_path, pr_number))
-        .await
-        .map_err(|e| format!("task join error: {e}"))
 }
 
 #[tauri::command]

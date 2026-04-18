@@ -1,18 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Subscribe } from "./useMessageBus";
-import type { DiffBase } from "./useRemoteFileContent";
 
-export type Tab = "changes" | "diff" | "terminal" | "comments" | "threads";
+export type Tab = "terminal" | "comments" | "threads";
 
 interface UseRemoteNavigationOptions {
 	subscribe: Subscribe;
 }
 
 export function useRemoteNavigation({ subscribe }: UseRemoteNavigationOptions) {
-	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 	const [selectedWorktree, setSelectedWorktree] = useState<string | null>(null);
 	const [activeTab, setActiveTab] = useState<Tab>("terminal");
-	const [diffBase, setDiffBase] = useState<DiffBase>("branch-base");
 	const [worktreeLoading, setWorktreeLoading] = useState(false);
 
 	const selectWorktreeOptimistic = useCallback((path: string) => {
@@ -34,15 +31,11 @@ export function useRemoteNavigation({ subscribe }: UseRemoteNavigationOptions) {
 	}, [subscribe]);
 
 	return {
-		selectedPath,
 		selectedWorktree,
 		worktreeLoading,
 		activeTab,
-		diffBase,
-		setSelectedPath,
 		setSelectedWorktree,
 		setActiveTab,
-		setDiffBase,
 		selectWorktreeOptimistic,
 	};
 }

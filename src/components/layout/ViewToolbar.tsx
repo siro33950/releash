@@ -1,6 +1,5 @@
 import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
 	Tooltip,
 	TooltipContent,
@@ -49,14 +48,6 @@ export function ViewToolbar({ leftPanels, rightSlot }: ViewToolbarProps) {
 					<TooltipContent side="bottom">{panel.label}</TooltipContent>
 				</Tooltip>
 			))}
-			<TabsList variant="line" className="h-[30px] px-0">
-				<TabsTrigger value="agent" className="text-xs px-[10px] py-1">
-					Agent
-				</TabsTrigger>
-				<TabsTrigger value="editor" className="text-xs px-[10px] py-1">
-					Editor
-				</TabsTrigger>
-			</TabsList>
 			<div data-tauri-drag-region className="flex-1" />
 			{rightSlot}
 		</div>
