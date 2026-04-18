@@ -343,26 +343,15 @@ export function MessageInput({
 	);
 
 	const canSend = value.trim().length > 0 || attachedImages.length > 0;
+	const inputRef = useRef<HTMLDivElement>(null);
 
 	return (
-		<SlashCommandPopup
-			open={popupOpen}
-			commands={filteredCommands}
-			selectedIndex={selectedIndex}
-			onSelect={handleSelectCommand}
-			onClose={() => setSlashPopupDismissed(true)}
-		>
-			<MentionPopup
-				open={mentionPopupOpen}
-				files={mentionFiles}
-				selectedIndex={mentionSelectedIndex}
-				onSelect={handleSelectMention}
-				onClose={() => setMentionDismissed(true)}
+		<>
+			<div
+				ref={inputRef}
+				data-testid="message-input"
+				className="relative mx-3 my-2 border rounded-lg focus-within:ring-1 focus-within:ring-ring"
 			>
-				<div
-					data-testid="message-input"
-					className="mx-3 my-2 border rounded-lg focus-within:ring-1 focus-within:ring-ring"
-				>
 				{attachedImages.length > 0 && (
 					<div
 						data-testid="image-preview-list"
@@ -438,8 +427,23 @@ export function MessageInput({
 						</Button>
 					)}
 				</div>
-				</div>
-			</MentionPopup>
-		</SlashCommandPopup>
+			</div>
+			<SlashCommandPopup
+				open={popupOpen}
+				commands={filteredCommands}
+				selectedIndex={selectedIndex}
+				onSelect={handleSelectCommand}
+				onClose={() => setSlashPopupDismissed(true)}
+				anchorRef={inputRef}
+			/>
+			<MentionPopup
+				open={mentionPopupOpen}
+				files={mentionFiles}
+				selectedIndex={mentionSelectedIndex}
+				onSelect={handleSelectMention}
+				onClose={() => setMentionDismissed(true)}
+				anchorRef={inputRef}
+			/>
+		</>
 	);
 }

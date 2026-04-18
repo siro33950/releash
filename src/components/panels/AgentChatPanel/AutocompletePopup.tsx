@@ -11,7 +11,7 @@ interface AutocompletePopupProps<T> {
 	selectedIndex: number;
 	onSelect: (item: T) => void;
 	onClose: () => void;
-	children: React.ReactNode;
+	anchorRef: React.RefObject<HTMLElement | null>;
 	getKey: (item: T) => string;
 	renderItem: (item: T) => React.ReactNode;
 	testId: string;
@@ -24,7 +24,7 @@ export function AutocompletePopup<T>({
 	selectedIndex,
 	onSelect,
 	onClose,
-	children,
+	anchorRef,
 	getKey,
 	renderItem,
 	testId,
@@ -41,7 +41,7 @@ export function AutocompletePopup<T>({
 			open={open && items.length > 0}
 			onOpenChange={(o) => !o && onClose()}
 		>
-			<PopoverAnchor asChild>{children}</PopoverAnchor>
+			<PopoverAnchor virtualRef={anchorRef as React.RefObject<HTMLElement>} />
 			<PopoverContent
 				side="top"
 				align="start"

@@ -6,7 +6,7 @@ interface MentionPopupProps {
 	selectedIndex: number;
 	onSelect: (filePath: string) => void;
 	onClose: () => void;
-	children: React.ReactNode;
+	anchorRef: React.RefObject<HTMLElement | null>;
 }
 
 export function MentionPopup({
@@ -15,7 +15,7 @@ export function MentionPopup({
 	selectedIndex,
 	onSelect,
 	onClose,
-	children,
+	anchorRef,
 }: MentionPopupProps) {
 	return (
 		<AutocompletePopup
@@ -24,13 +24,12 @@ export function MentionPopup({
 			selectedIndex={selectedIndex}
 			onSelect={onSelect}
 			onClose={onClose}
+			anchorRef={anchorRef}
 			getKey={(f) => f}
 			renderItem={(f) => (
 				<span className="truncate font-mono text-xs">{f}</span>
 			)}
 			testId="mention-file-list"
-		>
-			{children}
-		</AutocompletePopup>
+		/>
 	);
 }

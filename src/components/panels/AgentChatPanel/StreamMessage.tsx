@@ -34,7 +34,13 @@ function ExternalLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
 
 const displayPartsCache = new Map<string, DisplayPart[]>();
 
-function HumanMessageContent({ content, images }: { content: string; images?: ImagePart[] }) {
+function HumanMessageContent({
+	content,
+	images,
+}: {
+	content: string;
+	images?: ImagePart[];
+}) {
 	const [parts, setParts] = useState<DisplayPart[] | null>(
 		() => displayPartsCache.get(content) ?? null,
 	);

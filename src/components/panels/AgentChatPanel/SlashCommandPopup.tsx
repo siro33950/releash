@@ -7,7 +7,7 @@ interface SlashCommandPopupProps {
 	selectedIndex: number;
 	onSelect: (command: SlashCommand) => void;
 	onClose: () => void;
-	children: React.ReactNode;
+	anchorRef: React.RefObject<HTMLElement | null>;
 }
 
 export function SlashCommandPopup({
@@ -16,7 +16,7 @@ export function SlashCommandPopup({
 	selectedIndex,
 	onSelect,
 	onClose,
-	children,
+	anchorRef,
 }: SlashCommandPopupProps) {
 	return (
 		<AutocompletePopup
@@ -25,6 +25,7 @@ export function SlashCommandPopup({
 			selectedIndex={selectedIndex}
 			onSelect={onSelect}
 			onClose={onClose}
+			anchorRef={anchorRef}
 			getKey={(cmd) => cmd.name}
 			renderItem={(cmd) => (
 				<>
@@ -43,8 +44,6 @@ export function SlashCommandPopup({
 			)}
 			testId="slash-command-list"
 			itemClassName="flex flex-col"
-		>
-			{children}
-		</AutocompletePopup>
+		/>
 	);
 }

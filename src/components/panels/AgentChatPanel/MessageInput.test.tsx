@@ -684,5 +684,4 @@ describe("MessageInput mention popup", () => {
 			query: "mai",
 		});
 	});
-	});
 });
