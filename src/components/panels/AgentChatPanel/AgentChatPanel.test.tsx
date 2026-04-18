@@ -97,6 +97,19 @@ describe("AgentChatPanel", () => {
 		expect(screen.getByTestId("agent-chat-panel")).toBeDefined();
 	});
 
+	it("has data-tauri-drag-region attribute for window dragging", () => {
+		mockUseAgentChat();
+		const { container } = render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const dragRegion = container.querySelector("[data-tauri-drag-region]");
+		expect(dragRegion).toBeInTheDocument();
+	});
+
 	it("renders message input", () => {
 		mockUseAgentChat();
 		render(
