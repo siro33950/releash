@@ -2,6 +2,7 @@ mod agent_sdk;
 mod agent_status;
 mod comment_store;
 mod config;
+mod file_mention;
 mod focus_tracker;
 mod git;
 mod git_host;
@@ -337,6 +338,9 @@ pub fn run() {
             pty::oneshot::get_oneshot_pty_status,
             pty::oneshot::list_oneshot_ptys,
             pty::oneshot::find_oneshot_pty,
+            // File Mention
+            file_mention::list_mentionable_files,
+            file_mention::parse_display_mentions,
             // Agent SDK
             agent_sdk::start_agent_session,
             agent_sdk::execute_agent_query,

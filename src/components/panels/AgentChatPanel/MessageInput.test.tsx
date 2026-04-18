@@ -7,9 +7,12 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { createRef } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setSlashCommands } from "@/hooks/useSlashCommands";
 import { MessageInput, type MessageInputHandle } from "./MessageInput";
+import { findMentionTrigger } from "./popupInputUtils";
+
+const mockInvoke = vi.mocked(invoke);
 
 const defaultProps = {
 	onSend: vi.fn(),
@@ -439,5 +442,247 @@ describe("MessageInput image attachments", () => {
 			});
 		});
 		expect(await screen.findByTestId("image-preview-list")).toBeDefined();
+	});
+});
+
+describe("findMentionTrigger", () => {
+	it("returns null for empty text", () => {
+		expect(findMentionTrigger("", 0)).toBeNull();
+	});
+
+	it("detects @ at start of text", () => {
+		expect(findMentionTrigger("@src", 4)).toEqual({
+			start: 0,
+			query: "src",
+		});
+	});
+
+	it("detects @ after whitespace", () => {
+		expect(findMentionTrigger("hello @src", 10)).toEqual({
+			start: 6,
+			query: "src",
+		});
+	});
+
+	it("returns null when @ is not preceded by whitespace", () => {
+		expect(findMentionTrigger("hello@src", 9)).toBeNull();
+	});
+
+	it("returns null when query contains whitespace", () => {
+		expect(findMentionTrigger("@ src", 5)).toBeNull();
+	});
+
+	it("returns empty query when cursor is right after @", () => {
+		expect(findMentionTrigger("@", 1)).toEqual({ start: 0, query: "" });
+	});
+
+	it("handles cursor in middle of text", () => {
+		expect(findMentionTrigger("hello @src/main.rs world", 18)).toEqual({
+			start: 6,
+			query: "src/main.rs",
+		});
+	});
+
+	it("returns null when no @ in text", () => {
+		expect(findMentionTrigger("hello world", 11)).toBeNull();
+	});
+});
+
+describe("MessageInput mention popup", () => {
+	const mentionFiles = ["src/main.rs", "src/lib.rs", "src/app.tsx"];
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		mockInvoke.mockResolvedValue(mentionFiles);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		mockInvoke.mockReset();
+	});
+
+	it("shows mention popup when typing @ with worktreePath", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		expect(mockInvoke).toHaveBeenCalledWith("list_mentionable_files", {
+			worktreePath: "/test/repo",
+			query: "",
+		});
+		expect(screen.getByTestId("mention-file-list")).toBeDefined();
+	});
+
+	it("does not show mention popup without worktreePath", async () => {
+		render(<MessageInput {...defaultProps} />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		expect(screen.queryByTestId("mention-file-list")).toBeNull();
+	});
+
+	it("selects mention on Enter", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		expect(textarea.value).toBe("@src/main.rs ");
+	});
+
+	it("selects mention on Tab", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Tab" });
+		expect(textarea.value).toBe("@src/main.rs ");
+	});
+
+	it("returns focus to textarea after mention selection", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		expect(document.activeElement).toBe(textarea);
+	});
+
+	it("dismisses mention popup on Escape", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		expect(screen.getByTestId("mention-file-list")).toBeDefined();
+		fireEvent.keyDown(textarea, { key: "Escape" });
+		expect(screen.queryByTestId("mention-file-list")).toBeNull();
+		expect((textarea as HTMLTextAreaElement).value).toBe("@");
+	});
+
+	it("navigates mention list with ArrowDown and ArrowUp", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "ArrowDown" });
+		const options = screen.getAllByRole("option");
+		expect(options[1].dataset.selected).toBe("true");
+		fireEvent.keyDown(textarea, { key: "ArrowUp" });
+		expect(options[0].dataset.selected).toBe("true");
+	});
+
+	it("filters mentions by query", async () => {
+		mockInvoke.mockResolvedValue(["src/main.rs"]);
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@main", selectionStart: 5 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		expect(mockInvoke).toHaveBeenCalledWith("list_mentionable_files", {
+			worktreePath: "/test/repo",
+			query: "main",
+		});
+	});
+
+	it("closes mention popup when @ is deleted via backspace", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+
+		// Type @ to open popup
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		expect(screen.getByTestId("mention-file-list")).toBeDefined();
+
+		// Delete @ via backspace
+		fireEvent.change(textarea, {
+			target: { value: "", selectionStart: 0 },
+		});
+		expect(screen.queryByTestId("mention-file-list")).toBeNull();
+	});
+
+	it("does not show mention popup when no files match", async () => {
+		mockInvoke.mockResolvedValue([]);
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@nonexistent", selectionStart: 12 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		expect(screen.queryByTestId("mention-file-list")).toBeNull();
+	});
+
+	it("replaces @query with selected file path when filter text exists", async () => {
+		mockInvoke.mockResolvedValue(["src/main.rs"]);
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "check @main", selectionStart: 11 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		expect(textarea.value).toBe("check @src/main.rs ");
+	});
+
+	it("replaces @query in middle of text preserving surrounding text", async () => {
+		mockInvoke.mockResolvedValue(["src/lib.rs"]);
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "check @lib please", selectionStart: 10 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		expect(textarea.value).toBe("check @src/lib.rs  please");
+	});
+
+	it("debounces invoke calls", async () => {
+		render(<MessageInput {...defaultProps} worktreePath="/test/repo" />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, {
+			target: { value: "@m", selectionStart: 2 },
+		});
+		fireEvent.change(textarea, {
+			target: { value: "@ma", selectionStart: 3 },
+		});
+		fireEvent.change(textarea, {
+			target: { value: "@mai", selectionStart: 4 },
+		});
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"list_mentionable_files",
+			expect.anything(),
+		);
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		expect(mockInvoke).toHaveBeenCalledWith("list_mentionable_files", {
+			worktreePath: "/test/repo",
+			query: "mai",
+		});
+	});
 	});
 });
