@@ -208,10 +208,9 @@ impl ChatSession {
             .first()
             .map(|m| {
                 let content = if m.content.is_empty() {
-                    if m.parts
-                        .as_ref()
-                        .is_some_and(|parts| parts.iter().any(|p| matches!(p, MessagePart::Image { .. })))
-                    {
+                    if m.parts.as_ref().is_some_and(|parts| {
+                        parts.iter().any(|p| matches!(p, MessagePart::Image { .. }))
+                    }) {
                         "[Image]".to_string()
                     } else {
                         m.content.clone()
