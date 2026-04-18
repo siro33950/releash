@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
-import type { DiffBase } from "@/components/panels/MonacoDiffViewer";
 import type { FileChangeEvent } from "@/hooks/useFileWatcher";
 import { normalizePath } from "@/lib/normalizePath";
+import type { DiffBase } from "@/types/settings";
 
 export function useGitOriginalContent(
 	filePath: string | null,

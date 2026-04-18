@@ -141,14 +141,14 @@ describe("useWebSocket", () => {
 		act(() => {
 			mockInstances[0].simulateMessage(
 				serializeMessage({
-					type: "git_status_sync",
-					payload: { files: [] },
+					type: "worktree_list_request",
+					payload: {},
 				}),
 			);
 		});
 
 		expect(onMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "git_status_sync" }),
+			expect.objectContaining({ type: "worktree_list_request" }),
 		);
 	});
 
@@ -164,7 +164,7 @@ describe("useWebSocket", () => {
 
 		act(() => {
 			result.current.send({
-				type: "git_status_request",
+				type: "worktree_list_request",
 				payload: {} as Record<string, never>,
 			});
 		});

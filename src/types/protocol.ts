@@ -1,5 +1,3 @@
-import type { GitFileStatus } from "./git";
-
 // --- 認証 ---
 
 interface AuthChallenge {
@@ -70,75 +68,6 @@ export interface PtyKillResponse {
 	success: boolean;
 	pty_id: number;
 	error?: string;
-}
-
-// --- ファイル・Diff ---
-
-export interface GitStatusSync {
-	files: GitFileStatus[];
-}
-
-export interface FileContentRequest {
-	path: string;
-	diff_base?: "branch-base" | "staged";
-}
-
-interface FileContentResponse {
-	path: string;
-	original: string;
-	modified: string;
-	staged?: string;
-}
-
-export interface FileChange {
-	path: string;
-	kind: string;
-}
-
-// --- Git操作 ---
-
-export interface GitStage {
-	paths: string[];
-}
-
-export interface GitUnstage {
-	paths: string[];
-}
-
-interface GitStageResult {
-	success: boolean;
-	error?: string;
-	files: GitFileStatus[];
-}
-
-export interface GitStageHunk {
-	patch: string;
-}
-
-// --- Git Commit / Push / BranchInfo ---
-
-export interface GitCommitRequest {
-	message: string;
-}
-
-export interface GitCommitResult {
-	success: boolean;
-	hash?: string;
-	error?: string;
-}
-
-export type GitPushRequest = Record<string, never>;
-
-export interface GitPushResult {
-	success: boolean;
-	output?: string;
-	error?: string;
-}
-
-export type BranchInfoRequest = Record<string, never>;
-
-export interface BranchInfoResponse {
-	branch: string;
 }
 
 // --- コメント ---
@@ -286,6 +215,14 @@ export interface ErrorMsg {
 	message: string;
 }
 
+// --- ブランチ情報 ---
+
+export type BranchInfoRequest = Record<string, never>;
+
+export interface BranchInfoResponse {
+	branch: string;
+}
+
 // --- 統合メッセージ型 ---
 
 export type WsMessage =
@@ -302,21 +239,6 @@ export type WsMessage =
 	| { type: "pty_spawn_response"; payload: PtySpawnResponse }
 	| { type: "pty_kill_request"; payload: PtyKillRequest }
 	| { type: "pty_kill_response"; payload: PtyKillResponse }
-	| { type: "git_status_sync"; payload: GitStatusSync }
-	| { type: "file_content_request"; payload: FileContentRequest }
-	| { type: "file_content_response"; payload: FileContentResponse }
-	| { type: "file_change"; payload: FileChange }
-	| { type: "git_stage"; payload: GitStage }
-	| { type: "git_unstage"; payload: GitUnstage }
-	| { type: "git_stage_result"; payload: GitStageResult }
-	| { type: "git_stage_hunk"; payload: GitStageHunk }
-	| { type: "git_commit_request"; payload: GitCommitRequest }
-	| { type: "git_commit_result"; payload: GitCommitResult }
-	| { type: "git_push_request"; payload: GitPushRequest }
-	| { type: "git_push_result"; payload: GitPushResult }
-	| { type: "branch_info_request"; payload: BranchInfoRequest }
-	| { type: "branch_info_response"; payload: BranchInfoResponse }
-	| { type: "git_status_request"; payload: Record<string, never> }
 	| { type: "add_comment"; payload: AddComment }
 	| { type: "delete_comment"; payload: DeleteComment }
 	| { type: "update_comment"; payload: UpdateComment }
@@ -331,6 +253,8 @@ export type WsMessage =
 	| { type: "worktree_list_response"; payload: WorktreeListResponse }
 	| { type: "worktree_select_request"; payload: WorktreeSelectRequest }
 	| { type: "worktree_select_response"; payload: WorktreeSelectResponse }
+	| { type: "branch_info_request"; payload: BranchInfoRequest }
+	| { type: "branch_info_response"; payload: BranchInfoResponse }
 	| { type: "branch_list_sync"; payload: BranchListSync }
 	| { type: "agent_state_sync"; payload: AgentStateSync }
 	| { type: "error"; payload: ErrorMsg };

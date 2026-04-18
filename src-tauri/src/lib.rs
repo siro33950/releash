@@ -5,7 +5,6 @@ mod config;
 mod focus_tracker;
 mod git;
 mod git_host;
-mod lsp;
 mod mcp;
 mod menu;
 mod native_drop;
@@ -14,7 +13,6 @@ mod protocol;
 mod pty;
 mod qr_code;
 mod repo_registry;
-mod search;
 mod sentry_integration;
 mod session;
 mod shell_integration;
@@ -66,7 +64,6 @@ pub fn run() {
         ))
         .manage(Arc::new(session::SessionStore::default()))
         .manage(Arc::new(pty::PtyManager::default()))
-        .manage(Arc::new(lsp::LspManager::default()))
         .manage(watcher::FileWatcherManager::default())
         .manage(Arc::new(ws_bridge::WsBroadcaster::default()))
         .manage(Arc::new(tokio::sync::Mutex::new(
@@ -74,7 +71,6 @@ pub fn run() {
         )))
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
-        .manage(Arc::new(git_host::PrDetailCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
         .manage(mcp::McpServerHandle::default())
         .manage::<repo_registry::SharedRepoPaths>(Arc::new(parking_lot::RwLock::new(Vec::new())))
@@ -216,7 +212,6 @@ pub fn run() {
             // Git: diff/content
             git::commands::get_file_at_ref,
             git::commands::get_staged_content,
-            git::commands::get_binary_file_at_ref,
             git::commands::get_binary_staged_content,
             git::commands::get_file_at_branch_base,
             git::commands::get_binary_file_at_branch_base,
@@ -224,7 +219,6 @@ pub fn run() {
             // Git: ブランチ
             git::commands::list_branches,
             git::commands::get_current_branch,
-            git::commands::get_current_branch_ahead_behind,
             git::commands::get_default_branch,
             git::commands::git_create_branch,
             git::commands::delete_branch,
@@ -236,10 +230,6 @@ pub fn run() {
             git::commands::git_unstage,
             git::commands::git_stage_hunk,
             git::commands::git_unstage_hunk,
-            git::commands::git_discard,
-            // Git: コミット・プッシュ
-            git::commands::git_commit,
-            git::commands::git_push,
             // Git: ワークツリー
             git::commands::get_main_repo_path,
             git::commands::get_worktree_dirty_count,
@@ -258,11 +248,8 @@ pub fn run() {
             git_host::check_pr_provider_status,
             git_host::fetch_pr_status,
             git_host::get_cached_pr_status,
-            git_host::get_pr_detail,
             git_host::fetch_issues,
             git_host::get_cached_issues,
-            git_host::get_pr_files,
-            git_host::get_pr_review_comments,
             // Notion
             notion::query_notion_tasks,
             notion::fetch_notion_label_options,
@@ -270,11 +257,6 @@ pub fn run() {
             notion::get_notion_config,
             notion::delete_notion_config,
             notion::validate_notion_config,
-            // 検索
-            search::search_files,
-            search::find_definition,
-            search::find_references,
-            search::list_document_symbols,
             // アプリ設定
             config::get_server_config,
             config::update_server_port,
@@ -355,17 +337,6 @@ pub fn run() {
             pty::oneshot::get_oneshot_pty_status,
             pty::oneshot::list_oneshot_ptys,
             pty::oneshot::find_oneshot_pty,
-            // LSP
-            lsp::spawn_lsp,
-            lsp::lsp_send,
-            lsp::shutdown_lsp,
-            lsp::kill_lsp,
-            lsp::list_lsp_sessions,
-            lsp::kill_lsp_by_worktree,
-            lsp::detect_lsp_server,
-            lsp::install_lsp_server,
-            lsp::get_language_for_extension,
-            lsp::get_supported_lsp_languages,
             // Agent SDK
             agent_sdk::start_agent_session,
             agent_sdk::execute_agent_query,

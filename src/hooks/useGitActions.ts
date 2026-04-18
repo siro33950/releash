@@ -10,29 +10,12 @@ export function useGitActions() {
 		await invoke("git_unstage", { repoPath, paths });
 	}, []);
 
-	const commit = useCallback(
-		async (repoPath: string, message: string): Promise<string> => {
-			const result = await invoke<string>("git_commit", { repoPath, message });
-			return result;
-		},
-		[],
-	);
-
-	const push = useCallback(async (repoPath: string): Promise<string> => {
-		const result = await invoke<string>("git_push", { repoPath });
-		return result;
-	}, []);
-
 	const stageHunk = useCallback(async (repoPath: string, patch: string) => {
 		await invoke("git_stage_hunk", { repoPath, patch });
 	}, []);
 
 	const unstageHunk = useCallback(async (repoPath: string, patch: string) => {
 		await invoke("git_unstage_hunk", { repoPath, patch });
-	}, []);
-
-	const discard = useCallback(async (repoPath: string, paths: string[]) => {
-		await invoke("git_discard", { repoPath, paths });
 	}, []);
 
 	const createBranch = useCallback(
@@ -47,9 +30,6 @@ export function useGitActions() {
 		unstage,
 		stageHunk,
 		unstageHunk,
-		discard,
-		commit,
-		push,
 		createBranch,
 	};
 }

@@ -2,7 +2,6 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PanelLeft } from "lucide-react";
 import { describe, expect, it, vi } from "vitest";
-import { Tabs } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { type TogglePanel, ViewToolbar } from "./ViewToolbar";
 
@@ -12,21 +11,12 @@ function renderToolbar(props: {
 }) {
 	return render(
 		<TooltipProvider>
-			<Tabs value="editor">
-				<ViewToolbar {...props} />
-			</Tabs>
+			<ViewToolbar {...props} />
 		</TooltipProvider>,
 	);
 }
 
 describe("ViewToolbar", () => {
-	it("renders TabsList with Agent and Editor triggers", () => {
-		renderToolbar({});
-
-		expect(screen.getByRole("tab", { name: "Agent" })).toBeInTheDocument();
-		expect(screen.getByRole("tab", { name: "Editor" })).toBeInTheDocument();
-	});
-
 	it("has data-tauri-drag-region attribute for window dragging", () => {
 		const { container } = renderToolbar({});
 

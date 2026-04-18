@@ -22,14 +22,16 @@ beforeEach(() => {
 });
 
 describe("App", () => {
-	it("renders 3-column layout with empty state", async () => {
+	it("renders layout with empty state message", async () => {
 		render(
 			<TooltipProvider>
 				<App />
 			</TooltipProvider>,
 		);
 		await waitFor(() => {
-			expect(screen.getByText("No worktree selected")).toBeInTheDocument();
+			expect(
+				screen.getByText("Select a worktree from the sidebar to start working"),
+			).toBeInTheDocument();
 		});
 	});
 });

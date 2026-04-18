@@ -6,24 +6,9 @@ use tauri::{
 
 pub mod ids {
     // File
-    pub const NEW_FILE: &str = "new-file";
-    pub const NEW_FOLDER: &str = "new-folder";
     pub const OPEN_FOLDER: &str = "open-folder";
-    pub const SAVE: &str = "save";
-    pub const SAVE_ALL: &str = "save-all";
-    pub const CLOSE_TAB: &str = "close-tab";
-    pub const CLOSE_ALL_TABS: &str = "close-all-tabs";
-
-    // Edit
-    pub const FIND_IN_FILES: &str = "find-in-files";
 
     // View
-    pub const VIEW_EXPLORER: &str = "view-explorer";
-    pub const VIEW_SEARCH: &str = "view-search";
-    pub const VIEW_SOURCE_CONTROL: &str = "view-source-control";
-    pub const DIFF_GUTTER: &str = "diff-gutter";
-    pub const DIFF_INLINE: &str = "diff-inline";
-    pub const DIFF_SPLIT: &str = "diff-split";
     pub const THEME_DARK: &str = "theme-dark";
     pub const THEME_LIGHT: &str = "theme-light";
     pub const INCREASE_FONT_SIZE: &str = "increase-font-size";
@@ -33,9 +18,6 @@ pub mod ids {
     // Git
     pub const GIT_STAGE_ALL: &str = "git-stage-all";
     pub const GIT_UNSTAGE_ALL: &str = "git-unstage-all";
-    pub const GIT_COMMIT: &str = "git-commit";
-    pub const GIT_PUSH: &str = "git-push";
-    pub const GIT_DISCARD_ALL: &str = "git-discard-all";
     pub const GIT_CREATE_BRANCH: &str = "git-create-branch";
 
     // Terminal
@@ -85,56 +67,15 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // ---- File menu ----
-    let new_file = MenuItemBuilder::with_id(ids::NEW_FILE, "New File")
-        .accelerator("CmdOrCtrl+N")
-        .build(handle)?;
-    let new_folder = MenuItemBuilder::with_id(ids::NEW_FOLDER, "New Folder")
-        .accelerator("CmdOrCtrl+Shift+N")
-        .build(handle)?;
     let open_folder = MenuItemBuilder::with_id(ids::OPEN_FOLDER, "Open Folder...")
         .accelerator("CmdOrCtrl+O")
         .build(handle)?;
-    let save = MenuItemBuilder::with_id(ids::SAVE, "Save")
-        .accelerator("CmdOrCtrl+S")
-        .build(handle)?;
-    let save_all = MenuItemBuilder::with_id(ids::SAVE_ALL, "Save All")
-        .accelerator("CmdOrCtrl+Alt+S")
-        .build(handle)?;
-    let close_tab = MenuItemBuilder::with_id(ids::CLOSE_TAB, "Close Tab")
-        .accelerator("CmdOrCtrl+W")
-        .build(handle)?;
-    let close_all_tabs = MenuItemBuilder::with_id(ids::CLOSE_ALL_TABS, "Close All Tabs")
-        .accelerator("CmdOrCtrl+Shift+W")
-        .build(handle)?;
-
-    worktree_items.extend([
-        new_file.clone(),
-        new_folder.clone(),
-        save.clone(),
-        save_all.clone(),
-        close_tab.clone(),
-        close_all_tabs.clone(),
-    ]);
 
     let file_menu = SubmenuBuilder::new(handle, "File")
-        .item(&new_file)
-        .item(&new_folder)
-        .separator()
         .item(&open_folder)
-        .separator()
-        .item(&save)
-        .item(&save_all)
-        .separator()
-        .item(&close_tab)
-        .item(&close_all_tabs)
         .build()?;
 
     // ---- Edit menu ----
-    let find_in_files = MenuItemBuilder::with_id(ids::FIND_IN_FILES, "Find in Files")
-        .accelerator("CmdOrCtrl+Shift+F")
-        .build(handle)?;
-    worktree_items.push(find_in_files.clone());
-
     let edit_menu = SubmenuBuilder::new(handle, "Edit")
         .item(&PredefinedMenuItem::undo(handle, None)?)
         .item(&PredefinedMenuItem::redo(handle, None)?)
@@ -143,28 +84,9 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .item(&PredefinedMenuItem::copy(handle, None)?)
         .item(&PredefinedMenuItem::paste(handle, None)?)
         .item(&PredefinedMenuItem::select_all(handle, None)?)
-        .separator()
-        .item(&find_in_files)
         .build()?;
 
     // ---- View menu ----
-    let view_explorer = MenuItemBuilder::with_id(ids::VIEW_EXPLORER, "Explorer")
-        .accelerator("CmdOrCtrl+Shift+E")
-        .build(handle)?;
-    let view_search = MenuItemBuilder::with_id(ids::VIEW_SEARCH, "Search").build(handle)?;
-    let view_source_control = MenuItemBuilder::with_id(ids::VIEW_SOURCE_CONTROL, "Source Control")
-        .accelerator("CmdOrCtrl+Shift+G")
-        .build(handle)?;
-
-    let diff_gutter = MenuItemBuilder::with_id(ids::DIFF_GUTTER, "Gutter").build(handle)?;
-    let diff_inline = MenuItemBuilder::with_id(ids::DIFF_INLINE, "Inline").build(handle)?;
-    let diff_split = MenuItemBuilder::with_id(ids::DIFF_SPLIT, "Split").build(handle)?;
-    let diff_submenu = SubmenuBuilder::new(handle, "Diff Mode")
-        .item(&diff_gutter)
-        .item(&diff_inline)
-        .item(&diff_split)
-        .build()?;
-
     let theme_dark = MenuItemBuilder::with_id(ids::THEME_DARK, "Dark").build(handle)?;
     let theme_light = MenuItemBuilder::with_id(ids::THEME_LIGHT, "Light").build(handle)?;
     let theme_submenu = SubmenuBuilder::new(handle, "Theme")
@@ -183,24 +105,12 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         .build(handle)?;
 
     worktree_items.extend([
-        view_explorer.clone(),
-        view_search.clone(),
-        view_source_control.clone(),
-        diff_gutter.clone(),
-        diff_inline.clone(),
-        diff_split.clone(),
         increase_font.clone(),
         decrease_font.clone(),
         reset_font.clone(),
     ]);
 
     let view_menu = SubmenuBuilder::new(handle, "View")
-        .item(&view_explorer)
-        .item(&view_search)
-        .item(&view_source_control)
-        .separator()
-        .item(&diff_submenu)
-        .separator()
         .item(&theme_submenu)
         .separator()
         .item(&increase_font)
@@ -212,30 +122,18 @@ pub fn setup_menu(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let git_stage_all = MenuItemBuilder::with_id(ids::GIT_STAGE_ALL, "Stage All").build(handle)?;
     let git_unstage_all =
         MenuItemBuilder::with_id(ids::GIT_UNSTAGE_ALL, "Unstage All").build(handle)?;
-    let git_commit = MenuItemBuilder::with_id(ids::GIT_COMMIT, "Commit").build(handle)?;
-    let git_push = MenuItemBuilder::with_id(ids::GIT_PUSH, "Push").build(handle)?;
-    let git_discard_all =
-        MenuItemBuilder::with_id(ids::GIT_DISCARD_ALL, "Discard All Changes").build(handle)?;
     let git_create_branch =
         MenuItemBuilder::with_id(ids::GIT_CREATE_BRANCH, "Create Branch...").build(handle)?;
 
     worktree_items.extend([
         git_stage_all.clone(),
         git_unstage_all.clone(),
-        git_commit.clone(),
-        git_push.clone(),
-        git_discard_all.clone(),
         git_create_branch.clone(),
     ]);
 
     let git_menu = SubmenuBuilder::new(handle, "Git")
         .item(&git_stage_all)
         .item(&git_unstage_all)
-        .separator()
-        .item(&git_commit)
-        .item(&git_push)
-        .separator()
-        .item(&git_discard_all)
         .separator()
         .item(&git_create_branch)
         .build()?;

@@ -45,40 +45,6 @@ describe("useGitActions", () => {
 		});
 	});
 
-	it("commit should invoke git_commit and return hash", async () => {
-		mockInvoke.mockResolvedValue("abc123");
-		const { result } = renderHook(() => useGitActions());
-
-		const hash = await result.current.commit("/repo", "test message");
-		expect(mockInvoke).toHaveBeenCalledWith("git_commit", {
-			repoPath: "/repo",
-			message: "test message",
-		});
-		expect(hash).toBe("abc123");
-	});
-
-	it("push should invoke git_push and return output", async () => {
-		mockInvoke.mockResolvedValue("Everything up-to-date");
-		const { result } = renderHook(() => useGitActions());
-
-		const output = await result.current.push("/repo");
-		expect(mockInvoke).toHaveBeenCalledWith("git_push", {
-			repoPath: "/repo",
-		});
-		expect(output).toBe("Everything up-to-date");
-	});
-
-	it("discard should invoke git_discard with correct args", async () => {
-		mockInvoke.mockResolvedValue(undefined);
-		const { result } = renderHook(() => useGitActions());
-
-		await result.current.discard("/repo", ["file.txt"]);
-		expect(mockInvoke).toHaveBeenCalledWith("git_discard", {
-			repoPath: "/repo",
-			paths: ["file.txt"],
-		});
-	});
-
 	it("createBranch should invoke git_create_branch", async () => {
 		mockInvoke.mockResolvedValue(undefined);
 		const { result } = renderHook(() => useGitActions());

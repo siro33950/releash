@@ -8,9 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::protocol::{
-    BranchCardMsg, BranchListSync, FileChange, GitFileStatusMsg, GitStatusSync, WsMessage,
-};
+use crate::protocol::{BranchCardMsg, BranchListSync, WsMessage};
 use crate::ws_bridge::WsBroadcaster;
 
 struct GitWatchPaths {
@@ -80,7 +78,6 @@ pub fn start_watching(
 
     let app_clone = app.clone();
     let watcher_id_clone = watcher_id;
-    let watch_path_str = path.clone();
 
     let debouncer = new_debouncer(
         Duration::from_millis(100),
@@ -101,30 +98,10 @@ pub fn start_watching(
                             "file-change",
                             FileChangeEvent {
                                 watcher_id: watcher_id_clone,
-                                path: event_path.clone(),
+                                path: event_path,
                                 kind: kind.to_string(),
                             },
                         );
-
-                        if let Some(ws) = app_clone.try_state::<std::sync::Arc<WsBroadcaster>>() {
-                            ws.try_send(WsMessage::FileChange(FileChange {
-                                path: event_path,
-                                kind: kind.to_string(),
-                            }));
-
-                            if let Ok(statuses) = crate::git::get_git_status(watch_path_str.clone())
-                            {
-                                let files = statuses
-                                    .into_iter()
-                                    .map(|s| GitFileStatusMsg {
-                                        path: s.path,
-                                        index_status: s.index_status,
-                                        worktree_status: s.worktree_status,
-                                    })
-                                    .collect();
-                                ws.try_send(WsMessage::GitStatusSync(GitStatusSync { files }));
-                            }
-                        }
                     }
                 }
                 Err(e) => {
@@ -225,19 +202,6 @@ pub fn start_git_dir_watching(
                         repo_path: repo_path_clone.clone(),
                     },
                 );
-                if let Some(ws) = app_clone.try_state::<std::sync::Arc<WsBroadcaster>>() {
-                    if let Ok(statuses) = crate::git::get_git_status(repo_path_clone.clone()) {
-                        let files = statuses
-                            .into_iter()
-                            .map(|s| GitFileStatusMsg {
-                                path: s.path,
-                                index_status: s.index_status,
-                                worktree_status: s.worktree_status,
-                            })
-                            .collect();
-                        ws.try_send(WsMessage::GitStatusSync(GitStatusSync { files }));
-                    }
-                }
             }
         },
     )

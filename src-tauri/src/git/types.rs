@@ -23,13 +23,6 @@ pub struct CommitInfo {
     pub timestamp: i64,
 }
 
-#[derive(Serialize)]
-pub struct AheadBehind {
-    pub ahead: usize,
-    pub behind: usize,
-    pub has_upstream: bool,
-}
-
 #[derive(Serialize, Debug, Clone)]
 pub struct WorktreeEntry {
     pub name: String,

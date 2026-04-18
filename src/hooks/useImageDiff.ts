@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useState } from "react";
-import type { DiffBase } from "@/components/panels/MonacoDiffViewer";
 import { buildDataUrl, getMimeType } from "@/lib/imageUtils";
+import type { DiffBase } from "@/types/settings";
 
 export interface ImageDiffResult {
 	originalUrl: string | null;
