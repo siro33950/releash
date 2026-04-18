@@ -3,8 +3,8 @@ import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPane
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
-import { useThreads } from "@/hooks/useThreads";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
+import { useThreads } from "@/hooks/useThreads";
 import { useWorkspaceStatus } from "@/hooks/useWorkspaceStatus";
 import { useWorktreeThreads } from "@/screens/useWorktreeComments";
 import {
