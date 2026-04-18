@@ -463,7 +463,10 @@ export function AgentChatPanel({
 				onValueChange={selectSession}
 				className="flex flex-col h-full gap-0"
 			>
-				<div className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background border-b">
+				<div
+					data-tauri-drag-region
+					className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background border-b"
+				>
 					<TabsList
 						data-testid="session-tab-list"
 						className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
@@ -504,6 +507,7 @@ export function AgentChatPanel({
 							</TabsTrigger>
 						))}
 					</TabsList>
+					<div data-tauri-drag-region className="flex-1" />
 					<button
 						type="button"
 						onClick={() => createNewSession()}
