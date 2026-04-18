@@ -283,7 +283,7 @@ export function MessageInput({
 								<button
 									type="button"
 									onClick={() => removeImage(img.id)}
-									className="absolute -top-1.5 -right-1.5 bg-destructive text-destructive-foreground rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+									className="absolute -top-1.5 -right-1.5 bg-destructive text-destructive-foreground rounded-full p-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring transition-opacity"
 									aria-label="Remove image"
 									data-testid="remove-image-button"
 								>
