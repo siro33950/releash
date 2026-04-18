@@ -1,7 +1,15 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
+import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setSlashCommands } from "@/hooks/useSlashCommands";
-import { MessageInput } from "./MessageInput";
+import { MessageInput, type MessageInputHandle } from "./MessageInput";
 
 const defaultProps = {
 	onSend: vi.fn(),
@@ -300,5 +308,136 @@ describe("MessageInput slash command popup", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/" } });
 		expect(screen.queryByTestId("slash-command-list")).toBeNull();
+	});
+});
+
+const sampleAttachment = {
+	data: "aGVsbG8=",
+	mediaType: "image/png",
+};
+
+describe("MessageInput image attachments", () => {
+	it("shows image preview when images are added via ref", () => {
+		const ref = createRef<MessageInputHandle>();
+		render(<MessageInput {...defaultProps} ref={ref} />);
+		act(() => {
+			ref.current?.addImageAttachments([sampleAttachment]);
+		});
+		expect(screen.getByTestId("image-preview-list")).toBeDefined();
+		expect(screen.getAllByTestId("image-preview-item")).toHaveLength(1);
+		const img = screen.getByAltText("Attached");
+		expect(img.getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
+	});
+
+	it("enables send button when only images are attached (no text)", () => {
+		const ref = createRef<MessageInputHandle>();
+		render(<MessageInput {...defaultProps} ref={ref} />);
+		act(() => {
+			ref.current?.addImageAttachments([sampleAttachment]);
+		});
+		const button = screen.getByLabelText("Send message");
+		expect(button.hasAttribute("disabled")).toBe(false);
+	});
+
+	it("removes image when remove button is clicked", () => {
+		const ref = createRef<MessageInputHandle>();
+		render(<MessageInput {...defaultProps} ref={ref} />);
+		act(() => {
+			ref.current?.addImageAttachments([sampleAttachment]);
+		});
+		expect(screen.getAllByTestId("image-preview-item")).toHaveLength(1);
+		fireEvent.click(screen.getByTestId("remove-image-button"));
+		expect(screen.queryByTestId("image-preview-item")).toBeNull();
+	});
+
+	it("sends images with onSend when images are attached", () => {
+		const onSend = vi.fn();
+		const ref = createRef<MessageInputHandle>();
+		render(<MessageInput {...defaultProps} onSend={onSend} ref={ref} />);
+		act(() => {
+			ref.current?.addImageAttachments([sampleAttachment]);
+		});
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.change(textarea, { target: { value: "Check this" } });
+		fireEvent.click(screen.getByLabelText("Send message"));
+		expect(onSend).toHaveBeenCalledWith("Check this", [sampleAttachment]);
+	});
+
+	it("sends images only (no text) when text is empty", () => {
+		const onSend = vi.fn();
+		const ref = createRef<MessageInputHandle>();
+		render(<MessageInput {...defaultProps} onSend={onSend} ref={ref} />);
+		act(() => {
+			ref.current?.addImageAttachments([sampleAttachment]);
+		});
+		fireEvent.click(screen.getByLabelText("Send message"));
+		expect(onSend).toHaveBeenCalledWith("", [sampleAttachment]);
+	});
+
+	it("clears image preview after sending", () => {
+		const ref = createRef<MessageInputHandle>();
+		render(<MessageInput {...defaultProps} ref={ref} />);
+		act(() => {
+			ref.current?.addImageAttachments([sampleAttachment]);
+		});
+		expect(screen.getByTestId("image-preview-list")).toBeDefined();
+		fireEvent.click(screen.getByLabelText("Send message"));
+		expect(screen.queryByTestId("image-preview-list")).toBeNull();
+	});
+
+	it("supports multiple image attachments", () => {
+		const ref = createRef<MessageInputHandle>();
+		render(<MessageInput {...defaultProps} ref={ref} />);
+		act(() => {
+			ref.current?.addImageAttachments([
+				sampleAttachment,
+				{ data: "aW1nMg==", mediaType: "image/jpeg" },
+			]);
+		});
+		expect(screen.getAllByTestId("image-preview-item")).toHaveLength(2);
+	});
+
+	it("ignores non-image files on paste", async () => {
+		render(<MessageInput {...defaultProps} />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		const file = new File(["hello"], "readme.txt", { type: "text/plain" });
+		const clipboardData = {
+			items: [
+				{
+					type: "text/plain",
+					getAsFile: () => file,
+				},
+			],
+		};
+		await act(async () => {
+			fireEvent.paste(textarea, { clipboardData });
+		});
+		expect(screen.queryByTestId("image-preview-list")).toBeNull();
+	});
+
+	it("adds image from clipboard paste", async () => {
+		vi.mocked(invoke).mockResolvedValueOnce(sampleAttachment);
+		render(<MessageInput {...defaultProps} />);
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		const file = new File(["fake-png-data"], "screenshot.png", {
+			type: "image/png",
+		});
+		const clipboardData = {
+			items: [
+				{
+					type: "image/png",
+					getAsFile: () => file,
+				},
+			],
+		};
+		await act(async () => {
+			fireEvent.paste(textarea, { clipboardData });
+		});
+		await waitFor(() => {
+			expect(invoke).toHaveBeenCalledWith("prepare_image_attachment", {
+				data: expect.any(Array),
+			});
+		});
+		expect(await screen.findByTestId("image-preview-list")).toBeDefined();
 	});
 });

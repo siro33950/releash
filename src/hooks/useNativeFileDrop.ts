@@ -10,7 +10,7 @@ interface UseNativeFileDropOptions {
 	onDropToEditor: (paths: string[]) => void;
 }
 
-type DropZoneType = "editor";
+export type DropZoneType = "editor" | "agent";
 
 export function resolveZone(
 	zones: Map<DropZoneType, HTMLElement>,
@@ -37,6 +37,9 @@ export function hasVisibleZones(
 
 export function useNativeFileDrop(options: UseNativeFileDropOptions) {
 	const zonesRef = useRef<Map<DropZoneType, HTMLElement>>(new Map());
+	const callbacksRef = useRef<Map<DropZoneType, (paths: string[]) => void>>(
+		new Map(),
+	);
 	const optionsRef = useRef(options);
 	optionsRef.current = options;
 
@@ -62,8 +65,11 @@ export function useNativeFileDrop(options: UseNativeFileDropOptions) {
 				if (!hasVisibleZones(zonesRef.current)) return;
 
 				const zone = lastZoneRef.current;
+				const callback = zone ? callbacksRef.current.get(zone) : undefined;
 
-				if (zone === "editor") {
+				if (callback) {
+					callback(paths);
+				} else if (zone === "editor") {
 					optionsRef.current.onDropToEditor(paths);
 				}
 				// zone === null の場合は何もしない（TerminalPanelが自己処理する）
@@ -78,11 +84,21 @@ export function useNativeFileDrop(options: UseNativeFileDropOptions) {
 	}, []);
 
 	const registerDropZone = useCallback(
-		(zone: DropZoneType, element: HTMLElement | null) => {
+		(
+			zone: DropZoneType,
+			element: HTMLElement | null,
+			onDrop?: (paths: string[]) => void,
+		) => {
 			if (element) {
 				zonesRef.current.set(zone, element);
+				if (onDrop) {
+					callbacksRef.current.set(zone, onDrop);
+				} else {
+					callbacksRef.current.delete(zone);
+				}
 			} else {
 				zonesRef.current.delete(zone);
+				callbacksRef.current.delete(zone);
 			}
 		},
 		[],

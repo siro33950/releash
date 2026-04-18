@@ -71,6 +71,11 @@ export type MessagePart =
 			label: string;
 			detail?: string;
 			hookId?: string;
+	  }
+	| {
+			type: "image";
+			data: string;
+			mediaType: string;
 	  };
 
 export type ActivityEntry =
@@ -169,4 +174,11 @@ export interface WorkspaceStatus {
 	error_count: number;
 	session_count: number;
 	last_activity_at: number;
+}
+
+export type ImagePart = Extract<MessagePart, { type: "image" }>;
+
+export interface ImageAttachment {
+	data: string;
+	mediaType: string;
 }

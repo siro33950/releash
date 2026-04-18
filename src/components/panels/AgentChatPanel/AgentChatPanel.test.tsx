@@ -1,4 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 // jsdom does not implement scrollIntoView
@@ -10,12 +16,22 @@ vi.mock("react-resizable-panels", () => ({
 	Separator: () => <div />,
 }));
 
+const mockInvoke = vi.fn().mockResolvedValue([]);
 vi.mock("@tauri-apps/api/core", () => ({
-	invoke: vi.fn().mockResolvedValue([]),
+	invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
+type ListenCallback = (event: { payload: unknown }) => void;
+const listenCallbacks = new Map<string, ListenCallback>();
+const mockListen = vi.fn((eventName: string, callback: ListenCallback) => {
+	listenCallbacks.set(eventName, callback);
+	return Promise.resolve(() => {
+		listenCallbacks.delete(eventName);
+	});
+});
 vi.mock("@tauri-apps/api/event", () => ({
-	listen: vi.fn().mockResolvedValue(() => {}),
+	listen: (...args: unknown[]) =>
+		mockListen(args[0] as string, args[1] as ListenCallback),
 }));
 
 const useAgentChatMock = vi.fn();
@@ -25,6 +41,18 @@ vi.mock("@/hooks/useAgentChat", () => ({
 
 // Must import after mocks
 const { AgentChatPanel } = await import("./AgentChatPanel");
+
+type DropCallback = (paths: string[]) => void;
+const agentDropCallbacks = new Map<string, DropCallback>();
+const mockRegisterDropZone = vi.fn(
+	(zone: string, _element: HTMLElement | null, onDrop?: DropCallback) => {
+		if (_element && onDrop) {
+			agentDropCallbacks.set(zone, onDrop);
+		} else if (!_element) {
+			agentDropCallbacks.delete(zone);
+		}
+	},
+);
 
 function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 	const sessions = (overrides.sessions ?? []) as Array<{ id: string }>;
@@ -60,13 +88,23 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 describe("AgentChatPanel", () => {
 	it("renders empty state when no active session", () => {
 		mockUseAgentChat();
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.getByTestId("agent-chat-panel")).toBeDefined();
 	});
 
 	it("renders message input", () => {
 		mockUseAgentChat();
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.getByTestId("message-input")).toBeDefined();
 	});
 });
@@ -95,7 +133,12 @@ describe("AgentChatPanel session tabs", () => {
 				},
 			],
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.getByText("Hello")).toBeDefined();
 		expect(screen.getByText("Fix bug")).toBeDefined();
 	});
@@ -114,7 +157,12 @@ describe("AgentChatPanel session tabs", () => {
 				},
 			],
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.getByText("New session")).toBeDefined();
 	});
 
@@ -132,7 +180,12 @@ describe("AgentChatPanel session tabs", () => {
 				},
 			],
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.queryByLabelText("Close Hello")).toBeNull();
 	});
 
@@ -159,7 +212,12 @@ describe("AgentChatPanel session tabs", () => {
 				},
 			],
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.getByLabelText("Close Hello")).toBeDefined();
 		expect(screen.getByLabelText("Close Fix bug")).toBeDefined();
 	});
@@ -189,7 +247,12 @@ describe("AgentChatPanel session tabs", () => {
 			],
 			closeSession,
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		fireEvent.click(screen.getByLabelText("Close Hello"));
 		expect(closeSession).toHaveBeenCalledWith("s1");
 	});
@@ -197,7 +260,12 @@ describe("AgentChatPanel session tabs", () => {
 	it("calls createNewSession when + button is clicked", () => {
 		const createNewSession = vi.fn();
 		mockUseAgentChat({ createNewSession });
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		fireEvent.click(screen.getByLabelText("New session"));
 		expect(createNewSession).toHaveBeenCalled();
 	});
@@ -227,7 +295,12 @@ describe("AgentChatPanel session tabs", () => {
 			],
 			selectSession,
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		fireEvent.click(screen.getByText("Fix bug"));
 		expect(selectSession).toHaveBeenCalledWith("s2");
 	});
@@ -271,7 +344,12 @@ describe("AgentChatPanel agent state reflection", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 
 		const tab = screen.getByText("Hello").closest("[role='tab']");
 		expect(tab?.querySelector("[title='running']")).not.toBeNull();
@@ -320,7 +398,12 @@ describe("AgentChatPanel agent state reflection", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 
 		const tab = screen.getByText("Hello").closest("[role='tab']");
 		expect(tab?.querySelector("[title='waiting']")).not.toBeNull();
@@ -341,7 +424,12 @@ describe("AgentChatPanel agent state reflection", () => {
 			],
 			sessionAgentStates: new Map([["s1", "done"]]),
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 
 		const tab = screen.getByText("Hello").closest("[role='tab']");
 		expect(tab?.querySelector("[title='done']")).not.toBeNull();
@@ -366,7 +454,12 @@ describe("AgentChatPanel agent state reflection", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 
 		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent(
 			"Plan",
@@ -395,7 +488,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		const shimmer = screen.getByTestId("shimmer-placeholder");
 		expect(shimmer).toBeDefined();
 		expect(shimmer.children).toHaveLength(3);
@@ -429,7 +527,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		const shimmer = screen.getByTestId("shimmer-placeholder");
 		expect(shimmer).toBeDefined();
 		expect(shimmer.children).toHaveLength(2);
@@ -461,7 +564,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
 		const shimmer = screen.getByTestId("shimmer-placeholder");
 		expect(shimmer).toBeDefined();
@@ -500,7 +608,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		const shimmer = screen.getByTestId("shimmer-placeholder");
 		expect(shimmer).toBeDefined();
 		expect(shimmer.children).toHaveLength(2);
@@ -546,7 +659,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		const shimmer = screen.getByTestId("shimmer-placeholder");
 		expect(shimmer).toBeDefined();
 		expect(shimmer.children).toHaveLength(2);
@@ -588,7 +706,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
 	});
 
@@ -617,7 +740,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
 	});
 
@@ -649,7 +777,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.queryByTestId("thinking-indicator")).toBeNull();
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
 	});
@@ -679,7 +812,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.getByTestId("stream-message-agent")).toBeDefined();
 		expect(screen.queryByTestId("shimmer-placeholder")).toBeNull();
 	});
@@ -734,7 +872,12 @@ describe("AgentChatPanel shimmer placeholder", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		// Both tool_use items should be rendered, but no standalone tool_result items
 		expect(screen.getByTestId("activity-tool-use-0")).toBeDefined();
 		expect(screen.getByTestId("activity-tool-use-1")).toBeDefined();
@@ -750,7 +893,12 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 			permissionMode: "acceptEdits",
 			setPermissionMode,
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
@@ -821,7 +969,12 @@ describe("AgentChatPanel Task tool rendering", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 
 		// TaskToolActivity should be rendered
 		expect(screen.getByTestId("activity-task-0")).toBeDefined();
@@ -871,7 +1024,12 @@ describe("AgentChatPanel Task tool rendering", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		const shimmer = screen.getByTestId("shimmer-placeholder");
 		expect(shimmer.children).toHaveLength(2);
 	});
@@ -910,7 +1068,12 @@ describe("SystemNotificationItem rendering", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		const el = screen.getByText(/Compacting conversation/);
 		expect(el).toBeDefined();
 		expect(el.textContent).toContain("⏳");
@@ -949,7 +1112,12 @@ describe("SystemNotificationItem rendering", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		const el = screen.getByText(/Conversation compacted/);
 		expect(el).toBeDefined();
 		expect(el.textContent).toContain("✓");
@@ -989,7 +1157,12 @@ describe("SystemNotificationItem rendering", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		const el = screen.getByText(/pre-commit/);
 		expect(el).toBeDefined();
 		expect(el.textContent).toContain("❌");
@@ -1028,7 +1201,12 @@ describe("SystemNotificationItem rendering", () => {
 				updatedAt: 1000,
 			},
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.getByText("(trigger=auto, 50000 tokens)")).toBeDefined();
 	});
 });
@@ -1036,13 +1214,23 @@ describe("SystemNotificationItem rendering", () => {
 describe("AgentChatPanel session history", () => {
 	it("renders history button", () => {
 		mockUseAgentChat();
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		expect(screen.getByLabelText("Session history")).toBeDefined();
 	});
 
 	it("shows 'No closed sessions' when closedSessions is empty", () => {
 		mockUseAgentChat();
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		fireEvent.click(screen.getByLabelText("Session history"));
 		expect(screen.getByText("No closed sessions")).toBeDefined();
 	});
@@ -1063,10 +1251,115 @@ describe("AgentChatPanel session history", () => {
 			],
 			restoreSession,
 		});
-		render(<AgentChatPanel worktreePath="/repo" />);
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
 		fireEvent.click(screen.getByLabelText("Session history"));
 		expect(screen.getByText("Old conversation")).toBeDefined();
 		fireEvent.click(screen.getByText("Old conversation"));
 		expect(restoreSession).toHaveBeenCalledWith("closed-1");
+	});
+});
+
+describe("AgentChatPanel image drag and drop", () => {
+	it("shows drop overlay on dragover with files and hides on dragleave", () => {
+		mockUseAgentChat();
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const dropZone = screen
+			.getByTestId("agent-chat-panel")
+			.querySelector("[class*='relative']") as HTMLElement;
+		expect(dropZone).not.toBeNull();
+
+		// Initially no overlay
+		expect(screen.queryByText("Drop image to attach")).toBeNull();
+
+		// Drag over with Files
+		fireEvent.dragOver(dropZone, {
+			dataTransfer: { types: ["Files"], dropEffect: "" },
+		});
+		expect(screen.getByText("Drop image to attach")).toBeDefined();
+
+		// Drag leave (relatedTarget outside currentTarget)
+		fireEvent.dragLeave(dropZone, {
+			relatedTarget: document.body,
+		});
+		expect(screen.queryByText("Drop image to attach")).toBeNull();
+	});
+
+	it("calls prepare_image_attachments_from_paths on native file drop", async () => {
+		mockUseAgentChat();
+		mockInvoke.mockImplementation(async (cmd: string) => {
+			if (cmd === "prepare_image_attachments_from_paths") {
+				return [{ data: "aGVsbG8=", mediaType: "image/png" }];
+			}
+			return [];
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		// registerDropZone should have been called with "agent" zone
+		const agentDropCallback = agentDropCallbacks.get("agent");
+		expect(agentDropCallback).toBeDefined();
+
+		await act(async () => {
+			await agentDropCallback?.(["/tmp/test.png"]);
+		});
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"prepare_image_attachments_from_paths",
+				{ paths: ["/tmp/test.png"] },
+			);
+		});
+
+		await waitFor(() => {
+			expect(screen.getByTestId("image-preview-list")).toBeDefined();
+			expect(screen.getAllByTestId("image-preview-item")).toHaveLength(1);
+		});
+	});
+
+	it("does not show preview when dropped files are not images", async () => {
+		mockUseAgentChat();
+		mockInvoke.mockImplementation(async (cmd: string) => {
+			if (cmd === "prepare_image_attachments_from_paths") {
+				return [];
+			}
+			return [];
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const agentDropCallback = agentDropCallbacks.get("agent");
+		expect(agentDropCallback).toBeDefined();
+
+		await act(async () => {
+			await agentDropCallback?.(["/tmp/readme.txt"]);
+		});
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith(
+				"prepare_image_attachments_from_paths",
+				{ paths: ["/tmp/readme.txt"] },
+			);
+		});
+
+		expect(screen.queryByTestId("image-preview-list")).toBeNull();
 	});
 });

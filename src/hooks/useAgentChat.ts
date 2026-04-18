@@ -4,6 +4,7 @@ import type { AgentState } from "@/types/protocol";
 import type {
 	ChatMessage,
 	ChatSession,
+	ImageAttachment,
 	ModelInfo,
 	PermissionMode,
 	SessionSummary,
@@ -39,7 +40,7 @@ export interface UseAgentChatResult {
 	error: string | null;
 	permissionMode: PermissionMode;
 	sessionAgentStates: Map<string, AgentState>;
-	sendMessage: (content: string) => Promise<void>;
+	sendMessage: (content: string, images?: ImageAttachment[]) => Promise<void>;
 	interrupt: () => void;
 	selectSession: (sessionId: string) => Promise<void>;
 	refreshSessions: () => Promise<SessionSummary[] | undefined>;
@@ -222,34 +223,44 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		});
 	}, []);
 
-	const sendMessage = useCallback(async (content: string) => {
-		const trimmed = content.trim();
-		if (!trimmed) return;
+	const sendMessage = useCallback(
+		async (content: string, images?: ImageAttachment[]) => {
+			const trimmed = content.trim();
+			if (!trimmed && (!images || images.length === 0)) return;
 
-		try {
-			const isNewSession = !activeSessionRef.current;
-			const response = await sendAgentMessage(
-				activeSessionRef.current?.id ?? null,
-				worktreePathRef.current,
-				trimmed,
-				permissionModeRef.current,
-			);
-			if (isNewSession) {
-				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
-			} else {
-				dispatch({ type: "ADD_MESSAGE", message: response.humanMessage });
-				if (response.agentMessage) {
-					dispatch({ type: "ADD_MESSAGE", message: response.agentMessage });
+			try {
+				const isNewSession = !activeSessionRef.current;
+				const hasImages = images && images.length > 0;
+				const sessionId = activeSessionRef.current?.id ?? null;
+				const wPath = worktreePathRef.current;
+				const pm = permissionModeRef.current;
+				const response = hasImages
+					? await sendAgentMessage(sessionId, wPath, trimmed, pm, images)
+					: await sendAgentMessage(sessionId, wPath, trimmed, pm);
+				if (isNewSession) {
+					dispatch({
+						type: "SET_ACTIVE_SESSION",
+						session: response.session,
+					});
+				} else {
+					dispatch({ type: "ADD_MESSAGE", message: response.humanMessage });
+					if (response.agentMessage) {
+						dispatch({
+							type: "ADD_MESSAGE",
+							message: response.agentMessage,
+						});
+					}
 				}
+				dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
+			} catch (e) {
+				dispatch({
+					type: "SET_ERROR",
+					error: `メッセージ送信に失敗: ${e}`,
+				});
 			}
-			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
-		} catch (e) {
-			dispatch({
-				type: "SET_ERROR",
-				error: `メッセージ送信に失敗: ${e}`,
-			});
-		}
-	}, []);
+		},
+		[],
+	);
 
 	const refreshClosedSessions = useCallback(async () => {
 		try {

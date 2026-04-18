@@ -3,6 +3,7 @@ import type { TerminalTabPanelHandle } from "@/components/panels/TerminalTabPane
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
+import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
 import { useThreads } from "@/hooks/useThreads";
 import { useWorkspaceStatus } from "@/hooks/useWorkspaceStatus";
 import { useWorktreeThreads } from "@/screens/useWorktreeComments";
@@ -119,6 +120,11 @@ export function useWorktreeState({
 		rootPath,
 	});
 
+	// --- Native file drop (image D&D to AgentChat) ---
+	const { registerDropZone } = useNativeFileDrop({
+		onDropToEditor: useCallback((_paths: string[]) => {}, []),
+	});
+
 	// --- Sync internal state for workspace state persistence ---
 	useEffect(() => {
 		if (!internalStateMapRef) return;
@@ -153,6 +159,7 @@ export function useWorktreeState({
 		dispatchUI,
 		dispatchGit,
 		gitActions,
+		registerDropZone,
 		handleSendToTerminal,
 		handleThreadClick,
 		refreshGit,

@@ -91,6 +91,13 @@ pub enum MessagePart {
         #[serde(skip_serializing_if = "Option::is_none", default, rename = "hookId")]
         hook_id: Option<String>,
     },
+    Image {
+        /// Base64-encoded image data
+        data: String,
+        /// MIME type (e.g. "image/png", "image/jpeg")
+        #[serde(rename = "mediaType")]
+        media_type: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,10 +207,20 @@ impl ChatSession {
             .messages
             .first()
             .map(|m| {
-                let content = &m.content;
+                let content = if m.content.is_empty() {
+                    if m.parts.as_ref().is_some_and(|parts| {
+                        parts.iter().any(|p| matches!(p, MessagePart::Image { .. }))
+                    }) {
+                        "[Image]".to_string()
+                    } else {
+                        m.content.clone()
+                    }
+                } else {
+                    m.content.clone()
+                };
                 match content.char_indices().nth(100) {
                     Some((byte_pos, _)) => format!("{}…", &content[..byte_pos]),
-                    None => content.clone(),
+                    None => content,
                 }
             })
             .unwrap_or_default();
@@ -298,6 +315,7 @@ pub fn parts_to_legacy(
             }
             MessagePart::TaskStatus { .. } => {}
             MessagePart::SystemNotification { .. } => {}
+            MessagePart::Image { .. } => {}
         }
     }
     let thinking = if thinking.is_empty() {
@@ -352,6 +370,7 @@ pub fn add_message_internal(
     session_id: &str,
     role: MessageRole,
     content: &str,
+    parts: Option<Vec<MessagePart>>,
 ) -> Result<ChatMessage, String> {
     let mut session = session_store
         .get_session(data_dir, session_id)?
@@ -363,7 +382,7 @@ pub fn add_message_internal(
         content: content.to_string(),
         thinking: None,
         activities: None,
-        parts: None,
+        parts,
         timestamp: now,
     };
     session.messages.push(message.clone());
@@ -391,7 +410,7 @@ pub fn add_message(
     content: String,
 ) -> Result<ChatMessage, String> {
     let data_dir = resolve_data_dir(&app)?;
-    add_message_internal(&state, &data_dir, &session_id, role, &content)
+    add_message_internal(&state, &data_dir, &session_id, role, &content, None)
 }
 
 #[tauri::command]
@@ -1051,5 +1070,67 @@ mod tests {
         } else {
             panic!("Expected Text variant");
         }
+    }
+
+    #[test]
+    fn message_part_image_serde_roundtrip() {
+        let part = MessagePart::Image {
+            data: "iVBORw0KGgoAAAA==".to_string(),
+            media_type: "image/png".to_string(),
+        };
+        let json = serde_json::to_string(&part).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "image");
+        assert_eq!(v["data"], "iVBORw0KGgoAAAA==");
+        assert_eq!(v["mediaType"], "image/png");
+        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, part);
+    }
+
+    #[test]
+    fn chat_message_with_image_parts_roundtrip() {
+        let msg = ChatMessage {
+            id: "m1".to_string(),
+            role: MessageRole::Human,
+            content: "Check this image".to_string(),
+            thinking: None,
+            activities: None,
+            parts: Some(vec![
+                MessagePart::Text {
+                    content: "Check this image".to_string(),
+                    parent_tool_use_id: None,
+                },
+                MessagePart::Image {
+                    data: "base64data".to_string(),
+                    media_type: "image/jpeg".to_string(),
+                },
+            ]),
+            timestamp: 1000.0,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.parts.as_ref().unwrap().len(), 2);
+        assert!(matches!(
+            &back.parts.as_ref().unwrap()[1],
+            MessagePart::Image { .. }
+        ));
+    }
+
+    #[test]
+    fn parts_to_legacy_ignores_image() {
+        let parts = vec![
+            MessagePart::Text {
+                content: "hello".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Image {
+                data: "base64".to_string(),
+                media_type: "image/png".to_string(),
+            },
+        ];
+        let (content, thinking, activities) = parts_to_legacy(&parts);
+        assert_eq!(content, "hello");
+        assert_eq!(thinking, None);
+        assert_eq!(activities, None);
     }
 }

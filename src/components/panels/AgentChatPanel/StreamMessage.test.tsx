@@ -112,4 +112,51 @@ describe("StreamMessage", () => {
 		expect(notPrevented).toBe(false);
 		expect(mockOpenUrl).toHaveBeenCalledWith("https://docs.example.com");
 	});
+
+	it("renders images in human message when image parts provided", () => {
+		const images = [
+			{ type: "image" as const, data: "aGVsbG8=", mediaType: "image/png" },
+		];
+		render(<StreamMessage content="Check this" role={human} images={images} />);
+		const el = screen.getByTestId("stream-message-human");
+		const imgs = el.querySelectorAll("img");
+		expect(imgs.length).toBe(1);
+		expect(imgs[0].getAttribute("src")).toBe("data:image/png;base64,aGVsbG8=");
+		expect(el.textContent).toContain("Check this");
+	});
+
+	it("renders human message without images when no image parts", () => {
+		render(<StreamMessage content="Hello" role={human} />);
+		const el = screen.getByTestId("stream-message-human");
+		const imgs = el.querySelectorAll("img");
+		expect(imgs.length).toBe(0);
+		expect(el.textContent).toContain("Hello");
+	});
+
+	it("renders multiple images in human message", () => {
+		const images = [
+			{ type: "image" as const, data: "aW1nMQ==", mediaType: "image/png" },
+			{
+				type: "image" as const,
+				data: "aW1nMg==",
+				mediaType: "image/jpeg",
+			},
+		];
+		render(<StreamMessage content="Two images" role={human} images={images} />);
+		const el = screen.getByTestId("stream-message-human");
+		const imgs = el.querySelectorAll("img");
+		expect(imgs.length).toBe(2);
+	});
+
+	it("renders image-only human message (no text)", () => {
+		const images = [
+			{ type: "image" as const, data: "aGVsbG8=", mediaType: "image/png" },
+		];
+		render(<StreamMessage content="" role={human} images={images} />);
+		const el = screen.getByTestId("stream-message-human");
+		const imgs = el.querySelectorAll("img");
+		expect(imgs.length).toBe(1);
+		const p = el.querySelector("p");
+		expect(p).toBeNull();
+	});
 });
