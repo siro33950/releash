@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { useEffect, useState } from "react";
 import { buildDataUrl, getMimeType } from "@/lib/imageUtils";
-import type { DiffBase } from "@/types/settings";
+import type { DiffBase, DiffSection } from "@/types/settings";
 
 export interface ImageDiffResult {
 	originalUrl: string | null;
@@ -21,6 +21,7 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 export function useImageDiff(
 	filePath: string | null,
 	diffBase: DiffBase,
+	section: DiffSection,
 	gitRefreshKey?: number,
 ): ImageDiffResult {
 	const [originalUrl, setOriginalUrl] = useState<string | null>(null);
@@ -40,46 +41,83 @@ export function useImageDiff(
 
 		const mime = getMimeType(filePath);
 
-		const fetchModified = async () => {
+		const fetchWorkingTree = async (): Promise<string | null> => {
 			try {
 				const bytes = await readFile(filePath);
-				if (!cancelled) {
-					const base64 = uint8ArrayToBase64(bytes);
-					setModifiedUrl(buildDataUrl(base64, mime));
-				}
+				const base64 = uint8ArrayToBase64(bytes);
+				return buildDataUrl(base64, mime);
 			} catch {
-				if (!cancelled) setModifiedUrl(null);
+				return null;
 			}
 		};
 
-		const fetchOriginal = async () => {
+		const fetchStaged = async (): Promise<string | null> => {
 			try {
-				let base64: string;
-				if (diffBase === "staged") {
-					base64 = await invoke<string>("get_binary_staged_content", {
-						filePath,
-					});
-				} else {
-					base64 = await invoke<string>("get_binary_file_at_branch_base", {
-						filePath,
-					});
-				}
-				if (!cancelled) {
-					setOriginalUrl(buildDataUrl(base64, mime));
-				}
+				const base64 = await invoke<string>("get_binary_staged_content", {
+					filePath,
+				});
+				return buildDataUrl(base64, mime);
 			} catch {
-				if (!cancelled) setOriginalUrl(null);
+				return null;
 			}
 		};
 
-		Promise.all([fetchModified(), fetchOriginal()]).finally(() => {
-			if (!cancelled) setLoading(false);
-		});
+		const fetchHead = async (): Promise<string | null> => {
+			try {
+				const base64 = await invoke<string>("get_binary_file_at_ref", {
+					filePath,
+					gitRef: "HEAD",
+				});
+				return buildDataUrl(base64, mime);
+			} catch {
+				return null;
+			}
+		};
+
+		const fetchBranchBase = async (): Promise<string | null> => {
+			try {
+				const base64 = await invoke<string>("get_binary_file_at_branch_base", {
+					filePath,
+				});
+				return buildDataUrl(base64, mime);
+			} catch {
+				return null;
+			}
+		};
+
+		const fetchAll = async () => {
+			let original: string | null;
+			let modified: string | null;
+
+			if (diffBase === "branch-base") {
+				[original, modified] = await Promise.all([
+					fetchBranchBase(),
+					fetchWorkingTree(),
+				]);
+			} else if (section === "staged") {
+				// Staged Changes: HEAD → Staged
+				[original, modified] = await Promise.all([fetchHead(), fetchStaged()]);
+			} else {
+				// Changes: Staged → Working Tree
+				[original, modified] = await Promise.all([
+					fetchStaged(),
+					fetchWorkingTree(),
+				]);
+			}
+
+			if (!cancelled) {
+				setOriginalUrl(original);
+				setModifiedUrl(modified);
+				setLoading(false);
+			}
+		};
+
+		fetchAll();
 
 		return () => {
 			cancelled = true;
 		};
-	}, [filePath, diffBase, gitRefreshKey]);
+	}, [filePath, diffBase, section, gitRefreshKey]);
 
 	return { originalUrl, modifiedUrl, loading };
 }

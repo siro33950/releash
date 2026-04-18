@@ -12,19 +12,15 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { DiffBase, DiffMode } from "@/types/settings";
+import type { DiffMode } from "@/types/settings";
 
 export interface DiffToolbarProps {
-	diffBase: DiffBase;
 	diffMode: DiffMode;
 	currentIndex: number;
 	total: number;
 	onDiffModeChange: (mode: DiffMode) => void;
 	onGoToPrev: () => void;
 	onGoToNext: () => void;
-	onStageAll: () => void;
-	onUnstageAll: () => void;
-	showStageButtons: boolean;
 }
 
 const diffModes: { mode: DiffMode; icon: typeof Minus; label: string }[] = [
@@ -34,16 +30,12 @@ const diffModes: { mode: DiffMode; icon: typeof Minus; label: string }[] = [
 ];
 
 export function DiffToolbar({
-	diffBase,
 	diffMode,
 	currentIndex,
 	total,
 	onDiffModeChange,
 	onGoToPrev,
 	onGoToNext,
-	onStageAll,
-	onUnstageAll,
-	showStageButtons,
 }: DiffToolbarProps) {
 	return (
 		<div className="flex items-center justify-between px-2 h-[36px] border-t border-border bg-card shrink-0 select-none">
@@ -53,28 +45,6 @@ export function DiffToolbar({
 			{/* Center: Hunk navigation (only when changes exist) */}
 			{total > 0 && (
 				<div className="flex items-center gap-1">
-					{showStageButtons && (
-						<>
-							<Button
-								variant="ghost"
-								size="xs"
-								onClick={onStageAll}
-								className="bg-status-added/20 text-status-added hover:bg-status-added/30 hover:text-status-added text-[10px]"
-							>
-								Stage All
-							</Button>
-							{diffBase === "branch-base" && (
-								<Button
-									variant="ghost"
-									size="xs"
-									onClick={onUnstageAll}
-									className="bg-status-modified/20 text-status-modified hover:bg-status-modified/30 hover:text-status-modified text-[10px]"
-								>
-									Unstage All
-								</Button>
-							)}
-						</>
-					)}
 					<Button
 						variant="ghost"
 						size="icon-xs"

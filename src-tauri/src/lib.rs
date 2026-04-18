@@ -216,7 +216,14 @@ pub fn run() {
             git::commands::get_binary_staged_content,
             git::commands::get_file_at_branch_base,
             git::commands::get_binary_file_at_branch_base,
+            git::commands::get_binary_file_at_ref,
             git::commands::get_branch_diff_summary,
+            git::commands::build_diff_file_tree,
+            // Git: hunk/patch
+            git::commands::compute_diff_hunks,
+            git::commands::generate_group_patch,
+            git::commands::get_language_from_path,
+            git::commands::get_relative_path,
             // Git: ブランチ
             git::commands::list_branches,
             git::commands::get_current_branch,
@@ -225,6 +232,7 @@ pub fn run() {
             git::commands::delete_branch,
             // Git: ステータス
             git::commands::get_git_status,
+            git::commands::get_status_diff_stats,
             git::commands::get_git_log,
             // Git: ステージング
             git::commands::git_stage,

@@ -1,5 +1,6 @@
 export type Theme = "dark" | "light";
-export type DiffBase = "branch-base" | "staged";
+export type DiffBase = "branch-base" | "head";
+export type DiffSection = "changes" | "staged";
 export type DiffMode = "gutter" | "inline" | "split";
 
 export type AgentType =
@@ -111,7 +112,7 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
 	theme: "dark",
 	fontSize: 14,
-	defaultDiffBase: "staged",
+	defaultDiffBase: "head",
 	defaultDiffMode: "inline",
 	agent: "none",
 	agentAutoApprove: false,

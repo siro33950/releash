@@ -16,16 +16,12 @@ if (typeof Element.prototype.releasePointerCapture !== "function") {
 }
 
 const defaultProps: DiffToolbarProps = {
-	diffBase: "staged",
 	diffMode: "inline",
 	currentIndex: 0,
 	total: 3,
 	onDiffModeChange: vi.fn(),
 	onGoToPrev: vi.fn(),
 	onGoToNext: vi.fn(),
-	onStageAll: vi.fn(),
-	onUnstageAll: vi.fn(),
-	showStageButtons: true,
 };
 
 function renderToolbar(props: Partial<DiffToolbarProps> = {}) {
@@ -104,30 +100,11 @@ describe("DiffToolbar", () => {
 		});
 	});
 
-	describe("stage buttons", () => {
-		it("should show Stage All when showStageButtons is true and total > 0", () => {
-			renderToolbar({ showStageButtons: true });
-
-			expect(screen.getByText("Stage All")).toBeInTheDocument();
-		});
-
-		it("should hide Stage All when showStageButtons is false", () => {
-			renderToolbar({ showStageButtons: false });
+	describe("stage buttons removed from toolbar", () => {
+		it("should not show Stage All or Unstage All buttons", () => {
+			renderToolbar();
 
 			expect(screen.queryByText("Stage All")).not.toBeInTheDocument();
-		});
-
-		it("should show Unstage All only when diffBase is branch-base", () => {
-			renderToolbar({ diffBase: "branch-base", showStageButtons: true });
-
-			expect(screen.getByText("Stage All")).toBeInTheDocument();
-			expect(screen.getByText("Unstage All")).toBeInTheDocument();
-		});
-
-		it("should hide Unstage All when diffBase is staged", () => {
-			renderToolbar({ diffBase: "staged", showStageButtons: true });
-
-			expect(screen.getByText("Stage All")).toBeInTheDocument();
 			expect(screen.queryByText("Unstage All")).not.toBeInTheDocument();
 		});
 	});

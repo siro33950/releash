@@ -12,6 +12,7 @@ import { BranchSelector } from "@/components/layout/BranchSelector";
 import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { AgentChatPanel } from "@/components/panels/AgentChatPanel";
+import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import {
 	type RightBottomTab,
 	RightSidebarBottom,
@@ -56,6 +57,7 @@ function WorktreeContent({
 	togglePanels,
 	initialWorkspaceState,
 	internalStateMapRef,
+	baseBranch,
 }: {
 	rootPath: string;
 	settings: AppSettings;
@@ -69,8 +71,10 @@ function WorktreeContent({
 	internalStateMapRef: React.MutableRefObject<
 		Map<string, InternalWorktreeState>
 	>;
+	baseBranch: string | null;
 }) {
 	const rightBottomRef = useRef<PanelImperativeHandle>(null);
+	const reviewRef = useRef<PanelImperativeHandle>(null);
 
 	const handleToggleRightBottom = useCallback(() => {
 		const panel = rightBottomRef.current;
@@ -89,6 +93,18 @@ function WorktreeContent({
 			panel.collapse();
 		});
 	}, [initialRightBottomCollapsed]);
+
+	// Restore review collapsed state from initialWorkspaceState
+	const initialReviewCollapsed =
+		initialWorkspaceState?.layout.reviewCollapsed ?? false;
+	useEffect(() => {
+		if (!initialReviewCollapsed) return;
+		const panel = reviewRef.current;
+		if (!panel) return;
+		requestAnimationFrame(() => {
+			panel.collapse();
+		});
+	}, [initialReviewCollapsed]);
 
 	const s = useWorktreeState({
 		rootPath,
@@ -131,9 +147,30 @@ function WorktreeContent({
 					<div className="flex-1 overflow-hidden">
 						<Group orientation="vertical">
 							<Panel
+								id="review"
+								panelRef={reviewRef}
+								defaultSize="60%"
+								minSize="20%"
+								collapsible
+								collapsedSize="0%"
+								onResize={(size) =>
+									s.setReviewCollapsed(size.asPercentage <= 0)
+								}
+							>
+								<div className="h-full overflow-hidden">
+									<ReviewPanel
+										rootPath={rootPath}
+										baseBranch={baseBranch}
+										defaultDiffBase={settings.defaultDiffBase}
+										defaultDiffMode={settings.defaultDiffMode}
+									/>
+								</div>
+							</Panel>
+							<Separator />
+							<Panel
 								id="right-bottom"
 								panelRef={rightBottomRef}
-								defaultSize="100%"
+								defaultSize="40%"
 								minSize="20%"
 								collapsible
 								collapsedSize={31}
@@ -365,6 +402,7 @@ export function MainLayout({
 								togglePanels={togglePanels}
 								initialWorkspaceState={getInitialState(selectedRootPath)}
 								internalStateMapRef={internalStateMapRef}
+								baseBranch={baseBranch}
 							/>
 						) : (
 							<Panel id="center" minSize="30%">
