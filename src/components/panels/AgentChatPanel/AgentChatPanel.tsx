@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { History, X } from "lucide-react";
 import React, {
 	useCallback,
@@ -15,8 +16,14 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import { loadSlashCommands } from "@/hooks/useSlashCommands";
-import type { ChatMessage, MessagePart } from "@/types/session";
+import type {
+	ChatMessage,
+	ImageAttachment,
+	ImagePart,
+	MessagePart,
+} from "@/types/session";
 import { getTextContent } from "@/types/session";
 import {
 	ActivityItem,
@@ -24,6 +31,7 @@ import {
 	TaskToolActivity,
 	ToolActivity,
 } from "./ActivityLog";
+import type { MessageInputHandle } from "./MessageInput";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
 import { PermissionDialog } from "./PermissionDialog";
@@ -199,6 +207,8 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 						);
 					case "system_notification":
 						return <SystemNotificationItem key={key} part={part} />;
+					case "image":
+						return null;
 				}
 			})}
 			{runningBackgroundTasks.map((group) => (
@@ -221,9 +231,17 @@ const AgentMessageParts = React.memo(function AgentMessageParts({
 
 interface AgentChatPanelProps {
 	worktreePath: string;
+	registerDropZone: (
+		zone: DropZoneType,
+		element: HTMLElement | null,
+		onDrop?: (paths: string[]) => void,
+	) => void;
 }
 
-export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
+export function AgentChatPanel({
+	worktreePath,
+	registerDropZone,
+}: AgentChatPanelProps) {
 	const {
 		sessions,
 		orderedSessions,
@@ -253,6 +271,10 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 	const draggedSessionIdRef = useRef<string | null>(null);
 	const isDraggingRef = useRef(false);
 
+	const messageInputRef = useRef<MessageInputHandle>(null);
+	const [isFileDragOver, setIsFileDragOver] = useState(false);
+	const isFileDragOverRef = useRef(false);
+
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const scrollAnchorRef = useRef<HTMLDivElement>(null);
 	const lastMessageCount = useRef(0);
@@ -264,6 +286,49 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 			console.error("Failed to load slash commands:", e),
 		);
 	}, [worktreePath]);
+
+	// Register agent drop zone for native file drop (image attachment)
+	const agentDropZoneRef = useRef<HTMLDivElement>(null);
+	const handleAgentDrop = useCallback(async (paths: string[]) => {
+		isFileDragOverRef.current = false;
+		setIsFileDragOver(false);
+		try {
+			const attachments = await invoke<ImageAttachment[]>(
+				"prepare_image_attachments_from_paths",
+				{ paths },
+			);
+			if (attachments.length > 0) {
+				messageInputRef.current?.addImageAttachments(attachments);
+			}
+		} catch (e) {
+			console.error("Failed to process dropped images:", e);
+		}
+	}, []);
+	useEffect(() => {
+		const el = agentDropZoneRef.current;
+		if (el) {
+			registerDropZone("agent", el, handleAgentDrop);
+		}
+		return () => {
+			registerDropZone("agent", null);
+		};
+	}, [registerDropZone, handleAgentDrop]);
+
+	const handleFileDragOver = useCallback((e: React.DragEvent) => {
+		if (e.dataTransfer.types.includes("Files")) {
+			e.preventDefault();
+			e.dataTransfer.dropEffect = "copy";
+			isFileDragOverRef.current = true;
+			setIsFileDragOver(true);
+		}
+	}, []);
+
+	const handleFileDragLeave = useCallback((e: React.DragEvent) => {
+		if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+			isFileDragOverRef.current = false;
+			setIsFileDragOver(false);
+		}
+	}, []);
 
 	// Track scroll position via onScroll handler
 	const handleScroll = useCallback(() => {
@@ -480,7 +545,20 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 						</PopoverContent>
 					</Popover>
 				</div>
-				<div className="flex flex-col flex-1 min-h-0">
+				{/* biome-ignore lint/a11y/noStaticElementInteractions: native file drop target */}
+				<div
+					ref={agentDropZoneRef}
+					className="flex flex-col flex-1 min-h-0 relative"
+					onDragOver={handleFileDragOver}
+					onDragLeave={handleFileDragLeave}
+				>
+					{isFileDragOver && (
+						<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none z-10">
+							<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
+								Drop image to attach
+							</span>
+						</div>
+					)}
 					<ScrollArea
 						viewportRef={scrollRef}
 						onScroll={handleScroll}
@@ -491,9 +569,18 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 								{activeSession.messages.map((msg, idx) => {
 									if (msg.role !== "agent") {
 										const textContent = getTextContent(msg.parts);
+										const imageParts = msg.parts.filter(
+											(p): p is ImagePart => p.type === "image",
+										);
 										return (
 											<div key={msg.id}>
-												<StreamMessage content={textContent} role={msg.role} />
+												<StreamMessage
+													content={textContent}
+													role={msg.role}
+													images={
+														imageParts.length > 0 ? imageParts : undefined
+													}
+												/>
 											</div>
 										);
 									}
@@ -533,6 +620,7 @@ export function AgentChatPanel({ worktreePath }: AgentChatPanelProps) {
 							</div>
 						)}
 						<MessageInput
+							ref={messageInputRef}
 							onSend={sendMessage}
 							onInterrupt={interrupt}
 							isStreaming={isStreaming}

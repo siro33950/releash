@@ -65,6 +65,7 @@ pub enum TurnPhase {
 pub struct PendingMessage {
     pub content: String,
     pub permission_mode: String,
+    pub images: Vec<ImageAttachment>,
 }
 
 /// Model information from Agent SDK.
@@ -1628,6 +1629,7 @@ async fn start_agent_turn(
     permission_mode: &str,
     prompt: &str,
     streaming_message_id: &str,
+    images: &[ImageAttachment],
 ) -> Result<(), String> {
     // Check if we need to spawn a new process (single lock to avoid TOCTOU)
     let needs_spawn = {
@@ -1663,10 +1665,7 @@ async fn start_agent_turn(
     // Even if a message is sent while the SDK is still processing an interrupt,
     // the Bridge's promptGenerator queues it and only yields after the current turn completes.
     // The SDK calls generator.next() only when ready for the next turn, providing ordering guarantee.
-    let msg_cmd = serde_json::json!({
-        "type": "message",
-        "prompt": prompt,
-    });
+    let msg_cmd = build_message_cmd(prompt, images);
     let data = format!("{}\n", msg_cmd);
 
     {
@@ -1742,6 +1741,7 @@ async fn consume_pending_message(
         chat_session_id,
         MessageRole::Agent,
         "",
+        None,
     ) {
         Ok(msg) => msg,
         Err(e) => {
@@ -1764,10 +1764,7 @@ async fn consume_pending_message(
 
     // 4. Sync permissionMode + selected_model + send message directly to the running Bridge.
     //    The process is guaranteed running since it just emitted turn_complete.
-    let msg_cmd = serde_json::json!({
-        "type": "message",
-        "prompt": pending.content,
-    });
+    let msg_cmd = build_message_cmd(&pending.content, &pending.images);
     let data = format!("{}\n", msg_cmd);
 
     {
@@ -1830,6 +1827,7 @@ pub async fn execute_agent_query(
         permission_mode.as_deref().unwrap_or("acceptEdits"),
         &prompt,
         &streaming_message_id,
+        &[],
     )
     .await
 }
@@ -2126,6 +2124,7 @@ pub struct SendMessageResponse {
 
 /// Unified command to send a message: handles session creation, message persistence,
 /// turn phase check (interrupt if streaming, start query if idle), and pending message queuing.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn send_agent_message(
     app: tauri::AppHandle,
@@ -2135,9 +2134,11 @@ pub async fn send_agent_message(
     worktree_path: String,
     content: String,
     permission_mode: Option<String>,
+    images: Option<Vec<ImageAttachment>>,
 ) -> Result<SendMessageResponse, String> {
     let data_dir = resolve_data_dir(&app)?;
     let pm = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
+    let images = images.unwrap_or_default();
 
     // 1. Create or get session
     let session = if let Some(ref sid) = chat_session_id {
@@ -2149,14 +2150,35 @@ pub async fn send_agent_message(
     };
     let sid = session.id.clone();
 
-    // 2. Add human message
-    let human_message = add_message_internal(
-        &session_store,
-        &data_dir,
-        &sid,
-        MessageRole::Human,
-        &content,
-    )?;
+    // 2. Add human message (with image parts if present)
+    let human_message = {
+        let parts = if images.is_empty() {
+            None
+        } else {
+            let mut p: Vec<MessagePart> = Vec::new();
+            if !content.is_empty() {
+                p.push(MessagePart::Text {
+                    content: content.clone(),
+                    parent_tool_use_id: None,
+                });
+            }
+            for img in &images {
+                p.push(MessagePart::Image {
+                    data: img.data.clone(),
+                    media_type: img.media_type.clone(),
+                });
+            }
+            Some(p)
+        };
+        add_message_internal(
+            &session_store,
+            &data_dir,
+            &sid,
+            MessageRole::Human,
+            &content,
+            parts,
+        )?
+    };
 
     // 3. Check turn phase
     let current_phase = {
@@ -2175,6 +2197,7 @@ pub async fn send_agent_message(
                     proc.pending_message = Some(PendingMessage {
                         content: content.clone(),
                         permission_mode: pm.clone(),
+                        images: images.clone(),
                     });
                     proc.stdin
                         .write_all(b"{\"type\":\"interrupt\"}\n")
@@ -2189,8 +2212,14 @@ pub async fn send_agent_message(
             None
         } else {
             // 4b. Create agent message + start turn
-            let agent_msg =
-                add_message_internal(&session_store, &data_dir, &sid, MessageRole::Agent, "")?;
+            let agent_msg = add_message_internal(
+                &session_store,
+                &data_dir,
+                &sid,
+                MessageRole::Agent,
+                "",
+                None,
+            )?;
             start_agent_turn(
                 &app,
                 handles.inner(),
@@ -2200,6 +2229,7 @@ pub async fn send_agent_message(
                 &pm,
                 &content,
                 &agent_msg.id,
+                &images,
             )
             .await?;
             Some(agent_msg)
@@ -2401,6 +2431,120 @@ pub async fn scan_slash_commands(cwd: String) -> Result<Vec<SlashCommandEntry>, 
     }
 
     Ok(commands)
+}
+
+// --- Image attachment support ---
+
+/// Build a JSON command to send a user message (with optional images) to the Bridge.
+fn build_message_cmd(prompt: &str, images: &[ImageAttachment]) -> serde_json::Value {
+    if images.is_empty() {
+        serde_json::json!({
+            "type": "message",
+            "prompt": prompt,
+        })
+    } else {
+        let img_blocks: Vec<serde_json::Value> = images
+            .iter()
+            .map(|img| {
+                serde_json::json!({
+                    "data": img.data,
+                    "mediaType": img.media_type,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "type": "message",
+            "prompt": prompt,
+            "images": img_blocks,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAttachment {
+    pub data: String,
+    pub media_type: String,
+}
+
+/// Validate and encode an image from raw bytes.
+/// Returns base64-encoded data and detected MIME type, or an error for unsupported formats.
+fn validate_and_encode_image(bytes: &[u8]) -> Result<ImageAttachment, String> {
+    let media_type =
+        detect_image_mime(bytes).ok_or_else(|| "Unsupported image format".to_string())?;
+
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+
+    Ok(ImageAttachment {
+        data,
+        media_type: media_type.to_string(),
+    })
+}
+
+/// Detect MIME type from magic bytes.
+fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    // JPEG: FF D8 FF
+    if bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        return Some("image/jpeg");
+    }
+    // PNG: 89 50 4E 47
+    if bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47 {
+        return Some("image/png");
+    }
+    // GIF: 47 49 46 38
+    if bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38 {
+        return Some("image/gif");
+    }
+    // WebP: RIFF....WEBP
+    if bytes.len() >= 12
+        && bytes[0] == 0x52
+        && bytes[1] == 0x49
+        && bytes[2] == 0x46
+        && bytes[3] == 0x46
+        && bytes[8] == 0x57
+        && bytes[9] == 0x45
+        && bytes[10] == 0x42
+        && bytes[11] == 0x50
+    {
+        return Some("image/webp");
+    }
+    None
+}
+
+/// Tauri command: Validate image bytes and return base64-encoded image attachment.
+/// Called from the frontend after D&D or paste events.
+#[tauri::command]
+pub fn prepare_image_attachment(data: Vec<u8>) -> Result<ImageAttachment, String> {
+    if data.is_empty() {
+        return Err("Empty image data".to_string());
+    }
+    validate_and_encode_image(&data)
+}
+
+/// Tauri command: Read image files from paths and return base64-encoded attachments.
+/// Called from the frontend when files are dropped via native drag-and-drop.
+/// Non-image files are silently skipped.
+#[tauri::command]
+pub async fn prepare_image_attachments_from_paths(
+    paths: Vec<String>,
+) -> Result<Vec<ImageAttachment>, String> {
+    let mut attachments = Vec::new();
+    for path in &paths {
+        let data = tokio::fs::read(path)
+            .await
+            .map_err(|e| format!("Failed to read {}: {}", path, e))?;
+        if data.is_empty() {
+            continue;
+        }
+        if let Ok(attachment) = validate_and_encode_image(&data) {
+            attachments.push(attachment);
+        }
+    }
+    Ok(attachments)
 }
 
 #[cfg(test)]
@@ -3831,5 +3975,159 @@ mod tests {
     #[test]
     fn resolve_permission_mode_default_unchanged() {
         assert_eq!(resolve_permission_mode("default"), "default");
+    }
+
+    // --- Image attachment tests ---
+
+    #[test]
+    fn detect_image_mime_jpeg() {
+        let bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        assert_eq!(detect_image_mime(&bytes), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn detect_image_mime_png() {
+        let bytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        assert_eq!(detect_image_mime(&bytes), Some("image/png"));
+    }
+
+    #[test]
+    fn detect_image_mime_gif() {
+        let bytes = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61];
+        assert_eq!(detect_image_mime(&bytes), Some("image/gif"));
+    }
+
+    #[test]
+    fn detect_image_mime_webp() {
+        let bytes = [
+            0x52, 0x49, 0x46, 0x46, // RIFF
+            0x00, 0x00, 0x00, 0x00, // size
+            0x57, 0x45, 0x42, 0x50, // WEBP
+        ];
+        assert_eq!(detect_image_mime(&bytes), Some("image/webp"));
+    }
+
+    #[test]
+    fn detect_image_mime_unknown() {
+        let bytes = [0x00, 0x01, 0x02, 0x03];
+        assert_eq!(detect_image_mime(&bytes), None);
+    }
+
+    #[test]
+    fn detect_image_mime_too_short() {
+        let bytes = [0xFF, 0xD8];
+        assert_eq!(detect_image_mime(&bytes), None);
+    }
+
+    #[test]
+    fn validate_and_encode_image_jpeg() {
+        let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        bytes.extend_from_slice(&[0x00; 100]); // pad
+        let result = validate_and_encode_image(&bytes).unwrap();
+        assert_eq!(result.media_type, "image/jpeg");
+        assert!(!result.data.is_empty());
+    }
+
+    #[test]
+    fn validate_and_encode_image_png() {
+        let mut bytes = vec![0x89, 0x50, 0x4E, 0x47];
+        bytes.extend_from_slice(&[0x00; 100]);
+        let result = validate_and_encode_image(&bytes).unwrap();
+        assert_eq!(result.media_type, "image/png");
+    }
+
+    #[test]
+    fn validate_and_encode_image_rejects_unknown() {
+        let bytes = vec![0x00, 0x01, 0x02, 0x03, 0x04];
+        let result = validate_and_encode_image(&bytes);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unsupported"));
+    }
+
+    #[test]
+    fn prepare_image_attachment_empty_data() {
+        let result = prepare_image_attachment(vec![]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Empty"));
+    }
+
+    #[test]
+    fn prepare_image_attachment_valid_png() {
+        let mut bytes = vec![0x89, 0x50, 0x4E, 0x47];
+        bytes.extend_from_slice(&[0x00; 100]);
+        let result = prepare_image_attachment(bytes).unwrap();
+        assert_eq!(result.media_type, "image/png");
+    }
+
+    #[test]
+    fn prepare_image_attachment_rejects_text_file() {
+        let bytes = b"Hello, world!".to_vec();
+        let result = prepare_image_attachment(bytes);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn prepare_image_attachments_from_paths_valid_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let png_path = dir.path().join("test.png");
+        let mut png_bytes = vec![0x89, 0x50, 0x4E, 0x47];
+        png_bytes.extend_from_slice(&[0x00; 100]);
+        tokio::fs::write(&png_path, &png_bytes).await.unwrap();
+
+        let result =
+            prepare_image_attachments_from_paths(vec![png_path.to_string_lossy().to_string()])
+                .await
+                .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].media_type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn prepare_image_attachments_from_paths_skips_non_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt_path = dir.path().join("readme.txt");
+        tokio::fs::write(&txt_path, b"Hello, world!").await.unwrap();
+
+        let result =
+            prepare_image_attachments_from_paths(vec![txt_path.to_string_lossy().to_string()])
+                .await
+                .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_image_attachments_from_paths_skips_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty_path = dir.path().join("empty.png");
+        tokio::fs::write(&empty_path, b"").await.unwrap();
+
+        let result =
+            prepare_image_attachments_from_paths(vec![empty_path.to_string_lossy().to_string()])
+                .await
+                .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn build_message_cmd_text_only() {
+        let cmd = build_message_cmd("hello", &[]);
+        assert_eq!(cmd["type"], "message");
+        assert_eq!(cmd["prompt"], "hello");
+        assert!(cmd.get("images").is_none());
+    }
+
+    #[test]
+    fn build_message_cmd_with_images() {
+        let images = vec![ImageAttachment {
+            data: "base64data".to_string(),
+            media_type: "image/png".to_string(),
+        }];
+        let cmd = build_message_cmd("check this", &images);
+        assert_eq!(cmd["type"], "message");
+        assert_eq!(cmd["prompt"], "check this");
+        let imgs = cmd["images"].as_array().unwrap();
+        assert_eq!(imgs.len(), 1);
+        assert_eq!(imgs[0]["data"], "base64data");
+        assert_eq!(imgs[0]["mediaType"], "image/png");
     }
 }

@@ -108,7 +108,10 @@ function WorktreeContent({
 				<div className="h-full relative overflow-hidden flex flex-col">
 					<ViewToolbar leftPanels={leftPanels} rightSlot={branchSelector} />
 					<div className="flex-1 overflow-hidden">
-						<AgentChatPanel worktreePath={rootPath} />
+						<AgentChatPanel
+							worktreePath={rootPath}
+							registerDropZone={s.registerDropZone}
+						/>
 					</div>
 				</div>
 			</Panel>

@@ -62,12 +62,28 @@ process.stdin.on("data", (chunk) => {
  * Wrap a plain text prompt into an SDKUserMessage that the CLI's
  * `--input-format stream-json` protocol expects.
  */
-function toUserMessage(text) {
+function toUserMessage(text, images) {
+	const content = [];
+	if (images && images.length > 0) {
+		for (const img of images) {
+			content.push({
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: img.mediaType,
+					data: img.data,
+				},
+			});
+		}
+	}
+	if (text) {
+		content.push({ type: "text", text });
+	}
 	return {
 		type: "user",
 		message: {
 			role: "user",
-			content: [{ type: "text", text }],
+			content,
 		},
 		parent_tool_use_id: null,
 		session_id: "",
@@ -96,7 +112,7 @@ function handleCommand(cmd) {
 			handleInit(cmd);
 			break;
 		case "message": {
-			const msg = toUserMessage(cmd.prompt);
+			const msg = toUserMessage(cmd.prompt, cmd.images);
 			if (messageResolve) {
 				messageResolve(msg);
 			} else {

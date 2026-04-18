@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
 	ChatMessage,
 	ChatSession,
+	ImageAttachment,
 	LegacyChatMessage,
 	MessagePart,
 	MessageRole,
@@ -191,12 +192,14 @@ export async function sendAgentMessage(
 	worktreePath: string,
 	content: string,
 	permissionMode: string,
+	images?: ImageAttachment[],
 ): Promise<SendMessageResponse> {
 	const raw = await invoke<RawSendMessageResponse>("send_agent_message", {
 		chatSessionId,
 		worktreePath,
 		content,
 		permissionMode,
+		images: images && images.length > 0 ? images : undefined,
 	});
 	return {
 		session: convertLegacySession(raw.session),

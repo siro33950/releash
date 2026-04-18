@@ -3,11 +3,12 @@ import type { AnchorHTMLAttributes } from "react";
 import { useDeferredValue } from "react";
 import Markdown from "react-markdown";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
-import type { MessageRole } from "@/types/session";
+import type { ImagePart, MessageRole } from "@/types/session";
 
 interface StreamMessageProps {
 	content: string;
 	role: MessageRole;
+	images?: ImagePart[];
 }
 
 function ExternalLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
@@ -25,7 +26,7 @@ function ExternalLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
 	);
 }
 
-export function StreamMessage({ content, role }: StreamMessageProps) {
+export function StreamMessage({ content, role, images }: StreamMessageProps) {
 	const isHuman = role === "human";
 	const deferredContent = useDeferredValue(content);
 
@@ -39,6 +40,18 @@ export function StreamMessage({ content, role }: StreamMessageProps) {
 		);
 	}
 
+	const imageElements =
+		isHuman && images && images.length > 0
+			? images.map((img) => (
+					<img
+						key={`${img.mediaType}-${img.data.slice(0, 20)}`}
+						src={`data:${img.mediaType};base64,${img.data}`}
+						alt="Attached"
+						className="max-h-48 max-w-full rounded-md"
+					/>
+				))
+			: null;
+
 	return (
 		<div
 			data-testid={`stream-message-${role}`}
@@ -46,7 +59,12 @@ export function StreamMessage({ content, role }: StreamMessageProps) {
 		>
 			{isHuman ? (
 				<div className="bg-muted rounded-lg px-3 py-2">
-					<p className="text-sm whitespace-pre-wrap break-words">{content}</p>
+					{imageElements && imageElements.length > 0 && (
+						<div className="flex flex-wrap gap-2 mb-2">{imageElements}</div>
+					)}
+					{content && (
+						<p className="text-sm whitespace-pre-wrap break-words">{content}</p>
+					)}
 				</div>
 			) : (
 				<div className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words">

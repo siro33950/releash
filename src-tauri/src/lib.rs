@@ -348,6 +348,8 @@ pub fn run() {
             agent_sdk::send_agent_message,
             agent_sdk::init_agent_sessions,
             agent_sdk::scan_slash_commands,
+            agent_sdk::prepare_image_attachment,
+            agent_sdk::prepare_image_attachments_from_paths,
             // Session
             session::list_sessions,
             agent_sdk::get_session,

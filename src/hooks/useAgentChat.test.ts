@@ -117,6 +117,67 @@ describe("useAgentChat", () => {
 		);
 	});
 
+	it("sendMessage passes images to sendAgentMessage", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		const images = [{ data: "aGVsbG8=", mediaType: "image/png" }];
+		await act(async () => {
+			await result.current.sendMessage("check this", images);
+		});
+
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			null,
+			"/repo",
+			"check this",
+			"acceptEdits",
+			images,
+		);
+	});
+
+	it("sendMessage with images only (empty text) calls sendAgentMessage", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		const images = [{ data: "aGVsbG8=", mediaType: "image/png" }];
+		await act(async () => {
+			await result.current.sendMessage("", images);
+		});
+
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			null,
+			"/repo",
+			"",
+			"acceptEdits",
+			images,
+		);
+	});
+
+	it("sendMessage without images does not pass images arg", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await result.current.sendMessage("hello");
+		});
+
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			null,
+			"/repo",
+			"hello",
+			"acceptEdits",
+		);
+	});
+
 	it("respondPermission invokes respond_agent_permission with chatSessionId", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
