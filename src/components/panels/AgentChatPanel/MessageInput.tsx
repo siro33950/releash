@@ -139,6 +139,9 @@ export function MessageInput({
 			return;
 		}
 
+		setMentionFiles([]);
+		setMentionSelectedIndex(0);
+
 		let cancelled = false;
 		const timer = setTimeout(() => {
 			invoke<string[]>("list_mentionable_files", {

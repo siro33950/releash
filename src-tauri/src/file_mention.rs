@@ -58,7 +58,7 @@ pub fn list_mentionable_files(worktree_path: String, query: String) -> Result<Ve
         }
         let path = entry.path();
         if let Ok(rel) = path.strip_prefix(&canonical_root) {
-            let rel_str = rel.to_string_lossy().to_string();
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
             if query_lower.is_empty() || fuzzy_match(&rel_str.to_lowercase(), &query_lower) {
                 results.push(rel_str);
                 if results.len() >= collect_limit {
@@ -174,9 +174,13 @@ pub fn resolve_mentions_internal(worktree_path: &str, content: &str) -> Result<S
                 }
             }
             (Some(start), None) => {
-                let lines: Vec<&str> = file_content.lines().collect();
-                let s = (start as usize).saturating_sub(1);
-                lines.get(s).unwrap_or(&"").to_string()
+                if start == 0 {
+                    String::new()
+                } else {
+                    let lines: Vec<&str> = file_content.lines().collect();
+                    let s = (start as usize) - 1;
+                    lines.get(s).unwrap_or(&"").to_string()
+                }
             }
             _ => file_content,
         };
@@ -420,21 +424,19 @@ mod tests {
     #[test]
     fn resolve_mentions_rejects_path_traversal() {
         let dir = tempfile::tempdir().unwrap();
-        // Create a file outside the worktree that the traversal would target
         let parent = dir.path().parent().unwrap();
-        let outside_file = parent.join("outside.txt");
+        let sibling = tempfile::tempdir_in(parent).unwrap();
+        let outside_file = sibling.path().join("outside.txt");
         fs::write(&outside_file, "secret").unwrap();
 
+        let sibling_name = sibling.path().file_name().unwrap().to_str().unwrap();
         let result = resolve_mentions_internal(
             dir.path().to_str().unwrap(),
-            &format!("Check @../outside.txt"),
+            &format!("Check @../{sibling_name}/outside.txt"),
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("traversal"), "Error message: {err}");
-
-        // Clean up
-        let _ = fs::remove_file(outside_file);
     }
 
     #[test]
