@@ -659,7 +659,7 @@ describe("MessageInput mention popup", () => {
 		});
 		await act(() => vi.advanceTimersByTimeAsync(150));
 		fireEvent.keyDown(textarea, { key: "Enter" });
-		expect(textarea.value).toBe("check @src/lib.rs  please");
+		expect(textarea.value).toBe("check @src/lib.rs please");
 	});
 
 	it("debounces invoke calls", async () => {

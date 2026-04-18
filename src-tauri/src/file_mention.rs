@@ -40,6 +40,7 @@ pub fn list_mentionable_files(worktree_path: String, query: String) -> Result<Ve
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
+        .filter_entry(|entry| entry.file_name() != ".git")
         .build();
 
     let query_lower = query.to_lowercase();
@@ -160,9 +161,17 @@ pub fn resolve_mentions_internal(worktree_path: &str, content: &str) -> Result<S
         let excerpt = match (mention.start_line, mention.end_line) {
             (Some(start), Some(end)) => {
                 let lines: Vec<&str> = file_content.lines().collect();
-                let s = (start as usize).saturating_sub(1);
-                let e = (end as usize).min(lines.len());
-                lines[s..e].join("\n")
+                if start == 0 || end < start {
+                    String::new()
+                } else {
+                    let s = (start as usize) - 1;
+                    let e = (end as usize).min(lines.len());
+                    if s >= lines.len() || s >= e {
+                        String::new()
+                    } else {
+                        lines[s..e].join("\n")
+                    }
+                }
             }
             (Some(start), None) => {
                 let lines: Vec<&str> = file_content.lines().collect();

@@ -193,16 +193,21 @@ export function MessageInput({
 			if (!mentionTrigger) return;
 			// Replace @query with @filePath
 			const before = value.slice(0, mentionTrigger.start);
-			const after = value.slice(
-				mentionTrigger.start + 1 + mentionTrigger.query.length,
-			);
+			const after = value
+				.slice(mentionTrigger.start + 1 + mentionTrigger.query.length)
+				.replace(/^\s/, "");
 			const newValue = `${before}@${filePath} ${after}`;
 			setValue(newValue);
 			setMentionTrigger(null);
 			setMentionDismissed(true);
 			setMentionSelectedIndex(0);
-			if (textareaRef.current) {
-				textareaRef.current.focus();
+			const caret = before.length + 1 + filePath.length + 1; // "@" + path + " "
+			const el = textareaRef.current;
+			if (el) {
+				el.focus();
+				requestAnimationFrame(() => {
+					el.setSelectionRange(caret, caret);
+				});
 			}
 		},
 		[mentionTrigger, value],
