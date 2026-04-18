@@ -207,10 +207,21 @@ impl ChatSession {
             .messages
             .first()
             .map(|m| {
-                let content = &m.content;
+                let content = if m.content.is_empty() {
+                    if m.parts
+                        .as_ref()
+                        .is_some_and(|parts| parts.iter().any(|p| matches!(p, MessagePart::Image { .. })))
+                    {
+                        "[Image]".to_string()
+                    } else {
+                        m.content.clone()
+                    }
+                } else {
+                    m.content.clone()
+                };
                 match content.char_indices().nth(100) {
                     Some((byte_pos, _)) => format!("{}…", &content[..byte_pos]),
-                    None => content.clone(),
+                    None => content,
                 }
             })
             .unwrap_or_default();

@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setSlashCommands } from "@/hooks/useSlashCommands";
@@ -427,9 +433,11 @@ describe("MessageInput image attachments", () => {
 		await act(async () => {
 			fireEvent.paste(textarea, { clipboardData });
 		});
-		expect(invoke).toHaveBeenCalledWith("prepare_image_attachment", {
-			data: expect.any(Array),
+		await waitFor(() => {
+			expect(invoke).toHaveBeenCalledWith("prepare_image_attachment", {
+				data: expect.any(Array),
+			});
 		});
-		expect(screen.getByTestId("image-preview-list")).toBeDefined();
+		expect(await screen.findByTestId("image-preview-list")).toBeDefined();
 	});
 });

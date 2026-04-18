@@ -93,6 +93,8 @@ export function useNativeFileDrop(options: UseNativeFileDropOptions) {
 				zonesRef.current.set(zone, element);
 				if (onDrop) {
 					callbacksRef.current.set(zone, onDrop);
+				} else {
+					callbacksRef.current.delete(zone);
 				}
 			} else {
 				zonesRef.current.delete(zone);

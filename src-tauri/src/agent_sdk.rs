@@ -2467,9 +2467,21 @@ pub struct ImageAttachment {
     pub media_type: String,
 }
 
+/// Maximum image size in bytes (5 MiB).
+/// Anthropic Messages API limits base64-encoded images to ~5 MB.
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+
 /// Validate and encode an image from raw bytes.
 /// Returns base64-encoded data and detected MIME type, or an error for unsupported formats.
 fn validate_and_encode_image(bytes: &[u8]) -> Result<ImageAttachment, String> {
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "Image too large: {} bytes (max {} bytes)",
+            bytes.len(),
+            MAX_IMAGE_BYTES
+        ));
+    }
+
     let media_type =
         detect_image_mime(bytes).ok_or_else(|| "Unsupported image format".to_string())?;
 

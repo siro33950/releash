@@ -42,9 +42,10 @@ export function StreamMessage({ content, role, images }: StreamMessageProps) {
 
 	const imageElements =
 		isHuman && images && images.length > 0
-			? images.map((img) => (
+			? images.map((img, index) => (
 					<img
-						key={`${img.mediaType}-${img.data.slice(0, 20)}`}
+						// biome-ignore lint/suspicious/noArrayIndexKey: images are positional data, order is fixed
+						key={`${index}-${img.mediaType}-${img.data.slice(0, 20)}`}
 						src={`data:${img.mediaType};base64,${img.data}`}
 						alt="Attached"
 						className="max-h-48 max-w-full rounded-md"
