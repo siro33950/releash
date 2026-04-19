@@ -2,6 +2,7 @@ import { useDeferredValue, useMemo } from "react";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	computeInlineChunks,
 	computeModifiedDiffRanges,
@@ -35,11 +36,13 @@ function GutterView({
 		[diffRanges],
 	);
 	return (
-		<div className="markdown-preview h-full overflow-auto p-6 scrollbar-thin">
-			<Markdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
-				{modifiedContent}
-			</Markdown>
-		</div>
+		<ScrollArea className="h-full">
+			<div className="markdown-preview p-6">
+				<Markdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
+					{modifiedContent}
+				</Markdown>
+			</div>
+		</ScrollArea>
 	);
 }
 
@@ -131,27 +134,29 @@ function InlineView({
 	);
 	const rehypePlugins = useMemo(() => [rehypeHighlight], []);
 	return (
-		<div className="markdown-preview h-full overflow-auto p-6 scrollbar-thin">
-			{chunks.map((chunk, chunkIndex) => {
-				const className =
-					chunk.type === "added"
-						? "md-diff-inline-added"
-						: chunk.type === "removed"
-							? "md-diff-inline-removed"
-							: undefined;
-				return (
-					// biome-ignore lint/suspicious/noArrayIndexKey: chunks are positional diff output, order is fixed
-					<div key={chunkIndex} className={className}>
-						<Markdown
-							remarkPlugins={remarkPlugins}
-							rehypePlugins={rehypePlugins}
-						>
-							{chunk.content}
-						</Markdown>
-					</div>
-				);
-			})}
-		</div>
+		<ScrollArea className="h-full">
+			<div className="markdown-preview p-6">
+				{chunks.map((chunk, chunkIndex) => {
+					const className =
+						chunk.type === "added"
+							? "md-diff-inline-added"
+							: chunk.type === "removed"
+								? "md-diff-inline-removed"
+								: undefined;
+					return (
+						// biome-ignore lint/suspicious/noArrayIndexKey: chunks are positional diff output, order is fixed
+						<div key={chunkIndex} className={className}>
+							<Markdown
+								remarkPlugins={remarkPlugins}
+								rehypePlugins={rehypePlugins}
+							>
+								{chunk.content}
+							</Markdown>
+						</div>
+					);
+				})}
+			</div>
+		</ScrollArea>
 	);
 }
 
