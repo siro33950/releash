@@ -141,6 +141,8 @@ Feature: Reviewパネル
 pub struct DiffFileEntry {
     pub path: String,
     pub status: String,
+    pub additions: u32,
+    pub deletions: u32,
 }
 
 #[derive(Serialize)]
@@ -149,6 +151,8 @@ pub struct DiffTreeNode {
     pub path: String,           // フルパス
     pub node_type: String,      // "file" | "folder"
     pub status: Option<String>, // ファイルの変更ステータス
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
     pub children: Vec<DiffTreeNode>,
 }
 

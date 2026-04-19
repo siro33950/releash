@@ -96,7 +96,7 @@ function TreeNode({
 				{isExpanded &&
 					node.children.map((child) => (
 						<TreeNode
-							key={child.path}
+							key={child.id}
 							node={child}
 							depth={depth + 1}
 							selectedFile={selectedFile}
@@ -344,7 +344,7 @@ function TreeSection({
 		<>
 			{tree.map((node) => (
 				<TreeNode
-					key={node.path}
+					key={node.id}
 					node={node}
 					depth={0}
 					selectedFile={selectedFile}
@@ -494,7 +494,7 @@ function BranchBaseTree({
 			)}
 			{tree.map((node) => (
 				<TreeNode
-					key={node.path}
+					key={node.id}
 					node={node}
 					depth={0}
 					selectedFile={selectedFile}

@@ -195,6 +195,15 @@ export function ReviewPanel({
 		}
 	}, []);
 
+	const handleDiffBaseChange = useCallback(
+		(base: DiffBase) => {
+			if (base === diffBase) return;
+			setDiffBase(base);
+			selectFile(null, "changes");
+		},
+		[diffBase, setDiffBase, selectFile],
+	);
+
 	// Stage/Unstage actions
 	const { stage, unstage, stageHunk, unstageHunk } = useGitActions();
 
@@ -296,7 +305,10 @@ export function ReviewPanel({
 			<div className="flex flex-col h-full">
 				<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 					<div className="w-5" />
-					<DiffBaseToggle diffBase={diffBase} onDiffBaseChange={setDiffBase} />
+					<DiffBaseToggle
+						diffBase={diffBase}
+						onDiffBaseChange={handleDiffBaseChange}
+					/>
 				</div>
 				<div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">
 					No changes
@@ -331,7 +343,10 @@ export function ReviewPanel({
 						{fileTreeCollapsed ? "Show file list" : "Hide file list"}
 					</TooltipContent>
 				</Tooltip>
-				<DiffBaseToggle diffBase={diffBase} onDiffBaseChange={setDiffBase} />
+				<DiffBaseToggle
+					diffBase={diffBase}
+					onDiffBaseChange={handleDiffBaseChange}
+				/>
 			</div>
 			{/* Content: split left (file tree) / right (diff viewer) */}
 			<div className="flex-1 overflow-hidden">

@@ -21,6 +21,7 @@ const fileNode = (
 	name: string,
 	status = "modified",
 ): DiffTreeNode => ({
+	id: `file:${path}`,
 	name,
 	path,
 	node_type: "file",
@@ -35,6 +36,7 @@ const folderNode = (
 	name: string,
 	children: DiffTreeNode[],
 ): DiffTreeNode => ({
+	id: `folder:${path}`,
 	name,
 	path,
 	node_type: "folder",

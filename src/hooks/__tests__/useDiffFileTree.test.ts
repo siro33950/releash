@@ -47,6 +47,7 @@ describe("useDiffFileTree", () => {
 	it("builds tree from branch-base diff files", async () => {
 		const mockTree: DiffTreeNode[] = [
 			{
+				id: "folder:src",
 				name: "src",
 				path: "src",
 				node_type: "folder",
@@ -55,6 +56,7 @@ describe("useDiffFileTree", () => {
 				deletions: null,
 				children: [
 					{
+						id: "file:src/main.ts",
 						name: "main.ts",
 						path: "src/main.ts",
 						node_type: "file",
@@ -99,6 +101,7 @@ describe("useDiffFileTree", () => {
 	it("head mode builds two separate trees (staged + changes)", async () => {
 		const mockStagedTree: DiffTreeNode[] = [
 			{
+				id: "file:a.ts",
 				name: "a.ts",
 				path: "a.ts",
 				node_type: "file",
@@ -110,6 +113,7 @@ describe("useDiffFileTree", () => {
 		];
 		const mockChangesTree: DiffTreeNode[] = [
 			{
+				id: "file:b.ts",
 				name: "b.ts",
 				path: "b.ts",
 				node_type: "file",
@@ -167,6 +171,7 @@ describe("useDiffFileTree", () => {
 	it("head mode with only changedFiles builds changes tree", async () => {
 		const mockTree: DiffTreeNode[] = [
 			{
+				id: "file:README.md",
 				name: "README.md",
 				path: "README.md",
 				node_type: "file",
@@ -257,6 +262,7 @@ describe("useDiffFileTree", () => {
 	it("head mode with only stagedFiles builds staged tree", async () => {
 		const mockStagedTree: DiffTreeNode[] = [
 			{
+				id: "file:a.ts",
 				name: "a.ts",
 				path: "a.ts",
 				node_type: "file",

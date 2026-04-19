@@ -12,6 +12,7 @@ export interface DiffFileEntry {
 }
 
 export interface DiffTreeNode {
+	id: string;
 	name: string;
 	path: string;
 	node_type: "file" | "folder";

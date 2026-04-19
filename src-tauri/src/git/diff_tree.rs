@@ -11,6 +11,7 @@ pub struct DiffFileEntry {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DiffTreeNode {
+    pub id: String,
     pub name: String,
     pub path: String,
     pub node_type: String,
@@ -89,6 +90,7 @@ impl TreeBuilder {
             if let Some((full_path, status, additions, deletions)) = file_info {
                 // Leaf: file node (may coexist with folder when file↔directory replacement)
                 nodes.push(DiffTreeNode {
+                    id: format!("file:{full_path}"),
                     name,
                     path: full_path,
                     node_type: "file".to_string(),
@@ -117,6 +119,7 @@ fn collapse_single_child_folder(
         collapse_single_child_folder(merged_name, child.path, child.children)
     } else {
         DiffTreeNode {
+            id: format!("folder:{path}"),
             name,
             path,
             node_type: "folder".to_string(),
