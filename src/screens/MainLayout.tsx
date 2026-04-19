@@ -175,7 +175,10 @@ function WorktreeContent({
 									s.setRightBottomCollapsed(size.inPixels <= 31)
 								}
 							>
-								<div data-testid="comments" className="h-full overflow-hidden">
+								<div
+									data-testid="right-bottom-content"
+									className="h-full overflow-hidden"
+								>
 									<RightSidebarBottom
 										rootPath={rootPath}
 										theme={settings.theme}
