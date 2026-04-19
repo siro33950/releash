@@ -83,6 +83,7 @@ const mockEditor = {
 		.fn()
 		.mockReturnValue({ top: 0, left: 0, height: 20 }),
 	getLayoutInfo: vi.fn().mockReturnValue({ height: 600 }),
+	onDidLayoutChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 	onDidScrollChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 	onDidContentSizeChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
 	getModel: vi.fn().mockReturnValue(null),

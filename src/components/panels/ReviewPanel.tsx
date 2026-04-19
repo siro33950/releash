@@ -6,7 +6,7 @@ import {
 	PanelLeftClose,
 	PanelLeftOpen,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
 	Group,
 	Panel,
@@ -31,6 +31,7 @@ import { isImageFile } from "@/lib/imageUtils";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
 import type { DiffBase, DiffMode, DiffSection } from "@/types/settings";
+import { Breadcrumb } from "./Breadcrumb";
 import { DiffFileTree } from "./DiffFileTree";
 import { DiffToolbar } from "./DiffToolbar";
 import { DiffViewerSection } from "./DiffViewerSection";
@@ -153,6 +154,16 @@ export function ReviewPanel({
 		diffBase === "branch-base"
 			? branchBaseFileCount
 			: stagedFileCount + changesFileCount;
+
+	// Breadcrumb segments
+	const breadcrumbSegments = useMemo(() => {
+		if (!selectedFile) return [];
+		const parts = selectedFile.split("/");
+		return parts.map((name, i) => ({
+			isFile: i === parts.length - 1,
+			name,
+		}));
+	}, [selectedFile]);
 
 	// File diff content
 	const selectedFilePath = selectedFile ? `${rootPath}/${selectedFile}` : null;
@@ -382,6 +393,7 @@ export function ReviewPanel({
 						<div className="flex flex-col h-full">
 							{selectedFile ? (
 								<>
+									<Breadcrumb segments={breadcrumbSegments} />
 									{isMarkdown && (
 										<div className="flex items-center justify-end px-2 h-[28px] border-b border-border bg-card shrink-0">
 											<div className="flex items-center gap-0.5 bg-muted rounded p-0.5">
