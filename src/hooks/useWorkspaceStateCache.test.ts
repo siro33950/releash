@@ -21,7 +21,6 @@ function makeState(overrides?: Partial<WorkspaceState>): WorkspaceState {
 			leftNavCollapsed: false,
 			rightCollapsed: false,
 			rightBottomCollapsed: false,
-			rightBottomActiveTab: "terminal",
 		},
 		...overrides,
 	};

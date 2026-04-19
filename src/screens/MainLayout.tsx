@@ -13,10 +13,7 @@ import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { AgentChatPanel } from "@/components/panels/AgentChatPanel";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
-import {
-	type RightBottomTab,
-	RightSidebarBottom,
-} from "@/components/panels/RightSidebarBottom";
+import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { Button } from "@/components/ui/button";
 import {
@@ -178,7 +175,10 @@ function WorktreeContent({
 									s.setRightBottomCollapsed(size.inPixels <= 31)
 								}
 							>
-								<div data-testid="comments" className="h-full overflow-hidden">
+								<div
+									data-testid="right-bottom-content"
+									className="h-full overflow-hidden"
+								>
 									<RightSidebarBottom
 										rootPath={rootPath}
 										theme={settings.theme}
@@ -191,8 +191,6 @@ function WorktreeContent({
 										onToggleShowResolved={s.toggleShowResolvedThreads}
 										onToggleCollapse={handleToggleRightBottom}
 										collapsed={s.rightBottomCollapsed}
-										initialActiveTab={s.rightBottomActiveTab as RightBottomTab}
-										onActiveTabChange={s.setRightBottomActiveTab}
 									/>
 								</div>
 							</Panel>

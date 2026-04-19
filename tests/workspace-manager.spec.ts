@@ -54,8 +54,8 @@ test.describe("Workspace Manager", () => {
 		// feat/wip（worktree_path あり）をクリック
 		await page.getByTestId("worktree-item-feat/wip").click();
 
-		// WorktreeView 固有の comments パネルが表示される
-		await expect(page.getByTestId("comments")).toBeVisible({
+		// WorktreeView 固有の右下パネルが表示される
+		await expect(page.getByTestId("right-bottom-content")).toBeVisible({
 			timeout: 5000,
 		});
 	});
