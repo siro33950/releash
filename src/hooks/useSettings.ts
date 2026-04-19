@@ -23,6 +23,10 @@ function loadSettings(): AppSettings {
 		const stored = localStorage.getItem(STORAGE_KEY);
 		if (stored) {
 			const parsed = JSON.parse(stored) as Partial<AppSettings>;
+			// Migration: "staged" was removed from DiffBase
+			if ((parsed as Record<string, unknown>).defaultDiffBase === "staged") {
+				parsed.defaultDiffBase = "head";
+			}
 			return { ...DEFAULT_SETTINGS, ...parsed };
 		}
 	} catch {

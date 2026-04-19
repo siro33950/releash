@@ -143,6 +143,13 @@ pub async fn get_git_status(
     blocking(move || super::status::get_git_status(repo_path)).await
 }
 
+#[tauri::command]
+pub async fn get_status_diff_stats(
+    repo_path: String,
+) -> Result<Vec<super::types::StatusFileStat>, GitError> {
+    blocking(move || super::status::get_status_diff_stats(repo_path)).await
+}
+
 // ── log ──
 
 #[tauri::command]
@@ -200,6 +207,63 @@ pub async fn get_file_at_branch_base(file_path: String) -> Result<String, GitErr
 #[tauri::command]
 pub async fn get_binary_file_at_branch_base(file_path: String) -> Result<String, GitError> {
     blocking(move || super::diff::get_binary_file_at_branch_base(file_path)).await
+}
+
+#[tauri::command]
+pub async fn get_binary_file_at_ref(
+    file_path: String,
+    git_ref: String,
+) -> Result<String, GitError> {
+    blocking(move || super::diff::get_binary_file_at_ref(file_path, git_ref)).await
+}
+
+// ── diff tree ──
+
+#[tauri::command]
+pub async fn build_diff_file_tree(
+    entries: Vec<super::diff_tree::DiffFileEntry>,
+) -> Result<Vec<super::diff_tree::DiffTreeNode>, GitError> {
+    blocking(move || Ok(super::diff_tree::build_tree(entries))).await
+}
+
+// ── hunk / patch ──
+
+#[tauri::command]
+pub async fn compute_diff_hunks(
+    original: String,
+    modified: String,
+    file_path: Option<String>,
+) -> Result<super::types::DiffHunksResult, GitError> {
+    blocking(move || {
+        Ok(super::hunk::compute_diff_hunks(
+            &original,
+            &modified,
+            file_path.as_deref(),
+        ))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn generate_group_patch(
+    file_path: String,
+    hunk: super::types::Hunk,
+    group: super::types::ChangeGroup,
+) -> Result<String, GitError> {
+    blocking(move || Ok(super::hunk::generate_group_patch(&file_path, &hunk, &group))).await
+}
+
+#[tauri::command]
+pub async fn get_language_from_path(file_path: String) -> Result<String, GitError> {
+    blocking(move || Ok(super::lang::get_language_from_path(&file_path))).await
+}
+
+#[tauri::command]
+pub async fn get_relative_path(
+    root_path: String,
+    file_path: String,
+) -> Result<Option<String>, GitError> {
+    blocking(move || Ok(super::hunk::get_relative_path(&root_path, &file_path))).await
 }
 
 // ── branch diff ──

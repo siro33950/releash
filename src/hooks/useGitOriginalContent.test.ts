@@ -40,20 +40,24 @@ describe("useGitOriginalContent", () => {
 		});
 	});
 
-	it("should return content from get_staged_content when diffBase is staged", async () => {
+	it("should return content from get_file_at_ref when diffBase is head", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_repo_git_dir") return Promise.resolve("/repo/.git");
-			if (cmd === "get_staged_content")
-				return Promise.resolve("staged content");
+			if (cmd === "get_file_at_ref") return Promise.resolve("head content");
 			return Promise.resolve("");
 		});
 
 		const { result } = renderHook(() =>
-			useGitOriginalContent("/repo/file.ts", "staged", "fallback"),
+			useGitOriginalContent("/repo/file.ts", "head", "fallback"),
 		);
 
 		await waitFor(() => {
-			expect(result.current).toBe("staged content");
+			expect(result.current).toBe("head content");
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("get_file_at_ref", {
+			filePath: "/repo/file.ts",
+			gitRef: "HEAD",
 		});
 	});
 

@@ -1,4 +1,6 @@
+import type { ChangeGroup } from "@/lib/computeHunks";
 import type { DiffMode } from "@/types/settings";
+import { CodeDiffViewer } from "./CodeDiffViewer";
 import { ImageDiffViewer } from "./ImageDiffViewer";
 import { MarkdownDiffViewer } from "./MarkdownDiffViewer";
 
@@ -14,6 +16,10 @@ export interface DiffViewerSectionProps {
 	originalContent: string;
 	modifiedContent: string;
 	diffMode: DiffMode;
+	filePath?: string;
+	changeGroups?: ChangeGroup[];
+	onStageGroup?: (groupIndex: number) => void;
+	groupActionLabel?: string;
 }
 
 export function DiffViewerSection(props: DiffViewerSectionProps) {
@@ -38,8 +44,15 @@ export function DiffViewerSection(props: DiffViewerSectionProps) {
 	}
 
 	return (
-		<div className="flex items-center justify-center h-full text-muted-foreground text-xs">
-			Diff viewer not available
-		</div>
+		<CodeDiffViewer
+			key={props.filePath ?? "__no-file__"}
+			originalContent={props.originalContent}
+			modifiedContent={props.modifiedContent}
+			diffMode={props.diffMode}
+			filePath={props.filePath}
+			changeGroups={props.changeGroups}
+			onStageGroup={props.onStageGroup}
+			groupActionLabel={props.groupActionLabel}
+		/>
 	);
 }

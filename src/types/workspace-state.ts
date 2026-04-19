@@ -30,6 +30,7 @@ export interface WorkspaceState {
 		rightCollapsed: boolean;
 		rightBottomCollapsed: boolean;
 		rightBottomActiveTab?: RightBottomActiveTab;
+		reviewCollapsed?: boolean;
 	};
 }
 
@@ -39,6 +40,7 @@ export interface InternalWorktreeState {
 	activeView: string;
 	rightBottomCollapsed: boolean;
 	rightBottomActiveTab: string;
+	reviewCollapsed: boolean;
 }
 
 export function buildWorkspaceState(
@@ -62,6 +64,7 @@ export function buildWorkspaceState(
 			rightBottomActiveTab: normalizeRightBottomActiveTab(
 				internal.rightBottomActiveTab,
 			),
+			reviewCollapsed: internal.reviewCollapsed,
 		},
 	};
 }

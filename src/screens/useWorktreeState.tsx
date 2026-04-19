@@ -52,6 +52,10 @@ export function useWorktreeState({
 		),
 	);
 
+	const [reviewCollapsed, setReviewCollapsed] = useState(
+		initialWorkspaceState?.layout.reviewCollapsed ?? false,
+	);
+
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
 	const {
@@ -134,12 +138,14 @@ export function useWorktreeState({
 			activeView: "agent",
 			rightBottomCollapsed,
 			rightBottomActiveTab,
+			reviewCollapsed,
 		});
 	}, [
 		internalStateMapRef,
 		rootPath,
 		rightBottomCollapsed,
 		rightBottomActiveTab,
+		reviewCollapsed,
 	]);
 
 	return {
@@ -171,5 +177,7 @@ export function useWorktreeState({
 		setRightBottomCollapsed,
 		rightBottomActiveTab,
 		setRightBottomActiveTab,
+		reviewCollapsed,
+		setReviewCollapsed,
 	};
 }

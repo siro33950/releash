@@ -34,6 +34,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			rightBottomActiveTab: "terminal",
+			reviewCollapsed: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -51,6 +52,7 @@ describe("buildWorkspaceState", () => {
 				rightCollapsed: false,
 				rightBottomCollapsed: false,
 				rightBottomActiveTab: "terminal",
+				reviewCollapsed: false,
 			},
 		});
 	});
@@ -62,6 +64,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			rightBottomActiveTab: "terminal",
+			reviewCollapsed: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -75,6 +78,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			rightBottomActiveTab: "terminal",
+			reviewCollapsed: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", false, true);
@@ -88,6 +92,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			rightBottomActiveTab: "terminal",
+			reviewCollapsed: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, false);
@@ -101,6 +106,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: true,
 			rightBottomActiveTab: "terminal",
+			reviewCollapsed: false,
 		};
 
 		const result = buildWorkspaceState(internal, "agent", true, true);
@@ -115,6 +121,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			rightBottomActiveTab: "comments",
+			reviewCollapsed: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -128,6 +135,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			rightBottomActiveTab: "review",
+			reviewCollapsed: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -141,6 +149,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			rightBottomActiveTab: "unknown-tab",
+			reviewCollapsed: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);

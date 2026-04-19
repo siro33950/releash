@@ -21,7 +21,9 @@ describe("useImageDiff", () => {
 	});
 
 	it("returns null URLs when filePath is null", () => {
-		const { result } = renderHook(() => useImageDiff(null, "branch-base"));
+		const { result } = renderHook(() =>
+			useImageDiff(null, "branch-base", "changes"),
+		);
 		expect(result.current.originalUrl).toBeNull();
 		expect(result.current.modifiedUrl).toBeNull();
 		expect(result.current.loading).toBe(false);
@@ -33,7 +35,7 @@ describe("useImageDiff", () => {
 		mockInvoke.mockResolvedValue("iVBORw0KGgo=");
 
 		const { result } = renderHook(() =>
-			useImageDiff("/repo/image.png", "branch-base"),
+			useImageDiff("/repo/image.png", "branch-base", "changes"),
 		);
 
 		await waitFor(() => {
@@ -51,19 +53,49 @@ describe("useImageDiff", () => {
 		);
 	});
 
-	it("uses get_binary_staged_content when diffBase is staged", async () => {
+	it("uses Staged→Working Tree when section is changes (HEAD mode)", async () => {
 		const pngBytes = new Uint8Array([1, 2, 3]);
 		mockReadFile.mockResolvedValue(pngBytes);
 		mockInvoke.mockResolvedValue("AQID");
 
 		const { result } = renderHook(() =>
-			useImageDiff("/repo/image.png", "staged"),
+			useImageDiff("/repo/image.png", "head", "changes"),
 		);
 
 		await waitFor(() => {
 			expect(result.current.loading).toBe(false);
 		});
 
+		// original = get_binary_staged_content
+		expect(mockInvoke).toHaveBeenCalledWith("get_binary_staged_content", {
+			filePath: "/repo/image.png",
+		});
+		// modified = readFile
+		expect(mockReadFile).toHaveBeenCalledWith("/repo/image.png");
+	});
+
+	it("uses HEAD→Staged when section is staged", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_binary_file_at_ref") return Promise.resolve("HEAD64");
+			if (cmd === "get_binary_staged_content")
+				return Promise.resolve("STAGED64");
+			return Promise.resolve("");
+		});
+
+		const { result } = renderHook(() =>
+			useImageDiff("/repo/image.png", "head", "staged"),
+		);
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+
+		// original = HEAD
+		expect(mockInvoke).toHaveBeenCalledWith("get_binary_file_at_ref", {
+			filePath: "/repo/image.png",
+			gitRef: "HEAD",
+		});
+		// modified = staged
 		expect(mockInvoke).toHaveBeenCalledWith("get_binary_staged_content", {
 			filePath: "/repo/image.png",
 		});
@@ -75,7 +107,7 @@ describe("useImageDiff", () => {
 		mockInvoke.mockRejectedValue(new Error("not found"));
 
 		const { result } = renderHook(() =>
-			useImageDiff("/repo/new-image.png", "branch-base"),
+			useImageDiff("/repo/new-image.png", "branch-base", "changes"),
 		);
 
 		await waitFor(() => {
@@ -91,7 +123,7 @@ describe("useImageDiff", () => {
 		mockInvoke.mockResolvedValue("AQID");
 
 		const { result } = renderHook(() =>
-			useImageDiff("/repo/deleted.png", "branch-base"),
+			useImageDiff("/repo/deleted.png", "branch-base", "changes"),
 		);
 
 		await waitFor(() => {

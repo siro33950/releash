@@ -51,6 +51,7 @@ pub fn get_branch_diff_summary(
     let mut opts = git2::DiffOptions::new();
     opts.include_untracked(true);
     opts.recurse_untracked_dirs(true);
+    opts.show_untracked_content(true);
 
     let diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
     let mut find_opts = git2::DiffFindOptions::new();

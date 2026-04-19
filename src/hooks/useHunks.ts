@@ -1,28 +1,52 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-	type ChangeGroup,
-	computeChangeGroups,
-	computeHunks,
-} from "@/lib/computeHunks";
+import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
+
+interface DiffHunksResult {
+	hunks: Hunk[];
+	changeGroups: ChangeGroup[];
+}
 
 export function useHunks(
 	original: string,
 	modified: string,
 	filePath?: string,
 ) {
-	const hunks = useMemo(
-		() => computeHunks(original, modified, filePath),
-		[original, modified, filePath],
-	);
-
-	const changeGroups = useMemo(() => computeChangeGroups(hunks), [hunks]);
-
+	const [hunks, setHunks] = useState<Hunk[]>([]);
+	const [changeGroups, setChangeGroups] = useState<ChangeGroup[]>([]);
 	const [currentIndex, setCurrentIndex] = useState(0);
+	const requestIdRef = useRef(0);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: changeGroups変更時にインデックスをリセット
 	useEffect(() => {
+		let active = true;
+		const requestId = ++requestIdRef.current;
+
+		setHunks([]);
+		setChangeGroups([]);
 		setCurrentIndex(0);
-	}, [changeGroups]);
+
+		invoke<DiffHunksResult>("compute_diff_hunks", {
+			original,
+			modified,
+			filePath: filePath ?? null,
+		})
+			.then((result) => {
+				if (!active || requestId !== requestIdRef.current) return;
+				setHunks(result.hunks);
+				setChangeGroups(result.changeGroups);
+				setCurrentIndex(0);
+			})
+			.catch(() => {
+				if (!active || requestId !== requestIdRef.current) return;
+				setHunks([]);
+				setChangeGroups([]);
+				setCurrentIndex(0);
+			});
+
+		return () => {
+			active = false;
+		};
+	}, [original, modified, filePath]);
 
 	const safeIndex =
 		changeGroups.length === 0

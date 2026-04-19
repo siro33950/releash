@@ -87,9 +87,10 @@ export function useGitOriginalContent(
 		const fetchContent = async () => {
 			try {
 				let content: string;
-				if (diffBase === "staged") {
-					content = await invoke<string>("get_staged_content", {
+				if (diffBase === "head") {
+					content = await invoke<string>("get_file_at_ref", {
 						filePath,
+						gitRef: "HEAD",
 					});
 				} else {
 					content = await invoke<string>("get_file_at_branch_base", {

@@ -238,7 +238,7 @@ function EditorSection({
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="staged">Staged</SelectItem>
+						<SelectItem value="head">HEAD</SelectItem>
 						<SelectItem value="branch-base">Branch Base</SelectItem>
 					</SelectContent>
 				</Select>
