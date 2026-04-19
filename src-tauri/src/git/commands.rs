@@ -226,6 +226,14 @@ pub async fn build_diff_file_tree(
     blocking(move || Ok(super::diff_tree::build_tree(entries))).await
 }
 
+#[tauri::command]
+pub async fn get_file_navigation(
+    tree: Vec<super::diff_tree::DiffTreeNode>,
+    current_file: String,
+) -> Result<super::diff_tree::FileNavigationResult, GitError> {
+    blocking(move || Ok(super::diff_tree::get_file_navigation(&tree, &current_file))).await
+}
+
 // ── hunk / patch ──
 
 #[tauri::command]

@@ -17,11 +17,7 @@ if (typeof Element.prototype.releasePointerCapture !== "function") {
 
 const defaultProps: DiffToolbarProps = {
 	diffMode: "inline",
-	currentIndex: 0,
-	total: 3,
 	onDiffModeChange: vi.fn(),
-	onGoToPrev: vi.fn(),
-	onGoToNext: vi.fn(),
 };
 
 function renderToolbar(props: Partial<DiffToolbarProps> = {}) {
@@ -40,36 +36,6 @@ describe("DiffToolbar", () => {
 			expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
 			expect(screen.queryByText("Staged")).not.toBeInTheDocument();
 			expect(screen.queryByText("Branch Base")).not.toBeInTheDocument();
-		});
-	});
-
-	describe("hunk navigation", () => {
-		it("should render Previous and Next hunk buttons", () => {
-			renderToolbar();
-
-			expect(
-				screen.getByRole("button", { name: "Previous hunk" }),
-			).toBeInTheDocument();
-			expect(
-				screen.getByRole("button", { name: "Next hunk" }),
-			).toBeInTheDocument();
-		});
-
-		it("should show current/total indicator", () => {
-			renderToolbar({ currentIndex: 1, total: 5 });
-
-			expect(screen.getByText("2/5")).toBeInTheDocument();
-		});
-
-		it("should hide navigation when total is 0", () => {
-			renderToolbar({ total: 0 });
-
-			expect(
-				screen.queryByRole("button", { name: "Previous hunk" }),
-			).not.toBeInTheDocument();
-			expect(
-				screen.queryByRole("button", { name: "Next hunk" }),
-			).not.toBeInTheDocument();
 		});
 	});
 
@@ -106,6 +72,96 @@ describe("DiffToolbar", () => {
 
 			expect(screen.queryByText("Stage All")).not.toBeInTheDocument();
 			expect(screen.queryByText("Unstage All")).not.toBeInTheDocument();
+		});
+	});
+
+	describe("file navigation", () => {
+		it("should render Previous/Next file buttons when fileNavigation is provided", () => {
+			renderToolbar({
+				fileNavigation: {
+					current_index: 1,
+					total: 3,
+					prev_file: "a.ts",
+					next_file: "c.ts",
+				},
+				onGoToPrevFile: vi.fn(),
+				onGoToNextFile: vi.fn(),
+			});
+
+			expect(
+				screen.getByRole("button", { name: "Previous file" }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: "Next file" }),
+			).toBeInTheDocument();
+			expect(screen.getByText("2/3")).toBeInTheDocument();
+		});
+
+		it("should disable Previous file when prev_file is null", () => {
+			renderToolbar({
+				fileNavigation: {
+					current_index: 0,
+					total: 3,
+					prev_file: null,
+					next_file: "b.ts",
+				},
+				onGoToPrevFile: vi.fn(),
+				onGoToNextFile: vi.fn(),
+			});
+
+			expect(
+				screen.getByRole("button", { name: "Previous file" }),
+			).toBeDisabled();
+			expect(
+				screen.getByRole("button", { name: "Next file" }),
+			).not.toBeDisabled();
+		});
+
+		it("should disable Next file when next_file is null", () => {
+			renderToolbar({
+				fileNavigation: {
+					current_index: 2,
+					total: 3,
+					prev_file: "b.ts",
+					next_file: null,
+				},
+				onGoToPrevFile: vi.fn(),
+				onGoToNextFile: vi.fn(),
+			});
+
+			expect(
+				screen.getByRole("button", { name: "Previous file" }),
+			).not.toBeDisabled();
+			expect(screen.getByRole("button", { name: "Next file" })).toBeDisabled();
+		});
+
+		it("should disable both buttons when total is 1", () => {
+			renderToolbar({
+				fileNavigation: {
+					current_index: 0,
+					total: 1,
+					prev_file: null,
+					next_file: null,
+				},
+				onGoToPrevFile: vi.fn(),
+				onGoToNextFile: vi.fn(),
+			});
+
+			expect(
+				screen.getByRole("button", { name: "Previous file" }),
+			).toBeDisabled();
+			expect(screen.getByRole("button", { name: "Next file" })).toBeDisabled();
+		});
+
+		it("should not render file navigation when fileNavigation is not provided", () => {
+			renderToolbar();
+
+			expect(
+				screen.queryByRole("button", { name: "Previous file" }),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: "Next file" }),
+			).not.toBeInTheDocument();
 		});
 	});
 });

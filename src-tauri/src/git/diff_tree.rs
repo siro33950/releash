@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffFileEntry {
@@ -9,7 +9,7 @@ pub struct DiffFileEntry {
     pub deletions: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffTreeNode {
     pub id: String,
     pub name: String,
@@ -128,6 +128,67 @@ fn collapse_single_child_folder(
             deletions: None,
             children,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileNavigationResult {
+    pub current_index: usize,
+    pub total: usize,
+    pub prev_file: Option<String>,
+    pub next_file: Option<String>,
+}
+
+/// Flatten tree nodes into an ordered list of unique file paths (depth-first).
+/// Duplicates are skipped (keeps first occurrence), which is important when
+/// the input contains multiple trees (e.g. staged + unstaged combined).
+fn flatten_file_paths(nodes: &[DiffTreeNode]) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    collect_file_paths(nodes, &mut paths, &mut seen);
+    paths
+}
+
+fn collect_file_paths(nodes: &[DiffTreeNode], paths: &mut Vec<String>, seen: &mut HashSet<String>) {
+    for node in nodes {
+        if node.node_type == "file" && seen.insert(node.path.clone()) {
+            paths.push(node.path.clone());
+        }
+        if !node.children.is_empty() {
+            collect_file_paths(&node.children, paths, seen);
+        }
+    }
+}
+
+/// Compute file navigation info (current index, total, prev/next file)
+/// from a hierarchical tree and the currently selected file path.
+pub fn get_file_navigation(tree: &[DiffTreeNode], current_file: &str) -> FileNavigationResult {
+    let files = flatten_file_paths(tree);
+    let total = files.len();
+
+    let current_pos = files.iter().position(|p| p == current_file);
+
+    match current_pos {
+        Some(idx) => FileNavigationResult {
+            current_index: idx,
+            total,
+            prev_file: if idx > 0 {
+                Some(files[idx - 1].clone())
+            } else {
+                None
+            },
+            next_file: if idx + 1 < total {
+                Some(files[idx + 1].clone())
+            } else {
+                None
+            },
+        },
+        None => FileNavigationResult {
+            current_index: 0,
+            total,
+            prev_file: None,
+            next_file: None,
+        },
     }
 }
 
@@ -286,6 +347,110 @@ mod tests {
         // Children have stats
         assert_eq!(tree[0].children[0].additions, Some(5));
         assert_eq!(tree[0].children[1].additions, Some(20));
+    }
+
+    // ── get_file_navigation tests ──
+
+    #[test]
+    fn nav_empty_tree() {
+        let tree = build_tree(vec![]);
+        let result = get_file_navigation(&tree, "anything.rs");
+        assert_eq!(result.total, 0);
+        assert_eq!(result.current_index, 0);
+        assert!(result.prev_file.is_none());
+        assert!(result.next_file.is_none());
+    }
+
+    #[test]
+    fn nav_single_file() {
+        let tree = build_tree(vec![entry("README.md", "modified")]);
+        let result = get_file_navigation(&tree, "README.md");
+        assert_eq!(result.total, 1);
+        assert_eq!(result.current_index, 0);
+        assert!(result.prev_file.is_none());
+        assert!(result.next_file.is_none());
+    }
+
+    #[test]
+    fn nav_first_file_has_no_prev() {
+        let tree = build_tree(vec![
+            entry("a.rs", "modified"),
+            entry("b.rs", "modified"),
+            entry("c.rs", "modified"),
+        ]);
+        let result = get_file_navigation(&tree, "a.rs");
+        assert_eq!(result.current_index, 0);
+        assert_eq!(result.total, 3);
+        assert!(result.prev_file.is_none());
+        assert_eq!(result.next_file.as_deref(), Some("b.rs"));
+    }
+
+    #[test]
+    fn nav_last_file_has_no_next() {
+        let tree = build_tree(vec![
+            entry("a.rs", "modified"),
+            entry("b.rs", "modified"),
+            entry("c.rs", "modified"),
+        ]);
+        let result = get_file_navigation(&tree, "c.rs");
+        assert_eq!(result.current_index, 2);
+        assert_eq!(result.total, 3);
+        assert_eq!(result.prev_file.as_deref(), Some("b.rs"));
+        assert!(result.next_file.is_none());
+    }
+
+    #[test]
+    fn nav_middle_file() {
+        let tree = build_tree(vec![
+            entry("a.rs", "modified"),
+            entry("b.rs", "new"),
+            entry("c.rs", "deleted"),
+        ]);
+        let result = get_file_navigation(&tree, "b.rs");
+        assert_eq!(result.current_index, 1);
+        assert_eq!(result.total, 3);
+        assert_eq!(result.prev_file.as_deref(), Some("a.rs"));
+        assert_eq!(result.next_file.as_deref(), Some("c.rs"));
+    }
+
+    #[test]
+    fn nav_nested_folders() {
+        let tree = build_tree(vec![
+            entry("src/a.ts", "modified"),
+            entry("src/b.ts", "new"),
+            entry("lib/c.ts", "modified"),
+        ]);
+        // BTreeMap sorts: lib < src, so order is lib/c.ts, src/a.ts, src/b.ts
+        let result = get_file_navigation(&tree, "src/a.ts");
+        assert_eq!(result.total, 3);
+        assert_eq!(result.current_index, 1);
+        assert_eq!(result.prev_file.as_deref(), Some("lib/c.ts"));
+        assert_eq!(result.next_file.as_deref(), Some("src/b.ts"));
+    }
+
+    #[test]
+    fn nav_current_file_not_found() {
+        let tree = build_tree(vec![entry("a.rs", "modified"), entry("b.rs", "new")]);
+        let result = get_file_navigation(&tree, "nonexistent.rs");
+        assert_eq!(result.total, 2);
+        assert_eq!(result.current_index, 0);
+        assert!(result.prev_file.is_none());
+        assert!(result.next_file.is_none());
+    }
+
+    #[test]
+    fn nav_combined_trees_deduplicates() {
+        // When combining staged + changes trees, the same file may appear in both.
+        // Navigation should deduplicate and count each file only once.
+        let staged = build_tree(vec![entry("a.rs", "modified"), entry("b.rs", "modified")]);
+        let changes = build_tree(vec![entry("b.rs", "modified"), entry("c.rs", "new")]);
+        let combined: Vec<_> = staged.into_iter().chain(changes).collect();
+
+        let result = get_file_navigation(&combined, "b.rs");
+        assert_eq!(result.total, 3); // a.rs, b.rs, c.rs (not 4)
+        assert_eq!(result.current_index, 1);
+        assert_eq!(result.prev_file.as_deref(), Some("a.rs"));
+        assert_eq!(result.next_file.as_deref(), Some("c.rs"));
     }
 
     #[test]
