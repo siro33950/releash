@@ -288,19 +288,23 @@ mod tests {
     #[test]
     fn file_directory_replacement_preserves_both() {
         // Scenario: "foo" is deleted (file) and "foo/bar.rs" is added (nested in dir)
-        let entries = vec![
-            entry("foo", "deleted"),
-            entry("foo/bar.rs", "new"),
-        ];
+        let entries = vec![entry("foo", "deleted"), entry("foo/bar.rs", "new")];
         let tree = build_tree(entries);
 
-        let has_deleted_file = tree.iter().any(|n| n.path == "foo" && n.node_type == "file");
-        assert!(has_deleted_file, "deleted file entry 'foo' should be present");
+        let has_deleted_file = tree
+            .iter()
+            .any(|n| n.path == "foo" && n.node_type == "file");
+        assert!(
+            has_deleted_file,
+            "deleted file entry 'foo' should be present"
+        );
 
-        let has_nested = tree.iter().any(|n| {
-            n.node_type == "folder"
-                && n.children.iter().any(|c| c.path == "foo/bar.rs")
-        });
-        assert!(has_nested, "nested added entry 'foo/bar.rs' should be present");
+        let has_nested = tree
+            .iter()
+            .any(|n| n.node_type == "folder" && n.children.iter().any(|c| c.path == "foo/bar.rs"));
+        assert!(
+            has_nested,
+            "nested added entry 'foo/bar.rs' should be present"
+        );
     }
 }
