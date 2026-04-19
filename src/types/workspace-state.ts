@@ -15,6 +15,7 @@ export interface WorkspaceState {
 		rightCollapsed: boolean;
 		rightBottomCollapsed: boolean;
 		reviewCollapsed?: boolean;
+		diffOnlyMode?: boolean;
 	};
 }
 
@@ -24,6 +25,7 @@ export interface InternalWorktreeState {
 	activeView: string;
 	rightBottomCollapsed: boolean;
 	reviewCollapsed: boolean;
+	diffOnlyMode: boolean;
 }
 
 export function buildWorkspaceState(
@@ -45,6 +47,7 @@ export function buildWorkspaceState(
 			rightCollapsed: !rightVisible,
 			rightBottomCollapsed: internal.rightBottomCollapsed,
 			reviewCollapsed: internal.reviewCollapsed,
+			diffOnlyMode: internal.diffOnlyMode,
 		},
 	};
 }

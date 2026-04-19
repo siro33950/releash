@@ -112,7 +112,12 @@ describe("ReviewPanel", () => {
 	it("should show 'No changes' when totalFileCount is 0", () => {
 		render(
 			<TooltipProvider>
-				<ReviewPanel rootPath="/repo" baseBranch="main" />
+				<ReviewPanel
+					rootPath="/repo"
+					baseBranch="main"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+				/>
 			</TooltipProvider>,
 		);
 
@@ -143,7 +148,12 @@ describe("ReviewPanel", () => {
 
 		render(
 			<TooltipProvider>
-				<ReviewPanel rootPath="/repo" baseBranch="main" />
+				<ReviewPanel
+					rootPath="/repo"
+					baseBranch="main"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+				/>
 			</TooltipProvider>,
 		);
 
@@ -174,7 +184,12 @@ describe("ReviewPanel", () => {
 
 		render(
 			<TooltipProvider>
-				<ReviewPanel rootPath="/repo" baseBranch="main" />
+				<ReviewPanel
+					rootPath="/repo"
+					baseBranch="main"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+				/>
 			</TooltipProvider>,
 		);
 

@@ -160,6 +160,8 @@ function WorktreeContent({
 										baseBranch={baseBranch}
 										defaultDiffBase={settings.defaultDiffBase}
 										defaultDiffMode={settings.defaultDiffMode}
+										diffOnlyMode={s.diffOnlyMode}
+										onDiffOnlyModeChange={s.setDiffOnlyMode}
 									/>
 								</div>
 							</Panel>

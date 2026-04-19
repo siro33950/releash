@@ -1,4 +1,11 @@
-import { useDeferredValue, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import {
+	useCallback,
+	useDeferredValue,
+	useEffect,
+	useMemo,
+	useState,
+} from "react";
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
@@ -12,10 +19,17 @@ import {
 import { rehypeSourceLines } from "@/lib/rehypeSourceLines";
 import type { DiffMode } from "@/types/settings";
 
+interface VisibleBlock {
+	startLine: number;
+	endLine: number;
+	content: string;
+}
+
 export interface MarkdownDiffViewerProps {
 	originalContent: string;
 	modifiedContent: string;
 	diffMode?: DiffMode;
+	diffOnlyMode?: boolean;
 }
 
 const remarkPlugins = [remarkGfm];
@@ -160,13 +174,110 @@ function InlineView({
 	);
 }
 
+function DiffOnlyMarkdownView({
+	originalContent,
+	modifiedContent,
+}: {
+	originalContent: string;
+	modifiedContent: string;
+}) {
+	const [visibleBlocks, setVisibleBlocks] = useState<VisibleBlock[]>([]);
+	const [expandedGaps, setExpandedGaps] = useState<Set<number>>(new Set());
+	const rehypePlugins = useMemo(() => [rehypeHighlight], []);
+
+	useEffect(() => {
+		setExpandedGaps(new Set());
+		invoke<VisibleBlock[]>("compute_visible_markdown_blocks", {
+			original: originalContent,
+			modified: modifiedContent,
+			contextLines: 3,
+		})
+			.then(setVisibleBlocks)
+			.catch(() => setVisibleBlocks([]));
+	}, [originalContent, modifiedContent]);
+
+	const expandGap = useCallback((gapIndex: number) => {
+		setExpandedGaps((prev) => {
+			const next = new Set(prev);
+			next.add(gapIndex);
+			return next;
+		});
+	}, []);
+
+	const modLines = useMemo(
+		() => modifiedContent.split("\n"),
+		[modifiedContent],
+	);
+
+	if (visibleBlocks.length === 0) {
+		return (
+			<div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+				No changes
+			</div>
+		);
+	}
+
+	return (
+		<div className="markdown-preview h-full overflow-auto p-6 scrollbar-thin">
+			{visibleBlocks.map((block, i) => {
+				const prevEnd = visibleBlocks[i - 1]?.endLine ?? 0;
+				const gapLines = block.startLine - prevEnd - 1;
+
+				return (
+					// biome-ignore lint/suspicious/noArrayIndexKey: blocks are positional, order is fixed
+					<div key={i}>
+						{i > 0 &&
+							gapLines > 0 &&
+							(expandedGaps.has(i) ? (
+								<div className="border-y border-border my-4 py-2 opacity-60">
+									<Markdown
+										remarkPlugins={remarkPlugins}
+										rehypePlugins={rehypePlugins}
+									>
+										{modLines.slice(prevEnd, block.startLine - 1).join("\n")}
+									</Markdown>
+								</div>
+							) : (
+								<button
+									type="button"
+									onClick={() => expandGap(i)}
+									className="flex w-full items-center justify-center text-xs text-muted-foreground py-2 border-y border-border my-4 cursor-pointer hover:bg-muted/50"
+								>
+									··· {gapLines} lines hidden ···
+								</button>
+							))}
+						<Markdown
+							remarkPlugins={remarkPlugins}
+							rehypePlugins={rehypePlugins}
+						>
+							{block.content}
+						</Markdown>
+					</div>
+				);
+			})}
+		</div>
+	);
+}
+
 export function MarkdownDiffViewer({
 	originalContent,
 	modifiedContent,
 	diffMode = "gutter",
+	diffOnlyMode,
 }: MarkdownDiffViewerProps) {
 	const deferredOriginal = useDeferredValue(originalContent);
 	const deferredModified = useDeferredValue(modifiedContent);
+
+	if (diffOnlyMode) {
+		return (
+			<div data-testid="markdown-diff-viewer" className="h-full">
+				<DiffOnlyMarkdownView
+					originalContent={deferredOriginal}
+					modifiedContent={deferredModified}
+				/>
+			</div>
+		);
+	}
 
 	return (
 		<div data-testid="markdown-diff-viewer" className="h-full">

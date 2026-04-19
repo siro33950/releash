@@ -43,6 +43,8 @@ interface ReviewPanelProps {
 	baseBranch: string | null;
 	defaultDiffBase?: DiffBase;
 	defaultDiffMode?: DiffMode;
+	diffOnlyMode: boolean;
+	onDiffOnlyModeChange: (enabled: boolean) => void;
 }
 
 function DiffBaseToggle({
@@ -107,6 +109,8 @@ export function ReviewPanel({
 	baseBranch,
 	defaultDiffBase,
 	defaultDiffMode,
+	diffOnlyMode,
+	onDiffOnlyModeChange,
 }: ReviewPanelProps) {
 	const {
 		diffBase,
@@ -493,6 +497,7 @@ export function ReviewPanel({
 											originalContent={originalContent}
 											modifiedContent={modifiedContent}
 											diffMode={diffMode}
+											diffOnlyMode={diffOnlyMode}
 											filePath={selectedFile}
 											changeGroups={isBranchBase ? undefined : changeGroups}
 											onStageGroup={
@@ -505,7 +510,9 @@ export function ReviewPanel({
 									</div>
 									<DiffToolbar
 										diffMode={diffMode}
+										diffOnlyMode={diffOnlyMode}
 										onDiffModeChange={setDiffMode}
+										onDiffOnlyModeChange={onDiffOnlyModeChange}
 										fileNavigation={fileNavigation}
 										onGoToPrevFile={handleGoToPrevFile}
 										onGoToNextFile={handleGoToNextFile}

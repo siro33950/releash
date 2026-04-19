@@ -267,6 +267,22 @@ function EditorSection({
 					</SelectContent>
 				</Select>
 			</div>
+
+			<div className="flex items-center gap-2">
+				<Checkbox
+					id="diff-only-mode"
+					checked={draft.defaultDiffOnlyMode}
+					onCheckedChange={(checked) =>
+						updateDraft((d) => ({
+							...d,
+							defaultDiffOnlyMode: checked === true,
+						}))
+					}
+				/>
+				<label htmlFor="diff-only-mode" className={labelClass}>
+					Show diff only by default
+				</label>
+			</div>
 		</div>
 	);
 }

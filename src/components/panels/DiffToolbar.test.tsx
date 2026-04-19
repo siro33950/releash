@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { DiffToolbarProps } from "./DiffToolbar";
@@ -17,7 +17,9 @@ if (typeof Element.prototype.releasePointerCapture !== "function") {
 
 const defaultProps: DiffToolbarProps = {
 	diffMode: "inline",
+	diffOnlyMode: false,
 	onDiffModeChange: vi.fn(),
+	onDiffOnlyModeChange: vi.fn(),
 };
 
 function renderToolbar(props: Partial<DiffToolbarProps> = {}) {
@@ -63,6 +65,41 @@ describe("DiffToolbar", () => {
 				"aria-pressed",
 				"false",
 			);
+		});
+	});
+
+	describe("diff only mode toggle", () => {
+		it("should render Diff only button", () => {
+			renderToolbar();
+
+			expect(
+				screen.getByRole("button", { name: "Diff only" }),
+			).toBeInTheDocument();
+		});
+
+		it("should mark diff only button as pressed when enabled", () => {
+			renderToolbar({ diffOnlyMode: true });
+
+			expect(screen.getByRole("button", { name: "Diff only" })).toHaveAttribute(
+				"aria-pressed",
+				"true",
+			);
+		});
+
+		it("should call onDiffOnlyModeChange(true) when clicking Diff only while disabled", () => {
+			const onChange = vi.fn();
+			renderToolbar({ diffOnlyMode: false, onDiffOnlyModeChange: onChange });
+
+			fireEvent.click(screen.getByRole("button", { name: "Diff only" }));
+			expect(onChange).toHaveBeenCalledWith(true);
+		});
+
+		it("should call onDiffOnlyModeChange(false) when clicking Diff only while enabled", () => {
+			const onChange = vi.fn();
+			renderToolbar({ diffOnlyMode: true, onDiffOnlyModeChange: onChange });
+
+			fireEvent.click(screen.getByRole("button", { name: "Diff only" }));
+			expect(onChange).toHaveBeenCalledWith(false);
 		});
 	});
 
