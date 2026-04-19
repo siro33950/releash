@@ -57,7 +57,6 @@ function makeInternalState(
 		activeEditorPath: "/repoA/src/main.rs",
 		activeView: "git",
 		rightBottomCollapsed: false,
-		rightBottomActiveTab: "terminal",
 		reviewCollapsed: false,
 		...overrides,
 	};
@@ -483,120 +482,5 @@ describe("useWorkspacePersistence", () => {
 		);
 
 		expect(mockLoadState).not.toHaveBeenCalled();
-	});
-
-	it("右下パネルのタブ選択が保存される", () => {
-		const setCenterTab = vi.fn();
-		const leftNavRef = makePanelRef();
-		const rightPanelRef = makePanelRef();
-
-		const { result, rerender } = renderHook(
-			({ selectedRootPath }) =>
-				useWorkspacePersistence({
-					selectedRootPath,
-					centerTab: "editor",
-					leftNavVisible: true,
-					rightVisible: true,
-					setCenterTab,
-					leftNavRef,
-					rightPanelRef,
-				}),
-			{ initialProps: { selectedRootPath: "/repoA" as string | null } },
-		);
-
-		act(() => {
-			result.current.internalStateMapRef.current.set(
-				"/repoA",
-				makeInternalState({ rightBottomActiveTab: "comments" }),
-			);
-		});
-
-		rerender({ selectedRootPath: "/repoB" });
-
-		const savedState = mockUpdateState.mock.calls[0][1] as WorkspaceState;
-		expect(savedState.layout.rightBottomActiveTab).toBe("comments");
-	});
-
-	it("右下パネルのタブ選択がWorktreeごとに独立している", () => {
-		const stateA = makeState({
-			layout: {
-				centerTab: "editor",
-				activeView: "git",
-				leftNavCollapsed: false,
-				rightCollapsed: false,
-				rightBottomCollapsed: false,
-				rightBottomActiveTab: "comments",
-			},
-		});
-		const stateB = makeState({
-			layout: {
-				centerTab: "editor",
-				activeView: "git",
-				leftNavCollapsed: false,
-				rightCollapsed: false,
-				rightBottomCollapsed: false,
-				rightBottomActiveTab: "terminal",
-			},
-		});
-
-		mockGetState.mockImplementation((path: string) => {
-			if (path === "/repoA") return stateA;
-			if (path === "/repoB") return stateB;
-			return undefined;
-		});
-
-		const setCenterTab = vi.fn();
-		const leftNavRef = makePanelRef();
-		const rightPanelRef = makePanelRef();
-
-		const { result, rerender } = renderHook(
-			({ selectedRootPath }) =>
-				useWorkspacePersistence({
-					selectedRootPath,
-					centerTab: "editor",
-					leftNavVisible: true,
-					rightVisible: true,
-					setCenterTab,
-					leftNavRef,
-					rightPanelRef,
-				}),
-			{ initialProps: { selectedRootPath: "/repoA" as string | null } },
-		);
-
-		// A → B に切り替え
-		act(() => {
-			result.current.internalStateMapRef.current.set(
-				"/repoA",
-				makeInternalState({ rightBottomActiveTab: "comments" }),
-			);
-		});
-		rerender({ selectedRootPath: "/repoB" });
-
-		const initialB = result.current.getInitialState("/repoB");
-		expect(initialB?.layout.rightBottomActiveTab).toBe("terminal");
-	});
-
-	it("保存された状態が存在しないWorktreeでは右下パネルがデフォルトタブで表示される", () => {
-		mockGetState.mockReturnValue(undefined);
-
-		const setCenterTab = vi.fn();
-		const leftNavRef = makePanelRef();
-		const rightPanelRef = makePanelRef();
-
-		const { result } = renderHook(() =>
-			useWorkspacePersistence({
-				selectedRootPath: "/newRepo",
-				centerTab: "editor",
-				leftNavVisible: true,
-				rightVisible: true,
-				setCenterTab,
-				leftNavRef,
-				rightPanelRef,
-			}),
-		);
-
-		const initialState = result.current.getInitialState("/newRepo");
-		// 保存状態がないのでundefined、useWorktreeStateでデフォルト"terminal"になる
-		expect(initialState).toBeUndefined();
 	});
 });

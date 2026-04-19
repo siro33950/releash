@@ -15,10 +15,9 @@ import {
 } from "@/screens/useWorktreeGitActions";
 import { useWorktreeMenuHandlers } from "@/screens/useWorktreeMenuHandlers";
 import type { AppSettings } from "@/types/settings";
-import {
-	type InternalWorktreeState,
-	normalizeRightBottomActiveTab,
-	type WorkspaceState,
+import type {
+	InternalWorktreeState,
+	WorkspaceState,
 } from "@/types/workspace-state";
 
 export type { InternalWorktreeState } from "@/types/workspace-state";
@@ -44,12 +43,6 @@ export function useWorktreeState({
 }: UseWorktreeStateParams) {
 	const [rightBottomCollapsed, setRightBottomCollapsed] = useState(
 		initialWorkspaceState?.layout.rightBottomCollapsed ?? false,
-	);
-
-	const [rightBottomActiveTab, setRightBottomActiveTab] = useState<string>(
-		normalizeRightBottomActiveTab(
-			initialWorkspaceState?.layout.rightBottomActiveTab,
-		),
 	);
 
 	const [reviewCollapsed, setReviewCollapsed] = useState(
@@ -137,16 +130,9 @@ export function useWorktreeState({
 			activeEditorPath: null,
 			activeView: "agent",
 			rightBottomCollapsed,
-			rightBottomActiveTab,
 			reviewCollapsed,
 		});
-	}, [
-		internalStateMapRef,
-		rootPath,
-		rightBottomCollapsed,
-		rightBottomActiveTab,
-		reviewCollapsed,
-	]);
+	}, [internalStateMapRef, rootPath, rightBottomCollapsed, reviewCollapsed]);
 
 	return {
 		ready,
@@ -175,8 +161,6 @@ export function useWorktreeState({
 		rootPath,
 		rightBottomCollapsed,
 		setRightBottomCollapsed,
-		rightBottomActiveTab,
-		setRightBottomActiveTab,
 		reviewCollapsed,
 		setReviewCollapsed,
 	};
