@@ -22,6 +22,7 @@ import {
 import { useBranchDiffFiles } from "@/hooks/useBranchDiffFiles";
 import { useDiffFileTree } from "@/hooks/useDiffFileTree";
 import { useFileDiffContent } from "@/hooks/useFileDiffContent";
+import { useFileNavigation } from "@/hooks/useFileNavigation";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitStatus } from "@/hooks/useGitStatus";
 import { useHunks } from "@/hooks/useHunks";
@@ -165,6 +166,45 @@ export function ReviewPanel({
 		}));
 	}, [selectedFile]);
 
+	// File navigation — combined list of all changed files (not scoped to section)
+	const navigationTree = useMemo(() => {
+		if (diffBase === "branch-base") {
+			return branchBaseTree;
+		}
+		return [...stagedTree, ...changesTree];
+	}, [diffBase, branchBaseTree, stagedTree, changesTree]);
+
+	const { fileNavigation, goToPrevFile, goToNextFile } = useFileNavigation(
+		navigationTree,
+		selectedFile,
+	);
+
+	const determineSectionForFile = useCallback(
+		(path: string): DiffSection => {
+			if (diffBase === "branch-base") return "changes";
+			const inStaged = stagedFiles.some((f) => f.path === path);
+			const inChanges = changedFiles.some((f) => f.path === path);
+			if (inStaged && !inChanges) return "staged";
+			if (!inStaged && inChanges) return "changes";
+			return selectedSection;
+		},
+		[diffBase, stagedFiles, changedFiles, selectedSection],
+	);
+
+	const handleGoToPrevFile = useCallback(() => {
+		const prev = goToPrevFile();
+		if (prev) {
+			selectFile(prev, determineSectionForFile(prev));
+		}
+	}, [goToPrevFile, selectFile, determineSectionForFile]);
+
+	const handleGoToNextFile = useCallback(() => {
+		const next = goToNextFile();
+		if (next) {
+			selectFile(next, determineSectionForFile(next));
+		}
+	}, [goToNextFile, selectFile, determineSectionForFile]);
+
 	// File diff content
 	const selectedFilePath = selectedFile ? `${rootPath}/${selectedFile}` : null;
 	const { originalContent, modifiedContent } = useFileDiffContent(
@@ -175,7 +215,7 @@ export function ReviewPanel({
 	);
 
 	// Hunks
-	const { changeGroups, currentIndex, total, goToNext, goToPrev } = useHunks(
+	const { changeGroups } = useHunks(
 		originalContent,
 		modifiedContent,
 		selectedFile ?? undefined,
@@ -465,11 +505,10 @@ export function ReviewPanel({
 									</div>
 									<DiffToolbar
 										diffMode={diffMode}
-										currentIndex={currentIndex}
-										total={total}
 										onDiffModeChange={setDiffMode}
-										onGoToPrev={goToPrev}
-										onGoToNext={goToNext}
+										fileNavigation={fileNavigation}
+										onGoToPrevFile={handleGoToPrevFile}
+										onGoToNextFile={handleGoToNextFile}
 									/>
 								</>
 							) : (

@@ -219,6 +219,7 @@ pub fn run() {
             git::commands::get_binary_file_at_ref,
             git::commands::get_branch_diff_summary,
             git::commands::build_diff_file_tree,
+            git::commands::get_file_navigation,
             // Git: hunk/patch
             git::commands::compute_diff_hunks,
             git::commands::generate_group_patch,
