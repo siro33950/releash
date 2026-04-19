@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	Tooltip,
 	TooltipContent,
@@ -413,17 +414,19 @@ export function DiffFileTree({
 					onCollapseAll={changesExpand.collapseAll}
 				/>
 				{changesSectionOpen && changesFileCount > 0 && (
-					<div className="flex-1 overflow-y-auto">
-						<TreeSection
-							tree={changesTree}
-							section="changes"
-							selectedFile={selectedFile}
-							selectedSection={selectedSection}
-							onSelectFile={onSelectFile}
-							onFileAction={onStageFile}
-							fileActionIcon="plus"
-							expandState={changesExpand}
-						/>
+					<div className="flex-1 min-h-0 overflow-hidden">
+						<ScrollArea className="h-full">
+							<TreeSection
+								tree={changesTree}
+								section="changes"
+								selectedFile={selectedFile}
+								selectedSection={selectedSection}
+								onSelectFile={onSelectFile}
+								onFileAction={onStageFile}
+								fileActionIcon="plus"
+								expandState={changesExpand}
+							/>
+						</ScrollArea>
 					</div>
 				)}
 			</div>
@@ -448,17 +451,19 @@ export function DiffFileTree({
 					onCollapseAll={stagedExpand.collapseAll}
 				/>
 				{stagedSectionOpen && stagedFileCount > 0 && (
-					<div className="flex-1 overflow-y-auto">
-						<TreeSection
-							tree={stagedTree}
-							section="staged"
-							selectedFile={selectedFile}
-							selectedSection={selectedSection}
-							onSelectFile={onSelectFile}
-							onFileAction={onUnstageFile}
-							fileActionIcon="minus"
-							expandState={stagedExpand}
-						/>
+					<div className="flex-1 min-h-0 overflow-hidden">
+						<ScrollArea className="h-full">
+							<TreeSection
+								tree={stagedTree}
+								section="staged"
+								selectedFile={selectedFile}
+								selectedSection={selectedSection}
+								onSelectFile={onSelectFile}
+								onFileAction={onUnstageFile}
+								fileActionIcon="minus"
+								expandState={stagedExpand}
+							/>
+						</ScrollArea>
 					</div>
 				)}
 			</div>
@@ -480,10 +485,7 @@ function BranchBaseTree({
 		useTreeExpand(tree);
 
 	return (
-		<div
-			className="flex flex-col overflow-y-auto select-none"
-			data-testid="diff-file-tree"
-		>
+		<ScrollArea className="select-none h-full" data-testid="diff-file-tree">
 			{hasFolders && (
 				<div className="flex items-center justify-end gap-0.5 px-1 py-0.5 border-b border-border">
 					<ExpandCollapseButtons
@@ -506,6 +508,6 @@ function BranchBaseTree({
 					onToggle={handleToggle}
 				/>
 			))}
-		</div>
+		</ScrollArea>
 	);
 }
