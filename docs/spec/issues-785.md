@@ -167,7 +167,7 @@ pub async fn build_diff_file_tree(
 
 **レイアウト構成**:
 
-```
+```text
 右パネル (Panel "right")
 ├─ RightPanelHeader
 └─ Group(vertical)
@@ -184,7 +184,7 @@ pub async fn build_diff_file_tree(
 
 **データフロー**:
 
-```
+```text
 [branch-base基準]
 useBranchDiffFiles → ChangedFile[] → invoke("build_diff_file_tree") → DiffTreeNode[] → DiffFileTree描画
 
@@ -193,16 +193,16 @@ useGitStatus → stagedFiles[] + changedFiles[] → invoke("build_diff_file_tree
 ```
 
 **流用する既存コード**:
-- `DiffToolbar` — diffモード切り替え・hunkナビゲーション・stage/unstageボタン
+- `DiffToolbar` — diffモード切り替え・hunkナビゲーション
 - `DiffViewerSection` — 画像/マークダウン/テキストの条件分岐表示
 - `ImageDiffViewer`, `MarkdownDiffViewer` — 画像・マークダウン差分表示
 - `StatusIcon`, `statusColor` — ツリー内のステータスアイコン表示に流用
-- `useHunks` — diff hunks計算・ナビゲーション
+- `useHunks` — Rust IPC (`compute_diff_hunks`) によるdiff hunks計算・ナビゲーション
+- `useDiffOperations` — Rust IPC (`compute_diff_hunks`, `generate_group_patch`) によるグループ単位stage/unstage
 - `useBranchDiffFiles` — branch-base基準のファイル一覧取得
 - `useGitStatus` — staged基準のファイル一覧取得（stagedFiles/changedFiles）
 - `useImageDiff` — 画像diff取得
-- `computeHunks`, `generatePatch`, `imageUtils` — diffユーティリティ
-- Rustコマンド — `get_branch_diff_summary`, `get_file_at_branch_base`, `get_staged_content`, `git_stage`, `git_unstage`, `git_stage_hunk`, `git_unstage_hunk`等（変更なし）
+- Rustコマンド — `get_branch_diff_summary`, `get_file_at_branch_base`, `get_staged_content`, `git_stage`, `git_unstage`, `compute_diff_hunks`, `generate_group_patch`等（変更なし）
 
 **影響するテスト**:
 - `src-tauri/src/git/diff_tree.rs` (Rust): ツリー構築・単一子ディレクトリ結合・空入力・深いネスト

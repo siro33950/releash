@@ -68,15 +68,26 @@ impl TreeBuilder {
 
     fn into_nodes(self, parent_path: &str) -> Vec<DiffTreeNode> {
         let mut nodes = Vec::new();
-        for (name, builder) in self.children {
+        for (name, mut builder) in self.children {
             let path = if parent_path.is_empty() {
                 name.clone()
             } else {
                 format!("{parent_path}/{name}")
             };
 
-            if let Some((full_path, status, additions, deletions)) = builder.file {
-                // Leaf: file node
+            let has_children = !builder.children.is_empty();
+            // Take file info before consuming builder via into_nodes
+            let file_info = builder.file.take();
+
+            if has_children {
+                // Folder node (or file↔directory replacement) — recurse then collapse
+                let children = builder.into_nodes(&path);
+                let node = collapse_single_child_folder(name.clone(), path.clone(), children);
+                nodes.push(node);
+            }
+
+            if let Some((full_path, status, additions, deletions)) = file_info {
+                // Leaf: file node (may coexist with folder when file↔directory replacement)
                 nodes.push(DiffTreeNode {
                     name,
                     path: full_path,
@@ -86,11 +97,6 @@ impl TreeBuilder {
                     deletions: Some(deletions),
                     children: vec![],
                 });
-            } else {
-                // Folder node — recurse then collapse single-child directories
-                let children = builder.into_nodes(&path);
-                let node = collapse_single_child_folder(name, path, children);
-                nodes.push(node);
             }
         }
         nodes
@@ -277,5 +283,24 @@ mod tests {
         // Children have stats
         assert_eq!(tree[0].children[0].additions, Some(5));
         assert_eq!(tree[0].children[1].additions, Some(20));
+    }
+
+    #[test]
+    fn file_directory_replacement_preserves_both() {
+        // Scenario: "foo" is deleted (file) and "foo/bar.rs" is added (nested in dir)
+        let entries = vec![
+            entry("foo", "deleted"),
+            entry("foo/bar.rs", "new"),
+        ];
+        let tree = build_tree(entries);
+
+        let has_deleted_file = tree.iter().any(|n| n.path == "foo" && n.node_type == "file");
+        assert!(has_deleted_file, "deleted file entry 'foo' should be present");
+
+        let has_nested = tree.iter().any(|n| {
+            n.node_type == "folder"
+                && n.children.iter().any(|c| c.path == "foo/bar.rs")
+        });
+        assert!(has_nested, "nested added entry 'foo/bar.rs' should be present");
     }
 }

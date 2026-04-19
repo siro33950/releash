@@ -396,9 +396,18 @@ export function CodeDiffViewer({
 
 	useEffect(() => {
 		if (language || !filePath) return;
+		let cancelled = false;
 		invoke<string>("get_language_from_path", { filePath }).then(
-			setDetectedLanguage,
+			(detected) => {
+				if (!cancelled) setDetectedLanguage(detected);
+			},
+			() => {
+				if (!cancelled) setDetectedLanguage("plaintext");
+			},
 		);
+		return () => {
+			cancelled = true;
+		};
 	}, [language, filePath]);
 
 	const resolvedLanguage = language ?? detectedLanguage;

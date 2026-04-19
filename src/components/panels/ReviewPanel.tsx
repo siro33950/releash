@@ -226,18 +226,24 @@ export function ReviewPanel({
 		async (path: string) => {
 			if (!rootPath) return;
 			await stage(rootPath, [path]);
+			if (selectedFile === path) {
+				selectFile(path, "staged");
+			}
 			refreshAfterAction();
 		},
-		[rootPath, stage, refreshAfterAction],
+		[rootPath, selectedFile, selectFile, stage, refreshAfterAction],
 	);
 
 	const handleUnstageFile = useCallback(
 		async (path: string) => {
 			if (!rootPath) return;
 			await unstage(rootPath, [path]);
+			if (selectedFile === path) {
+				selectFile(path, "changes");
+			}
 			refreshAfterAction();
 		},
-		[rootPath, unstage, refreshAfterAction],
+		[rootPath, selectedFile, selectFile, unstage, refreshAfterAction],
 	);
 
 	const handleStageAll = useCallback(async () => {
@@ -245,16 +251,36 @@ export function ReviewPanel({
 		const paths = changedFiles.map((f) => f.path);
 		if (paths.length === 0) return;
 		await stage(rootPath, paths);
+		if (selectedFile && paths.includes(selectedFile)) {
+			selectFile(selectedFile, "staged");
+		}
 		refreshAfterAction();
-	}, [rootPath, changedFiles, stage, refreshAfterAction]);
+	}, [
+		rootPath,
+		changedFiles,
+		selectedFile,
+		selectFile,
+		stage,
+		refreshAfterAction,
+	]);
 
 	const handleUnstageAll = useCallback(async () => {
 		if (!rootPath) return;
 		const paths = stagedFiles.map((f) => f.path);
 		if (paths.length === 0) return;
 		await unstage(rootPath, paths);
+		if (selectedFile && paths.includes(selectedFile)) {
+			selectFile(selectedFile, "changes");
+		}
 		refreshAfterAction();
-	}, [rootPath, stagedFiles, unstage, refreshAfterAction]);
+	}, [
+		rootPath,
+		stagedFiles,
+		selectedFile,
+		selectFile,
+		unstage,
+		refreshAfterAction,
+	]);
 
 	// Handle file selection with section
 	const handleSelectFile = useCallback(

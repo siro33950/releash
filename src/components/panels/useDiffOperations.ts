@@ -36,38 +36,38 @@ export function useDiffOperations({
 			groupIndex: number,
 			action: ((rootPath: string, patch: string) => Promise<void>) | undefined,
 		) => {
-			if (!rootPath) return;
+			if (!rootPath || !action) return;
 
-			const relativePath = await invoke<string | null>("get_relative_path", {
-				rootPath,
-				filePath,
-			});
-			if (!relativePath) return;
+			try {
+				const relativePath = await invoke<string | null>("get_relative_path", {
+					rootPath,
+					filePath,
+				});
+				if (!relativePath) return;
 
-			const result = await invoke<DiffHunksResult>("compute_diff_hunks", {
-				original: originalContent,
-				modified: modifiedContent,
-				filePath: relativePath,
-			});
-			const group = result.changeGroups.find(
-				(g) => g.groupIndex === groupIndex,
-			);
-			if (!group) return;
-			const hunk = result.hunks.find((h) => h.index === group.hunkIndex);
-			if (!hunk) return;
+				const result = await invoke<DiffHunksResult>("compute_diff_hunks", {
+					original: originalContent,
+					modified: modifiedContent,
+					filePath: relativePath,
+				});
+				const group = result.changeGroups.find(
+					(g) => g.groupIndex === groupIndex,
+				);
+				if (!group) return;
+				const hunk = result.hunks.find((h) => h.index === group.hunkIndex);
+				if (!hunk) return;
 
-			const patch = await invoke<string>("generate_group_patch", {
-				filePath: relativePath,
-				hunk,
-				group,
-			});
-			if (patch) {
-				try {
-					await action?.(rootPath, patch);
+				const patch = await invoke<string>("generate_group_patch", {
+					filePath: relativePath,
+					hunk,
+					group,
+				});
+				if (patch) {
+					await action(rootPath, patch);
 					onGitChanged?.();
-				} catch (e) {
-					console.error("Group action failed:", e);
 				}
+			} catch (e) {
+				console.error("Group action failed:", e);
 			}
 		},
 		[rootPath, filePath, originalContent, modifiedContent, onGitChanged],

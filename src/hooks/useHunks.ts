@@ -18,7 +18,12 @@ export function useHunks(
 	const requestIdRef = useRef(0);
 
 	useEffect(() => {
+		let active = true;
 		const requestId = ++requestIdRef.current;
+
+		setHunks([]);
+		setChangeGroups([]);
+		setCurrentIndex(0);
 
 		invoke<DiffHunksResult>("compute_diff_hunks", {
 			original,
@@ -26,17 +31,21 @@ export function useHunks(
 			filePath: filePath ?? null,
 		})
 			.then((result) => {
-				if (requestId !== requestIdRef.current) return;
+				if (!active || requestId !== requestIdRef.current) return;
 				setHunks(result.hunks);
 				setChangeGroups(result.changeGroups);
 				setCurrentIndex(0);
 			})
 			.catch(() => {
-				if (requestId !== requestIdRef.current) return;
+				if (!active || requestId !== requestIdRef.current) return;
 				setHunks([]);
 				setChangeGroups([]);
 				setCurrentIndex(0);
 			});
+
+		return () => {
+			active = false;
+		};
 	}, [original, modified, filePath]);
 
 	const safeIndex =

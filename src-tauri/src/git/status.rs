@@ -1,6 +1,6 @@
 use super::error::GitError;
 use super::types::{GitFileStatus, StatusFileStat};
-use git2::{Repository, StatusOptions};
+use git2::{ErrorCode, Repository, StatusOptions};
 use std::collections::HashMap;
 
 fn index_status_from_flags(status: git2::Status) -> &'static str {
@@ -124,7 +124,11 @@ pub fn get_status_diff_stats(repo_path: String) -> Result<Vec<StatusFileStat>, G
     let repo = Repository::open(&repo_path)?;
 
     // HEAD tree (may not exist for unborn branch)
-    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let head_tree = match repo.head() {
+        Ok(head) => Some(head.peel_to_tree()?),
+        Err(err) if err.code() == ErrorCode::UnbornBranch => None,
+        Err(err) => return Err(err.into()),
+    };
 
     // Index diff stats: HEAD → index (staged changes)
     let index_diff = repo.diff_tree_to_index(head_tree.as_ref(), None, None)?;

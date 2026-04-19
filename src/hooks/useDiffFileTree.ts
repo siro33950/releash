@@ -150,6 +150,7 @@ export function useDiffFileTree(
 				} catch {
 					// Fall back to 0 stats
 				}
+				if (requestId !== requestIdRef.current) return;
 			}
 
 			const stagedEntries = stagedToIndexEntries(stagedFiles, statsMap);

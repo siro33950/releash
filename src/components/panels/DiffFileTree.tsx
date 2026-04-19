@@ -9,7 +9,7 @@ import {
 	Minus,
 	Plus,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -291,6 +291,10 @@ function useTreeExpand(tree: DiffTreeNode[]) {
 	const [expanded, setExpanded] = useState<Set<string>>(() =>
 		collectAllFolderPaths(tree),
 	);
+
+	useEffect(() => {
+		setExpanded(collectAllFolderPaths(tree));
+	}, [tree]);
 
 	const handleToggle = useCallback((path: string) => {
 		setExpanded((prev) => {

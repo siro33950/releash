@@ -21,6 +21,7 @@ export function useFileDiffContent(
 		if (!filePath) {
 			setOriginalContent("");
 			setModifiedContent("");
+			setLoading(false);
 			return;
 		}
 

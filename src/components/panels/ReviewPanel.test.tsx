@@ -62,6 +62,7 @@ vi.mock("@/hooks/useDiffFileTree", () => ({
 		changesFileCount: 0,
 		branchBaseTree: [],
 		branchBaseFileCount: 0,
+		loading: false,
 	}),
 }));
 
@@ -126,6 +127,7 @@ describe("ReviewPanel", () => {
 			changesFileCount: 1,
 			branchBaseTree: [],
 			branchBaseFileCount: 0,
+			loading: false,
 		});
 
 		render(
@@ -155,6 +157,7 @@ describe("ReviewPanel", () => {
 			changesFileCount: 1,
 			branchBaseTree: [],
 			branchBaseFileCount: 0,
+			loading: false,
 		});
 
 		render(
