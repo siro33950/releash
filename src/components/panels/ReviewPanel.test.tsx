@@ -114,6 +114,7 @@ describe("ReviewPanel", () => {
 			stagedTree: [],
 			changesTree: [
 				{
+					id: "file:file.ts",
 					name: "file.ts",
 					path: "file.ts",
 					node_type: "file",
@@ -144,6 +145,7 @@ describe("ReviewPanel", () => {
 			stagedTree: [],
 			changesTree: [
 				{
+					id: "file:file.ts",
 					name: "file.ts",
 					path: "file.ts",
 					node_type: "file",
