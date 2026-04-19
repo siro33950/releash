@@ -51,6 +51,10 @@ describe("SettingsModal", () => {
 				case "update_remote_config":
 				case "update_notify_config":
 					return Promise.resolve(null);
+				case "get_external_editor":
+					return Promise.resolve("");
+				case "detect_editors":
+					return Promise.resolve([]);
 				default:
 					return Promise.resolve(null);
 			}
@@ -392,6 +396,68 @@ describe("SettingsModal", () => {
 		fireEvent.click(within(nav).getByText("Agent"));
 		await waitFor(() => {
 			expect(screen.getByText("Not configured")).toBeInTheDocument();
+		});
+	});
+
+	it("should save external editor selection via Save button", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "get_external_editor":
+					return Promise.resolve("");
+				case "detect_editors":
+					return Promise.resolve([
+						{
+							name: "Visual Studio Code",
+							path: "/Applications/Visual Studio Code.app",
+						},
+						{ name: "Cursor", path: "/Applications/Cursor.app" },
+					]);
+				case "get_notify_config":
+					return Promise.resolve({
+						webhook_url: "",
+						on_running: false,
+						on_done: true,
+						on_error: true,
+						on_waiting: true,
+						desktop_mode: "always",
+						inactive_timeout_minutes: 2,
+					});
+				case "get_remote_config":
+					return Promise.resolve({
+						auto_start: false,
+						auto_start_on_lan: false,
+					});
+				case "get_mcp_config":
+					return Promise.resolve({ port: 19801, token: "test-token" });
+				case "get_configured_agents":
+					return Promise.resolve([]);
+				case "preview_agent_mcp_config":
+					return Promise.resolve("");
+				case "update_external_editor":
+					return Promise.resolve(null);
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Editor"));
+
+		const trigger = await screen.findByRole("combobox", {
+			name: "External Editor",
+		});
+		await user.click(trigger);
+		const option = screen.getByRole("option", { name: "Cursor" });
+		await user.click(option);
+
+		const saveBtn = screen.getByRole("button", { name: "Save" });
+		expect(saveBtn).toBeEnabled();
+		await user.click(saveBtn);
+
+		expect(vi.mocked(invoke)).toHaveBeenCalledWith("update_external_editor", {
+			editor: "/Applications/Cursor.app",
 		});
 	});
 

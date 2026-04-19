@@ -105,6 +105,20 @@ vi.mock("@/hooks/useGitActions", () => ({
 	}),
 }));
 
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("./DiffViewerSection", () => ({
+	DiffViewerSection: () => <div data-testid="diff-viewer-section" />,
+}));
+
+vi.mock("./DiffToolbar", () => ({
+	DiffToolbar: ({ filePath }: { filePath?: string | null }) => (
+		<div data-testid="diff-toolbar" data-file-path={filePath ?? ""} />
+	),
+}));
+
 const { useDiffFileTree } = await import("@/hooks/useDiffFileTree");
 const { useReviewPanel } = await import("@/hooks/useReviewPanel");
 
@@ -290,5 +304,79 @@ describe("ReviewPanel", () => {
 		);
 
 		expect(screen.queryByTestId("breadcrumb")).not.toBeInTheDocument();
+	});
+
+	it("should pass null filePath to DiffToolbar when no file is selected", () => {
+		vi.mocked(useDiffFileTree).mockReturnValue({
+			stagedTree: [],
+			changesTree: [
+				{
+					id: "file:file.ts",
+					name: "file.ts",
+					path: "file.ts",
+					node_type: "file",
+					status: "modified",
+					additions: 1,
+					deletions: 0,
+					children: [],
+				},
+			],
+			stagedFileCount: 0,
+			changesFileCount: 1,
+			branchBaseTree: [],
+			branchBaseFileCount: 0,
+			loading: false,
+		});
+
+		render(
+			<TooltipProvider>
+				<ReviewPanel rootPath="/repo" baseBranch="main" />
+			</TooltipProvider>,
+		);
+
+		// No file selected → DiffToolbar is not rendered (placeholder shown instead)
+		expect(screen.queryByTestId("diff-toolbar")).not.toBeInTheDocument();
+	});
+
+	it("should pass filePath to DiffToolbar when a file is selected", () => {
+		vi.mocked(useReviewPanel).mockReturnValue({
+			diffBase: "head",
+			diffMode: "gutter",
+			selectedFile: "src/main.ts",
+			selectedSection: "changes",
+			setDiffBase: vi.fn(),
+			setDiffMode: vi.fn(),
+			selectFile: vi.fn(),
+		});
+
+		vi.mocked(useDiffFileTree).mockReturnValue({
+			stagedTree: [],
+			changesTree: [
+				{
+					id: "file:src/main.ts",
+					name: "main.ts",
+					path: "src/main.ts",
+					node_type: "file",
+					status: "modified",
+					additions: 1,
+					deletions: 0,
+					children: [],
+				},
+			],
+			stagedFileCount: 0,
+			changesFileCount: 1,
+			branchBaseTree: [],
+			branchBaseFileCount: 0,
+			loading: false,
+		});
+
+		render(
+			<TooltipProvider>
+				<ReviewPanel rootPath="/repo" baseBranch="main" />
+			</TooltipProvider>,
+		);
+
+		const toolbar = screen.getByTestId("diff-toolbar");
+		expect(toolbar).toHaveAttribute("data-file-path", "/repo/src/main.ts");
 	});
 });

@@ -212,12 +212,52 @@ function AppearanceSection({
 	);
 }
 
+interface EditorInfo {
+	name: string;
+	path: string;
+}
+
+function useExternalEditorConfig() {
+	const [editor, setEditor] = useState("");
+	const [initialEditor, setInitialEditor] = useState("");
+	const [editors, setEditors] = useState<EditorInfo[]>([]);
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		setLoading(true);
+		setError(null);
+		Promise.all([
+			invoke<string>("get_external_editor"),
+			invoke<EditorInfo[]>("detect_editors"),
+		])
+			.then(([current, detected]) => {
+				setEditor(current);
+				setInitialEditor(current);
+				setEditors(detected);
+			})
+			.catch((e) => setError(String(e)))
+			.finally(() => setLoading(false));
+	}, []);
+
+	const isDirty = editor !== initialEditor;
+
+	const save = useCallback(async () => {
+		await invoke("update_external_editor", { editor });
+		setInitialEditor(editor);
+	}, [editor]);
+
+	return { editor, setEditor, editors, isDirty, loading, error, save };
+}
+
 function EditorSection({
 	draft,
 	updateDraft,
+	externalEditor,
 }: {
 	draft: AppSettings;
 	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
+	externalEditor: ReturnType<typeof useExternalEditorConfig>;
 }) {
 	return (
 		<div className="flex flex-col gap-4">
@@ -282,6 +322,44 @@ function EditorSection({
 				<label htmlFor="diff-only-mode" className={labelClass}>
 					Show diff only by default
 				</label>
+			</div>
+
+			<div className="flex flex-col gap-1.5">
+				<label htmlFor="external-editor-select" className={labelClass}>
+					External Editor
+				</label>
+				{externalEditor.loading ? (
+					<div className="flex items-center justify-center py-3">
+						<Loader2 className="size-4 animate-spin text-muted-foreground" />
+					</div>
+				) : (
+					<>
+						<Select
+							value={externalEditor.editor || "__default__"}
+							onValueChange={(value) =>
+								externalEditor.setEditor(value === "__default__" ? "" : value)
+							}
+						>
+							<SelectTrigger id="external-editor-select">
+								<SelectValue placeholder="System Default" />
+							</SelectTrigger>
+							<SelectContent>
+								<SelectItem value="__default__">System Default</SelectItem>
+								{externalEditor.editors.map((e) => (
+									<SelectItem key={e.path} value={e.path}>
+										{e.name}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						<p className="text-[10px] text-muted-foreground">
+							Application used when opening files from the diff view.
+						</p>
+						{externalEditor.error && (
+							<p className="text-xs text-destructive">{externalEditor.error}</p>
+						)}
+					</>
+				)}
 			</div>
 		</div>
 	);
@@ -1135,6 +1213,7 @@ export function SettingsModal({
 	const repos = useRepoChanges();
 	const notion = useNotionSettings(repoPaths);
 	const mcp = useMcpConfig();
+	const externalEditor = useExternalEditorConfig();
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
@@ -1214,6 +1293,7 @@ export function SettingsModal({
 	const { isDirty: reposIsDirty, save: reposSave } = repos;
 	const { isDirty: notionIsDirty, save: notionSave } = notion;
 	const { isDirty: mcpIsDirty, save: mcpSave } = mcp;
+	const { isDirty: editorIsDirty, save: editorSave } = externalEditor;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -1236,6 +1316,9 @@ export function SettingsModal({
 			}
 			if (mcpIsDirty) {
 				await mcpSave();
+			}
+			if (editorIsDirty) {
+				await editorSave();
 			}
 			if (draft.telemetryEnabled) {
 				trackEvent("settings_saved");
@@ -1261,6 +1344,8 @@ export function SettingsModal({
 		notionSave,
 		mcpIsDirty,
 		mcpSave,
+		editorIsDirty,
+		editorSave,
 	]);
 
 	const isDirty =
@@ -1270,14 +1355,21 @@ export function SettingsModal({
 		backgroundIsDirty ||
 		reposIsDirty ||
 		notionIsDirty ||
-		mcpIsDirty;
+		mcpIsDirty ||
+		editorIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
 			case "appearance":
 				return <AppearanceSection draft={draft} updateDraft={updateDraft} />;
 			case "editor":
-				return <EditorSection draft={draft} updateDraft={updateDraft} />;
+				return (
+					<EditorSection
+						draft={draft}
+						updateDraft={updateDraft}
+						externalEditor={externalEditor}
+					/>
+				);
 			case "repositories":
 				return (
 					<RepositoriesSection

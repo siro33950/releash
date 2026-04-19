@@ -52,6 +52,8 @@ pub struct AppSection {
     pub last_repo_paths: Vec<String>,
     #[serde(default)]
     pub last_bind_ip: String,
+    #[serde(default)]
+    pub external_editor: String,
 }
 
 impl Default for AppSection {
@@ -63,6 +65,7 @@ impl Default for AppSection {
             last_root_path: String::new(),
             last_repo_paths: Vec::new(),
             last_bind_ip: String::new(),
+            external_editor: String::new(),
         }
     }
 }
@@ -805,6 +808,34 @@ pub async fn update_crash_reporting(
     .map_err(|e| format!("task join error: {e}"))?
 }
 
+#[tauri::command]
+pub fn get_external_editor(state: tauri::State<'_, Arc<AppConfig>>) -> Result<String, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("ロック取得失敗: {e}"))?;
+    Ok(config.app.external_editor.clone())
+}
+
+#[tauri::command]
+pub async fn update_external_editor(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    editor: String,
+) -> Result<(), String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.app.external_editor = editor;
+        write_config(&app_config.config_path, &config)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1268,6 +1299,7 @@ token = "existing_token_value_here_with_enough_length_!!"
         assert!(app.last_root_path.is_empty());
         assert!(app.last_repo_paths.is_empty());
         assert!(app.last_bind_ip.is_empty());
+        assert!(app.external_editor.is_empty());
     }
 
     #[test]
@@ -1283,6 +1315,7 @@ token = "existing_token_value_here_with_enough_length_!!"
         config.app.last_root_path = "/repo/path".to_string();
         config.app.last_repo_paths = vec!["/repo/path".to_string(), "/repo/path2".to_string()];
         config.app.last_bind_ip = "10.0.0.1".to_string();
+        config.app.external_editor = "/Applications/Cursor.app".to_string();
         write_config(&path, &config).unwrap();
 
         let reloaded = fs::read_to_string(&path).unwrap();
@@ -1296,6 +1329,7 @@ token = "existing_token_value_here_with_enough_length_!!"
             vec!["/repo/path", "/repo/path2"]
         );
         assert_eq!(reloaded.app.last_bind_ip, "10.0.0.1");
+        assert_eq!(reloaded.app.external_editor, "/Applications/Cursor.app");
     }
 
     #[test]

@@ -516,6 +516,7 @@ export function ReviewPanel({
 										fileNavigation={fileNavigation}
 										onGoToPrevFile={handleGoToPrevFile}
 										onGoToNextFile={handleGoToNextFile}
+										filePath={selectedFilePath}
 									/>
 								</>
 							) : (

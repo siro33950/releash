@@ -2,6 +2,7 @@ mod agent_sdk;
 mod agent_status;
 mod comment_store;
 mod config;
+mod external_editor;
 mod file_mention;
 mod focus_tracker;
 mod git;
@@ -288,9 +289,14 @@ pub fn run() {
             config::get_crash_reporting_enabled,
             config::update_crash_reporting,
             config::update_webhook_url,
+            config::get_external_editor,
+            config::update_external_editor,
             config::get_mcp_config,
             config::update_mcp_config,
             config::regenerate_mcp_token,
+            // External Editor
+            external_editor::detect_editors,
+            external_editor::open_in_editor,
             // Agent Status (Rust 中央管理)
             agent_status::get_session_status,
             agent_status::get_workspace_status,
