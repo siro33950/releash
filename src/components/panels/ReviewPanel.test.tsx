@@ -231,7 +231,7 @@ describe("ReviewPanel", () => {
 
 		render(
 			<TooltipProvider>
-				<ReviewPanel rootPath="/repo" baseBranch="main" />
+				<ReviewPanel rootPath="/repo" baseBranch="main" diffOnlyMode={false} onDiffOnlyModeChange={() => {}} />
 			</TooltipProvider>,
 		);
 
@@ -275,7 +275,7 @@ describe("ReviewPanel", () => {
 
 		render(
 			<TooltipProvider>
-				<ReviewPanel rootPath="/repo" baseBranch="main" />
+				<ReviewPanel rootPath="/repo" baseBranch="main" diffOnlyMode={false} onDiffOnlyModeChange={() => {}} />
 			</TooltipProvider>,
 		);
 
