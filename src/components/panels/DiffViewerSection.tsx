@@ -47,7 +47,6 @@ export function DiffViewerSection(props: DiffViewerSectionProps) {
 
 	return (
 		<CodeDiffViewer
-			key={props.filePath ?? "__no-file__"}
 			originalContent={props.originalContent}
 			modifiedContent={props.modifiedContent}
 			diffMode={props.diffMode}

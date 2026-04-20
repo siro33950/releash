@@ -33,6 +33,9 @@ export default defineConfig(async () => ({
 	build: {
 		sourcemap: true,
 	},
+	worker: {
+		format: "es",
+	},
 	test: {
 		globals: true,
 		environment: "jsdom",
