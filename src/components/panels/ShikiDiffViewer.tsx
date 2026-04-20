@@ -337,7 +337,11 @@ function useDelegatedClick(
 				const startLine = Number(expandBtn.dataset.expandStart);
 				const endLine = Number(expandBtn.dataset.expandEnd);
 				const hiddenCount = Number(expandBtn.dataset.expandCount);
-				if (!Number.isNaN(startLine)) {
+				if (
+					Number.isFinite(startLine) &&
+					Number.isFinite(endLine) &&
+					Number.isFinite(hiddenCount)
+				) {
 					onExpandRange({ startLine, endLine, hiddenCount });
 				}
 			}
@@ -907,7 +911,7 @@ export function ShikiDiffViewer({
 				containerRef.current.scrollTo(0, 0);
 			}
 		}
-	});
+	}, [filePath]);
 
 	const handleDelegatedClick = useDelegatedClick(onStageGroup, expandRange);
 

@@ -34,10 +34,14 @@ export function CodeDiffViewer({
 	const [detectedLanguage, setDetectedLanguage] = useState("plaintext");
 	const [hunks, setHunks] = useState<Hunk[] | null>(null);
 	const requestIdRef = useRef(0);
+	const prevFilePathRef = useRef(filePath);
 
 	useEffect(() => {
 		const id = ++requestIdRef.current;
-		setHunks(null);
+		if (prevFilePathRef.current !== filePath) {
+			setHunks(null);
+			prevFilePathRef.current = filePath;
+		}
 		if (!language) setDetectedLanguage("plaintext");
 
 		const langPromise =

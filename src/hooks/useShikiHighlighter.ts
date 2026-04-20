@@ -28,6 +28,13 @@ function getWorker(): Worker {
 		}
 	};
 
+	worker.onerror = () => {
+		for (const [id, cb] of pendingCallbacks) {
+			cb([]);
+			pendingCallbacks.delete(id);
+		}
+	};
+
 	return worker;
 }
 

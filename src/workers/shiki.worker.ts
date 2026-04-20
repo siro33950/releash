@@ -25,33 +25,33 @@ async function getHighlighter(): Promise<HighlighterCore> {
 	return highlighterPromise;
 }
 
-const LANG_IMPORT_MAP: Record<string, () => Promise<unknown>> = {
-	typescript: () => import("@shikijs/langs/typescript"),
-	javascript: () => import("@shikijs/langs/javascript"),
-	rust: () => import("@shikijs/langs/rust"),
-	json: () => import("@shikijs/langs/json"),
-	toml: () => import("@shikijs/langs/toml"),
-	yaml: () => import("@shikijs/langs/yaml"),
-	html: () => import("@shikijs/langs/html"),
-	css: () => import("@shikijs/langs/css"),
-	scss: () => import("@shikijs/langs/scss"),
-	python: () => import("@shikijs/langs/python"),
-	go: () => import("@shikijs/langs/go"),
-	shell: () => import("@shikijs/langs/shellscript"),
-	sql: () => import("@shikijs/langs/sql"),
-	markdown: () => import("@shikijs/langs/markdown"),
-	xml: () => import("@shikijs/langs/xml"),
-	c: () => import("@shikijs/langs/c"),
-	cpp: () => import("@shikijs/langs/cpp"),
-	java: () => import("@shikijs/langs/java"),
-	ruby: () => import("@shikijs/langs/ruby"),
-	swift: () => import("@shikijs/langs/swift"),
-	kotlin: () => import("@shikijs/langs/kotlin"),
-	php: () => import("@shikijs/langs/php"),
-	lua: () => import("@shikijs/langs/lua"),
-	r: () => import("@shikijs/langs/r"),
-	dart: () => import("@shikijs/langs/dart"),
-};
+const LANG_IMPORT_MAP = new Map<string, () => Promise<unknown>>([
+	["typescript", () => import("@shikijs/langs/typescript")],
+	["javascript", () => import("@shikijs/langs/javascript")],
+	["rust", () => import("@shikijs/langs/rust")],
+	["json", () => import("@shikijs/langs/json")],
+	["toml", () => import("@shikijs/langs/toml")],
+	["yaml", () => import("@shikijs/langs/yaml")],
+	["html", () => import("@shikijs/langs/html")],
+	["css", () => import("@shikijs/langs/css")],
+	["scss", () => import("@shikijs/langs/scss")],
+	["python", () => import("@shikijs/langs/python")],
+	["go", () => import("@shikijs/langs/go")],
+	["shell", () => import("@shikijs/langs/shellscript")],
+	["sql", () => import("@shikijs/langs/sql")],
+	["markdown", () => import("@shikijs/langs/markdown")],
+	["xml", () => import("@shikijs/langs/xml")],
+	["c", () => import("@shikijs/langs/c")],
+	["cpp", () => import("@shikijs/langs/cpp")],
+	["java", () => import("@shikijs/langs/java")],
+	["ruby", () => import("@shikijs/langs/ruby")],
+	["swift", () => import("@shikijs/langs/swift")],
+	["kotlin", () => import("@shikijs/langs/kotlin")],
+	["php", () => import("@shikijs/langs/php")],
+	["lua", () => import("@shikijs/langs/lua")],
+	["r", () => import("@shikijs/langs/r")],
+	["dart", () => import("@shikijs/langs/dart")],
+]);
 
 const loadedLanguages = new Set<string>();
 const loadingLanguages = new Map<string, Promise<void>>();
@@ -73,7 +73,7 @@ async function ensureLanguageLoaded(
 		return loadedLanguages.has(language);
 	}
 
-	const importFn = LANG_IMPORT_MAP[language];
+	const importFn = LANG_IMPORT_MAP.get(language);
 	if (!importFn) return false;
 
 	const promise = (async () => {
@@ -118,22 +118,28 @@ self.onmessage = async (e: MessageEvent<TokenizeRequest>) => {
 		return;
 	}
 
-	const hl = await getHighlighter();
-	const loaded = await ensureLanguageLoaded(hl, language);
-	const effectiveLang = loaded && language !== "plaintext" ? language : "text";
+	try {
+		const hl = await getHighlighter();
+		const loaded = await ensureLanguageLoaded(hl, language);
+		const effectiveLang =
+			loaded && language !== "plaintext" ? language : "text";
 
-	const tokenLines = hl.codeToTokensBase(code, {
-		lang: effectiveLang,
-		theme: THEME,
-	});
+		const tokenLines = hl.codeToTokensBase(code, {
+			lang: effectiveLang,
+			theme: THEME,
+		});
 
-	const lines = tokenLines.map((tokens) => ({
-		tokens: tokens.map((t) => ({
-			content: t.content,
-			color: t.color,
-			offset: t.offset,
-		})),
-	}));
+		const lines = tokenLines.map((tokens) => ({
+			tokens: tokens.map((t) => ({
+				content: t.content,
+				color: t.color,
+				offset: t.offset,
+			})),
+		}));
 
-	self.postMessage({ id, lines } satisfies TokenizeResponse);
+		self.postMessage({ id, lines } satisfies TokenizeResponse);
+	} catch (err) {
+		console.error("shiki worker tokenize failed:", err);
+		self.postMessage({ id, lines: [] } satisfies TokenizeResponse);
+	}
 };

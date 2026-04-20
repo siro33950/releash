@@ -202,21 +202,6 @@ export function assignChangeGroupsToBlocks(
 			}
 		}
 
-		if (changeGroups.length > 0) {
-			const firstLine = block.lines[0];
-			const lineNum = firstLine?.newLineNumber ?? firstLine?.oldLineNumber ?? 0;
-			let closest = changeGroups[0];
-			let minDist = Math.abs(lineNum - closest.newStart);
-			for (const cg of changeGroups) {
-				const dist = Math.abs(lineNum - cg.newStart);
-				if (dist < minDist) {
-					minDist = dist;
-					closest = cg;
-				}
-			}
-			return { ...block, changeGroupIndex: closest.groupIndex };
-		}
-
 		return block;
 	});
 }
