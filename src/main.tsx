@@ -3,10 +3,13 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { SentryErrorBoundary } from "./components/ErrorBoundary";
+import { preloadHighlighter } from "./hooks/useShikiHighlighter";
 import "./index.css";
 import { initSentry } from "./lib/sentry";
 
 async function bootstrap() {
+	preloadHighlighter();
+
 	let crashReportingEnabled = true;
 	try {
 		crashReportingEnabled = await invoke<boolean>(
