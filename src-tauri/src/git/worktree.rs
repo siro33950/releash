@@ -223,15 +223,12 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch
     let mut wt_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     let main_branch = get_branch_name_for_repo(&repo);
-    if let Some(workdir) = repo.workdir() {
-        wt_map.insert(
-            main_branch.clone(),
-            workdir
-                .to_str()
-                .unwrap_or("")
-                .trim_end_matches('/')
-                .to_string(),
-        );
+    let main_workdir = repo
+        .workdir()
+        .and_then(|p| p.to_str())
+        .map(|s| s.trim_end_matches('/').to_string());
+    if let Some(ref workdir) = main_workdir {
+        wt_map.insert(main_branch.clone(), workdir.clone());
     }
 
     if let Ok(wt_names) = repo.worktrees() {
@@ -275,6 +272,7 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch
         .or(default_oid);
 
     let mut cards = Vec::new();
+    let mut matched_wt_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for branch in local_branches {
         let (branch, _) = branch?;
         let name = match branch.name()? {
@@ -282,10 +280,9 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch
             None => continue,
         };
 
-        let is_default = default_branch.as_deref() == Some(&name);
-
         let (worktree_path, dirty_count) = match wt_map.get(&name) {
             Some(path) => {
+                matched_wt_keys.insert(name.clone());
                 let dirty = get_dirty_count_for_path(Path::new(path)) as usize;
                 (Some(path.clone()), dirty)
             }
@@ -324,9 +321,10 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch
             })
             .unwrap_or(0);
 
+        let is_main_wt = worktree_path.as_ref() == main_workdir.as_ref();
         cards.push(WorktreeBranch {
             name,
-            is_default,
+            is_main_worktree: is_main_wt,
             worktree_path,
             dirty_count,
             is_merged,
@@ -337,6 +335,30 @@ pub fn list_branches_with_status(repo_path: String) -> Result<Vec<WorktreeBranch
             behind,
             has_upstream,
             base_ahead,
+        });
+    }
+
+    // wt_map に残ったエントリ（ローカルブランチにマッチしなかったワークツリー）を追加
+    // detached HEAD（rebase中等）のワークツリーがここに該当する
+    for (wt_branch_name, wt_path) in &wt_map {
+        if matched_wt_keys.contains(wt_branch_name) {
+            continue;
+        }
+        let dirty_count = get_dirty_count_for_path(Path::new(wt_path)) as usize;
+        let is_main_wt = main_workdir.as_deref() == Some(wt_path.as_str());
+        cards.push(WorktreeBranch {
+            name: wt_branch_name.clone(),
+            is_main_worktree: is_main_wt,
+            worktree_path: Some(wt_path.clone()),
+            dirty_count,
+            is_merged: false,
+            has_pr: false,
+            pr_number: None,
+            pr_url: None,
+            ahead: 0,
+            behind: 0,
+            has_upstream: false,
+            base_ahead: 0,
         });
     }
 
@@ -915,7 +937,7 @@ mod tests {
 
         let cards = list_branches_with_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(cards.len(), 1);
-        assert!(cards[0].is_default);
+        assert!(cards[0].is_main_worktree);
     }
 
     #[test]
@@ -932,7 +954,7 @@ mod tests {
         let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"feature-a"));
         assert!(names.contains(&"feature-b"));
-        for card in cards.iter().filter(|c| !c.is_default) {
+        for card in cards.iter().filter(|c| !c.is_main_worktree) {
             assert!(card.worktree_path.is_none());
             assert_eq!(card.dirty_count, 0);
         }
@@ -1144,5 +1166,102 @@ mod tests {
         let card = cards.iter().find(|c| c.name == "no-upstream").unwrap();
         assert_eq!(card.ahead, 0);
         assert_eq!(card.behind, 0);
+    }
+
+    #[test]
+    fn test_list_branches_with_status_detached_head_worktree() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        // ワークツリーを作成
+        let wt_path = create_worktree_helper(&repo, _parent.path(), "wt-rebase", "feat-rebase");
+
+        // ワークツリーをdetached HEAD状態にする（rebase中を模擬）
+        let wt_repo = Repository::open(&wt_path).unwrap();
+        let head_commit = wt_repo.head().unwrap().peel_to_commit().unwrap();
+        wt_repo.set_head_detached(head_commit.id()).unwrap();
+
+        // list_branches_with_status を呼ぶ
+        let cards = list_branches_with_status(repo_dir.to_str().unwrap().to_string()).unwrap();
+
+        // detached HEAD のワークツリーが結果に含まれること
+        // macOSでは /var → /private/var のsymlink解決が発生するため、名前で検索する
+        let detached_card = cards.iter().find(|c| {
+            c.name != "feat-rebase"
+                && c.name != "master"
+                && c.worktree_path.is_some()
+                && c.worktree_path.as_deref().unwrap().ends_with("wt-rebase")
+        });
+        assert!(
+            detached_card.is_some(),
+            "detached HEAD worktree should be included in list_branches_with_status"
+        );
+
+        let card = detached_card.unwrap();
+        assert!(card.worktree_path.is_some());
+        // detached HEADのため、名前はOID短縮形（括弧付き）
+        assert!(
+            card.name.starts_with('('),
+            "detached HEAD card name should start with '(', got: {}",
+            card.name
+        );
+    }
+
+    #[test]
+    fn test_is_main_worktree_on_default_branch() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        // linked worktree を作成
+        create_worktree_helper(&repo, _parent.path(), "wt-feat", "feat-a");
+
+        let cards = list_branches_with_status(repo_dir.to_str().unwrap().to_string()).unwrap();
+
+        // メインリポジトリ（master ブランチ上）は is_main_worktree = true
+        let main_card = cards.iter().find(|c| c.name == "master").unwrap();
+        assert!(main_card.is_main_worktree);
+
+        // linked worktree は is_main_worktree = false
+        let wt_card = cards.iter().find(|c| c.name == "feat-a").unwrap();
+        assert!(!wt_card.is_main_worktree);
+    }
+
+    #[test]
+    fn test_is_main_worktree_on_feature_branch() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        // feature ブランチを作成し、メインリポジトリをそこにチェックアウト
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feat-current", &head, false).unwrap();
+        repo.set_head("refs/heads/feat-current").unwrap();
+        repo.checkout_head(Some(CheckoutBuilder::new().force()))
+            .unwrap();
+
+        let cards = list_branches_with_status(repo_dir.to_str().unwrap().to_string()).unwrap();
+
+        // メインリポジトリは feat-current ブランチ上にいるが is_main_worktree = true
+        let feat_card = cards.iter().find(|c| c.name == "feat-current").unwrap();
+        assert!(feat_card.is_main_worktree);
+
+        // master ブランチは worktree_path なし、is_main_worktree = false
+        let master_card = cards.iter().find(|c| c.name == "master").unwrap();
+        assert!(!master_card.is_main_worktree);
+    }
+
+    #[test]
+    fn test_is_main_worktree_detached_head_main_repo() {
+        let (_parent, repo_dir, repo) = create_test_repo_with_parent();
+        create_initial_commit(&repo);
+
+        // メインリポジトリを detached HEAD にする
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.set_head_detached(head_commit.id()).unwrap();
+
+        let cards = list_branches_with_status(repo_dir.to_str().unwrap().to_string()).unwrap();
+
+        // detached HEAD のメインリポジトリは is_main_worktree = true
+        let detached_card = cards.iter().find(|c| c.name.starts_with('(')).unwrap();
+        assert!(detached_card.is_main_worktree);
     }
 }

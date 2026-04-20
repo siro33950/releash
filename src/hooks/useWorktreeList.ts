@@ -94,9 +94,7 @@ export function useWorktreeList(repoPath: string) {
 					const ws = latestStatusMap.get(normalizePath(b.worktree_path));
 					return ws ? { ...b, agent_state: ws.aggregated_state } : b;
 				});
-				const filtered = withAgentState.filter(
-					(b) => b.worktree_path != null && !b.is_default,
-				);
+				const filtered = withAgentState.filter((b) => b.worktree_path != null);
 				if (seq === refreshSeqRef.current) {
 					const serialized = JSON.stringify(filtered);
 					if (serialized !== prevBranchesRef.current) {

@@ -178,7 +178,7 @@ export interface WorktreeSelectResponse {
 
 interface BranchCardMsg {
 	name: string;
-	is_default: boolean;
+	is_main_worktree: boolean;
 	worktree_path: string | null;
 	dirty_count: number;
 	is_merged: boolean;

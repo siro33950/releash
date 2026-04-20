@@ -6,6 +6,7 @@ import {
 	ChevronRight,
 	Filter,
 	Globe,
+	Home,
 	LayoutList,
 	Loader2,
 	Plus,
@@ -189,7 +190,7 @@ function RepoWorktreeSectionView({
 	const renderItem = (branch: WorktreeBranch) => {
 		const isSelected = branch.worktree_path === selectedRootPath;
 		const hasWorktree = branch.worktree_path != null;
-		const canDelete = !branch.is_default && (hasWorktree || branch.is_merged);
+		const canDelete = !branch.is_main_worktree;
 		const status = computeStatus(branch);
 
 		// 2行目テキスト部分を組み立て
@@ -233,6 +234,12 @@ function RepoWorktreeSectionView({
 						<span className="text-xs font-medium truncate flex-1">
 							{branch.name}
 						</span>
+						{branch.is_main_worktree && (
+							<Home
+								className="shrink-0 size-3 text-muted-foreground"
+								aria-label="Main repository"
+							/>
+						)}
 						{branch.ahead > 0 && (
 							<span className="shrink-0 text-[11px] font-mono text-success/70">
 								+{branch.ahead}

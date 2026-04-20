@@ -99,7 +99,7 @@ pub struct VisibleBlock {
 #[derive(Serialize)]
 pub struct WorktreeBranch {
     pub name: String,
-    pub is_default: bool,
+    pub is_main_worktree: bool,
     pub worktree_path: Option<String>,
     pub dirty_count: usize,
     pub is_merged: bool,

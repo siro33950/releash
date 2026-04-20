@@ -329,7 +329,7 @@ mod tests {
             WsMessage::BranchListSync(BranchListSync {
                 branches: vec![BranchCardMsg {
                     name: "feature/test".to_string(),
-                    is_default: false,
+                    is_main_worktree: false,
                     worktree_path: Some("/repo-worktrees/feature-test".to_string()),
                     dirty_count: 2,
                     is_merged: false,
