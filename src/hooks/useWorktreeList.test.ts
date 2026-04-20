@@ -19,7 +19,7 @@ const makeBranch = (
 ): WorktreeBranch => ({
 	name: "feat/test",
 	worktree_path: "/tmp/wt",
-	is_default: false,
+	is_main_worktree: false,
 	is_merged: false,
 	has_upstream: false,
 	has_pr: false,
@@ -318,9 +318,9 @@ describe("useWorktreeList", () => {
 		expect(result.current.branches).toHaveLength(2);
 	});
 
-	it("should filter out default branches and those without worktree_path", async () => {
+	it("should filter out branches without worktree_path but include default branches", async () => {
 		const branches = [
-			makeBranch({ name: "main", is_default: true }),
+			makeBranch({ name: "main", is_main_worktree: true }),
 			makeBranch({
 				name: "feat/a",
 				worktree_path: null as unknown as string,
@@ -332,10 +332,45 @@ describe("useWorktreeList", () => {
 		const { result } = renderHook(() => useWorktreeList("/test/repo"));
 
 		await waitFor(() => {
-			expect(result.current.branches).toHaveLength(1);
+			expect(result.current.branches).toHaveLength(2);
 		});
 
-		expect(result.current.branches[0].name).toBe("feat/b");
+		const names = result.current.branches.map((b) => b.name);
+		expect(names).toContain("main");
+		expect(names).toContain("feat/b");
+		expect(names).not.toContain("feat/a");
+	});
+
+	it("should pass is_main_worktree through to branches when main repo is on feature branch", async () => {
+		const branches = [
+			makeBranch({
+				name: "main",
+				is_main_worktree: false,
+				worktree_path: null as unknown as string,
+			}),
+			makeBranch({
+				name: "feat/current",
+				is_main_worktree: true,
+				worktree_path: "/repo",
+			}),
+			makeBranch({
+				name: "feat/wt",
+				is_main_worktree: false,
+				worktree_path: "/tmp/wt",
+			}),
+		];
+		setupMockInvoke(branches);
+
+		const { result } = renderHook(() => useWorktreeList("/test/repo"));
+
+		await waitFor(() => {
+			expect(result.current.branches).toHaveLength(2);
+		});
+
+		const mainWt = result.current.branches.find((b) => b.is_main_worktree);
+		expect(mainWt).toBeDefined();
+		expect(mainWt?.name).toBe("feat/current");
+		expect(mainWt?.is_main_worktree).toBe(true);
 	});
 
 	it("should update agent_state from workspace-status-changed event", async () => {

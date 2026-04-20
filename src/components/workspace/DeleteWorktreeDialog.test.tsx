@@ -6,7 +6,7 @@ import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 
 const baseBranch: WorktreeBranch = {
 	name: "feature/test",
-	is_default: false,
+	is_main_worktree: false,
 	worktree_path: "/tmp/worktree/feature-test",
 	dirty_count: 0,
 	is_merged: false,

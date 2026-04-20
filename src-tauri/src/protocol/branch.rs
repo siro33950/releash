@@ -5,7 +5,8 @@ use crate::git::types::WorktreeBranch;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BranchCardMsg {
     pub name: String,
-    pub is_default: bool,
+    #[serde(default)]
+    pub is_main_worktree: bool,
     pub worktree_path: Option<String>,
     pub dirty_count: usize,
     pub is_merged: bool,
@@ -29,7 +30,7 @@ impl From<WorktreeBranch> for BranchCardMsg {
     fn from(b: WorktreeBranch) -> Self {
         Self {
             name: b.name,
-            is_default: b.is_default,
+            is_main_worktree: b.is_main_worktree,
             worktree_path: b.worktree_path,
             dirty_count: b.dirty_count,
             is_merged: b.is_merged,
