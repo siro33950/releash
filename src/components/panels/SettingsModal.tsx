@@ -217,7 +217,7 @@ interface EditorInfo {
 	path: string;
 }
 
-function useExternalEditorConfig() {
+function useExternalEditorConfig(open: boolean) {
 	const [editor, setEditor] = useState("");
 	const [initialEditor, setInitialEditor] = useState("");
 	const [editors, setEditors] = useState<EditorInfo[]>([]);
@@ -225,6 +225,8 @@ function useExternalEditorConfig() {
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
+		if (!open) return;
+		let cancelled = false;
 		setLoading(true);
 		setError(null);
 		Promise.all([
@@ -232,19 +234,33 @@ function useExternalEditorConfig() {
 			invoke<EditorInfo[]>("detect_editors"),
 		])
 			.then(([current, detected]) => {
+				if (cancelled) return;
 				setEditor(current);
 				setInitialEditor(current);
 				setEditors(detected);
 			})
-			.catch((e) => setError(String(e)))
-			.finally(() => setLoading(false));
-	}, []);
+			.catch((e) => {
+				if (!cancelled) setError(String(e));
+			})
+			.finally(() => {
+				if (!cancelled) setLoading(false);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [open]);
 
 	const isDirty = editor !== initialEditor;
 
 	const save = useCallback(async () => {
-		await invoke("update_external_editor", { editor });
-		setInitialEditor(editor);
+		setError(null);
+		try {
+			await invoke("update_external_editor", { editor });
+			setInitialEditor(editor);
+		} catch (e) {
+			setError(String(e));
+			throw e;
+		}
 	}, [editor]);
 
 	return { editor, setEditor, editors, isDirty, loading, error, save };
@@ -1213,7 +1229,7 @@ export function SettingsModal({
 	const repos = useRepoChanges();
 	const notion = useNotionSettings(repoPaths);
 	const mcp = useMcpConfig();
-	const externalEditor = useExternalEditorConfig();
+	const externalEditor = useExternalEditorConfig(open);
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);

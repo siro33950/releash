@@ -8,6 +8,7 @@ import {
 	Minus,
 	SplitSquareHorizontal,
 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -46,11 +47,30 @@ export function DiffToolbar({
 	filePath,
 }: DiffToolbarProps) {
 	const hasFileNav = fileNavigation && fileNavigation.total > 0;
+	const [editorError, setEditorError] = useState<string | null>(null);
+	const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+	useEffect(() => {
+		return () => {
+			if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+		};
+	}, []);
+
+	const handleOpenInEditor = useCallback(() => {
+		if (!filePath) return;
+		setEditorError(null);
+		invoke("open_in_editor", { filePath }).catch((e) => {
+			console.error("Failed to open in editor:", e);
+			setEditorError(String(e));
+			if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+			errorTimerRef.current = setTimeout(() => setEditorError(null), 5000);
+		});
+	}, [filePath]);
 
 	return (
 		<div className="flex items-center justify-between px-2 h-[36px] border-t border-border bg-card shrink-0 select-none">
 			{/* Left: Open in Editor */}
-			<div className="flex items-center h-full">
+			<div className="flex items-center h-full gap-1">
 				{filePath && (
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -58,11 +78,7 @@ export function DiffToolbar({
 								variant="ghost"
 								size="icon-xs"
 								aria-label="Open in Editor"
-								onClick={() => {
-									invoke("open_in_editor", { filePath }).catch((e) => {
-										console.error("Failed to open in editor:", e);
-									});
-								}}
+								onClick={handleOpenInEditor}
 								className="h-5 w-5 text-muted-foreground hover:text-foreground"
 							>
 								<ExternalLink className="h-3.5 w-3.5" />
@@ -72,6 +88,11 @@ export function DiffToolbar({
 							Open in Editor
 						</TooltipContent>
 					</Tooltip>
+				)}
+				{editorError && (
+					<span className="text-[10px] text-destructive truncate max-w-[200px]">
+						{editorError}
+					</span>
 				)}
 			</div>
 

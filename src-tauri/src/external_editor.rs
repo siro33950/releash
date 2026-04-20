@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::AppConfig;
@@ -21,20 +21,35 @@ const KNOWN_EDITORS: &[(&str, &str)] = &[
     ("CotEditor", "CotEditor.app"),
 ];
 
-fn scan_applications() -> Vec<EditorInfo> {
+fn application_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("/Applications")];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join("Applications"));
+    }
+    dirs
+}
+
+fn scan_applications_in(dirs: &[PathBuf]) -> Vec<EditorInfo> {
     let mut editors = Vec::new();
 
     for (name, app_bundle) in KNOWN_EDITORS {
-        let app_path = format!("/Applications/{app_bundle}");
-        if Path::new(&app_path).exists() {
-            editors.push(EditorInfo {
-                name: name.to_string(),
-                path: app_path,
-            });
+        for dir in dirs {
+            let app_path = dir.join(app_bundle);
+            if app_path.exists() {
+                editors.push(EditorInfo {
+                    name: name.to_string(),
+                    path: app_path.to_string_lossy().into_owned(),
+                });
+                break;
+            }
         }
     }
 
     editors
+}
+
+fn scan_applications() -> Vec<EditorInfo> {
+    scan_applications_in(&application_dirs())
 }
 
 #[tauri::command]
@@ -71,6 +86,9 @@ pub fn open_in_editor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
 
     #[test]
     fn known_editors_list_is_not_empty() {
@@ -78,11 +96,54 @@ mod tests {
     }
 
     #[test]
-    fn scan_applications_returns_only_existing() {
-        let editors = scan_applications();
-        for editor in &editors {
-            assert!(Path::new(&editor.path).exists());
-        }
+    fn scan_finds_existing_editors_in_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let apps_dir = tmp.path().to_path_buf();
+        fs::create_dir_all(apps_dir.join("Cursor.app")).unwrap();
+        fs::create_dir_all(apps_dir.join("Zed.app")).unwrap();
+
+        let editors = scan_applications_in(&[apps_dir]);
+        assert_eq!(editors.len(), 2);
+        assert_eq!(editors[0].name, "Cursor");
+        assert_eq!(editors[1].name, "Zed");
+    }
+
+    #[test]
+    fn scan_returns_empty_for_no_editors() {
+        let tmp = TempDir::new().unwrap();
+        let editors = scan_applications_in(&[tmp.path().to_path_buf()]);
+        assert!(editors.is_empty());
+    }
+
+    #[test]
+    fn scan_deduplicates_across_dirs() {
+        let tmp1 = TempDir::new().unwrap();
+        let tmp2 = TempDir::new().unwrap();
+        fs::create_dir_all(tmp1.path().join("Cursor.app")).unwrap();
+        fs::create_dir_all(tmp2.path().join("Cursor.app")).unwrap();
+
+        let editors = scan_applications_in(&[tmp1.path().to_path_buf(), tmp2.path().to_path_buf()]);
+        assert_eq!(editors.len(), 1);
+        assert!(editors[0].path.contains(tmp1.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn scan_prefers_first_dir() {
+        let sys_dir = TempDir::new().unwrap();
+        let user_dir = TempDir::new().unwrap();
+        fs::create_dir_all(sys_dir.path().join("Zed.app")).unwrap();
+        fs::create_dir_all(user_dir.path().join("Zed.app")).unwrap();
+
+        let editors =
+            scan_applications_in(&[sys_dir.path().to_path_buf(), user_dir.path().to_path_buf()]);
+        assert_eq!(editors.len(), 1);
+        assert!(editors[0].path.contains(sys_dir.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn application_dirs_includes_system() {
+        let dirs = application_dirs();
+        assert!(dirs.iter().any(|d| d == Path::new("/Applications")));
     }
 
     #[test]

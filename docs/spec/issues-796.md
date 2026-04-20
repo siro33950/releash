@@ -45,7 +45,7 @@ Feature: Diffビューから外部エディタで開く
 **対応方針**: Diffビューから外部エディタでファイルを開く機能を実現するために、Rust側に外部エディタ検出・設定管理のロジックを実装し、フロントエンドのReviewPanelにボタンを追加する。ファイルオープンには既存の`tauri_plugin_opener`の`open_path`を使用する。
 
 **対象コンポーネント**:
-- `src-tauri/src/external_editor.rs`（新規）: エディタ検出ロジック（macOS: `/Applications`のアプリバンドル検索）、`open_in_editor` Tauriコマンド（`tauri_plugin_opener::open_path`で`with`にエディタパスを渡す）
+- `src-tauri/src/external_editor.rs`（新規）: エディタ検出ロジック（macOS: `/Applications`および`~/Applications`のアプリバンドル検索、スキャンディレクトリは注入可能）、`open_in_editor` Tauriコマンド（`tauri_plugin_opener::open_path`で`with`にエディタパスを渡す）
 - `src-tauri/src/config.rs`: `AppSection`に`external_editor: String`フィールド追加（デフォルト空=システムデフォルト）
 - `src-tauri/src/lib.rs`: 新規コマンド登録（`detect_editors`, `open_in_editor`）
 - `src/types/settings.ts`: `AppSettings`に`externalEditor: string`追加
@@ -59,6 +59,6 @@ Feature: Diffビューから外部エディタで開く
 - `std::process::Command`で直接エディタを起動: エディタごとの起動引数の差異を吸収する必要がありメンテコストが高い。`open_path`は各OSのデフォルトオープン機構を利用するため安定性が高い → 却下
 
 **影響するテスト**:
-- Rust単体テスト: `external_editor.rs`のエディタ検出ロジック（`/Applications`スキャンのモック）
+- Rust単体テスト: `external_editor.rs`のエディタ検出ロジック（`scan_applications_in`にTempDirを注入した決定的テスト）
 - フロントエンドテスト: ReviewPanelのボタン表示・クリック時のinvoke呼び出し確認
 - 設定テスト: `AppSettings`のexternalEditorフィールドの永続化テスト（既存`app_section_roundtrip`テストの拡張）
