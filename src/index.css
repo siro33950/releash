@@ -739,9 +739,6 @@
 	border-collapse: collapse;
 	margin: 0.8em 0;
 	width: auto;
-	display: block;
-	overflow-x: auto;
-	max-width: 100%;
 }
 .markdown-preview th,
 .markdown-preview td {
