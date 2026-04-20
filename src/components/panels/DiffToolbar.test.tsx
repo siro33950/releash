@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { DiffToolbarProps } from "./DiffToolbar";
@@ -15,11 +16,16 @@ if (typeof Element.prototype.releasePointerCapture !== "function") {
 	Element.prototype.releasePointerCapture = () => {};
 }
 
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: vi.fn().mockResolvedValue(null),
+}));
+
 const defaultProps: DiffToolbarProps = {
 	diffMode: "inline",
 	diffOnlyMode: false,
 	onDiffModeChange: vi.fn(),
 	onDiffOnlyModeChange: vi.fn(),
+	filePath: null,
 };
 
 function renderToolbar(props: Partial<DiffToolbarProps> = {}) {
@@ -100,6 +106,33 @@ describe("DiffToolbar", () => {
 
 			fireEvent.click(screen.getByRole("button", { name: "Diff only" }));
 			expect(onChange).toHaveBeenCalledWith(false);
+		});
+	});
+
+	describe("Open in Editor button", () => {
+		it("should not show button when filePath is null", () => {
+			renderToolbar({ filePath: null });
+			expect(
+				screen.queryByRole("button", { name: "Open in Editor" }),
+			).not.toBeInTheDocument();
+		});
+
+		it("should show button when filePath is provided", () => {
+			renderToolbar({ filePath: "/repo/src/main.ts" });
+			expect(
+				screen.getByRole("button", { name: "Open in Editor" }),
+			).toBeInTheDocument();
+		});
+
+		it("should invoke open_in_editor with filePath when clicked", async () => {
+			const { invoke } = await import("@tauri-apps/api/core");
+			const user = userEvent.setup();
+			renderToolbar({ filePath: "/repo/src/main.ts" });
+			const button = screen.getByRole("button", { name: "Open in Editor" });
+			await user.click(button);
+			expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_in_editor", {
+				filePath: "/repo/src/main.ts",
+			});
 		});
 	});
 

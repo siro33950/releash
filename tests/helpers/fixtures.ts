@@ -163,6 +163,11 @@ const baseIpcHandler: Record<string, unknown> = {
 	get_remote_config: { auto_start: false, auto_start_on_lan: false },
 	update_remote_config: null,
 
+	// External editor
+	get_external_editor: "",
+	detect_editors: [],
+	update_external_editor: null,
+
 	// Repo registry
 	get_repo_paths: ["/test/repo"],
 	add_repo_path: null,
