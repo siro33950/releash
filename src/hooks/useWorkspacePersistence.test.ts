@@ -58,6 +58,7 @@ function makeInternalState(
 		activeView: "git",
 		rightBottomCollapsed: false,
 		reviewCollapsed: false,
+		diffOnlyMode: false,
 		...overrides,
 	};
 }

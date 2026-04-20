@@ -222,6 +222,9 @@ pub fn run() {
             git::commands::get_file_navigation,
             // Git: hunk/patch
             git::commands::compute_diff_hunks,
+            git::commands::compute_hidden_ranges,
+            git::commands::compute_hidden_ranges_from_content,
+            git::commands::compute_visible_markdown_blocks,
             git::commands::generate_group_patch,
             git::commands::get_language_from_path,
             git::commands::get_relative_path,

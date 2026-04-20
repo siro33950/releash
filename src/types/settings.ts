@@ -106,6 +106,7 @@ export interface AppSettings {
 	autoUpdate: boolean;
 	telemetryEnabled: boolean;
 	enableCrashReporting: boolean;
+	defaultDiffOnlyMode: boolean;
 	agentMaxConcurrent: number;
 }
 
@@ -114,6 +115,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	fontSize: 14,
 	defaultDiffBase: "head",
 	defaultDiffMode: "inline",
+	defaultDiffOnlyMode: false,
 	agent: "none",
 	agentAutoApprove: false,
 	terminalStartupCommand: "",

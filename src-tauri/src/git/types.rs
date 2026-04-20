@@ -76,6 +76,26 @@ pub struct DiffHunksResult {
     pub change_groups: Vec<ChangeGroup>,
 }
 
+// ── HiddenRange / VisibleBlock (diff-only mode) ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenRange {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub hidden_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisibleBlock {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_content: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct WorktreeBranch {
     pub name: String,

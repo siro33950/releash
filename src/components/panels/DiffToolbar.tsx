@@ -2,6 +2,7 @@ import {
 	AlignJustify,
 	ChevronLeft,
 	ChevronRight,
+	Diff,
 	Minus,
 	SplitSquareHorizontal,
 } from "lucide-react";
@@ -17,7 +18,9 @@ import type { DiffMode } from "@/types/settings";
 
 export interface DiffToolbarProps {
 	diffMode: DiffMode;
+	diffOnlyMode: boolean;
 	onDiffModeChange: (mode: DiffMode) => void;
+	onDiffOnlyModeChange: (enabled: boolean) => void;
 	fileNavigation?: FileNavigationResult;
 	onGoToPrevFile?: () => void;
 	onGoToNextFile?: () => void;
@@ -31,7 +34,9 @@ const diffModes: { mode: DiffMode; icon: typeof Minus; label: string }[] = [
 
 export function DiffToolbar({
 	diffMode,
+	diffOnlyMode,
 	onDiffModeChange,
+	onDiffOnlyModeChange,
 	fileNavigation,
 	onGoToPrevFile,
 	onGoToNextFile,
@@ -74,8 +79,31 @@ export function DiffToolbar({
 				</div>
 			)}
 
-			{/* Right: Diff mode icons */}
+			{/* Right: Diff-only toggle + Diff mode icons */}
 			<div className="flex items-center gap-1">
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							variant="ghost"
+							size="icon-xs"
+							aria-label="Diff only"
+							aria-pressed={diffOnlyMode}
+							onClick={() => onDiffOnlyModeChange(!diffOnlyMode)}
+							className={cn(
+								"w-6 h-5",
+								diffOnlyMode
+									? "bg-primary/20 text-primary"
+									: "text-muted-foreground hover:text-foreground",
+							)}
+						>
+							<Diff className="h-3.5 w-3.5" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent side="top" className="text-xs">
+						{diffOnlyMode ? "Show full file" : "Show diff only"}
+					</TooltipContent>
+				</Tooltip>
+
 				<div className="flex items-center gap-0.5 bg-muted rounded p-0.5">
 					{diffModes.map(({ mode, icon: Icon, label }) => (
 						<Tooltip key={mode}>

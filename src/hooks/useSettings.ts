@@ -77,6 +77,13 @@ export function useSettings() {
 		setSettings((prev) => ({ ...prev, defaultDiffMode }));
 	}, []);
 
+	const updateDefaultDiffOnlyMode = useCallback(
+		(defaultDiffOnlyMode: boolean) => {
+			setSettings((prev) => ({ ...prev, defaultDiffOnlyMode }));
+		},
+		[],
+	);
+
 	const updateTerminalStartupCommand = useCallback(
 		(terminalStartupCommand: string) => {
 			setSettings((prev) => ({ ...prev, terminalStartupCommand }));
@@ -115,6 +122,7 @@ export function useSettings() {
 		updateFontSize,
 		updateDefaultDiffBase,
 		updateDefaultDiffMode,
+		updateDefaultDiffOnlyMode,
 		updateTerminalStartupCommand,
 		updateAgent,
 		updateAgentAutoApprove,

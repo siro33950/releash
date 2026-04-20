@@ -16,6 +16,7 @@ export interface DiffViewerSectionProps {
 	originalContent: string;
 	modifiedContent: string;
 	diffMode: DiffMode;
+	diffOnlyMode?: boolean;
 	filePath?: string;
 	changeGroups?: ChangeGroup[];
 	onStageGroup?: (groupIndex: number) => void;
@@ -39,6 +40,7 @@ export function DiffViewerSection(props: DiffViewerSectionProps) {
 				originalContent={props.originalContent}
 				modifiedContent={props.modifiedContent}
 				diffMode={props.diffMode}
+				diffOnlyMode={props.diffOnlyMode}
 			/>
 		);
 	}
@@ -49,6 +51,7 @@ export function DiffViewerSection(props: DiffViewerSectionProps) {
 			originalContent={props.originalContent}
 			modifiedContent={props.modifiedContent}
 			diffMode={props.diffMode}
+			diffOnlyMode={props.diffOnlyMode}
 			filePath={props.filePath}
 			changeGroups={props.changeGroups}
 			onStageGroup={props.onStageGroup}

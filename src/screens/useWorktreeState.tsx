@@ -49,6 +49,12 @@ export function useWorktreeState({
 		initialWorkspaceState?.layout.reviewCollapsed ?? false,
 	);
 
+	const [diffOnlyMode, setDiffOnlyMode] = useState(
+		initialWorkspaceState?.layout.diffOnlyMode ??
+			settings.defaultDiffOnlyMode ??
+			false,
+	);
+
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
 	const {
@@ -125,14 +131,22 @@ export function useWorktreeState({
 	// --- Sync internal state for workspace state persistence ---
 	useEffect(() => {
 		if (!internalStateMapRef) return;
+		const current = internalStateMapRef.current.get(rootPath);
 		internalStateMapRef.current.set(rootPath, {
-			tabs: [],
-			activeEditorPath: null,
-			activeView: "agent",
+			tabs: current?.tabs ?? [],
+			activeEditorPath: current?.activeEditorPath ?? null,
+			activeView: current?.activeView ?? "agent",
 			rightBottomCollapsed,
 			reviewCollapsed,
+			diffOnlyMode,
 		});
-	}, [internalStateMapRef, rootPath, rightBottomCollapsed, reviewCollapsed]);
+	}, [
+		internalStateMapRef,
+		rootPath,
+		rightBottomCollapsed,
+		reviewCollapsed,
+		diffOnlyMode,
+	]);
 
 	return {
 		ready,
@@ -163,5 +177,7 @@ export function useWorktreeState({
 		setRightBottomCollapsed,
 		reviewCollapsed,
 		setReviewCollapsed,
+		diffOnlyMode,
+		setDiffOnlyMode,
 	};
 }

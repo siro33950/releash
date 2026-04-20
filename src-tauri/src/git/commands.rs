@@ -262,6 +262,54 @@ pub async fn generate_group_patch(
 }
 
 #[tauri::command]
+pub async fn compute_hidden_ranges(
+    hunks: Vec<super::types::Hunk>,
+    total_lines: u32,
+    context_lines: u32,
+) -> Result<Vec<super::types::HiddenRange>, GitError> {
+    blocking(move || {
+        Ok(super::hunk::compute_hidden_ranges(
+            &hunks,
+            total_lines,
+            context_lines,
+        ))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn compute_hidden_ranges_from_content(
+    original: String,
+    modified: String,
+    context_lines: u32,
+) -> Result<Vec<super::types::HiddenRange>, GitError> {
+    blocking(move || {
+        Ok(super::hunk::compute_hidden_ranges_from_content(
+            &original,
+            &modified,
+            context_lines,
+        ))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn compute_visible_markdown_blocks(
+    original: String,
+    modified: String,
+    context_lines: u32,
+) -> Result<Vec<super::types::VisibleBlock>, GitError> {
+    blocking(move || {
+        Ok(super::hunk::compute_visible_markdown_blocks(
+            &original,
+            &modified,
+            context_lines,
+        ))
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn get_language_from_path(file_path: String) -> Result<String, GitError> {
     blocking(move || Ok(super::lang::get_language_from_path(&file_path))).await
 }

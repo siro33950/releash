@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::types::{ChangeGroup, DiffHunksResult, Hunk};
+use super::types::{ChangeGroup, DiffHunksResult, HiddenRange, Hunk, VisibleBlock};
 
 /// Compute diff hunks and change groups from two text buffers.
 ///
@@ -292,6 +292,164 @@ pub fn generate_patch(file_path: &str, hunks: &[Hunk], selected_indices: &[u32])
     }
 
     format!("{}\n", lines.join("\n"))
+}
+
+/// Compute hidden (foldable) line ranges for diff-only mode in the Gutter viewer.
+///
+/// Given a list of hunks and the total line count of the modified file,
+/// Compute merged visible line ranges around each hunk with context.
+fn compute_visible_ranges(hunks: &[Hunk], total_lines: u32, context_lines: u32) -> Vec<(u32, u32)> {
+    let mut visible_ranges: Vec<(u32, u32)> = Vec::new();
+    for hunk in hunks {
+        let hunk_start = hunk.new_start;
+        let hunk_end = hunk.new_start + hunk.new_lines.max(1) - 1;
+
+        let visible_start = if hunk_start > context_lines {
+            hunk_start - context_lines
+        } else {
+            1
+        };
+        let visible_end = (hunk_end + context_lines).min(total_lines);
+        visible_ranges.push((visible_start, visible_end));
+    }
+
+    visible_ranges.sort_by_key(|r| r.0);
+    let mut merged: Vec<(u32, u32)> = Vec::new();
+    for range in &visible_ranges {
+        if let Some(last) = merged.last_mut() {
+            if range.0 <= last.1 + 1 {
+                last.1 = last.1.max(range.1);
+            } else {
+                merged.push(*range);
+            }
+        } else {
+            merged.push(*range);
+        }
+    }
+    merged
+}
+
+/// returns the ranges of lines that should be hidden (folded) because they
+/// contain no changes. Each hunk is surrounded by `context_lines` of visible
+/// context.
+pub fn compute_hidden_ranges(
+    hunks: &[Hunk],
+    total_lines: u32,
+    context_lines: u32,
+) -> Vec<HiddenRange> {
+    if total_lines == 0 {
+        return Vec::new();
+    }
+
+    let merged = compute_visible_ranges(hunks, total_lines, context_lines);
+
+    // Compute hidden ranges (gaps between visible ranges)
+    let mut hidden: Vec<HiddenRange> = Vec::new();
+    let mut current = 1u32;
+
+    for (vis_start, vis_end) in &merged {
+        if current < *vis_start {
+            let count = vis_start - current;
+            hidden.push(HiddenRange {
+                start_line: current,
+                end_line: vis_start - 1,
+                hidden_count: count,
+            });
+        }
+        current = vis_end + 1;
+    }
+
+    // Trailing hidden range after last visible block
+    if current <= total_lines {
+        let count = total_lines - current + 1;
+        hidden.push(HiddenRange {
+            start_line: current,
+            end_line: total_lines,
+            hidden_count: count,
+        });
+    }
+
+    hidden
+}
+
+/// Compute hidden ranges directly from content strings.
+///
+/// Internally diffs `original` against `modified` and then computes hidden ranges.
+pub fn compute_hidden_ranges_from_content(
+    original: &str,
+    modified: &str,
+    context_lines: u32,
+) -> Vec<HiddenRange> {
+    let hunks_result = compute_diff_hunks(original, modified, None);
+    let total_lines = modified.lines().count() as u32;
+    compute_hidden_ranges(&hunks_result.hunks, total_lines, context_lines)
+}
+
+/// Compute visible blocks for Markdown diff-only mode.
+///
+/// Diffs `original` against `modified` and returns only the blocks
+/// (with surrounding context lines) that contain changes.
+pub fn compute_visible_markdown_blocks(
+    original: &str,
+    modified: &str,
+    context_lines: u32,
+) -> Vec<VisibleBlock> {
+    let hunks_result = compute_diff_hunks(original, modified, None);
+    let mod_lines: Vec<&str> = modified.lines().collect();
+    let orig_lines: Vec<&str> = original.lines().collect();
+    let total_lines = mod_lines.len() as u32;
+
+    if hunks_result.hunks.is_empty() {
+        return Vec::new();
+    }
+
+    let merged = compute_visible_ranges(&hunks_result.hunks, total_lines, context_lines);
+
+    // Build visible blocks from merged ranges, including deleted content
+    merged
+        .iter()
+        .map(|(start, end)| {
+            let s = (*start as usize).saturating_sub(1);
+            let e = (*end as usize).min(mod_lines.len());
+            let content = mod_lines[s..e].join("\n");
+
+            // Collect deleted lines from hunks that overlap this visible range
+            let mut deleted: Vec<&str> = Vec::new();
+            for hunk in &hunks_result.hunks {
+                let hunk_mod_start = hunk.new_start;
+                let hunk_mod_end = hunk.new_start + hunk.new_lines.max(1) - 1;
+                // Check if hunk overlaps with this visible range
+                if hunk_mod_end >= *start && hunk_mod_start <= *end {
+                    // Extract deleted lines (lines starting with '-') from original
+                    let mut orig_line = hunk.old_start as usize;
+                    for line in &hunk.lines {
+                        let prefix = line.as_bytes().first().copied().unwrap_or(b' ');
+                        if prefix == b'-' {
+                            if orig_line >= 1 && orig_line <= orig_lines.len() {
+                                deleted.push(orig_lines[orig_line - 1]);
+                            }
+                            orig_line += 1;
+                        } else if prefix == b' ' {
+                            orig_line += 1;
+                        }
+                    }
+                }
+            }
+
+            let deleted_content = if deleted.is_empty() {
+                None
+            } else {
+                Some(deleted.join("\n"))
+            };
+
+            VisibleBlock {
+                start_line: *start,
+                end_line: *end,
+                content,
+                deleted_content,
+            }
+        })
+        .collect()
 }
 
 /// Convert an absolute file path to a repository-relative path.
@@ -600,5 +758,234 @@ mod tests {
     fn relative_path_no_prefix() {
         let result = get_relative_path("/Users/foo/project", "other/path.ts");
         assert_eq!(result, Some("other/path.ts".to_string()));
+    }
+
+    // ── compute_hidden_ranges ──
+
+    #[test]
+    fn hidden_ranges_no_hunks() {
+        let result = compute_hidden_ranges(&[], 100, 3);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start_line, 1);
+        assert_eq!(result[0].end_line, 100);
+        assert_eq!(result[0].hidden_count, 100);
+    }
+
+    #[test]
+    fn hidden_ranges_zero_total_lines() {
+        let result = compute_hidden_ranges(&[], 0, 3);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn hidden_ranges_single_hunk_at_start() {
+        let hunks = vec![Hunk {
+            index: 0,
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 3,
+            lines: vec![
+                "-old".to_string(),
+                "+new1".to_string(),
+                "+new2".to_string(),
+                " ctx".to_string(),
+            ],
+        }];
+        let result = compute_hidden_ranges(&hunks, 20, 3);
+        // Hunk covers lines 1-3, context extends to 6
+        // Hidden: 7-20
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start_line, 7);
+        assert_eq!(result[0].end_line, 20);
+    }
+
+    #[test]
+    fn hidden_ranges_single_hunk_in_middle() {
+        let hunks = vec![Hunk {
+            index: 0,
+            old_start: 10,
+            old_lines: 2,
+            new_start: 10,
+            new_lines: 2,
+            lines: vec!["-old".to_string(), "+new".to_string()],
+        }];
+        let result = compute_hidden_ranges(&hunks, 20, 3);
+        // Hunk covers lines 10-11, context extends to 7-14
+        // Hidden: 1-6, 15-20
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].start_line, 1);
+        assert_eq!(result[0].end_line, 6);
+        assert_eq!(result[1].start_line, 15);
+        assert_eq!(result[1].end_line, 20);
+    }
+
+    #[test]
+    fn hidden_ranges_adjacent_hunks_merge() {
+        let hunks = vec![
+            Hunk {
+                index: 0,
+                old_start: 5,
+                old_lines: 1,
+                new_start: 5,
+                new_lines: 1,
+                lines: vec!["-a".to_string(), "+b".to_string()],
+            },
+            Hunk {
+                index: 1,
+                old_start: 8,
+                old_lines: 1,
+                new_start: 8,
+                new_lines: 1,
+                lines: vec!["-c".to_string(), "+d".to_string()],
+            },
+        ];
+        // context=3: hunk0 visible 2-8, hunk1 visible 5-11 → merged 2-11
+        let result = compute_hidden_ranges(&hunks, 20, 3);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].start_line, 1);
+        assert_eq!(result[0].end_line, 1);
+        assert_eq!(result[1].start_line, 12);
+        assert_eq!(result[1].end_line, 20);
+    }
+
+    #[test]
+    fn hidden_ranges_all_lines_changed() {
+        let hunks = vec![Hunk {
+            index: 0,
+            old_start: 1,
+            old_lines: 5,
+            new_start: 1,
+            new_lines: 5,
+            lines: vec![
+                "-a".to_string(),
+                "-b".to_string(),
+                "-c".to_string(),
+                "-d".to_string(),
+                "-e".to_string(),
+                "+A".to_string(),
+                "+B".to_string(),
+                "+C".to_string(),
+                "+D".to_string(),
+                "+E".to_string(),
+            ],
+        }];
+        let result = compute_hidden_ranges(&hunks, 5, 3);
+        assert!(result.is_empty());
+    }
+
+    // ── compute_visible_ranges (shared helper) ──
+
+    #[test]
+    fn visible_ranges_empty_hunks() {
+        let result = compute_visible_ranges(&[], 100, 3);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn visible_ranges_single_hunk() {
+        let hunks = vec![Hunk {
+            index: 0,
+            old_start: 10,
+            old_lines: 2,
+            new_start: 10,
+            new_lines: 2,
+            lines: vec!["-old".to_string(), "+new".to_string()],
+        }];
+        let result = compute_visible_ranges(&hunks, 20, 3);
+        assert_eq!(result, vec![(7, 14)]);
+    }
+
+    #[test]
+    fn visible_ranges_delete_only_hunk() {
+        let hunks = vec![Hunk {
+            index: 0,
+            old_start: 5,
+            old_lines: 3,
+            new_start: 5,
+            new_lines: 0,
+            lines: vec!["-a".to_string(), "-b".to_string(), "-c".to_string()],
+        }];
+        let result = compute_visible_ranges(&hunks, 20, 3);
+        assert_eq!(result, vec![(2, 8)]);
+    }
+
+    #[test]
+    fn visible_ranges_overlapping_merge() {
+        let hunks = vec![
+            Hunk {
+                index: 0,
+                old_start: 5,
+                old_lines: 1,
+                new_start: 5,
+                new_lines: 1,
+                lines: vec!["-a".to_string(), "+b".to_string()],
+            },
+            Hunk {
+                index: 1,
+                old_start: 8,
+                old_lines: 1,
+                new_start: 8,
+                new_lines: 1,
+                lines: vec!["-c".to_string(), "+d".to_string()],
+            },
+        ];
+        let result = compute_visible_ranges(&hunks, 20, 3);
+        assert_eq!(result, vec![(2, 11)]);
+    }
+
+    // ── compute_hidden_ranges_from_content ──
+
+    #[test]
+    fn hidden_ranges_from_content_no_changes() {
+        let text = "line1\nline2\nline3\n";
+        let result = compute_hidden_ranges_from_content(text, text, 3);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start_line, 1);
+    }
+
+    #[test]
+    fn hidden_ranges_from_content_with_change() {
+        // Use a large file so hidden ranges exist outside the hunk + context
+        let lines: Vec<String> = (1..=30).map(|i| format!("line{i}")).collect();
+        let original = lines.join("\n");
+        let mut modified_lines = lines.clone();
+        modified_lines[14] = "CHANGED15".to_string(); // Change line 15
+        let modified = modified_lines.join("\n");
+        let result = compute_hidden_ranges_from_content(&original, &modified, 3);
+        // With 30 lines and a change around line 15, there should be hidden ranges
+        // before and after the visible context around the hunk
+        assert!(
+            !result.is_empty(),
+            "expected hidden ranges for a 30-line file with change at line 15"
+        );
+    }
+
+    // ── compute_visible_markdown_blocks ──
+
+    #[test]
+    fn visible_blocks_no_changes() {
+        let text = "line1\nline2\nline3\n";
+        let result = compute_visible_markdown_blocks(text, text, 3);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn visible_blocks_single_change() {
+        let original = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
+        let modified = "a\nb\nc\nd\nE\nf\ng\nh\ni\nj\n";
+        let result = compute_visible_markdown_blocks(original, modified, 2);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].content.contains("E"));
+        assert!(result[0].start_line <= 5);
+        assert!(result[0].end_line >= 5);
+    }
+
+    #[test]
+    fn visible_blocks_multiple_changes() {
+        let original = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq\nr\ns\nt\n";
+        let modified = original.replace("b\n", "B\n").replace("s\n", "S\n");
+        let result = compute_visible_markdown_blocks(original, &modified, 2);
+        assert_eq!(result.len(), 2);
     }
 }

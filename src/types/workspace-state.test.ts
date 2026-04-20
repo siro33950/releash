@@ -30,6 +30,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			reviewCollapsed: false,
+			diffOnlyMode: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -47,6 +48,7 @@ describe("buildWorkspaceState", () => {
 				rightCollapsed: false,
 				rightBottomCollapsed: false,
 				reviewCollapsed: false,
+				diffOnlyMode: false,
 			},
 		});
 	});
@@ -58,6 +60,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			reviewCollapsed: false,
+			diffOnlyMode: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -71,6 +74,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			reviewCollapsed: false,
+			diffOnlyMode: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", false, true);
@@ -84,6 +88,7 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: false,
 			reviewCollapsed: false,
+			diffOnlyMode: false,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, false);
@@ -97,10 +102,25 @@ describe("buildWorkspaceState", () => {
 			activeView: "git",
 			rightBottomCollapsed: true,
 			reviewCollapsed: false,
+			diffOnlyMode: false,
 		};
 
 		const result = buildWorkspaceState(internal, "agent", true, true);
 		expect(result.layout.rightBottomCollapsed).toBe(true);
 		expect(result.layout.centerTab).toBe("agent");
+	});
+
+	it("diffOnlyMode=trueが保持される", () => {
+		const internal = {
+			tabs: [],
+			activeEditorPath: null,
+			activeView: "git",
+			rightBottomCollapsed: false,
+			reviewCollapsed: false,
+			diffOnlyMode: true,
+		};
+
+		const result = buildWorkspaceState(internal, "editor", true, true);
+		expect(result.layout.diffOnlyMode).toBe(true);
 	});
 });
