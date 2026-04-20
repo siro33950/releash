@@ -190,8 +190,7 @@ function RepoWorktreeSectionView({
 	const renderItem = (branch: WorktreeBranch) => {
 		const isSelected = branch.worktree_path === selectedRootPath;
 		const hasWorktree = branch.worktree_path != null;
-		const canDelete =
-			!branch.is_main_worktree && (hasWorktree || branch.is_merged);
+		const canDelete = !branch.is_main_worktree;
 		const status = computeStatus(branch);
 
 		// 2行目テキスト部分を組み立て

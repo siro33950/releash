@@ -62,15 +62,12 @@ export function DeleteWorktreeDialog({
 
 	if (!branch) return null;
 
-	const isMergedOnly = branch.is_merged && !branch.worktree_path;
 	const isMergedWithWorktree = branch.is_merged && !!branch.worktree_path;
 
 	const title = branch.is_merged ? "Delete Branch" : "Delete Workspace";
-	const description = isMergedOnly
-		? `Delete merged branch "${branch.name}"?`
-		: isMergedWithWorktree
-			? `Delete workspace and branch "${branch.name}"?`
-			: `Delete workspace for branch "${branch.name}"?`;
+	const description = isMergedWithWorktree
+		? `Delete workspace and branch "${branch.name}"?`
+		: `Delete workspace for branch "${branch.name}"?`;
 
 	return (
 		<AlertDialog open={open} onOpenChange={handleOpenChange}>

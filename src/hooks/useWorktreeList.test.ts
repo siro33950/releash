@@ -318,7 +318,7 @@ describe("useWorktreeList", () => {
 		expect(result.current.branches).toHaveLength(2);
 	});
 
-	it("should filter out branches without worktree_path but include default branches", async () => {
+	it("should filter out branches without worktree_path but include main worktree branches", async () => {
 		const branches = [
 			makeBranch({ name: "main", is_main_worktree: true }),
 			makeBranch({

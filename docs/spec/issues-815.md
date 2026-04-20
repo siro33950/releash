@@ -47,7 +47,7 @@ Feature: ワークツリー一覧の表示
 
 **対象コンポーネント**:
 - `src-tauri/src/git/worktree.rs` (`list_branches_with_status`): ローカルブランチイテレーション後、`wt_map` からブランチにマッチしなかったワークツリー（detached HEAD等）を検出し、`WorktreeBranch` として `cards` に追加する
-- `src/hooks/useWorktreeList.ts`: メインリポジトリの表示対応 — 現在の `!b.is_default` フィルタを見直し、メインリポジトリも一覧に含める。メインリポジトリには識別アイコンを付与
+- `src/hooks/useWorktreeList.ts`: メインリポジトリの表示対応 — `worktree_path` を持つエントリを一覧に残し、`is_main_worktree` をフロントエンドへ伝搬する
 - `src/components/workspace/WorkspaceList.tsx`: メインリポジトリのアイコン表示対応
 
 **検討した代替案**:
