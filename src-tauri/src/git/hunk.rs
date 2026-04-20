@@ -396,6 +396,7 @@ pub fn compute_visible_markdown_blocks(
 ) -> Vec<VisibleBlock> {
     let hunks_result = compute_diff_hunks(original, modified, None);
     let mod_lines: Vec<&str> = modified.lines().collect();
+    let orig_lines: Vec<&str> = original.lines().collect();
     let total_lines = mod_lines.len() as u32;
 
     if hunks_result.hunks.is_empty() {
@@ -404,17 +405,48 @@ pub fn compute_visible_markdown_blocks(
 
     let merged = compute_visible_ranges(&hunks_result.hunks, total_lines, context_lines);
 
-    // Build visible blocks from merged ranges
+    // Build visible blocks from merged ranges, including deleted content
     merged
         .iter()
         .map(|(start, end)| {
             let s = (*start as usize).saturating_sub(1);
             let e = (*end as usize).min(mod_lines.len());
             let content = mod_lines[s..e].join("\n");
+
+            // Collect deleted lines from hunks that overlap this visible range
+            let mut deleted: Vec<&str> = Vec::new();
+            for hunk in &hunks_result.hunks {
+                let hunk_mod_start = hunk.new_start;
+                let hunk_mod_end = hunk.new_start + hunk.new_lines.max(1) - 1;
+                // Check if hunk overlaps with this visible range
+                if hunk_mod_end >= *start && hunk_mod_start <= *end {
+                    // Extract deleted lines (lines starting with '-') from original
+                    let mut orig_line = hunk.old_start as usize;
+                    for line in &hunk.lines {
+                        let prefix = line.as_bytes().first().copied().unwrap_or(b' ');
+                        if prefix == b'-' {
+                            if orig_line >= 1 && orig_line <= orig_lines.len() {
+                                deleted.push(orig_lines[orig_line - 1]);
+                            }
+                            orig_line += 1;
+                        } else if prefix == b' ' {
+                            orig_line += 1;
+                        }
+                    }
+                }
+            }
+
+            let deleted_content = if deleted.is_empty() {
+                None
+            } else {
+                Some(deleted.join("\n"))
+            };
+
             VisibleBlock {
                 start_line: *start,
                 end_line: *end,
                 content,
+                deleted_content,
             }
         })
         .collect()

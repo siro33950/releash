@@ -131,10 +131,11 @@ export function useWorktreeState({
 	// --- Sync internal state for workspace state persistence ---
 	useEffect(() => {
 		if (!internalStateMapRef) return;
+		const current = internalStateMapRef.current.get(rootPath);
 		internalStateMapRef.current.set(rootPath, {
-			tabs: [],
-			activeEditorPath: null,
-			activeView: "agent",
+			tabs: current?.tabs ?? [],
+			activeEditorPath: current?.activeEditorPath ?? null,
+			activeView: current?.activeView ?? "agent",
 			rightBottomCollapsed,
 			reviewCollapsed,
 			diffOnlyMode,

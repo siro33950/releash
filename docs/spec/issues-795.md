@@ -96,11 +96,11 @@ Rust（ロジック）:
 フロントエンド（UI）:
 - `src/types/settings.ts`: `AppSettings`に`defaultDiffOnlyMode: boolean`を追加（デフォルト: `false`）
 - `src/hooks/useSettings.ts`: `updateDefaultDiffOnlyMode`アクセサを追加
-- `src/hooks/useReviewPanel.ts`: `diffOnlyMode: boolean`状態と`setDiffOnlyMode`を管理
+- `src/screens/useWorktreeState.tsx`: Workspaceごとの`diffOnlyMode: boolean`状態と`setDiffOnlyMode`を管理
 - `src/components/panels/DiffToolbar.tsx`: 差分のみ表示トグルボタンを追加（diff mode切り替えの左隣）
 - `src/components/panels/CodeDiffViewer.tsx`:
   - **MonacoDiffViewer**: `hideUnchangedRegions`オプションを`diffOnlyMode`連動で`updateOptions`切り替え（`contextLineCount: 3`, `minimumLineCount: 3`, `revealLineCount: 20`）
-  - **GutterDiffViewer**: `invoke("compute_hidden_ranges")`で取得した結果を`editor.setHiddenAreas()`に渡して非表示化 + ViewZoneで「… N lines hidden」バナーを表示。バナークリックで個別展開
+  - **GutterDiffViewer**: `invoke("compute_hidden_ranges_from_content")`で取得した結果を`editor.setHiddenAreas()`に渡して非表示化 + ViewZoneで「… N lines hidden」バナーを表示。バナークリックで個別展開
 - `src/components/panels/MarkdownDiffViewer.tsx`: `invoke("compute_visible_markdown_blocks")`で取得した可視ブロックのみを表示
 - `src/components/panels/ReviewPanel.tsx`: `diffOnlyMode`状態を`DiffToolbar`・`DiffViewerSection`に伝搬
 
