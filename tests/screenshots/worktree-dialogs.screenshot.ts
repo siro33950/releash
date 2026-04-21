@@ -7,7 +7,6 @@ import {
 	collapsePanels,
 	setupWorktreeView,
 	xtermMask,
-	monacoMask,
 } from "../helpers/screenshot-utils";
 import { emitTauriEvent } from "../helpers/tauri-mock";
 
@@ -24,7 +23,7 @@ test.describe("Worktree Dialogs", () => {
 		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-branch-create.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -39,7 +38,7 @@ test.describe("Worktree Dialogs", () => {
 		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-discard-all.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -59,7 +58,7 @@ test.describe("Worktree Dialogs", () => {
 		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-git-error.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -89,7 +88,7 @@ test.describe("Worktree Dialogs", () => {
 		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-unsaved.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -107,7 +106,7 @@ test.describe("Worktree Dialogs", () => {
 		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-dialog-push-error.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 });

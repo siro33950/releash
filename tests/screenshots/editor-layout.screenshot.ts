@@ -5,7 +5,6 @@ import {
 	searchResults,
 } from "../helpers/fixtures";
 import {
-	monacoMask,
 	setupWorktreeView,
 	switchToView,
 	xtermMask,
@@ -16,7 +15,7 @@ test.describe("Editor Layout", () => {
 		await setupWorktreeView(page);
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-empty.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -33,7 +32,7 @@ test.describe("Editor Layout", () => {
 		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-file-open.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -54,7 +53,7 @@ test.describe("Editor Layout", () => {
 		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-multiple-tabs.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -65,7 +64,7 @@ test.describe("Editor Layout", () => {
 		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-full-layout.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -79,7 +78,7 @@ test.describe("Editor Layout", () => {
 		}
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-sidebar-collapsed.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -93,7 +92,7 @@ test.describe("Editor Layout", () => {
 		}
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-terminal-collapsed.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -111,7 +110,7 @@ test.describe("Editor Layout", () => {
 		}
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-all-collapsed.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -123,7 +122,7 @@ test.describe("Editor Layout", () => {
 		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-source-control-view.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -138,7 +137,7 @@ test.describe("Editor Layout", () => {
 		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-search-view.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -150,7 +149,7 @@ test.describe("Editor Layout", () => {
 		await page.waitForTimeout(300);
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-pr-view.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -162,7 +161,7 @@ test.describe("Editor Layout", () => {
 		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-agent-tab.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 
@@ -180,7 +179,7 @@ test.describe("Editor Layout", () => {
 		await page.waitForTimeout(500);
 		await expect(page).toHaveScreenshot(
 			"worktree-editor-diff-toolbar.png",
-			{ mask: [...xtermMask(page), ...monacoMask(page)] },
+			{ mask: [...xtermMask(page)] },
 		);
 	});
 });
