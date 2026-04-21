@@ -7,6 +7,7 @@ import React, {
 	useRef,
 	useState,
 } from "react";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import {
 	assignChangeGroupsToBlocks,
 	computeDiffBlocks,
@@ -928,18 +929,17 @@ export function ShikiDiffViewer({
 				: InlineView;
 
 	return (
-		<div className="relative h-full w-full">
-			{/* biome-ignore lint/a11y/noStaticElementInteractions: event delegation for stage buttons and expand banners */}
-			{/* biome-ignore lint/a11y/useKeyWithClickEvents: interactive elements inside handle keyboard events */}
-			<div
-				ref={containerRef}
-				className="h-full w-full overflow-auto font-mono text-sm"
+		// biome-ignore lint/a11y/noStaticElementInteractions: event delegation for stage buttons and expand banners
+		// biome-ignore lint/a11y/useKeyWithClickEvents: interactive elements inside handle keyboard events
+		<div className="relative h-full w-full" onClick={handleDelegatedClick}>
+			<ScrollArea
+				viewportRef={containerRef}
+				className="h-full w-full font-mono text-sm"
 				style={{
 					backgroundColor: "var(--editor-background, #1a1a1a)",
 					color: "var(--editor-foreground, #e0e0e0)",
 				}}
 				data-testid="code-diff-viewer"
-				onClick={handleDelegatedClick}
 			>
 				<ViewComponent
 					visibleBlocks={visibleBlocks}
@@ -948,7 +948,8 @@ export function ShikiDiffViewer({
 					groupActionLabel={groupActionLabel}
 					containerRef={containerRef}
 				/>
-			</div>
+				<ScrollBar orientation="horizontal" />
+			</ScrollArea>
 			<ScrollbarMarkers markers={diffMarkers} />
 		</div>
 	);
