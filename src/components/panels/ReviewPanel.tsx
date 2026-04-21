@@ -228,7 +228,7 @@ export function ReviewPanel({
 	// Image / Markdown detection
 	const isImage = selectedFile ? isImageFile(selectedFile) : false;
 	const isMarkdown = selectedFile ? isMarkdownFile(selectedFile) : false;
-	const [showMarkdownPreview, setShowMarkdownPreview] = useState(true);
+	const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
 	const imageDiff = useImageDiff(
 		isImage ? selectedFilePath : null,
 		diffBase,
