@@ -348,8 +348,9 @@
 	padding: 12px 16px;
 	border-radius: var(--radius);
 	background: var(--muted);
-	overflow-x: auto;
-	max-width: 100%;
+	overflow: visible;
+	width: fit-content;
+	min-width: 100%;
 }
 .markdown-preview pre code {
 	padding: 0;

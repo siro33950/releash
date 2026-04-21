@@ -146,6 +146,12 @@ export function StreamMessage({ content, role, images }: StreamMessageProps) {
 									<ScrollBar orientation="horizontal" />
 								</ScrollArea>
 							),
+							pre: ({ children: c, ...props }) => (
+								<ScrollArea className="max-w-full">
+									<pre {...props}>{c}</pre>
+									<ScrollBar orientation="horizontal" />
+								</ScrollArea>
+							),
 						}}
 					>
 						{deferredContent}
