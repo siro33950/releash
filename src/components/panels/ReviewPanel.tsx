@@ -202,10 +202,13 @@ export function ReviewPanel({
 		[diffBase, stagedFiles, changedFiles, selectedSection],
 	);
 
+	const [scrollToLine, setScrollToLine] = useState<number | null>(null);
+
 	useEffect(() => {
 		if (!navigateToFile) return;
 		const section = determineSectionForFile(navigateToFile.path);
 		selectFile(navigateToFile.path, section);
+		setScrollToLine(navigateToFile.line ?? null);
 	}, [navigateToFile, determineSectionForFile, selectFile]);
 
 	const handleGoToPrevFile = useCallback(() => {
@@ -262,6 +265,7 @@ export function ReviewPanel({
 		updateComment,
 		deleteComment,
 		sendToAgent,
+		markSent,
 		sendAllUnsent,
 		getCommentsForFile,
 	} = useDiffComments({ worktreeName });
@@ -317,9 +321,10 @@ export function ReviewPanel({
 			const result = await sendToAgent(commentIds);
 			if (result.formattedMessage && onSendToAgent) {
 				await onSendToAgent(result.formattedMessage);
+				await markSent(result.commentIds);
 			}
 		},
-		[sendToAgent, onSendToAgent],
+		[sendToAgent, markSent, onSendToAgent],
 	);
 
 	// File tree panel collapse
@@ -498,6 +503,7 @@ export function ReviewPanel({
 									const result = await sendAllUnsent();
 									if (result.formattedMessage && onSendToAgent) {
 										await onSendToAgent(result.formattedMessage);
+										await markSent(result.commentIds);
 									}
 								}}
 								disabled={unsentCount === 0}
@@ -640,6 +646,7 @@ export function ReviewPanel({
 											onUpdateComment={updateComment}
 											onDeleteComment={deleteComment}
 											onSendComment={handleSendComments}
+											scrollToLine={scrollToLine}
 										/>
 									</div>
 									<DiffToolbar

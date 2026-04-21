@@ -29,6 +29,7 @@ export interface CodeDiffViewerProps {
 	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
 	onDeleteComment?: (commentId: string) => Promise<void>;
 	onSendComment?: (commentIds: string[]) => Promise<void>;
+	scrollToLine?: number | null;
 }
 
 export function CodeDiffViewer({
@@ -47,6 +48,7 @@ export function CodeDiffViewer({
 	onUpdateComment,
 	onDeleteComment,
 	onSendComment,
+	scrollToLine,
 }: CodeDiffViewerProps) {
 	const [detectedLanguage, setDetectedLanguage] = useState("plaintext");
 	const [hunks, setHunks] = useState<Hunk[] | null>(null);
@@ -110,6 +112,7 @@ export function CodeDiffViewer({
 			onUpdateComment={onUpdateComment}
 			onDeleteComment={onDeleteComment}
 			onSendComment={onSendComment}
+			scrollToLine={scrollToLine}
 		/>
 	);
 }

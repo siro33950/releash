@@ -236,11 +236,17 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				const response = hasImages
 					? await sendAgentMessage(sessionId, wPath, trimmed, pm, images)
 					: await sendAgentMessage(sessionId, wPath, trimmed, pm);
-				// Rust SessionStore is the source of truth — use the returned session as-is
-				dispatch({
-					type: "SET_ACTIVE_SESSION",
-					session: response.session,
-				});
+				// Only update if the user hasn't switched to a different session during await
+				const currentSessionId = activeSessionRef.current?.id ?? null;
+				if (
+					currentSessionId === sessionId ||
+					currentSessionId === response.session.id
+				) {
+					dispatch({
+						type: "SET_ACTIVE_SESSION",
+						session: response.session,
+					});
+				}
 				dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
 			} catch (e) {
 				dispatch({

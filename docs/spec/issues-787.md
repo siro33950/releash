@@ -194,7 +194,7 @@ struct DiffComment {
 4. フロントはコマンド完了後にUIを更新（Tauriイベント経由）
 
 送信フォーマット例:
-```
+```text
 @src/components/Example.tsx L42: ここのロジックは〇〇すべき
 @src/components/Example.tsx L10-15: この範囲のエラーハンドリングが不足
 @src/lib/utils.ts (file comment): 全体的にテストが不足している

@@ -24,8 +24,14 @@ export function RightSidebarBottom({
 	onToggleCollapse,
 	collapsed,
 }: RightSidebarBottomProps) {
-	const { comments, unsentCount, deleteComment, sendToAgent, sendAllUnsent } =
-		useDiffComments({ worktreeName });
+	const {
+		comments,
+		unsentCount,
+		deleteComment,
+		sendToAgent,
+		markSent,
+		sendAllUnsent,
+	} = useDiffComments({ worktreeName });
 
 	return (
 		<div className="flex flex-col h-full">
@@ -64,12 +70,14 @@ export function RightSidebarBottom({
 									const result = await sendToAgent(ids);
 									if (result.formattedMessage && onSendToAgent) {
 										await onSendToAgent(result.formattedMessage);
+										await markSent(result.commentIds);
 									}
 								}}
 								onSendAll={async () => {
 									const result = await sendAllUnsent();
 									if (result.formattedMessage && onSendToAgent) {
 										await onSendToAgent(result.formattedMessage);
+										await markSent(result.commentIds);
 									}
 								}}
 							/>

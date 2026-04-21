@@ -15,12 +15,15 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 
 	const loadComments = useCallback(async () => {
 		if (!worktreeName) return;
+		const requestedWorktree = worktreeName;
 		setLoading(true);
 		try {
 			const result = await invoke<DiffComment[]>("load_diff_comments", {
-				worktreeName,
+				worktreeName: requestedWorktree,
 			});
-			setComments(result);
+			if (worktreeNameRef.current === requestedWorktree) {
+				setComments(result);
+			}
 		} finally {
 			setLoading(false);
 		}
@@ -82,13 +85,24 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 
 	const sendToAgent = useCallback(
 		async (commentIds: string[]) => {
-			return invoke<{ sentCount: number; formattedMessage: string }>(
-				"send_diff_comments_to_agent",
-				{
-					worktreeName,
-					commentIds,
-				},
-			);
+			return invoke<{
+				sentCount: number;
+				formattedMessage: string;
+				commentIds: string[];
+			}>("send_diff_comments_to_agent", {
+				worktreeName,
+				commentIds,
+			});
+		},
+		[worktreeName],
+	);
+
+	const markSent = useCallback(
+		async (commentIds: string[]) => {
+			return invoke<void>("mark_diff_comments_sent", {
+				worktreeName,
+				commentIds,
+			});
 		},
 		[worktreeName],
 	);
@@ -114,6 +128,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 		updateComment,
 		deleteComment,
 		sendToAgent,
+		markSent,
 		sendAllUnsent,
 		getCommentsForFile,
 		reload: loadComments,

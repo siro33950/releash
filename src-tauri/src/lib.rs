@@ -334,6 +334,7 @@ pub fn run() {
             diff_comment_store::update_diff_comment,
             diff_comment_store::delete_diff_comment,
             diff_comment_sender::send_diff_comments_to_agent,
+            diff_comment_sender::mark_diff_comments_sent,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,

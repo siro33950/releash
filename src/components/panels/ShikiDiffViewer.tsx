@@ -68,6 +68,7 @@ export interface ShikiDiffViewerProps {
 	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
 	onDeleteComment?: (commentId: string) => Promise<void>;
 	onSendComment?: (commentIds: string[]) => Promise<void>;
+	scrollToLine?: number | null;
 }
 
 type VisibleItem = DiffBlock | { type: "hidden"; range: HiddenRange };
@@ -510,9 +511,13 @@ function useCommentViewState(comments: DiffComment[] | undefined) {
 	const commentHighlightLines = useMemo(() => {
 		const set = new Set<number>();
 		for (const c of comments ?? []) {
-			if (c.lineNumber != null && c.endLine != null) {
-				for (let i = c.lineNumber; i <= c.endLine; i++) {
-					set.add(i);
+			if (c.lineNumber != null) {
+				if (c.endLine != null) {
+					for (let i = c.lineNumber; i <= c.endLine; i++) {
+						set.add(i);
+					}
+				} else {
+					set.add(c.lineNumber);
 				}
 			}
 		}
@@ -749,11 +754,15 @@ function GutterView({
 							<DiffInlineCommentInput
 								onSubmit={async (content) => {
 									if (commentInputRange) {
-										await onAddRangeComment?.(
-											commentInputRange.start,
-											commentInputRange.end,
-											content,
-										);
+										if (onAddRangeComment) {
+											await onAddRangeComment(
+												commentInputRange.start,
+												commentInputRange.end,
+												content,
+											);
+										} else {
+											await onAddComment?.(commentInputRange.start, content);
+										}
 										setCommentInputRange(null);
 									} else {
 										await onAddComment?.(item.afterLine, content);
@@ -775,6 +784,7 @@ function GutterView({
 						) : (
 							// biome-ignore lint/a11y/noStaticElementInteractions: drag range tracking
 							<div
+								data-diff-line={item.line.newLineNumber ?? undefined}
 								className={`group/line relative ${isLineInRange(item.line.newLineNumber, selectionRange) || item.line.newLineNumber === commentInputLine || isLineInRange(item.line.newLineNumber, commentInputRange) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_15%,transparent)]" : commentHighlightLines.has(item.line.newLineNumber ?? -1) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_8%,transparent)]" : ""}`}
 								onMouseEnter={() => {
 									if (item.line.newLineNumber != null)
@@ -940,11 +950,15 @@ function InlineView({
 							<DiffInlineCommentInput
 								onSubmit={async (content) => {
 									if (commentInputRange) {
-										await onAddRangeComment?.(
-											commentInputRange.start,
-											commentInputRange.end,
-											content,
-										);
+										if (onAddRangeComment) {
+											await onAddRangeComment(
+												commentInputRange.start,
+												commentInputRange.end,
+												content,
+											);
+										} else {
+											await onAddComment?.(commentInputRange.start, content);
+										}
 										setCommentInputRange(null);
 									} else {
 										await onAddComment?.(item.afterLine, content);
@@ -966,6 +980,7 @@ function InlineView({
 						) : (
 							// biome-ignore lint/a11y/noStaticElementInteractions: drag range tracking
 							<div
+								data-diff-line={item.line.newLineNumber ?? undefined}
 								className={`group/line relative ${isLineInRange(item.line.newLineNumber, selectionRange) || item.line.newLineNumber === commentInputLine || isLineInRange(item.line.newLineNumber, commentInputRange) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_15%,transparent)]" : commentHighlightLines.has(item.line.newLineNumber ?? -1) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_8%,transparent)]" : ""}`}
 								onMouseEnter={() => {
 									if (item.line.newLineNumber != null)
@@ -1175,11 +1190,15 @@ function SplitView({
 							<DiffInlineCommentInput
 								onSubmit={async (content) => {
 									if (commentInputRange) {
-										await onAddRangeComment?.(
-											commentInputRange.start,
-											commentInputRange.end,
-											content,
-										);
+										if (onAddRangeComment) {
+											await onAddRangeComment(
+												commentInputRange.start,
+												commentInputRange.end,
+												content,
+											);
+										} else {
+											await onAddComment?.(commentInputRange.start, content);
+										}
 										setCommentInputRange(null);
 									} else {
 										await onAddComment?.(item.afterLine, content);
@@ -1201,6 +1220,7 @@ function SplitView({
 						) : (
 							// biome-ignore lint/a11y/noStaticElementInteractions: drag range tracking
 							<div
+								data-diff-line={item.row.right?.newLineNumber ?? undefined}
 								className={`group/line relative ${isLineInRange(item.row.right?.newLineNumber ?? null, selectionRange) || (item.row.right?.newLineNumber ?? null) === commentInputLine || isLineInRange(item.row.right?.newLineNumber ?? null, commentInputRange) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_15%,transparent)]" : commentHighlightLines.has(item.row.right?.newLineNumber ?? -1) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_8%,transparent)]" : ""}`}
 								onMouseEnter={() => {
 									const lineNum = item.row.right?.newLineNumber;
@@ -1408,6 +1428,7 @@ export function ShikiDiffViewer({
 	onUpdateComment,
 	onDeleteComment,
 	onSendComment,
+	scrollToLine,
 }: ShikiDiffViewerProps) {
 	const originalTokens = useShikiHighlighter(originalContent, language);
 	const modifiedTokens = useShikiHighlighter(modifiedContent, language);
@@ -1516,6 +1537,18 @@ export function ShikiDiffViewer({
 			}
 		}
 	}, [filePath]);
+
+	useEffect(() => {
+		if (scrollToLine == null || !containerRef.current) return;
+		requestAnimationFrame(() => {
+			const el = containerRef.current?.querySelector(
+				`[data-diff-line="${scrollToLine}"]`,
+			);
+			if (el) {
+				el.scrollIntoView({ block: "center", behavior: "smooth" });
+			}
+		});
+	}, [scrollToLine]);
 
 	const handleDelegatedClick = useDelegatedClick(onStageGroup, expandRange);
 

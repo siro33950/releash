@@ -32,6 +32,7 @@ export interface DiffViewerSectionProps {
 	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
 	onDeleteComment?: (commentId: string) => Promise<void>;
 	onSendComment?: (commentIds: string[]) => Promise<void>;
+	scrollToLine?: number | null;
 }
 
 export function DiffViewerSection(props: DiffViewerSectionProps) {
@@ -72,6 +73,7 @@ export function DiffViewerSection(props: DiffViewerSectionProps) {
 			onUpdateComment={props.onUpdateComment}
 			onDeleteComment={props.onDeleteComment}
 			onSendComment={props.onSendComment}
+			scrollToLine={props.scrollToLine}
 		/>
 	);
 }

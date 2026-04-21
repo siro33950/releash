@@ -255,7 +255,11 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					refreshInFlight = true;
 					try {
 						const response = await getSession(chat_session_id);
-						if (response) {
+						if (
+							response &&
+							!cancelled &&
+							activeSessionRef.current?.id === chat_session_id
+						) {
 							dispatch({
 								type: "SET_ACTIVE_SESSION",
 								session: response.session,

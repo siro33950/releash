@@ -67,7 +67,7 @@ pub enum WsMessage {
     #[serde(rename = "worktree_select_response")]
     WorktreeSelectResponse(WorktreeSelectResponse),
 
-    // ��ランチリスト同期
+    // ブランチリスト同期
     #[serde(rename = "branch_list_sync")]
     BranchListSync(BranchListSync),
 

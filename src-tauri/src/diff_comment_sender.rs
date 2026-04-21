@@ -9,6 +9,7 @@ use crate::diff_comment_store::{DiffComment, DiffCommentStore};
 pub struct SendDiffCommentsResult {
     pub sent_count: usize,
     pub formatted_message: String,
+    pub comment_ids: Vec<String>,
 }
 
 /// Format comments for agent using @mention syntax compatible with file_mention regex.
@@ -32,11 +33,11 @@ pub fn format_comments_for_agent(comments: &[DiffComment]) -> String {
     lines.join("\n")
 }
 
-/// Format and mark comments as sent. Does NOT send to agent — the frontend
-/// calls useAgentChat.sendMessage() with the returned formattedMessage.
+/// Format comments for sending to agent. Does NOT mark as sent — the frontend
+/// should call `mark_diff_comments_sent` after the agent send succeeds.
 #[tauri::command]
 pub async fn send_diff_comments_to_agent(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     comment_store: tauri::State<'_, Arc<DiffCommentStore>>,
     worktree_name: String,
     comment_ids: Vec<String>,
@@ -55,7 +56,22 @@ pub async fn send_diff_comments_to_agent(
     let sent_ids: Vec<String> = comments.iter().map(|c| c.id.clone()).collect();
     let sent_count = sent_ids.len();
 
-    comment_store.mark_sent(&worktree_name, &sent_ids)?;
+    Ok(SendDiffCommentsResult {
+        sent_count,
+        formatted_message,
+        comment_ids: sent_ids,
+    })
+}
+
+/// Mark comments as sent after the agent send succeeds.
+#[tauri::command]
+pub async fn mark_diff_comments_sent(
+    app: tauri::AppHandle,
+    comment_store: tauri::State<'_, Arc<DiffCommentStore>>,
+    worktree_name: String,
+    comment_ids: Vec<String>,
+) -> Result<(), String> {
+    comment_store.mark_sent(&worktree_name, &comment_ids)?;
 
     let data_dir = app
         .path()
@@ -64,10 +80,7 @@ pub async fn send_diff_comments_to_agent(
     comment_store.save(&data_dir, &worktree_name)?;
     let _ = app.emit("diff-comments-changed", &worktree_name);
 
-    Ok(SendDiffCommentsResult {
-        sent_count,
-        formatted_message,
-    })
+    Ok(())
 }
 
 #[cfg(test)]

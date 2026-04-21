@@ -1,10 +1,46 @@
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
+
+#[derive(Debug)]
+pub enum DiffCommentError {
+    Io(std::io::Error),
+    Serialize(serde_json::Error),
+    NotFound(String),
+}
+
+impl fmt::Display for DiffCommentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "IO error: {e}"),
+            Self::Serialize(e) => write!(f, "Serialization error: {e}"),
+            Self::NotFound(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl From<std::io::Error> for DiffCommentError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<serde_json::Error> for DiffCommentError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Serialize(e)
+    }
+}
+
+impl From<DiffCommentError> for String {
+    fn from(e: DiffCommentError) -> Self {
+        e.to_string()
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -77,11 +113,11 @@ impl DiffCommentStore {
         comments
     }
 
-    pub fn save(&self, app_data_dir: &Path, worktree_name: &str) -> Result<(), String> {
+    pub fn save(&self, app_data_dir: &Path, worktree_name: &str) -> Result<(), DiffCommentError> {
         let _guard = self.file_lock.lock();
 
         let dir = state_dir(app_data_dir);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {e}"))?;
+        std::fs::create_dir_all(&dir)?;
 
         let file_path = state_file(app_data_dir, worktree_name);
         let comments = {
@@ -91,9 +127,8 @@ impl DiffCommentStore {
                 None => Vec::new(),
             }
         };
-        let json = serde_json::to_string_pretty(&comments)
-            .map_err(|e| format!("Failed to serialize: {e}"))?;
-        std::fs::write(&file_path, json).map_err(|e| format!("Failed to write: {e}"))?;
+        let json = serde_json::to_string_pretty(&comments)?;
+        std::fs::write(&file_path, json)?;
         Ok(())
     }
 
@@ -132,41 +167,49 @@ impl DiffCommentStore {
         worktree_name: &str,
         comment_id: &str,
         content: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), DiffCommentError> {
         let mut entries = self.entries.write();
-        let comments = entries
-            .get_mut(worktree_name)
-            .ok_or_else(|| "Worktree not found".to_string())?;
+        let comments = entries.get_mut(worktree_name).ok_or_else(|| {
+            DiffCommentError::NotFound(format!("Worktree not found: {worktree_name}"))
+        })?;
 
         let comment = comments
             .iter_mut()
             .find(|c| c.id == comment_id)
-            .ok_or_else(|| "Comment not found".to_string())?;
+            .ok_or_else(|| {
+                DiffCommentError::NotFound(format!("Comment not found: {comment_id}"))
+            })?;
 
         comment.content = content;
         Ok(())
     }
 
-    pub fn delete(&self, worktree_name: &str, comment_id: &str) -> Result<(), String> {
+    pub fn delete(&self, worktree_name: &str, comment_id: &str) -> Result<(), DiffCommentError> {
         let mut entries = self.entries.write();
-        let comments = entries
-            .get_mut(worktree_name)
-            .ok_or_else(|| "Worktree not found".to_string())?;
+        let comments = entries.get_mut(worktree_name).ok_or_else(|| {
+            DiffCommentError::NotFound(format!("Worktree not found: {worktree_name}"))
+        })?;
 
         let len_before = comments.len();
         comments.retain(|c| c.id != comment_id);
 
         if comments.len() == len_before {
-            return Err("Comment not found".to_string());
+            return Err(DiffCommentError::NotFound(format!(
+                "Comment not found: {comment_id}"
+            )));
         }
         Ok(())
     }
 
-    pub fn mark_sent(&self, worktree_name: &str, comment_ids: &[String]) -> Result<(), String> {
+    pub fn mark_sent(
+        &self,
+        worktree_name: &str,
+        comment_ids: &[String],
+    ) -> Result<(), DiffCommentError> {
         let mut entries = self.entries.write();
-        let comments = entries
-            .get_mut(worktree_name)
-            .ok_or_else(|| "Worktree not found".to_string())?;
+        let comments = entries.get_mut(worktree_name).ok_or_else(|| {
+            DiffCommentError::NotFound(format!("Worktree not found: {worktree_name}"))
+        })?;
 
         for comment in comments.iter_mut() {
             if comment_ids.contains(&comment.id) {
