@@ -4,9 +4,7 @@ import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useGitActions } from "@/hooks/useGitActions";
 import { useGitDirWatcher } from "@/hooks/useGitDirWatcher";
 import { useNativeFileDrop } from "@/hooks/useNativeFileDrop";
-import { useThreads } from "@/hooks/useThreads";
 import { useWorkspaceStatus } from "@/hooks/useWorkspaceStatus";
-import { useWorktreeThreads } from "@/screens/useWorktreeComments";
 import {
 	gitReducer,
 	initialUIState,
@@ -57,13 +55,6 @@ export function useWorktreeState({
 
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
-	const {
-		threads,
-		removeThread,
-		resolveThread,
-		showResolvedThreads,
-		toggleShowResolvedThreads,
-	} = useThreads(rootPath);
 
 	const { stage, unstage, createBranch } = useGitActions();
 	const terminalRef = useRef<TerminalTabPanelHandle>(null);
@@ -118,11 +109,6 @@ export function useWorktreeState({
 		isActive,
 	});
 
-	const { handleSendToTerminal, handleThreadClick } = useWorktreeThreads({
-		terminalRef,
-		rootPath,
-	});
-
 	// --- Native file drop (image D&D to AgentChat) ---
 	const { registerDropZone } = useNativeFileDrop({
 		onDropToEditor: useCallback((_paths: string[]) => {}, []),
@@ -150,11 +136,6 @@ export function useWorktreeState({
 
 	return {
 		ready,
-		threads,
-		removeThread,
-		resolveThread,
-		showResolvedThreads,
-		toggleShowResolvedThreads,
 		gitError,
 		isSettingsOpen,
 		showCreateBranch,
@@ -166,8 +147,6 @@ export function useWorktreeState({
 		dispatchGit,
 		gitActions,
 		registerDropZone,
-		handleSendToTerminal,
-		handleThreadClick,
 		refreshGit,
 		gitRefreshKey,
 		onSettingsSave,

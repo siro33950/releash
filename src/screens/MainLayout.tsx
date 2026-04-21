@@ -72,6 +72,30 @@ function WorktreeContent({
 }) {
 	const rightBottomRef = useRef<PanelImperativeHandle>(null);
 	const reviewRef = useRef<PanelImperativeHandle>(null);
+	const [navigateToFile, setNavigateToFile] = useState<{
+		path: string;
+		line?: number;
+	} | null>(null);
+
+	const worktreeName = useMemo(() => {
+		const parts = rootPath.split("/");
+		return parts[parts.length - 1] ?? "";
+	}, [rootPath]);
+
+	const sendAgentMessageRef = useRef<
+		((content: string) => Promise<void>) | null
+	>(null);
+
+	const handleSendToAgent = useCallback(async (message: string) => {
+		await sendAgentMessageRef.current?.(message);
+	}, []);
+
+	const handleCommentClick = useCallback(
+		(filePath: string, lineNumber?: number) => {
+			setNavigateToFile({ path: filePath, line: lineNumber });
+		},
+		[],
+	);
 
 	const handleToggleRightBottom = useCallback(() => {
 		const panel = rightBottomRef.current;
@@ -112,8 +136,6 @@ function WorktreeContent({
 		internalStateMapRef,
 	});
 
-	const { handleSendToTerminal, handleThreadClick } = s;
-
 	return (
 		<>
 			{/* Center */}
@@ -124,6 +146,7 @@ function WorktreeContent({
 						<AgentChatPanel
 							worktreePath={rootPath}
 							registerDropZone={s.registerDropZone}
+							sendMessageRef={sendAgentMessageRef}
 						/>
 					</div>
 				</div>
@@ -162,6 +185,8 @@ function WorktreeContent({
 										defaultDiffMode={settings.defaultDiffMode}
 										diffOnlyMode={s.diffOnlyMode}
 										onDiffOnlyModeChange={s.setDiffOnlyMode}
+										navigateToFile={navigateToFile}
+										onSendToAgent={handleSendToAgent}
 									/>
 								</div>
 							</Panel>
@@ -184,13 +209,9 @@ function WorktreeContent({
 									<RightSidebarBottom
 										rootPath={rootPath}
 										theme={settings.theme}
-										threads={s.threads}
-										onThreadClick={handleThreadClick}
-										onDeleteThread={s.removeThread}
-										onResolveThread={s.resolveThread}
-										onSendToTerminal={handleSendToTerminal}
-										showResolvedThreads={s.showResolvedThreads}
-										onToggleShowResolved={s.toggleShowResolvedThreads}
+										worktreeName={worktreeName}
+										onSendToAgent={handleSendToAgent}
+										onCommentClick={handleCommentClick}
 										onToggleCollapse={handleToggleRightBottom}
 										collapsed={s.rightBottomCollapsed}
 									/>

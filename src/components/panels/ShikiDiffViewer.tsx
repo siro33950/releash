@@ -1,5 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { invoke } from "@tauri-apps/api/core";
+import { Plus } from "lucide-react";
 import React, {
 	useCallback,
 	useEffect,
@@ -16,7 +17,9 @@ import {
 } from "@/hooks/useDiffTokens";
 import { useShikiHighlighter } from "@/hooks/useShikiHighlighter";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
+import type { DiffComment } from "@/types/diffComment";
 import type { DiffMode } from "@/types/settings";
+import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
 
 interface HiddenRange {
 	startLine: number;
@@ -55,6 +58,16 @@ export interface ShikiDiffViewerProps {
 	changeGroups?: ChangeGroup[];
 	onStageGroup?: (groupIndex: number) => void;
 	groupActionLabel?: string;
+	comments?: DiffComment[];
+	onAddComment?: (lineNumber: number, content: string) => Promise<void>;
+	onAddRangeComment?: (
+		startLine: number,
+		endLine: number,
+		content: string,
+	) => Promise<void>;
+	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
+	onDeleteComment?: (commentId: string) => Promise<void>;
+	onSendComment?: (commentIds: string[]) => Promise<void>;
 }
 
 type VisibleItem = DiffBlock | { type: "hidden"; range: HiddenRange };
@@ -97,10 +110,12 @@ const DiffLineRow = React.memo(function DiffLineRow({
 	line,
 	showOldLineNumber,
 	showNewLineNumber,
+	commentButton,
 }: {
 	line: DiffLine;
 	showOldLineNumber: boolean;
 	showNewLineNumber: boolean;
+	commentButton?: React.ReactNode;
 }) {
 	return (
 		<div
@@ -121,6 +136,7 @@ const DiffLineRow = React.memo(function DiffLineRow({
 			>
 				{lineMarker(line.type)}
 			</span>
+			{commentButton}
 			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4">
 				{renderTokens(line.tokens)}
 			</span>
@@ -194,8 +210,10 @@ function buildGutterLines(blocks: DiffBlock[]): GutterDiffLine[] {
 
 const GutterLineRow = React.memo(function GutterLineRow({
 	line,
+	commentButton,
 }: {
 	line: GutterDiffLine;
+	commentButton?: React.ReactNode;
 }) {
 	const isAdded = line.type === "added";
 	const hasDelete = line.hasDeleteMarker === true;
@@ -224,6 +242,7 @@ const GutterLineRow = React.memo(function GutterLineRow({
 			>
 				{marker}
 			</span>
+			{commentButton}
 			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4">
 				{renderTokens(line.tokens)}
 			</span>
@@ -231,7 +250,10 @@ const GutterLineRow = React.memo(function GutterLineRow({
 	);
 });
 
-function renderHalfLine(line: DiffLine | null): React.ReactNode {
+function renderHalfLine(
+	line: DiffLine | null,
+	commentButton?: React.ReactNode,
+): React.ReactNode {
 	if (!line) return <div className="min-h-[20px] bg-[var(--muted)]/20" />;
 	return (
 		<div
@@ -246,6 +268,7 @@ function renderHalfLine(line: DiffLine | null): React.ReactNode {
 			>
 				{lineMarker(line.type)}
 			</span>
+			{commentButton}
 			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4">
 				{renderTokens(line.tokens)}
 			</span>
@@ -256,23 +279,29 @@ function renderHalfLine(line: DiffLine | null): React.ReactNode {
 const SplitDiffLineRow = React.memo(function SplitDiffLineRow({
 	left,
 	right,
+	commentButton,
 }: {
 	left: DiffLine | null;
 	right: DiffLine | null;
+	commentButton?: React.ReactNode;
 }) {
 	return (
 		<div className="flex">
 			<div className="flex-1 border-r border-border overflow-hidden">
 				{renderHalfLine(left)}
 			</div>
-			<div className="flex-1 overflow-hidden">{renderHalfLine(right)}</div>
+			<div className="flex-1 overflow-hidden">
+				{renderHalfLine(right, commentButton)}
+			</div>
 		</div>
 	);
 });
 
 type FlatGutterItem =
 	| { kind: "gutter-line"; line: GutterDiffLine }
-	| { kind: "hidden"; range: HiddenRange };
+	| { kind: "hidden"; range: HiddenRange }
+	| { kind: "comment"; comment: DiffComment }
+	| { kind: "comment-input"; afterLine: number };
 
 type FlatInlineItem =
 	| {
@@ -281,7 +310,9 @@ type FlatInlineItem =
 			showStageButton: boolean;
 			changeGroupIndex?: number;
 	  }
-	| { kind: "hidden"; range: HiddenRange };
+	| { kind: "hidden"; range: HiddenRange }
+	| { kind: "comment"; comment: DiffComment }
+	| { kind: "comment-input"; afterLine: number };
 
 interface FlatSplitRow {
 	left: DiffLine | null;
@@ -292,9 +323,24 @@ interface FlatSplitRow {
 
 type FlatSplitItem =
 	| { kind: "split-row"; row: FlatSplitRow }
-	| { kind: "hidden"; range: HiddenRange };
+	| { kind: "hidden"; range: HiddenRange }
+	| { kind: "comment"; comment: DiffComment }
+	| { kind: "comment-input"; afterLine: number };
 
-interface VirtualViewProps {
+interface CommentCallbacks {
+	comments?: DiffComment[];
+	onAddComment?: (lineNumber: number, content: string) => Promise<void>;
+	onAddRangeComment?: (
+		startLine: number,
+		endLine: number,
+		content: string,
+	) => Promise<void>;
+	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
+	onDeleteComment?: (commentId: string) => Promise<void>;
+	onSendComment?: (commentIds: string[]) => Promise<void>;
+}
+
+interface VirtualViewProps extends CommentCallbacks {
 	visibleBlocks: VisibleItem[];
 	changeGroups?: ChangeGroup[];
 	onStageGroup?: (groupIndex: number) => void;
@@ -351,6 +397,225 @@ function useDelegatedClick(
 	);
 }
 
+/**
+ * Hook for line range selection via mousedown+drag or Shift+click.
+ * On drag completion (mouseup with start !== end), immediately calls onRangeSelected.
+ * On Shift+click, creates range from last clicked line to current line.
+ */
+function useLineRangeSelection(
+	onRangeSelected: (start: number, end: number) => void,
+) {
+	const [selectionStart, setSelectionStart] = useState<number | null>(null);
+	const [selectionEnd, setSelectionEnd] = useState<number | null>(null);
+	const isDragging = useRef(false);
+	const startRef = useRef<number | null>(null);
+	const endRef = useRef<number | null>(null);
+	const lastClickedLine = useRef<number | null>(null);
+	const onRangeSelectedRef = useRef(onRangeSelected);
+	onRangeSelectedRef.current = onRangeSelected;
+
+	const selectionRange = useMemo(() => {
+		if (selectionStart == null || selectionEnd == null) return null;
+		const start = Math.min(selectionStart, selectionEnd);
+		const end = Math.max(selectionStart, selectionEnd);
+		return { start, end };
+	}, [selectionStart, selectionEnd]);
+
+	const handleLineMouseDown = useCallback(
+		(lineNumber: number, shiftKey?: boolean) => {
+			if (shiftKey && lastClickedLine.current != null) {
+				const start = Math.min(lastClickedLine.current, lineNumber);
+				const end = Math.max(lastClickedLine.current, lineNumber);
+				onRangeSelectedRef.current(start, end);
+				lastClickedLine.current = null;
+				return;
+			}
+			isDragging.current = true;
+			startRef.current = lineNumber;
+			endRef.current = lineNumber;
+			lastClickedLine.current = lineNumber;
+			setSelectionStart(lineNumber);
+			setSelectionEnd(lineNumber);
+		},
+		[],
+	);
+
+	const handleLineMouseEnter = useCallback((lineNumber: number) => {
+		if (!isDragging.current) return;
+		endRef.current = lineNumber;
+		setSelectionEnd(lineNumber);
+	}, []);
+
+	const clearSelection = useCallback(() => {
+		setSelectionStart(null);
+		setSelectionEnd(null);
+		isDragging.current = false;
+		startRef.current = null;
+		endRef.current = null;
+		lastClickedLine.current = null;
+	}, []);
+
+	useEffect(() => {
+		const handleUp = () => {
+			if (!isDragging.current) return;
+			isDragging.current = false;
+			const s = startRef.current;
+			const e = endRef.current;
+			if (s != null && e != null && s !== e) {
+				const start = Math.min(s, e);
+				const end = Math.max(s, e);
+				onRangeSelectedRef.current(start, end);
+				lastClickedLine.current = null;
+			}
+			startRef.current = null;
+			endRef.current = null;
+			setSelectionStart(null);
+			setSelectionEnd(null);
+		};
+		document.addEventListener("mouseup", handleUp);
+		return () => document.removeEventListener("mouseup", handleUp);
+	}, []);
+
+	return {
+		selectionRange,
+		handleLineMouseDown,
+		handleLineMouseEnter,
+		clearSelection,
+	};
+}
+
+function isLineInRange(
+	lineNumber: number | null,
+	range: { start: number; end: number } | null,
+): boolean {
+	if (lineNumber == null || range == null) return false;
+	return lineNumber >= range.start && lineNumber <= range.end;
+}
+
+function useCommentViewState(comments: DiffComment[] | undefined) {
+	const [commentInputLine, setCommentInputLine] = useState<number | null>(null);
+	const [commentInputRange, setCommentInputRange] = useState<{
+		start: number;
+		end: number;
+	} | null>(null);
+	const {
+		selectionRange,
+		handleLineMouseDown,
+		handleLineMouseEnter,
+		clearSelection,
+	} = useLineRangeSelection((start, end) => {
+		setCommentInputRange({ start, end });
+	});
+
+	const commentHighlightLines = useMemo(() => {
+		const set = new Set<number>();
+		for (const c of comments ?? []) {
+			if (c.lineNumber != null && c.endLine != null) {
+				for (let i = c.lineNumber; i <= c.endLine; i++) {
+					set.add(i);
+				}
+			}
+		}
+		return set;
+	}, [comments]);
+
+	return {
+		commentInputLine,
+		setCommentInputLine,
+		commentInputRange,
+		setCommentInputRange,
+		selectionRange,
+		handleLineMouseDown,
+		handleLineMouseEnter,
+		clearSelection,
+		commentHighlightLines,
+	};
+}
+
+function buildCommentsByLine(
+	comments: DiffComment[] | undefined,
+): Map<number, DiffComment[]> {
+	const map = new Map<number, DiffComment[]>();
+	for (const c of comments ?? []) {
+		if (c.lineNumber != null) {
+			const key = c.endLine ?? c.lineNumber;
+			const arr = map.get(key) ?? [];
+			arr.push(c);
+			map.set(key, arr);
+		}
+	}
+	return map;
+}
+
+function insertCommentItems<T extends { kind: string }>(
+	result: T[],
+	lineNum: number | null,
+	commentsByLine: Map<number, DiffComment[]>,
+	commentInputLine: number | null,
+	commentInputRange: { start: number; end: number } | null,
+	makeComment: (comment: DiffComment) => T,
+	makeCommentInput: (afterLine: number) => T,
+) {
+	if (lineNum == null) return;
+	const lineComments = commentsByLine.get(lineNum);
+	if (lineComments) {
+		for (const c of lineComments) {
+			result.push(makeComment(c));
+		}
+	}
+	if (commentInputLine === lineNum) {
+		result.push(makeCommentInput(lineNum));
+	}
+	if (commentInputRange && lineNum === commentInputRange.end) {
+		result.push(makeCommentInput(lineNum));
+	}
+}
+
+function estimateSizeWithComments(item: { kind: string }): number {
+	if (item.kind === "hidden") return 22;
+	if (item.kind === "comment") return 64;
+	if (item.kind === "comment-input") return 120;
+	return 20;
+}
+
+/**
+ * Comment gutter cell: leftmost column of each diff line.
+ * Shows blue "+" on row hover. Also handles mousedown/enter for drag selection.
+ */
+function CommentGutterCell({
+	onClickSingle,
+	onMouseDown,
+	onMouseEnter,
+}: {
+	onClickSingle: () => void;
+	onMouseDown: (shiftKey: boolean) => void;
+	onMouseEnter: () => void;
+}) {
+	return (
+		// biome-ignore lint/a11y/noStaticElementInteractions: drag selection area for line range comments
+		<span
+			className="shrink-0 w-[20px] flex items-center justify-center cursor-pointer select-none"
+			onMouseDown={(e) => {
+				e.preventDefault();
+				onMouseDown(e.shiftKey);
+			}}
+			onMouseEnter={onMouseEnter}
+		>
+			<button
+				type="button"
+				className="size-[18px] rounded bg-blue-600 hover:bg-blue-500 text-white items-center justify-center hidden group-hover/line:flex"
+				onClick={(e) => {
+					e.stopPropagation();
+					onClickSingle();
+				}}
+				title="Add comment"
+			>
+				<Plus className="size-3.5" />
+			</button>
+		</span>
+	);
+}
+
 function HiddenBanner({ range }: { range: HiddenRange }) {
 	return (
 		<button
@@ -389,7 +654,25 @@ function GutterView({
 	onStageGroup,
 	groupActionLabel,
 	containerRef,
+	comments,
+	onAddComment,
+	onAddRangeComment,
+	onUpdateComment,
+	onDeleteComment,
+	onSendComment,
 }: VirtualViewProps) {
+	const {
+		commentInputLine,
+		setCommentInputLine,
+		commentInputRange,
+		setCommentInputRange,
+		selectionRange,
+		handleLineMouseDown,
+		handleLineMouseEnter,
+		clearSelection,
+		commentHighlightLines,
+	} = useCommentViewState(comments);
+
 	const flatItems = useMemo(() => {
 		const { blocksWithGroups, blockOrder } = flattenWithGroups(
 			visibleBlocks,
@@ -397,6 +680,7 @@ function GutterView({
 		);
 		const result: FlatGutterItem[] = [];
 		let blockIdx = 0;
+		const commentsByLine = buildCommentsByLine(comments);
 
 		for (const item of blockOrder) {
 			if (item.type === "hidden") {
@@ -406,17 +690,32 @@ function GutterView({
 				const gutterLines = buildGutterLines([block]);
 				for (const line of gutterLines) {
 					result.push({ kind: "gutter-line", line });
+					insertCommentItems(
+						result,
+						line.newLineNumber,
+						commentsByLine,
+						commentInputLine,
+						commentInputRange,
+						(c) => ({ kind: "comment" as const, comment: c }),
+						(afterLine) => ({ kind: "comment-input" as const, afterLine }),
+					);
 				}
 			}
 		}
 
 		return result;
-	}, [visibleBlocks, changeGroups]);
+	}, [
+		visibleBlocks,
+		changeGroups,
+		comments,
+		commentInputLine,
+		commentInputRange,
+	]);
 
 	const virtualizer = useVirtualizer({
 		count: flatItems.length,
 		getScrollElement: () => containerRef.current,
-		estimateSize: (i) => (flatItems[i].kind === "hidden" ? 22 : 20),
+		estimateSize: (i) => estimateSizeWithComments(flatItems[i]),
 		overscan: 15,
 	});
 
@@ -439,8 +738,59 @@ function GutterView({
 					>
 						{item.kind === "hidden" ? (
 							<HiddenBanner range={item.range} />
+						) : item.kind === "comment" ? (
+							<DiffInlineComment
+								comment={item.comment}
+								onUpdate={onUpdateComment ?? (async () => {})}
+								onDelete={onDeleteComment ?? (async () => {})}
+								onSend={onSendComment ?? (async () => {})}
+							/>
+						) : item.kind === "comment-input" ? (
+							<DiffInlineCommentInput
+								onSubmit={async (content) => {
+									if (commentInputRange) {
+										await onAddRangeComment?.(
+											commentInputRange.start,
+											commentInputRange.end,
+											content,
+										);
+										setCommentInputRange(null);
+									} else {
+										await onAddComment?.(item.afterLine, content);
+										setCommentInputLine(null);
+									}
+									clearSelection();
+								}}
+								onCancel={() => {
+									setCommentInputLine(null);
+									setCommentInputRange(null);
+									clearSelection();
+								}}
+								rangeLabel={
+									commentInputRange
+										? `L${commentInputRange.start}-${commentInputRange.end}`
+										: undefined
+								}
+							/>
 						) : (
-							<>
+							// biome-ignore lint/a11y/noStaticElementInteractions: drag range tracking
+							<div
+								className={`group/line relative ${isLineInRange(item.line.newLineNumber, selectionRange) || item.line.newLineNumber === commentInputLine || isLineInRange(item.line.newLineNumber, commentInputRange) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_15%,transparent)]" : commentHighlightLines.has(item.line.newLineNumber ?? -1) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_8%,transparent)]" : ""}`}
+								onMouseEnter={() => {
+									if (item.line.newLineNumber != null)
+										handleLineMouseEnter(item.line.newLineNumber);
+								}}
+								onMouseDown={(e) => {
+									const target = e.target as HTMLElement;
+									if (
+										target.closest(".select-none") &&
+										item.line.newLineNumber != null
+									) {
+										e.preventDefault();
+										handleLineMouseDown(item.line.newLineNumber, e.shiftKey);
+									}
+								}}
+							>
 								{item.line.isGroupStart &&
 									item.line.changeGroupIndex != null &&
 									onStageGroup && (
@@ -449,8 +799,31 @@ function GutterView({
 											label={groupActionLabel ?? "Stage"}
 										/>
 									)}
-								<GutterLineRow line={item.line} />
-							</>
+								<GutterLineRow
+									line={item.line}
+									commentButton={
+										onAddComment ? (
+											<CommentGutterCell
+												onClickSingle={() => {
+													setCommentInputLine(item.line.newLineNumber);
+													clearSelection();
+												}}
+												onMouseDown={(shiftKey) => {
+													if (item.line.newLineNumber != null)
+														handleLineMouseDown(
+															item.line.newLineNumber,
+															shiftKey,
+														);
+												}}
+												onMouseEnter={() => {
+													if (item.line.newLineNumber != null)
+														handleLineMouseEnter(item.line.newLineNumber);
+												}}
+											/>
+										) : undefined
+									}
+								/>
+							</div>
 						)}
 					</div>
 				);
@@ -465,7 +838,25 @@ function InlineView({
 	onStageGroup,
 	groupActionLabel,
 	containerRef,
+	comments,
+	onAddComment,
+	onAddRangeComment,
+	onUpdateComment,
+	onDeleteComment,
+	onSendComment,
 }: VirtualViewProps) {
+	const {
+		commentInputLine,
+		setCommentInputLine,
+		commentInputRange,
+		setCommentInputRange,
+		selectionRange,
+		handleLineMouseDown,
+		handleLineMouseEnter,
+		clearSelection,
+		commentHighlightLines,
+	} = useCommentViewState(comments);
+
 	const flatItems = useMemo(() => {
 		const { blocksWithGroups, blockOrder } = flattenWithGroups(
 			visibleBlocks,
@@ -473,6 +864,7 @@ function InlineView({
 		);
 		const result: FlatInlineItem[] = [];
 		let blockIdx = 0;
+		const commentsByLine = buildCommentsByLine(comments);
 
 		for (const item of blockOrder) {
 			if (item.type === "hidden") {
@@ -488,17 +880,33 @@ function InlineView({
 						changeGroupIndex: block.changeGroupIndex,
 					});
 					isFirst = false;
+
+					insertCommentItems(
+						result,
+						line.newLineNumber,
+						commentsByLine,
+						commentInputLine,
+						commentInputRange,
+						(c) => ({ kind: "comment" as const, comment: c }),
+						(afterLine) => ({ kind: "comment-input" as const, afterLine }),
+					);
 				}
 			}
 		}
 
 		return result;
-	}, [visibleBlocks, changeGroups]);
+	}, [
+		visibleBlocks,
+		changeGroups,
+		comments,
+		commentInputLine,
+		commentInputRange,
+	]);
 
 	const virtualizer = useVirtualizer({
 		count: flatItems.length,
 		getScrollElement: () => containerRef.current,
-		estimateSize: (i) => (flatItems[i].kind === "hidden" ? 22 : 20),
+		estimateSize: (i) => estimateSizeWithComments(flatItems[i]),
 		overscan: 15,
 	});
 
@@ -521,8 +929,59 @@ function InlineView({
 					>
 						{item.kind === "hidden" ? (
 							<HiddenBanner range={item.range} />
+						) : item.kind === "comment" ? (
+							<DiffInlineComment
+								comment={item.comment}
+								onUpdate={onUpdateComment ?? (async () => {})}
+								onDelete={onDeleteComment ?? (async () => {})}
+								onSend={onSendComment ?? (async () => {})}
+							/>
+						) : item.kind === "comment-input" ? (
+							<DiffInlineCommentInput
+								onSubmit={async (content) => {
+									if (commentInputRange) {
+										await onAddRangeComment?.(
+											commentInputRange.start,
+											commentInputRange.end,
+											content,
+										);
+										setCommentInputRange(null);
+									} else {
+										await onAddComment?.(item.afterLine, content);
+										setCommentInputLine(null);
+									}
+									clearSelection();
+								}}
+								onCancel={() => {
+									setCommentInputLine(null);
+									setCommentInputRange(null);
+									clearSelection();
+								}}
+								rangeLabel={
+									commentInputRange
+										? `L${commentInputRange.start}-${commentInputRange.end}`
+										: undefined
+								}
+							/>
 						) : (
-							<>
+							// biome-ignore lint/a11y/noStaticElementInteractions: drag range tracking
+							<div
+								className={`group/line relative ${isLineInRange(item.line.newLineNumber, selectionRange) || item.line.newLineNumber === commentInputLine || isLineInRange(item.line.newLineNumber, commentInputRange) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_15%,transparent)]" : commentHighlightLines.has(item.line.newLineNumber ?? -1) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_8%,transparent)]" : ""}`}
+								onMouseEnter={() => {
+									if (item.line.newLineNumber != null)
+										handleLineMouseEnter(item.line.newLineNumber);
+								}}
+								onMouseDown={(e) => {
+									const target = e.target as HTMLElement;
+									if (
+										target.closest(".select-none") &&
+										item.line.newLineNumber != null
+									) {
+										e.preventDefault();
+										handleLineMouseDown(item.line.newLineNumber, e.shiftKey);
+									}
+								}}
+							>
 								{item.showStageButton &&
 									item.changeGroupIndex != null &&
 									onStageGroup && (
@@ -535,8 +994,29 @@ function InlineView({
 									line={item.line}
 									showOldLineNumber={true}
 									showNewLineNumber={true}
+									commentButton={
+										onAddComment ? (
+											<CommentGutterCell
+												onClickSingle={() => {
+													setCommentInputLine(item.line.newLineNumber);
+													clearSelection();
+												}}
+												onMouseDown={(shiftKey) => {
+													if (item.line.newLineNumber != null)
+														handleLineMouseDown(
+															item.line.newLineNumber,
+															shiftKey,
+														);
+												}}
+												onMouseEnter={() => {
+													if (item.line.newLineNumber != null)
+														handleLineMouseEnter(item.line.newLineNumber);
+												}}
+											/>
+										) : undefined
+									}
 								/>
-							</>
+							</div>
 						)}
 					</div>
 				);
@@ -551,7 +1031,25 @@ function SplitView({
 	onStageGroup,
 	groupActionLabel,
 	containerRef,
+	comments,
+	onAddComment,
+	onAddRangeComment,
+	onUpdateComment,
+	onDeleteComment,
+	onSendComment,
 }: VirtualViewProps) {
+	const {
+		commentInputLine,
+		setCommentInputLine,
+		commentInputRange,
+		setCommentInputRange,
+		selectionRange,
+		handleLineMouseDown,
+		handleLineMouseEnter,
+		clearSelection,
+		commentHighlightLines,
+	} = useCommentViewState(comments);
+
 	const flatItems = useMemo(() => {
 		const { blocksWithGroups, blockOrder } = flattenWithGroups(
 			visibleBlocks,
@@ -559,6 +1057,7 @@ function SplitView({
 		);
 		const result: FlatSplitItem[] = [];
 		let blockIdx = 0;
+		const commentsByLine = buildCommentsByLine(comments);
 
 		for (const item of blockOrder) {
 			if (item.type === "hidden") {
@@ -576,6 +1075,15 @@ function SplitView({
 								showStageButton: false,
 							},
 						});
+						insertCommentItems(
+							result,
+							line.newLineNumber,
+							commentsByLine,
+							commentInputLine,
+							commentInputRange,
+							(c) => ({ kind: "comment" as const, comment: c }),
+							(afterLine) => ({ kind: "comment-input" as const, afterLine }),
+						);
 					}
 				} else {
 					const deleted = block.lines.filter((l) => l.type === "deleted");
@@ -595,6 +1103,16 @@ function SplitView({
 								changeGroupIndex: block.changeGroupIndex,
 							},
 						});
+						const rightLine = added[i];
+						insertCommentItems(
+							result,
+							rightLine?.newLineNumber ?? null,
+							commentsByLine,
+							commentInputLine,
+							commentInputRange,
+							(c) => ({ kind: "comment" as const, comment: c }),
+							(afterLine) => ({ kind: "comment-input" as const, afterLine }),
+						);
 					}
 
 					for (const line of contextInBlock) {
@@ -612,12 +1130,18 @@ function SplitView({
 		}
 
 		return result;
-	}, [visibleBlocks, changeGroups]);
+	}, [
+		visibleBlocks,
+		changeGroups,
+		comments,
+		commentInputLine,
+		commentInputRange,
+	]);
 
 	const virtualizer = useVirtualizer({
 		count: flatItems.length,
 		getScrollElement: () => containerRef.current,
-		estimateSize: (i) => (flatItems[i].kind === "hidden" ? 22 : 20),
+		estimateSize: (i) => estimateSizeWithComments(flatItems[i]),
 		overscan: 15,
 	});
 
@@ -640,8 +1164,57 @@ function SplitView({
 					>
 						{item.kind === "hidden" ? (
 							<HiddenBanner range={item.range} />
+						) : item.kind === "comment" ? (
+							<DiffInlineComment
+								comment={item.comment}
+								onUpdate={onUpdateComment ?? (async () => {})}
+								onDelete={onDeleteComment ?? (async () => {})}
+								onSend={onSendComment ?? (async () => {})}
+							/>
+						) : item.kind === "comment-input" ? (
+							<DiffInlineCommentInput
+								onSubmit={async (content) => {
+									if (commentInputRange) {
+										await onAddRangeComment?.(
+											commentInputRange.start,
+											commentInputRange.end,
+											content,
+										);
+										setCommentInputRange(null);
+									} else {
+										await onAddComment?.(item.afterLine, content);
+										setCommentInputLine(null);
+									}
+									clearSelection();
+								}}
+								onCancel={() => {
+									setCommentInputLine(null);
+									setCommentInputRange(null);
+									clearSelection();
+								}}
+								rangeLabel={
+									commentInputRange
+										? `L${commentInputRange.start}-${commentInputRange.end}`
+										: undefined
+								}
+							/>
 						) : (
-							<>
+							// biome-ignore lint/a11y/noStaticElementInteractions: drag range tracking
+							<div
+								className={`group/line relative ${isLineInRange(item.row.right?.newLineNumber ?? null, selectionRange) || (item.row.right?.newLineNumber ?? null) === commentInputLine || isLineInRange(item.row.right?.newLineNumber ?? null, commentInputRange) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_15%,transparent)]" : commentHighlightLines.has(item.row.right?.newLineNumber ?? -1) ? "bg-[color-mix(in_oklch,var(--color-blue-500)_8%,transparent)]" : ""}`}
+								onMouseEnter={() => {
+									const lineNum = item.row.right?.newLineNumber;
+									if (lineNum != null) handleLineMouseEnter(lineNum);
+								}}
+								onMouseDown={(e) => {
+									const target = e.target as HTMLElement;
+									const lineNum = item.row.right?.newLineNumber;
+									if (target.closest(".select-none") && lineNum != null) {
+										e.preventDefault();
+										handleLineMouseDown(lineNum, e.shiftKey);
+									}
+								}}
+							>
 								{item.row.showStageButton &&
 									item.row.changeGroupIndex != null &&
 									onStageGroup && (
@@ -650,8 +1223,32 @@ function SplitView({
 											label={groupActionLabel ?? "Stage"}
 										/>
 									)}
-								<SplitDiffLineRow left={item.row.left} right={item.row.right} />
-							</>
+								<SplitDiffLineRow
+									left={item.row.left}
+									right={item.row.right}
+									commentButton={
+										onAddComment ? (
+											<CommentGutterCell
+												onClickSingle={() => {
+													setCommentInputLine(
+														item.row.right?.newLineNumber ?? null,
+													);
+													clearSelection();
+												}}
+												onMouseDown={(shiftKey) => {
+													const lineNum = item.row.right?.newLineNumber;
+													if (lineNum != null)
+														handleLineMouseDown(lineNum, shiftKey);
+												}}
+												onMouseEnter={() => {
+													const lineNum = item.row.right?.newLineNumber;
+													if (lineNum != null) handleLineMouseEnter(lineNum);
+												}}
+											/>
+										) : undefined
+									}
+								/>
+							</div>
 						)}
 					</div>
 				);
@@ -805,6 +1402,12 @@ export function ShikiDiffViewer({
 	changeGroups,
 	onStageGroup,
 	groupActionLabel,
+	comments,
+	onAddComment,
+	onAddRangeComment,
+	onUpdateComment,
+	onDeleteComment,
+	onSendComment,
 }: ShikiDiffViewerProps) {
 	const originalTokens = useShikiHighlighter(originalContent, language);
 	const modifiedTokens = useShikiHighlighter(modifiedContent, language);
@@ -947,6 +1550,12 @@ export function ShikiDiffViewer({
 					onStageGroup={onStageGroup}
 					groupActionLabel={groupActionLabel}
 					containerRef={containerRef}
+					comments={comments}
+					onAddComment={onAddComment}
+					onAddRangeComment={onAddRangeComment}
+					onUpdateComment={onUpdateComment}
+					onDeleteComment={onDeleteComment}
+					onSendComment={onSendComment}
 				/>
 				<ScrollBar orientation="horizontal" />
 			</ScrollArea>

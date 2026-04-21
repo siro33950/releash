@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
+import type { DiffComment } from "@/types/diffComment";
 import type { DiffMode } from "@/types/settings";
 import { ShikiDiffViewer } from "./ShikiDiffViewer";
 
@@ -18,6 +19,16 @@ export interface CodeDiffViewerProps {
 	changeGroups?: ChangeGroup[];
 	onStageGroup?: (groupIndex: number) => void;
 	groupActionLabel?: string;
+	comments?: DiffComment[];
+	onAddComment?: (lineNumber: number, content: string) => Promise<void>;
+	onAddRangeComment?: (
+		startLine: number,
+		endLine: number,
+		content: string,
+	) => Promise<void>;
+	onUpdateComment?: (commentId: string, content: string) => Promise<void>;
+	onDeleteComment?: (commentId: string) => Promise<void>;
+	onSendComment?: (commentIds: string[]) => Promise<void>;
 }
 
 export function CodeDiffViewer({
@@ -30,6 +41,12 @@ export function CodeDiffViewer({
 	changeGroups,
 	onStageGroup,
 	groupActionLabel,
+	comments,
+	onAddComment,
+	onAddRangeComment,
+	onUpdateComment,
+	onDeleteComment,
+	onSendComment,
 }: CodeDiffViewerProps) {
 	const [detectedLanguage, setDetectedLanguage] = useState("plaintext");
 	const [hunks, setHunks] = useState<Hunk[] | null>(null);
@@ -87,6 +104,12 @@ export function CodeDiffViewer({
 			changeGroups={changeGroups}
 			onStageGroup={onStageGroup}
 			groupActionLabel={groupActionLabel}
+			comments={comments}
+			onAddComment={onAddComment}
+			onAddRangeComment={onAddRangeComment}
+			onUpdateComment={onUpdateComment}
+			onDeleteComment={onDeleteComment}
+			onSendComment={onSendComment}
 		/>
 	);
 }

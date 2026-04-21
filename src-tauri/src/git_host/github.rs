@@ -193,6 +193,7 @@ fn parse_gh_issue_list_output(json_str: &str) -> Vec<IssueInfo> {
     serde_json::from_str(json_str).unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn parse_pr_review_comments(json_str: &str) -> Vec<PrReviewComment> {
     // gh api --paginate with --jq outputs one JSON array per page, concatenated.
     // We try to parse as a single array first, then fall back to parsing line-by-line.

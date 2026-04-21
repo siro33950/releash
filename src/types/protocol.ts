@@ -70,78 +70,6 @@ export interface PtyKillResponse {
 	error?: string;
 }
 
-// --- コメント ---
-
-export interface AddComment {
-	file_path: string;
-	line_number: number;
-	end_line?: number;
-	content: string;
-}
-
-export interface CommentItem {
-	id: string;
-	file_path: string;
-	line_number: number;
-	end_line?: number;
-	content: string;
-	status: "unsent" | "sent";
-	created_at: number;
-	author?: { type: "human"; name: string };
-	resolved?: boolean;
-	target?: "local";
-}
-
-export interface DeleteComment {
-	id: string;
-}
-
-export interface UpdateComment {
-	id: string;
-	content: string;
-}
-
-export interface CommentSync {
-	comments: CommentItem[];
-}
-
-// --- スレッド ---
-// Rust now sends camelCase via #[serde(rename_all = "camelCase")]
-// ThreadsSync payload uses the same Thread type as the frontend
-
-export interface ThreadsSync {
-	threads: import("@/types/thread").Thread[];
-}
-
-export interface CreateThread {
-	file_path: string;
-	line_number: number;
-	end_line?: number;
-	content: string;
-	severity?: string;
-	author_name?: string;
-}
-
-export interface AddThreadEntry {
-	thread_id: string;
-	content: string;
-	author_name?: string;
-}
-
-export interface ResolveThread {
-	thread_id: string;
-}
-
-export interface DeleteThread {
-	thread_id: string;
-}
-
-export interface UpdateThreadEntry {
-	thread_id: string;
-	entry_id: string;
-	content: string;
-}
-
 // --- Worktree ---
 
 export type WorktreeListRequest = Record<string, never>;
@@ -239,16 +167,6 @@ export type WsMessage =
 	| { type: "pty_spawn_response"; payload: PtySpawnResponse }
 	| { type: "pty_kill_request"; payload: PtyKillRequest }
 	| { type: "pty_kill_response"; payload: PtyKillResponse }
-	| { type: "add_comment"; payload: AddComment }
-	| { type: "delete_comment"; payload: DeleteComment }
-	| { type: "update_comment"; payload: UpdateComment }
-	| { type: "comments_sync"; payload: CommentSync }
-	| { type: "threads_sync"; payload: ThreadsSync }
-	| { type: "create_thread"; payload: CreateThread }
-	| { type: "add_thread_entry"; payload: AddThreadEntry }
-	| { type: "resolve_thread"; payload: ResolveThread }
-	| { type: "delete_thread"; payload: DeleteThread }
-	| { type: "update_thread_entry"; payload: UpdateThreadEntry }
 	| { type: "worktree_list_request"; payload: WorktreeListRequest }
 	| { type: "worktree_list_response"; payload: WorktreeListResponse }
 	| { type: "worktree_select_request"; payload: WorktreeSelectRequest }

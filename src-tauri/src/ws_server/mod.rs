@@ -16,7 +16,6 @@ use tokio::sync::Mutex;
 use crate::config::AppConfig;
 use crate::git_host::PrCache;
 use crate::pty::PtyManager;
-use crate::thread_store::ThreadStore;
 use crate::ws_bridge::WsBroadcaster;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -77,8 +76,6 @@ pub(crate) struct WsServerState {
     app_handle: Option<tauri::AppHandle>,
     tls_enabled: bool,
     pr_cache: Arc<PrCache>,
-    thread_store: Arc<ThreadStore>,
-    pr_threads_cache: parking_lot::RwLock<HashMap<String, Vec<crate::protocol::thread::Thread>>>,
 }
 
 impl WsServerState {
@@ -92,7 +89,6 @@ impl WsServerState {
         app_handle: Option<tauri::AppHandle>,
         tls_enabled: bool,
         pr_cache: Arc<PrCache>,
-        thread_store: Arc<ThreadStore>,
     ) -> Self {
         Self {
             active_connection: Arc::new(Mutex::new(false)),
@@ -106,8 +102,6 @@ impl WsServerState {
             app_handle,
             tls_enabled,
             pr_cache,
-            thread_store,
-            pr_threads_cache: parking_lot::RwLock::new(HashMap::new()),
         }
     }
 
@@ -176,7 +170,6 @@ mod tests {
             None,
             false,
             Arc::new(crate::git_host::PrCache::new()),
-            Arc::new(crate::thread_store::ThreadStore::default()),
         );
         assert_eq!(
             state.get_repo_paths(),

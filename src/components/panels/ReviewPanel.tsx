@@ -5,8 +5,9 @@ import {
 	GitCommitHorizontal,
 	PanelLeftClose,
 	PanelLeftOpen,
+	Send,
 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	Group,
 	Panel,
@@ -20,6 +21,7 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useBranchDiffFiles } from "@/hooks/useBranchDiffFiles";
+import { useDiffComments } from "@/hooks/useDiffComments";
 import { useDiffFileTree } from "@/hooks/useDiffFileTree";
 import { useFileDiffContent } from "@/hooks/useFileDiffContent";
 import { useFileNavigation } from "@/hooks/useFileNavigation";
@@ -33,6 +35,7 @@ import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
 import type { DiffBase, DiffMode, DiffSection } from "@/types/settings";
 import { Breadcrumb } from "./Breadcrumb";
+import { FileCommentPopoverTrigger } from "./DiffFileComment";
 import { DiffFileTree } from "./DiffFileTree";
 import { DiffToolbar } from "./DiffToolbar";
 import { DiffViewerSection } from "./DiffViewerSection";
@@ -45,6 +48,8 @@ interface ReviewPanelProps {
 	defaultDiffMode?: DiffMode;
 	diffOnlyMode: boolean;
 	onDiffOnlyModeChange: (enabled: boolean) => void;
+	navigateToFile?: { path: string; line?: number } | null;
+	onSendToAgent?: (message: string) => Promise<void>;
 }
 
 function DiffBaseToggle({
@@ -111,6 +116,8 @@ export function ReviewPanel({
 	defaultDiffMode,
 	diffOnlyMode,
 	onDiffOnlyModeChange,
+	navigateToFile,
+	onSendToAgent,
 }: ReviewPanelProps) {
 	const {
 		diffBase,
@@ -195,6 +202,12 @@ export function ReviewPanel({
 		[diffBase, stagedFiles, changedFiles, selectedSection],
 	);
 
+	useEffect(() => {
+		if (!navigateToFile) return;
+		const section = determineSectionForFile(navigateToFile.path);
+		selectFile(navigateToFile.path, section);
+	}, [navigateToFile, determineSectionForFile, selectFile]);
+
 	const handleGoToPrevFile = useCallback(() => {
 		const prev = goToPrevFile();
 		if (prev) {
@@ -234,6 +247,79 @@ export function ReviewPanel({
 		diffBase,
 		selectedSection,
 		gitRefreshKey,
+	);
+
+	// Diff comments
+	const worktreeName = useMemo(() => {
+		const parts = rootPath.split("/");
+		return parts[parts.length - 1] ?? "";
+	}, [rootPath]);
+
+	const {
+		comments: allComments,
+		unsentCount,
+		addComment,
+		updateComment,
+		deleteComment,
+		sendToAgent,
+		sendAllUnsent,
+		getCommentsForFile,
+	} = useDiffComments({ worktreeName });
+
+	const fileComments = useMemo(
+		() => (selectedFile ? getCommentsForFile(selectedFile) : []),
+		[selectedFile, getCommentsForFile],
+	);
+
+	const lineComments = useMemo(
+		() => fileComments.filter((c) => c.lineNumber != null),
+		[fileComments],
+	);
+
+	const handleAddLineComment = useCallback(
+		async (lineNumber: number, content: string) => {
+			if (!selectedFile) return;
+			await addComment({
+				filePath: selectedFile,
+				lineNumber,
+				content,
+			});
+		},
+		[selectedFile, addComment],
+	);
+
+	const handleAddRangeComment = useCallback(
+		async (startLine: number, endLine: number, content: string) => {
+			if (!selectedFile) return;
+			await addComment({
+				filePath: selectedFile,
+				lineNumber: startLine,
+				endLine,
+				content,
+			});
+		},
+		[selectedFile, addComment],
+	);
+
+	const handleAddFileComment = useCallback(
+		async (content: string) => {
+			if (!selectedFile) return;
+			await addComment({
+				filePath: selectedFile,
+				content,
+			});
+		},
+		[selectedFile, addComment],
+	);
+
+	const handleSendComments = useCallback(
+		async (commentIds: string[]) => {
+			const result = await sendToAgent(commentIds);
+			if (result.formattedMessage && onSendToAgent) {
+				await onSendToAgent(result.formattedMessage);
+			}
+		},
+		[sendToAgent, onSendToAgent],
 	);
 
 	// File tree panel collapse
@@ -398,10 +484,41 @@ export function ReviewPanel({
 						{fileTreeCollapsed ? "Show file list" : "Hide file list"}
 					</TooltipContent>
 				</Tooltip>
-				<DiffBaseToggle
-					diffBase={diffBase}
-					onDiffBaseChange={handleDiffBaseChange}
-				/>
+				<div className="flex items-center gap-1">
+					<DiffBaseToggle
+						diffBase={diffBase}
+						onDiffBaseChange={handleDiffBaseChange}
+					/>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								variant="ghost"
+								size="icon-xs"
+								onClick={async () => {
+									const result = await sendAllUnsent();
+									if (result.formattedMessage && onSendToAgent) {
+										await onSendToAgent(result.formattedMessage);
+									}
+								}}
+								disabled={unsentCount === 0}
+								className="h-5 w-5 text-muted-foreground hover:text-foreground relative disabled:opacity-30"
+								aria-label="Send all comments to Agent"
+							>
+								<Send className="h-3.5 w-3.5" />
+								{unsentCount > 0 && (
+									<span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] rounded-full bg-blue-600 text-[9px] text-white flex items-center justify-center px-0.5">
+										{unsentCount}
+									</span>
+								)}
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom" className="text-xs">
+							{unsentCount > 0
+								? `Send ${unsentCount} comments to Agent`
+								: "No unsent comments"}
+						</TooltipContent>
+					</Tooltip>
+				</div>
 			</div>
 			{/* Content: split left (file tree) / right (diff viewer) */}
 			<div className="flex-1 overflow-hidden">
@@ -437,7 +554,18 @@ export function ReviewPanel({
 						<div className="flex flex-col h-full">
 							{selectedFile ? (
 								<>
-									<Breadcrumb segments={breadcrumbSegments} />
+									<Breadcrumb segments={breadcrumbSegments}>
+										{selectedFile && (
+											<FileCommentPopoverTrigger
+												comments={allComments}
+												filePath={selectedFile}
+												onAdd={handleAddFileComment}
+												onUpdate={updateComment}
+												onDelete={deleteComment}
+												onSend={handleSendComments}
+											/>
+										)}
+									</Breadcrumb>
 									{isMarkdown && (
 										<div className="flex items-center justify-end px-2 h-[28px] border-b border-border bg-card shrink-0">
 											<div className="flex items-center gap-0.5 bg-muted rounded p-0.5">
@@ -506,6 +634,12 @@ export function ReviewPanel({
 											groupActionLabel={
 												isBranchBase ? undefined : groupActionLabel
 											}
+											comments={lineComments}
+											onAddComment={handleAddLineComment}
+											onAddRangeComment={handleAddRangeComment}
+											onUpdateComment={updateComment}
+											onDeleteComment={deleteComment}
+											onSendComment={handleSendComments}
 										/>
 									</div>
 									<DiffToolbar
