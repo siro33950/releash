@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiffComment } from "@/types/diffComment";
 import { FileCommentPopoverTrigger } from "./DiffFileComment";
 
@@ -29,30 +29,18 @@ describe("FileCommentPopoverTrigger", () => {
 	});
 
 	it("renders trigger button", () => {
-		render(
-			<FileCommentPopoverTrigger comments={[]} {...defaultProps} />,
-		);
+		render(<FileCommentPopoverTrigger comments={[]} {...defaultProps} />);
 		expect(screen.getByTitle("File comments")).toBeInTheDocument();
 	});
 
 	it("shows badge count when file comments exist", () => {
-		const comments = [
-			makeComment({ id: "c1" }),
-			makeComment({ id: "c2" }),
-		];
-		render(
-			<FileCommentPopoverTrigger
-				comments={comments}
-				{...defaultProps}
-			/>,
-		);
+		const comments = [makeComment({ id: "c1" }), makeComment({ id: "c2" })];
+		render(<FileCommentPopoverTrigger comments={comments} {...defaultProps} />);
 		expect(screen.getByText("2")).toBeInTheDocument();
 	});
 
 	it("does not show badge when no file comments", () => {
-		render(
-			<FileCommentPopoverTrigger comments={[]} {...defaultProps} />,
-		);
+		render(<FileCommentPopoverTrigger comments={[]} {...defaultProps} />);
 		expect(screen.queryByText("0")).not.toBeInTheDocument();
 	});
 
@@ -61,12 +49,7 @@ describe("FileCommentPopoverTrigger", () => {
 			makeComment({ id: "c1", lineNumber: undefined }),
 			makeComment({ id: "c2", lineNumber: 10 }),
 		];
-		render(
-			<FileCommentPopoverTrigger
-				comments={comments}
-				{...defaultProps}
-			/>,
-		);
+		render(<FileCommentPopoverTrigger comments={comments} {...defaultProps} />);
 		expect(screen.getByText("1")).toBeInTheDocument();
 	});
 
@@ -75,24 +58,14 @@ describe("FileCommentPopoverTrigger", () => {
 			makeComment({ id: "c1", filePath: "src/main.ts" }),
 			makeComment({ id: "c2", filePath: "src/other.ts" }),
 		];
-		render(
-			<FileCommentPopoverTrigger
-				comments={comments}
-				{...defaultProps}
-			/>,
-		);
+		render(<FileCommentPopoverTrigger comments={comments} {...defaultProps} />);
 		expect(screen.getByText("1")).toBeInTheDocument();
 	});
 
 	it("opens popover and shows comments on click", async () => {
 		const user = userEvent.setup();
 		const comments = [makeComment({ content: "Review this file" })];
-		render(
-			<FileCommentPopoverTrigger
-				comments={comments}
-				{...defaultProps}
-			/>,
-		);
+		render(<FileCommentPopoverTrigger comments={comments} {...defaultProps} />);
 
 		await user.click(screen.getByTitle("File comments"));
 		expect(screen.getByText("Review this file")).toBeInTheDocument();
@@ -100,9 +73,7 @@ describe("FileCommentPopoverTrigger", () => {
 
 	it("shows add comment button in popover", async () => {
 		const user = userEvent.setup();
-		render(
-			<FileCommentPopoverTrigger comments={[]} {...defaultProps} />,
-		);
+		render(<FileCommentPopoverTrigger comments={[]} {...defaultProps} />);
 
 		await user.click(screen.getByTitle("File comments"));
 		expect(screen.getByText("Add file comment")).toBeInTheDocument();

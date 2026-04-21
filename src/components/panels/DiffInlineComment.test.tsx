@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiffComment } from "@/types/diffComment";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
 
@@ -27,9 +27,7 @@ describe("DiffInlineComment", () => {
 	});
 
 	it("renders comment content", () => {
-		render(
-			<DiffInlineComment comment={makeComment()} {...defaultProps} />,
-		);
+		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 		expect(screen.getByText("Fix this bug")).toBeInTheDocument();
 	});
 
@@ -95,9 +93,7 @@ describe("DiffInlineComment", () => {
 
 	it("calls onDelete when delete button clicked", async () => {
 		const user = userEvent.setup();
-		render(
-			<DiffInlineComment comment={makeComment()} {...defaultProps} />,
-		);
+		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 
 		await user.click(screen.getByTitle("Delete"));
 		expect(defaultProps.onDelete).toHaveBeenCalledWith("c1");
@@ -105,9 +101,7 @@ describe("DiffInlineComment", () => {
 
 	it("calls onSend when send button clicked", async () => {
 		const user = userEvent.setup();
-		render(
-			<DiffInlineComment comment={makeComment()} {...defaultProps} />,
-		);
+		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 
 		await user.click(screen.getByTitle("Send to Agent"));
 		expect(defaultProps.onSend).toHaveBeenCalledWith(["c1"]);
@@ -115,9 +109,7 @@ describe("DiffInlineComment", () => {
 
 	it("enters edit mode when edit button clicked", async () => {
 		const user = userEvent.setup();
-		render(
-			<DiffInlineComment comment={makeComment()} {...defaultProps} />,
-		);
+		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 
 		await user.click(screen.getByTitle("Edit"));
 		expect(screen.getByRole("textbox")).toBeInTheDocument();
@@ -126,9 +118,7 @@ describe("DiffInlineComment", () => {
 
 	it("saves edited content", async () => {
 		const user = userEvent.setup();
-		render(
-			<DiffInlineComment comment={makeComment()} {...defaultProps} />,
-		);
+		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 
 		await user.click(screen.getByTitle("Edit"));
 		const textarea = screen.getByRole("textbox");
@@ -136,17 +126,12 @@ describe("DiffInlineComment", () => {
 		await user.type(textarea, "Updated content");
 		await user.click(screen.getByText("Save"));
 
-		expect(defaultProps.onUpdate).toHaveBeenCalledWith(
-			"c1",
-			"Updated content",
-		);
+		expect(defaultProps.onUpdate).toHaveBeenCalledWith("c1", "Updated content");
 	});
 
 	it("cancels editing and restores original content", async () => {
 		const user = userEvent.setup();
-		render(
-			<DiffInlineComment comment={makeComment()} {...defaultProps} />,
-		);
+		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 
 		await user.click(screen.getByTitle("Edit"));
 		const textarea = screen.getByRole("textbox");
@@ -160,9 +145,7 @@ describe("DiffInlineComment", () => {
 
 	it("does not save empty content", async () => {
 		const user = userEvent.setup();
-		render(
-			<DiffInlineComment comment={makeComment()} {...defaultProps} />,
-		);
+		render(<DiffInlineComment comment={makeComment()} {...defaultProps} />);
 
 		await user.click(screen.getByTitle("Edit"));
 		const textarea = screen.getByRole("textbox");
@@ -191,9 +174,7 @@ describe("DiffInlineCommentInput", () => {
 	});
 
 	it("renders range label when provided", () => {
-		render(
-			<DiffInlineCommentInput {...defaultProps} rangeLabel="L10-L20" />,
-		);
+		render(<DiffInlineCommentInput {...defaultProps} rangeLabel="L10-L20" />);
 		expect(screen.getByText("L10-L20")).toBeInTheDocument();
 	});
 

@@ -52,7 +52,10 @@ impl DiffCommentStore {
         let data = match std::fs::read_to_string(&file_path) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("[DiffCommentStore] Failed to read {}: {e}", file_path.display());
+                eprintln!(
+                    "[DiffCommentStore] Failed to read {}: {e}",
+                    file_path.display()
+                );
                 return Vec::new();
             }
         };
@@ -60,7 +63,10 @@ impl DiffCommentStore {
         let comments: Vec<DiffComment> = match serde_json::from_str(&data) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[DiffCommentStore] Failed to parse {}: {e}", file_path.display());
+                eprintln!(
+                    "[DiffCommentStore] Failed to parse {}: {e}",
+                    file_path.display()
+                );
                 return Vec::new();
             }
         };
@@ -229,13 +235,7 @@ pub fn add_diff_comment(
     end_line: Option<u32>,
     content: String,
 ) -> Result<DiffComment, String> {
-    let comment = store.add(
-        &worktree_name,
-        file_path,
-        line_number,
-        end_line,
-        content,
-    );
+    let comment = store.add(&worktree_name, file_path, line_number, end_line, content);
 
     let data_dir = app
         .path()

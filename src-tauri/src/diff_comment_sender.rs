@@ -128,10 +128,7 @@ mod tests {
         }];
 
         let result = format_comments_for_agent(&comments);
-        assert_eq!(
-            result,
-            "@src/lib/utils.ts 全体的にテストが不足している"
-        );
+        assert_eq!(result, "@src/lib/utils.ts 全体的にテストが不足している");
     }
 
     #[test]
@@ -140,7 +137,7 @@ mod tests {
             DiffComment {
                 id: "1".to_string(),
                 file_path: "src/a.ts".to_string(),
-    
+
                 line_number: Some(42),
                 end_line: None,
                 content: "Comment A".to_string(),
@@ -150,7 +147,7 @@ mod tests {
             DiffComment {
                 id: "2".to_string(),
                 file_path: "src/b.ts".to_string(),
-    
+
                 line_number: Some(10),
                 end_line: Some(15),
                 content: "Comment B".to_string(),
@@ -160,7 +157,7 @@ mod tests {
             DiffComment {
                 id: "3".to_string(),
                 file_path: "src/c.ts".to_string(),
-    
+
                 line_number: None,
                 end_line: None,
                 content: "Comment C".to_string(),
@@ -170,8 +167,7 @@ mod tests {
         ];
 
         let result = format_comments_for_agent(&comments);
-        let expected =
-            "@src/a.ts:L42 Comment A\n@src/b.ts:L10-L15 Comment B\n@src/c.ts Comment C";
+        let expected = "@src/a.ts:L42 Comment A\n@src/b.ts:L10-L15 Comment B\n@src/c.ts Comment C";
         assert_eq!(result, expected);
     }
 

@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { DiffComment } from "@/types/diffComment";
 import { DiffCommentList } from "./DiffCommentList";
@@ -36,9 +36,7 @@ describe("DiffCommentList", () => {
 	it("shows empty state when no comments", () => {
 		renderWithProviders(<DiffCommentList comments={[]} {...defaultProps} />);
 		expect(screen.getByText("No comments yet")).toBeInTheDocument();
-		expect(
-			screen.getByText("Add comments on diff lines"),
-		).toBeInTheDocument();
+		expect(screen.getByText("Add comments on diff lines")).toBeInTheDocument();
 	});
 
 	it("renders header with Comments label", () => {
@@ -141,10 +139,7 @@ describe("DiffCommentList", () => {
 		);
 
 		await user.click(screen.getByText("Fix this"));
-		expect(defaultProps.onCommentClick).toHaveBeenCalledWith(
-			"src/main.ts",
-			42,
-		);
+		expect(defaultProps.onCommentClick).toHaveBeenCalledWith("src/main.ts", 42);
 	});
 
 	it("calls onCommentClick with filePath only for file comments", async () => {

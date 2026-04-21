@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useDiffComments } from "./useDiffComments";
 
 const mockInvoke = vi.fn();
@@ -48,9 +48,7 @@ describe("useDiffComments", () => {
 	});
 
 	it("returns empty array when worktreeName is empty", async () => {
-		const { result } = renderHook(() =>
-			useDiffComments({ worktreeName: "" }),
-		);
+		const { result } = renderHook(() => useDiffComments({ worktreeName: "" }));
 
 		await waitFor(() => {
 			expect(result.current.loading).toBe(false);
