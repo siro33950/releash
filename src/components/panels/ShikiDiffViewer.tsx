@@ -347,6 +347,7 @@ interface VirtualViewProps extends CommentCallbacks {
 	onStageGroup?: (groupIndex: number) => void;
 	groupActionLabel?: string;
 	containerRef: React.RefObject<HTMLDivElement | null>;
+	scrollToLine?: number | null;
 }
 
 function flattenWithGroups(
@@ -659,6 +660,7 @@ function GutterView({
 	onStageGroup,
 	groupActionLabel,
 	containerRef,
+	scrollToLine,
 	comments,
 	onAddComment,
 	onAddRangeComment,
@@ -723,6 +725,17 @@ function GutterView({
 		estimateSize: (i) => estimateSizeWithComments(flatItems[i]),
 		overscan: 15,
 	});
+
+	useEffect(() => {
+		if (scrollToLine == null) return;
+		const index = flatItems.findIndex(
+			(item) =>
+				item.kind === "gutter-line" && item.line.newLineNumber === scrollToLine,
+		);
+		if (index >= 0) {
+			virtualizer.scrollToIndex(index, { align: "center" });
+		}
+	}, [scrollToLine, flatItems, virtualizer]);
 
 	return (
 		<div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
@@ -848,6 +861,7 @@ function InlineView({
 	onStageGroup,
 	groupActionLabel,
 	containerRef,
+	scrollToLine,
 	comments,
 	onAddComment,
 	onAddRangeComment,
@@ -919,6 +933,17 @@ function InlineView({
 		estimateSize: (i) => estimateSizeWithComments(flatItems[i]),
 		overscan: 15,
 	});
+
+	useEffect(() => {
+		if (scrollToLine == null) return;
+		const index = flatItems.findIndex(
+			(item) =>
+				item.kind === "line" && item.line.newLineNumber === scrollToLine,
+		);
+		if (index >= 0) {
+			virtualizer.scrollToIndex(index, { align: "center" });
+		}
+	}, [scrollToLine, flatItems, virtualizer]);
 
 	return (
 		<div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
@@ -1046,6 +1071,7 @@ function SplitView({
 	onStageGroup,
 	groupActionLabel,
 	containerRef,
+	scrollToLine,
 	comments,
 	onAddComment,
 	onAddRangeComment,
@@ -1159,6 +1185,18 @@ function SplitView({
 		estimateSize: (i) => estimateSizeWithComments(flatItems[i]),
 		overscan: 15,
 	});
+
+	useEffect(() => {
+		if (scrollToLine == null) return;
+		const index = flatItems.findIndex(
+			(item) =>
+				item.kind === "split-row" &&
+				item.row.right?.newLineNumber === scrollToLine,
+		);
+		if (index >= 0) {
+			virtualizer.scrollToIndex(index, { align: "center" });
+		}
+	}, [scrollToLine, flatItems, virtualizer]);
 
 	return (
 		<div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
@@ -1538,18 +1576,6 @@ export function ShikiDiffViewer({
 		}
 	}, [filePath]);
 
-	useEffect(() => {
-		if (scrollToLine == null || !containerRef.current) return;
-		requestAnimationFrame(() => {
-			const el = containerRef.current?.querySelector(
-				`[data-diff-line="${scrollToLine}"]`,
-			);
-			if (el) {
-				el.scrollIntoView({ block: "center", behavior: "smooth" });
-			}
-		});
-	}, [scrollToLine]);
-
 	const handleDelegatedClick = useDelegatedClick(onStageGroup, expandRange);
 
 	const diffMarkers = useMemo(
@@ -1583,6 +1609,7 @@ export function ShikiDiffViewer({
 					onStageGroup={onStageGroup}
 					groupActionLabel={groupActionLabel}
 					containerRef={containerRef}
+					scrollToLine={scrollToLine}
 					comments={comments}
 					onAddComment={onAddComment}
 					onAddRangeComment={onAddRangeComment}
