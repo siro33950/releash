@@ -1,19 +1,15 @@
 mod agent;
 mod auth;
 mod branch;
-mod comment;
 mod error;
 mod pty;
-pub mod thread;
 mod worktree;
 
 pub use agent::*;
 pub use auth::*;
 pub use branch::*;
-pub use comment::*;
 pub use error::*;
 pub use pty::*;
-pub use thread::*;
 pub use worktree::*;
 
 use serde::{Deserialize, Serialize};
@@ -48,30 +44,6 @@ pub enum WsMessage {
     BranchInfoRequest(BranchInfoRequest),
     #[serde(rename = "branch_info_response")]
     BranchInfoResponse(BranchInfoResponse),
-
-    // コメント（レガシー）
-    #[serde(rename = "add_comment")]
-    AddComment(AddComment),
-    #[serde(rename = "delete_comment")]
-    DeleteComment(DeleteComment),
-    #[serde(rename = "update_comment")]
-    UpdateComment(UpdateComment),
-    #[serde(rename = "comments_sync")]
-    CommentsSync(CommentSync),
-
-    // スレッド
-    #[serde(rename = "threads_sync")]
-    ThreadsSync(ThreadsSync),
-    #[serde(rename = "create_thread")]
-    CreateThread(CreateThread),
-    #[serde(rename = "add_thread_entry")]
-    AddThreadEntry(AddThreadEntry),
-    #[serde(rename = "resolve_thread")]
-    ResolveThread(ResolveThread),
-    #[serde(rename = "delete_thread")]
-    DeleteThread(DeleteThread),
-    #[serde(rename = "update_thread_entry")]
-    UpdateThreadEntry(UpdateThreadEntry),
 
     // PTYスポーン
     #[serde(rename = "pty_spawn_request")]
@@ -256,36 +228,6 @@ mod tests {
             WsMessage::BranchInfoResponse(BranchInfoResponse {
                 branch: "main".to_string(),
             }),
-            WsMessage::AddComment(AddComment {
-                file_path: "src/main.rs".to_string(),
-                line_number: 10,
-                end_line: None,
-                content: "fix this".to_string(),
-                severity: None,
-                target: "local".to_string(),
-            }),
-            WsMessage::DeleteComment(DeleteComment {
-                id: "c1".to_string(),
-            }),
-            WsMessage::UpdateComment(UpdateComment {
-                id: "c1".to_string(),
-                content: "updated".to_string(),
-            }),
-            WsMessage::CommentsSync(CommentSync {
-                comments: vec![CommentItem {
-                    id: "c1".to_string(),
-                    file_path: "src/main.rs".to_string(),
-                    line_number: 10,
-                    end_line: None,
-                    content: "fix this".to_string(),
-                    status: "unsent".to_string(),
-                    created_at: 1234567890.0,
-                    parent_id: None,
-                    severity: None,
-                    resolved: false,
-                    target: "local".to_string(),
-                }],
-            }),
             WsMessage::PtySpawnRequest(PtySpawnRequest {
                 cols: 80,
                 rows: 24,
@@ -361,51 +303,6 @@ mod tests {
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),
                 message: "M".to_string(),
-            }),
-            WsMessage::ThreadsSync(ThreadsSync {
-                threads: vec![Thread {
-                    id: "t1".to_string(),
-                    file_path: "src/main.rs".to_string(),
-                    line_number: 10,
-                    end_line: None,
-                    entries: vec![ThreadEntry {
-                        id: "e1".to_string(),
-                        content: "fix this".to_string(),
-                        action: None,
-                        author_name: None,
-                        author_avatar_url: None,
-                        pr_comment_id: None,
-                        created_at: 1234567890.0,
-                    }],
-                    resolved: false,
-                    severity: None,
-                    anchor: None,
-                    created_at: 1234567890.0,
-                }],
-            }),
-            WsMessage::CreateThread(CreateThread {
-                file_path: "src/main.rs".to_string(),
-                line_number: 10,
-                end_line: None,
-                content: "new thread".to_string(),
-                severity: None,
-                author_name: None,
-            }),
-            WsMessage::AddThreadEntry(AddThreadEntry {
-                thread_id: "t1".to_string(),
-                content: "reply".to_string(),
-                author_name: None,
-            }),
-            WsMessage::ResolveThread(ResolveThread {
-                thread_id: "t1".to_string(),
-            }),
-            WsMessage::DeleteThread(DeleteThread {
-                thread_id: "t1".to_string(),
-            }),
-            WsMessage::UpdateThreadEntry(UpdateThreadEntry {
-                thread_id: "t1".to_string(),
-                entry_id: "e1".to_string(),
-                content: "updated".to_string(),
             }),
         ];
 

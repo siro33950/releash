@@ -1,7 +1,8 @@
 mod agent_sdk;
 mod agent_status;
-mod comment_store;
 mod config;
+mod diff_comment_sender;
+mod diff_comment_store;
 mod external_editor;
 mod file_mention;
 mod focus_tracker;
@@ -18,7 +19,6 @@ mod repo_registry;
 mod sentry_integration;
 mod session;
 mod shell_integration;
-mod thread_store;
 mod tls;
 mod tray;
 mod vpn_detect;
@@ -59,11 +59,10 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
-        .manage(Arc::new(comment_store::CommentStore::default()))
-        .manage(Arc::new(thread_store::ThreadStore::default()))
         .manage(Arc::new(
             workspace_state_store::WorkspaceStateStore::default(),
         ))
+        .manage(Arc::new(diff_comment_store::DiffCommentStore::default()))
         .manage(Arc::new(session::SessionStore::default()))
         .manage(Arc::new(pty::PtyManager::default()))
         .manage(watcher::FileWatcherManager::default())
@@ -311,8 +310,6 @@ pub fn run() {
             ws_server::commands::stop_server,
             ws_server::commands::get_server_status,
             ws_server::commands::get_server_info,
-            ws_server::commands::broadcast_comments,
-            ws_server::commands::broadcast_threads,
             ws_server::commands::update_terminal_startup_command,
             // Repo registry
             repo_registry::get_repo_paths,
@@ -328,28 +325,16 @@ pub fn run() {
             mcp::mcp_json::save_and_generate_mcp_configs,
             mcp::mcp_json::generate_agent_mcp_config,
             mcp::mcp_json::preview_agent_mcp_config,
-            // Comments (legacy)
-            comment_store::load_comments,
-            comment_store::save_comments,
-            comment_store::cleanup_comments,
-            comment_store::add_comment,
-            comment_store::remove_comment,
-            comment_store::update_comment_content,
-            comment_store::mark_comments_sent,
-            comment_store::toggle_resolve_comment,
-            // Threads
-            thread_store::load_threads,
-            thread_store::save_threads,
-            thread_store::cleanup_threads,
-            thread_store::add_thread,
-            thread_store::add_thread_entry,
-            thread_store::remove_thread,
-            thread_store::update_thread_entry_content,
-            thread_store::update_thread,
-            thread_store::toggle_resolve_thread,
             // Workspace state
             workspace_state_store::load_workspace_state,
             workspace_state_store::save_workspace_state,
+            // Diff comments
+            diff_comment_store::load_diff_comments,
+            diff_comment_store::add_diff_comment,
+            diff_comment_store::update_diff_comment,
+            diff_comment_store::delete_diff_comment,
+            diff_comment_sender::send_diff_comments_to_agent,
+            diff_comment_sender::mark_diff_comments_sent,
             // OneShot PTY
             pty::oneshot::spawn_oneshot_pty,
             pty::oneshot::cancel_oneshot_pty,

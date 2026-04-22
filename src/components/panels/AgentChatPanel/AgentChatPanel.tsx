@@ -236,11 +236,15 @@ interface AgentChatPanelProps {
 		element: HTMLElement | null,
 		onDrop?: (paths: string[]) => void,
 	) => void;
+	sendMessageRef?: React.MutableRefObject<
+		((content: string) => Promise<void>) | null
+	>;
 }
 
 export function AgentChatPanel({
 	worktreePath,
 	registerDropZone,
+	sendMessageRef,
 }: AgentChatPanelProps) {
 	const {
 		sessions,
@@ -266,6 +270,18 @@ export function AgentChatPanel({
 		selectedModel,
 		setModel,
 	} = useAgentChat(worktreePath);
+
+	// Expose sendMessage to parent via ref
+	useEffect(() => {
+		if (sendMessageRef) {
+			sendMessageRef.current = sendMessage;
+		}
+		return () => {
+			if (sendMessageRef) {
+				sendMessageRef.current = null;
+			}
+		};
+	}, [sendMessage, sendMessageRef]);
 
 	const [historyOpen, setHistoryOpen] = useState(false);
 	const draggedSessionIdRef = useRef<string | null>(null);

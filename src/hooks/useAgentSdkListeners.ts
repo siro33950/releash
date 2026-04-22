@@ -11,7 +11,7 @@ import type {
 	TurnPhase,
 } from "@/types/session";
 import type { AgentChatAction } from "./agentChatReducer";
-import { updateSessionState } from "./useSessionStore";
+import { getSession, updateSessionState } from "./useSessionStore";
 import { setSlashCommands } from "./useSlashCommands";
 
 interface PermissionRequestMessage {
@@ -238,16 +238,46 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
 		let cancelled = false;
+		let refreshInFlight = false;
 
-		listen<StreamingMessageUpdated>("agent-streaming-updated", (event) => {
-			const { chat_session_id, message_id, parts } = event.payload;
-			dispatch({
-				type: "SET_STREAMING_MESSAGE",
-				sessionId: chat_session_id,
-				messageId: message_id,
-				parts,
-			});
-		}).then((fn) => {
+		listen<StreamingMessageUpdated>(
+			"agent-streaming-updated",
+			async (event) => {
+				const { chat_session_id, message_id, parts } = event.payload;
+
+				// Cache miss: message not in active session → refresh from Rust (source of truth)
+				const session = activeSessionRef.current;
+				if (
+					!refreshInFlight &&
+					session?.id === chat_session_id &&
+					!session.messages.some((m) => m.id === message_id)
+				) {
+					refreshInFlight = true;
+					try {
+						const response = await getSession(chat_session_id);
+						if (
+							response &&
+							!cancelled &&
+							activeSessionRef.current?.id === chat_session_id
+						) {
+							dispatch({
+								type: "SET_ACTIVE_SESSION",
+								session: response.session,
+							});
+						}
+					} finally {
+						refreshInFlight = false;
+					}
+				}
+
+				dispatch({
+					type: "SET_STREAMING_MESSAGE",
+					sessionId: chat_session_id,
+					messageId: message_id,
+					parts,
+				});
+			},
+		).then((fn) => {
 			if (cancelled) {
 				fn();
 			} else {
@@ -259,7 +289,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch]);
+	}, [dispatch, activeSessionRef]);
 
 	// Listen to agent-session-state-changed (unified state event from Rust)
 	useEffect(() => {

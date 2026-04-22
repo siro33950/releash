@@ -74,30 +74,6 @@ pub struct CreateWorkspaceParams {
     pub worktree_path: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Thread tool parameter types (Phase D-1)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct GetThreadParams {
-    /// Worktree path (from worktrees_list)
-    pub worktree: String,
-    /// Thread ID
-    pub thread_id: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ListThreadsParams {
-    /// Worktree path (from worktrees_list)
-    pub worktree: String,
-    /// Filter by file path
-    pub file_path: Option<String>,
-    /// Filter by severity
-    pub severity: Option<String>,
-    /// Filter by resolved status
-    pub resolved: Option<bool>,
-}
-
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadFileParams {
     /// Worktree path (from worktrees_list)
@@ -186,7 +162,6 @@ impl ReleashMcpServer {
         &self,
         Parameters(params): Parameters<CreateWorkspaceParams>,
     ) -> Result<CallToolResult, McpError> {
-        // create_workspace still uses repo_path since it needs a base repository
         let repo = {
             let configured = self.state.repo_paths.read();
             if configured.iter().any(|p| p == &params.repo_path) {
@@ -228,51 +203,6 @@ impl ReleashMcpServer {
 
         let json = serde_json::to_string_pretty(&entry).map_err(WorktreeError::from)?;
 
-        Ok(CallToolResult::success(vec![Content::text(json)]))
-    }
-
-    // -----------------------------------------------------------------------
-    // Thread tools (Phase D-1)
-    // -----------------------------------------------------------------------
-
-    #[tool(
-        description = "Get a thread by its ID. Returns the full thread with all entries (messages)."
-    )]
-    async fn get_thread(
-        &self,
-        Parameters(params): Parameters<GetThreadParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let worktree_path = self.resolve_worktree(&params.worktree)?;
-
-        let thread = self
-            .state
-            .thread_store
-            .get_thread(&worktree_path, &params.thread_id)
-            .ok_or_else(|| {
-                McpError::invalid_params(format!("Thread not found: {}", params.thread_id), None)
-            })?;
-
-        let json = serde_json::to_string_pretty(&thread).map_err(WorktreeError::from)?;
-        Ok(CallToolResult::success(vec![Content::text(json)]))
-    }
-
-    #[tool(
-        description = "List threads in a worktree, optionally filtered by file_path, severity, or resolved status."
-    )]
-    async fn list_threads(
-        &self,
-        Parameters(params): Parameters<ListThreadsParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let worktree_path = self.resolve_worktree(&params.worktree)?;
-
-        let threads = self.state.thread_store.get_filtered(
-            &worktree_path,
-            params.file_path.as_deref(),
-            params.severity.as_deref(),
-            params.resolved,
-        );
-
-        let json = serde_json::to_string_pretty(&threads).map_err(WorktreeError::from)?;
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
@@ -348,16 +278,12 @@ mod tests {
         ));
         let pty_manager = Arc::new(crate::pty::PtyManager::default());
         let broadcaster = Arc::new(crate::ws_bridge::WsBroadcaster::default());
-        let comment_store = Arc::new(crate::comment_store::CommentStore::default());
-        let thread_store = Arc::new(crate::thread_store::ThreadStore::default());
 
         let state = McpSharedState {
             repo_paths: Arc::new(parking_lot::RwLock::new(repo_paths)),
             pty_manager,
             app_config,
             broadcaster,
-            comment_store,
-            thread_store,
             app_data_dir: None,
         };
         ReleashMcpServer::new(state)
@@ -378,7 +304,6 @@ mod tests {
             .to_string();
 
         let server = make_server(vec![repo_path.clone()]);
-        // The main worktree path matches the repo_path
         let result = server.resolve_worktree(&repo_path);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), repo_path);

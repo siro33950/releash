@@ -3,10 +3,8 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::comment_store::CommentStore;
 use crate::config::AppConfig;
 use crate::pty::PtyManager;
-use crate::thread_store::ThreadStore;
 use crate::ws_bridge::WsBroadcaster;
 
 #[derive(Clone)]
@@ -17,9 +15,6 @@ pub struct McpSharedState {
     pub app_config: Arc<AppConfig>,
     #[allow(dead_code)] // Used in Phase I (mobile WebSocket broadcast)
     pub broadcaster: Arc<WsBroadcaster>,
-    #[allow(dead_code)] // Retained for backward compatibility during migration
-    pub comment_store: Arc<CommentStore>,
-    pub thread_store: Arc<ThreadStore>,
     #[allow(dead_code)] // Retained: may be needed by future MCP tools
     pub app_data_dir: Option<PathBuf>,
 }
@@ -36,16 +31,12 @@ mod tests {
         ));
         let pty_manager = Arc::new(PtyManager::default());
         let broadcaster = Arc::new(WsBroadcaster::default());
-        let comment_store = Arc::new(CommentStore::default());
-        let thread_store = Arc::new(ThreadStore::default());
 
         McpSharedState {
             repo_paths: Arc::new(RwLock::new(vec!["/tmp/repo".to_string()])),
             pty_manager,
             app_config,
             broadcaster,
-            comment_store,
-            thread_store,
             app_data_dir: None,
         }
     }
@@ -59,8 +50,6 @@ mod tests {
         assert!(Arc::ptr_eq(&state.pty_manager, &cloned.pty_manager));
         assert!(Arc::ptr_eq(&state.app_config, &cloned.app_config));
         assert!(Arc::ptr_eq(&state.broadcaster, &cloned.broadcaster));
-        assert!(Arc::ptr_eq(&state.comment_store, &cloned.comment_store));
-        assert!(Arc::ptr_eq(&state.thread_store, &cloned.thread_store));
     }
 
     #[test]

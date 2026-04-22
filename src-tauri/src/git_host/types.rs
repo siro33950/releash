@@ -83,5 +83,6 @@ pub trait GitHostProvider: Send + Sync {
     fn detect_open_prs(&self, repo_path: &str) -> HashMap<String, PrInfo>;
     fn detect_merged_prs(&self, repo_path: &str) -> Vec<String>;
     fn list_issues(&self, repo_path: &str) -> Vec<IssueInfo>;
+    #[allow(dead_code)]
     fn get_pr_review_comments(&self, repo_path: &str, pr_number: u64) -> Vec<PrReviewComment>;
 }
