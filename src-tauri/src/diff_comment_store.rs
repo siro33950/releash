@@ -128,15 +128,7 @@ impl DiffCommentStore {
             }
         };
         let json = serde_json::to_string_pretty(&comments)?;
-
-        // Atomic write: tmp file → sync → rename
-        let tmp_path = file_path.with_extension("json.tmp");
-        {
-            let mut f = std::fs::File::create(&tmp_path)?;
-            std::io::Write::write_all(&mut f, json.as_bytes())?;
-            f.sync_all()?;
-        }
-        std::fs::rename(&tmp_path, &file_path)?;
+        std::fs::write(&file_path, json)?;
         Ok(())
     }
 

@@ -697,7 +697,7 @@ function GutterView({
 					result.push({ kind: "gutter-line", line });
 					insertCommentItems(
 						result,
-						line.newLineNumber ?? line.oldLineNumber,
+						line.newLineNumber,
 						commentsByLine,
 						commentInputLine,
 						commentInputRange,
@@ -893,7 +893,7 @@ function InlineView({
 
 					insertCommentItems(
 						result,
-						line.newLineNumber ?? line.oldLineNumber,
+						line.newLineNumber,
 						commentsByLine,
 						commentInputLine,
 						commentInputRange,
@@ -1119,10 +1119,9 @@ function SplitView({
 							},
 						});
 						const rightLine = added[i];
-						const leftLine = deleted[i];
 						insertCommentItems(
 							result,
-							rightLine?.newLineNumber ?? leftLine?.oldLineNumber ?? null,
+							rightLine?.newLineNumber ?? null,
 							commentsByLine,
 							commentInputLine,
 							commentInputRange,

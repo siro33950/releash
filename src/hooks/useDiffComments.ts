@@ -22,7 +22,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 				worktreeName: requestedWorktree,
 			});
 			if (worktreeNameRef.current === requestedWorktree) {
-				setComments(result);
+				setComments(result ?? []);
 			}
 		} finally {
 			setLoading(false);
