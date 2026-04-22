@@ -123,8 +123,10 @@ export function DiffCommentList({
 							</Tooltip>
 							<div className="space-y-0.5">
 								{fileComments.map((comment) => (
-									<button
-										type="button"
+									// biome-ignore lint/a11y/useSemanticElements: Cannot use <button> because it contains interactive <Button> children (HTML spec violation)
+									<div
+										role="button"
+										tabIndex={0}
 										key={comment.id}
 										onClick={() =>
 											onCommentClick(
@@ -132,7 +134,16 @@ export function DiffCommentList({
 												comment.lineNumber ?? undefined,
 											)
 										}
-										className="group/item w-full text-left flex items-start gap-1.5 px-1.5 py-1 rounded hover:bg-muted/50 transition-colors"
+										onKeyDown={(e) => {
+											if (e.key === "Enter" || e.key === " ") {
+												e.preventDefault();
+												onCommentClick(
+													comment.filePath,
+													comment.lineNumber ?? undefined,
+												);
+											}
+										}}
+										className="group/item w-full text-left flex items-start gap-1.5 px-1.5 py-1 rounded hover:bg-muted/50 transition-colors cursor-pointer"
 									>
 										<span className="shrink-0 text-[10px] font-mono text-muted-foreground mt-0.5 min-w-[36px]">
 											{formatLineLabel(comment)}
@@ -178,7 +189,7 @@ export function DiffCommentList({
 												<Trash2 className="h-2.5 w-2.5" />
 											</Button>
 										</span>
-									</button>
+									</div>
 								))}
 							</div>
 						</div>
