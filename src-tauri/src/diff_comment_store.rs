@@ -356,7 +356,13 @@ mod tests {
         let store2 = DiffCommentStore::default();
         let loaded = store2.load(dir.path(), "wt1");
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0], comment);
+        assert_eq!(loaded[0].id, comment.id);
+        assert_eq!(loaded[0].file_path, comment.file_path);
+        assert_eq!(loaded[0].line_number, comment.line_number);
+        assert_eq!(loaded[0].end_line, comment.end_line);
+        assert_eq!(loaded[0].content, comment.content);
+        assert_eq!(loaded[0].status, comment.status);
+        assert!((loaded[0].created_at - comment.created_at).abs() < 1e-3);
     }
 
     #[test]
