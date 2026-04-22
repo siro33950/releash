@@ -603,6 +603,7 @@ function CommentGutterCell({
 			className="shrink-0 w-[20px] flex items-center justify-center cursor-pointer select-none"
 			onMouseDown={(e) => {
 				e.preventDefault();
+				e.stopPropagation();
 				onMouseDown(e.shiftKey);
 			}}
 			onMouseEnter={onMouseEnter}
