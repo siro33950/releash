@@ -539,6 +539,7 @@ export function ReviewPanel({
 					>
 						<div className="h-full overflow-hidden border-r border-border">
 							<DiffFileTree
+								rootPath={rootPath}
 								stagedTree={stagedTree}
 								changesTree={changesTree}
 								branchBaseTree={branchBaseTree}

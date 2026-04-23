@@ -11,6 +11,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	Tooltip,
@@ -22,6 +28,7 @@ import { cn } from "@/lib/utils";
 import type { DiffBase, DiffSection } from "@/types/settings";
 
 interface DiffFileTreeProps {
+	rootPath: string;
 	stagedTree: DiffTreeNode[];
 	changesTree: DiffTreeNode[];
 	branchBaseTree: DiffTreeNode[];
@@ -40,6 +47,7 @@ interface DiffFileTreeProps {
 interface TreeNodeProps {
 	node: DiffTreeNode;
 	depth: number;
+	rootPath: string;
 	selectedFile: string | null;
 	selectedSection: DiffSection;
 	section: DiffSection;
@@ -62,6 +70,7 @@ function formatFileName(name: string): { dir: string; baseName: string } {
 function TreeNode({
 	node,
 	depth,
+	rootPath,
 	selectedFile,
 	selectedSection,
 	section,
@@ -100,6 +109,7 @@ function TreeNode({
 							key={child.id}
 							node={child}
 							depth={depth + 1}
+							rootPath={rootPath}
 							selectedFile={selectedFile}
 							selectedSection={selectedSection}
 							section={section}
@@ -122,42 +132,68 @@ function TreeNode({
 			? "text-status-added/50 hover:text-status-added"
 			: "text-status-modified/50 hover:text-status-modified";
 
+	const handleCopyRelativePath = async () => {
+		try {
+			await navigator.clipboard.writeText(node.path);
+		} catch {}
+	};
+
+	const handleCopyAbsolutePath = async () => {
+		try {
+			await navigator.clipboard.writeText(`${rootPath}/${node.path}`);
+		} catch {}
+	};
+
 	return (
-		<div
-			className={cn(
-				"group relative flex w-full items-center py-0.5 px-1 text-xs transition-colors",
-				isSelected ? "bg-foreground/10" : "hover:bg-foreground/5",
-			)}
-			style={{ paddingLeft: paddingLeft + 16 }}
-		>
-			<button
-				type="button"
-				className="flex flex-1 items-center gap-1 min-w-0"
-				onClick={() => onSelectFile(node.path, section)}
-			>
-				<span className="truncate">{baseName}</span>
-				{node.additions != null && node.deletions != null && (
-					<span className="ml-auto shrink-0 text-[10px] font-mono text-muted-foreground tabular-nums">
-						<span className="text-status-untracked">+{node.additions}</span>{" "}
-						<span className="text-status-deleted">-{node.deletions}</span>
-					</span>
-				)}
-			</button>
-			{onFileAction && (
-				<button
-					type="button"
-					className={cn("ml-1 shrink-0 transition-colors", actionColor)}
-					onClick={(e) => {
-						e.stopPropagation();
-						onFileAction(node.path);
-					}}
-					title={fileActionIcon === "plus" ? "Stage file" : "Unstage file"}
-					aria-label={fileActionIcon === "plus" ? "Stage file" : "Unstage file"}
+		<ContextMenu>
+			<ContextMenuTrigger asChild>
+				<div
+					className={cn(
+						"group relative flex w-full items-center py-0.5 px-1 text-xs transition-colors",
+						isSelected ? "bg-foreground/10" : "hover:bg-foreground/5",
+					)}
+					style={{ paddingLeft: paddingLeft + 16 }}
 				>
-					<ActionIcon className="h-3.5 w-3.5" />
-				</button>
-			)}
-		</div>
+					<button
+						type="button"
+						className="flex flex-1 items-center gap-1 min-w-0"
+						onClick={() => onSelectFile(node.path, section)}
+					>
+						<span className="truncate">{baseName}</span>
+						{node.additions != null && node.deletions != null && (
+							<span className="ml-auto shrink-0 text-[10px] font-mono text-muted-foreground tabular-nums">
+								<span className="text-status-untracked">+{node.additions}</span>{" "}
+								<span className="text-status-deleted">-{node.deletions}</span>
+							</span>
+						)}
+					</button>
+					{onFileAction && (
+						<button
+							type="button"
+							className={cn("ml-1 shrink-0 transition-colors", actionColor)}
+							onClick={(e) => {
+								e.stopPropagation();
+								onFileAction(node.path);
+							}}
+							title={fileActionIcon === "plus" ? "Stage file" : "Unstage file"}
+							aria-label={
+								fileActionIcon === "plus" ? "Stage file" : "Unstage file"
+							}
+						>
+							<ActionIcon className="h-3.5 w-3.5" />
+						</button>
+					)}
+				</div>
+			</ContextMenuTrigger>
+			<ContextMenuContent>
+				<ContextMenuItem onClick={handleCopyRelativePath}>
+					Copy Relative Path
+				</ContextMenuItem>
+				<ContextMenuItem onClick={handleCopyAbsolutePath}>
+					Copy Absolute Path
+				</ContextMenuItem>
+			</ContextMenuContent>
+		</ContextMenu>
 	);
 }
 
@@ -325,6 +361,7 @@ function useTreeExpand(tree: DiffTreeNode[]) {
 function TreeSection({
 	tree,
 	section,
+	rootPath,
 	selectedFile,
 	selectedSection,
 	onSelectFile,
@@ -334,6 +371,7 @@ function TreeSection({
 }: {
 	tree: DiffTreeNode[];
 	section: DiffSection;
+	rootPath: string;
 	selectedFile: string | null;
 	selectedSection: DiffSection;
 	onSelectFile: (path: string, section: DiffSection) => void;
@@ -348,6 +386,7 @@ function TreeSection({
 					key={node.id}
 					node={node}
 					depth={0}
+					rootPath={rootPath}
 					selectedFile={selectedFile}
 					selectedSection={selectedSection}
 					section={section}
@@ -363,6 +402,7 @@ function TreeSection({
 }
 
 export function DiffFileTree({
+	rootPath,
 	stagedTree,
 	changesTree,
 	branchBaseTree,
@@ -386,6 +426,7 @@ export function DiffFileTree({
 	if (diffBase === "branch-base") {
 		return (
 			<BranchBaseTree
+				rootPath={rootPath}
 				tree={branchBaseTree}
 				selectedFile={selectedFile}
 				onSelectFile={onSelectFile}
@@ -419,6 +460,7 @@ export function DiffFileTree({
 							<TreeSection
 								tree={changesTree}
 								section="changes"
+								rootPath={rootPath}
 								selectedFile={selectedFile}
 								selectedSection={selectedSection}
 								onSelectFile={onSelectFile}
@@ -456,6 +498,7 @@ export function DiffFileTree({
 							<TreeSection
 								tree={stagedTree}
 								section="staged"
+								rootPath={rootPath}
 								selectedFile={selectedFile}
 								selectedSection={selectedSection}
 								onSelectFile={onSelectFile}
@@ -473,10 +516,12 @@ export function DiffFileTree({
 
 /** Branch Base mode uses a simple flat tree without sections */
 function BranchBaseTree({
+	rootPath,
 	tree,
 	selectedFile,
 	onSelectFile,
 }: {
+	rootPath: string;
 	tree: DiffTreeNode[];
 	selectedFile: string | null;
 	onSelectFile: (path: string, section: DiffSection) => void;
@@ -499,6 +544,7 @@ function BranchBaseTree({
 					key={node.id}
 					node={node}
 					depth={0}
+					rootPath={rootPath}
 					selectedFile={selectedFile}
 					selectedSection="changes"
 					section="changes"
