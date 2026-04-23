@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { DiffTreeNode } from "@/hooks/useDiffFileTree";
@@ -55,6 +55,7 @@ const sampleTree: DiffTreeNode[] = [
 ];
 
 interface TestProps {
+	rootPath: string;
 	stagedTree: DiffTreeNode[];
 	changesTree: DiffTreeNode[];
 	branchBaseTree: DiffTreeNode[];
@@ -71,6 +72,7 @@ interface TestProps {
 }
 
 const defaultProps: TestProps = {
+	rootPath: "/workspace/my-project",
 	stagedTree: [],
 	changesTree: [],
 	branchBaseTree: [],
@@ -403,6 +405,74 @@ describe("DiffFileTree", () => {
 
 			fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
 			expect(screen.getByText("app.tsx")).toBeInTheDocument();
+		});
+	});
+
+	describe("context menu - copy path", () => {
+		it("should show context menu with copy options when file is right-clicked", async () => {
+			renderTree({
+				changesTree: [fileNode("src/app.tsx", "app.tsx")],
+				changesFileCount: 1,
+			});
+
+			const fileButton = screen.getByText("app.tsx");
+			fireEvent.contextMenu(fileButton);
+
+			await waitFor(() => {
+				expect(screen.getByText("Copy Relative Path")).toBeInTheDocument();
+				expect(screen.getByText("Copy Absolute Path")).toBeInTheDocument();
+			});
+		});
+
+		it("should copy relative path to clipboard when 'Copy Relative Path' is clicked", async () => {
+			const writeText = vi.fn().mockResolvedValue(undefined);
+			Object.assign(navigator, {
+				clipboard: { writeText },
+			});
+
+			renderTree({
+				changesTree: [fileNode("src/app.tsx", "app.tsx")],
+				changesFileCount: 1,
+			});
+
+			fireEvent.contextMenu(screen.getByText("app.tsx"));
+
+			await waitFor(() => {
+				expect(screen.getByText("Copy Relative Path")).toBeInTheDocument();
+			});
+
+			fireEvent.click(screen.getByText("Copy Relative Path"));
+
+			await waitFor(() => {
+				expect(writeText).toHaveBeenCalledWith("src/app.tsx");
+			});
+		});
+
+		it("should copy absolute path to clipboard when 'Copy Absolute Path' is clicked", async () => {
+			const writeText = vi.fn().mockResolvedValue(undefined);
+			Object.assign(navigator, {
+				clipboard: { writeText },
+			});
+
+			renderTree({
+				rootPath: "/workspace/my-project",
+				changesTree: [fileNode("src/app.tsx", "app.tsx")],
+				changesFileCount: 1,
+			});
+
+			fireEvent.contextMenu(screen.getByText("app.tsx"));
+
+			await waitFor(() => {
+				expect(screen.getByText("Copy Absolute Path")).toBeInTheDocument();
+			});
+
+			fireEvent.click(screen.getByText("Copy Absolute Path"));
+
+			await waitFor(() => {
+				expect(writeText).toHaveBeenCalledWith(
+					"/workspace/my-project/src/app.tsx",
+				);
+			});
 		});
 	});
 });
