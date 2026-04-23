@@ -57,64 +57,52 @@ pub fn detect_editors() -> Vec<EditorInfo> {
     scan_applications()
 }
 
+fn validate_path(path: &str, label: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err(format!("{label}が指定されていません"));
+    }
+    Ok(())
+}
+
+fn open_path_with_opener(
+    app: &tauri::AppHandle,
+    path: &str,
+    editor: &str,
+    label: &str,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    if editor.is_empty() {
+        app.opener()
+            .open_path(path, None::<&str>)
+            .map_err(|e| format!("{label}を開けませんでした: {e}"))
+    } else {
+        app.opener()
+            .open_path(path, Some(editor))
+            .map_err(|e| format!("エディタで{label}を開けませんでした: {e}"))
+    }
+}
+
 #[tauri::command]
 pub fn open_in_editor(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppConfig>>,
     file_path: String,
 ) -> Result<(), String> {
-    if file_path.is_empty() {
-        return Err("ファイルパスが指定されていません".to_string());
-    }
-
-    use tauri_plugin_opener::OpenerExt;
-
+    validate_path(&file_path, "ファイルパス")?;
     let config = state.get_config()?;
-    let editor = &config.app.external_editor;
-
-    if editor.is_empty() {
-        app.opener()
-            .open_path(&file_path, None::<&str>)
-            .map_err(|e| format!("ファイルを開けませんでした: {e}"))
-    } else {
-        app.opener()
-            .open_path(&file_path, Some(editor.as_str()))
-            .map_err(|e| format!("エディタでファイルを開けませんでした: {e}"))
-    }
+    open_path_with_opener(&app, &file_path, &config.app.external_editor, "ファイル")
 }
 
 #[tauri::command]
 pub fn open_folder_in_editor(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppConfig>>,
     folder_path: String,
 ) -> Result<(), String> {
-    if folder_path.is_empty() {
-        return Err("フォルダパスが指定されていません".to_string());
-    }
-
+    validate_path(&folder_path, "フォルダパス")?;
     let config = state.get_config()?;
-    let editor = &config.app.external_editor;
-
-    let output = if editor.is_empty() {
-        std::process::Command::new("open")
-            .arg(&folder_path)
-            .output()
-    } else {
-        std::process::Command::new("open")
-            .arg("-a")
-            .arg(editor)
-            .arg(&folder_path)
-            .output()
-    };
-
-    match output {
-        Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            Err(format!("エディタでフォルダを開けませんでした: {stderr}"))
-        }
-        Err(e) => Err(format!("コマンドの実行に失敗しました: {e}")),
-    }
+    open_path_with_opener(&app, &folder_path, &config.app.external_editor, "フォルダ")
 }
 
 #[cfg(test)]
@@ -189,5 +177,25 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("Test Editor"));
         assert!(json.contains("/Applications/Test.app"));
+    }
+
+    #[test]
+    fn validate_path_rejects_empty() {
+        let result = validate_path("", "ファイルパス");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "ファイルパスが指定されていません");
+    }
+
+    #[test]
+    fn validate_path_rejects_empty_folder() {
+        let result = validate_path("", "フォルダパス");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "フォルダパスが指定されていません");
+    }
+
+    #[test]
+    fn validate_path_accepts_non_empty() {
+        assert!(validate_path("/some/path", "ファイルパス").is_ok());
+        assert!(validate_path("/some/folder", "フォルダパス").is_ok());
     }
 }

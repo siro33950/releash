@@ -463,6 +463,8 @@ export function ReviewPanel({
 									onClick={() => {
 										invoke("open_folder_in_editor", {
 											folderPath: rootPath,
+										}).catch((e: unknown) => {
+											console.error("Failed to open folder in editor:", e);
 										});
 									}}
 									className="h-5 w-5 text-muted-foreground hover:text-foreground"
@@ -523,6 +525,8 @@ export function ReviewPanel({
 								onClick={() => {
 									invoke("open_folder_in_editor", {
 										folderPath: rootPath,
+									}).catch((e: unknown) => {
+										console.error("Failed to open folder in editor:", e);
 									});
 								}}
 								className="h-5 w-5 text-muted-foreground hover:text-foreground"
