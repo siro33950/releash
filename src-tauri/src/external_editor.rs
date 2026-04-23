@@ -83,6 +83,40 @@ pub fn open_in_editor(
     }
 }
 
+#[tauri::command]
+pub fn open_folder_in_editor(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    folder_path: String,
+) -> Result<(), String> {
+    if folder_path.is_empty() {
+        return Err("フォルダパスが指定されていません".to_string());
+    }
+
+    let config = state.get_config()?;
+    let editor = &config.app.external_editor;
+
+    let output = if editor.is_empty() {
+        std::process::Command::new("open")
+            .arg(&folder_path)
+            .output()
+    } else {
+        std::process::Command::new("open")
+            .arg("-a")
+            .arg(editor)
+            .arg(&folder_path)
+            .output()
+    };
+
+    match output {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            Err(format!("エディタでフォルダを開けませんでした: {stderr}"))
+        }
+        Err(e) => Err(format!("コマンドの実行に失敗しました: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

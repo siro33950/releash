@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
 	Code,
 	Eye,
@@ -5,7 +6,7 @@ import {
 	GitCommitHorizontal,
 	PanelLeftClose,
 	PanelLeftOpen,
-	Send,
+	SquareArrowOutUpRight,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -260,13 +261,11 @@ export function ReviewPanel({
 
 	const {
 		comments: allComments,
-		unsentCount,
 		addComment,
 		updateComment,
 		deleteComment,
 		sendToAgent,
 		markSent,
-		sendAllUnsent,
 		getCommentsForFile,
 	} = useDiffComments({ worktreeName });
 
@@ -451,10 +450,32 @@ export function ReviewPanel({
 			<div className="flex flex-col h-full">
 				<div className="flex items-center justify-between px-2 h-[32px] border-b border-border bg-card shrink-0">
 					<div className="w-5" />
-					<DiffBaseToggle
-						diffBase={diffBase}
-						onDiffBaseChange={handleDiffBaseChange}
-					/>
+					<div className="flex items-center gap-1">
+						<DiffBaseToggle
+							diffBase={diffBase}
+							onDiffBaseChange={handleDiffBaseChange}
+						/>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									variant="ghost"
+									size="icon-xs"
+									onClick={() => {
+										invoke("open_folder_in_editor", {
+											folderPath: rootPath,
+										});
+									}}
+									className="h-5 w-5 text-muted-foreground hover:text-foreground"
+									aria-label="Open in editor"
+								>
+									<SquareArrowOutUpRight className="h-3.5 w-3.5" />
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent side="bottom" className="text-xs">
+								Open in editor
+							</TooltipContent>
+						</Tooltip>
+					</div>
 				</div>
 				<div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">
 					No changes
@@ -499,29 +520,19 @@ export function ReviewPanel({
 							<Button
 								variant="ghost"
 								size="icon-xs"
-								onClick={async () => {
-									const result = await sendAllUnsent();
-									if (result.formattedMessage && onSendToAgent) {
-										await onSendToAgent(result.formattedMessage);
-										await markSent(result.commentIds);
-									}
+								onClick={() => {
+									invoke("open_folder_in_editor", {
+										folderPath: rootPath,
+									});
 								}}
-								disabled={unsentCount === 0}
-								className="h-5 w-5 text-muted-foreground hover:text-foreground relative disabled:opacity-30"
-								aria-label="Send all comments to Agent"
+								className="h-5 w-5 text-muted-foreground hover:text-foreground"
+								aria-label="Open in editor"
 							>
-								<Send className="h-3.5 w-3.5" />
-								{unsentCount > 0 && (
-									<span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] rounded-full bg-blue-600 text-[9px] text-white flex items-center justify-center px-0.5">
-										{unsentCount}
-									</span>
-								)}
+								<SquareArrowOutUpRight className="h-3.5 w-3.5" />
 							</Button>
 						</TooltipTrigger>
 						<TooltipContent side="bottom" className="text-xs">
-							{unsentCount > 0
-								? `Send ${unsentCount} comments to Agent`
-								: "No unsent comments"}
+							Open in editor
 						</TooltipContent>
 					</Tooltip>
 				</div>

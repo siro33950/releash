@@ -389,4 +389,45 @@ describe("ReviewPanel", () => {
 		const toolbar = screen.getByTestId("diff-toolbar");
 		expect(toolbar).toHaveAttribute("data-file-path", "/repo/src/main.ts");
 	});
+
+	it("should show 'Open in editor' button instead of 'Send all comments' button", () => {
+		vi.mocked(useDiffFileTree).mockReturnValue({
+			stagedTree: [],
+			changesTree: [
+				{
+					id: "file:file.ts",
+					name: "file.ts",
+					path: "file.ts",
+					node_type: "file",
+					status: "modified",
+					additions: 1,
+					deletions: 0,
+					children: [],
+				},
+			],
+			stagedFileCount: 0,
+			changesFileCount: 1,
+			branchBaseTree: [],
+			branchBaseFileCount: 0,
+			loading: false,
+		});
+
+		render(
+			<TooltipProvider>
+				<ReviewPanel
+					rootPath="/repo"
+					baseBranch="main"
+					diffOnlyMode={false}
+					onDiffOnlyModeChange={vi.fn()}
+				/>
+			</TooltipProvider>,
+		);
+
+		expect(
+			screen.getByRole("button", { name: "Open in editor" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Send all comments to Agent" }),
+		).not.toBeInTheDocument();
+	});
 });
