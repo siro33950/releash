@@ -138,7 +138,7 @@ const DiffLineRow = React.memo(function DiffLineRow({
 				{lineMarker(line.type)}
 			</span>
 			{commentButton}
-			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4">
+			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4 select-text">
 				{renderTokens(line.tokens)}
 			</span>
 		</div>
@@ -244,7 +244,7 @@ const GutterLineRow = React.memo(function GutterLineRow({
 				{marker}
 			</span>
 			{commentButton}
-			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4">
+			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4 select-text">
 				{renderTokens(line.tokens)}
 			</span>
 		</div>
@@ -270,7 +270,7 @@ function renderHalfLine(
 				{lineMarker(line.type)}
 			</span>
 			{commentButton}
-			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4">
+			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4 select-text">
 				{renderTokens(line.tokens)}
 			</span>
 		</div>
