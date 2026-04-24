@@ -99,6 +99,30 @@ describe("computeDiffBlocks", () => {
 		expect(result.blocks[0].lines[0].tokens[0].color).toBe("#ff0000");
 	});
 
+	it("processes all-deletion hunks (file deleted)", () => {
+		// Simulates git2 output for "content\n" → "" (file deleted)
+		// git2 returns: old_start=1, old_lines=1, new_start=0, new_lines=0
+		const hunks = [
+			{
+				index: 0,
+				oldStart: 1,
+				oldLines: 1,
+				newStart: 0,
+				newLines: 0,
+				lines: ["-content"],
+			},
+		];
+		const result = computeDiffBlocks(hunks, null, null, "content\n", "");
+
+		expect(result.blocks).toHaveLength(1);
+		expect(result.blocks[0].type).toBe("change");
+		expect(result.blocks[0].lines).toHaveLength(1);
+		expect(result.blocks[0].lines[0].type).toBe("deleted");
+		expect(result.blocks[0].lines[0].content).toBe("content");
+		expect(result.blocks[0].lines[0].oldLineNumber).toBe(1);
+		expect(result.blocks[0].lines[0].newLineNumber).toBeNull();
+	});
+
 	it("skips backslash-only lines in hunks", () => {
 		const hunks = [
 			{

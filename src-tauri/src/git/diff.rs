@@ -3,10 +3,26 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use git2::Repository;
 use std::path::Path;
 
+/// Discover a git repository from a file path.
+/// Falls back to the parent directory if the file does not exist (e.g. deleted files).
+fn discover_repo(path: &Path) -> Result<Repository, git2::Error> {
+    match Repository::discover(path) {
+        Ok(repo) => Ok(repo),
+        Err(_) if !path.exists() => {
+            if let Some(parent) = path.parent() {
+                Repository::discover(parent)
+            } else {
+                Repository::discover(path)
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// merge-base コミットのファイル内容を取得する（テキスト）
 pub fn get_file_at_branch_base(file_path: String) -> Result<String, GitError> {
     let path = Path::new(&file_path);
-    let repo = Repository::discover(path)?;
+    let repo = discover_repo(path)?;
 
     let repo_workdir = repo
         .workdir()
@@ -26,7 +42,7 @@ pub fn get_file_at_branch_base(file_path: String) -> Result<String, GitError> {
 /// merge-base コミットのファイル内容を取得する（バイナリ → Base64）
 pub fn get_binary_file_at_branch_base(file_path: String) -> Result<String, GitError> {
     let path = Path::new(&file_path);
-    let repo = Repository::discover(path)?;
+    let repo = discover_repo(path)?;
 
     let repo_workdir = repo
         .workdir()
@@ -96,7 +112,7 @@ fn find_merge_base_commit(repo: &Repository) -> Result<git2::Commit<'_>, GitErro
 
 pub fn get_file_at_ref(file_path: String, git_ref: String) -> Result<String, GitError> {
     let path = Path::new(&file_path);
-    let repo = Repository::discover(path)?;
+    let repo = discover_repo(path)?;
 
     let repo_workdir = repo
         .workdir()
@@ -116,7 +132,7 @@ pub fn get_file_at_ref(file_path: String, git_ref: String) -> Result<String, Git
 
 pub fn get_binary_file_at_ref(file_path: String, git_ref: String) -> Result<String, GitError> {
     let path = Path::new(&file_path);
-    let repo = Repository::discover(path)?;
+    let repo = discover_repo(path)?;
 
     let repo_workdir = repo
         .workdir()
@@ -135,7 +151,7 @@ pub fn get_binary_file_at_ref(file_path: String, git_ref: String) -> Result<Stri
 
 pub fn get_staged_content(file_path: String) -> Result<String, GitError> {
     let path = Path::new(&file_path);
-    let repo = Repository::discover(path)?;
+    let repo = discover_repo(path)?;
 
     let repo_workdir = repo
         .workdir()
@@ -161,7 +177,7 @@ pub fn get_staged_content(file_path: String) -> Result<String, GitError> {
 
 pub fn get_binary_staged_content(file_path: String) -> Result<String, GitError> {
     let path = Path::new(&file_path);
-    let repo = Repository::discover(path)?;
+    let repo = discover_repo(path)?;
 
     let repo_workdir = repo
         .workdir()
@@ -269,5 +285,39 @@ mod tests {
         let result =
             get_binary_file_at_ref(workdir_file(&repo, "img.bin"), "HEAD".to_string()).unwrap();
         assert_eq!(result, STANDARD.encode(b"binary at HEAD"));
+    }
+
+    #[test]
+    fn test_get_file_at_ref_deleted_file() {
+        let (_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "deleted.txt", "original content\n", "add file");
+
+        // Delete the file from working tree
+        let file_path = workdir_file(&repo, "deleted.txt");
+        std::fs::remove_file(&file_path).unwrap();
+
+        // Should still be able to get content from HEAD
+        let result = get_file_at_ref(file_path.clone(), "HEAD".to_string());
+        println!("get_file_at_ref for deleted file: {:?}", result);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        assert_eq!(result.unwrap(), "original content\n");
+    }
+
+    #[test]
+    fn test_get_staged_content_deleted_file() {
+        let (_dir, repo) = create_test_repo();
+        create_initial_commit(&repo);
+        add_and_commit(&repo, "deleted.txt", "staged content\n", "add file");
+
+        // File still in index (only rm, not git rm)
+        let file_path = workdir_file(&repo, "deleted.txt");
+        std::fs::remove_file(&file_path).unwrap();
+
+        // Should still be able to get content from index
+        let result = get_staged_content(file_path.clone());
+        println!("get_staged_content for deleted file: {:?}", result);
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        assert_eq!(result.unwrap(), "staged content\n");
     }
 }

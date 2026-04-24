@@ -228,6 +228,7 @@ mod tests {
         let statuses = get_git_status(dir.path().to_str().unwrap().to_string()).unwrap();
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].index_status, "deleted");
+        assert_eq!(statuses[0].worktree_status, "none");
     }
 
     #[test]

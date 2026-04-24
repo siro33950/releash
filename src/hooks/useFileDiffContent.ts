@@ -73,7 +73,17 @@ export function useFileDiffContent(
 			fetchPair = Promise.all([fetchHead(), fetchStaged()]);
 		} else {
 			// Changes: Staged → Working Tree
-			fetchPair = Promise.all([fetchStaged(), fetchWorkingTree()]);
+			// When both staged and working tree are empty (deleted file),
+			// fall back to HEAD for original content
+			fetchPair = Promise.all([fetchStaged(), fetchWorkingTree()]).then(
+				async ([staged, workingTree]) => {
+					if (staged === "" && workingTree === "") {
+						const head = await fetchHead();
+						return [head, workingTree] as [string, string];
+					}
+					return [staged, workingTree] as [string, string];
+				},
+			);
 		}
 
 		fetchPair
