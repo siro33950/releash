@@ -296,6 +296,7 @@ pub fn run() {
             // External Editor
             external_editor::detect_editors,
             external_editor::open_in_editor,
+            external_editor::open_folder_in_editor,
             // Agent Status (Rust 中央管理)
             agent_status::get_session_status,
             agent_status::get_workspace_status,
