@@ -27,11 +27,11 @@ export function useFileDiffContent(
 
 		setLoading(true);
 
-		const fetchStaged = async () => {
+		const fetchStaged = async (): Promise<string | null> => {
 			try {
 				return await invoke<string>("get_staged_content", { filePath });
 			} catch {
-				return "";
+				return null;
 			}
 		};
 
@@ -56,24 +56,38 @@ export function useFileDiffContent(
 			}
 		};
 
-		const fetchWorkingTree = async () => {
+		const fetchWorkingTree = async (): Promise<string | null> => {
 			try {
 				return await readTextFile(filePath);
 			} catch {
-				return "";
+				return null;
 			}
 		};
 
 		let fetchPair: Promise<[string, string]>;
 
 		if (diffBase === "branch-base") {
-			fetchPair = Promise.all([fetchBranchBase(), fetchWorkingTree()]);
+			fetchPair = Promise.all([fetchBranchBase(), fetchWorkingTree()]).then(
+				([base, wt]) => [base, wt ?? ""] as [string, string],
+			);
 		} else if (section === "staged") {
 			// Staged Changes: HEAD → Staged
-			fetchPair = Promise.all([fetchHead(), fetchStaged()]);
+			fetchPair = Promise.all([fetchHead(), fetchStaged()]).then(
+				([head, staged]) => [head, staged ?? ""] as [string, string],
+			);
 		} else {
 			// Changes: Staged → Working Tree
-			fetchPair = Promise.all([fetchStaged(), fetchWorkingTree()]);
+			// When both fetch fail (null = deleted file),
+			// fall back to HEAD for original content
+			fetchPair = Promise.all([fetchStaged(), fetchWorkingTree()]).then(
+				async ([staged, workingTree]) => {
+					if (staged === null && workingTree === null) {
+						const head = await fetchHead();
+						return [head, ""] as [string, string];
+					}
+					return [staged ?? "", workingTree ?? ""] as [string, string];
+				},
+			);
 		}
 
 		fetchPair
