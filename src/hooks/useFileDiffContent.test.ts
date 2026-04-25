@@ -58,6 +58,24 @@ describe("useFileDiffContent", () => {
 			expect(result.current.modifiedContent).toBe("");
 		});
 
+		it("does not fall back to HEAD when both staged and working tree are genuinely empty (not deleted)", async () => {
+			mockInvoke.mockImplementation((cmd: string) => {
+				if (cmd === "get_staged_content") return Promise.resolve("");
+				return Promise.resolve("");
+			});
+			mockReadTextFile.mockResolvedValue("");
+
+			const { result } = renderHook(() =>
+				useFileDiffContent("empty-file.ts", "head", "changes", 0),
+			);
+
+			await waitFor(() => {
+				expect(result.current.loading).toBe(false);
+			});
+			expect(result.current.originalContent).toBe("");
+			expect(result.current.modifiedContent).toBe("");
+		});
+
 		it("does not fall back to HEAD when staged has content but working tree is empty", async () => {
 			mockInvoke.mockImplementation((cmd: string) => {
 				if (cmd === "get_staged_content")
