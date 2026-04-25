@@ -61,7 +61,7 @@ jobs:
           retention-days: 7
       - name: Add PR comment with test results
         if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const prNumber = context.payload.pull_request?.number;
@@ -298,7 +298,7 @@ jobs:
 
       - name: Post PR comment with screenshot results
         if: always() && steps.check.outputs.should_run == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const prNumber = context.payload.pull_request?.number;
