@@ -14,7 +14,7 @@ export default defineConfig({
 	build: {
 		outDir: "src-tauri/resources/remote",
 		emptyOutDir: false,
-		rollupOptions: {
+		rolldownOptions: {
 			input: path.resolve(import.meta.dirname, "remote.html"),
 		},
 	},
