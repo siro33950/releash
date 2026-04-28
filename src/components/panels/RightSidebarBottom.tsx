@@ -3,13 +3,17 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { DiffCommentList } from "@/components/panels/DiffCommentList";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
 import { useDiffComments } from "@/hooks/useDiffComments";
+import type { MentionReference } from "@/types/session";
 import type { Theme } from "@/types/settings";
 
 interface RightSidebarBottomProps {
 	rootPath: string;
 	theme?: Theme;
 	worktreeName: string;
-	onSendToAgent?: (message: string) => Promise<void>;
+	onSendToAgent?: (
+		message: string,
+		mentions?: MentionReference[],
+	) => Promise<void>;
 	onCommentClick?: (filePath: string, lineNumber?: number) => void;
 	onToggleCollapse?: () => void;
 	collapsed?: boolean;
@@ -69,14 +73,20 @@ export function RightSidebarBottom({
 								onSend={async (ids) => {
 									const result = await sendToAgent(ids);
 									if (result.formattedMessage && onSendToAgent) {
-										await onSendToAgent(result.formattedMessage);
+										await onSendToAgent(
+											result.formattedMessage,
+											result.mentions,
+										);
 										await markSent(result.commentIds);
 									}
 								}}
 								onSendAll={async () => {
 									const result = await sendAllUnsent();
 									if (result.formattedMessage && onSendToAgent) {
-										await onSendToAgent(result.formattedMessage);
+										await onSendToAgent(
+											result.formattedMessage,
+											result.mentions,
+										);
 										await markSent(result.commentIds);
 									}
 								}}

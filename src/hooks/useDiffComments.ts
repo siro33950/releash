@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DiffComment } from "@/types/diffComment";
+import type { MentionReference } from "@/types/session";
 
 interface UseDiffCommentsOptions {
 	worktreeName: string;
@@ -88,6 +89,7 @@ export function useDiffComments({ worktreeName }: UseDiffCommentsOptions) {
 			return invoke<{
 				sentCount: number;
 				formattedMessage: string;
+				mentions: MentionReference[];
 				commentIds: string[];
 			}>("send_diff_comments_to_agent", {
 				worktreeName,

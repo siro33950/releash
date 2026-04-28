@@ -4,6 +4,7 @@ import type {
 	ChatSession,
 	ImageAttachment,
 	LegacyChatMessage,
+	MentionReference,
 	MessagePart,
 	MessageRole,
 	ModelInfo,
@@ -193,6 +194,7 @@ export async function sendAgentMessage(
 	content: string,
 	permissionMode: string,
 	images?: ImageAttachment[],
+	mentions?: MentionReference[],
 ): Promise<SendMessageResponse> {
 	const raw = await invoke<RawSendMessageResponse>("send_agent_message", {
 		chatSessionId,
@@ -200,6 +202,7 @@ export async function sendAgentMessage(
 		content,
 		permissionMode,
 		images: images && images.length > 0 ? images : undefined,
+		mentions: mentions && mentions.length > 0 ? mentions : undefined,
 	});
 	return {
 		session: convertLegacySession(raw.session),

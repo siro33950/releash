@@ -13,11 +13,43 @@ import type { SlashCommand } from "@/hooks/useSlashCommands";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
 import type {
 	ImageAttachment,
+	MentionReference,
 	ModelInfo,
 	PermissionMode,
 } from "@/types/session";
 import { MentionPopup } from "./MentionPopup";
 import { ModelSelector } from "./ModelSelector";
+
+const MENTION_SYNC_RE = /@([^\s@:]+(?:\.[^\s@:]+)*)(?::L(\d+)(?:-L(\d+))?)?/g;
+
+function syncMentionsWithText(
+	text: string,
+	refs: MentionReference[],
+): MentionReference[] | undefined {
+	const re = new RegExp(MENTION_SYNC_RE.source, "g");
+	const found = new Map<string, { startLine?: number; endLine?: number }>();
+	for (;;) {
+		const m = re.exec(text);
+		if (m === null) break;
+		found.set(m[1], {
+			startLine: m[2] ? Number(m[2]) : undefined,
+			endLine: m[3] ? Number(m[3]) : undefined,
+		});
+	}
+	const synced = refs
+		.filter((ref) => found.has(ref.filePath))
+		.map((ref) => {
+			const info = found.get(ref.filePath);
+			if (!info) return { filePath: ref.filePath };
+			return {
+				filePath: ref.filePath,
+				startLine: info.startLine,
+				endLine: info.endLine,
+			};
+		});
+	return synced.length > 0 ? synced : undefined;
+}
+
 import { ModeSelector } from "./ModeSelector";
 import { findMentionTrigger, handlePopupKeyDown } from "./popupInputUtils";
 import { SlashCommandPopup } from "./SlashCommandPopup";
@@ -33,7 +65,11 @@ export interface MessageInputHandle {
 }
 
 interface MessageInputProps {
-	onSend: (content: string, images?: ImageAttachment[]) => void;
+	onSend: (
+		content: string,
+		images?: ImageAttachment[],
+		mentions?: MentionReference[],
+	) => void;
 	onInterrupt: () => void;
 	isStreaming: boolean;
 	onCycleMode?: () => void;
@@ -74,6 +110,7 @@ export function MessageInput({
 		start: number;
 		query: string;
 	} | null>(null);
+	const [mentionRefs, setMentionRefs] = useState<MentionReference[]>([]);
 
 	const allCommands = useSlashCommands();
 
@@ -201,6 +238,10 @@ export function MessageInput({
 				.replace(/^\s/, "");
 			const newValue = `${before}@${filePath} ${after}`;
 			setValue(newValue);
+			setMentionRefs((prev) => [
+				...prev,
+				{ filePath, startLine: undefined, endLine: undefined },
+			]);
 			setMentionTrigger(null);
 			setMentionDismissed(true);
 			setMentionSelectedIndex(0);
@@ -220,16 +261,19 @@ export function MessageInput({
 		const trimmed = value.trim();
 		const hasImages = attachedImages.length > 0;
 		if (!trimmed && !hasImages) return;
+		const currentMentions = syncMentionsWithText(trimmed, mentionRefs);
 		if (hasImages) {
 			onSend(
 				trimmed,
 				attachedImages.map((img) => img.attachment),
+				currentMentions,
 			);
 		} else {
-			onSend(trimmed);
+			onSend(trimmed, undefined, currentMentions);
 		}
 		setValue("");
 		setAttachedImages([]);
+		setMentionRefs([]);
 		setSlashPopupDismissed(false);
 		setSelectedIndex(0);
 		setMentionTrigger(null);
@@ -238,7 +282,7 @@ export function MessageInput({
 		if (textareaRef.current) {
 			textareaRef.current.style.height = "auto";
 		}
-	}, [value, onSend, attachedImages]);
+	}, [value, onSend, attachedImages, mentionRefs]);
 
 	const handleKeyDown = useCallback(
 		(e: React.KeyboardEvent<HTMLTextAreaElement>) => {

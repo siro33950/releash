@@ -67,6 +67,7 @@ pub struct PendingMessage {
     pub permission_mode: String,
     pub images: Vec<ImageAttachment>,
     pub worktree_path: String,
+    pub mentions: Vec<crate::file_mention::MentionReference>,
 }
 
 /// Model information from Agent SDK.
@@ -1763,9 +1764,11 @@ async fn consume_pending_message(
         );
     }
 
-    // 3b. Resolve @file mentions in the pending content
-    let resolved_prompt =
-        crate::file_mention::resolve_mentions_or_fallback(&pending.worktree_path, &pending.content);
+    let resolved_prompt = crate::file_mention::resolve_mentions_or_fallback(
+        &pending.worktree_path,
+        &pending.content,
+        &pending.mentions,
+    );
 
     // 4. Sync permissionMode + selected_model + send message directly to the running Bridge.
     //    The process is guaranteed running since it just emitted turn_complete.
@@ -2140,10 +2143,12 @@ pub async fn send_agent_message(
     content: String,
     permission_mode: Option<String>,
     images: Option<Vec<ImageAttachment>>,
+    mentions: Option<Vec<crate::file_mention::MentionReference>>,
 ) -> Result<SendMessageResponse, String> {
     let data_dir = resolve_data_dir(&app)?;
     let pm = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
     let images = images.unwrap_or_default();
+    let mentions = mentions.unwrap_or_default();
 
     // 1. Create or get session
     let session = if let Some(ref sid) = chat_session_id {
@@ -2193,56 +2198,57 @@ pub async fn send_agent_message(
             .unwrap_or(TurnPhase::Idle)
     };
 
-    let agent_message =
-        if current_phase == TurnPhase::Streaming || current_phase == TurnPhase::WaitingPermission {
-            // 4a. Queue pending message + interrupt
-            {
-                let mut map = handles.lock().await;
-                if let Some(proc) = map.get_mut(&sid) {
-                    proc.pending_message = Some(PendingMessage {
-                        content: content.clone(),
-                        permission_mode: pm.clone(),
-                        images: images.clone(),
-                        worktree_path: worktree_path.clone(),
-                    });
-                    proc.stdin
-                        .write_all(b"{\"type\":\"interrupt\"}\n")
-                        .await
-                        .map_err(|e| format!("Failed to write interrupt: {e}"))?;
-                    proc.stdin
-                        .flush()
-                        .await
-                        .map_err(|e| format!("Failed to flush: {e}"))?;
-                }
+    let agent_message = if current_phase == TurnPhase::Streaming
+        || current_phase == TurnPhase::WaitingPermission
+    {
+        // 4a. Queue pending message + interrupt
+        {
+            let mut map = handles.lock().await;
+            if let Some(proc) = map.get_mut(&sid) {
+                proc.pending_message = Some(PendingMessage {
+                    content: content.clone(),
+                    permission_mode: pm.clone(),
+                    images: images.clone(),
+                    worktree_path: worktree_path.clone(),
+                    mentions: mentions.clone(),
+                });
+                proc.stdin
+                    .write_all(b"{\"type\":\"interrupt\"}\n")
+                    .await
+                    .map_err(|e| format!("Failed to write interrupt: {e}"))?;
+                proc.stdin
+                    .flush()
+                    .await
+                    .map_err(|e| format!("Failed to flush: {e}"))?;
             }
-            None
-        } else {
-            // 4b. Create agent message + start turn
-            let agent_msg = add_message_internal(
-                &session_store,
-                &data_dir,
-                &sid,
-                MessageRole::Agent,
-                "",
-                None,
-            )?;
-            // Resolve @file mentions: parse mentions, read files, build context prompt
-            let resolved_prompt =
-                crate::file_mention::resolve_mentions_or_fallback(&worktree_path, &content);
-            start_agent_turn(
-                &app,
-                handles.inner(),
-                session_store.inner(),
-                &sid,
-                &worktree_path,
-                &pm,
-                &resolved_prompt,
-                &agent_msg.id,
-                &images,
-            )
-            .await?;
-            Some(agent_msg)
-        };
+        }
+        None
+    } else {
+        // 4b. Create agent message + start turn
+        let agent_msg = add_message_internal(
+            &session_store,
+            &data_dir,
+            &sid,
+            MessageRole::Agent,
+            "",
+            None,
+        )?;
+        let resolved_prompt =
+            crate::file_mention::resolve_mentions_or_fallback(&worktree_path, &content, &mentions);
+        start_agent_turn(
+            &app,
+            handles.inner(),
+            session_store.inner(),
+            &sid,
+            &worktree_path,
+            &pm,
+            &resolved_prompt,
+            &agent_msg.id,
+            &images,
+        )
+        .await?;
+        Some(agent_msg)
+    };
 
     // 5. Get updated session and list
     let updated_session = session_store

@@ -22,6 +22,7 @@ import type {
 	ChatMessage,
 	ImageAttachment,
 	ImagePart,
+	MentionReference,
 	MessagePart,
 } from "@/types/session";
 import { getTextContent } from "@/types/session";
@@ -237,7 +238,7 @@ interface AgentChatPanelProps {
 		onDrop?: (paths: string[]) => void,
 	) => void;
 	sendMessageRef?: React.MutableRefObject<
-		((content: string) => Promise<void>) | null
+		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
 	>;
 }
 
@@ -271,10 +272,13 @@ export function AgentChatPanel({
 		setModel,
 	} = useAgentChat(worktreePath);
 
-	// Expose sendMessage to parent via ref
+	// Expose sendMessage to parent via ref (without images parameter)
 	useEffect(() => {
 		if (sendMessageRef) {
-			sendMessageRef.current = sendMessage;
+			sendMessageRef.current = (
+				content: string,
+				mentions?: MentionReference[],
+			) => sendMessage(content, undefined, mentions);
 		}
 		return () => {
 			if (sendMessageRef) {

@@ -182,3 +182,9 @@ export interface ImageAttachment {
 	data: string;
 	mediaType: string;
 }
+
+export interface MentionReference {
+	filePath: string;
+	startLine?: number;
+	endLine?: number;
+}

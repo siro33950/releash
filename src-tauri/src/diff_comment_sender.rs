@@ -3,31 +3,41 @@ use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
 use crate::diff_comment_store::{DiffComment, DiffCommentStore};
+use crate::file_mention::MentionReference;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendDiffCommentsResult {
     pub sent_count: usize,
     pub formatted_message: String,
+    pub mentions: Vec<MentionReference>,
     pub comment_ids: Vec<String>,
 }
 
-/// Format comments for agent using @mention syntax compatible with file_mention regex.
-/// Output format: `@filepath:Lx-Ly comment` (line range), `@filepath:Lx comment` (single line),
-/// `@filepath comment` (file-level).
-pub fn format_comments_for_agent(comments: &[DiffComment]) -> String {
+pub fn build_mentions_from_comments(comments: &[DiffComment]) -> Vec<MentionReference> {
+    comments
+        .iter()
+        .map(|c| MentionReference {
+            file_path: c.file_path.clone(),
+            start_line: c.line_number,
+            end_line: c.end_line,
+        })
+        .collect()
+}
+
+pub fn format_comment_text(comments: &[DiffComment]) -> String {
     let mut lines: Vec<String> = Vec::new();
 
     for comment in comments {
-        let mention = if let (Some(start), Some(end)) = (comment.line_number, comment.end_line) {
-            format!("@{}:L{}-L{}", comment.file_path, start, end)
+        let location = if let (Some(start), Some(end)) = (comment.line_number, comment.end_line) {
+            format!("{}:L{}-L{}", comment.file_path, start, end)
         } else if let Some(line) = comment.line_number {
-            format!("@{}:L{}", comment.file_path, line)
+            format!("{}:L{}", comment.file_path, line)
         } else {
-            format!("@{}", comment.file_path)
+            comment.file_path.clone()
         };
 
-        lines.push(format!("{} {}", mention, comment.content));
+        lines.push(format!("@{} {}", location, comment.content));
     }
 
     lines.join("\n")
@@ -52,13 +62,15 @@ pub async fn send_diff_comments_to_agent(
         return Err("No comments to send".to_string());
     }
 
-    let formatted_message = format_comments_for_agent(&comments);
+    let mentions = build_mentions_from_comments(&comments);
+    let formatted_message = format_comment_text(&comments);
     let sent_ids: Vec<String> = comments.iter().map(|c| c.id.clone()).collect();
     let sent_count = sent_ids.len();
 
     Ok(SendDiffCommentsResult {
         sent_count,
         formatted_message,
+        mentions,
         comment_ids: sent_ids,
     })
 }
@@ -88,11 +100,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_single_line_comment() {
+    fn build_mentions_single_line() {
         let comments = vec![DiffComment {
             id: "1".to_string(),
             file_path: "src/components/Example.tsx".to_string(),
-
             line_number: Some(42),
             end_line: None,
             content: "ここのロジックは〇〇すべき".to_string(),
@@ -100,19 +111,18 @@ mod tests {
             created_at: 0.0,
         }];
 
-        let result = format_comments_for_agent(&comments);
-        assert_eq!(
-            result,
-            "@src/components/Example.tsx:L42 ここのロジックは〇〇すべき"
-        );
+        let mentions = build_mentions_from_comments(&comments);
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].file_path, "src/components/Example.tsx");
+        assert_eq!(mentions[0].start_line, Some(42));
+        assert_eq!(mentions[0].end_line, None);
     }
 
     #[test]
-    fn format_range_comment() {
+    fn build_mentions_range() {
         let comments = vec![DiffComment {
             id: "2".to_string(),
             file_path: "src/components/Example.tsx".to_string(),
-
             line_number: Some(10),
             end_line: Some(15),
             content: "この範囲のエラーハンドリングが不足".to_string(),
@@ -120,37 +130,34 @@ mod tests {
             created_at: 0.0,
         }];
 
-        let result = format_comments_for_agent(&comments);
-        assert_eq!(
-            result,
-            "@src/components/Example.tsx:L10-L15 この範囲のエラーハンドリングが不足"
-        );
+        let mentions = build_mentions_from_comments(&comments);
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].start_line, Some(10));
+        assert_eq!(mentions[0].end_line, Some(15));
     }
 
     #[test]
-    fn format_file_comment() {
+    fn format_comment_text_single() {
         let comments = vec![DiffComment {
-            id: "3".to_string(),
-            file_path: "src/lib/utils.ts".to_string(),
-
-            line_number: None,
+            id: "1".to_string(),
+            file_path: "src/a.ts".to_string(),
+            line_number: Some(42),
             end_line: None,
-            content: "全体的にテストが不足している".to_string(),
+            content: "Comment A".to_string(),
             status: "unsent".to_string(),
             created_at: 0.0,
         }];
 
-        let result = format_comments_for_agent(&comments);
-        assert_eq!(result, "@src/lib/utils.ts 全体的にテストが不足している");
+        let result = format_comment_text(&comments);
+        assert_eq!(result, "@src/a.ts:L42 Comment A");
     }
 
     #[test]
-    fn format_multiple_comments() {
+    fn format_comment_text_multiple() {
         let comments = vec![
             DiffComment {
                 id: "1".to_string(),
                 file_path: "src/a.ts".to_string(),
-
                 line_number: Some(42),
                 end_line: None,
                 content: "Comment A".to_string(),
@@ -160,7 +167,6 @@ mod tests {
             DiffComment {
                 id: "2".to_string(),
                 file_path: "src/b.ts".to_string(),
-
                 line_number: Some(10),
                 end_line: Some(15),
                 content: "Comment B".to_string(),
@@ -170,7 +176,6 @@ mod tests {
             DiffComment {
                 id: "3".to_string(),
                 file_path: "src/c.ts".to_string(),
-
                 line_number: None,
                 end_line: None,
                 content: "Comment C".to_string(),
@@ -179,15 +184,17 @@ mod tests {
             },
         ];
 
-        let result = format_comments_for_agent(&comments);
-        let expected = "@src/a.ts:L42 Comment A\n@src/b.ts:L10-L15 Comment B\n@src/c.ts Comment C";
-        assert_eq!(result, expected);
+        let result = format_comment_text(&comments);
+        assert_eq!(
+            result,
+            "@src/a.ts:L42 Comment A\n@src/b.ts:L10-L15 Comment B\n@src/c.ts Comment C"
+        );
     }
 
     #[test]
-    fn format_empty_comments() {
+    fn build_mentions_empty() {
         let comments: Vec<DiffComment> = Vec::new();
-        let result = format_comments_for_agent(&comments);
-        assert_eq!(result, "");
+        let mentions = build_mentions_from_comments(&comments);
+        assert!(mentions.is_empty());
     }
 }

@@ -5,6 +5,7 @@ import type {
 	ChatMessage,
 	ChatSession,
 	ImageAttachment,
+	MentionReference,
 	ModelInfo,
 	PermissionMode,
 	SessionSummary,
@@ -40,7 +41,11 @@ export interface UseAgentChatResult {
 	error: string | null;
 	permissionMode: PermissionMode;
 	sessionAgentStates: Map<string, AgentState>;
-	sendMessage: (content: string, images?: ImageAttachment[]) => Promise<void>;
+	sendMessage: (
+		content: string,
+		images?: ImageAttachment[],
+		mentions?: MentionReference[],
+	) => Promise<void>;
 	interrupt: () => void;
 	selectSession: (sessionId: string) => Promise<void>;
 	refreshSessions: () => Promise<SessionSummary[] | undefined>;
@@ -224,18 +229,26 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	}, []);
 
 	const sendMessage = useCallback(
-		async (content: string, images?: ImageAttachment[]) => {
+		async (
+			content: string,
+			images?: ImageAttachment[],
+			mentions?: MentionReference[],
+		) => {
 			const trimmed = content.trim();
 			if (!trimmed && (!images || images.length === 0)) return;
 
 			try {
-				const hasImages = images && images.length > 0;
 				const sessionId = activeSessionRef.current?.id ?? null;
 				const wPath = worktreePathRef.current;
 				const pm = permissionModeRef.current;
-				const response = hasImages
-					? await sendAgentMessage(sessionId, wPath, trimmed, pm, images)
-					: await sendAgentMessage(sessionId, wPath, trimmed, pm);
+				const response = await sendAgentMessage(
+					sessionId,
+					wPath,
+					trimmed,
+					pm,
+					images,
+					mentions,
+				);
 				// Only update if the user hasn't switched to a different session during await
 				const currentSessionId = activeSessionRef.current?.id ?? null;
 				if (

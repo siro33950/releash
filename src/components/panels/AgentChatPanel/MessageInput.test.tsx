@@ -53,7 +53,7 @@ describe("MessageInput", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Hello" } });
 		fireEvent.click(screen.getByLabelText("Send message"));
-		expect(onSend).toHaveBeenCalledWith("Hello");
+		expect(onSend).toHaveBeenCalledWith("Hello", undefined, undefined);
 	});
 
 	it("clears input after sending", () => {
@@ -72,7 +72,7 @@ describe("MessageInput", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Hello" } });
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
-		expect(onSend).toHaveBeenCalledWith("Hello");
+		expect(onSend).toHaveBeenCalledWith("Hello", undefined, undefined);
 	});
 
 	it("does not send on Shift+Enter", () => {
@@ -302,7 +302,7 @@ describe("MessageInput slash command popup", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/review" } });
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
-		expect(onSend).toHaveBeenCalledWith("/review");
+		expect(onSend).toHaveBeenCalledWith("/review", undefined, undefined);
 	});
 
 	it("does not show popup when commands cache is empty", () => {
@@ -363,7 +363,11 @@ describe("MessageInput image attachments", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Check this" } });
 		fireEvent.click(screen.getByLabelText("Send message"));
-		expect(onSend).toHaveBeenCalledWith("Check this", [sampleAttachment]);
+		expect(onSend).toHaveBeenCalledWith(
+			"Check this",
+			[sampleAttachment],
+			undefined,
+		);
 	});
 
 	it("sends images only (no text) when text is empty", () => {
@@ -374,7 +378,7 @@ describe("MessageInput image attachments", () => {
 			ref.current?.addImageAttachments([sampleAttachment]);
 		});
 		fireEvent.click(screen.getByLabelText("Send message"));
-		expect(onSend).toHaveBeenCalledWith("", [sampleAttachment]);
+		expect(onSend).toHaveBeenCalledWith("", [sampleAttachment], undefined);
 	});
 
 	it("clears image preview after sending", () => {
@@ -683,5 +687,115 @@ describe("MessageInput mention popup", () => {
 			worktreePath: "/test/repo",
 			query: "mai",
 		});
+	});
+
+	it("sends mentions with onSend after selecting a mention", async () => {
+		const onSend = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		expect(onSend).toHaveBeenCalledWith("@src/main.rs", undefined, [
+			{ filePath: "src/main.rs", startLine: undefined, endLine: undefined },
+		]);
+	});
+
+	it("excludes deleted mentions from onSend", async () => {
+		const onSend = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		expect(textarea.value).toBe("@src/main.rs ");
+		fireEvent.change(textarea, {
+			target: { value: "hello world", selectionStart: 11 },
+		});
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		expect(onSend).toHaveBeenCalledWith("hello world", undefined, undefined);
+	});
+
+	it("extracts line number from @filePath:L50 in text", async () => {
+		const onSend = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.change(textarea, {
+			target: {
+				value: "@src/main.rs:L50 check this",
+				selectionStart: 27,
+			},
+		});
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		expect(onSend).toHaveBeenCalledWith(
+			"@src/main.rs:L50 check this",
+			undefined,
+			[{ filePath: "src/main.rs", startLine: 50, endLine: undefined }],
+		);
+	});
+
+	it("extracts line range from @filePath:L10-L20 in text", async () => {
+		const onSend = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.change(textarea, {
+			target: {
+				value: "@src/main.rs:L10-L20 review",
+				selectionStart: 27,
+			},
+		});
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		expect(onSend).toHaveBeenCalledWith(
+			"@src/main.rs:L10-L20 review",
+			undefined,
+			[{ filePath: "src/main.rs", startLine: 10, endLine: 20 }],
+		);
 	});
 });

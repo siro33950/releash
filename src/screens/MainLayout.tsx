@@ -33,6 +33,7 @@ import {
 	CreateBranchDialog,
 	GitErrorDialog,
 } from "@/screens/WorktreeViewDialogs";
+import type { MentionReference } from "@/types/session";
 import type { AppSettings } from "@/types/settings";
 import type { WorkspaceState } from "@/types/workspace-state";
 
@@ -83,12 +84,15 @@ function WorktreeContent({
 	}, [rootPath]);
 
 	const sendAgentMessageRef = useRef<
-		((content: string) => Promise<void>) | null
+		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
 	>(null);
 
-	const handleSendToAgent = useCallback(async (message: string) => {
-		await sendAgentMessageRef.current?.(message);
-	}, []);
+	const handleSendToAgent = useCallback(
+		async (message: string, mentions?: MentionReference[]) => {
+			await sendAgentMessageRef.current?.(message, mentions);
+		},
+		[],
+	);
 
 	const handleCommentClick = useCallback(
 		(filePath: string, lineNumber?: number) => {

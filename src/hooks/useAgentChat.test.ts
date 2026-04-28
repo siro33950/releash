@@ -114,6 +114,8 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"acceptEdits",
+			undefined,
+			undefined,
 		);
 	});
 
@@ -135,6 +137,33 @@ describe("useAgentChat", () => {
 			"check this",
 			"acceptEdits",
 			images,
+			undefined,
+		);
+	});
+
+	it("sendMessage passes mentions to sendAgentMessage", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		const mentions = [{ filePath: "src/main.rs", startLine: 10, endLine: 20 }];
+		await act(async () => {
+			await result.current.sendMessage(
+				"check @src/main.rs:L10-L20",
+				undefined,
+				mentions,
+			);
+		});
+
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			null,
+			"/repo",
+			"check @src/main.rs:L10-L20",
+			"acceptEdits",
+			undefined,
+			mentions,
 		);
 	});
 
@@ -156,6 +185,7 @@ describe("useAgentChat", () => {
 			"",
 			"acceptEdits",
 			images,
+			undefined,
 		);
 	});
 
@@ -175,6 +205,8 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"acceptEdits",
+			undefined,
+			undefined,
 		);
 	});
 
@@ -244,6 +276,8 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"acceptEdits",
+			undefined,
+			undefined,
 		);
 	});
 
@@ -269,6 +303,8 @@ describe("useAgentChat", () => {
 			"/repo",
 			"second",
 			"acceptEdits",
+			undefined,
+			undefined,
 		);
 	});
 
@@ -453,6 +489,8 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"plan",
+			undefined,
+			undefined,
 		);
 	});
 
@@ -556,6 +594,8 @@ describe("useAgentChat", () => {
 			"/repo",
 			"second",
 			"acceptEdits",
+			undefined,
+			undefined,
 		);
 	});
 
