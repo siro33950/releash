@@ -37,6 +37,7 @@ vi.mock("@tanstack/react-virtual", () => ({
 			return total;
 		},
 		measureElement: () => {},
+		scrollToIndex: () => {},
 	}),
 }));
 
@@ -379,5 +380,178 @@ describe("ShikiDiffViewer", () => {
 		expect(container.textContent).not.toContain("lines hidden");
 		expect(container.textContent).toContain("line1");
 		expect(container.textContent).toContain("line3");
+	});
+
+	describe("file search (Cmd+F)", () => {
+		it("opens search bar on Cmd+F", () => {
+			const { container } = render(
+				<ShikiDiffViewer {...baseProps} diffMode="inline" />,
+			);
+			expect(screen.queryByTestId("diff-search-bar")).toBeNull();
+			const wrapper = container.firstElementChild as HTMLElement;
+			wrapper.focus();
+			fireEvent.keyDown(wrapper, { key: "f", metaKey: true });
+			expect(screen.getByTestId("diff-search-bar")).toBeDefined();
+		});
+
+		it("closes search bar on Escape", () => {
+			const { container } = render(
+				<ShikiDiffViewer {...baseProps} diffMode="inline" />,
+			);
+			const wrapper = container.firstElementChild as HTMLElement;
+			wrapper.focus();
+			fireEvent.keyDown(wrapper, { key: "f", metaKey: true });
+			expect(screen.getByTestId("diff-search-bar")).toBeDefined();
+
+			fireEvent.keyDown(screen.getByTestId("diff-search-input"), {
+				key: "Escape",
+			});
+			expect(screen.queryByTestId("diff-search-bar")).toBeNull();
+		});
+
+		it("highlights matches and shows count", () => {
+			const { container } = render(
+				<ShikiDiffViewer {...baseProps} diffMode="inline" />,
+			);
+			const wrapper = container.firstElementChild as HTMLElement;
+			wrapper.focus();
+			fireEvent.keyDown(wrapper, { key: "f", metaKey: true });
+
+			fireEvent.change(screen.getByTestId("diff-search-input"), {
+				target: { value: "line" },
+			});
+
+			const matchElements = container.querySelectorAll("[data-search-match]");
+			expect(matchElements.length).toBeGreaterThan(0);
+			expect(screen.getByTestId("diff-search-count")).toBeDefined();
+
+			const currentElements = container.querySelectorAll(
+				'[data-search-match="current"]',
+			);
+			expect(currentElements.length).toBe(1);
+		});
+
+		it("shows 0 when no matches found", () => {
+			const { container } = render(
+				<ShikiDiffViewer {...baseProps} diffMode="inline" />,
+			);
+			const wrapper = container.firstElementChild as HTMLElement;
+			wrapper.focus();
+			fireEvent.keyDown(wrapper, { key: "f", metaKey: true });
+
+			fireEvent.change(screen.getByTestId("diff-search-input"), {
+				target: { value: "zzzznotfound" },
+			});
+
+			expect(screen.getByTestId("diff-search-count").textContent).toBe("0");
+		});
+
+		it("navigates to next match on Enter", () => {
+			const { container } = render(
+				<ShikiDiffViewer {...baseProps} diffMode="inline" />,
+			);
+			const wrapper = container.firstElementChild as HTMLElement;
+			wrapper.focus();
+			fireEvent.keyDown(wrapper, { key: "f", metaKey: true });
+
+			fireEvent.change(screen.getByTestId("diff-search-input"), {
+				target: { value: "line" },
+			});
+
+			const countBefore = screen.getByTestId("diff-search-count").textContent;
+			expect(countBefore).toMatch(/^1\//);
+
+			fireEvent.keyDown(screen.getByTestId("diff-search-input"), {
+				key: "Enter",
+			});
+
+			const countAfter = screen.getByTestId("diff-search-count").textContent;
+			expect(countAfter).toMatch(/^2\//);
+		});
+
+		it("navigates to previous match on Shift+Enter", () => {
+			const { container } = render(
+				<ShikiDiffViewer {...baseProps} diffMode="inline" />,
+			);
+			const wrapper = container.firstElementChild as HTMLElement;
+			wrapper.focus();
+			fireEvent.keyDown(wrapper, { key: "f", metaKey: true });
+
+			fireEvent.change(screen.getByTestId("diff-search-input"), {
+				target: { value: "line" },
+			});
+
+			fireEvent.keyDown(screen.getByTestId("diff-search-input"), {
+				key: "Enter",
+			});
+			const countAfterNext =
+				screen.getByTestId("diff-search-count").textContent;
+			expect(countAfterNext).toMatch(/^2\//);
+
+			fireEvent.keyDown(screen.getByTestId("diff-search-input"), {
+				key: "Enter",
+				shiftKey: true,
+			});
+			const countAfterPrev =
+				screen.getByTestId("diff-search-count").textContent;
+			expect(countAfterPrev).toMatch(/^1\//);
+		});
+
+		it("wraps around from last match to first on Enter", () => {
+			const { container } = render(
+				<ShikiDiffViewer {...baseProps} diffMode="inline" />,
+			);
+			const wrapper = container.firstElementChild as HTMLElement;
+			wrapper.focus();
+			fireEvent.keyDown(wrapper, { key: "f", metaKey: true });
+
+			fireEvent.change(screen.getByTestId("diff-search-input"), {
+				target: { value: "line" },
+			});
+
+			const totalMatch = screen.getByTestId("diff-search-count").textContent;
+			const total = Number.parseInt(totalMatch?.split("/")[1] ?? "0", 10);
+			expect(total).toBeGreaterThan(1);
+
+			for (let i = 1; i < total; i++) {
+				fireEvent.keyDown(screen.getByTestId("diff-search-input"), {
+					key: "Enter",
+				});
+			}
+
+			expect(screen.getByTestId("diff-search-count").textContent).toBe(
+				`${total}/${total}`,
+			);
+
+			fireEvent.keyDown(screen.getByTestId("diff-search-input"), {
+				key: "Enter",
+			});
+			expect(screen.getByTestId("diff-search-count").textContent).toMatch(
+				/^1\//,
+			);
+		});
+
+		it("clears highlights when search bar is closed", () => {
+			const { container } = render(
+				<ShikiDiffViewer {...baseProps} diffMode="inline" />,
+			);
+			const wrapper = container.firstElementChild as HTMLElement;
+			wrapper.focus();
+			fireEvent.keyDown(wrapper, { key: "f", metaKey: true });
+
+			fireEvent.change(screen.getByTestId("diff-search-input"), {
+				target: { value: "line" },
+			});
+
+			expect(
+				container.querySelectorAll("[data-search-match]").length,
+			).toBeGreaterThan(0);
+
+			fireEvent.keyDown(screen.getByTestId("diff-search-input"), {
+				key: "Escape",
+			});
+
+			expect(container.querySelectorAll("[data-search-match]").length).toBe(0);
+		});
 	});
 });

@@ -9,6 +9,7 @@ import React, {
 	useState,
 } from "react";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { type SearchMatch, useDiffSearch } from "@/hooks/useDiffSearch";
 import {
 	assignChangeGroupsToBlocks,
 	computeDiffBlocks,
@@ -20,6 +21,7 @@ import type { ChangeGroup, Hunk } from "@/lib/computeHunks";
 import type { DiffComment } from "@/types/diffComment";
 import type { DiffMode } from "@/types/settings";
 import { DiffInlineComment, DiffInlineCommentInput } from "./DiffInlineComment";
+import { DiffSearchBar } from "./DiffSearchBar";
 
 interface HiddenRange {
 	startLine: number;
@@ -93,18 +95,87 @@ function lineMarker(type: string): string {
 	return " ";
 }
 
-function renderTokens(tokens: DiffLine["tokens"]): React.ReactNode {
+interface HighlightRange {
+	start: number;
+	end: number;
+	isCurrent: boolean;
+}
+
+function renderTokens(
+	tokens: DiffLine["tokens"],
+	highlights?: HighlightRange[],
+): React.ReactNode {
 	if (tokens.length === 0) return "\u00A0";
-	let offset = 0;
-	return tokens.map((token) => {
-		const key = `${offset}-${token.content.length}`;
-		offset += token.content.length;
-		return (
-			<span key={key} style={{ color: token.color }}>
-				{token.content}
-			</span>
-		);
-	});
+
+	if (!highlights || highlights.length === 0) {
+		let offset = 0;
+		return tokens.map((token) => {
+			const key = `${offset}-${token.content.length}`;
+			offset += token.content.length;
+			return (
+				<span key={key} style={{ color: token.color }}>
+					{token.content}
+				</span>
+			);
+		});
+	}
+
+	const result: React.ReactNode[] = [];
+	let charOffset = 0;
+
+	for (const token of tokens) {
+		const tokenStart = charOffset;
+		const tokenEnd = charOffset + token.content.length;
+		let pos = 0;
+
+		for (const hl of highlights) {
+			if (hl.end <= tokenStart || hl.start >= tokenEnd) continue;
+
+			const hlStartInToken = Math.max(pos, Math.max(0, hl.start - tokenStart));
+			const hlEndInToken = Math.min(token.content.length, hl.end - tokenStart);
+
+			if (hlStartInToken >= hlEndInToken) continue;
+
+			if (hlStartInToken > pos) {
+				result.push(
+					<span
+						key={`${charOffset}-${pos}-normal`}
+						style={{ color: token.color }}
+					>
+						{token.content.slice(pos, hlStartInToken)}
+					</span>,
+				);
+			}
+
+			result.push(
+				<span
+					key={`${charOffset}-${hlStartInToken}-hl`}
+					style={{ color: token.color }}
+					className={
+						hl.isCurrent
+							? "bg-[var(--search-match-current,#515c6a)] outline outline-2 outline-[var(--search-match-current-border,#eccc68)]"
+							: "bg-[var(--search-match,#623315)]"
+					}
+					data-search-match={hl.isCurrent ? "current" : "match"}
+				>
+					{token.content.slice(hlStartInToken, hlEndInToken)}
+				</span>,
+			);
+			pos = hlEndInToken;
+		}
+
+		if (pos < token.content.length) {
+			result.push(
+				<span key={`${charOffset}-${pos}-tail`} style={{ color: token.color }}>
+					{token.content.slice(pos)}
+				</span>,
+			);
+		}
+
+		charOffset = tokenEnd;
+	}
+
+	return result;
 }
 
 const DiffLineRow = React.memo(function DiffLineRow({
@@ -112,11 +183,13 @@ const DiffLineRow = React.memo(function DiffLineRow({
 	showOldLineNumber,
 	showNewLineNumber,
 	commentButton,
+	highlights,
 }: {
 	line: DiffLine;
 	showOldLineNumber: boolean;
 	showNewLineNumber: boolean;
 	commentButton?: React.ReactNode;
+	highlights?: HighlightRange[];
 }) {
 	return (
 		<div
@@ -139,7 +212,7 @@ const DiffLineRow = React.memo(function DiffLineRow({
 			</span>
 			{commentButton}
 			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4 select-text">
-				{renderTokens(line.tokens)}
+				{renderTokens(line.tokens, highlights)}
 			</span>
 		</div>
 	);
@@ -149,6 +222,7 @@ interface GutterDiffLine extends DiffLine {
 	hasDeleteMarker?: boolean;
 	changeGroupIndex?: number;
 	isGroupStart?: boolean;
+	_source?: DiffLine;
 }
 
 function buildGutterLines(blocks: DiffBlock[]): GutterDiffLine[] {
@@ -157,7 +231,7 @@ function buildGutterLines(blocks: DiffBlock[]): GutterDiffLine[] {
 	for (const block of blocks) {
 		if (block.type === "context") {
 			for (const line of block.lines) {
-				result.push({ ...line });
+				result.push({ ...line, _source: line });
 			}
 			continue;
 		}
@@ -173,6 +247,7 @@ function buildGutterLines(blocks: DiffBlock[]): GutterDiffLine[] {
 				const gutterLine: GutterDiffLine = {
 					...line,
 					changeGroupIndex: block.changeGroupIndex,
+					_source: line,
 				};
 				if (pendingDeleteMarker) {
 					gutterLine.hasDeleteMarker = true;
@@ -212,9 +287,11 @@ function buildGutterLines(blocks: DiffBlock[]): GutterDiffLine[] {
 const GutterLineRow = React.memo(function GutterLineRow({
 	line,
 	commentButton,
+	highlights,
 }: {
 	line: GutterDiffLine;
 	commentButton?: React.ReactNode;
+	highlights?: HighlightRange[];
 }) {
 	const isAdded = line.type === "added";
 	const hasDelete = line.hasDeleteMarker === true;
@@ -245,7 +322,7 @@ const GutterLineRow = React.memo(function GutterLineRow({
 			</span>
 			{commentButton}
 			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4 select-text">
-				{renderTokens(line.tokens)}
+				{renderTokens(line.tokens, highlights)}
 			</span>
 		</div>
 	);
@@ -254,6 +331,7 @@ const GutterLineRow = React.memo(function GutterLineRow({
 function renderHalfLine(
 	line: DiffLine | null,
 	commentButton?: React.ReactNode,
+	highlights?: HighlightRange[],
 ): React.ReactNode {
 	if (!line) return <div className="min-h-[20px] bg-[var(--muted)]/20" />;
 	return (
@@ -271,7 +349,7 @@ function renderHalfLine(
 			</span>
 			{commentButton}
 			<span className="flex-1 whitespace-pre-wrap break-all font-mono text-sm leading-[20px] pr-4 select-text">
-				{renderTokens(line.tokens)}
+				{renderTokens(line.tokens, highlights)}
 			</span>
 		</div>
 	);
@@ -281,18 +359,22 @@ const SplitDiffLineRow = React.memo(function SplitDiffLineRow({
 	left,
 	right,
 	commentButton,
+	leftHighlights,
+	rightHighlights,
 }: {
 	left: DiffLine | null;
 	right: DiffLine | null;
 	commentButton?: React.ReactNode;
+	leftHighlights?: HighlightRange[];
+	rightHighlights?: HighlightRange[];
 }) {
 	return (
 		<div className="flex">
 			<div className="flex-1 border-r border-border overflow-hidden">
-				{renderHalfLine(left)}
+				{renderHalfLine(left, undefined, leftHighlights)}
 			</div>
 			<div className="flex-1 overflow-hidden">
-				{renderHalfLine(right, commentButton)}
+				{renderHalfLine(right, commentButton, rightHighlights)}
 			</div>
 		</div>
 	);
@@ -348,6 +430,7 @@ interface VirtualViewProps extends CommentCallbacks {
 	groupActionLabel?: string;
 	containerRef: React.RefObject<HTMLDivElement | null>;
 	scrollToLine?: number | null;
+	lineHighlights?: Map<DiffLine, HighlightRange[]>;
 }
 
 function flattenWithGroups(
@@ -661,6 +744,7 @@ function GutterView({
 	onStageGroup,
 	groupActionLabel,
 	containerRef,
+	lineHighlights,
 	scrollToLine,
 	comments,
 	onAddComment,
@@ -825,6 +909,9 @@ function GutterView({
 									)}
 								<GutterLineRow
 									line={item.line}
+									highlights={lineHighlights?.get(
+										item.line._source ?? item.line,
+									)}
 									commentButton={
 										onAddComment ? (
 											<CommentGutterCell
@@ -862,6 +949,7 @@ function InlineView({
 	onStageGroup,
 	groupActionLabel,
 	containerRef,
+	lineHighlights,
 	scrollToLine,
 	comments,
 	onAddComment,
@@ -1035,6 +1123,7 @@ function InlineView({
 									line={item.line}
 									showOldLineNumber={true}
 									showNewLineNumber={true}
+									highlights={lineHighlights?.get(item.line)}
 									commentButton={
 										onAddComment ? (
 											<CommentGutterCell
@@ -1072,6 +1161,7 @@ function SplitView({
 	onStageGroup,
 	groupActionLabel,
 	containerRef,
+	lineHighlights,
 	scrollToLine,
 	comments,
 	onAddComment,
@@ -1285,6 +1375,16 @@ function SplitView({
 								<SplitDiffLineRow
 									left={item.row.left}
 									right={item.row.right}
+									leftHighlights={
+										item.row.left
+											? lineHighlights?.get(item.row.left)
+											: undefined
+									}
+									rightHighlights={
+										item.row.right
+											? lineHighlights?.get(item.row.right)
+											: undefined
+									}
 									commentButton={
 										onAddComment ? (
 											<CommentGutterCell
@@ -1450,6 +1550,42 @@ const ScrollbarMarkers = React.memo(function ScrollbarMarkers({
 	);
 });
 
+function collectAllLines(visibleBlocks: VisibleItem[]): DiffLine[] {
+	const result: DiffLine[] = [];
+	for (const item of visibleBlocks) {
+		if (item.type !== "hidden") {
+			for (const line of (item as DiffBlock).lines) {
+				result.push(line);
+			}
+		}
+	}
+	return result;
+}
+
+function buildLineHighlights(
+	allLines: DiffLine[],
+	matches: SearchMatch[],
+	currentIndex: number,
+): Map<DiffLine, HighlightRange[]> {
+	const map = new Map<DiffLine, HighlightRange[]>();
+	for (let i = 0; i < matches.length; i++) {
+		const m = matches[i];
+		const line = allLines[m.lineIndex];
+		if (!line) continue;
+		let ranges = map.get(line);
+		if (!ranges) {
+			ranges = [];
+			map.set(line, ranges);
+		}
+		ranges.push({
+			start: m.startOffset,
+			end: m.endOffset,
+			isCurrent: i === currentIndex,
+		});
+	}
+	return map;
+}
+
 export function ShikiDiffViewer({
 	originalContent,
 	modifiedContent,
@@ -1584,6 +1720,42 @@ export function ShikiDiffViewer({
 		[visibleBlocks, diffMode],
 	);
 
+	const allLines = useMemo(
+		() => collectAllLines(visibleBlocks),
+		[visibleBlocks],
+	);
+
+	const search = useDiffSearch(allLines);
+
+	const lineHighlights = useMemo(
+		() => buildLineHighlights(allLines, search.matches, search.currentIndex),
+		[allLines, search.matches, search.currentIndex],
+	);
+
+	const wrapperRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		const el = wrapperRef.current;
+		if (!el) return;
+
+		const handleKeyDown = (e: KeyboardEvent) => {
+			if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+				e.preventDefault();
+				search.open();
+			}
+		};
+
+		el.addEventListener("keydown", handleKeyDown);
+		return () => el.removeEventListener("keydown", handleKeyDown);
+	}, [search.open]);
+
+	const searchScrollToLine = useMemo(() => {
+		if (search.matches.length === 0 || search.currentIndex < 0) return null;
+		const match = search.matches[search.currentIndex];
+		const line = allLines[match.lineIndex];
+		return line?.newLineNumber ?? line?.oldLineNumber ?? null;
+	}, [search.matches, search.currentIndex, allLines]);
+
 	const ViewComponent =
 		diffMode === "gutter"
 			? GutterView
@@ -1594,7 +1766,23 @@ export function ShikiDiffViewer({
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: event delegation for stage buttons and expand banners
 		// biome-ignore lint/a11y/useKeyWithClickEvents: interactive elements inside handle keyboard events
-		<div className="relative h-full w-full" onClick={handleDelegatedClick}>
+		<div
+			ref={wrapperRef}
+			className="relative h-full w-full"
+			onClick={handleDelegatedClick}
+			tabIndex={-1}
+		>
+			{search.isOpen && (
+				<DiffSearchBar
+					query={search.query}
+					onQueryChange={search.setQuery}
+					currentIndex={search.currentIndex}
+					totalMatches={search.totalMatches}
+					onNext={search.goToNext}
+					onPrev={search.goToPrev}
+					onClose={search.close}
+				/>
+			)}
 			<ScrollArea
 				viewportRef={containerRef}
 				className="h-full w-full font-mono text-sm"
@@ -1610,7 +1798,8 @@ export function ShikiDiffViewer({
 					onStageGroup={onStageGroup}
 					groupActionLabel={groupActionLabel}
 					containerRef={containerRef}
-					scrollToLine={scrollToLine}
+					lineHighlights={lineHighlights}
+					scrollToLine={searchScrollToLine ?? scrollToLine}
 					comments={comments}
 					onAddComment={onAddComment}
 					onAddRangeComment={onAddRangeComment}
