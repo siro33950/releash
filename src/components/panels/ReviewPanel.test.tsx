@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ReviewPanel } from "./ReviewPanel";
@@ -105,6 +105,23 @@ vi.mock("@/hooks/useGitActions", () => ({
 	}),
 }));
 
+vi.mock("@/hooks/useGitEventRefresh", () => ({
+	useGitEventRefresh: vi.fn(),
+}));
+
+vi.mock("@/hooks/useFileNavigation", () => ({
+	useFileNavigation: vi.fn().mockReturnValue({
+		fileNavigation: {
+			current_index: 0,
+			total: 0,
+			prev_file: null,
+			next_file: null,
+		},
+		goToPrevFile: vi.fn(),
+		goToNextFile: vi.fn(),
+	}),
+}));
+
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn().mockResolvedValue(null),
 }));
@@ -121,6 +138,8 @@ vi.mock("./DiffToolbar", () => ({
 
 const { useDiffFileTree } = await import("@/hooks/useDiffFileTree");
 const { useReviewPanel } = await import("@/hooks/useReviewPanel");
+const { useGitEventRefresh } = await import("@/hooks/useGitEventRefresh");
+const { useFileDiffContent } = await import("@/hooks/useFileDiffContent");
 
 describe("ReviewPanel", () => {
 	it("should show 'No changes' when totalFileCount is 0", () => {
@@ -429,5 +448,106 @@ describe("ReviewPanel", () => {
 		expect(
 			screen.queryByRole("button", { name: "Send all comments to Agent" }),
 		).not.toBeInTheDocument();
+	});
+
+	describe("useGitEventRefresh integration", () => {
+		it("should pass rootPath and callback to useGitEventRefresh", () => {
+			render(
+				<TooltipProvider>
+					<ReviewPanel
+						rootPath="/repo"
+						baseBranch="main"
+						diffOnlyMode={false}
+						onDiffOnlyModeChange={vi.fn()}
+					/>
+				</TooltipProvider>,
+			);
+
+			expect(vi.mocked(useGitEventRefresh)).toHaveBeenCalledWith(
+				"/repo",
+				expect.any(Function),
+			);
+		});
+
+		it("should increment gitRefreshKey when refresh callback is invoked", async () => {
+			let capturedRefresh: (() => void) | undefined;
+			vi.mocked(useGitEventRefresh).mockImplementation(
+				(_rootPath, onRefresh) => {
+					capturedRefresh = onRefresh;
+				},
+			);
+
+			const refreshKeys: number[] = [];
+			vi.mocked(useFileDiffContent).mockImplementation(((
+				_filePath,
+				_diffBase,
+				_section,
+				gitRefreshKey,
+			) => {
+				refreshKeys.push(gitRefreshKey);
+				return { originalContent: "", modifiedContent: "" };
+			}) as typeof useFileDiffContent);
+
+			render(
+				<TooltipProvider>
+					<ReviewPanel
+						rootPath="/repo"
+						baseBranch="main"
+						diffOnlyMode={false}
+						onDiffOnlyModeChange={vi.fn()}
+					/>
+				</TooltipProvider>,
+			);
+
+			expect(capturedRefresh).toBeDefined();
+
+			await act(async () => {
+				capturedRefresh?.();
+			});
+
+			expect(refreshKeys[refreshKeys.length - 1]).toBe(1);
+		});
+
+		it("should increment gitRefreshKey cumulatively on multiple events", async () => {
+			let capturedRefresh: (() => void) | undefined;
+			vi.mocked(useGitEventRefresh).mockImplementation(
+				(_rootPath, onRefresh) => {
+					capturedRefresh = onRefresh;
+				},
+			);
+
+			const refreshKeys: number[] = [];
+			vi.mocked(useFileDiffContent).mockImplementation(((
+				_filePath,
+				_diffBase,
+				_section,
+				gitRefreshKey,
+			) => {
+				refreshKeys.push(gitRefreshKey);
+				return { originalContent: "", modifiedContent: "" };
+			}) as typeof useFileDiffContent);
+
+			render(
+				<TooltipProvider>
+					<ReviewPanel
+						rootPath="/repo"
+						baseBranch="main"
+						diffOnlyMode={false}
+						onDiffOnlyModeChange={vi.fn()}
+					/>
+				</TooltipProvider>,
+			);
+
+			expect(capturedRefresh).toBeDefined();
+
+			await act(async () => {
+				capturedRefresh?.();
+			});
+			await act(async () => {
+				capturedRefresh?.();
+			});
+
+			expect(refreshKeys[refreshKeys.length - 1]).toBe(2);
+		});
 	});
 });

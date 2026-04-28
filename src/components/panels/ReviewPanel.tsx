@@ -27,6 +27,7 @@ import { useDiffFileTree } from "@/hooks/useDiffFileTree";
 import { useFileDiffContent } from "@/hooks/useFileDiffContent";
 import { useFileNavigation } from "@/hooks/useFileNavigation";
 import { useGitActions } from "@/hooks/useGitActions";
+import { useGitEventRefresh } from "@/hooks/useGitEventRefresh";
 import { useGitStatus } from "@/hooks/useGitStatus";
 import { useHunks } from "@/hooks/useHunks";
 import { useImageDiff } from "@/hooks/useImageDiff";
@@ -134,6 +135,11 @@ export function ReviewPanel({
 	});
 
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
+
+	const handleGitEventRefresh = useCallback(() => {
+		setGitRefreshKey((k) => k + 1);
+	}, []);
+	useGitEventRefresh(rootPath, handleGitEventRefresh);
 
 	// File lists
 	const { files: branchDiffFiles } = useBranchDiffFiles(
