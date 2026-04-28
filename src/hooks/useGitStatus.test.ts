@@ -14,14 +14,23 @@ vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
 }));
 
+function gitStatusCallCount(): number {
+	return mockInvoke.mock.calls.filter((call) => call[0] === "get_git_status")
+		.length;
+}
+
 describe("useGitStatus", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockListen.mockResolvedValue(vi.fn());
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 	});
 
 	it("should return empty data when rootPath is null", () => {
-		mockInvoke.mockResolvedValue([]);
 		const { result } = renderHook(() => useGitStatus(null));
 
 		expect(result.current.statusMap.size).toBe(0);
@@ -39,7 +48,12 @@ describe("useGitStatus", () => {
 			{ path: "new_file.txt", index_status: "none", worktree_status: "new" },
 			{ path: "staged.txt", index_status: "new", worktree_status: "none" },
 		];
-		mockInvoke.mockResolvedValue(mockEntries);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		const { result } = renderHook(() => useGitStatus("/test/repo"));
 
@@ -63,7 +77,12 @@ describe("useGitStatus", () => {
 		const mockEntries: GitFileStatus[] = [
 			{ path: "deleted.txt", index_status: "none", worktree_status: "deleted" },
 		];
-		mockInvoke.mockResolvedValue(mockEntries);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		const { result } = renderHook(() => useGitStatus("/test/repo"));
 
@@ -94,7 +113,12 @@ describe("useGitStatus", () => {
 				worktree_status: "none",
 			},
 		];
-		mockInvoke.mockResolvedValue(mockEntries);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		const { result } = renderHook(() => useGitStatus("/test/repo"));
 
@@ -126,7 +150,12 @@ describe("useGitStatus", () => {
 				worktree_status: "modified",
 			},
 		];
-		mockInvoke.mockResolvedValue(mockEntries);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		const { result } = renderHook(() => useGitStatus("/test/repo"));
 
@@ -145,12 +174,18 @@ describe("useGitStatus", () => {
 	});
 
 	it("should handle invoke error gracefully", async () => {
-		mockInvoke.mockRejectedValue(new Error("not a git repo"));
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status")
+				return Promise.reject(new Error("not a git repo"));
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		const { result } = renderHook(() => useGitStatus("/test/not-repo"));
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalled();
+			expect(gitStatusCallCount()).toBeGreaterThanOrEqual(1);
 		});
 
 		expect(result.current.statusMap.size).toBe(0);
@@ -160,9 +195,18 @@ describe("useGitStatus", () => {
 
 	it("should debounce refresh on file-change events", async () => {
 		vi.useFakeTimers();
-		mockInvoke.mockResolvedValue([]);
 
-		type ListenCallback = (event: { payload: { path: string } }) => void;
+		const WATCHER_ID = 42;
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "start_watching") return Promise.resolve(WATCHER_ID);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
+
+		type ListenCallback = (event: {
+			payload: { watcher_id: number; path: string };
+		}) => void;
 		let fileChangeCallback: ListenCallback | null = null;
 		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
 			if (event === "file-change") {
@@ -174,33 +218,53 @@ describe("useGitStatus", () => {
 		renderHook(() => useGitStatus("/test/repo"));
 
 		await vi.waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(1);
+			expect(gitStatusCallCount()).toBe(1);
+		});
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+				path: "/test/repo",
+			});
 		});
 
 		expect(fileChangeCallback).not.toBeNull();
 
 		act(() => {
-			fileChangeCallback?.({ payload: { path: "/test/repo/src/a.ts" } });
-			fileChangeCallback?.({ payload: { path: "/test/repo/src/b.ts" } });
-			fileChangeCallback?.({ payload: { path: "/test/repo/src/c.ts" } });
+			fileChangeCallback?.({
+				payload: { watcher_id: WATCHER_ID, path: "/test/repo/src/a.ts" },
+			});
+			fileChangeCallback?.({
+				payload: { watcher_id: WATCHER_ID, path: "/test/repo/src/b.ts" },
+			});
+			fileChangeCallback?.({
+				payload: { watcher_id: WATCHER_ID, path: "/test/repo/src/c.ts" },
+			});
 		});
 
-		expect(mockInvoke).toHaveBeenCalledTimes(1);
+		expect(gitStatusCallCount()).toBe(1);
 
 		await act(async () => {
 			vi.advanceTimersByTime(300);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledTimes(2);
+		expect(gitStatusCallCount()).toBe(2);
 
 		vi.useRealTimers();
 	});
 
-	it("should ignore file-change events from different rootPath", async () => {
+	it("should ignore file-change events with non-matching watcher_id", async () => {
 		vi.useFakeTimers();
-		mockInvoke.mockResolvedValue([]);
 
-		type ListenCallback = (event: { payload: { path: string } }) => void;
+		const WATCHER_ID = 42;
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "start_watching") return Promise.resolve(WATCHER_ID);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
+
+		type ListenCallback = (event: {
+			payload: { watcher_id: number; path: string };
+		}) => void;
 		let fileChangeCallback: ListenCallback | null = null;
 		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
 			if (event === "file-change") {
@@ -212,44 +276,17 @@ describe("useGitStatus", () => {
 		renderHook(() => useGitStatus("/test/repo-a"));
 
 		await vi.waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(1);
+			expect(gitStatusCallCount()).toBe(1);
 		});
-
-		act(() => {
-			fileChangeCallback?.({ payload: { path: "/test/repo-b/src/file.ts" } });
-		});
-
-		await act(async () => {
-			vi.advanceTimersByTime(300);
-		});
-
-		expect(mockInvoke).toHaveBeenCalledTimes(1);
-
-		vi.useRealTimers();
-	});
-
-	it("should ignore file-change events from a path that shares the same prefix but is a different directory", async () => {
-		vi.useFakeTimers();
-		mockInvoke.mockResolvedValue([]);
-
-		type ListenCallback = (event: { payload: { path: string } }) => void;
-		let fileChangeCallback: ListenCallback | null = null;
-		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
-			if (event === "file-change") {
-				fileChangeCallback = cb;
-			}
-			return Promise.resolve(vi.fn());
-		});
-
-		renderHook(() => useGitStatus("/test/repo"));
-
 		await vi.waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(1);
+			expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+				path: "/test/repo-a",
+			});
 		});
 
 		act(() => {
 			fileChangeCallback?.({
-				payload: { path: "/test/repo-other/src/file.ts" },
+				payload: { watcher_id: 999, path: "/test/repo-b/src/file.ts" },
 			});
 		});
 
@@ -257,13 +294,15 @@ describe("useGitStatus", () => {
 			vi.advanceTimersByTime(300);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledTimes(1);
+		expect(gitStatusCallCount()).toBe(1);
 
 		vi.useRealTimers();
 	});
 
 	it("should deduplicate when debounce fires after externalRefreshKey fetch", async () => {
 		vi.useFakeTimers();
+
+		const WATCHER_ID = 42;
 		const mockEntries: GitFileStatus[] = [
 			{
 				path: "src/main.ts",
@@ -271,9 +310,16 @@ describe("useGitStatus", () => {
 				worktree_status: "modified",
 			},
 		];
-		mockInvoke.mockResolvedValue(mockEntries);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "start_watching") return Promise.resolve(WATCHER_ID);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
-		type ListenCallback = (event: { payload: { path: string } }) => void;
+		type ListenCallback = (event: {
+			payload: { watcher_id: number; path: string };
+		}) => void;
 		let fileChangeCallback: ListenCallback | null = null;
 		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
 			if (event === "file-change") {
@@ -289,38 +335,48 @@ describe("useGitStatus", () => {
 		);
 
 		await vi.waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(1);
+			expect(gitStatusCallCount()).toBe(1);
+		});
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+				path: "/test/repo",
+			});
 		});
 
 		act(() => {
-			fileChangeCallback?.({ payload: { path: "/test/repo/src/a.ts" } });
+			fileChangeCallback?.({
+				payload: { watcher_id: WATCHER_ID, path: "/test/repo/src/a.ts" },
+			});
 		});
 
 		rerender({ refreshKey: 1 });
 
 		await vi.waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(2);
+			expect(gitStatusCallCount()).toBe(2);
 		});
 
 		await act(async () => {
 			vi.advanceTimersByTime(300);
 		});
 
-		// Debounce fires (3rd invoke call), but prevEntriesRef dedup prevents state update
-		expect(mockInvoke).toHaveBeenCalledTimes(3);
-		// State remains the same (only 1 entry)
+		expect(gitStatusCallCount()).toBe(3);
 		expect(result.current.statusMap.size).toBe(1);
 
 		vi.useRealTimers();
 	});
 
 	it("should re-fetch when refresh is called", async () => {
-		mockInvoke.mockResolvedValue([]);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		const { result } = renderHook(() => useGitStatus("/test/repo"));
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(1);
+			expect(gitStatusCallCount()).toBe(1);
 		});
 
 		act(() => {
@@ -328,7 +384,7 @@ describe("useGitStatus", () => {
 		});
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(2);
+			expect(gitStatusCallCount()).toBe(2);
 		});
 	});
 
@@ -340,7 +396,12 @@ describe("useGitStatus", () => {
 				worktree_status: "modified",
 			},
 		];
-		mockInvoke.mockResolvedValue(mockEntries);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve(mockEntries);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		const { result } = renderHook(() => useGitStatus("/test/repo"));
 
@@ -356,7 +417,7 @@ describe("useGitStatus", () => {
 		});
 
 		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(2);
+			expect(gitStatusCallCount()).toBe(2);
 		});
 
 		expect(result.current.statusMap).toBe(firstStatusMap);
@@ -371,7 +432,12 @@ describe("useGitStatus", () => {
 				worktree_status: "modified",
 			},
 		];
-		mockInvoke.mockResolvedValue(initialEntries);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve(initialEntries);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		const { result } = renderHook(() => useGitStatus("/test/repo"));
 
@@ -393,7 +459,12 @@ describe("useGitStatus", () => {
 				worktree_status: "new",
 			},
 		];
-		mockInvoke.mockResolvedValue(updatedEntries);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve(updatedEntries);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		act(() => {
 			result.current.refresh();
@@ -408,7 +479,12 @@ describe("useGitStatus", () => {
 
 	it("should debounce refresh on git-status-changed events", async () => {
 		vi.useFakeTimers();
-		mockInvoke.mockResolvedValue([]);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		type GitStatusCallback = (event: {
 			payload: { repo_path: string };
@@ -424,7 +500,7 @@ describe("useGitStatus", () => {
 		renderHook(() => useGitStatus("/test/repo"));
 
 		await vi.waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(1);
+			expect(gitStatusCallCount()).toBe(1);
 		});
 
 		expect(gitStatusCallback).not.toBeNull();
@@ -433,20 +509,25 @@ describe("useGitStatus", () => {
 			gitStatusCallback?.({ payload: { repo_path: "/test/repo" } });
 		});
 
-		expect(mockInvoke).toHaveBeenCalledTimes(1);
+		expect(gitStatusCallCount()).toBe(1);
 
 		await act(async () => {
 			vi.advanceTimersByTime(300);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledTimes(2);
+		expect(gitStatusCallCount()).toBe(2);
 
 		vi.useRealTimers();
 	});
 
 	it("should ignore git-status-changed events from different repo_path", async () => {
 		vi.useFakeTimers();
-		mockInvoke.mockResolvedValue([]);
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_git_status") return Promise.resolve([]);
+			if (cmd === "start_watching") return Promise.resolve(1);
+			if (cmd === "stop_watching") return Promise.resolve();
+			return Promise.resolve([]);
+		});
 
 		type GitStatusCallback = (event: {
 			payload: { repo_path: string };
@@ -462,7 +543,7 @@ describe("useGitStatus", () => {
 		renderHook(() => useGitStatus("/test/repo-a"));
 
 		await vi.waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledTimes(1);
+			expect(gitStatusCallCount()).toBe(1);
 		});
 
 		act(() => {
@@ -473,7 +554,7 @@ describe("useGitStatus", () => {
 			vi.advanceTimersByTime(300);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledTimes(1);
+		expect(gitStatusCallCount()).toBe(1);
 
 		vi.useRealTimers();
 	});

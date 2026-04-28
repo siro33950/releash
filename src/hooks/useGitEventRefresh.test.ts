@@ -10,17 +10,30 @@ import {
 } from "vitest";
 import { useGitEventRefresh } from "./useGitEventRefresh";
 
-type ListenCallback = (event: { payload: Record<string, string> }) => void;
+type ListenCallback = (event: {
+	payload: Record<string, string | number>;
+}) => void;
 
 const mockListen = vi.fn();
 vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
 }));
 
+const mockInvoke = vi.fn();
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
+
+const WATCHER_ID = 42;
+
 describe("useGitEventRefresh", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		mockListen.mockResolvedValue(vi.fn());
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "start_watching") return Promise.resolve(WATCHER_ID);
+			return Promise.resolve();
+		});
 	});
 
 	afterEach(() => {
@@ -32,6 +45,10 @@ describe("useGitEventRefresh", () => {
 		const onRefresh = vi.fn();
 		renderHook(() => useGitEventRefresh("/repo", onRefresh, false));
 		expect(mockListen).not.toHaveBeenCalled();
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"start_watching",
+			expect.anything(),
+		);
 	});
 
 	it("should not register listeners when rootPath=null", () => {
@@ -40,7 +57,7 @@ describe("useGitEventRefresh", () => {
 		expect(mockListen).not.toHaveBeenCalled();
 	});
 
-	it("should register both listeners when enabled and rootPath provided", async () => {
+	it("should register both listeners and start file watcher", async () => {
 		const onRefresh = vi.fn();
 		renderHook(() => useGitEventRefresh("/repo", onRefresh));
 
@@ -56,38 +73,68 @@ describe("useGitEventRefresh", () => {
 			"git-status-changed",
 			expect.any(Function),
 		);
+		expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+			path: "/repo",
+		});
 	});
 
-	it("should debounce onRefresh on file-change event with matching path", async () => {
+	it("should debounce onRefresh on file-change event with matching watcher_id", async () => {
 		const onRefresh = vi.fn();
+		let fileChangeCb: ListenCallback | null = null;
+
 		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
 			if (event === "file-change") {
-				setTimeout(() => cb({ payload: { path: "/repo/src/main.ts" } }), 0);
+				fileChangeCb = cb;
 			}
 			return Promise.resolve(vi.fn());
 		});
 
 		renderHook(() => useGitEventRefresh("/repo", onRefresh));
 
-		await vi.advanceTimersByTimeAsync(0);
-		expect(onRefresh).not.toHaveBeenCalled();
+		await vi.waitFor(() => {
+			expect(fileChangeCb).not.toBeNull();
+		});
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+				path: "/repo",
+			});
+		});
 
+		(fileChangeCb as unknown as Mock)({
+			payload: { watcher_id: WATCHER_ID, path: "/repo/src/main.ts" },
+		});
+
+		expect(onRefresh).not.toHaveBeenCalled();
 		await vi.advanceTimersByTimeAsync(300);
 		expect(onRefresh).toHaveBeenCalledTimes(1);
 	});
 
-	it("should ignore file-change event with non-matching path", async () => {
+	it("should ignore file-change event with non-matching watcher_id", async () => {
 		const onRefresh = vi.fn();
+		let fileChangeCb: ListenCallback | null = null;
+
 		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
 			if (event === "file-change") {
-				setTimeout(() => cb({ payload: { path: "/other-repo/file.ts" } }), 0);
+				fileChangeCb = cb;
 			}
 			return Promise.resolve(vi.fn());
 		});
 
 		renderHook(() => useGitEventRefresh("/repo", onRefresh));
 
-		await vi.advanceTimersByTimeAsync(0);
+		await vi.waitFor(() => {
+			expect(fileChangeCb).not.toBeNull();
+		});
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+				path: "/repo",
+			});
+		});
+
+		(fileChangeCb as unknown as Mock)({
+			payload: { watcher_id: 999, path: "/other-repo/file.ts" },
+		});
+
 		await vi.advanceTimersByTimeAsync(300);
 		expect(onRefresh).not.toHaveBeenCalled();
 	});
@@ -126,7 +173,7 @@ describe("useGitEventRefresh", () => {
 		expect(onRefresh).not.toHaveBeenCalled();
 	});
 
-	it("should call unlisten on cleanup", async () => {
+	it("should call unlisten and stop watcher on cleanup", async () => {
 		const mockUnlisten = vi.fn();
 		mockListen.mockResolvedValue(mockUnlisten);
 
@@ -135,9 +182,17 @@ describe("useGitEventRefresh", () => {
 		await vi.waitFor(() => {
 			expect(mockListen).toHaveBeenCalledTimes(2);
 		});
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+				path: "/repo",
+			});
+		});
 
 		unmount();
 		expect(mockUnlisten).toHaveBeenCalledTimes(2);
+		expect(mockInvoke).toHaveBeenCalledWith("stop_watching", {
+			watcherId: WATCHER_ID,
+		});
 	});
 
 	it("should debounce multiple rapid events into single call", async () => {
@@ -156,12 +211,56 @@ describe("useGitEventRefresh", () => {
 		await vi.waitFor(() => {
 			expect(fileChangeCb).not.toBeNull();
 		});
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+				path: "/repo",
+			});
+		});
 
-		(fileChangeCb as unknown as Mock)({ payload: { path: "/repo/a.ts" } });
-		(fileChangeCb as unknown as Mock)({ payload: { path: "/repo/b.ts" } });
-		(fileChangeCb as unknown as Mock)({ payload: { path: "/repo/c.ts" } });
+		(fileChangeCb as unknown as Mock)({
+			payload: { watcher_id: WATCHER_ID, path: "/repo/a.ts" },
+		});
+		(fileChangeCb as unknown as Mock)({
+			payload: { watcher_id: WATCHER_ID, path: "/repo/b.ts" },
+		});
+		(fileChangeCb as unknown as Mock)({
+			payload: { watcher_id: WATCHER_ID, path: "/repo/c.ts" },
+		});
 
 		await vi.advanceTimersByTimeAsync(300);
+		expect(onRefresh).toHaveBeenCalledTimes(1);
+	});
+
+	it("should not call onRefresh again after debounce without new events", async () => {
+		const onRefresh = vi.fn();
+		let fileChangeCb: ListenCallback | null = null;
+
+		mockListen.mockImplementation((event: string, cb: ListenCallback) => {
+			if (event === "file-change") {
+				fileChangeCb = cb;
+			}
+			return Promise.resolve(vi.fn());
+		});
+
+		renderHook(() => useGitEventRefresh("/repo", onRefresh));
+
+		await vi.waitFor(() => {
+			expect(fileChangeCb).not.toBeNull();
+		});
+		await vi.waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("start_watching", {
+				path: "/repo",
+			});
+		});
+
+		(fileChangeCb as unknown as Mock)({
+			payload: { watcher_id: WATCHER_ID, path: "/repo/src/main.ts" },
+		});
+
+		await vi.advanceTimersByTimeAsync(300);
+		expect(onRefresh).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(1000);
 		expect(onRefresh).toHaveBeenCalledTimes(1);
 	});
 });
