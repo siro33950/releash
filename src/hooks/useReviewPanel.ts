@@ -4,6 +4,7 @@ import type { DiffBase, DiffMode, DiffSection } from "@/types/settings";
 export interface UseReviewPanelOptions {
 	initialDiffBase?: DiffBase;
 	initialDiffMode?: DiffMode;
+	initialSelectedFile?: string | null;
 }
 
 export interface UseReviewPanelResult {
@@ -25,7 +26,9 @@ export function useReviewPanel(
 	const [diffMode, setDiffMode] = useState<DiffMode>(
 		options?.initialDiffMode ?? "inline",
 	);
-	const [selectedFile, setSelectedFile] = useState<string | null>(null);
+	const [selectedFile, setSelectedFile] = useState<string | null>(
+		options?.initialSelectedFile ?? null,
+	);
 	const [selectedSection, setSelectedSection] =
 		useState<DiffSection>("changes");
 

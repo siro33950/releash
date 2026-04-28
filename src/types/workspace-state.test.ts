@@ -31,6 +31,7 @@ describe("buildWorkspaceState", () => {
 			rightBottomCollapsed: false,
 			reviewCollapsed: false,
 			diffOnlyMode: false,
+			selectedDiffFile: null,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -49,6 +50,7 @@ describe("buildWorkspaceState", () => {
 				rightBottomCollapsed: false,
 				reviewCollapsed: false,
 				diffOnlyMode: false,
+				selectedDiffFile: null,
 			},
 		});
 	});
@@ -61,6 +63,7 @@ describe("buildWorkspaceState", () => {
 			rightBottomCollapsed: false,
 			reviewCollapsed: false,
 			diffOnlyMode: false,
+			selectedDiffFile: null,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);
@@ -75,6 +78,7 @@ describe("buildWorkspaceState", () => {
 			rightBottomCollapsed: false,
 			reviewCollapsed: false,
 			diffOnlyMode: false,
+			selectedDiffFile: null,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", false, true);
@@ -89,6 +93,7 @@ describe("buildWorkspaceState", () => {
 			rightBottomCollapsed: false,
 			reviewCollapsed: false,
 			diffOnlyMode: false,
+			selectedDiffFile: null,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, false);
@@ -103,11 +108,27 @@ describe("buildWorkspaceState", () => {
 			rightBottomCollapsed: true,
 			reviewCollapsed: false,
 			diffOnlyMode: false,
+			selectedDiffFile: null,
 		};
 
 		const result = buildWorkspaceState(internal, "agent", true, true);
 		expect(result.layout.rightBottomCollapsed).toBe(true);
 		expect(result.layout.centerTab).toBe("agent");
+	});
+
+	it("selectedDiffFileが非null値で保持される", () => {
+		const internal = {
+			tabs: [],
+			activeEditorPath: null,
+			activeView: "git",
+			rightBottomCollapsed: false,
+			reviewCollapsed: false,
+			diffOnlyMode: false,
+			selectedDiffFile: "src/main.rs",
+		};
+
+		const result = buildWorkspaceState(internal, "editor", true, true);
+		expect(result.layout.selectedDiffFile).toBe("src/main.rs");
 	});
 
 	it("diffOnlyMode=trueが保持される", () => {
@@ -118,6 +139,7 @@ describe("buildWorkspaceState", () => {
 			rightBottomCollapsed: false,
 			reviewCollapsed: false,
 			diffOnlyMode: true,
+			selectedDiffFile: null,
 		};
 
 		const result = buildWorkspaceState(internal, "editor", true, true);

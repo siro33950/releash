@@ -16,6 +16,7 @@ export interface WorkspaceState {
 		rightBottomCollapsed: boolean;
 		reviewCollapsed?: boolean;
 		diffOnlyMode?: boolean;
+		selectedDiffFile?: string | null;
 	};
 }
 
@@ -26,6 +27,7 @@ export interface InternalWorktreeState {
 	rightBottomCollapsed: boolean;
 	reviewCollapsed: boolean;
 	diffOnlyMode: boolean;
+	selectedDiffFile: string | null;
 }
 
 export function buildWorkspaceState(
@@ -48,6 +50,7 @@ export function buildWorkspaceState(
 			rightBottomCollapsed: internal.rightBottomCollapsed,
 			reviewCollapsed: internal.reviewCollapsed,
 			diffOnlyMode: internal.diffOnlyMode,
+			selectedDiffFile: internal.selectedDiffFile,
 		},
 	};
 }

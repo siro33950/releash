@@ -59,6 +59,7 @@ function makeInternalState(
 		rightBottomCollapsed: false,
 		reviewCollapsed: false,
 		diffOnlyMode: false,
+		selectedDiffFile: null,
 		...overrides,
 	};
 }
@@ -439,6 +440,81 @@ describe("useWorkspacePersistence", () => {
 		expect(result.current.internalStateMapRef.current.has("/repoB")).toBe(
 			false,
 		);
+	});
+
+	it("シナリオ9: A→B→A の往復で selectedDiffFile が復元される", () => {
+		const stateA = makeState({
+			layout: {
+				centerTab: "editor",
+				activeView: "git",
+				leftNavCollapsed: false,
+				rightCollapsed: false,
+				rightBottomCollapsed: false,
+				selectedDiffFile: "src/main.rs",
+			},
+		});
+		const stateB = makeState({
+			layout: {
+				centerTab: "agent",
+				activeView: "explorer",
+				leftNavCollapsed: false,
+				rightCollapsed: false,
+				rightBottomCollapsed: false,
+			},
+		});
+
+		mockGetState.mockImplementation((path: string) => {
+			if (path === "/repoA") return stateA;
+			if (path === "/repoB") return stateB;
+			return undefined;
+		});
+
+		const setCenterTab = vi.fn();
+		const leftNavRef = makePanelRef();
+		const rightPanelRef = makePanelRef();
+
+		const { result, rerender } = renderHook(
+			({ selectedRootPath }) =>
+				useWorkspacePersistence({
+					selectedRootPath,
+					centerTab: "editor",
+					leftNavVisible: true,
+					rightVisible: true,
+					setCenterTab,
+					leftNavRef,
+					rightPanelRef,
+				}),
+			{ initialProps: { selectedRootPath: "/repoA" as string | null } },
+		);
+
+		// Set internal state for A with selectedDiffFile
+		act(() => {
+			result.current.internalStateMapRef.current.set(
+				"/repoA",
+				makeInternalState({ selectedDiffFile: "src/main.rs" }),
+			);
+		});
+
+		// A → B
+		rerender({ selectedRootPath: "/repoB" });
+
+		// A's state should be saved with selectedDiffFile
+		const savedState = mockUpdateState.mock.calls[0][1] as WorkspaceState;
+		expect(savedState.layout.selectedDiffFile).toBe("src/main.rs");
+
+		// B → A
+		setCenterTab.mockClear();
+		act(() => {
+			result.current.internalStateMapRef.current.set(
+				"/repoB",
+				makeInternalState({ activeView: "explorer" }),
+			);
+		});
+		rerender({ selectedRootPath: "/repoA" });
+
+		// A's cached state should have selectedDiffFile restored
+		const initialState = result.current.getInitialState("/repoA");
+		expect(initialState?.layout.selectedDiffFile).toBe("src/main.rs");
 	});
 
 	it("pre-load: 初回マウント時にloadStateが呼ばれる", () => {

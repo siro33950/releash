@@ -53,6 +53,10 @@ export function useWorktreeState({
 			false,
 	);
 
+	const [selectedDiffFile, setSelectedDiffFile] = useState<string | null>(
+		initialWorkspaceState?.layout.selectedDiffFile ?? null,
+	);
+
 	const { branch } = useCurrentBranch(rootPath);
 	const [ready, setReady] = useState(false);
 
@@ -125,6 +129,7 @@ export function useWorktreeState({
 			rightBottomCollapsed,
 			reviewCollapsed,
 			diffOnlyMode,
+			selectedDiffFile,
 		});
 	}, [
 		internalStateMapRef,
@@ -132,6 +137,7 @@ export function useWorktreeState({
 		rightBottomCollapsed,
 		reviewCollapsed,
 		diffOnlyMode,
+		selectedDiffFile,
 	]);
 
 	return {
@@ -158,5 +164,7 @@ export function useWorktreeState({
 		setReviewCollapsed,
 		diffOnlyMode,
 		setDiffOnlyMode,
+		selectedDiffFile,
+		setSelectedDiffFile,
 	};
 }

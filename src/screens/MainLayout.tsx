@@ -187,6 +187,8 @@ function WorktreeContent({
 										onDiffOnlyModeChange={s.setDiffOnlyMode}
 										navigateToFile={navigateToFile}
 										onSendToAgent={handleSendToAgent}
+										initialSelectedFile={s.selectedDiffFile}
+										onSelectedFileChange={s.setSelectedDiffFile}
 									/>
 								</div>
 							</Panel>
