@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef } from "react";
 import type { FileChangeEvent } from "./useFileWatcher";
@@ -8,6 +9,7 @@ export function useGitEventRefresh(
 	enabled = true,
 ): void {
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const watcherIdRef = useRef<number | null>(null);
 
 	const debouncedRefresh = useCallback(() => {
 		if (timerRef.current) clearTimeout(timerRef.current);
@@ -26,8 +28,8 @@ export function useGitEventRefresh(
 			const off = await listen<FileChangeEvent>("file-change", (event) => {
 				if (
 					!disposed &&
-					(event.payload.path === rootPath ||
-						event.payload.path.startsWith(`${rootPath}/`))
+					watcherIdRef.current !== null &&
+					event.payload.watcher_id === watcherIdRef.current
 				) {
 					debouncedRefresh();
 				}
@@ -37,6 +39,19 @@ export function useGitEventRefresh(
 				return;
 			}
 			unlisten = off;
+
+			try {
+				const id = await invoke<number>("start_watching", {
+					path: rootPath,
+				});
+				if (disposed) {
+					invoke("stop_watching", { watcherId: id }).catch(() => {});
+					return;
+				}
+				watcherIdRef.current = id;
+			} catch (e) {
+				console.error("Failed to start file watcher:", e);
+			}
 		};
 		void setup();
 
@@ -44,6 +59,12 @@ export function useGitEventRefresh(
 			disposed = true;
 			unlisten?.();
 			if (timerRef.current) clearTimeout(timerRef.current);
+			if (watcherIdRef.current !== null) {
+				invoke("stop_watching", { watcherId: watcherIdRef.current }).catch(
+					() => {},
+				);
+				watcherIdRef.current = null;
+			}
 		};
 	}, [debouncedRefresh, rootPath, enabled]);
 

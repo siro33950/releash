@@ -36,6 +36,21 @@ fn resolve_git_watch_paths(repo_path: &str) -> Result<GitWatchPaths, String> {
     })
 }
 
+fn canonicalize_event_path(path: &std::path::Path) -> Option<String> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Some(canonical.to_string_lossy().to_string());
+    }
+    let parent = path.parent()?;
+    let file_name = path.file_name()?;
+    let canonical_parent = parent.canonicalize().ok()?;
+    Some(
+        canonical_parent
+            .join(file_name)
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
 static WATCHER_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn generate_watcher_id() -> u64 {
@@ -93,7 +108,8 @@ pub fn start_watching(
                             DebouncedEventKind::AnyContinuous => "change",
                             _ => "change",
                         };
-                        let event_path = event.path.to_string_lossy().to_string();
+                        let event_path = canonicalize_event_path(&event.path)
+                            .unwrap_or_else(|| event.path.to_string_lossy().to_string());
                         let _ = app_clone.emit(
                             "file-change",
                             FileChangeEvent {
@@ -397,5 +413,36 @@ mod tests {
         let (branch, index) = classify_git_dir_events(&events);
         assert!(!branch);
         assert!(index);
+    }
+
+    #[test]
+    fn canonicalize_existing_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        let result = canonicalize_event_path(&file_path);
+        assert!(result.is_some());
+        let canonical = result.unwrap();
+        assert!(canonical.ends_with("test.txt"));
+        assert!(!canonical.contains(".."));
+    }
+
+    #[test]
+    fn canonicalize_deleted_file_falls_back_to_parent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file_path = dir.path().join("deleted.txt");
+
+        let result = canonicalize_event_path(&file_path);
+        assert!(result.is_some());
+        let canonical = result.unwrap();
+        assert!(canonical.ends_with("deleted.txt"));
+    }
+
+    #[test]
+    fn canonicalize_nonexistent_parent_returns_none() {
+        let path = PathBuf::from("/nonexistent/parent/file.txt");
+        let result = canonicalize_event_path(&path);
+        assert!(result.is_none());
     }
 }
