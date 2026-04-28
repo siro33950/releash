@@ -560,4 +560,176 @@ describe("useWorkspacePersistence", () => {
 
 		expect(mockLoadState).not.toHaveBeenCalled();
 	});
+
+	it("stateReady: キャッシュがある場合は即座にtrue", () => {
+		mockGetState.mockReturnValue(makeState());
+
+		const setCenterTab = vi.fn();
+		const leftNavRef = makePanelRef();
+		const rightPanelRef = makePanelRef();
+
+		const { result } = renderHook(() =>
+			useWorkspacePersistence({
+				selectedRootPath: "/repoX",
+				centerTab: "editor",
+				leftNavVisible: true,
+				rightVisible: true,
+				setCenterTab,
+				leftNavRef,
+				rightPanelRef,
+			}),
+		);
+
+		expect(result.current.stateReady).toBe(true);
+	});
+
+	it("stateReady: キャッシュがない場合はloadState完了後にtrue", async () => {
+		let resolveLoad!: (v: WorkspaceState | undefined) => void;
+		mockLoadState.mockReturnValue(
+			new Promise((resolve) => {
+				resolveLoad = resolve;
+			}),
+		);
+		mockGetState.mockReturnValue(undefined);
+
+		const setCenterTab = vi.fn();
+		const leftNavRef = makePanelRef();
+		const rightPanelRef = makePanelRef();
+
+		const { result } = renderHook(() =>
+			useWorkspacePersistence({
+				selectedRootPath: "/repoX",
+				centerTab: "editor",
+				leftNavVisible: true,
+				rightVisible: true,
+				setCenterTab,
+				leftNavRef,
+				rightPanelRef,
+			}),
+		);
+
+		// loadState完了前はfalse
+		expect(result.current.stateReady).toBe(false);
+
+		// loadState完了
+		await act(async () => {
+			resolveLoad(makeState());
+		});
+
+		expect(result.current.stateReady).toBe(true);
+	});
+
+	it("stateReady: selectedRootPathがnullの場合はtrue", () => {
+		mockGetState.mockReturnValue(undefined);
+
+		const setCenterTab = vi.fn();
+		const leftNavRef = makePanelRef();
+		const rightPanelRef = makePanelRef();
+
+		const { result } = renderHook(() =>
+			useWorkspacePersistence({
+				selectedRootPath: null,
+				centerTab: "editor",
+				leftNavVisible: true,
+				rightVisible: true,
+				setCenterTab,
+				leftNavRef,
+				rightPanelRef,
+			}),
+		);
+
+		expect(result.current.stateReady).toBe(true);
+	});
+
+	it("stateReady: ワークスペース切替時にキャッシュがあれば即true", () => {
+		const stateB = makeState({
+			layout: {
+				centerTab: "agent",
+				activeView: "git",
+				leftNavCollapsed: false,
+				rightCollapsed: false,
+				rightBottomCollapsed: false,
+			},
+		});
+		mockGetState.mockImplementation((path: string) =>
+			path === "/repoB" ? stateB : undefined,
+		);
+
+		const setCenterTab = vi.fn();
+		const leftNavRef = makePanelRef();
+		const rightPanelRef = makePanelRef();
+
+		const { result, rerender } = renderHook(
+			({ selectedRootPath }) =>
+				useWorkspacePersistence({
+					selectedRootPath,
+					centerTab: "editor",
+					leftNavVisible: true,
+					rightVisible: true,
+					setCenterTab,
+					leftNavRef,
+					rightPanelRef,
+				}),
+			{ initialProps: { selectedRootPath: "/repoA" as string | null } },
+		);
+
+		// /repoAはキャッシュなし → false
+		expect(result.current.stateReady).toBe(false);
+
+		// /repoBに切替（キャッシュあり）
+		rerender({ selectedRootPath: "/repoB" });
+		expect(result.current.stateReady).toBe(true);
+	});
+
+	it("stateReady: ワークスペース切替時にキャッシュがなければloadState完了後にtrue", async () => {
+		let resolveLoad!: (v: WorkspaceState | undefined) => void;
+		mockGetState.mockReturnValue(undefined);
+		mockLoadState.mockReturnValue(
+			new Promise((resolve) => {
+				resolveLoad = resolve;
+			}),
+		);
+
+		const setCenterTab = vi.fn();
+		const leftNavRef = makePanelRef();
+		const rightPanelRef = makePanelRef();
+
+		const { result, rerender } = renderHook(
+			({ selectedRootPath }) =>
+				useWorkspacePersistence({
+					selectedRootPath,
+					centerTab: "editor",
+					leftNavVisible: true,
+					rightVisible: true,
+					setCenterTab,
+					leftNavRef,
+					rightPanelRef,
+				}),
+			{ initialProps: { selectedRootPath: "/repoA" as string | null } },
+		);
+
+		// loadState完了でstateReady=true
+		await act(async () => {
+			resolveLoad(undefined);
+		});
+		expect(result.current.stateReady).toBe(true);
+
+		// 新しいloadStateのPromiseを設定
+		let resolveLoad2!: (v: WorkspaceState | undefined) => void;
+		mockLoadState.mockReturnValue(
+			new Promise((resolve) => {
+				resolveLoad2 = resolve;
+			}),
+		);
+
+		// /repoBに切替（キャッシュなし）
+		rerender({ selectedRootPath: "/repoB" });
+		expect(result.current.stateReady).toBe(false);
+
+		// loadState完了
+		await act(async () => {
+			resolveLoad2(makeState());
+		});
+		expect(result.current.stateReady).toBe(true);
+	});
 });

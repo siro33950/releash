@@ -22,6 +22,7 @@ interface UseWorkspacePersistenceReturn {
 		Map<string, InternalWorktreeState>
 	>;
 	getInitialState: (rootPath: string) => WorkspaceState | undefined;
+	stateReady: boolean;
 }
 
 export function useWorkspacePersistence({
@@ -37,6 +38,11 @@ export function useWorkspacePersistence({
 	const internalStateMapRef = useRef<Map<string, InternalWorktreeState>>(
 		new Map(),
 	);
+
+	const [stateReady, setStateReady] = useState(() => {
+		if (!selectedRootPath) return true;
+		return !!workspaceCache.getState(selectedRootPath);
+	});
 
 	const centerTabRef = useRef(centerTab);
 	centerTabRef.current = centerTab;
@@ -73,6 +79,12 @@ export function useWorkspacePersistence({
 			? workspaceCache.getState(selectedRootPath)
 			: undefined;
 		setCenterTab(cached?.layout.centerTab ?? "agent");
+
+		// 切替先のキャッシュ有無でstateReadyを更新
+		const hasCache = selectedRootPath
+			? !!workspaceCache.getState(selectedRootPath)
+			: true;
+		setStateReady(hasCache);
 	}
 
 	// Restore panel expand/collapse (DOM操作のためuseEffect + rAF)
@@ -107,11 +119,14 @@ export function useWorkspacePersistence({
 		if (!selectedRootPath) return;
 		const cache = workspaceCacheRef.current;
 		if (cache.getState(selectedRootPath)) return;
-		cache.loadState(selectedRootPath);
+		cache.loadState(selectedRootPath).then(() => {
+			setStateReady(true);
+		});
 	}, [selectedRootPath]);
 
 	return {
 		internalStateMapRef,
 		getInitialState: workspaceCache.getState,
+		stateReady,
 	};
 }

@@ -269,15 +269,16 @@ export function MainLayout({
 	const [rightVisible, setRightVisible] = useState(true);
 
 	// --- Workspace state persistence ---
-	const { internalStateMapRef, getInitialState } = useWorkspacePersistence({
-		selectedRootPath,
-		centerTab: "agent",
-		leftNavVisible,
-		rightVisible,
-		setCenterTab: () => {},
-		leftNavRef,
-		rightPanelRef,
-	});
+	const { internalStateMapRef, getInitialState, stateReady } =
+		useWorkspacePersistence({
+			selectedRootPath,
+			centerTab: "agent",
+			leftNavVisible,
+			rightVisible,
+			setCenterTab: () => {},
+			leftNavRef,
+			rightPanelRef,
+		});
 
 	const { branch } = useCurrentBranch(selectedRootPath);
 	const { baseBranch, setBaseBranch, localBranches } = useBaseBranch(
@@ -412,7 +413,7 @@ export function MainLayout({
 				<Separator />
 				<Panel id="main-area" minSize="30%">
 					<Group orientation="horizontal" className="h-full">
-						{selectedRootPath ? (
+						{selectedRootPath && stateReady ? (
 							<WorktreeContent
 								key={selectedRootPath}
 								rootPath={selectedRootPath}
@@ -434,9 +435,13 @@ export function MainLayout({
 										leftPanels={leftNavVisible ? undefined : [leftToggle]}
 										rightSlot={rightSlotContent}
 									/>
-									<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-										Select a worktree from the sidebar to start working
-									</div>
+									{!selectedRootPath ? (
+										<div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
+											Select a worktree from the sidebar to start working
+										</div>
+									) : (
+										<div className="flex-1" />
+									)}
 								</div>
 							</Panel>
 						)}
