@@ -505,7 +505,7 @@ describe("ReviewPanel", () => {
 				capturedRefresh?.();
 			});
 
-			expect(refreshKeys.at(-1)).toBe(1);
+			expect(refreshKeys[refreshKeys.length - 1]).toBe(1);
 		});
 
 		it("should increment gitRefreshKey cumulatively on multiple events", async () => {
@@ -547,7 +547,7 @@ describe("ReviewPanel", () => {
 				capturedRefresh?.();
 			});
 
-			expect(refreshKeys.at(-1)).toBe(2);
+			expect(refreshKeys[refreshKeys.length - 1]).toBe(2);
 		});
 	});
 });
