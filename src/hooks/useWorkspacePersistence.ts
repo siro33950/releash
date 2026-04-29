@@ -119,9 +119,15 @@ export function useWorkspacePersistence({
 		if (!selectedRootPath) return;
 		const cache = workspaceCacheRef.current;
 		if (cache.getState(selectedRootPath)) return;
+		let cancelled = false;
 		cache.loadState(selectedRootPath).then(() => {
-			setStateReady(true);
+			if (!cancelled) {
+				setStateReady(true);
+			}
 		});
+		return () => {
+			cancelled = true;
+		};
 	}, [selectedRootPath]);
 
 	return {

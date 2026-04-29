@@ -78,10 +78,11 @@ impl WorkspaceStateStore {
 
         // Filter out tabs whose files no longer exist
         state.tabs.editors.retain(|tab| {
-            let full_path = if tab.path.starts_with('/') || tab.path.starts_with('\\') {
-                PathBuf::from(&tab.path)
+            let tab_path = Path::new(&tab.path);
+            let full_path = if tab_path.is_absolute() {
+                tab_path.to_path_buf()
             } else {
-                Path::new(worktree_root).join(&tab.path)
+                Path::new(worktree_root).join(tab_path)
             };
             full_path.exists()
         });
@@ -96,10 +97,11 @@ impl WorkspaceStateStore {
 
         // Clear selected diff file if the file no longer exists
         if let Some(ref diff_file) = state.layout.selected_diff_file {
-            let full_path = if diff_file.starts_with('/') || diff_file.starts_with('\\') {
-                PathBuf::from(diff_file)
+            let diff_path = Path::new(diff_file.as_str());
+            let full_path = if diff_path.is_absolute() {
+                diff_path.to_path_buf()
             } else {
-                Path::new(worktree_root).join(diff_file)
+                Path::new(worktree_root).join(diff_path)
             };
             if !full_path.exists() {
                 state.layout.selected_diff_file = None;
