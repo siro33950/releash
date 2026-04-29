@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 static MENTION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"@([^\s@:]+(?:\.[^\s@:]+)*)(?::L(\d+)(?:-L(\d+))?)?")
+    regex::Regex::new(r"@([^ \t\r\n@:]+(?:\.[^ \t\r\n@:]+)*)(?::L(\d+)(?:-L(\d+))?)?")
         .expect("invalid mention regex")
 });
 
@@ -533,6 +533,27 @@ mod tests {
                 },
                 DisplayPart::Mention {
                     value: "@docs/Gitフロー.md".to_string()
+                },
+                DisplayPart::Text {
+                    value: " してください".to_string()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_display_mentions_fullwidth_space_in_path() {
+        let parts = parse_display_mentions(
+            "確認 @docs/Gitフロー\u{3000}・デプロイサイクル見直し.md してください".to_string(),
+        );
+        assert_eq!(
+            parts,
+            vec![
+                DisplayPart::Text {
+                    value: "確認 ".to_string()
+                },
+                DisplayPart::Mention {
+                    value: "@docs/Gitフロー\u{3000}・デプロイサイクル見直し.md".to_string()
                 },
                 DisplayPart::Text {
                     value: " してください".to_string()

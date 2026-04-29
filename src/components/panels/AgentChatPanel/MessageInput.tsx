@@ -20,7 +20,8 @@ import type {
 import { MentionPopup } from "./MentionPopup";
 import { ModelSelector } from "./ModelSelector";
 
-const MENTION_SYNC_RE = /@([^\s@:]+(?:\.[^\s@:]+)*)(?::L(\d+)(?:-L(\d+))?)?/g;
+const MENTION_SYNC_RE =
+	/@([^ \t\r\n@:]+(?:\.[^ \t\r\n@:]+)*)(?::L(\d+)(?:-L(\d+))?)?/g;
 
 function syncMentionsWithText(
 	text: string,

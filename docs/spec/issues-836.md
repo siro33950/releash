@@ -55,13 +55,14 @@ Feature: 非ASCII文字を含むファイルの@メンション参照
 - **`src-tauri/src/file_mention.rs`**:
   - `MentionReference` 構造体を追加（`file_path: String, start_line: Option<u32>, end_line: Option<u32>`）
   - `resolve_from_references()` 新設: 構造化データから直接ファイル読み込み・`<file_context>` ブロック構築
-  - `MENTION_RE` の文字クラスをUnicode対応に修正（`parse_display_mentions` の表示用パースのため）
-  - `parse_mentions` / `resolve_mentions_internal` / `resolve_mentions_or_fallback` は削除（呼び出し元がなくなる）
+  - `resolve_mentions_or_fallback()` は `resolve_from_references` のフォールバック付きラッパーとして残す（エラー時にログ出力し元のcontentを返す）
+  - `MENTION_RE` の文字クラスをASCII空白限定に修正（`parse_display_mentions` の表示用パースで全角スペースを含むパスを切り捨てないため）
+  - `parse_mentions` / `resolve_mentions_internal` は削除（呼び出し元がなくなる）
 
 - **`src-tauri/src/agent_sdk.rs`**:
   - `send_agent_message` コマンドに `mentions: Option<Vec<MentionReference>>` パラメータ追加
   - `PendingMessage` に `mentions` フィールド追加
-  - `resolve_mentions_or_fallback` 呼び出しを `resolve_from_references` に置き換え
+  - `resolve_mentions_or_fallback` を経由して `resolve_from_references` を呼び出す（フォールバック付きで後方互換性を維持）
 
 - **`src-tauri/src/diff_comment_sender.rs`**:
   - `format_comments_for_agent` → `build_mentions_from_comments`: `DiffComment[]` を `MentionReference[]` に変換
