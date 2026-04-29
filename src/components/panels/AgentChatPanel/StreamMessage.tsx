@@ -33,6 +33,16 @@ function ExternalLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
 	);
 }
 
+function formatMentionToken(mention: MentionReference): string {
+	if (mention.startLine && mention.endLine) {
+		return `@${mention.filePath}:L${mention.startLine}-L${mention.endLine}`;
+	}
+	if (mention.startLine) {
+		return `@${mention.filePath}:L${mention.startLine}`;
+	}
+	return `@${mention.filePath}`;
+}
+
 function buildDisplayParts(
 	content: string,
 	mentions?: MentionReference[],
@@ -40,24 +50,32 @@ function buildDisplayParts(
 	if (!mentions || mentions.length === 0) {
 		return content ? [{ type: "text", value: content }] : [];
 	}
+	const tokens = mentions.map(formatMentionToken);
 	const parts: DisplayPart[] = [];
-	let remaining = content;
-	for (const mention of mentions) {
-		const mentionText = `@${mention.filePath}`;
-		const idx = remaining.indexOf(mentionText);
-		if (idx === -1) continue;
-		let matchEnd = idx + mentionText.length;
-		const after = remaining.slice(matchEnd);
-		const lineMatch = after.match(/^:L(\d+)(?:-L(\d+))?/);
-		if (lineMatch) matchEnd += lineMatch[0].length;
-		if (idx > 0) parts.push({ type: "text", value: remaining.slice(0, idx) });
-		parts.push({
-			type: "mention",
-			value: remaining.slice(idx, matchEnd),
-		});
-		remaining = remaining.slice(matchEnd);
+	let cursor = 0;
+	while (cursor < content.length) {
+		let best: { idx: number; token: string } | null = null;
+		for (const token of tokens) {
+			const idx = content.indexOf(token, cursor);
+			if (idx === -1) continue;
+			if (
+				!best ||
+				idx < best.idx ||
+				(idx === best.idx && token.length > best.token.length)
+			) {
+				best = { idx, token };
+			}
+		}
+		if (!best) {
+			parts.push({ type: "text", value: content.slice(cursor) });
+			break;
+		}
+		if (best.idx > cursor) {
+			parts.push({ type: "text", value: content.slice(cursor, best.idx) });
+		}
+		parts.push({ type: "mention", value: best.token });
+		cursor = best.idx + best.token.length;
 	}
-	if (remaining) parts.push({ type: "text", value: remaining });
 	return parts;
 }
 

@@ -2210,23 +2210,24 @@ pub async fn send_agent_message(
         // 4a. Queue pending message + interrupt
         {
             let mut map = handles.lock().await;
-            if let Some(proc) = map.get_mut(&sid) {
-                proc.pending_message = Some(PendingMessage {
-                    content: content.clone(),
-                    permission_mode: pm.clone(),
-                    images: images.clone(),
-                    worktree_path: worktree_path.clone(),
-                    mentions: mentions.clone(),
-                });
-                proc.stdin
-                    .write_all(b"{\"type\":\"interrupt\"}\n")
-                    .await
-                    .map_err(|e| format!("Failed to write interrupt: {e}"))?;
-                proc.stdin
-                    .flush()
-                    .await
-                    .map_err(|e| format!("Failed to flush: {e}"))?;
-            }
+            let proc = map
+                .get_mut(&sid)
+                .ok_or_else(|| format!("No active agent process for session {sid}"))?;
+            proc.pending_message = Some(PendingMessage {
+                content: content.clone(),
+                permission_mode: pm.clone(),
+                images: images.clone(),
+                worktree_path: worktree_path.clone(),
+                mentions: mentions.clone(),
+            });
+            proc.stdin
+                .write_all(b"{\"type\":\"interrupt\"}\n")
+                .await
+                .map_err(|e| format!("Failed to write interrupt: {e}"))?;
+            proc.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Failed to flush: {e}"))?;
         }
         None
     } else {
