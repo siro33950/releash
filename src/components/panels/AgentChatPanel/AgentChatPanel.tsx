@@ -604,6 +604,7 @@ export function AgentChatPanel({
 													images={
 														imageParts.length > 0 ? imageParts : undefined
 													}
+													mentions={msg.mentions}
 												/>
 											</div>
 										);

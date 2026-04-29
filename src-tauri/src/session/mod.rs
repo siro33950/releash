@@ -154,6 +154,8 @@ pub struct ChatMessage {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub parts: Option<Vec<MessagePart>>,
     pub timestamp: f64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mentions: Option<Vec<crate::file_mention::MentionReference>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,6 +373,7 @@ pub fn add_message_internal(
     role: MessageRole,
     content: &str,
     parts: Option<Vec<MessagePart>>,
+    mentions: Option<Vec<crate::file_mention::MentionReference>>,
 ) -> Result<ChatMessage, String> {
     let mut session = session_store
         .get_session(data_dir, session_id)?
@@ -384,6 +387,7 @@ pub fn add_message_internal(
         activities: None,
         parts,
         timestamp: now,
+        mentions,
     };
     session.messages.push(message.clone());
     session.updated_at = now;
@@ -410,7 +414,7 @@ pub fn add_message(
     content: String,
 ) -> Result<ChatMessage, String> {
     let data_dir = resolve_data_dir(&app)?;
-    add_message_internal(&state, &data_dir, &session_id, role, &content, None)
+    add_message_internal(&state, &data_dir, &session_id, role, &content, None, None)
 }
 
 #[tauri::command]
@@ -506,6 +510,7 @@ mod tests {
                 activities: None,
                 parts: None,
                 timestamp: 1000.0,
+                mentions: None,
             }],
             state: SessionState::Active,
             created_at: 1000.0,
@@ -535,6 +540,7 @@ mod tests {
                 activities: None,
                 parts: None,
                 timestamp: 1000.0,
+                mentions: None,
             }],
             state: SessionState::Idle,
             created_at: 1000.0,
@@ -563,6 +569,7 @@ mod tests {
                 activities: None,
                 parts: None,
                 timestamp: 1000.0,
+                mentions: None,
             }],
             state: SessionState::Idle,
             created_at: 1000.0,
@@ -646,6 +653,7 @@ mod tests {
             activities: None,
             parts: None,
             timestamp: 1000.0,
+            mentions: None,
         };
         let json = serde_json::to_string(&msg_with).unwrap();
         assert!(json.contains("\"thinking\":\"deep thought\""));
@@ -660,6 +668,7 @@ mod tests {
             activities: None,
             parts: None,
             timestamp: 1000.0,
+            mentions: None,
         };
         let json = serde_json::to_string(&msg_without).unwrap();
         assert!(!json.contains("thinking"));
@@ -688,6 +697,7 @@ mod tests {
                     activities: None,
                     parts: None,
                     timestamp: 1000.0,
+                    mentions: None,
                 },
                 ChatMessage {
                     id: "m2".to_string(),
@@ -697,6 +707,7 @@ mod tests {
                     activities: None,
                     parts: None,
                     timestamp: 1001.0,
+                    mentions: None,
                 },
             ],
             state: SessionState::Active,
@@ -824,6 +835,7 @@ mod tests {
             ]),
             parts: None,
             timestamp: 1000.0,
+            mentions: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ChatMessage = serde_json::from_str(&json).unwrap();
@@ -903,6 +915,7 @@ mod tests {
                 },
             ]),
             timestamp: 1000.0,
+            mentions: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ChatMessage = serde_json::from_str(&json).unwrap();
@@ -1106,6 +1119,7 @@ mod tests {
                 },
             ]),
             timestamp: 1000.0,
+            mentions: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: ChatMessage = serde_json::from_str(&json).unwrap();

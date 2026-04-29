@@ -19,6 +19,9 @@ import type {
 } from "@/types/session";
 import { MentionPopup } from "./MentionPopup";
 import { ModelSelector } from "./ModelSelector";
+import { ModeSelector } from "./ModeSelector";
+import { findMentionTrigger, handlePopupKeyDown } from "./popupInputUtils";
+import { SlashCommandPopup } from "./SlashCommandPopup";
 
 const MENTION_SYNC_RE =
 	/@([^ \t\r\n@:]+(?:\.[^ \t\r\n@:]+)*)(?::L(\d+)(?:-L(\d+))?)?/g;
@@ -28,39 +31,26 @@ export function syncMentionsWithText(
 	refs: MentionReference[],
 ): MentionReference[] | undefined {
 	const re = new RegExp(MENTION_SYNC_RE.source, "g");
-	const queues = new Map<
-		string,
-		Array<{ startLine?: number; endLine?: number }>
-	>();
+	const available = new Map<string, number>();
+	for (const ref of refs) {
+		available.set(ref.filePath, (available.get(ref.filePath) ?? 0) + 1);
+	}
+	const synced: MentionReference[] = [];
 	for (;;) {
 		const m = re.exec(text);
 		if (m === null) break;
 		const filePath = m[1];
-		const queue = queues.get(filePath) ?? [];
-		if (!queues.has(filePath)) queues.set(filePath, queue);
-		queue.push({
+		const remaining = available.get(filePath) ?? 0;
+		if (remaining === 0) continue;
+		synced.push({
+			filePath,
 			startLine: m[2] ? Number(m[2]) : undefined,
 			endLine: m[3] ? Number(m[3]) : undefined,
 		});
-	}
-	const synced: MentionReference[] = [];
-	for (const ref of refs) {
-		const queue = queues.get(ref.filePath);
-		if (!queue || queue.length === 0) continue;
-		const range = queue.shift();
-		if (!range) continue;
-		synced.push({
-			filePath: ref.filePath,
-			startLine: range.startLine,
-			endLine: range.endLine,
-		});
+		available.set(filePath, remaining - 1);
 	}
 	return synced.length > 0 ? synced : undefined;
 }
-
-import { ModeSelector } from "./ModeSelector";
-import { findMentionTrigger, handlePopupKeyDown } from "./popupInputUtils";
-import { SlashCommandPopup } from "./SlashCommandPopup";
 
 interface AttachedImage {
 	id: string;

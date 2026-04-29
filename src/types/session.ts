@@ -103,6 +103,7 @@ export interface ChatMessage {
 	role: MessageRole;
 	parts: MessagePart[];
 	timestamp: number;
+	mentions?: MentionReference[];
 }
 
 /** Rust backend ChatMessage format (for DB persistence) */
@@ -113,6 +114,7 @@ export interface LegacyChatMessage {
 	thinking?: string;
 	activities?: ActivityEntry[];
 	timestamp: number;
+	mentions?: MentionReference[];
 }
 
 export interface ChatSession {

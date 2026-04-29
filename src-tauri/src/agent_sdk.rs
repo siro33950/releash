@@ -1744,6 +1744,7 @@ async fn consume_pending_message(
         MessageRole::Agent,
         "",
         None,
+        None,
     ) {
         Ok(msg) => msg,
         Err(e) => {
@@ -2187,6 +2188,11 @@ pub async fn send_agent_message(
             MessageRole::Human,
             &content,
             parts,
+            if mentions.is_empty() {
+                None
+            } else {
+                Some(mentions.clone())
+            },
         )?
     };
 
@@ -2231,6 +2237,7 @@ pub async fn send_agent_message(
             &sid,
             MessageRole::Agent,
             "",
+            None,
             None,
         )?;
         let resolved_prompt =

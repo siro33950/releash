@@ -1,4 +1,5 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { useCallback } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { DiffCommentList } from "@/components/panels/DiffCommentList";
 import { TerminalPanel } from "@/components/panels/TerminalPanel";
@@ -37,6 +38,20 @@ export function RightSidebarBottom({
 		sendAllUnsent,
 	} = useDiffComments({ worktreeName });
 
+	const handleSendResult = useCallback(
+		async (result: {
+			formattedMessage: string;
+			mentions: MentionReference[];
+			commentIds: string[];
+		}) => {
+			if (result.formattedMessage && onSendToAgent) {
+				await onSendToAgent(result.formattedMessage, result.mentions);
+				await markSent(result.commentIds);
+			}
+		},
+		[onSendToAgent, markSent],
+	);
+
 	return (
 		<div className="flex flex-col h-full">
 			<div className="flex items-center gap-2 shrink-0 px-0 pt-0 bg-background border-y border-border">
@@ -70,26 +85,8 @@ export function RightSidebarBottom({
 								unsentCount={unsentCount}
 								onCommentClick={onCommentClick ?? (() => {})}
 								onDelete={deleteComment}
-								onSend={async (ids) => {
-									const result = await sendToAgent(ids);
-									if (result.formattedMessage && onSendToAgent) {
-										await onSendToAgent(
-											result.formattedMessage,
-											result.mentions,
-										);
-										await markSent(result.commentIds);
-									}
-								}}
-								onSendAll={async () => {
-									const result = await sendAllUnsent();
-									if (result.formattedMessage && onSendToAgent) {
-										await onSendToAgent(
-											result.formattedMessage,
-											result.mentions,
-										);
-										await markSent(result.commentIds);
-									}
-								}}
+								onSend={async (ids) => handleSendResult(await sendToAgent(ids))}
+								onSendAll={async () => handleSendResult(await sendAllUnsent())}
 							/>
 						</div>
 					</Panel>

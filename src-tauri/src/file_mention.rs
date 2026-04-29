@@ -1,11 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::LazyLock;
-
-static MENTION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"@([^ \t\r\n@:]+(?:\.[^ \t\r\n@:]+)*)(?::L(\d+)(?:-L(\d+))?)?")
-        .expect("invalid mention regex")
-});
 
 /// A structured file mention reference passed from the frontend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -16,14 +10,6 @@ pub struct MentionReference {
     pub start_line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_line: Option<u32>,
-}
-
-/// A segment of message text for display: either plain text or a @mention.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum DisplayPart {
-    Text { value: String },
-    Mention { value: String },
 }
 
 /// List files in a worktree that match a fuzzy query, respecting .gitignore.
@@ -76,16 +62,6 @@ pub fn list_mentionable_files(worktree_path: String, query: String) -> Result<Ve
     Ok(results)
 }
 
-/// Check whether a regex match at `start` is a valid mention position:
-/// the `@` must appear at the beginning of the text or after whitespace.
-fn is_valid_mention_position(content: &str, start: usize) -> bool {
-    start == 0
-        || content
-            .as_bytes()
-            .get(start - 1)
-            .is_some_and(|&b| b.is_ascii_whitespace())
-}
-
 /// Subsequence fuzzy match: all characters in `query` appear in `haystack` in order.
 fn fuzzy_match(haystack: &str, query: &str) -> bool {
     let mut haystack_chars = haystack.chars();
@@ -99,6 +75,13 @@ fn fuzzy_match(haystack: &str, query: &str) -> bool {
         }
     }
     true
+}
+
+fn escape_xml_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Resolve structured mention references into a file_context block prepended to the content.
@@ -139,10 +122,11 @@ pub fn resolve_from_references(
 
         let excerpt = extract_excerpt(&file_content, mention.start_line, mention.end_line);
 
+        let escaped_path = escape_xml_attr(&mention.file_path);
         let attrs = match (mention.start_line, mention.end_line) {
-            (Some(s), Some(e)) => format!(r#" path="{}" lines="{}-{}""#, mention.file_path, s, e),
-            (Some(s), None) => format!(r#" path="{}" lines="{}""#, mention.file_path, s),
-            _ => format!(r#" path="{}""#, mention.file_path),
+            (Some(s), Some(e)) => format!(r#" path="{escaped_path}" lines="{s}-{e}""#),
+            (Some(s), None) => format!(r#" path="{escaped_path}" lines="{s}""#),
+            _ => format!(r#" path="{escaped_path}""#),
         };
 
         file_sections.push(format!("<file{attrs}>\n{excerpt}\n</file>"));
@@ -203,38 +187,6 @@ fn extract_excerpt(file_content: &str, start_line: Option<u32>, end_line: Option
         }
         _ => file_content.to_string(),
     }
-}
-
-/// Parse message text into display parts, splitting @mentions from plain text.
-/// Used by the frontend to render mentions as badges without duplicating parse logic.
-#[tauri::command]
-pub fn parse_display_mentions(content: String) -> Vec<DisplayPart> {
-    let mut parts = Vec::new();
-    let mut last_index = 0;
-
-    for mat in MENTION_RE.find_iter(&content) {
-        let start = mat.start();
-        if !is_valid_mention_position(&content, start) {
-            continue;
-        }
-        if start > last_index {
-            parts.push(DisplayPart::Text {
-                value: content[last_index..start].to_string(),
-            });
-        }
-        parts.push(DisplayPart::Mention {
-            value: mat.as_str().to_string(),
-        });
-        last_index = mat.end();
-    }
-
-    if last_index < content.len() {
-        parts.push(DisplayPart::Text {
-            value: content[last_index..].to_string(),
-        });
-    }
-
-    parts
 }
 
 #[cfg(test)]
@@ -410,156 +362,6 @@ mod tests {
 
         assert!(result.contains(&"main.rs".to_string()));
         assert!(!result.contains(&"lib.rs".to_string()));
-    }
-
-    // --- parse_display_mentions tests ---
-
-    #[test]
-    fn parse_display_mentions_no_mentions() {
-        let parts = parse_display_mentions("Hello world".to_string());
-        assert_eq!(
-            parts,
-            vec![DisplayPart::Text {
-                value: "Hello world".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_single() {
-        let parts = parse_display_mentions("Check @src/main.rs please".to_string());
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "Check ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@src/main.rs".to_string()
-                },
-                DisplayPart::Text {
-                    value: " please".to_string()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_with_line_range() {
-        let parts = parse_display_mentions("See @src/lib.rs:L10-L20".to_string());
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "See ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@src/lib.rs:L10-L20".to_string()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_multiple() {
-        let parts = parse_display_mentions("Compare @a.rs and @b.rs end".to_string());
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "Compare ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@a.rs".to_string()
-                },
-                DisplayPart::Text {
-                    value: " and ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@b.rs".to_string()
-                },
-                DisplayPart::Text {
-                    value: " end".to_string()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_empty_string() {
-        let parts = parse_display_mentions(String::new());
-        assert!(parts.is_empty());
-    }
-
-    #[test]
-    fn parse_display_mentions_ignores_email() {
-        let parts = parse_display_mentions("user@example.com says hello".to_string());
-        assert_eq!(
-            parts,
-            vec![DisplayPart::Text {
-                value: "user@example.com says hello".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_mixed_email_and_mention() {
-        let parts =
-            parse_display_mentions("From user@example.com see @src/main.rs end".to_string());
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "From user@example.com see ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@src/main.rs".to_string()
-                },
-                DisplayPart::Text {
-                    value: " end".to_string()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_japanese_filename() {
-        let parts = parse_display_mentions("確認 @docs/Gitフロー.md してください".to_string());
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "確認 ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@docs/Gitフロー.md".to_string()
-                },
-                DisplayPart::Text {
-                    value: " してください".to_string()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_fullwidth_space_in_path() {
-        let parts = parse_display_mentions(
-            "確認 @docs/Gitフロー\u{3000}・デプロイサイクル見直し.md してください".to_string(),
-        );
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "確認 ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@docs/Gitフロー\u{3000}・デプロイサイクル見直し.md".to_string()
-                },
-                DisplayPart::Text {
-                    value: " してください".to_string()
-                },
-            ]
-        );
     }
 
     #[test]

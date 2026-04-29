@@ -74,6 +74,7 @@ function convertLegacyMessage(
 		role: msg.role,
 		parts: msg.parts ?? legacyToParts(msg),
 		timestamp: msg.timestamp,
+		mentions: msg.mentions,
 	};
 }
 

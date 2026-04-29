@@ -1,11 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MessageRole } from "@/types/session";
 import { StreamMessage } from "./StreamMessage";
-
-const mockInvoke = vi.mocked(invoke);
 
 const mockOpenUrl = vi.fn().mockResolvedValue(undefined);
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -19,33 +16,6 @@ const system: MessageRole = "system";
 describe("StreamMessage", () => {
 	beforeEach(() => {
 		mockOpenUrl.mockClear();
-		mockInvoke.mockReset();
-		const displayFixtures: Record<
-			string,
-			Array<{ type: string; value: string }>
-		> = {
-			"Hello agent": [{ type: "text", value: "Hello agent" }],
-			"**not bold**": [{ type: "text", value: "**not bold**" }],
-			"Check @src/main.rs for details": [
-				{ type: "text", value: "Check " },
-				{ type: "mention", value: "@src/main.rs" },
-				{ type: "text", value: " for details" },
-			],
-			"Compare @src/a.rs and @src/b.rs:L1-L5": [
-				{ type: "text", value: "Compare " },
-				{ type: "mention", value: "@src/a.rs" },
-				{ type: "text", value: " and " },
-				{ type: "mention", value: "@src/b.rs:L1-L5" },
-			],
-			"No mentions here": [{ type: "text", value: "No mentions here" }],
-		};
-		mockInvoke.mockImplementation(async (cmd: string, args?: unknown) => {
-			if (cmd === "parse_display_mentions") {
-				const { content } = args as { content: string };
-				return displayFixtures[content] ?? [{ type: "text", value: content }];
-			}
-			return undefined;
-		});
 	});
 
 	it("renders human message", async () => {
@@ -194,7 +164,11 @@ describe("StreamMessage", () => {
 
 	it("renders @mention as badge in human messages", async () => {
 		render(
-			<StreamMessage content="Check @src/main.rs for details" role={human} />,
+			<StreamMessage
+				content="Check @src/main.rs for details"
+				role={human}
+				mentions={[{ filePath: "src/main.rs" }]}
+			/>,
 		);
 		const el = screen.getByTestId("stream-message-human");
 		await waitFor(() => {
@@ -209,6 +183,10 @@ describe("StreamMessage", () => {
 			<StreamMessage
 				content="Compare @src/a.rs and @src/b.rs:L1-L5"
 				role={human}
+				mentions={[
+					{ filePath: "src/a.rs" },
+					{ filePath: "src/b.rs", startLine: 1, endLine: 5 },
+				]}
 			/>,
 		);
 		const el = screen.getByTestId("stream-message-human");
@@ -217,6 +195,22 @@ describe("StreamMessage", () => {
 			expect(badges.length).toBe(2);
 			expect(badges[0].textContent).toBe("@src/a.rs");
 			expect(badges[1].textContent).toBe("@src/b.rs:L1-L5");
+		});
+	});
+
+	it("renders Japanese filename @mention as badge in human messages", async () => {
+		render(
+			<StreamMessage
+				content="確認してください @docs/Gitフロー.md の内容"
+				role={human}
+				mentions={[{ filePath: "docs/Gitフロー.md" }]}
+			/>,
+		);
+		const el = screen.getByTestId("stream-message-human");
+		await waitFor(() => {
+			const badge = el.querySelector(".font-mono");
+			expect(badge).not.toBeNull();
+			expect(badge?.textContent).toBe("@docs/Gitフロー.md");
 		});
 	});
 
