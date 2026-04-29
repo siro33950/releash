@@ -190,6 +190,7 @@ mod tests {
                 activities: None,
                 parts: None,
                 timestamp: 1000.0,
+                mentions: None,
             }],
             state: SessionState::Active,
             created_at: 1000.0,
@@ -259,6 +260,7 @@ mod tests {
             activities: None,
             parts: None,
             timestamp: 1001.0,
+            mentions: None,
         });
         session.updated_at = 1001.0;
         store.save_session(tmp.path(), &session).unwrap();

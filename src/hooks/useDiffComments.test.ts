@@ -179,6 +179,39 @@ describe("useDiffComments", () => {
 		});
 	});
 
+	it("sendToAgent returns mentions from invoke result", async () => {
+		mockInvoke.mockResolvedValue([]);
+
+		const { result } = renderHook(() =>
+			useDiffComments({ worktreeName: "wt" }),
+		);
+
+		await waitFor(() => {
+			expect(result.current.loading).toBe(false);
+		});
+
+		const mentions = [
+			{ filePath: "src/main.ts", startLine: 10, endLine: null },
+			{ filePath: "src/app.tsx", startLine: 5, endLine: 15 },
+		];
+		mockInvoke.mockResolvedValue({
+			sentCount: 2,
+			formattedMessage: "msg",
+			mentions,
+			commentIds: ["c1", "c2"],
+		});
+
+		let sendResult:
+			| Awaited<ReturnType<typeof result.current.sendToAgent>>
+			| undefined;
+		await act(async () => {
+			sendResult = await result.current.sendToAgent(["c1", "c2"]);
+		});
+
+		expect(sendResult?.mentions).toEqual(mentions);
+		expect(sendResult?.commentIds).toEqual(["c1", "c2"]);
+	});
+
 	it("sendAllUnsent calls sendToAgent with empty array", async () => {
 		mockInvoke.mockResolvedValue([]);
 

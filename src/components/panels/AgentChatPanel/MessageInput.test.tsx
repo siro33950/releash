@@ -9,7 +9,11 @@ import {
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setSlashCommands } from "@/hooks/useSlashCommands";
-import { MessageInput, type MessageInputHandle } from "./MessageInput";
+import {
+	MessageInput,
+	type MessageInputHandle,
+	syncMentionsWithText,
+} from "./MessageInput";
 import { findMentionTrigger } from "./popupInputUtils";
 
 const mockInvoke = vi.mocked(invoke);
@@ -53,7 +57,7 @@ describe("MessageInput", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Hello" } });
 		fireEvent.click(screen.getByLabelText("Send message"));
-		expect(onSend).toHaveBeenCalledWith("Hello");
+		expect(onSend).toHaveBeenCalledWith("Hello", undefined, undefined);
 	});
 
 	it("clears input after sending", () => {
@@ -72,7 +76,7 @@ describe("MessageInput", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Hello" } });
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
-		expect(onSend).toHaveBeenCalledWith("Hello");
+		expect(onSend).toHaveBeenCalledWith("Hello", undefined, undefined);
 	});
 
 	it("does not send on Shift+Enter", () => {
@@ -302,7 +306,7 @@ describe("MessageInput slash command popup", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/review" } });
 		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
-		expect(onSend).toHaveBeenCalledWith("/review");
+		expect(onSend).toHaveBeenCalledWith("/review", undefined, undefined);
 	});
 
 	it("does not show popup when commands cache is empty", () => {
@@ -363,7 +367,11 @@ describe("MessageInput image attachments", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Check this" } });
 		fireEvent.click(screen.getByLabelText("Send message"));
-		expect(onSend).toHaveBeenCalledWith("Check this", [sampleAttachment]);
+		expect(onSend).toHaveBeenCalledWith(
+			"Check this",
+			[sampleAttachment],
+			undefined,
+		);
 	});
 
 	it("sends images only (no text) when text is empty", () => {
@@ -374,7 +382,7 @@ describe("MessageInput image attachments", () => {
 			ref.current?.addImageAttachments([sampleAttachment]);
 		});
 		fireEvent.click(screen.getByLabelText("Send message"));
-		expect(onSend).toHaveBeenCalledWith("", [sampleAttachment]);
+		expect(onSend).toHaveBeenCalledWith("", [sampleAttachment], undefined);
 	});
 
 	it("clears image preview after sending", () => {
@@ -683,5 +691,149 @@ describe("MessageInput mention popup", () => {
 			worktreePath: "/test/repo",
 			query: "mai",
 		});
+	});
+
+	it("sends mentions with onSend after selecting a mention", async () => {
+		const onSend = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		expect(onSend).toHaveBeenCalledWith("@src/main.rs", undefined, [
+			{ filePath: "src/main.rs", startLine: undefined, endLine: undefined },
+		]);
+	});
+
+	it("excludes deleted mentions from onSend", async () => {
+		const onSend = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		expect(textarea.value).toBe("@src/main.rs ");
+		fireEvent.change(textarea, {
+			target: { value: "hello world", selectionStart: 11 },
+		});
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		expect(onSend).toHaveBeenCalledWith("hello world", undefined, undefined);
+	});
+
+	it("extracts line number from @filePath:L50 in text", async () => {
+		const onSend = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.change(textarea, {
+			target: {
+				value: "@src/main.rs:L50 check this",
+				selectionStart: 27,
+			},
+		});
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		expect(onSend).toHaveBeenCalledWith(
+			"@src/main.rs:L50 check this",
+			undefined,
+			[{ filePath: "src/main.rs", startLine: 50, endLine: undefined }],
+		);
+	});
+
+	it("handles multiple mentions of the same file with different ranges", async () => {
+		const refs = [{ filePath: "src/main.rs" }, { filePath: "src/main.rs" }];
+		const text = "@src/main.rs:L1-L5 and @src/main.rs:L20-L25";
+		const result = syncMentionsWithText(text, refs);
+		expect(result).toEqual([
+			{ filePath: "src/main.rs", startLine: 1, endLine: 5 },
+			{ filePath: "src/main.rs", startLine: 20, endLine: 25 },
+		]);
+	});
+
+	it("excludes extra refs when text has fewer mentions than refs", async () => {
+		const refs = [{ filePath: "src/main.rs" }, { filePath: "src/main.rs" }];
+		const text = "@src/main.rs:L1-L5 only one mention";
+		const result = syncMentionsWithText(text, refs);
+		expect(result).toEqual([
+			{ filePath: "src/main.rs", startLine: 1, endLine: 5 },
+		]);
+	});
+
+	it("handles mixed files with duplicates correctly", async () => {
+		const refs = [
+			{ filePath: "src/main.rs" },
+			{ filePath: "src/lib.rs" },
+			{ filePath: "src/main.rs" },
+		];
+		const text = "@src/main.rs:L1 and @src/lib.rs:L10-L20 and @src/main.rs:L50";
+		const result = syncMentionsWithText(text, refs);
+		expect(result).toEqual([
+			{ filePath: "src/main.rs", startLine: 1, endLine: undefined },
+			{ filePath: "src/lib.rs", startLine: 10, endLine: 20 },
+			{ filePath: "src/main.rs", startLine: 50, endLine: undefined },
+		]);
+	});
+
+	it("extracts line range from @filePath:L10-L20 in text", async () => {
+		const onSend = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.change(textarea, {
+			target: {
+				value: "@src/main.rs:L10-L20 review",
+				selectionStart: 27,
+			},
+		});
+		fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+		expect(onSend).toHaveBeenCalledWith(
+			"@src/main.rs:L10-L20 review",
+			undefined,
+			[{ filePath: "src/main.rs", startLine: 10, endLine: 20 }],
+		);
 	});
 });

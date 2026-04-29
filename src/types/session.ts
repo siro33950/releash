@@ -103,6 +103,7 @@ export interface ChatMessage {
 	role: MessageRole;
 	parts: MessagePart[];
 	timestamp: number;
+	mentions?: MentionReference[];
 }
 
 /** Rust backend ChatMessage format (for DB persistence) */
@@ -113,6 +114,7 @@ export interface LegacyChatMessage {
 	thinking?: string;
 	activities?: ActivityEntry[];
 	timestamp: number;
+	mentions?: MentionReference[];
 }
 
 export interface ChatSession {
@@ -181,4 +183,10 @@ export type ImagePart = Extract<MessagePart, { type: "image" }>;
 export interface ImageAttachment {
 	data: string;
 	mediaType: string;
+}
+
+export interface MentionReference {
+	filePath: string;
+	startLine?: number;
+	endLine?: number;
 }

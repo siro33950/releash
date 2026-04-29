@@ -1,11 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AnchorHTMLAttributes } from "react";
-import { useDeferredValue, useEffect, useState } from "react";
+import { useDeferredValue } from "react";
 import Markdown from "react-markdown";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
-import type { ImagePart, MessageRole } from "@/types/session";
+import type { ImagePart, MentionReference, MessageRole } from "@/types/session";
 
 interface DisplayPart {
 	type: "text" | "mention";
@@ -16,6 +15,7 @@ interface StreamMessageProps {
 	content: string;
 	role: MessageRole;
 	images?: ImagePart[];
+	mentions?: MentionReference[];
 }
 
 function ExternalLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
@@ -33,47 +33,62 @@ function ExternalLink(props: AnchorHTMLAttributes<HTMLAnchorElement>) {
 	);
 }
 
-const displayPartsCache = new Map<string, DisplayPart[]>();
+function formatMentionToken(mention: MentionReference): string {
+	if (mention.startLine && mention.endLine) {
+		return `@${mention.filePath}:L${mention.startLine}-L${mention.endLine}`;
+	}
+	if (mention.startLine) {
+		return `@${mention.filePath}:L${mention.startLine}`;
+	}
+	return `@${mention.filePath}`;
+}
+
+function buildDisplayParts(
+	content: string,
+	mentions?: MentionReference[],
+): DisplayPart[] {
+	if (!mentions || mentions.length === 0) {
+		return content ? [{ type: "text", value: content }] : [];
+	}
+	const tokens = mentions.map(formatMentionToken);
+	const parts: DisplayPart[] = [];
+	let cursor = 0;
+	while (cursor < content.length) {
+		let best: { idx: number; token: string } | null = null;
+		for (const token of tokens) {
+			const idx = content.indexOf(token, cursor);
+			if (idx === -1) continue;
+			if (
+				!best ||
+				idx < best.idx ||
+				(idx === best.idx && token.length > best.token.length)
+			) {
+				best = { idx, token };
+			}
+		}
+		if (!best) {
+			parts.push({ type: "text", value: content.slice(cursor) });
+			break;
+		}
+		if (best.idx > cursor) {
+			parts.push({ type: "text", value: content.slice(cursor, best.idx) });
+		}
+		parts.push({ type: "mention", value: best.token });
+		cursor = best.idx + best.token.length;
+	}
+	return parts;
+}
 
 function HumanMessageContent({
 	content,
 	images,
+	mentions,
 }: {
 	content: string;
 	images?: ImagePart[];
+	mentions?: MentionReference[];
 }) {
-	const [parts, setParts] = useState<DisplayPart[] | null>(
-		() => displayPartsCache.get(content) ?? null,
-	);
-
-	useEffect(() => {
-		const cached = displayPartsCache.get(content);
-		if (cached) {
-			setParts(cached);
-			return;
-		}
-
-		let cancelled = false;
-		invoke<DisplayPart[]>("parse_display_mentions", { content })
-			.then((result) => {
-				if (!cancelled) {
-					displayPartsCache.set(content, result);
-					setParts(result);
-				}
-			})
-			.catch(() => {
-				if (!cancelled) {
-					const fallback: DisplayPart[] = [{ type: "text", value: content }];
-					displayPartsCache.set(content, fallback);
-					setParts(fallback);
-				}
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [content]);
-
-	const displayParts = parts ?? [{ type: "text" as const, value: content }];
+	const displayParts = buildDisplayParts(content, mentions);
 
 	const imageElements =
 		images && images.length > 0
@@ -112,7 +127,12 @@ function HumanMessageContent({
 	);
 }
 
-export function StreamMessage({ content, role, images }: StreamMessageProps) {
+export function StreamMessage({
+	content,
+	role,
+	images,
+	mentions,
+}: StreamMessageProps) {
 	const isHuman = role === "human";
 	const deferredContent = useDeferredValue(content);
 
@@ -132,7 +152,11 @@ export function StreamMessage({ content, role, images }: StreamMessageProps) {
 			className={`${isHuman ? "px-2" : "pt-1 pb-2 px-5"}`}
 		>
 			{isHuman ? (
-				<HumanMessageContent content={content} images={images} />
+				<HumanMessageContent
+					content={content}
+					images={images}
+					mentions={mentions}
+				/>
 			) : (
 				<div className="markdown-preview prose prose-sm dark:prose-invert max-w-none break-words">
 					<Markdown

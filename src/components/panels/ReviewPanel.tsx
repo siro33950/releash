@@ -35,6 +35,7 @@ import { useReviewPanel } from "@/hooks/useReviewPanel";
 import { isImageFile } from "@/lib/imageUtils";
 import { isMarkdownFile } from "@/lib/markdownUtils";
 import { cn } from "@/lib/utils";
+import type { MentionReference } from "@/types/session";
 import type { DiffBase, DiffMode, DiffSection } from "@/types/settings";
 import { Breadcrumb } from "./Breadcrumb";
 import { FileCommentPopoverTrigger } from "./DiffFileComment";
@@ -51,7 +52,10 @@ interface ReviewPanelProps {
 	diffOnlyMode: boolean;
 	onDiffOnlyModeChange: (enabled: boolean) => void;
 	navigateToFile?: { path: string; line?: number } | null;
-	onSendToAgent?: (message: string) => Promise<void>;
+	onSendToAgent?: (
+		message: string,
+		mentions?: MentionReference[],
+	) => Promise<void>;
 	initialSelectedFile?: string | null;
 	onSelectedFileChange?: (file: string | null) => void;
 }
@@ -338,7 +342,7 @@ export function ReviewPanel({
 		async (commentIds: string[]) => {
 			const result = await sendToAgent(commentIds);
 			if (result.formattedMessage && onSendToAgent) {
-				await onSendToAgent(result.formattedMessage);
+				await onSendToAgent(result.formattedMessage, result.mentions);
 				await markSent(result.commentIds);
 			}
 		},

@@ -1,26 +1,15 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::LazyLock;
 
-static MENTION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"@([\w./_\-\[\]]+(?:\.[\w]+)*)(?::L(\d+)(?:-L(\d+))?)?")
-        .expect("invalid mention regex")
-});
-
-/// A single file mention parsed from message text.
-#[derive(Debug, Clone, PartialEq)]
-struct ParsedMention {
-    file_path: String,
-    start_line: Option<u32>,
-    end_line: Option<u32>,
-}
-
-/// A segment of message text for display: either plain text or a @mention.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum DisplayPart {
-    Text { value: String },
-    Mention { value: String },
+/// A structured file mention reference passed from the frontend.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MentionReference {
+    pub file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
 }
 
 /// List files in a worktree that match a fuzzy query, respecting .gitignore.
@@ -73,16 +62,6 @@ pub fn list_mentionable_files(worktree_path: String, query: String) -> Result<Ve
     Ok(results)
 }
 
-/// Check whether a regex match at `start` is a valid mention position:
-/// the `@` must appear at the beginning of the text or after whitespace.
-fn is_valid_mention_position(content: &str, start: usize) -> bool {
-    start == 0
-        || content
-            .as_bytes()
-            .get(start - 1)
-            .is_some_and(|&b| b.is_ascii_whitespace())
-}
-
 /// Subsequence fuzzy match: all characters in `query` appear in `haystack` in order.
 fn fuzzy_match(haystack: &str, query: &str) -> bool {
     let mut haystack_chars = haystack.chars();
@@ -98,38 +77,21 @@ fn fuzzy_match(haystack: &str, query: &str) -> bool {
     true
 }
 
-/// Parse mention patterns from message text.
-/// Recognized formats:
-/// - `@filepath`
-/// - `@filepath:L10-L20`
-/// - `@filepath:L10` (single line)
-fn parse_mentions(content: &str) -> Vec<ParsedMention> {
-    let mut mentions = Vec::new();
-    for caps in MENTION_RE.captures_iter(content) {
-        let mat = caps.get(0).unwrap();
-        if !is_valid_mention_position(content, mat.start()) {
-            continue;
-        }
-        let file_path = caps[1].to_string();
-        let start_line = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
-        let end_line = caps.get(3).and_then(|m| m.as_str().parse::<u32>().ok());
-        mentions.push(ParsedMention {
-            file_path,
-            start_line,
-            end_line,
-        });
-    }
-    mentions
+fn escape_xml_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
-/// Resolve all @mentions in `content`:
-/// 1. Parse mentions
-/// 2. Read each file (or line range)
-/// 3. Build a prompt with <file_context> + original message
-///
-/// If there are no mentions, returns the content unchanged.
-pub fn resolve_mentions_internal(worktree_path: &str, content: &str) -> Result<String, String> {
-    let mentions = parse_mentions(content);
+/// Resolve structured mention references into a file_context block prepended to the content.
+/// Each mention is read from the filesystem and inserted as a <file> element.
+/// If no mentions are provided, returns the content unchanged.
+pub fn resolve_from_references(
+    worktree_path: &str,
+    content: &str,
+    mentions: &[MentionReference],
+) -> Result<String, String> {
     if mentions.is_empty() {
         return Ok(content.to_string());
     }
@@ -140,7 +102,7 @@ pub fn resolve_mentions_internal(worktree_path: &str, content: &str) -> Result<S
         .map_err(|e| format!("Failed to resolve worktree root: {e}"))?;
     let mut file_sections = Vec::new();
 
-    for mention in &mentions {
+    for mention in mentions {
         let file_path = root.join(&mention.file_path);
         let canonical = match file_path.canonicalize() {
             Ok(p) => p,
@@ -158,37 +120,13 @@ pub fn resolve_mentions_internal(worktree_path: &str, content: &str) -> Result<S
             Err(_) => continue,
         };
 
-        let excerpt = match (mention.start_line, mention.end_line) {
-            (Some(start), Some(end)) => {
-                let lines: Vec<&str> = file_content.lines().collect();
-                if start == 0 || end < start {
-                    String::new()
-                } else {
-                    let s = (start as usize) - 1;
-                    let e = (end as usize).min(lines.len());
-                    if s >= lines.len() || s >= e {
-                        String::new()
-                    } else {
-                        lines[s..e].join("\n")
-                    }
-                }
-            }
-            (Some(start), None) => {
-                if start == 0 {
-                    String::new()
-                } else {
-                    let lines: Vec<&str> = file_content.lines().collect();
-                    let s = (start as usize) - 1;
-                    lines.get(s).unwrap_or(&"").to_string()
-                }
-            }
-            _ => file_content,
-        };
+        let excerpt = extract_excerpt(&file_content, mention.start_line, mention.end_line);
 
+        let escaped_path = escape_xml_attr(&mention.file_path);
         let attrs = match (mention.start_line, mention.end_line) {
-            (Some(s), Some(e)) => format!(r#" path="{}" lines="{}-{}""#, mention.file_path, s, e),
-            (Some(s), None) => format!(r#" path="{}" lines="{}""#, mention.file_path, s),
-            _ => format!(r#" path="{}""#, mention.file_path),
+            (Some(s), Some(e)) => format!(r#" path="{escaped_path}" lines="{s}-{e}""#),
+            (Some(s), None) => format!(r#" path="{escaped_path}" lines="{s}""#),
+            _ => format!(r#" path="{escaped_path}""#),
         };
 
         file_sections.push(format!("<file{attrs}>\n{excerpt}\n</file>"));
@@ -206,48 +144,49 @@ pub fn resolve_mentions_internal(worktree_path: &str, content: &str) -> Result<S
     Ok(format!("{context_block}\n\n{content}"))
 }
 
-/// Resolve @mentions with fallback: if resolution fails or worktree_path is empty,
-/// log and return the original content unchanged.
-pub fn resolve_mentions_or_fallback(worktree_path: &str, content: &str) -> String {
-    if worktree_path.is_empty() {
+/// Resolve mentions with logging fallback.
+/// Returns the original content unchanged if mentions is empty or resolution fails.
+pub fn resolve_mentions_or_fallback(
+    worktree_path: &str,
+    content: &str,
+    mentions: &[MentionReference],
+) -> String {
+    if mentions.is_empty() {
         return content.to_string();
     }
-    resolve_mentions_internal(worktree_path, content).unwrap_or_else(|e| {
+    resolve_from_references(worktree_path, content, mentions).unwrap_or_else(|e| {
         log::warn!("Failed to resolve mentions: {e}");
         content.to_string()
     })
 }
 
-/// Parse message text into display parts, splitting @mentions from plain text.
-/// Used by the frontend to render mentions as badges without duplicating parse logic.
-#[tauri::command]
-pub fn parse_display_mentions(content: String) -> Vec<DisplayPart> {
-    let mut parts = Vec::new();
-    let mut last_index = 0;
-
-    for mat in MENTION_RE.find_iter(&content) {
-        let start = mat.start();
-        if !is_valid_mention_position(&content, start) {
-            continue;
+fn extract_excerpt(file_content: &str, start_line: Option<u32>, end_line: Option<u32>) -> String {
+    match (start_line, end_line) {
+        (Some(start), Some(end)) => {
+            let lines: Vec<&str> = file_content.lines().collect();
+            if start == 0 || end < start {
+                String::new()
+            } else {
+                let s = (start as usize) - 1;
+                let e = (end as usize).min(lines.len());
+                if s >= lines.len() || s >= e {
+                    String::new()
+                } else {
+                    lines[s..e].join("\n")
+                }
+            }
         }
-        if start > last_index {
-            parts.push(DisplayPart::Text {
-                value: content[last_index..start].to_string(),
-            });
+        (Some(start), None) => {
+            if start == 0 {
+                String::new()
+            } else {
+                let lines: Vec<&str> = file_content.lines().collect();
+                let s = (start as usize) - 1;
+                lines.get(s).unwrap_or(&"").to_string()
+            }
         }
-        parts.push(DisplayPart::Mention {
-            value: mat.as_str().to_string(),
-        });
-        last_index = mat.end();
+        _ => file_content.to_string(),
     }
-
-    if last_index < content.len() {
-        parts.push(DisplayPart::Text {
-            value: content[last_index..].to_string(),
-        });
-    }
-
-    parts
 }
 
 #[cfg(test)]
@@ -269,79 +208,48 @@ mod tests {
         assert!(fuzzy_match("anything.rs", ""));
     }
 
-    #[test]
-    fn parse_mentions_no_mentions() {
-        let result = parse_mentions("Hello world");
-        assert!(result.is_empty());
-    }
+    // --- resolve_from_references tests ---
 
     #[test]
-    fn parse_mentions_simple_path() {
-        let result = parse_mentions("Check @src/main.rs for details");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].file_path, "src/main.rs");
-        assert_eq!(result[0].start_line, None);
-        assert_eq!(result[0].end_line, None);
-    }
-
-    #[test]
-    fn parse_mentions_with_line_range() {
-        let result = parse_mentions("See @src/lib.rs:L10-L20");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].file_path, "src/lib.rs");
-        assert_eq!(result[0].start_line, Some(10));
-        assert_eq!(result[0].end_line, Some(20));
-    }
-
-    #[test]
-    fn parse_mentions_single_line() {
-        let result = parse_mentions("Look at @src/lib.rs:L42");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].file_path, "src/lib.rs");
-        assert_eq!(result[0].start_line, Some(42));
-        assert_eq!(result[0].end_line, None);
-    }
-
-    #[test]
-    fn parse_mentions_multiple() {
-        let result = parse_mentions("Compare @src/a.rs and @src/b.rs:L1-L5");
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].file_path, "src/a.rs");
-        assert_eq!(result[1].file_path, "src/b.rs");
-        assert_eq!(result[1].start_line, Some(1));
-        assert_eq!(result[1].end_line, Some(5));
-    }
-
-    #[test]
-    fn resolve_mentions_no_mentions_returns_content_unchanged() {
-        let result = resolve_mentions_internal("/tmp", "Hello world").unwrap();
+    fn resolve_refs_no_mentions_returns_content_unchanged() {
+        let result = resolve_from_references("/tmp", "Hello world", &[]).unwrap();
         assert_eq!(result, "Hello world");
     }
 
     #[test]
-    fn resolve_mentions_reads_file() {
+    fn resolve_refs_reads_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.txt");
         fs::write(&file, "line1\nline2\nline3\n").unwrap();
 
+        let mentions = vec![MentionReference {
+            file_path: "test.txt".to_string(),
+            start_line: None,
+            end_line: None,
+        }];
         let result =
-            resolve_mentions_internal(dir.path().to_str().unwrap(), "Check @test.txt please")
+            resolve_from_references(dir.path().to_str().unwrap(), "Check please", &mentions)
                 .unwrap();
 
         assert!(result.contains("<file_context>"));
         assert!(result.contains(r#"path="test.txt""#));
         assert!(result.contains("line1\nline2\nline3\n"));
-        assert!(result.contains("Check @test.txt please"));
+        assert!(result.contains("Check please"));
     }
 
     #[test]
-    fn resolve_mentions_line_range() {
+    fn resolve_refs_line_range() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.txt");
         fs::write(&file, "line1\nline2\nline3\nline4\nline5\n").unwrap();
 
+        let mentions = vec![MentionReference {
+            file_path: "test.txt".to_string(),
+            start_line: Some(2),
+            end_line: Some(4),
+        }];
         let result =
-            resolve_mentions_internal(dir.path().to_str().unwrap(), "See @test.txt:L2-L4").unwrap();
+            resolve_from_references(dir.path().to_str().unwrap(), "See file", &mentions).unwrap();
 
         assert!(result.contains(r#"lines="2-4""#));
         assert!(result.contains("line2\nline3\nline4"));
@@ -350,13 +258,18 @@ mod tests {
     }
 
     #[test]
-    fn resolve_mentions_single_line() {
+    fn resolve_refs_single_line() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.txt");
         fs::write(&file, "line1\nline2\nline3\n").unwrap();
 
+        let mentions = vec![MentionReference {
+            file_path: "test.txt".to_string(),
+            start_line: Some(2),
+            end_line: None,
+        }];
         let result =
-            resolve_mentions_internal(dir.path().to_str().unwrap(), "Look at @test.txt:L2")
+            resolve_from_references(dir.path().to_str().unwrap(), "Look at file", &mentions)
                 .unwrap();
 
         assert!(result.contains(r#"lines="2""#));
@@ -364,12 +277,66 @@ mod tests {
     }
 
     #[test]
+    fn resolve_refs_japanese_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Gitフロー.md");
+        fs::write(&file, "日本語の内容\n2行目\n").unwrap();
+
+        let mentions = vec![MentionReference {
+            file_path: "Gitフロー.md".to_string(),
+            start_line: None,
+            end_line: None,
+        }];
+        let result =
+            resolve_from_references(dir.path().to_str().unwrap(), "確認してください", &mentions)
+                .unwrap();
+
+        assert!(result.contains("<file_context>"));
+        assert!(result.contains(r#"path="Gitフロー.md""#));
+        assert!(result.contains("日本語の内容"));
+    }
+
+    #[test]
+    fn resolve_refs_missing_file_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mentions = vec![MentionReference {
+            file_path: "nonexistent.txt".to_string(),
+            start_line: None,
+            end_line: None,
+        }];
+        let result =
+            resolve_from_references(dir.path().to_str().unwrap(), "Check", &mentions).unwrap();
+        assert_eq!(result, "Check");
+    }
+
+    #[test]
+    fn resolve_refs_rejects_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().parent().unwrap();
+        let sibling = tempfile::tempdir_in(parent).unwrap();
+        let outside_file = sibling.path().join("outside.txt");
+        fs::write(&outside_file, "secret").unwrap();
+
+        let sibling_name = sibling.path().file_name().unwrap().to_str().unwrap();
+        let mentions = vec![MentionReference {
+            file_path: format!("../{sibling_name}/outside.txt"),
+            start_line: None,
+            end_line: None,
+        }];
+        let result = resolve_from_references(dir.path().to_str().unwrap(), "Check", &mentions);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("traversal"), "Error message: {err}");
+    }
+
+    // --- list_mentionable_files tests ---
+
+    #[test]
     fn list_mentionable_files_basic() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("hello.rs"), "fn main() {}").unwrap();
         fs::write(dir.path().join("world.txt"), "hello").unwrap();
 
-        // Initialize git repo so .gitignore is respected
         git2::Repository::init(dir.path()).unwrap();
 
         let result =
@@ -389,187 +356,45 @@ mod tests {
 
         git2::Repository::init(dir.path()).unwrap();
 
-        let result = list_mentionable_files(
-            dir.path().to_str().unwrap().to_string(),
-            "mn".to_string(), // fuzzy matches "main.rs"
-        )
-        .unwrap();
+        let result =
+            list_mentionable_files(dir.path().to_str().unwrap().to_string(), "mn".to_string())
+                .unwrap();
 
         assert!(result.contains(&"main.rs".to_string()));
         assert!(!result.contains(&"lib.rs".to_string()));
     }
 
     #[test]
-    fn resolve_mentions_missing_file_skips() {
-        let dir = tempfile::tempdir().unwrap();
-        let result =
-            resolve_mentions_internal(dir.path().to_str().unwrap(), "Check @nonexistent.txt");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "Check @nonexistent.txt");
+    fn fallback_empty_mentions() {
+        let result = resolve_mentions_or_fallback("/tmp", "Hello world", &[]);
+        assert_eq!(result, "Hello world");
     }
 
     #[test]
-    fn resolve_mentions_partial_failure_includes_successful() {
+    fn fallback_with_valid_file() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("exists.txt"), "content here").unwrap();
-        let result = resolve_mentions_internal(
-            dir.path().to_str().unwrap(),
-            "See @exists.txt and @missing.txt",
-        )
-        .unwrap();
-        assert!(result.contains("content here"));
+        let file = dir.path().join("test.txt");
+        fs::write(&file, "line1\nline2\n").unwrap();
+
+        let mentions = vec![MentionReference {
+            file_path: "test.txt".to_string(),
+            start_line: None,
+            end_line: None,
+        }];
+        let result = resolve_mentions_or_fallback(dir.path().to_str().unwrap(), "Check", &mentions);
         assert!(result.contains("<file_context>"));
+        assert!(result.contains("Check"));
     }
 
     #[test]
-    fn resolve_mentions_rejects_path_traversal() {
+    fn fallback_missing_file_returns_content() {
         let dir = tempfile::tempdir().unwrap();
-        let parent = dir.path().parent().unwrap();
-        let sibling = tempfile::tempdir_in(parent).unwrap();
-        let outside_file = sibling.path().join("outside.txt");
-        fs::write(&outside_file, "secret").unwrap();
-
-        let sibling_name = sibling.path().file_name().unwrap().to_str().unwrap();
-        let result = resolve_mentions_internal(
-            dir.path().to_str().unwrap(),
-            &format!("Check @../{sibling_name}/outside.txt"),
-        );
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.contains("traversal"), "Error message: {err}");
-    }
-
-    #[test]
-    fn parse_display_mentions_no_mentions() {
-        let parts = parse_display_mentions("Hello world".to_string());
-        assert_eq!(
-            parts,
-            vec![DisplayPart::Text {
-                value: "Hello world".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_single() {
-        let parts = parse_display_mentions("Check @src/main.rs please".to_string());
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "Check ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@src/main.rs".to_string()
-                },
-                DisplayPart::Text {
-                    value: " please".to_string()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_with_line_range() {
-        let parts = parse_display_mentions("See @src/lib.rs:L10-L20".to_string());
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "See ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@src/lib.rs:L10-L20".to_string()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_multiple() {
-        let parts = parse_display_mentions("Compare @a.rs and @b.rs end".to_string());
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "Compare ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@a.rs".to_string()
-                },
-                DisplayPart::Text {
-                    value: " and ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@b.rs".to_string()
-                },
-                DisplayPart::Text {
-                    value: " end".to_string()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_empty_string() {
-        let parts = parse_display_mentions(String::new());
-        assert!(parts.is_empty());
-    }
-
-    #[test]
-    fn parse_mentions_ignores_email_addresses() {
-        let result = parse_mentions("Contact user@example.com for details");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn parse_mentions_ignores_mid_word_at() {
-        let result = parse_mentions("something@path.rs is not a mention");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn parse_mentions_accepts_after_whitespace() {
-        let result = parse_mentions("Check @src/main.rs please");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].file_path, "src/main.rs");
-    }
-
-    #[test]
-    fn parse_mentions_accepts_at_start() {
-        let result = parse_mentions("@src/lib.rs has the code");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].file_path, "src/lib.rs");
-    }
-
-    #[test]
-    fn parse_display_mentions_ignores_email() {
-        let parts = parse_display_mentions("user@example.com says hello".to_string());
-        assert_eq!(
-            parts,
-            vec![DisplayPart::Text {
-                value: "user@example.com says hello".to_string()
-            }]
-        );
-    }
-
-    #[test]
-    fn parse_display_mentions_mixed_email_and_mention() {
-        let parts =
-            parse_display_mentions("From user@example.com see @src/main.rs end".to_string());
-        assert_eq!(
-            parts,
-            vec![
-                DisplayPart::Text {
-                    value: "From user@example.com see ".to_string()
-                },
-                DisplayPart::Mention {
-                    value: "@src/main.rs".to_string()
-                },
-                DisplayPart::Text {
-                    value: " end".to_string()
-                },
-            ]
-        );
+        let mentions = vec![MentionReference {
+            file_path: "nonexistent.txt".to_string(),
+            start_line: None,
+            end_line: None,
+        }];
+        let result = resolve_mentions_or_fallback(dir.path().to_str().unwrap(), "Check", &mentions);
+        assert_eq!(result, "Check");
     }
 }

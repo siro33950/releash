@@ -13,6 +13,7 @@ import type { SlashCommand } from "@/hooks/useSlashCommands";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
 import type {
 	ImageAttachment,
+	MentionReference,
 	ModelInfo,
 	PermissionMode,
 } from "@/types/session";
@@ -21,6 +22,35 @@ import { ModelSelector } from "./ModelSelector";
 import { ModeSelector } from "./ModeSelector";
 import { findMentionTrigger, handlePopupKeyDown } from "./popupInputUtils";
 import { SlashCommandPopup } from "./SlashCommandPopup";
+
+const MENTION_SYNC_RE =
+	/@([^ \t\r\n@:]+(?:\.[^ \t\r\n@:]+)*)(?::L(\d+)(?:-L(\d+))?)?/g;
+
+export function syncMentionsWithText(
+	text: string,
+	refs: MentionReference[],
+): MentionReference[] | undefined {
+	const re = new RegExp(MENTION_SYNC_RE.source, "g");
+	const available = new Map<string, number>();
+	for (const ref of refs) {
+		available.set(ref.filePath, (available.get(ref.filePath) ?? 0) + 1);
+	}
+	const synced: MentionReference[] = [];
+	for (;;) {
+		const m = re.exec(text);
+		if (m === null) break;
+		const filePath = m[1];
+		const remaining = available.get(filePath) ?? 0;
+		if (remaining === 0) continue;
+		synced.push({
+			filePath,
+			startLine: m[2] ? Number(m[2]) : undefined,
+			endLine: m[3] ? Number(m[3]) : undefined,
+		});
+		available.set(filePath, remaining - 1);
+	}
+	return synced.length > 0 ? synced : undefined;
+}
 
 interface AttachedImage {
 	id: string;
@@ -33,7 +63,11 @@ export interface MessageInputHandle {
 }
 
 interface MessageInputProps {
-	onSend: (content: string, images?: ImageAttachment[]) => void;
+	onSend: (
+		content: string,
+		images?: ImageAttachment[],
+		mentions?: MentionReference[],
+	) => void;
 	onInterrupt: () => void;
 	isStreaming: boolean;
 	onCycleMode?: () => void;
@@ -74,6 +108,7 @@ export function MessageInput({
 		start: number;
 		query: string;
 	} | null>(null);
+	const [mentionRefs, setMentionRefs] = useState<MentionReference[]>([]);
 
 	const allCommands = useSlashCommands();
 
@@ -201,6 +236,10 @@ export function MessageInput({
 				.replace(/^\s/, "");
 			const newValue = `${before}@${filePath} ${after}`;
 			setValue(newValue);
+			setMentionRefs((prev) => [
+				...prev,
+				{ filePath, startLine: undefined, endLine: undefined },
+			]);
 			setMentionTrigger(null);
 			setMentionDismissed(true);
 			setMentionSelectedIndex(0);
@@ -220,16 +259,19 @@ export function MessageInput({
 		const trimmed = value.trim();
 		const hasImages = attachedImages.length > 0;
 		if (!trimmed && !hasImages) return;
+		const currentMentions = syncMentionsWithText(trimmed, mentionRefs);
 		if (hasImages) {
 			onSend(
 				trimmed,
 				attachedImages.map((img) => img.attachment),
+				currentMentions,
 			);
 		} else {
-			onSend(trimmed);
+			onSend(trimmed, undefined, currentMentions);
 		}
 		setValue("");
 		setAttachedImages([]);
+		setMentionRefs([]);
 		setSlashPopupDismissed(false);
 		setSelectedIndex(0);
 		setMentionTrigger(null);
@@ -238,7 +280,7 @@ export function MessageInput({
 		if (textareaRef.current) {
 			textareaRef.current.style.height = "auto";
 		}
-	}, [value, onSend, attachedImages]);
+	}, [value, onSend, attachedImages, mentionRefs]);
 
 	const handleKeyDown = useCallback(
 		(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
