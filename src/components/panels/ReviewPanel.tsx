@@ -52,6 +52,8 @@ interface ReviewPanelProps {
 	onDiffOnlyModeChange: (enabled: boolean) => void;
 	navigateToFile?: { path: string; line?: number } | null;
 	onSendToAgent?: (message: string) => Promise<void>;
+	initialSelectedFile?: string | null;
+	onSelectedFileChange?: (file: string | null) => void;
 }
 
 function DiffBaseToggle({
@@ -120,6 +122,8 @@ export function ReviewPanel({
 	onDiffOnlyModeChange,
 	navigateToFile,
 	onSendToAgent,
+	initialSelectedFile,
+	onSelectedFileChange,
 }: ReviewPanelProps) {
 	const {
 		diffBase,
@@ -128,11 +132,20 @@ export function ReviewPanel({
 		selectedSection,
 		setDiffBase,
 		setDiffMode,
-		selectFile,
+		selectFile: selectFileInternal,
 	} = useReviewPanel({
 		initialDiffBase: defaultDiffBase,
 		initialDiffMode: defaultDiffMode,
+		initialSelectedFile,
 	});
+
+	const selectFile = useCallback(
+		(path: string | null, section?: DiffSection) => {
+			selectFileInternal(path, section);
+			onSelectedFileChange?.(path);
+		},
+		[selectFileInternal, onSelectedFileChange],
+	);
 
 	const [gitRefreshKey, setGitRefreshKey] = useState(0);
 

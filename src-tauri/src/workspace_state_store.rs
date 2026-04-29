@@ -26,6 +26,8 @@ pub struct WorkspaceLayoutState {
     pub right_bottom_collapsed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub right_bottom_active_tab: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_diff_file: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -76,10 +78,11 @@ impl WorkspaceStateStore {
 
         // Filter out tabs whose files no longer exist
         state.tabs.editors.retain(|tab| {
-            let full_path = if tab.path.starts_with('/') || tab.path.starts_with('\\') {
-                PathBuf::from(&tab.path)
+            let tab_path = Path::new(&tab.path);
+            let full_path = if tab_path.is_absolute() {
+                tab_path.to_path_buf()
             } else {
-                Path::new(worktree_root).join(&tab.path)
+                Path::new(worktree_root).join(tab_path)
             };
             full_path.exists()
         });
@@ -89,6 +92,19 @@ impl WorkspaceStateStore {
             let still_exists = state.tabs.editors.iter().any(|e| e.path == *active);
             if !still_exists {
                 state.tabs.active_editor_path = state.tabs.editors.first().map(|e| e.path.clone());
+            }
+        }
+
+        // Clear selected diff file if the file no longer exists
+        if let Some(ref diff_file) = state.layout.selected_diff_file {
+            let diff_path = Path::new(diff_file.as_str());
+            let full_path = if diff_path.is_absolute() {
+                diff_path.to_path_buf()
+            } else {
+                Path::new(worktree_root).join(diff_path)
+            };
+            if !full_path.exists() {
+                state.layout.selected_diff_file = None;
             }
         }
 
@@ -190,6 +206,7 @@ mod tests {
                 right_collapsed: false,
                 right_bottom_collapsed: false,
                 right_bottom_active_tab: None,
+                selected_diff_file: None,
             },
         }
     }
@@ -300,5 +317,52 @@ mod tests {
         store.set("wt1", make_state());
         let got = store.get("wt1").unwrap();
         assert_eq!(got.tabs.editors.len(), 2);
+    }
+
+    #[test]
+    fn load_clears_selected_diff_file_when_deleted() {
+        let dir = TempDir::new().unwrap();
+        let worktree_dir = dir.path().join("worktree");
+        std::fs::create_dir_all(worktree_dir.join("src")).unwrap();
+        std::fs::write(worktree_dir.join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(worktree_dir.join("src/lib.rs"), "// lib").unwrap();
+
+        let mut state = make_state();
+        state.layout.selected_diff_file = Some("src/deleted.rs".to_string());
+
+        let store = WorkspaceStateStore::default();
+        store.set("wt1", state);
+        store.save(dir.path(), "wt1").unwrap();
+
+        let store2 = WorkspaceStateStore::default();
+        let loaded = store2
+            .load(dir.path(), "wt1", worktree_dir.to_str().unwrap())
+            .unwrap();
+        assert_eq!(loaded.layout.selected_diff_file, None);
+    }
+
+    #[test]
+    fn load_preserves_selected_diff_file_when_exists() {
+        let dir = TempDir::new().unwrap();
+        let worktree_dir = dir.path().join("worktree");
+        std::fs::create_dir_all(worktree_dir.join("src")).unwrap();
+        std::fs::write(worktree_dir.join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(worktree_dir.join("src/lib.rs"), "// lib").unwrap();
+
+        let mut state = make_state();
+        state.layout.selected_diff_file = Some("src/main.rs".to_string());
+
+        let store = WorkspaceStateStore::default();
+        store.set("wt1", state);
+        store.save(dir.path(), "wt1").unwrap();
+
+        let store2 = WorkspaceStateStore::default();
+        let loaded = store2
+            .load(dir.path(), "wt1", worktree_dir.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            loaded.layout.selected_diff_file.as_deref(),
+            Some("src/main.rs")
+        );
     }
 }

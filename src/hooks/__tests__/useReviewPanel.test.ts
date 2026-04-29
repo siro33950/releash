@@ -91,6 +91,24 @@ describe("useReviewPanel", () => {
 		expect(result.current.selectedSection).toBe("changes");
 	});
 
+	it("initializes selectedFile with initialSelectedFile option", () => {
+		const { result } = renderHook(() =>
+			useReviewPanel({
+				initialSelectedFile: "src/main.rs",
+			}),
+		);
+		expect(result.current.selectedFile).toBe("src/main.rs");
+	});
+
+	it("initializes selectedFile as null when initialSelectedFile is null", () => {
+		const { result } = renderHook(() =>
+			useReviewPanel({
+				initialSelectedFile: null,
+			}),
+		);
+		expect(result.current.selectedFile).toBeNull();
+	});
+
 	it("preserves selectedSection when selectFile is called without section", () => {
 		const { result } = renderHook(() => useReviewPanel());
 
