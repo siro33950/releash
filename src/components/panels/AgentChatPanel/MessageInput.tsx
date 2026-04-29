@@ -23,31 +23,38 @@ import { ModelSelector } from "./ModelSelector";
 const MENTION_SYNC_RE =
 	/@([^ \t\r\n@:]+(?:\.[^ \t\r\n@:]+)*)(?::L(\d+)(?:-L(\d+))?)?/g;
 
-function syncMentionsWithText(
+export function syncMentionsWithText(
 	text: string,
 	refs: MentionReference[],
 ): MentionReference[] | undefined {
 	const re = new RegExp(MENTION_SYNC_RE.source, "g");
-	const found = new Map<string, { startLine?: number; endLine?: number }>();
+	const queues = new Map<
+		string,
+		Array<{ startLine?: number; endLine?: number }>
+	>();
 	for (;;) {
 		const m = re.exec(text);
 		if (m === null) break;
-		found.set(m[1], {
+		const filePath = m[1];
+		const queue = queues.get(filePath) ?? [];
+		if (!queues.has(filePath)) queues.set(filePath, queue);
+		queue.push({
 			startLine: m[2] ? Number(m[2]) : undefined,
 			endLine: m[3] ? Number(m[3]) : undefined,
 		});
 	}
-	const synced = refs
-		.filter((ref) => found.has(ref.filePath))
-		.map((ref) => {
-			const info = found.get(ref.filePath);
-			if (!info) return { filePath: ref.filePath };
-			return {
-				filePath: ref.filePath,
-				startLine: info.startLine,
-				endLine: info.endLine,
-			};
+	const synced: MentionReference[] = [];
+	for (const ref of refs) {
+		const queue = queues.get(ref.filePath);
+		if (!queue || queue.length === 0) continue;
+		const range = queue.shift();
+		if (!range) continue;
+		synced.push({
+			filePath: ref.filePath,
+			startLine: range.startLine,
+			endLine: range.endLine,
 		});
+	}
 	return synced.length > 0 ? synced : undefined;
 }
 

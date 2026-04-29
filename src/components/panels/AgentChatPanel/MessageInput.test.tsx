@@ -9,7 +9,11 @@ import {
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setSlashCommands } from "@/hooks/useSlashCommands";
-import { MessageInput, type MessageInputHandle } from "./MessageInput";
+import {
+	MessageInput,
+	type MessageInputHandle,
+	syncMentionsWithText,
+} from "./MessageInput";
 import { findMentionTrigger } from "./popupInputUtils";
 
 const mockInvoke = vi.mocked(invoke);
@@ -766,6 +770,40 @@ describe("MessageInput mention popup", () => {
 			undefined,
 			[{ filePath: "src/main.rs", startLine: 50, endLine: undefined }],
 		);
+	});
+
+	it("handles multiple mentions of the same file with different ranges", async () => {
+		const refs = [{ filePath: "src/main.rs" }, { filePath: "src/main.rs" }];
+		const text = "@src/main.rs:L1-L5 and @src/main.rs:L20-L25";
+		const result = syncMentionsWithText(text, refs);
+		expect(result).toEqual([
+			{ filePath: "src/main.rs", startLine: 1, endLine: 5 },
+			{ filePath: "src/main.rs", startLine: 20, endLine: 25 },
+		]);
+	});
+
+	it("excludes extra refs when text has fewer mentions than refs", async () => {
+		const refs = [{ filePath: "src/main.rs" }, { filePath: "src/main.rs" }];
+		const text = "@src/main.rs:L1-L5 only one mention";
+		const result = syncMentionsWithText(text, refs);
+		expect(result).toEqual([
+			{ filePath: "src/main.rs", startLine: 1, endLine: 5 },
+		]);
+	});
+
+	it("handles mixed files with duplicates correctly", async () => {
+		const refs = [
+			{ filePath: "src/main.rs" },
+			{ filePath: "src/lib.rs" },
+			{ filePath: "src/main.rs" },
+		];
+		const text = "@src/main.rs:L1 and @src/lib.rs:L10-L20 and @src/main.rs:L50";
+		const result = syncMentionsWithText(text, refs);
+		expect(result).toEqual([
+			{ filePath: "src/main.rs", startLine: 1, endLine: undefined },
+			{ filePath: "src/lib.rs", startLine: 10, endLine: 20 },
+			{ filePath: "src/main.rs", startLine: 50, endLine: undefined },
+		]);
 	});
 
 	it("extracts line range from @filePath:L10-L20 in text", async () => {
