@@ -84,7 +84,6 @@ pub async fn start_workflow(
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     workflow_name: String,
     chat_session_id: String,
-    worktree_path: String,
 ) -> Result<(), String> {
     let dir = storage::workflows_dir();
     let workflow = tokio::task::spawn_blocking(move || {
@@ -102,9 +101,9 @@ pub async fn start_workflow(
             handles.inner(),
             workflow,
             &chat_session_id,
-            &worktree_path,
         )
         .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -124,8 +123,9 @@ pub async fn abort_workflow(
         )
         .await
         .map_err(|e| {
-            log::error!("abort_workflow failed for session {chat_session_id}: {e}");
-            e
+            let msg = e.to_string();
+            log::error!("abort_workflow failed for session {chat_session_id}: {msg}");
+            msg
         })
 }
 
@@ -155,6 +155,7 @@ pub async fn approve_workflow_step(
             decision,
         )
         .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -175,4 +176,5 @@ pub async fn complete_interactive_step(
             abort,
         )
         .await
+        .map_err(|e| e.to_string())
 }

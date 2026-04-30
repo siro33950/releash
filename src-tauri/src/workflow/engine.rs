@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use regex::RegexBuilder;
@@ -11,6 +12,49 @@ use crate::agent_status::{current_timestamp, AgentStatusCenter};
 use crate::session::SessionStore;
 use crate::workflow::schema::{StepMode, TransitionRule, Workflow};
 use crate::workflow::state::{StepHistoryEntry, WorkflowExecutionState, WorkflowState};
+
+/// ワークフローエンジンのエラー型。
+#[derive(Debug)]
+pub enum WorkflowEngineError {
+    /// ワークフロー実行が見つからない
+    ExecutionNotFound(String),
+    /// セッションが見つからない
+    SessionNotFound(String),
+    /// ワークフロー定義エラー（ステップなし、ステップ未発見等）
+    InvalidWorkflow(String),
+    /// ワークフローが既にアクティブ
+    AlreadyActive(String),
+    /// 不正な状態遷移（WaitingApprovalでない時にapproval等）
+    InvalidState(String),
+    /// セッションストアのIO/シリアライズエラー
+    SessionStore(String),
+    /// AgentSession起動エラー
+    AgentSession(String),
+}
+
+impl fmt::Display for WorkflowEngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ExecutionNotFound(id) => {
+                write!(f, "No workflow execution found for session '{id}'")
+            }
+            Self::SessionNotFound(id) => write!(f, "ChatSession not found: {id}"),
+            Self::InvalidWorkflow(msg) => write!(f, "{msg}"),
+            Self::AlreadyActive(name) => {
+                write!(f, "Workflow '{name}' is already running for this session")
+            }
+            Self::InvalidState(msg) => write!(f, "{msg}"),
+            Self::SessionStore(msg) => write!(f, "{msg}"),
+            Self::AgentSession(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl From<WorkflowEngineError> for String {
+    fn from(e: WorkflowEngineError) -> Self {
+        e.to_string()
+    }
+}
 
 /// ワークフローエンジンが外部にブロードキャストするイベントペイロード。
 #[derive(Debug, Clone, Serialize)]
@@ -46,15 +90,16 @@ impl WorkflowExecution {
     fn validate_start(
         workflow: &Workflow,
         existing: Option<&WorkflowExecution>,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         if workflow.steps.is_empty() {
-            return Err("Workflow has no steps".to_string());
+            return Err(WorkflowEngineError::InvalidWorkflow(
+                "Workflow has no steps".to_string(),
+            ));
         }
         if let Some(existing) = existing {
             if existing.is_active() {
-                return Err(format!(
-                    "Workflow '{}' is already running for this session",
-                    existing.workflow.name,
+                return Err(WorkflowEngineError::AlreadyActive(
+                    existing.workflow.name.clone(),
                 ));
             }
         }
@@ -125,13 +170,21 @@ impl WorkflowExecution {
     }
 
     /// 指定ステップへの遷移時にサイクルガードを検証する（純粋関数）。
-    fn check_cycle_guard(&self, target_step_name: &str) -> Result<CycleGuardResult, String> {
+    fn check_cycle_guard(
+        &self,
+        target_step_name: &str,
+    ) -> Result<CycleGuardResult, WorkflowEngineError> {
         let idx = self
             .workflow
             .steps
             .iter()
             .position(|s| s.name == target_step_name)
-            .ok_or_else(|| format!("Step '{}' not found in workflow", target_step_name))?;
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidWorkflow(format!(
+                    "Step '{}' not found in workflow",
+                    target_step_name
+                ))
+            })?;
 
         let step = &self.workflow.steps[idx];
         if let Some(guard) = &step.cycle_guard {
@@ -182,9 +235,11 @@ impl WorkflowExecution {
     fn decide_approval_action(
         &self,
         decision: &ApprovalDecision,
-    ) -> Result<ApprovalAction, String> {
+    ) -> Result<ApprovalAction, WorkflowEngineError> {
         if self.state != WorkflowExecutionState::WaitingApproval {
-            return Err("Workflow is not waiting for approval".to_string());
+            return Err(WorkflowEngineError::InvalidState(
+                "Workflow is not waiting for approval".to_string(),
+            ));
         }
         let step = &self.workflow.steps[self.current_step_index];
         match decision {
@@ -198,13 +253,20 @@ impl WorkflowExecution {
     }
 
     /// interactiveモードの判定ロジック（純粋関数）。
-    fn decide_interactive_action(&self, abort: bool) -> Result<InteractiveAction, String> {
+    fn decide_interactive_action(
+        &self,
+        abort: bool,
+    ) -> Result<InteractiveAction, WorkflowEngineError> {
         if self.state != WorkflowExecutionState::Running {
-            return Err("Workflow is not running".to_string());
+            return Err(WorkflowEngineError::InvalidState(
+                "Workflow is not running".to_string(),
+            ));
         }
         let step = &self.workflow.steps[self.current_step_index];
         if step.mode != StepMode::Interactive {
-            return Err("Current step is not interactive mode".to_string());
+            return Err(WorkflowEngineError::InvalidState(
+                "Current step is not interactive mode".to_string(),
+            ));
         }
         if abort {
             Ok(InteractiveAction::Abort)
@@ -260,12 +322,20 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         workflow: Workflow,
         chat_session_id: &str,
-        worktree_path: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         {
             let execs = self.executions.lock().await;
             WorkflowExecution::validate_start(&workflow, execs.get(chat_session_id))?;
         }
+
+        // worktree_pathはセッションから取得（唯一のソース）
+        let data_dir = crate::session::resolve_data_dir(app)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
+        let session = session_store
+            .get_session(&data_dir, chat_session_id)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
+            .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.to_string()))?;
+        let worktree_path = session.worktree_path.clone();
 
         let now = current_timestamp();
         let mut execution = WorkflowExecution {
@@ -275,7 +345,7 @@ impl WorkflowEngine {
             current_step_index: 0,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: worktree_path.to_string(),
+            worktree_path,
             started_at: now,
             updated_at: now,
         };
@@ -293,8 +363,24 @@ impl WorkflowEngine {
         self.broadcast_state(app, chat_session_id).await;
 
         // 最初のステップのAgentSession開始＋プロンプト送信
-        self.start_step_session(app, handles, session_store, chat_session_id)
+        // 失敗時はFailed状態に遷移して永続化する
+        if let Err(e) = self
+            .start_step_session(app, handles, session_store, chat_session_id)
             .await
+        {
+            let _ = self
+                .set_execution_state(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    WorkflowExecutionState::Failed {
+                        reason: format!("Failed to start step session: {e}"),
+                    },
+                )
+                .await;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// turn_complete後に呼ばれるフック。
@@ -307,12 +393,12 @@ impl WorkflowEngine {
         chat_session_id: &str,
         exit_code: i64,
         final_parts: &[crate::session::MessagePart],
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         let action = {
             let execs = self.executions.lock().await;
-            let exec = execs
-                .get(chat_session_id)
-                .ok_or("No workflow execution found")?;
+            let exec = execs.get(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
             exec.decide_turn_complete_action(exit_code)
         };
 
@@ -367,12 +453,12 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         chat_session_id: &str,
         decision: ApprovalDecision,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         let (action, step_name) = {
             let execs = self.executions.lock().await;
-            let exec = execs
-                .get(chat_session_id)
-                .ok_or("No workflow execution found")?;
+            let exec = execs.get(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
             let action = exec.decide_approval_action(&decision)?;
             let step_name = exec.workflow.steps[exec.current_step_index].name.clone();
             (action, step_name)
@@ -442,12 +528,12 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         chat_session_id: &str,
         abort: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         let (action, step_name) = {
             let execs = self.executions.lock().await;
-            let exec = execs
-                .get(chat_session_id)
-                .ok_or("No workflow execution found")?;
+            let exec = execs.get(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
             let action = exec.decide_interactive_action(abort)?;
             let step_name = exec.workflow.steps[exec.current_step_index].name.clone();
             (action, step_name)
@@ -483,12 +569,12 @@ impl WorkflowEngine {
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         chat_session_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         {
             let execs = self.executions.lock().await;
-            let exec = execs
-                .get(chat_session_id)
-                .ok_or("No workflow execution found")?;
+            let exec = execs.get(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
 
             // 既に終了状態なら何もしない
             if !exec.is_active() {
@@ -529,12 +615,12 @@ impl WorkflowEngine {
         session_store: &Arc<SessionStore>,
         chat_session_id: &str,
         new_state: WorkflowExecutionState,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         {
             let mut execs = self.executions.lock().await;
-            let exec = execs
-                .get_mut(chat_session_id)
-                .ok_or("No workflow execution found")?;
+            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
             exec.state = new_state;
             exec.updated_at = current_timestamp();
         }
@@ -555,7 +641,7 @@ impl WorkflowEngine {
         final_parts: &[crate::session::MessagePart],
         rules: &[TransitionRule],
         step_name: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         // テキストパートを結合
         let text = Self::extract_text_from_parts(final_parts);
 
@@ -633,20 +719,25 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         chat_session_id: &str,
         target_step_name: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         // サイクルガードチェック + 遷移実行を1回のロックで処理
         let exceeded_info = {
             let mut execs = self.executions.lock().await;
-            let exec = execs
-                .get_mut(chat_session_id)
-                .ok_or("No workflow execution found")?;
+            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
 
             let idx = exec
                 .workflow
                 .steps
                 .iter()
                 .position(|s| s.name == target_step_name)
-                .ok_or_else(|| format!("Step '{}' not found in workflow", target_step_name))?;
+                .ok_or_else(|| {
+                    WorkflowEngineError::InvalidWorkflow(format!(
+                        "Step '{}' not found in workflow",
+                        target_step_name
+                    ))
+                })?;
 
             let guard_result = exec.check_cycle_guard(target_step_name)?;
 
@@ -689,8 +780,24 @@ impl WorkflowEngine {
         self.broadcast_state(app, chat_session_id).await;
 
         // 次のステップのAgentSession開始＋プロンプト送信
-        self.start_step_session(app, handles, session_store, chat_session_id)
+        // 失敗時はFailed状態に遷移して永続化する
+        if let Err(e) = self
+            .start_step_session(app, handles, session_store, chat_session_id)
             .await
+        {
+            let _ = self
+                .set_execution_state(
+                    app,
+                    session_store,
+                    chat_session_id,
+                    WorkflowExecutionState::Failed {
+                        reason: format!("Failed to start step session: {e}"),
+                    },
+                )
+                .await;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// 定義順で次のステップに遷移する。最後のステップならCompletedに。
@@ -700,12 +807,12 @@ impl WorkflowEngine {
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         chat_session_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         let decision = {
             let execs = self.executions.lock().await;
-            let exec = execs
-                .get(chat_session_id)
-                .ok_or("No workflow execution found")?;
+            let exec = execs.get(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
             exec.decide_next_step()
         };
 
@@ -733,22 +840,22 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         session_store: &Arc<SessionStore>,
         chat_session_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         let (worktree_path, prompt) = {
             let execs = self.executions.lock().await;
-            let exec = execs
-                .get(chat_session_id)
-                .ok_or("No workflow execution found")?;
+            let exec = execs.get(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
             let step = &exec.workflow.steps[exec.current_step_index];
             (exec.worktree_path.clone(), step.prompt.clone())
         };
 
-        let data_dir =
-            crate::session::resolve_data_dir(app).map_err(|e| format!("resolve_data_dir: {e}"))?;
+        let data_dir = crate::session::resolve_data_dir(app)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let session = session_store
             .get_session(&data_dir, chat_session_id)
-            .map_err(|e| format!("get_session: {e}"))?
-            .ok_or_else(|| format!("ChatSession not found: {}", chat_session_id))?;
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
+            .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.to_string()))?;
         let permission_mode = session.permission_mode;
 
         // AgentSession開始
@@ -760,7 +867,8 @@ impl WorkflowEngine {
             &worktree_path,
             None,
         )
-        .await?;
+        .await
+        .map_err(WorkflowEngineError::AgentSession)?;
 
         // プロンプト送信
         crate::agent_sdk::start_agent_turn_internal(
@@ -773,6 +881,7 @@ impl WorkflowEngine {
             &prompt,
         )
         .await
+        .map_err(WorkflowEngineError::AgentSession)
     }
 
     /// AgentSessionを中断する。
@@ -819,26 +928,26 @@ impl WorkflowEngine {
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         chat_session_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), WorkflowEngineError> {
         let workflow_state = {
             let execs = self.executions.lock().await;
             execs.get(chat_session_id).map(|e| e.to_workflow_state())
         };
 
         let workflow_state = workflow_state
-            .ok_or_else(|| format!("No workflow execution for session '{}'", chat_session_id))?;
+            .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string()))?;
 
-        let data_dir =
-            crate::session::resolve_data_dir(app).map_err(|e| format!("resolve_data_dir: {e}"))?;
+        let data_dir = crate::session::resolve_data_dir(app)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let mut session = session_store
             .get_session(&data_dir, chat_session_id)
-            .map_err(|e| format!("get_session: {e}"))?
-            .ok_or_else(|| format!("ChatSession not found: {}", chat_session_id))?;
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
+            .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.to_string()))?;
         session.workflow_state = Some(workflow_state);
         session.updated_at = crate::session::now_timestamp();
         session_store
             .save_session(&data_dir, &session)
-            .map_err(|e| format!("save_session: {e}"))?;
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("save_session: {e}")))?;
 
         Ok(())
     }
@@ -1599,7 +1708,7 @@ mod tests {
         };
         let result = WorkflowExecution::validate_start(&workflow, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("no steps"));
+        assert!(result.unwrap_err().to_string().contains("no steps"));
     }
 
     #[test]
@@ -1608,7 +1717,7 @@ mod tests {
         let existing = make_exec(0); // Running state
         let result = WorkflowExecution::validate_start(&workflow, Some(&existing));
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("already running"));
+        assert!(result.unwrap_err().to_string().contains("already running"));
     }
 
     #[test]

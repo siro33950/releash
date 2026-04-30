@@ -245,7 +245,7 @@ pub enum WorkflowExecutionState {
 
 ### ブロードキャスト
 
-- `SessionStatus` に `workflow_step: Option<String>` と `workflow_state: Option<String>` を追加
+- `SessionStatus` に `workflow_step: Option<String>` と `workflow_execution_state: Option<String>` を追加
 - `update_session` 時に `workflow-state-changed` Tauriイベントを emit
 - WebSocket: `WsMessage::WorkflowStateSync` variant を追加（リモートクライアント向け）
 
