@@ -1142,6 +1142,7 @@ function WorkflowsSection({
 									size="icon"
 									className="size-7"
 									onClick={() => openInEditor(wf.name)}
+									aria-label={`Open workflow ${wf.name} in editor`}
 									title="Open in editor"
 								>
 									<ExternalLink className="size-3.5" />
@@ -1152,6 +1153,7 @@ function WorkflowsSection({
 										size="icon"
 										className="size-7 text-destructive hover:text-destructive"
 										onClick={() => deleteWorkflow(wf.name)}
+										aria-label={`Delete workflow ${wf.name}`}
 										title="Delete workflow"
 									>
 										<Trash2 className="size-3.5" />

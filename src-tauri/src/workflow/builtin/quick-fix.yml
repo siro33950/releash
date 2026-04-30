@@ -1,5 +1,5 @@
 name: quick-fix
-description: 素早いバグ修正ワークフロー
+description: Quick bug-fix workflow
 builtin: true
 
 steps:

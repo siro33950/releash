@@ -1,60 +1,114 @@
 use super::prompt_schema::PromptTemplate;
 use super::schema::Workflow;
+use serde::Serialize;
 use std::collections::HashSet;
+use std::fmt;
 
-pub fn validate_name(name: &str) -> Result<(), String> {
+#[derive(Debug)]
+pub enum ValidationError {
+    EmptyName,
+    InvalidChars { name: String },
+    EmptySteps,
+    DuplicateStep { name: String },
+    UnknownNextStep { step: String, next: String },
+    EmptyTemplateContent,
+    DuplicateVariable { name: String },
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyName => write!(f, "ワークフロー名が空です"),
+            Self::InvalidChars { name } => write!(
+                f,
+                "ワークフロー名 '{name}' に使用できない文字が含まれています（英数字・ハイフン・アンダースコアのみ許可）"
+            ),
+            Self::EmptySteps => write!(f, "ワークフローにステップが定義されていません"),
+            Self::DuplicateStep { name } => {
+                write!(f, "ステップ名 '{name}' が重複しています")
+            }
+            Self::UnknownNextStep { step, next } => write!(
+                f,
+                "ステップ '{step}' のルールが存在しないステップ '{next}' を参照しています"
+            ),
+            Self::EmptyTemplateContent => {
+                write!(f, "プロンプトテンプレートの内容が空です")
+            }
+            Self::DuplicateVariable { name } => {
+                write!(f, "変数名 '{name}' が重複しています")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
+impl Serialize for ValidationError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     if name.is_empty() {
-        return Err("ワークフロー名が空です".to_string());
+        return Err(ValidationError::EmptyName);
     }
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(format!(
-            "ワークフロー名 '{name}' に使用できない文字が含まれています（英数字・ハイフン・アンダースコアのみ許可）"
-        ));
+        return Err(ValidationError::InvalidChars {
+            name: name.to_string(),
+        });
     }
     Ok(())
 }
 
-pub fn validate_prompt_template(template: &PromptTemplate) -> Result<(), String> {
+pub fn validate_prompt_template(template: &PromptTemplate) -> Result<(), ValidationError> {
     validate_name(&template.name)?;
 
     if template.content.is_empty() {
-        return Err("プロンプトテンプレートの内容が空です".to_string());
+        return Err(ValidationError::EmptyTemplateContent);
     }
 
     let mut var_names = HashSet::new();
     for var in &template.variables {
         if !var_names.insert(var.name.as_str()) {
-            return Err(format!("変数名 '{}' が重複しています", var.name));
+            return Err(ValidationError::DuplicateVariable {
+                name: var.name.clone(),
+            });
         }
     }
 
     Ok(())
 }
 
-pub fn validate(workflow: &Workflow) -> Result<(), String> {
+pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
     validate_name(&workflow.name)?;
 
     if workflow.steps.is_empty() {
-        return Err("ワークフローにステップが定義されていません".to_string());
+        return Err(ValidationError::EmptySteps);
     }
 
     let mut step_names = HashSet::new();
     for step in &workflow.steps {
         if !step_names.insert(step.name.as_str()) {
-            return Err(format!("ステップ名 '{}' が重複しています", step.name));
+            return Err(ValidationError::DuplicateStep {
+                name: step.name.clone(),
+            });
         }
     }
 
     for step in &workflow.steps {
         for rule in &step.rules {
             if !step_names.contains(rule.next.as_str()) {
-                return Err(format!(
-                    "ステップ '{}' のルールが存在しないステップ '{}' を参照しています",
-                    step.name, rule.next
-                ));
+                return Err(ValidationError::UnknownNextStep {
+                    step: step.name.clone(),
+                    next: rule.next.clone(),
+                });
             }
         }
     }
@@ -114,15 +168,20 @@ mod tests {
         }]);
         let result = validate(&wf);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("存在しないステップ 'nonexistent'"));
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::UnknownNextStep { ref next, .. } if next == "nonexistent"
+        ));
     }
 
     #[test]
     fn empty_steps_fails() {
         let wf = make_workflow(vec![]);
-        assert!(validate(&wf).is_err());
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::EmptySteps
+        ));
     }
 
     #[test]
@@ -134,7 +193,10 @@ mod tests {
 
     #[test]
     fn invalid_name_with_traversal() {
-        assert!(validate_name("../evil").is_err());
+        assert!(matches!(
+            validate_name("../evil").unwrap_err(),
+            ValidationError::InvalidChars { .. }
+        ));
         assert!(validate_name("foo/bar").is_err());
         assert!(validate_name("..").is_err());
     }
@@ -143,7 +205,10 @@ mod tests {
     fn invalid_name_with_special_chars() {
         assert!(validate_name("foo bar").is_err());
         assert!(validate_name("foo.yml").is_err());
-        assert!(validate_name("").is_err());
+        assert!(matches!(
+            validate_name("").unwrap_err(),
+            ValidationError::EmptyName
+        ));
     }
 
     #[test]
@@ -165,8 +230,10 @@ mod tests {
             },
         ]);
         let result = validate(&wf);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("重複"));
+        assert!(matches!(
+            result.unwrap_err(),
+            ValidationError::DuplicateStep { ref name } if name == "plan"
+        ));
     }
 
     // --- Prompt template validation tests ---
@@ -200,9 +267,10 @@ mod tests {
     #[test]
     fn prompt_template_empty_content_fails() {
         let tpl = make_prompt("fixer", "", vec![]);
-        let result = validate_prompt_template(&tpl);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("内容が空"));
+        assert!(matches!(
+            validate_prompt_template(&tpl).unwrap_err(),
+            ValidationError::EmptyTemplateContent
+        ));
     }
 
     #[test]
@@ -229,8 +297,9 @@ mod tests {
                 },
             ],
         );
-        let result = validate_prompt_template(&tpl);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("重複"));
+        assert!(matches!(
+            validate_prompt_template(&tpl).unwrap_err(),
+            ValidationError::DuplicateVariable { ref name } if name == "var1"
+        ));
     }
 }

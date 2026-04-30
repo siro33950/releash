@@ -1,8 +1,82 @@
 use super::prompt_schema::PromptTemplate;
 use super::schema::{Summary, Workflow};
-use super::validation;
+use super::validation::{self, ValidationError};
+use serde::Serialize;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+pub enum StorageError {
+    Io(std::io::Error),
+    YamlDeserialize(serde_saphyr::Error),
+    YamlSerialize(serde_saphyr::ser::Error),
+    Validation(ValidationError),
+    NotFound { name: String },
+    BuiltinProtected { name: String },
+}
+
+impl fmt::Display for StorageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "I/Oエラー: {e}"),
+            Self::YamlDeserialize(e) => write!(f, "YAMLパース失敗: {e}"),
+            Self::YamlSerialize(e) => write!(f, "YAMLシリアライズ失敗: {e}"),
+            Self::Validation(e) => write!(f, "{e}"),
+            Self::NotFound { name } => {
+                write!(f, "ワークフロー '{name}' が見つかりません")
+            }
+            Self::BuiltinProtected { name } => {
+                write!(f, "ビルトインワークフロー '{name}' は削除できません")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StorageError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::YamlDeserialize(e) => Some(e),
+            Self::YamlSerialize(e) => Some(e),
+            Self::Validation(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for StorageError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<serde_saphyr::Error> for StorageError {
+    fn from(e: serde_saphyr::Error) -> Self {
+        Self::YamlDeserialize(e)
+    }
+}
+
+impl From<serde_saphyr::ser::Error> for StorageError {
+    fn from(e: serde_saphyr::ser::Error) -> Self {
+        Self::YamlSerialize(e)
+    }
+}
+
+impl From<ValidationError> for StorageError {
+    fn from(e: ValidationError) -> Self {
+        Self::Validation(e)
+    }
+}
+
+impl Serialize for StorageError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
 
 pub fn workflows_dir() -> PathBuf {
     dirs::config_dir()
@@ -11,54 +85,51 @@ pub fn workflows_dir() -> PathBuf {
         .join("workflows")
 }
 
-pub fn ensure_dir(dir: &Path) -> Result<(), String> {
+pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
     if !dir.exists() {
-        fs::create_dir_all(dir)
-            .map_err(|e| format!("ワークフローディレクトリの作成に失敗: {e}"))?;
+        fs::create_dir_all(dir)?;
     }
     Ok(())
 }
 
-pub fn save_workflow(dir: &Path, workflow: &Workflow) -> Result<(), String> {
+pub fn save_workflow(dir: &Path, workflow: &Workflow) -> Result<(), StorageError> {
     validation::validate(workflow)?;
 
     ensure_dir(dir)?;
 
-    let content =
-        serde_saphyr::to_string(workflow).map_err(|e| format!("YAMLシリアライズ失敗: {e}"))?;
+    let content = serde_saphyr::to_string(workflow)?;
 
     let file_path = dir.join(format!("{}.yml", workflow.name));
     let tmp_path = file_path.with_extension("yml.tmp");
 
-    fs::write(&tmp_path, &content).map_err(|e| format!("一時ファイル書き込み失敗: {e}"))?;
-    fs::rename(&tmp_path, &file_path).map_err(|e| format!("ファイルのリネーム失敗: {e}"))?;
+    fs::write(&tmp_path, &content)?;
+    fs::rename(&tmp_path, &file_path)?;
 
     Ok(())
 }
 
-pub fn load_workflow(path: &Path) -> Result<Workflow, String> {
-    let content = fs::read_to_string(path).map_err(|e| format!("ファイル読み込み失敗: {e}"))?;
-    let workflow: Workflow =
-        serde_saphyr::from_str(&content).map_err(|e| format!("YAMLパース失敗: {e}"))?;
+pub fn load_workflow(path: &Path) -> Result<Workflow, StorageError> {
+    let content = fs::read_to_string(path)?;
+    let workflow: Workflow = serde_saphyr::from_str(&content)?;
     validation::validate(&workflow)?;
     Ok(workflow)
 }
 
-fn list_yml_summaries<T>(
+fn list_yml_summaries<T, E: fmt::Display>(
     dir: &Path,
-    loader: impl Fn(&Path) -> Result<T, String>,
+    loader: impl Fn(&Path) -> Result<T, E>,
     to_summary: impl Fn(T) -> Summary,
     label: &str,
-) -> Result<Vec<Summary>, String> {
+) -> Result<Vec<Summary>, StorageError> {
     if !dir.exists() {
         return Ok(vec![]);
     }
 
-    let entries = fs::read_dir(dir).map_err(|e| format!("ディレクトリ読み込み失敗: {e}"))?;
+    let entries = fs::read_dir(dir)?;
 
     let mut summaries = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|e| format!("エントリ読み込み失敗: {e}"))?;
+        let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("yml") {
             match loader(&path) {
@@ -74,7 +145,7 @@ fn list_yml_summaries<T>(
     Ok(summaries)
 }
 
-pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, String> {
+pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
     list_yml_summaries(
         dir,
         load_workflow,
@@ -87,24 +158,28 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, String> {
     )
 }
 
-pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
+pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, StorageError> {
     validation::validate_name(name)?;
     let file_path = dir.join(format!("{name}.yml"));
     if !file_path.exists() {
-        return Err(format!("ワークフロー '{name}' が見つかりません"));
+        return Err(StorageError::NotFound {
+            name: name.to_string(),
+        });
     }
     Ok(file_path)
 }
 
-pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), String> {
+pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
     let file_path = resolve_workflow_path(dir, name)?;
 
     let workflow = load_workflow(&file_path)?;
     if workflow.builtin {
-        return Err(format!("ビルトインワークフロー '{name}' は削除できません"));
+        return Err(StorageError::BuiltinProtected {
+            name: name.to_string(),
+        });
     }
 
-    fs::remove_file(&file_path).map_err(|e| format!("ファイル削除失敗: {e}"))?;
+    fs::remove_file(&file_path)?;
     Ok(())
 }
 
@@ -115,15 +190,14 @@ pub fn prompts_dir() -> PathBuf {
         .join("prompts")
 }
 
-pub fn load_prompt(path: &Path) -> Result<PromptTemplate, String> {
-    let content = fs::read_to_string(path).map_err(|e| format!("ファイル読み込み失敗: {e}"))?;
-    let template: PromptTemplate =
-        serde_saphyr::from_str(&content).map_err(|e| format!("YAMLパース失敗: {e}"))?;
+pub fn load_prompt(path: &Path) -> Result<PromptTemplate, StorageError> {
+    let content = fs::read_to_string(path)?;
+    let template: PromptTemplate = serde_saphyr::from_str(&content)?;
     validation::validate_prompt_template(&template)?;
     Ok(template)
 }
 
-pub fn list_prompts(dir: &Path) -> Result<Vec<Summary>, String> {
+pub fn list_prompts(dir: &Path) -> Result<Vec<Summary>, StorageError> {
     list_yml_summaries(
         dir,
         load_prompt,
@@ -224,8 +298,10 @@ mod tests {
         save_workflow(dir, &sample_workflow("quick-fix", true)).unwrap();
 
         let result = delete_workflow(dir, "quick-fix");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("ビルトインワークフロー"));
+        assert!(matches!(
+            result.unwrap_err(),
+            StorageError::BuiltinProtected { ref name } if name == "quick-fix"
+        ));
         assert!(dir.join("quick-fix.yml").exists());
     }
 
@@ -233,8 +309,10 @@ mod tests {
     fn delete_nonexistent_workflow_fails() {
         let tmp = TempDir::new().unwrap();
         let result = delete_workflow(tmp.path(), "nope");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("見つかりません"));
+        assert!(matches!(
+            result.unwrap_err(),
+            StorageError::NotFound { ref name } if name == "nope"
+        ));
     }
 
     // --- Prompt template storage tests ---
@@ -256,15 +334,14 @@ mod tests {
         }
     }
 
-    fn save_prompt(dir: &Path, template: &PromptTemplate) -> Result<(), String> {
+    fn save_prompt(dir: &Path, template: &PromptTemplate) -> Result<(), StorageError> {
         validation::validate_prompt_template(template)?;
         ensure_dir(dir)?;
-        let content =
-            serde_saphyr::to_string(template).map_err(|e| format!("YAMLシリアライズ失敗: {e}"))?;
+        let content = serde_saphyr::to_string(template)?;
         let file_path = dir.join(format!("{}.yml", template.name));
         let tmp_path = file_path.with_extension("yml.tmp");
-        fs::write(&tmp_path, &content).map_err(|e| format!("一時ファイル書き込み失敗: {e}"))?;
-        fs::rename(&tmp_path, &file_path).map_err(|e| format!("ファイルのリネーム失敗: {e}"))?;
+        fs::write(&tmp_path, &content)?;
+        fs::rename(&tmp_path, &file_path)?;
         Ok(())
     }
 
@@ -319,15 +396,17 @@ mod tests {
     fn resolve_workflow_path_not_found() {
         let tmp = TempDir::new().unwrap();
         let result = resolve_workflow_path(tmp.path(), "nonexistent");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("見つかりません"));
+        assert!(matches!(
+            result.unwrap_err(),
+            StorageError::NotFound { ref name } if name == "nonexistent"
+        ));
     }
 
     #[test]
     fn resolve_workflow_path_invalid_name() {
         let tmp = TempDir::new().unwrap();
         let result = resolve_workflow_path(tmp.path(), "../evil");
-        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::Validation(_)));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 name: plan-implement-review
-description: 計画→実装→レビュー→修正ループ
+description: Plan → implement → review → fix loop
 builtin: true
 
 steps:

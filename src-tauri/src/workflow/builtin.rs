@@ -2,7 +2,56 @@ use super::prompt_schema::PromptTemplate;
 use super::schema::Workflow;
 use super::storage;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
+use std::fmt;
 use std::path::Path;
+
+#[derive(Debug)]
+pub enum BuiltinInitError {
+    Io(std::io::Error),
+    Parse {
+        filename: String,
+        source: Box<serde_saphyr::Error>,
+    },
+    Storage(Box<storage::StorageError>),
+}
+
+impl fmt::Display for BuiltinInitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "I/Oエラー: {e}"),
+            Self::Parse { filename, source } => {
+                write!(f, "ビルトインのパース失敗 ({filename}): {source}")
+            }
+            Self::Storage(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for BuiltinInitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            Self::Parse { source, .. } => Some(source.as_ref()),
+            Self::Storage(e) => Some(e.as_ref()),
+        }
+    }
+}
+
+impl From<storage::StorageError> for BuiltinInitError {
+    fn from(e: storage::StorageError) -> Self {
+        Self::Storage(Box::new(e))
+    }
+}
+
+impl Serialize for BuiltinInitError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
 
 const BUILTIN_QUICK_FIX: &str = include_str!("builtin/quick-fix.yml");
 const BUILTIN_PLAN_IMPLEMENT_REVIEW: &str = include_str!("builtin/plan-implement-review.yml");
@@ -60,8 +109,7 @@ const BUILTIN_PROMPTS: &[BuiltinEntry] = &[
 fn init_builtins<T: DeserializeOwned>(
     dir: &Path,
     entries: &[BuiltinEntry],
-    label: &str,
-) -> Result<(), String> {
+) -> Result<(), BuiltinInitError> {
     storage::ensure_dir(dir)?;
 
     for entry in entries {
@@ -70,22 +118,23 @@ fn init_builtins<T: DeserializeOwned>(
             continue;
         }
 
-        let _: T = serde_saphyr::from_str(entry.content)
-            .map_err(|e| format!("ビルトイン{label}のパース失敗 ({}): {e}", entry.filename))?;
+        let _: T = serde_saphyr::from_str(entry.content).map_err(|e| BuiltinInitError::Parse {
+            filename: entry.filename.to_string(),
+            source: Box::new(e),
+        })?;
 
-        std::fs::write(&file_path, entry.content)
-            .map_err(|e| format!("ビルトイン{label}の書き出し失敗 ({}): {e}", entry.filename))?;
+        std::fs::write(&file_path, entry.content).map_err(BuiltinInitError::Io)?;
     }
 
     Ok(())
 }
 
-pub fn init_builtin_workflows(dir: &Path) -> Result<(), String> {
-    init_builtins::<Workflow>(dir, BUILTINS, "ワークフロー")
+pub fn init_builtin_workflows(dir: &Path) -> Result<(), BuiltinInitError> {
+    init_builtins::<Workflow>(dir, BUILTINS)
 }
 
-pub fn init_builtin_prompts(dir: &Path) -> Result<(), String> {
-    init_builtins::<PromptTemplate>(dir, BUILTIN_PROMPTS, "プロンプト")
+pub fn init_builtin_prompts(dir: &Path) -> Result<(), BuiltinInitError> {
+    init_builtins::<PromptTemplate>(dir, BUILTIN_PROMPTS)
 }
 
 #[cfg(test)]

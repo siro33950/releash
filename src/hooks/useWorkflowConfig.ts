@@ -33,6 +33,7 @@ export function useWorkflowConfig(open: boolean) {
 
 	const deleteWorkflow = useCallback(
 		async (name: string) => {
+			setError(null);
 			try {
 				await invoke("delete_workflow", { name });
 				await fetchWorkflows();
@@ -44,6 +45,7 @@ export function useWorkflowConfig(open: boolean) {
 	);
 
 	const openInEditor = useCallback(async (name: string) => {
+		setError(null);
 		try {
 			await invoke("open_workflow_in_editor", { name });
 		} catch (e) {
