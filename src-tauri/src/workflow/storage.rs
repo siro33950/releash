@@ -139,8 +139,16 @@ fn list_yml_summaries<T, E: fmt::Display>(
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                log::warn!("{label}読み込みスキップ: {}: 無効なファイル名", path.display());
+                continue;
+            };
             match loader(&path) {
-                Ok(item) => summaries.push(to_summary(item)),
+                Ok(item) => {
+                    let mut summary = to_summary(item);
+                    summary.name = stem.to_string();
+                    summaries.push(summary);
+                }
                 Err(e) => {
                     log::warn!("{label}読み込みスキップ: {}: {e}", path.display());
                 }
@@ -270,6 +278,23 @@ mod tests {
         assert_eq!(list[1].name, "bravo");
         assert!(list[1].builtin);
         assert_eq!(list[2].name, "charlie");
+    }
+
+    #[test]
+    fn list_workflows_uses_file_stem_not_yaml_name() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // save_workflowで作成（ファイル名 = YAML本文name）
+        save_workflow(dir, &sample_workflow("original", false)).unwrap();
+
+        // ファイルをリネームしてYAML本文nameとファイルstemを乖離させる
+        fs::rename(dir.join("original.yml"), dir.join("renamed.yml")).unwrap();
+
+        let list = list_workflows(dir).unwrap();
+        assert_eq!(list.len(), 1);
+        // Summary.nameはファイルstem（renamed）であるべき、YAML本文（original）ではない
+        assert_eq!(list[0].name, "renamed");
     }
 
     #[test]
