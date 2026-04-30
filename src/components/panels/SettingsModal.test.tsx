@@ -55,6 +55,8 @@ describe("SettingsModal", () => {
 					return Promise.resolve("");
 				case "detect_editors":
 					return Promise.resolve([]);
+				case "list_workflows":
+					return Promise.resolve([]);
 				default:
 					return Promise.resolve(null);
 			}
@@ -519,5 +521,144 @@ describe("SettingsModal", () => {
 			repoPath: "/repos/my-app",
 			base: "develop",
 		});
+	});
+
+	it("should show workflow list in Workflows section", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "list_workflows":
+					return Promise.resolve([
+						{
+							name: "quick-fix",
+							description: "素早いバグ修正",
+							builtin: true,
+						},
+						{
+							name: "my-workflow",
+							description: "カスタムワークフロー",
+							builtin: false,
+						},
+					]);
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Workflows"));
+
+		await waitFor(() => {
+			expect(screen.getByText("quick-fix")).toBeInTheDocument();
+			expect(screen.getByText("my-workflow")).toBeInTheDocument();
+		});
+
+		expect(screen.getByText("素早いバグ修正")).toBeInTheDocument();
+		expect(screen.getByText("カスタムワークフロー")).toBeInTheDocument();
+		expect(screen.getByText("builtin")).toBeInTheDocument();
+	});
+
+	it("should show empty state when no workflows exist", async () => {
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Workflows"));
+
+		await waitFor(() => {
+			expect(screen.getByText("No workflows found.")).toBeInTheDocument();
+		});
+	});
+
+	it("should call open_workflow_in_editor when Open in editor button is clicked", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "list_workflows":
+					return Promise.resolve([
+						{
+							name: "quick-fix",
+							description: "素早いバグ修正",
+							builtin: true,
+						},
+					]);
+				case "open_workflow_in_editor":
+					return Promise.resolve(null);
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Workflows"));
+
+		await waitFor(() => {
+			expect(screen.getByText("quick-fix")).toBeInTheDocument();
+		});
+
+		await user.click(screen.getByTitle("Open in editor"));
+
+		expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_workflow_in_editor", {
+			name: "quick-fix",
+		});
+	});
+
+	it("should call delete_workflow when Delete button is clicked", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "list_workflows":
+					return Promise.resolve([
+						{
+							name: "my-workflow",
+							description: "カスタムワークフロー",
+							builtin: false,
+						},
+					]);
+				case "delete_workflow":
+					return Promise.resolve(null);
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Workflows"));
+
+		await waitFor(() => {
+			expect(screen.getByText("my-workflow")).toBeInTheDocument();
+		});
+
+		await user.click(screen.getByTitle("Delete workflow"));
+
+		expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_workflow", {
+			name: "my-workflow",
+		});
+	});
+
+	it("should not show delete button for builtin workflows", async () => {
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "list_workflows":
+					return Promise.resolve([
+						{
+							name: "quick-fix",
+							description: "素早いバグ修正",
+							builtin: true,
+						},
+					]);
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		render(<SettingsModal {...defaultProps} />);
+		fireEvent.click(screen.getByText("Workflows"));
+
+		await waitFor(() => {
+			expect(screen.getByText("quick-fix")).toBeInTheDocument();
+		});
+
+		expect(screen.queryByTitle("Delete workflow")).not.toBeInTheDocument();
 	});
 });
