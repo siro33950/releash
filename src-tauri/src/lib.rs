@@ -139,6 +139,7 @@ pub fn run() {
                 broadcaster,
             ));
             app.manage(agent_status_center);
+            app.manage(Arc::new(workflow::engine::WorkflowEngine::new()));
 
             menu::setup_menu(app)?;
             tray::setup_tray(app)?;
@@ -389,6 +390,11 @@ pub fn run() {
             workflow::commands::delete_workflow,
             workflow::commands::open_workflow_in_editor,
             workflow::commands::list_prompt_templates,
+            workflow::commands::start_workflow,
+            workflow::commands::abort_workflow,
+            workflow::commands::get_workflow_state,
+            workflow::commands::approve_workflow_step,
+            workflow::commands::complete_interactive_step,
             // Menu
             menu::set_menu_items_enabled,
         ])

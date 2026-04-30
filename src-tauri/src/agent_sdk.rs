@@ -247,6 +247,10 @@ fn notify_status_transition(
     let agent_state = AgentStatusCenter::derive_agent_state(turn_phase, session_state.clone());
 
     if let Some(center) = app.try_state::<Arc<AgentStatusCenter>>() {
+        let (wf_step, wf_state) = center
+            .get_session(chat_session_id)
+            .map(|s| (s.workflow_step, s.workflow_execution_state))
+            .unwrap_or((None, None));
         let status = SessionStatus {
             chat_session_id: chat_session_id.to_string(),
             worktree_id: worktree_path.clone(),
@@ -257,6 +261,8 @@ fn notify_status_transition(
             session_state,
             pending_permission: matches!(turn_phase, TurnPhase::WaitingPermission),
             last_activity_at: current_timestamp(),
+            workflow_step: wf_step,
+            workflow_execution_state: wf_state,
         };
         center.update_session(status);
     }
@@ -1096,6 +1102,46 @@ async fn spawn_bridge_process(
                                 override_state,
                             );
 
+                            // Workflow engine hook: notify on turn_complete
+                            // Note: std::thread::spawn is required because on_turn_complete's
+                            // future is !Send (it transitively awaits spawn_bridge_process).
+                            // Handle::current() reuses the existing tokio runtime instead of
+                            // creating a new Runtime per turn_complete.
+                            {
+                                use tauri::Manager;
+                                let wf_engine: Option<
+                                    Arc<crate::workflow::engine::WorkflowEngine>,
+                                > = app_stdout
+                                    .try_state::<Arc<crate::workflow::engine::WorkflowEngine>>()
+                                    .map(|s| Arc::clone(&s));
+                                if let Some(engine) = wf_engine {
+                                    let app_wf = app_stdout.clone();
+                                    let ss_wf = Arc::clone(&session_store_clone);
+                                    let h_wf = Arc::clone(&handles_stdout);
+                                    let csid_wf = csid_stdout.clone();
+                                    let parts_wf = final_parts.clone();
+                                    let handle = tokio::runtime::Handle::current();
+                                    std::thread::spawn(move || {
+                                        handle.block_on(async move {
+                                            if engine.is_running(&csid_wf).await {
+                                                if let Err(e) = engine
+                                                    .on_turn_complete(
+                                                        &app_wf, &ss_wf, &h_wf, &csid_wf,
+                                                        exit_code, &parts_wf,
+                                                    )
+                                                    .await
+                                                {
+                                                    log::error!(
+                                                        "Workflow on_turn_complete error for {}: {e}",
+                                                        csid_wf
+                                                    );
+                                                }
+                                            }
+                                        });
+                                    });
+                                }
+                            }
+
                             // Auto-consume pending message queued by send_agent_message.
                             // Spawn a separate task to avoid oversized async state machine in stdout reader.
                             let has_pending = {
@@ -1565,7 +1611,7 @@ fn get_persisted_spawn_info(
         .unwrap_or((None, None))
 }
 
-async fn start_agent_session_internal(
+pub(crate) async fn start_agent_session_internal(
     app: &tauri::AppHandle,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
@@ -2320,21 +2366,23 @@ pub async fn init_agent_sessions(
             active_session: Some(response),
         })
     } else {
-        // Start agent processes for all sessions with their persisted permission_mode
+        // Start agent processes for all sessions with their persisted permission_mode.
+        // Sequential execution is required because start_agent_session_internal
+        // transitively calls spawn_bridge_process, making the Future !Send
+        // and incompatible with tokio::spawn.
         for s in &sessions {
-            let app_c = app.clone();
-            let h_c = Arc::clone(handles.inner());
-            let ss_c = Arc::clone(session_store.inner());
-            let sid = s.id.clone();
-            let cwd = worktree_path.clone();
-            let pm_c = s.permission_mode.clone();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    start_agent_session_internal(&app_c, &h_c, &ss_c, &sid, &cwd, Some(pm_c)).await
-                {
-                    log::error!("Failed to start agent session {sid}: {e}");
-                }
-            });
+            if let Err(e) = start_agent_session_internal(
+                &app,
+                handles.inner(),
+                session_store.inner(),
+                &s.id,
+                &worktree_path,
+                Some(s.permission_mode.clone()),
+            )
+            .await
+            {
+                log::error!("Failed to start agent session {}: {e}", s.id);
+            }
         }
 
         // Get first session as active
@@ -2580,6 +2628,57 @@ pub async fn prepare_image_attachments_from_paths(
         }
     }
     Ok(attachments)
+}
+
+/// ワークフローエンジンから呼ばれる内部版。
+/// AgentSessionを開始し、プロンプトを送信する。
+/// メッセージの追加(human + agent)とstart_agent_turnをまとめて行う。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn start_agent_turn_internal(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    cwd: &str,
+    permission_mode: &str,
+    prompt: &str,
+) -> Result<(), String> {
+    let data_dir = resolve_data_dir(app)?;
+
+    // Add human message
+    let _human_msg = add_message_internal(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        MessageRole::Human,
+        prompt,
+        None,
+        None,
+    )?;
+
+    // Add empty agent message (will be filled by streaming)
+    let agent_msg = add_message_internal(
+        session_store,
+        &data_dir,
+        chat_session_id,
+        MessageRole::Agent,
+        "",
+        None,
+        None,
+    )?;
+
+    start_agent_turn(
+        app,
+        handles,
+        session_store,
+        chat_session_id,
+        cwd,
+        permission_mode,
+        prompt,
+        &agent_msg.id,
+        &[],
+    )
+    .await
 }
 
 #[cfg(test)]

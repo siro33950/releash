@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{Manager, State};
 
+pub use crate::workflow::state::WorkflowState;
 pub use store::SessionStore;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -173,6 +174,8 @@ pub struct ChatSession {
     pub permission_mode: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub selected_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub workflow_state: Option<WorkflowState>,
 }
 
 fn default_permission_mode() -> String {
@@ -360,6 +363,7 @@ pub fn create_session_internal(
         agent_session_id: None,
         permission_mode: default_permission_mode(),
         selected_model: None,
+        workflow_state: None,
     };
     session_store.save_session(data_dir, &session)?;
     Ok(session)
@@ -496,6 +500,7 @@ pub fn update_session_agent_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workflow::state::{StepHistoryEntry, WorkflowExecutionState};
 
     #[test]
     fn chat_session_to_summary_basic() {
@@ -518,6 +523,7 @@ mod tests {
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
+            workflow_state: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.id, "s1");
@@ -548,6 +554,7 @@ mod tests {
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
+            workflow_state: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message.len(), 100 + "…".len());
@@ -577,6 +584,7 @@ mod tests {
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
+            workflow_state: None,
         };
         let summary = session.to_summary();
         // 100 chars of "あ" (300 bytes) + "…" (3 bytes)
@@ -597,6 +605,7 @@ mod tests {
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
+            workflow_state: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message, "");
@@ -716,6 +725,7 @@ mod tests {
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
+            workflow_state: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         let back: ChatSession = serde_json::from_str(&json).unwrap();
@@ -744,6 +754,7 @@ mod tests {
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
             selected_model: Some("claude-opus-4-6".to_string()),
+            workflow_state: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("selectedModel"));
@@ -1146,5 +1157,112 @@ mod tests {
         assert_eq!(content, "hello");
         assert_eq!(thinking, None);
         assert_eq!(activities, None);
+    }
+
+    // ---- WorkflowState serde ----
+
+    #[test]
+    fn workflow_state_serde_roundtrip() {
+        let state = WorkflowState {
+            execution_id: "exec-1".to_string(),
+            workflow_name: "review-cycle".to_string(),
+            state: WorkflowExecutionState::Running,
+            current_step_index: 2,
+            current_step_name: "review".to_string(),
+            total_steps: 4,
+            step_history: vec![
+                StepHistoryEntry {
+                    step_name: "plan".to_string(),
+                    completed_at: 1000.0,
+                    result: None,
+                },
+                StepHistoryEntry {
+                    step_name: "implement".to_string(),
+                    completed_at: 1001.0,
+                    result: Some("done".to_string()),
+                },
+            ],
+            started_at: 999.0,
+            updated_at: 1001.0,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: WorkflowState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.execution_id, "exec-1");
+        assert_eq!(back.workflow_name, "review-cycle");
+        assert_eq!(back.state, WorkflowExecutionState::Running);
+        assert_eq!(back.current_step_index, 2);
+        assert_eq!(back.current_step_name, "review");
+        assert_eq!(back.total_steps, 4);
+        assert_eq!(back.step_history.len(), 2);
+        assert_eq!(back.step_history[0].step_name, "plan");
+        assert_eq!(back.step_history[1].result, Some("done".to_string()));
+    }
+
+    #[test]
+    fn workflow_execution_state_failed_tagged_enum_format() {
+        let state = WorkflowExecutionState::Failed {
+            reason: "exit code 1".to_string(),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "failed");
+        assert_eq!(v["reason"], "exit code 1");
+        let back: WorkflowExecutionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, state);
+    }
+
+    #[test]
+    fn workflow_execution_state_all_variants_serde() {
+        let variants = vec![
+            WorkflowExecutionState::Running,
+            WorkflowExecutionState::WaitingApproval,
+            WorkflowExecutionState::Completed,
+            WorkflowExecutionState::Failed {
+                reason: "err".to_string(),
+            },
+            WorkflowExecutionState::Aborted,
+        ];
+        for state in variants {
+            let json = serde_json::to_string(&state).unwrap();
+            let back: WorkflowExecutionState = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, state);
+        }
+    }
+
+    #[test]
+    fn chat_session_with_workflow_state_roundtrip() {
+        let session = ChatSession {
+            id: "s1".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![],
+            state: SessionState::Active,
+            created_at: 1000.0,
+            updated_at: 1001.0,
+            agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state: Some(WorkflowState {
+                execution_id: "exec-1".to_string(),
+                workflow_name: "test-wf".to_string(),
+                state: WorkflowExecutionState::WaitingApproval,
+                current_step_index: 1,
+                current_step_name: "review".to_string(),
+                total_steps: 3,
+                step_history: vec![StepHistoryEntry {
+                    step_name: "implement".to_string(),
+                    completed_at: 1000.5,
+                    result: None,
+                }],
+                started_at: 999.0,
+                updated_at: 1000.5,
+            }),
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("workflowState"));
+        let back: ChatSession = serde_json::from_str(&json).unwrap();
+        let ws = back.workflow_state.unwrap();
+        assert_eq!(ws.execution_id, "exec-1");
+        assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
+        assert_eq!(ws.step_history.len(), 1);
     }
 }

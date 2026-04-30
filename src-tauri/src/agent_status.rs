@@ -22,6 +22,8 @@ pub struct SessionStatus {
     pub session_state: SessionState,
     pub pending_permission: bool,
     pub last_activity_at: f64,
+    pub workflow_step: Option<String>,
+    pub workflow_execution_state: Option<String>,
 }
 
 /// `TurnPhase` は `agent_sdk` 側で `Copy + Serialize` だが `Eq` を持たないため、
@@ -108,6 +110,8 @@ impl AgentStatusCenter {
             && a.turn_phase == b.turn_phase
             && a.session_state == b.session_state
             && a.pending_permission == b.pending_permission
+            && a.workflow_step == b.workflow_step
+            && a.workflow_execution_state == b.workflow_execution_state
     }
 
     fn is_workspace_state_equivalent(a: &WorkspaceStatus, b: &WorkspaceStatus) -> bool {
@@ -332,6 +336,12 @@ impl AgentStatusCenter {
         let _ = self.app_handle.emit("workspace-status-changed", status);
     }
 
+    /// ワークフロー状態変更を通知する。
+    pub fn emit_workflow_state_changed(&self, payload: &impl Serialize) {
+        use tauri::Emitter;
+        let _ = self.app_handle.emit("workflow-state-changed", payload);
+    }
+
     /// 既存 frontend / remote が購読している `agent-state-changed` を維持する。
     fn emit_agent_state_changed_compat(
         &self,
@@ -424,6 +434,8 @@ mod tests {
             session_state,
             pending_permission: matches!(turn_phase, TurnPhase::WaitingPermission),
             last_activity_at: 0.0,
+            workflow_step: None,
+            workflow_execution_state: None,
         }
     }
 

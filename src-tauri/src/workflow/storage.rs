@@ -140,7 +140,10 @@ fn list_yml_summaries<T, E: fmt::Display>(
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("yml") {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                log::warn!("{label}読み込みスキップ: {}: 無効なファイル名", path.display());
+                log::warn!(
+                    "{label}読み込みスキップ: {}: 無効なファイル名",
+                    path.display()
+                );
                 continue;
             };
             match loader(&path) {
