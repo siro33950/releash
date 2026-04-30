@@ -86,6 +86,16 @@ impl WorkflowExecution {
         )
     }
 
+    /// ワークフローが終了状態（Completed / Failed / Aborted）かどうかを返す。
+    fn is_terminal(&self) -> bool {
+        matches!(
+            self.state,
+            WorkflowExecutionState::Completed
+                | WorkflowExecutionState::Failed { .. }
+                | WorkflowExecutionState::Aborted
+        )
+    }
+
     /// ワークフロー開始の事前条件を検証する（純粋関数）。
     fn validate_start(
         workflow: &Workflow,
@@ -323,12 +333,8 @@ impl WorkflowEngine {
         workflow: Workflow,
         chat_session_id: &str,
     ) -> Result<(), WorkflowEngineError> {
-        {
-            let execs = self.executions.lock().await;
-            WorkflowExecution::validate_start(&workflow, execs.get(chat_session_id))?;
-        }
-
         // worktree_pathはセッションから取得（唯一のソース）
+        // ロック前に非同期I/Oを完了させる
         let data_dir = crate::session::resolve_data_dir(app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let session = session_store
@@ -350,9 +356,11 @@ impl WorkflowEngine {
             updated_at: now,
         };
 
+        // validate_start → insert を同一ロックで原子的に実行
         let step_name = workflow.steps[0].name.clone();
         {
             let mut execs = self.executions.lock().await;
+            WorkflowExecution::validate_start(&workflow, execs.get(chat_session_id))?;
             execution.step_execution_counts.insert(step_name.clone(), 1);
             execs.insert(chat_session_id.to_string(), execution);
         }
@@ -621,6 +629,10 @@ impl WorkflowEngine {
             let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
                 WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
             })?;
+            // 終了状態（Completed/Failed/Aborted）からの上書きを防止
+            if exec.is_terminal() {
+                return Ok(());
+            }
             exec.state = new_state;
             exec.updated_at = current_timestamp();
         }
@@ -726,6 +738,11 @@ impl WorkflowEngine {
             let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
                 WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
             })?;
+
+            // 終了状態（Completed/Failed/Aborted）からの遷移を防止
+            if exec.is_terminal() {
+                return Ok(());
+            }
 
             let idx = exec
                 .workflow
@@ -1734,5 +1751,43 @@ mod tests {
         let workflow = make_test_workflow();
         let result = WorkflowExecution::validate_start(&workflow, None);
         assert!(result.is_ok());
+    }
+
+    // ---- is_terminal ----
+
+    #[test]
+    fn is_terminal_completed() {
+        let mut exec = make_exec(0);
+        exec.state = WorkflowExecutionState::Completed;
+        assert!(exec.is_terminal());
+    }
+
+    #[test]
+    fn is_terminal_failed() {
+        let mut exec = make_exec(0);
+        exec.state = WorkflowExecutionState::Failed {
+            reason: "err".to_string(),
+        };
+        assert!(exec.is_terminal());
+    }
+
+    #[test]
+    fn is_terminal_aborted() {
+        let mut exec = make_exec(0);
+        exec.state = WorkflowExecutionState::Aborted;
+        assert!(exec.is_terminal());
+    }
+
+    #[test]
+    fn is_terminal_running_is_false() {
+        let exec = make_exec(0);
+        assert!(!exec.is_terminal());
+    }
+
+    #[test]
+    fn is_terminal_waiting_approval_is_false() {
+        let mut exec = make_exec(0);
+        exec.state = WorkflowExecutionState::WaitingApproval;
+        assert!(!exec.is_terminal());
     }
 }
