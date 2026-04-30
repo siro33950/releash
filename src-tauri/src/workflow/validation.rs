@@ -70,7 +70,7 @@ pub fn validate_name(name: &str) -> Result<(), ValidationError> {
 pub fn validate_prompt_template(template: &PromptTemplate) -> Result<(), ValidationError> {
     validate_name(&template.name)?;
 
-    if template.content.is_empty() {
+    if template.content.trim().is_empty() {
         return Err(ValidationError::EmptyTemplateContent);
     }
 
@@ -271,6 +271,22 @@ mod tests {
             validate_prompt_template(&tpl).unwrap_err(),
             ValidationError::EmptyTemplateContent
         ));
+    }
+
+    #[test]
+    fn prompt_template_whitespace_only_content_fails() {
+        let cases = ["   ", "\n", "\t", "  \n\t  "];
+        for content in &cases {
+            let tpl = make_prompt("fixer", content, vec![]);
+            assert!(
+                matches!(
+                    validate_prompt_template(&tpl).unwrap_err(),
+                    ValidationError::EmptyTemplateContent
+                ),
+                "whitespace-only content {:?} should fail validation",
+                content
+            );
+        }
     }
 
     #[test]

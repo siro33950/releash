@@ -100,10 +100,17 @@ pub fn save_workflow(dir: &Path, workflow: &Workflow) -> Result<(), StorageError
     let content = serde_saphyr::to_string(workflow)?;
 
     let file_path = dir.join(format!("{}.yml", workflow.name));
-    let tmp_path = file_path.with_extension("yml.tmp");
+    let tmp_path = dir.join(format!(
+        "{}.yml.{}.tmp",
+        workflow.name,
+        uuid::Uuid::new_v4()
+    ));
 
     fs::write(&tmp_path, &content)?;
-    fs::rename(&tmp_path, &file_path)?;
+    if let Err(e) = fs::rename(&tmp_path, &file_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
 
     Ok(())
 }
