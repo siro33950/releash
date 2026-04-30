@@ -1,0 +1,27 @@
+name: plan-implement-review
+description: Plan → implement → review → fix loop
+builtin: true
+
+steps:
+  - name: plan
+    mode: interactive
+    prompt: planner
+
+  - name: implement
+    mode: auto
+    prompt: coder
+
+  - name: review
+    mode: auto
+    prompt: reviewer
+    rules:
+      - match: NEEDS_FIX
+        next: implement
+      - match: LGTM
+        next: report
+    cycle_guard:
+      max_iterations: 5
+
+  - name: report
+    mode: approval
+    prompt: reporter

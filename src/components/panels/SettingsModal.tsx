@@ -6,6 +6,7 @@ import {
 	Check,
 	Code,
 	Copy,
+	ExternalLink,
 	GitBranch,
 	Globe,
 	Loader2,
@@ -13,6 +14,8 @@ import {
 	Palette,
 	Plug,
 	Shield,
+	Trash2,
+	Workflow,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useReducer, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -41,6 +44,7 @@ import { useMcpConfig } from "@/hooks/useMcpConfig";
 import { useNotionSettings } from "@/hooks/useNotionSettings";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useWebhookConfig } from "@/hooks/useWebhookConfig";
+import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { trackEvent } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
 import type { BranchInfo } from "@/types/git";
@@ -141,6 +145,7 @@ type SettingsSection =
 	| "remote"
 	| "background"
 	| "notifications"
+	| "workflows"
 	| "privacy";
 
 const SETTINGS_SECTIONS: {
@@ -157,6 +162,7 @@ const SETTINGS_SECTIONS: {
 	{ id: "remote", label: "Remote", icon: Globe },
 	{ id: "background", label: "Background", icon: Monitor },
 	{ id: "notifications", label: "Notifications", icon: Bell },
+	{ id: "workflows", label: "Workflows", icon: Workflow },
 	{ id: "privacy", label: "Privacy & Updates", icon: Shield },
 ];
 
@@ -1087,6 +1093,81 @@ function NotificationsSection({
 	);
 }
 
+function WorkflowsSection({
+	workflowConfig,
+}: {
+	workflowConfig: ReturnType<typeof useWorkflowConfig>;
+}) {
+	const { workflows, loading, error, deleteWorkflow, openInEditor } =
+		workflowConfig;
+
+	return (
+		<div className="flex flex-col gap-4">
+			<div className="flex items-center justify-between">
+				<h3 className="text-sm font-medium">Workflows</h3>
+			</div>
+
+			{error && <p className="text-xs text-destructive">{error}</p>}
+
+			{loading ? (
+				<div className="flex items-center gap-2 text-sm text-muted-foreground">
+					<Loader2 className="size-4 animate-spin" />
+					Loading workflows...
+				</div>
+			) : workflows.length === 0 ? (
+				<p className="text-sm text-muted-foreground">No workflows found.</p>
+			) : (
+				<div className="flex flex-col gap-2">
+					{workflows.map((wf) => (
+						<div
+							key={wf.name}
+							className="flex items-center justify-between rounded-md border border-border p-3"
+						>
+							<div className="flex flex-col gap-0.5">
+								<div className="flex items-center gap-2">
+									<span className="text-sm font-medium">{wf.name}</span>
+									{wf.builtin && (
+										<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+											builtin
+										</span>
+									)}
+								</div>
+								<span className="text-xs text-muted-foreground">
+									{wf.description}
+								</span>
+							</div>
+							<div className="flex items-center gap-1">
+								<Button
+									variant="ghost"
+									size="icon"
+									className="size-7"
+									onClick={() => openInEditor(wf.name)}
+									aria-label={`Open workflow ${wf.name} in editor`}
+									title="Open in editor"
+								>
+									<ExternalLink className="size-3.5" />
+								</Button>
+								{!wf.builtin && (
+									<Button
+										variant="ghost"
+										size="icon"
+										className="size-7 text-destructive hover:text-destructive"
+										onClick={() => deleteWorkflow(wf.name)}
+										aria-label={`Delete workflow ${wf.name}`}
+										title="Delete workflow"
+									>
+										<Trash2 className="size-3.5" />
+									</Button>
+								)}
+							</div>
+						</div>
+					))}
+				</div>
+			)}
+		</div>
+	);
+}
+
 function PrivacySection({
 	draft,
 	updateDraft,
@@ -1230,6 +1311,7 @@ export function SettingsModal({
 	const notion = useNotionSettings(repoPaths);
 	const mcp = useMcpConfig();
 	const externalEditor = useExternalEditorConfig(open);
+	const workflowConfig = useWorkflowConfig(open);
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
@@ -1429,6 +1511,8 @@ export function SettingsModal({
 				return <BackgroundSection background={background} />;
 			case "notifications":
 				return <NotificationsSection webhook={webhook} />;
+			case "workflows":
+				return <WorkflowsSection workflowConfig={workflowConfig} />;
 			case "privacy":
 				return <PrivacySection draft={draft} updateDraft={updateDraft} />;
 		}

@@ -1,0 +1,13 @@
+name: reporter
+description: 作業結果をレポートするプロンプト
+builtin: true
+content: |
+  {{project_name}}プロジェクトの作業結果をレポートしてください。
+
+  以下の内容を含めてください:
+  - 実施した変更の概要
+  - テスト結果
+  - 特記事項
+variables:
+  - name: project_name
+    description: プロジェクト名

@@ -24,6 +24,7 @@ mod tray;
 mod vpn_detect;
 mod watcher;
 mod webhook;
+mod workflow;
 mod workspace_state_store;
 mod ws_bridge;
 mod ws_server;
@@ -188,6 +189,20 @@ pub fn run() {
                         log::error!("MCP server auto-start failed: {e}");
                     }
                 });
+            }
+
+            // Initialize builtin workflows
+            if let Err(e) =
+                workflow::builtin::init_builtin_workflows(&workflow::storage::workflows_dir())
+            {
+                log::error!("ビルトインワークフローの初期化に失敗: {e}");
+            }
+
+            // Initialize builtin prompt templates
+            if let Err(e) =
+                workflow::builtin::init_builtin_prompts(&workflow::storage::prompts_dir())
+            {
+                log::error!("ビルトインプロンプトテンプレートの初期化に失敗: {e}");
             }
 
             if telemetry_enabled {
@@ -367,6 +382,13 @@ pub fn run() {
             session::add_message,
             session::update_session_state,
             session::update_session_agent_info,
+            // Workflow
+            workflow::commands::list_workflows,
+            workflow::commands::get_workflow,
+            workflow::commands::save_workflow,
+            workflow::commands::delete_workflow,
+            workflow::commands::open_workflow_in_editor,
+            workflow::commands::list_prompt_templates,
             // Menu
             menu::set_menu_items_enabled,
         ])

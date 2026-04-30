@@ -1,0 +1,23 @@
+name: quick-fix
+description: Quick bug-fix workflow
+builtin: true
+
+steps:
+  - name: fix
+    mode: auto
+    prompt: fixer
+
+  - name: verify
+    mode: auto
+    prompt: verifier
+    rules:
+      - match: NEEDS_FIX
+        next: fix
+      - match: LGTM
+        next: done
+    cycle_guard:
+      max_iterations: 3
+
+  - name: done
+    mode: approval
+    prompt: reporter

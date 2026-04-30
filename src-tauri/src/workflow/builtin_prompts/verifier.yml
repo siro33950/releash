@@ -1,0 +1,15 @@
+name: verifier
+description: 修正結果を検証するプロンプト
+builtin: true
+content: |
+  {{project_name}}プロジェクトの修正結果を検証してください。
+
+  以下の観点で検証し、結果を判定してください:
+  - 修正が問題を正しく解決しているか
+  - 新たな問題が発生していないか
+  - テストが通っているか
+
+  判定: LGTM（問題なし）または NEEDS_FIX（修正が必要）
+variables:
+  - name: project_name
+    description: プロジェクト名
