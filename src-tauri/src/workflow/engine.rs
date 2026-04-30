@@ -311,6 +311,14 @@ enum InteractiveAction {
     Abort,
 }
 
+/// ロック内で確定した遷移結果。ロック外で永続化・AgentSession起動を行うための情報を持つ。
+enum StepOutcome {
+    /// 状態を永続化・ブロードキャストするだけ（終了状態遷移など）
+    Persist(WorkflowState),
+    /// 次のステップに遷移し、AgentSession を起動する
+    TransitionAndStart(WorkflowState),
+}
+
 /// ワークフローのステップを順次実行するステートマシンエンジン。
 pub struct WorkflowEngine {
     executions: Mutex<HashMap<String, WorkflowExecution>>,
@@ -356,19 +364,20 @@ impl WorkflowEngine {
             updated_at: now,
         };
 
-        // validate_start → insert を同一ロックで原子的に実行
+        // validate_start → insert → スナップショット確定を同一ロックで原子的に実行
         let step_name = workflow.steps[0].name.clone();
-        {
+        let snapshot = {
             let mut execs = self.executions.lock().await;
             WorkflowExecution::validate_start(&workflow, execs.get(chat_session_id))?;
             execution.step_execution_counts.insert(step_name.clone(), 1);
             execs.insert(chat_session_id.to_string(), execution);
-        }
+            execs.get(chat_session_id).unwrap().to_workflow_state()
+        };
 
-        // 永続化・ブロードキャスト
-        self.persist_state(app, session_store, chat_session_id)
+        // 永続化・ブロードキャスト（ロック内で確定したスナップショットを使用）
+        self.persist_state(app, session_store, chat_session_id, snapshot.clone())
             .await?;
-        self.broadcast_state(app, chat_session_id).await;
+        self.broadcast_state(app, chat_session_id, snapshot);
 
         // 最初のステップのAgentSession開始＋プロンプト送信
         // 失敗時はFailed状態に遷移して永続化する
@@ -393,6 +402,8 @@ impl WorkflowEngine {
 
     /// turn_complete後に呼ばれるフック。
     /// autoモード→タグ検出で遷移、approvalモード→WaitingApproval、interactiveモード→何もしない。
+    /// SessionError / WaitApproval は判定 + 状態変更を1回のロックで原子的に実行する。
+    /// AutoEvaluate はタグ検出が必要なため handle_auto_complete に委譲する。
     pub async fn on_turn_complete(
         &self,
         app: &tauri::AppHandle,
@@ -402,34 +413,50 @@ impl WorkflowEngine {
         exit_code: i64,
         final_parts: &[crate::session::MessagePart],
     ) -> Result<(), WorkflowEngineError> {
-        let action = {
-            let execs = self.executions.lock().await;
-            let exec = execs.get(chat_session_id).ok_or_else(|| {
+        // 判定 + 状態変更を原子的に実行（AutoEvaluate以外）
+        let action_or_outcome = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
                 WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
             })?;
-            exec.decide_turn_complete_action(exit_code)
-        };
+            let action = exec.decide_turn_complete_action(exit_code);
 
-        match action {
-            TurnCompleteAction::NotRunning | TurnCompleteAction::Noop => Ok(()),
-            TurnCompleteAction::SessionError {
-                step_name,
-                exit_code,
-            } => {
-                self.set_execution_state(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    WorkflowExecutionState::Failed {
+            match action {
+                TurnCompleteAction::NotRunning | TurnCompleteAction::Noop => return Ok(()),
+                TurnCompleteAction::SessionError {
+                    step_name,
+                    exit_code,
+                } => {
+                    if exec.is_terminal() {
+                        return Ok(());
+                    }
+                    exec.state = WorkflowExecutionState::Failed {
                         reason: format!(
                             "AgentSession error at step '{}' (exit_code: {})",
                             step_name, exit_code
                         ),
-                    },
-                )
-                .await
+                    };
+                    exec.updated_at = current_timestamp();
+                    Ok(StepOutcome::Persist(exec.to_workflow_state()))
+                }
+                TurnCompleteAction::WaitApproval => {
+                    if exec.is_terminal() {
+                        return Ok(());
+                    }
+                    exec.state = WorkflowExecutionState::WaitingApproval;
+                    exec.updated_at = current_timestamp();
+                    Ok(StepOutcome::Persist(exec.to_workflow_state()))
+                }
+                TurnCompleteAction::AutoEvaluate { rules, step_name } => Err((rules, step_name)),
             }
-            TurnCompleteAction::AutoEvaluate { rules, step_name } => {
+        };
+
+        match action_or_outcome {
+            Ok(outcome) => {
+                self.execute_outcome(app, session_store, handles, chat_session_id, outcome)
+                    .await
+            }
+            Err((rules, step_name)) => {
                 self.handle_auto_complete(
                     app,
                     session_store,
@@ -441,19 +468,12 @@ impl WorkflowEngine {
                 )
                 .await
             }
-            TurnCompleteAction::WaitApproval => {
-                self.set_execution_state(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    WorkflowExecutionState::WaitingApproval,
-                )
-                .await
-            }
         }
     }
 
     /// approvalモードでのユーザー判定を処理する。
+    /// 判定 + 状態変更 + 履歴記録を1回のロックで原子的に実行し、
+    /// ロック外では永続化・ブロードキャスト・AgentSession起動のみ行う。
     pub async fn handle_approval(
         &self,
         app: &tauri::AppHandle,
@@ -462,73 +482,64 @@ impl WorkflowEngine {
         chat_session_id: &str,
         decision: ApprovalDecision,
     ) -> Result<(), WorkflowEngineError> {
-        let (action, step_name) = {
-            let execs = self.executions.lock().await;
-            let exec = execs.get(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
-            let action = exec.decide_approval_action(&decision)?;
-            let step_name = exec.workflow.steps[exec.current_step_index].name.clone();
-            (action, step_name)
-        };
-
         let result_tag = match &decision {
             ApprovalDecision::Approve => "approve",
             ApprovalDecision::Reject => "reject",
             ApprovalDecision::Abort => "abort",
         };
 
-        match action {
-            ApprovalAction::Advance => {
-                self.record_step_completion(
-                    chat_session_id,
-                    &step_name,
-                    Some(result_tag.to_string()),
-                )
-                .await;
-                self.advance_to_next(app, session_store, handles, chat_session_id)
-                    .await
-            }
-            ApprovalAction::TransitionTo(target) => {
-                self.record_step_completion(
-                    chat_session_id,
-                    &step_name,
-                    Some(result_tag.to_string()),
-                )
-                .await;
-                self.transition_to_step(app, session_store, handles, chat_session_id, &target)
-                    .await
-            }
-            ApprovalAction::FailedNoRejectRule(name) => {
-                self.record_step_completion(
-                    chat_session_id,
-                    &step_name,
-                    Some(result_tag.to_string()),
-                )
-                .await;
-                self.set_execution_state(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    WorkflowExecutionState::Failed {
+        // 判定 + 状態変更 + 履歴記録を原子的に実行
+        let outcome = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
+            let action = exec.decide_approval_action(&decision)?;
+            let step_name = exec.workflow.steps[exec.current_step_index].name.clone();
+
+            match action {
+                ApprovalAction::Advance => {
+                    exec.step_history.push(StepHistoryEntry {
+                        step_name,
+                        completed_at: current_timestamp(),
+                        result: Some(result_tag.to_string()),
+                    });
+                    Self::apply_advance(exec)
+                }
+                ApprovalAction::TransitionTo(target) => {
+                    exec.step_history.push(StepHistoryEntry {
+                        step_name,
+                        completed_at: current_timestamp(),
+                        result: Some(result_tag.to_string()),
+                    });
+                    Self::apply_transition(exec, &target)?
+                }
+                ApprovalAction::FailedNoRejectRule(name) => {
+                    exec.step_history.push(StepHistoryEntry {
+                        step_name,
+                        completed_at: current_timestamp(),
+                        result: Some(result_tag.to_string()),
+                    });
+                    exec.state = WorkflowExecutionState::Failed {
                         reason: format!("No reject rule defined for step '{}'", name),
-                    },
-                )
-                .await
+                    };
+                    exec.updated_at = current_timestamp();
+                    StepOutcome::Persist(exec.to_workflow_state())
+                }
+                ApprovalAction::Abort => {
+                    exec.state = WorkflowExecutionState::Aborted;
+                    exec.updated_at = current_timestamp();
+                    StepOutcome::Persist(exec.to_workflow_state())
+                }
             }
-            ApprovalAction::Abort => {
-                self.set_execution_state(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    WorkflowExecutionState::Aborted,
-                )
-                .await
-            }
-        }
+        };
+
+        self.execute_outcome(app, session_store, handles, chat_session_id, outcome)
+            .await
     }
 
     /// interactiveモードの完了/中止を処理する。
+    /// 判定 + 状態変更 + 履歴記録を1回のロックで原子的に実行する。
     pub async fn complete_interactive(
         &self,
         app: &tauri::AppHandle,
@@ -537,37 +548,33 @@ impl WorkflowEngine {
         chat_session_id: &str,
         abort: bool,
     ) -> Result<(), WorkflowEngineError> {
-        let (action, step_name) = {
-            let execs = self.executions.lock().await;
-            let exec = execs.get(chat_session_id).ok_or_else(|| {
+        let outcome = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
                 WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
             })?;
             let action = exec.decide_interactive_action(abort)?;
             let step_name = exec.workflow.steps[exec.current_step_index].name.clone();
-            (action, step_name)
+
+            match action {
+                InteractiveAction::Abort => {
+                    exec.state = WorkflowExecutionState::Aborted;
+                    exec.updated_at = current_timestamp();
+                    StepOutcome::Persist(exec.to_workflow_state())
+                }
+                InteractiveAction::Advance => {
+                    exec.step_history.push(StepHistoryEntry {
+                        step_name,
+                        completed_at: current_timestamp(),
+                        result: Some("complete".to_string()),
+                    });
+                    Self::apply_advance(exec)
+                }
+            }
         };
 
-        match action {
-            InteractiveAction::Abort => {
-                self.set_execution_state(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    WorkflowExecutionState::Aborted,
-                )
-                .await
-            }
-            InteractiveAction::Advance => {
-                self.record_step_completion(
-                    chat_session_id,
-                    &step_name,
-                    Some("complete".to_string()),
-                )
-                .await;
-                self.advance_to_next(app, session_store, handles, chat_session_id)
-                    .await
-            }
-        }
+        self.execute_outcome(app, session_store, handles, chat_session_id, outcome)
+            .await
     }
 
     /// ワークフローを中断する。
@@ -624,7 +631,7 @@ impl WorkflowEngine {
         chat_session_id: &str,
         new_state: WorkflowExecutionState,
     ) -> Result<(), WorkflowEngineError> {
-        {
+        let snapshot = {
             let mut execs = self.executions.lock().await;
             let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
                 WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
@@ -635,14 +642,16 @@ impl WorkflowEngine {
             }
             exec.state = new_state;
             exec.updated_at = current_timestamp();
-        }
-        self.persist_state(app, session_store, chat_session_id)
+            exec.to_workflow_state()
+        };
+        self.persist_state(app, session_store, chat_session_id, snapshot.clone())
             .await?;
-        self.broadcast_state(app, chat_session_id).await;
+        self.broadcast_state(app, chat_session_id, snapshot);
         Ok(())
     }
 
     /// autoモードのタグ検出結果を処理する。
+    /// 判定 + 状態変更 + 履歴記録を1回のロックで原子的に実行する。
     #[allow(clippy::too_many_arguments)]
     async fn handle_auto_complete(
         &self,
@@ -654,38 +663,55 @@ impl WorkflowEngine {
         rules: &[TransitionRule],
         step_name: &str,
     ) -> Result<(), WorkflowEngineError> {
-        // テキストパートを結合
+        // テキストパートを結合（ロック外で完了）
         let text = Self::extract_text_from_parts(final_parts);
 
-        if rules.is_empty() {
-            // ルールがない場合は定義順で次のステップに遷移
-            self.record_step_completion(chat_session_id, step_name, None)
-                .await;
-            return self
-                .advance_to_next(app, session_store, handles, chat_session_id)
-                .await;
-        }
+        // タグ検出もロック外で完了（純粋関数）
+        let rule_match = if rules.is_empty() {
+            None // ルールなし → 定義順で次へ
+        } else {
+            Some(Self::evaluate_auto_rules(&text, rules))
+        };
 
-        // タグ検出
-        match Self::evaluate_auto_rules(&text, rules) {
-            Some((next_step, matched_rule)) => {
-                self.record_step_completion(chat_session_id, step_name, Some(matched_rule))
-                    .await;
-                self.transition_to_step(app, session_store, handles, chat_session_id, &next_step)
-                    .await
-            }
-            None => {
-                self.set_execution_state(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    WorkflowExecutionState::Failed {
+        // 判定 + 状態変更 + 履歴記録を原子的に実行
+        let outcome = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
+            })?;
+
+            match rule_match {
+                None => {
+                    // ルールなし → 定義順で次へ
+                    exec.step_history.push(StepHistoryEntry {
+                        step_name: step_name.to_string(),
+                        completed_at: current_timestamp(),
+                        result: None,
+                    });
+                    Self::apply_advance(exec)
+                }
+                Some(Some((next_step, matched_rule))) => {
+                    // ルールマッチ → 指定ステップへ遷移
+                    exec.step_history.push(StepHistoryEntry {
+                        step_name: step_name.to_string(),
+                        completed_at: current_timestamp(),
+                        result: Some(matched_rule),
+                    });
+                    Self::apply_transition(exec, &next_step)?
+                }
+                Some(None) => {
+                    // マッチなし → Failed
+                    exec.state = WorkflowExecutionState::Failed {
                         reason: format!("No matching rule found for step '{}' output", step_name),
-                    },
-                )
-                .await
+                    };
+                    exec.updated_at = current_timestamp();
+                    StepOutcome::Persist(exec.to_workflow_state())
+                }
             }
-        }
+        };
+
+        self.execute_outcome(app, session_store, handles, chat_session_id, outcome)
+            .await
     }
 
     /// autoモードのタグ検出。rulesの定義順で最初にマッチしたルールを返す。
@@ -721,133 +747,6 @@ impl WorkflowEngine {
             }
         }
         text
-    }
-
-    /// 指定ステップに遷移する（サイクルガード検証含む）。
-    async fn transition_to_step(
-        &self,
-        app: &tauri::AppHandle,
-        session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
-        chat_session_id: &str,
-        target_step_name: &str,
-    ) -> Result<(), WorkflowEngineError> {
-        // サイクルガードチェック + 遷移実行を1回のロックで処理
-        let exceeded_info = {
-            let mut execs = self.executions.lock().await;
-            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
-
-            // 終了状態（Completed/Failed/Aborted）からの遷移を防止
-            if exec.is_terminal() {
-                return Ok(());
-            }
-
-            let idx = exec
-                .workflow
-                .steps
-                .iter()
-                .position(|s| s.name == target_step_name)
-                .ok_or_else(|| {
-                    WorkflowEngineError::InvalidWorkflow(format!(
-                        "Step '{}' not found in workflow",
-                        target_step_name
-                    ))
-                })?;
-
-            let guard_result = exec.check_cycle_guard(target_step_name)?;
-
-            match guard_result {
-                CycleGuardResult::Exceeded {
-                    max_iterations,
-                    count,
-                } => Some((max_iterations, count)),
-                CycleGuardResult::Allowed => {
-                    exec.current_step_index = idx;
-                    exec.state = WorkflowExecutionState::Running;
-                    *exec
-                        .step_execution_counts
-                        .entry(target_step_name.to_string())
-                        .or_insert(0) += 1;
-                    exec.updated_at = current_timestamp();
-                    None
-                }
-            }
-        };
-
-        if let Some((max_iterations, count)) = exceeded_info {
-            return self
-                .set_execution_state(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    WorkflowExecutionState::Failed {
-                        reason: format!(
-                            "Cycle guard exceeded for step '{}': max_iterations={}, executed={}",
-                            target_step_name, max_iterations, count
-                        ),
-                    },
-                )
-                .await;
-        }
-
-        self.persist_state(app, session_store, chat_session_id)
-            .await?;
-        self.broadcast_state(app, chat_session_id).await;
-
-        // 次のステップのAgentSession開始＋プロンプト送信
-        // 失敗時はFailed状態に遷移して永続化する
-        if let Err(e) = self
-            .start_step_session(app, handles, session_store, chat_session_id)
-            .await
-        {
-            let _ = self
-                .set_execution_state(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    WorkflowExecutionState::Failed {
-                        reason: format!("Failed to start step session: {e}"),
-                    },
-                )
-                .await;
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    /// 定義順で次のステップに遷移する。最後のステップならCompletedに。
-    async fn advance_to_next(
-        &self,
-        app: &tauri::AppHandle,
-        session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
-        chat_session_id: &str,
-    ) -> Result<(), WorkflowEngineError> {
-        let decision = {
-            let execs = self.executions.lock().await;
-            let exec = execs.get(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
-            exec.decide_next_step()
-        };
-
-        match decision {
-            NextStepDecision::Completed => {
-                self.set_execution_state(
-                    app,
-                    session_store,
-                    chat_session_id,
-                    WorkflowExecutionState::Completed,
-                )
-                .await
-            }
-            NextStepDecision::TransitionTo(name) => {
-                self.transition_to_step(app, session_store, handles, chat_session_id, &name)
-                    .await
-            }
-        }
     }
 
     /// 現在のステップのAgentSessionを開始し、プロンプトを送信する。
@@ -922,38 +821,134 @@ impl WorkflowEngine {
         }
     }
 
-    /// ステップ完了を履歴に記録する。
-    async fn record_step_completion(
+    /// ロック内で次ステップへの advance を適用する（純粋な状態変更）。
+    /// `&self` を使わないため関連関数として定義。
+    fn apply_advance(exec: &mut WorkflowExecution) -> StepOutcome {
+        let decision = exec.decide_next_step();
+        match decision {
+            NextStepDecision::Completed => {
+                exec.state = WorkflowExecutionState::Completed;
+                exec.updated_at = current_timestamp();
+                StepOutcome::Persist(exec.to_workflow_state())
+            }
+            NextStepDecision::TransitionTo(name) => {
+                let idx = exec
+                    .workflow
+                    .steps
+                    .iter()
+                    .position(|s| s.name == name)
+                    .expect("decide_next_step returned unknown step");
+                exec.current_step_index = idx;
+                exec.state = WorkflowExecutionState::Running;
+                *exec.step_execution_counts.entry(name).or_insert(0) += 1;
+                exec.updated_at = current_timestamp();
+                StepOutcome::TransitionAndStart(exec.to_workflow_state())
+            }
+        }
+    }
+
+    /// ロック内で指定ステップへの遷移を適用する（サイクルガード検証含む）。
+    /// `&self` を使わないため関連関数として定義。
+    fn apply_transition(
+        exec: &mut WorkflowExecution,
+        target_step_name: &str,
+    ) -> Result<StepOutcome, WorkflowEngineError> {
+        if exec.is_terminal() {
+            return Ok(StepOutcome::Persist(exec.to_workflow_state()));
+        }
+
+        let idx = exec
+            .workflow
+            .steps
+            .iter()
+            .position(|s| s.name == target_step_name)
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidWorkflow(format!(
+                    "Step '{}' not found in workflow",
+                    target_step_name
+                ))
+            })?;
+
+        let guard_result = exec.check_cycle_guard(target_step_name)?;
+        match guard_result {
+            CycleGuardResult::Exceeded {
+                max_iterations,
+                count,
+            } => {
+                exec.state = WorkflowExecutionState::Failed {
+                    reason: format!(
+                        "Cycle guard exceeded for step '{}': max_iterations={}, executed={}",
+                        target_step_name, max_iterations, count
+                    ),
+                };
+                exec.updated_at = current_timestamp();
+                Ok(StepOutcome::Persist(exec.to_workflow_state()))
+            }
+            CycleGuardResult::Allowed => {
+                exec.current_step_index = idx;
+                exec.state = WorkflowExecutionState::Running;
+                *exec
+                    .step_execution_counts
+                    .entry(target_step_name.to_string())
+                    .or_insert(0) += 1;
+                exec.updated_at = current_timestamp();
+                Ok(StepOutcome::TransitionAndStart(exec.to_workflow_state()))
+            }
+        }
+    }
+
+    /// ロック外でStepOutcomeに応じた副作用（永続化・ブロードキャスト・AgentSession起動）を実行する。
+    async fn execute_outcome(
         &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
         chat_session_id: &str,
-        step_name: &str,
-        result: Option<String>,
-    ) {
-        let mut execs = self.executions.lock().await;
-        if let Some(exec) = execs.get_mut(chat_session_id) {
-            exec.step_history.push(StepHistoryEntry {
-                step_name: step_name.to_string(),
-                completed_at: current_timestamp(),
-                result,
-            });
+        outcome: StepOutcome,
+    ) -> Result<(), WorkflowEngineError> {
+        match outcome {
+            StepOutcome::Persist(snapshot) => {
+                self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+                    .await?;
+                self.broadcast_state(app, chat_session_id, snapshot);
+                Ok(())
+            }
+            StepOutcome::TransitionAndStart(snapshot) => {
+                self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+                    .await?;
+                self.broadcast_state(app, chat_session_id, snapshot);
+
+                // AgentSession起動。失敗時はFailed状態に遷移。
+                if let Err(e) = self
+                    .start_step_session(app, handles, session_store, chat_session_id)
+                    .await
+                {
+                    let _ = self
+                        .set_execution_state(
+                            app,
+                            session_store,
+                            chat_session_id,
+                            WorkflowExecutionState::Failed {
+                                reason: format!("Failed to start step session: {e}"),
+                            },
+                        )
+                        .await;
+                    return Err(e);
+                }
+                Ok(())
+            }
         }
     }
 
     /// ワークフロー状態をChatSessionに永続化する。
+    /// スナップショットは呼び出し元がロック内で確定したものを受け取る。
     async fn persist_state(
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         chat_session_id: &str,
+        workflow_state: WorkflowState,
     ) -> Result<(), WorkflowEngineError> {
-        let workflow_state = {
-            let execs = self.executions.lock().await;
-            execs.get(chat_session_id).map(|e| e.to_workflow_state())
-        };
-
-        let workflow_state = workflow_state
-            .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string()))?;
-
         let data_dir = crate::session::resolve_data_dir(app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let mut session = session_store
@@ -970,29 +965,30 @@ impl WorkflowEngine {
     }
 
     /// ワークフロー状態をブロードキャストする。
-    async fn broadcast_state(&self, app: &tauri::AppHandle, chat_session_id: &str) {
-        let payload = {
-            let execs = self.executions.lock().await;
-            execs.get(chat_session_id).map(|e| WorkflowStatePayload {
-                chat_session_id: chat_session_id.to_string(),
-                workflow_state: e.to_workflow_state(),
-            })
+    /// スナップショットは呼び出し元がロック内で確定したものを受け取る。
+    fn broadcast_state(
+        &self,
+        app: &tauri::AppHandle,
+        chat_session_id: &str,
+        workflow_state: WorkflowState,
+    ) {
+        let payload = WorkflowStatePayload {
+            chat_session_id: chat_session_id.to_string(),
+            workflow_state,
         };
 
-        if let Some(payload) = payload {
-            let center: Option<tauri::State<'_, Arc<AgentStatusCenter>>> =
-                app.try_state::<Arc<AgentStatusCenter>>();
-            if let Some(center) = center {
-                // ワークフロー状態変更イベントを emit
-                center.emit_workflow_state_changed(&payload);
+        let center: Option<tauri::State<'_, Arc<AgentStatusCenter>>> =
+            app.try_state::<Arc<AgentStatusCenter>>();
+        if let Some(center) = center {
+            // ワークフロー状態変更イベントを emit
+            center.emit_workflow_state_changed(&payload);
 
-                // SessionStatusのworkflowフィールドも更新
-                if let Some(mut status) = center.get_session(chat_session_id) {
-                    status.workflow_step = Some(payload.workflow_state.current_step_name.clone());
-                    status.workflow_execution_state =
-                        Some(payload.workflow_state.state.as_str().to_string());
-                    center.update_session(status);
-                }
+            // SessionStatusのworkflowフィールドも更新
+            if let Some(mut status) = center.get_session(chat_session_id) {
+                status.workflow_step = Some(payload.workflow_state.current_step_name.clone());
+                status.workflow_execution_state =
+                    Some(payload.workflow_state.state.as_str().to_string());
+                center.update_session(status);
             }
         }
     }
