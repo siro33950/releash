@@ -336,10 +336,34 @@ impl AgentStatusCenter {
         let _ = self.app_handle.emit("workspace-status-changed", status);
     }
 
-    /// ワークフロー状態変更を通知する。
-    pub fn emit_workflow_state_changed(&self, payload: &impl Serialize) {
+    /// ワークフロー状態変更を通知する（Tauriイベント + WebSocket）。
+    pub fn emit_workflow_state_changed(
+        &self,
+        worktree_path: &str,
+        workflow_state: &crate::session::WorkflowState,
+    ) {
         use tauri::Emitter;
-        let _ = self.app_handle.emit("workflow-state-changed", payload);
+
+        // Tauriイベント（デスクトップUI向け）
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Payload<'a> {
+            worktree_path: &'a str,
+            workflow_state: &'a crate::session::WorkflowState,
+        }
+        let payload = Payload {
+            worktree_path,
+            workflow_state,
+        };
+        let _ = self.app_handle.emit("workflow-state-changed", &payload);
+
+        // WebSocketブロードキャスト（リモートアプリ向け）
+        let ws_sync = crate::protocol::WorkflowStateSync {
+            worktree_path: worktree_path.to_string(),
+            workflow_state: workflow_state.clone(),
+        };
+        self.broadcaster
+            .try_send(WsMessage::WorkflowStateSync(Box::new(ws_sync)));
     }
 
     /// 既存 frontend / remote が購読している `agent-state-changed` を維持する。

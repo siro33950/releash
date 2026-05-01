@@ -119,7 +119,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::schema::{CycleGuard, Step, StepMode, TransitionRule};
+    use crate::workflow::schema::{CycleGuard, Step, StepMode, StepPrompt, TransitionRule};
 
     fn make_workflow(steps: Vec<Step>) -> Workflow {
         Workflow {
@@ -136,14 +136,14 @@ mod tests {
             Step {
                 name: "plan".to_string(),
                 mode: StepMode::Interactive,
-                prompt: "planner".to_string(),
+                prompt: StepPrompt::inline("planner"),
                 rules: vec![],
                 cycle_guard: None,
             },
             Step {
                 name: "implement".to_string(),
                 mode: StepMode::Auto,
-                prompt: "coder".to_string(),
+                prompt: StepPrompt::inline("coder"),
                 rules: vec![TransitionRule {
                     r#match: "DONE".to_string(),
                     next: "plan".to_string(),
@@ -159,7 +159,7 @@ mod tests {
         let wf = make_workflow(vec![Step {
             name: "plan".to_string(),
             mode: StepMode::Interactive,
-            prompt: "planner".to_string(),
+            prompt: StepPrompt::inline("planner"),
             rules: vec![TransitionRule {
                 r#match: "DONE".to_string(),
                 next: "nonexistent".to_string(),
@@ -217,14 +217,14 @@ mod tests {
             Step {
                 name: "plan".to_string(),
                 mode: StepMode::Interactive,
-                prompt: "planner".to_string(),
+                prompt: StepPrompt::inline("planner"),
                 rules: vec![],
                 cycle_guard: None,
             },
             Step {
                 name: "plan".to_string(),
                 mode: StepMode::Auto,
-                prompt: "coder".to_string(),
+                prompt: StepPrompt::inline("coder"),
                 rules: vec![],
                 cycle_guard: None,
             },

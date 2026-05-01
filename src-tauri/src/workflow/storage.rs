@@ -231,7 +231,7 @@ pub fn list_prompts(dir: &Path) -> Result<Vec<Summary>, StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::schema::{Step, StepMode};
+    use crate::workflow::schema::{Step, StepMode, StepPrompt};
     use tempfile::TempDir;
 
     fn sample_workflow(name: &str, builtin: bool) -> Workflow {
@@ -242,7 +242,7 @@ mod tests {
             steps: vec![Step {
                 name: "step1".to_string(),
                 mode: StepMode::Auto,
-                prompt: "test-prompt".to_string(),
+                prompt: StepPrompt::inline("test-prompt"),
                 rules: vec![],
                 cycle_guard: None,
             }],

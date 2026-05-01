@@ -5,11 +5,13 @@ builtin: true
 steps:
   - name: fix
     mode: auto
-    prompt: fixer
+    prompt:
+      template: fixer
 
   - name: verify
     mode: auto
-    prompt: verifier
+    prompt:
+      template: verifier
     rules:
       - match: NEEDS_FIX
         next: fix
@@ -20,4 +22,5 @@ steps:
 
   - name: done
     mode: approval
-    prompt: reporter
+    prompt:
+      template: reporter

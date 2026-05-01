@@ -500,7 +500,8 @@ pub fn update_session_agent_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::state::{StepHistoryEntry, WorkflowExecutionState};
+    use crate::workflow::schema::{Step, StepMode, StepPrompt, Workflow};
+    use crate::workflow::state::{StepHistoryEntry, TokenUsage, WorkflowExecutionState};
 
     #[test]
     fn chat_session_to_summary_basic() {
@@ -1161,6 +1162,44 @@ mod tests {
 
     // ---- WorkflowState serde ----
 
+    fn make_test_workflow_for_session() -> Workflow {
+        Workflow {
+            name: "review-cycle".to_string(),
+            description: "Test".to_string(),
+            builtin: false,
+            steps: vec![
+                Step {
+                    name: "plan".to_string(),
+                    mode: StepMode::Interactive,
+                    prompt: StepPrompt::inline("Plan"),
+                    rules: vec![],
+                    cycle_guard: None,
+                },
+                Step {
+                    name: "implement".to_string(),
+                    mode: StepMode::Auto,
+                    prompt: StepPrompt::inline("Implement"),
+                    rules: vec![],
+                    cycle_guard: None,
+                },
+                Step {
+                    name: "review".to_string(),
+                    mode: StepMode::Auto,
+                    prompt: StepPrompt::inline("Review"),
+                    rules: vec![],
+                    cycle_guard: None,
+                },
+                Step {
+                    name: "report".to_string(),
+                    mode: StepMode::Approval,
+                    prompt: StepPrompt::inline("Report"),
+                    rules: vec![],
+                    cycle_guard: None,
+                },
+            ],
+        }
+    }
+
     #[test]
     fn workflow_state_serde_roundtrip() {
         let state = WorkflowState {
@@ -1175,13 +1214,27 @@ mod tests {
                     step_name: "plan".to_string(),
                     completed_at: 1000.0,
                     result: None,
+                    session_id: None,
+                    token_usage: None,
                 },
                 StepHistoryEntry {
                     step_name: "implement".to_string(),
                     completed_at: 1001.0,
                     result: Some("done".to_string()),
+                    session_id: Some("sess-1".to_string()),
+                    token_usage: Some(TokenUsage {
+                        input_tokens: 100,
+                        output_tokens: 50,
+                    }),
                 },
             ],
+            step_execution_counts: std::collections::HashMap::new(),
+            workflow_definition: make_test_workflow_for_session(),
+            total_token_usage: TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+            },
+            step_states: std::collections::HashMap::new(),
             started_at: 999.0,
             updated_at: 1001.0,
         };
@@ -1252,7 +1305,13 @@ mod tests {
                     step_name: "implement".to_string(),
                     completed_at: 1000.5,
                     result: None,
+                    session_id: None,
+                    token_usage: None,
                 }],
+                step_execution_counts: std::collections::HashMap::new(),
+                workflow_definition: make_test_workflow_for_session(),
+                total_token_usage: TokenUsage::default(),
+                step_states: std::collections::HashMap::new(),
                 started_at: 999.0,
                 updated_at: 1000.5,
             }),

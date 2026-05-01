@@ -7,6 +7,7 @@ import React, {
 	useRef,
 	useState,
 } from "react";
+import { Group, Panel, Separator } from "react-resizable-panels";
 import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import {
 	Popover,
@@ -18,6 +19,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import { loadSlashCommands } from "@/hooks/useSlashCommands";
+import { useWorkflowState } from "@/hooks/useWorkflowState";
 import type {
 	ChatMessage,
 	ImageAttachment,
@@ -39,6 +41,7 @@ import { PermissionDialog } from "./PermissionDialog";
 import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
 import { StreamMessage } from "./StreamMessage";
 import { buildToolPairings, type TaskGroup } from "./toolPairing";
+import { WorkflowPanel } from "./WorkflowPanel";
 
 type SystemNotificationPart = Extract<
 	MessagePart,
@@ -271,6 +274,8 @@ export function AgentChatPanel({
 		selectedModel,
 		setModel,
 	} = useAgentChat(worktreePath);
+
+	const { workflowState } = useWorkflowState(worktreePath);
 
 	// Expose sendMessage to parent via ref (without images parameter)
 	useEffect(() => {
@@ -569,96 +574,110 @@ export function AgentChatPanel({
 						</PopoverContent>
 					</Popover>
 				</div>
-				{/* biome-ignore lint/a11y/noStaticElementInteractions: native file drop target */}
-				<div
-					ref={agentDropZoneRef}
-					className="flex flex-col flex-1 min-h-0 relative"
-					onDragOver={handleFileDragOver}
-					onDragLeave={handleFileDragLeave}
-				>
-					{isFileDragOver && (
-						<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none z-10">
-							<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
-								Drop image to attach
-							</span>
-						</div>
-					)}
-					<ScrollArea
-						viewportRef={scrollRef}
-						onScroll={handleScroll}
-						className="flex-1 min-h-0 select-text"
-					>
-						{activeSession && (
-							<div className="py-2">
-								{activeSession.messages.map((msg, idx) => {
-									if (msg.role !== "agent") {
-										const textContent = getTextContent(msg.parts);
-										const imageParts = msg.parts.filter(
-											(p): p is ImagePart => p.type === "image",
-										);
-										return (
-											<div key={msg.id}>
-												<StreamMessage
-													content={textContent}
-													role={msg.role}
-													images={
-														imageParts.length > 0 ? imageParts : undefined
-													}
-													mentions={msg.mentions}
-												/>
-											</div>
-										);
-									}
-
-									const isLastMsg = idx === activeSession.messages.length - 1;
-									const isLastAgentStreaming = isStreaming && isLastMsg;
-
-									return (
-										<div key={msg.id}>
-											<AgentMessageParts
-												msg={msg}
-												isLastAgentStreaming={isLastAgentStreaming}
-												worktreePath={worktreePath}
-												respondPermission={respondPermission}
-											/>
-										</div>
-									);
-								})}
-								{shimmerLineCount > 0 && (
-									<ShimmerPlaceholder lines={shimmerLineCount} />
-								)}
-								<div ref={scrollAnchorRef} />
-							</div>
-						)}
-					</ScrollArea>
-					<div className="shrink-0">
-						{activityStatus && (
-							<div className="px-4 pb-1 text-xs text-muted-foreground animate-pulse truncate">
-								{activityStatus.label}
-							</div>
-						)}
-						{error && (
-							<div className="px-2 pb-2">
-								<div className="bg-destructive/10 text-destructive rounded-lg px-3 py-2 text-sm">
-									{error}
+				<Group orientation="horizontal" className="flex-1 min-h-0">
+					<Panel defaultSize="60%" minSize="30%">
+						{/* biome-ignore lint/a11y/noStaticElementInteractions: native file drop target */}
+						<div
+							ref={agentDropZoneRef}
+							className="flex flex-col h-full relative"
+							onDragOver={handleFileDragOver}
+							onDragLeave={handleFileDragLeave}
+						>
+							{isFileDragOver && (
+								<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none z-10">
+									<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
+										Drop image to attach
+									</span>
 								</div>
+							)}
+							<ScrollArea
+								viewportRef={scrollRef}
+								onScroll={handleScroll}
+								className="flex-1 min-h-0 select-text"
+							>
+								{activeSession && (
+									<div className="py-2">
+										{activeSession.messages.map((msg, idx) => {
+											if (msg.role !== "agent") {
+												const textContent = getTextContent(msg.parts);
+												const imageParts = msg.parts.filter(
+													(p): p is ImagePart => p.type === "image",
+												);
+												return (
+													<div key={msg.id}>
+														<StreamMessage
+															content={textContent}
+															role={msg.role}
+															images={
+																imageParts.length > 0 ? imageParts : undefined
+															}
+															mentions={msg.mentions}
+														/>
+													</div>
+												);
+											}
+
+											const isLastMsg =
+												idx === activeSession.messages.length - 1;
+											const isLastAgentStreaming = isStreaming && isLastMsg;
+
+											return (
+												<div key={msg.id}>
+													<AgentMessageParts
+														msg={msg}
+														isLastAgentStreaming={isLastAgentStreaming}
+														worktreePath={worktreePath}
+														respondPermission={respondPermission}
+													/>
+												</div>
+											);
+										})}
+										{shimmerLineCount > 0 && (
+											<ShimmerPlaceholder lines={shimmerLineCount} />
+										)}
+										<div ref={scrollAnchorRef} />
+									</div>
+								)}
+							</ScrollArea>
+							<div className="shrink-0">
+								{activityStatus && (
+									<div className="px-4 pb-1 text-xs text-muted-foreground animate-pulse truncate">
+										{activityStatus.label}
+									</div>
+								)}
+								{error && (
+									<div className="px-2 pb-2">
+										<div className="bg-destructive/10 text-destructive rounded-lg px-3 py-2 text-sm">
+											{error}
+										</div>
+									</div>
+								)}
+								<MessageInput
+									ref={messageInputRef}
+									onSend={sendMessage}
+									onInterrupt={interrupt}
+									isStreaming={isStreaming}
+									onCycleMode={cycleMode}
+									mode={permissionMode}
+									onModeChange={setPermissionMode}
+									models={availableModels}
+									currentModelId={selectedModel}
+									onModelChange={setModel}
+									worktreePath={worktreePath}
+								/>
 							</div>
-						)}
-						<MessageInput
-							ref={messageInputRef}
-							onSend={sendMessage}
-							onInterrupt={interrupt}
-							isStreaming={isStreaming}
-							onCycleMode={cycleMode}
-							mode={permissionMode}
-							onModeChange={setPermissionMode}
-							models={availableModels}
-							currentModelId={selectedModel}
-							onModelChange={setModel}
+						</div>
+					</Panel>
+					<Separator className="w-px bg-border" />
+					<Panel defaultSize="40%" minSize="20%">
+						<WorkflowPanel
+							workflowState={workflowState ?? null}
 							worktreePath={worktreePath}
+							chatSessionId={activeSession?.id ?? null}
+							onSessionClick={selectSession}
 						/>
-					</div>
-				</div>
+					</Panel>
+				</Group>
 			</Tabs>
 		</div>
 	);

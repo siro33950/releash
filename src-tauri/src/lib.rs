@@ -395,6 +395,9 @@ pub fn run() {
             workflow::commands::get_workflow_state,
             workflow::commands::approve_workflow_step,
             workflow::commands::complete_interactive_step,
+            workflow::commands::list_workflow_executions,
+            workflow::commands::get_workflow_execution_log,
+            workflow::commands::get_workflow_execution_state,
             // Menu
             menu::set_menu_items_enabled,
         ])
