@@ -259,6 +259,19 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// Workspace state
 	save_workspace_state: null,
+
+	// Workflow
+	get_workflow_state: null,
+	list_workflows: [],
+	start_workflow: null,
+	abort_workflow: null,
+	approve_workflow_step: null,
+	complete_interactive_step: null,
+	delete_workflow: null,
+	open_workflow_in_editor: null,
+	list_workflow_executions: [],
+	get_workflow_execution_log: [],
+	get_workflow_execution_state: null,
 };
 
 // -------------------------------------------------------
