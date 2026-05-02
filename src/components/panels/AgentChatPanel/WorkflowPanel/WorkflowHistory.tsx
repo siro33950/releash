@@ -18,6 +18,16 @@ export function WorkflowHistory({
 	const [selectedStep, setSelectedStep] = useState<string | null>(null);
 	const selectionReqRef = useRef(0);
 
+	// worktreePath が変わったら選択状態をクリア
+	const prevWorktreePathRef = useRef(worktreePath);
+	if (prevWorktreePathRef.current !== worktreePath) {
+		prevWorktreePathRef.current = worktreePath;
+		setSelectedId(null);
+		setSelectedStep(null);
+		setEvents([]);
+		setHistoryState(null);
+	}
+
 	const fetchExecutionIds = useCallback(() => {
 		invoke<string[]>("list_workflow_executions", { worktreePath })
 			.then(setExecutionIds)
@@ -140,7 +150,7 @@ export function WorkflowHistory({
 				<div className="px-3 py-1 border-t">
 					{events.map((event) => (
 						<div
-							key={`${event.event}-${event.timestamp}`}
+							key={`${event.event}-${"step_name" in event ? event.step_name : ""}-${event.timestamp}`}
 							className="text-xs text-muted-foreground py-0.5"
 						>
 							<span className="font-mono">{event.event}</span>
