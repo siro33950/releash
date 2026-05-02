@@ -67,9 +67,7 @@ describe("WorkflowHistory", () => {
 		mockInvoke.mockResolvedValue([]);
 		render(<WorkflowHistory worktreePath="/repo" />);
 		await waitFor(() => {
-			expect(
-				screen.getByText("No execution history"),
-			).toBeInTheDocument();
+			expect(screen.getByText("No execution history")).toBeInTheDocument();
 		});
 	});
 
