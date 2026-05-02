@@ -56,8 +56,7 @@ impl Serialize for BuiltinInitError {
 const BUILTIN_QUICK_FIX: &str = include_str!("builtin/quick-fix.yml");
 const BUILTIN_PLAN_IMPLEMENT_REVIEW: &str = include_str!("builtin/plan-implement-review.yml");
 const BUILTIN_TRACE_LOOP_TEST: &str = include_str!("builtin/trace-loop-test.yml");
-const BUILTIN_STEP_OUTPUT_COLLECT_TEST: &str =
-    include_str!("builtin/step-output-collect-test.yml");
+const BUILTIN_STEP_OUTPUT_COLLECT_TEST: &str = include_str!("builtin/step-output-collect-test.yml");
 
 const BUILTIN_PROMPT_FIXER: &str = include_str!("builtin_prompts/fixer.yml");
 const BUILTIN_PROMPT_VERIFIER: &str = include_str!("builtin_prompts/verifier.yml");
