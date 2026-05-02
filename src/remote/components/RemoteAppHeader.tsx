@@ -1,4 +1,5 @@
 import { ArrowLeft } from "lucide-react";
+import type { WorkflowState } from "@/types/workflow";
 import type { ConnectionStatus } from "../hooks/useWebSocket";
 import { StatusIndicator } from "./StatusIndicator";
 
@@ -6,14 +7,31 @@ interface RemoteAppHeaderProps {
 	selectedWorktree: string | null;
 	branchName: string | null;
 	status: ConnectionStatus;
+	workflowState: WorkflowState | null;
 	onBackToWorktrees: () => void;
 	onDisconnect: () => void;
+}
+
+function workflowStateBadge(state: WorkflowState) {
+	const label = `${state.workflowName}: ${state.currentStepName}`;
+	const colors: Record<string, string> = {
+		running: "bg-blue-500/20 text-blue-400",
+		waiting_approval: "bg-yellow-500/20 text-yellow-400",
+		completed: "bg-green-500/20 text-green-400",
+		failed: "bg-red-500/20 text-red-400",
+		aborted: "bg-gray-500/20 text-gray-400",
+	};
+	const color = colors[state.state.type] ?? "bg-gray-500/20 text-gray-400";
+	return (
+		<span className={`text-xs px-1.5 py-0.5 rounded ${color}`}>{label}</span>
+	);
 }
 
 export function RemoteAppHeader({
 	selectedWorktree,
 	branchName,
 	status,
+	workflowState,
 	onBackToWorktrees,
 	onDisconnect,
 }: RemoteAppHeaderProps) {
@@ -36,6 +54,7 @@ export function RemoteAppHeader({
 						{branchName}
 					</span>
 				)}
+				{workflowState && workflowStateBadge(workflowState)}
 			</div>
 			<div className="flex items-center gap-2 shrink-0">
 				<StatusIndicator status={status} />

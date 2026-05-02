@@ -3,6 +3,7 @@ mod auth;
 mod branch;
 mod error;
 mod pty;
+mod workflow;
 mod worktree;
 
 pub use agent::*;
@@ -10,6 +11,7 @@ pub use auth::*;
 pub use branch::*;
 pub use error::*;
 pub use pty::*;
+pub use workflow::*;
 pub use worktree::*;
 
 use serde::{Deserialize, Serialize};
@@ -74,6 +76,10 @@ pub enum WsMessage {
     // エージェント状態
     #[serde(rename = "agent_state_sync")]
     AgentStateSync(AgentStateSync),
+
+    // ワークフロー状態
+    #[serde(rename = "workflow_state_sync")]
+    WorkflowStateSync(Box<WorkflowStateSync>),
 
     // 制御
     #[serde(rename = "error")]
@@ -300,6 +306,29 @@ mod tests {
                 session_id: None,
                 pty_id: Some("42".to_string()),
             }),
+            WsMessage::WorkflowStateSync(Box::new(WorkflowStateSync {
+                worktree_path: "/repo".to_string(),
+                workflow_state: crate::session::WorkflowState {
+                    execution_id: "exec-1".to_string(),
+                    workflow_name: "test".to_string(),
+                    state: crate::workflow::state::WorkflowExecutionState::Running,
+                    current_step_index: 0,
+                    current_step_name: "step1".to_string(),
+                    total_steps: 1,
+                    step_history: vec![],
+                    step_execution_counts: std::collections::HashMap::new(),
+                    workflow_definition: crate::workflow::schema::Workflow {
+                        name: "test".to_string(),
+                        description: "test".to_string(),
+                        builtin: false,
+                        steps: vec![],
+                    },
+                    total_token_usage: crate::workflow::state::TokenUsage::default(),
+                    step_states: std::collections::HashMap::new(),
+                    started_at: 1000.0,
+                    updated_at: 1000.0,
+                },
+            })),
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),
                 message: "M".to_string(),

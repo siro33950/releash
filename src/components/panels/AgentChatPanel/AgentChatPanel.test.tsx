@@ -39,6 +39,23 @@ vi.mock("@/hooks/useAgentChat", () => ({
 	useAgentChat: (...args: unknown[]) => useAgentChatMock(...args),
 }));
 
+const useWorkflowStateMock = vi.fn().mockReturnValue({ workflowState: null });
+vi.mock("@/hooks/useWorkflowState", () => ({
+	useWorkflowState: (...args: unknown[]) => useWorkflowStateMock(...args),
+}));
+
+vi.mock("@/hooks/useWorkflowConfig", () => ({
+	useWorkflowConfig: () => ({ workflows: [] }),
+}));
+
+vi.mock("@xyflow/react", () => ({
+	ReactFlow: ({ children }: { children?: React.ReactNode }) => (
+		<div data-testid="react-flow">{children}</div>
+	),
+	Handle: () => <div />,
+	Position: { Top: "top", Bottom: "bottom" },
+}));
+
 // Must import after mocks
 const { AgentChatPanel } = await import("./AgentChatPanel");
 
@@ -1374,5 +1391,59 @@ describe("AgentChatPanel image drag and drop", () => {
 		});
 
 		expect(screen.queryByTestId("image-preview-list")).toBeNull();
+	});
+});
+
+describe("AgentChatPanel workflow panel visibility", () => {
+	it("shows WorkflowPanel when workflowState is present", () => {
+		useWorkflowStateMock.mockReturnValue({
+			workflowState: {
+				executionId: "exec-001",
+				workflowName: "test-wf",
+				state: { type: "running" },
+				currentStepIndex: 0,
+				currentStepName: "step-1",
+				totalSteps: 1,
+				stepHistory: [],
+				stepExecutionCounts: {},
+				workflowDefinition: {
+					name: "test-wf",
+					description: "",
+					builtin: false,
+					steps: [{ name: "step-1", mode: "auto", prompt: "p", rules: [] }],
+				},
+				totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
+				stepStates: {},
+				startedAt: 1000,
+				updatedAt: 2000,
+			},
+		});
+		mockUseAgentChat({
+			sessions: [{ id: "s1", label: "S1" }],
+			activeSession: { id: "s1", label: "S1", messages: [] },
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/test"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		expect(screen.getByText("test-wf")).toBeInTheDocument();
+		expect(screen.getByText("running")).toBeInTheDocument();
+	});
+
+	it("does not show WorkflowPanel when workflowState is null", () => {
+		useWorkflowStateMock.mockReturnValue({ workflowState: null });
+		mockUseAgentChat({
+			sessions: [{ id: "s1", label: "S1" }],
+			activeSession: { id: "s1", label: "S1", messages: [] },
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/test"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+		expect(screen.queryByText("test-wf")).not.toBeInTheDocument();
 	});
 });

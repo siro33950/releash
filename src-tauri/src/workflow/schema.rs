@@ -13,11 +13,38 @@ pub struct Workflow {
 pub struct Step {
     pub name: String,
     pub mode: StepMode,
-    pub prompt: String,
+    pub prompt: StepPrompt,
     #[serde(default)]
     pub rules: Vec<TransitionRule>,
     #[serde(default)]
     pub cycle_guard: Option<CycleGuard>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum StepPrompt {
+    Inline(String),
+    InlineObject(InlinePrompt),
+    Template(TemplatePrompt),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct InlinePrompt {
+    pub inline: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TemplatePrompt {
+    pub template: String,
+}
+
+#[cfg(test)]
+impl StepPrompt {
+    pub fn inline(prompt: impl Into<String>) -> Self {
+        Self::Inline(prompt.into())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,15 +86,18 @@ description: 計画→実装→レビュー→修正ループ
 steps:
   - name: plan
     mode: interactive
-    prompt: planner
+    prompt:
+      template: planner
 
   - name: implement
     mode: auto
-    prompt: coder
+    prompt:
+      template: coder
 
   - name: review
     mode: auto
-    prompt: reviewer
+    prompt:
+      template: reviewer
     rules:
       - match: NEEDS_FIX
         next: implement
@@ -78,7 +108,8 @@ steps:
 
   - name: report
     mode: approval
-    prompt: reporter
+    prompt:
+      template: reporter
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(wf.name, "plan-implement-review");
@@ -89,7 +120,12 @@ steps:
         let plan = &wf.steps[0];
         assert_eq!(plan.name, "plan");
         assert_eq!(plan.mode, StepMode::Interactive);
-        assert_eq!(plan.prompt, "planner");
+        assert_eq!(
+            plan.prompt,
+            StepPrompt::Template(TemplatePrompt {
+                template: "planner".to_string()
+            })
+        );
         assert!(plan.rules.is_empty());
         assert!(plan.cycle_guard.is_none());
 
@@ -115,7 +151,8 @@ description: bad workflow
 steps:
   - name: step1
     mode: unknown
-    prompt: test
+    prompt:
+      inline: test
 "#;
         let result: Result<Workflow, _> = serde_saphyr::from_str(yaml);
         assert!(result.is_err());
@@ -130,9 +167,47 @@ builtin: true
 steps:
   - name: fix
     mode: auto
-    prompt: fixer
+    prompt:
+      template: fixer
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert!(wf.builtin);
+    }
+
+    #[test]
+    fn parse_legacy_inline_prompt_string() {
+        let yaml = r#"
+name: legacy
+description: legacy string prompt
+steps:
+  - name: step1
+    mode: auto
+    prompt: Run tests
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(
+            wf.steps[0].prompt,
+            StepPrompt::Inline("Run tests".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_inline_prompt_object() {
+        let yaml = r#"
+name: inline-object
+description: explicit inline prompt
+steps:
+  - name: step1
+    mode: auto
+    prompt:
+      inline: Run tests
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(
+            wf.steps[0].prompt,
+            StepPrompt::InlineObject(InlinePrompt {
+                inline: "Run tests".to_string()
+            })
+        );
     }
 }

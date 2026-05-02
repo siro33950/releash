@@ -1,6 +1,7 @@
 pub mod builtin;
 pub mod commands;
 pub mod engine;
+pub mod log;
 pub mod prompt_schema;
 pub mod schema;
 pub mod state;

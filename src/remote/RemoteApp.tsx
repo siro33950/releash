@@ -11,6 +11,7 @@ import { usePtyManagement } from "./hooks/usePtyManagement";
 import { useRemoteAppActions } from "./hooks/useRemoteAppActions";
 import { useRemoteContent } from "./hooks/useRemoteContent";
 import { type Tab, useRemoteNavigation } from "./hooks/useRemoteNavigation";
+import { useRemoteWorkflowState } from "./hooks/useRemoteWorkflowState";
 import { useRemoteWorktrees } from "./hooks/useRemoteWorktrees";
 import { useWebSocket } from "./hooks/useWebSocket";
 
@@ -56,6 +57,11 @@ export function RemoteApp() {
 
 	const { branchName, setBranchName } = useRemoteContent({ subscribe });
 
+	const { workflowState } = useRemoteWorkflowState({
+		subscribe,
+		selectedWorktree,
+	});
+
 	const {
 		worktrees,
 		loading: worktreesLoading,
@@ -100,6 +106,7 @@ export function RemoteApp() {
 				selectedWorktree={selectedWorktree}
 				branchName={branchName}
 				status={status}
+				workflowState={workflowState}
 				onBackToWorktrees={handleBackToWorktrees}
 				onDisconnect={handleDisconnect}
 			/>

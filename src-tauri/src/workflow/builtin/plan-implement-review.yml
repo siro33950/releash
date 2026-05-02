@@ -5,15 +5,18 @@ builtin: true
 steps:
   - name: plan
     mode: interactive
-    prompt: planner
+    prompt:
+      template: planner
 
   - name: implement
     mode: auto
-    prompt: coder
+    prompt:
+      template: coder
 
   - name: review
     mode: auto
-    prompt: reviewer
+    prompt:
+      template: reviewer
     rules:
       - match: NEEDS_FIX
         next: implement
@@ -24,4 +27,5 @@ steps:
 
   - name: report
     mode: approval
-    prompt: reporter
+    prompt:
+      template: reporter

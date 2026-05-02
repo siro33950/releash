@@ -1,17 +1,19 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
 
 use regex::RegexBuilder;
-use serde::Serialize;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
 use crate::agent_sdk::AgentProcessMap;
 use crate::agent_status::{current_timestamp, AgentStatusCenter};
 use crate::session::SessionStore;
-use crate::workflow::schema::{StepMode, TransitionRule, Workflow};
-use crate::workflow::state::{StepHistoryEntry, WorkflowExecutionState, WorkflowState};
+use crate::workflow::log::{WorkflowEventLog, WorkflowLogEvent};
+use crate::workflow::schema::{StepMode, StepPrompt, TransitionRule, Workflow};
+use crate::workflow::state::{StepHistoryEntry, TokenUsage, WorkflowExecutionState, WorkflowState};
+use crate::workflow::storage;
 
 /// ワークフローエンジンのエラー型。
 #[derive(Debug)]
@@ -56,14 +58,6 @@ impl From<WorkflowEngineError> for String {
     }
 }
 
-/// ワークフローエンジンが外部にブロードキャストするイベントペイロード。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowStatePayload {
-    pub chat_session_id: String,
-    pub workflow_state: WorkflowState,
-}
-
 /// ワークフロー実行の内部状態。
 struct WorkflowExecution {
     id: String,
@@ -72,9 +66,14 @@ struct WorkflowExecution {
     current_step_index: usize,
     step_execution_counts: HashMap<String, u32>,
     step_history: Vec<StepHistoryEntry>,
-    worktree_path: String,
+    /// ワークフローを開始した親セッションのID（persist_state用）。
+    chat_session_id: String,
     started_at: f64,
     updated_at: f64,
+    /// 現在のステップに対応するAgentSessionのセッションID。
+    current_session_id: Option<String>,
+    /// 現在のステップで累計したトークン使用量。
+    current_step_token_usage: TokenUsage,
 }
 
 impl WorkflowExecution {
@@ -156,6 +155,20 @@ enum TurnCompleteAction {
 impl WorkflowExecution {
     /// 永続化用の `WorkflowState` に変換する。
     fn to_workflow_state(&self) -> WorkflowState {
+        let mut total_token_usage = TokenUsage::default();
+        for entry in &self.step_history {
+            if let Some(ref usage) = entry.token_usage {
+                total_token_usage.add(usage);
+            }
+        }
+
+        let step_states = crate::workflow::state::compute_step_states(
+            &self.workflow,
+            self.current_step_index,
+            &self.state,
+            &self.step_history,
+        );
+
         WorkflowState {
             execution_id: self.id.clone(),
             workflow_name: self.workflow.name.clone(),
@@ -164,9 +177,26 @@ impl WorkflowExecution {
             current_step_name: self.workflow.steps[self.current_step_index].name.clone(),
             total_steps: self.workflow.steps.len(),
             step_history: self.step_history.clone(),
+            step_execution_counts: self.step_execution_counts.clone(),
+            workflow_definition: self.workflow.clone(),
+            total_token_usage,
+            step_states,
             started_at: self.started_at,
             updated_at: self.updated_at,
         }
+    }
+
+    /// 現在のステップの完了履歴エントリを生成し、トークン使用量をリセットする。
+    fn make_step_history_entry(&mut self, result: Option<String>) -> StepHistoryEntry {
+        let entry = StepHistoryEntry {
+            step_name: self.workflow.steps[self.current_step_index].name.clone(),
+            completed_at: current_timestamp(),
+            result,
+            session_id: self.current_session_id.clone(),
+            token_usage: Some(std::mem::take(&mut self.current_step_token_usage)),
+        };
+        self.current_session_id = None;
+        entry
     }
 
     /// 次のステップ遷移先を判定する（純粋関数）。
@@ -321,13 +351,17 @@ enum StepOutcome {
 
 /// ワークフローのステップを順次実行するステートマシンエンジン。
 pub struct WorkflowEngine {
+    /// worktree_path → WorkflowExecution のマッピング
     executions: Mutex<HashMap<String, WorkflowExecution>>,
+    /// session_id（親・ステップ両方） → worktree_path のマッピング
+    session_worktree_map: Mutex<HashMap<String, String>>,
 }
 
 impl WorkflowEngine {
     pub fn new() -> Self {
         Self {
             executions: Mutex::new(HashMap::new()),
+            session_worktree_map: Mutex::new(HashMap::new()),
         }
     }
 
@@ -340,6 +374,7 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         workflow: Workflow,
         chat_session_id: &str,
+        file_stem: &str,
     ) -> Result<(), WorkflowEngineError> {
         // worktree_pathはセッションから取得（唯一のソース）
         // ロック前に非同期I/Oを完了させる
@@ -359,37 +394,84 @@ impl WorkflowEngine {
             current_step_index: 0,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path,
+            chat_session_id: chat_session_id.to_string(),
             started_at: now,
             updated_at: now,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
 
         // validate_start → insert → スナップショット確定を同一ロックで原子的に実行
         let step_name = workflow.steps[0].name.clone();
         let snapshot = {
             let mut execs = self.executions.lock().await;
-            WorkflowExecution::validate_start(&workflow, execs.get(chat_session_id))?;
+            WorkflowExecution::validate_start(&workflow, execs.get(&worktree_path))?;
             execution.step_execution_counts.insert(step_name.clone(), 1);
-            execs.insert(chat_session_id.to_string(), execution);
-            execs.get(chat_session_id).unwrap().to_workflow_state()
+            execs.insert(worktree_path.clone(), execution);
+            execs.get(&worktree_path).unwrap().to_workflow_state()
         };
 
+        // session_worktree_map に親セッションIDを登録
+        {
+            let mut map = self.session_worktree_map.lock().await;
+            map.insert(chat_session_id.to_string(), worktree_path.clone());
+        }
+
         // 永続化・ブロードキャスト（ロック内で確定したスナップショットを使用）
-        self.persist_state(app, session_store, chat_session_id, snapshot.clone())
-            .await?;
-        self.broadcast_state(app, chat_session_id, snapshot);
+        if let Err(e) = self
+            .persist_state(app, session_store, chat_session_id, snapshot.clone())
+            .await
+        {
+            let mut execs = self.executions.lock().await;
+            execs.remove(&worktree_path);
+            drop(execs);
+            self.cleanup_session_worktree_map(&worktree_path).await;
+            return Err(e);
+        }
+        self.broadcast_state(app, &worktree_path, snapshot.clone());
+
+        // NDJSONログ: workflow_started + step_started
+        self.write_log(
+            app,
+            WorkflowLogEvent::WorkflowStarted {
+                execution_id: snapshot.execution_id.clone(),
+                workflow_name: snapshot.workflow_name.clone(),
+                workflow_file_stem: file_stem.to_string(),
+                worktree_path: worktree_path.clone(),
+                workflow_definition: Some(workflow.clone()),
+                timestamp: now,
+            },
+        );
+        self.write_log(
+            app,
+            WorkflowLogEvent::StepStarted {
+                execution_id: snapshot.execution_id,
+                workflow_name: snapshot.workflow_name,
+                step_name: step_name.clone(),
+                execution_count: 1,
+                timestamp: now,
+            },
+        );
 
         // 最初のステップのAgentSession開始＋プロンプト送信
         // 失敗時はFailed状態に遷移して永続化する
         if let Err(e) = self
-            .start_step_session(app, handles, session_store, chat_session_id)
+            .start_step_session(app, handles, session_store, &worktree_path)
             .await
         {
+            {
+                let mut execs = self.executions.lock().await;
+                if let Some(exec) = execs.get_mut(&worktree_path) {
+                    let entry =
+                        exec.make_step_history_entry(Some(format!("session_start_failed: {e}")));
+                    exec.step_history.push(entry);
+                }
+            }
             let _ = self
                 .set_execution_state(
                     app,
                     session_store,
-                    chat_session_id,
+                    &worktree_path,
                     WorkflowExecutionState::Failed {
                         reason: format!("Failed to start step session: {e}"),
                     },
@@ -404,24 +486,41 @@ impl WorkflowEngine {
     /// autoモード→タグ検出で遷移、approvalモード→WaitingApproval、interactiveモード→何もしない。
     /// SessionError / WaitApproval は判定 + 状態変更を1回のロックで原子的に実行する。
     /// AutoEvaluate はタグ検出が必要なため handle_auto_complete に委譲する。
+    #[allow(clippy::too_many_arguments)]
     pub async fn on_turn_complete(
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
-        chat_session_id: &str,
+        session_id: &str,
         exit_code: i64,
         final_parts: &[crate::session::MessagePart],
+        token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
+        // session_id から worktree_path を解決（ワークフロー既終了なら何もしない）
+        let Some(worktree_path) = self.resolve_worktree_path(session_id).await else {
+            return Ok(());
+        };
+
         // 判定 + 状態変更を原子的に実行（AutoEvaluate以外）
-        let action_or_outcome = {
+        let (chat_session_id, action_or_outcome) = {
             let mut execs = self.executions.lock().await;
-            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
+            let exec = execs
+                .get_mut(&worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.clone()))?;
+
+            // トークン使用量を現在のステップに累計
+            if let Some((input, output)) = token_usage {
+                exec.current_step_token_usage.add(&TokenUsage {
+                    input_tokens: input,
+                    output_tokens: output,
+                });
+            }
+
+            let chat_session_id = exec.chat_session_id.clone();
             let action = exec.decide_turn_complete_action(exit_code);
 
-            match action {
+            let result = match action {
                 TurnCompleteAction::NotRunning | TurnCompleteAction::Noop => return Ok(()),
                 TurnCompleteAction::SessionError {
                     step_name,
@@ -430,6 +529,9 @@ impl WorkflowEngine {
                     if exec.is_terminal() {
                         return Ok(());
                     }
+                    let entry = exec
+                        .make_step_history_entry(Some(format!("error (exit_code: {})", exit_code)));
+                    exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!(
                             "AgentSession error at step '{}' (exit_code: {})",
@@ -448,20 +550,28 @@ impl WorkflowEngine {
                     Ok(StepOutcome::Persist(exec.to_workflow_state()))
                 }
                 TurnCompleteAction::AutoEvaluate { rules, step_name } => Err((rules, step_name)),
-            }
+            };
+            (chat_session_id, result)
         };
 
         match action_or_outcome {
             Ok(outcome) => {
-                self.execute_outcome(app, session_store, handles, chat_session_id, outcome)
-                    .await
+                self.execute_outcome(
+                    app,
+                    session_store,
+                    handles,
+                    &worktree_path,
+                    &chat_session_id,
+                    outcome,
+                )
+                .await
             }
             Err((rules, step_name)) => {
                 self.handle_auto_complete(
                     app,
                     session_store,
                     handles,
-                    chat_session_id,
+                    &worktree_path,
                     final_parts,
                     &rules,
                     &step_name,
@@ -479,7 +589,7 @@ impl WorkflowEngine {
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
-        chat_session_id: &str,
+        worktree_path: &str,
         decision: ApprovalDecision,
     ) -> Result<(), WorkflowEngineError> {
         let result_tag = match &decision {
@@ -489,37 +599,28 @@ impl WorkflowEngine {
         };
 
         // 判定 + 状態変更 + 履歴記録を原子的に実行
-        let outcome = {
+        let (chat_session_id, outcome) = {
             let mut execs = self.executions.lock().await;
-            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
+            let exec = execs
+                .get_mut(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            let chat_session_id = exec.chat_session_id.clone();
             let action = exec.decide_approval_action(&decision)?;
-            let step_name = exec.workflow.steps[exec.current_step_index].name.clone();
 
-            match action {
+            let outcome = match action {
                 ApprovalAction::Advance => {
-                    exec.step_history.push(StepHistoryEntry {
-                        step_name,
-                        completed_at: current_timestamp(),
-                        result: Some(result_tag.to_string()),
-                    });
+                    let entry = exec.make_step_history_entry(Some(result_tag.to_string()));
+                    exec.step_history.push(entry);
                     Self::apply_advance(exec)
                 }
                 ApprovalAction::TransitionTo(target) => {
-                    exec.step_history.push(StepHistoryEntry {
-                        step_name,
-                        completed_at: current_timestamp(),
-                        result: Some(result_tag.to_string()),
-                    });
+                    let entry = exec.make_step_history_entry(Some(result_tag.to_string()));
+                    exec.step_history.push(entry);
                     Self::apply_transition(exec, &target)?
                 }
                 ApprovalAction::FailedNoRejectRule(name) => {
-                    exec.step_history.push(StepHistoryEntry {
-                        step_name,
-                        completed_at: current_timestamp(),
-                        result: Some(result_tag.to_string()),
-                    });
+                    let entry = exec.make_step_history_entry(Some(result_tag.to_string()));
+                    exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!("No reject rule defined for step '{}'", name),
                     };
@@ -531,11 +632,19 @@ impl WorkflowEngine {
                     exec.updated_at = current_timestamp();
                     StepOutcome::Persist(exec.to_workflow_state())
                 }
-            }
+            };
+            (chat_session_id, outcome)
         };
 
-        self.execute_outcome(app, session_store, handles, chat_session_id, outcome)
-            .await
+        self.execute_outcome(
+            app,
+            session_store,
+            handles,
+            worktree_path,
+            &chat_session_id,
+            outcome,
+        )
+        .await
     }
 
     /// interactiveモードの完了/中止を処理する。
@@ -545,36 +654,41 @@ impl WorkflowEngine {
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
-        chat_session_id: &str,
+        worktree_path: &str,
         abort: bool,
     ) -> Result<(), WorkflowEngineError> {
-        let outcome = {
+        let (chat_session_id, outcome) = {
             let mut execs = self.executions.lock().await;
-            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
+            let exec = execs
+                .get_mut(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            let chat_session_id = exec.chat_session_id.clone();
             let action = exec.decide_interactive_action(abort)?;
-            let step_name = exec.workflow.steps[exec.current_step_index].name.clone();
 
-            match action {
+            let outcome = match action {
                 InteractiveAction::Abort => {
                     exec.state = WorkflowExecutionState::Aborted;
                     exec.updated_at = current_timestamp();
                     StepOutcome::Persist(exec.to_workflow_state())
                 }
                 InteractiveAction::Advance => {
-                    exec.step_history.push(StepHistoryEntry {
-                        step_name,
-                        completed_at: current_timestamp(),
-                        result: Some("complete".to_string()),
-                    });
+                    let entry = exec.make_step_history_entry(Some("complete".to_string()));
+                    exec.step_history.push(entry);
                     Self::apply_advance(exec)
                 }
-            }
+            };
+            (chat_session_id, outcome)
         };
 
-        self.execute_outcome(app, session_store, handles, chat_session_id, outcome)
-            .await
+        self.execute_outcome(
+            app,
+            session_store,
+            handles,
+            worktree_path,
+            &chat_session_id,
+            outcome,
+        )
+        .await
     }
 
     /// ワークフローを中断する。
@@ -583,42 +697,62 @@ impl WorkflowEngine {
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
-        chat_session_id: &str,
+        worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
+        let current_step_session_id;
         {
             let execs = self.executions.lock().await;
-            let exec = execs.get(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
 
             // 既に終了状態なら何もしない
             if !exec.is_active() {
                 return Ok(());
             }
+            current_step_session_id = exec.current_session_id.clone();
         }
 
-        // 実行中のAgentSessionを中断
-        self.interrupt_agent(handles, chat_session_id).await;
+        // 実行中のステップセッションを中断
+        if let Some(ref step_sid) = current_step_session_id {
+            self.interrupt_agent(handles, step_sid).await;
+        }
 
         self.set_execution_state(
             app,
             session_store,
-            chat_session_id,
+            worktree_path,
             WorkflowExecutionState::Aborted,
         )
         .await
     }
 
-    /// 状態取得。
-    pub async fn get_state(&self, chat_session_id: &str) -> Option<WorkflowState> {
-        let execs = self.executions.lock().await;
-        execs.get(chat_session_id).map(|e| e.to_workflow_state())
+    /// 指定worktree_pathに関連する session_worktree_map エントリを削除する。
+    async fn cleanup_session_worktree_map(&self, worktree_path: &str) {
+        let mut map = self.session_worktree_map.lock().await;
+        map.retain(|_, wt| wt != worktree_path);
     }
 
-    /// chat_session_idがワークフロー実行中かどうか。
-    pub async fn is_running(&self, chat_session_id: &str) -> bool {
+    /// 状態取得。worktree_pathで直接検索する。
+    pub async fn get_state(&self, worktree_path: &str) -> Option<WorkflowState> {
         let execs = self.executions.lock().await;
-        execs.get(chat_session_id).is_some_and(|e| e.is_active())
+        execs.get(worktree_path).map(|e| e.to_workflow_state())
+    }
+
+    /// session_idがワークフロー実行中かどうか。
+    pub async fn is_running(&self, session_id: &str) -> bool {
+        let Some(worktree_path) = self.resolve_worktree_path(session_id).await else {
+            return false;
+        };
+        let execs = self.executions.lock().await;
+        execs.get(&worktree_path).is_some_and(|e| e.is_active())
+    }
+
+    /// セッションIDからworktree_pathを解決する。
+    /// session_worktree_mapに登録されていない場合はNoneを返す。
+    async fn resolve_worktree_path(&self, session_id: &str) -> Option<String> {
+        let map = self.session_worktree_map.lock().await;
+        map.get(session_id).cloned()
     }
 
     // ---- 内部メソッド ----
@@ -628,25 +762,37 @@ impl WorkflowEngine {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
-        chat_session_id: &str,
+        worktree_path: &str,
         new_state: WorkflowExecutionState,
     ) -> Result<(), WorkflowEngineError> {
-        let snapshot = {
+        let (chat_session_id, snapshot) = {
             let mut execs = self.executions.lock().await;
-            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
+            let exec = execs
+                .get_mut(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             // 終了状態（Completed/Failed/Aborted）からの上書きを防止
             if exec.is_terminal() {
                 return Ok(());
             }
             exec.state = new_state;
             exec.updated_at = current_timestamp();
-            exec.to_workflow_state()
+            (exec.chat_session_id.clone(), exec.to_workflow_state())
         };
-        self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+        self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
             .await?;
-        self.broadcast_state(app, chat_session_id, snapshot);
+        self.broadcast_state(app, worktree_path, snapshot.clone());
+        if matches!(
+            snapshot.state,
+            WorkflowExecutionState::Completed
+                | WorkflowExecutionState::Failed { .. }
+                | WorkflowExecutionState::Aborted
+        ) {
+            if matches!(snapshot.state, WorkflowExecutionState::Completed) {
+                self.write_last_step_completed_log(app, &snapshot);
+            }
+            self.write_terminal_log(app, &snapshot);
+            self.cleanup_session_worktree_map(worktree_path).await;
+        }
         Ok(())
     }
 
@@ -658,7 +804,7 @@ impl WorkflowEngine {
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
-        chat_session_id: &str,
+        worktree_path: &str,
         final_parts: &[crate::session::MessagePart],
         rules: &[TransitionRule],
         step_name: &str,
@@ -674,44 +820,49 @@ impl WorkflowEngine {
         };
 
         // 判定 + 状態変更 + 履歴記録を原子的に実行
-        let outcome = {
+        let (chat_session_id, outcome) = {
             let mut execs = self.executions.lock().await;
-            let exec = execs.get_mut(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
+            let exec = execs
+                .get_mut(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            let chat_session_id = exec.chat_session_id.clone();
 
-            match rule_match {
+            let outcome = match rule_match {
                 None => {
                     // ルールなし → 定義順で次へ
-                    exec.step_history.push(StepHistoryEntry {
-                        step_name: step_name.to_string(),
-                        completed_at: current_timestamp(),
-                        result: None,
-                    });
+                    let entry = exec.make_step_history_entry(None);
+                    exec.step_history.push(entry);
                     Self::apply_advance(exec)
                 }
                 Some(Some((next_step, matched_rule))) => {
                     // ルールマッチ → 指定ステップへ遷移
-                    exec.step_history.push(StepHistoryEntry {
-                        step_name: step_name.to_string(),
-                        completed_at: current_timestamp(),
-                        result: Some(matched_rule),
-                    });
+                    let entry = exec.make_step_history_entry(Some(matched_rule));
+                    exec.step_history.push(entry);
                     Self::apply_transition(exec, &next_step)?
                 }
                 Some(None) => {
                     // マッチなし → Failed
+                    let entry = exec.make_step_history_entry(Some("no_matching_rule".to_string()));
+                    exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!("No matching rule found for step '{}' output", step_name),
                     };
                     exec.updated_at = current_timestamp();
                     StepOutcome::Persist(exec.to_workflow_state())
                 }
-            }
+            };
+            (chat_session_id, outcome)
         };
 
-        self.execute_outcome(app, session_store, handles, chat_session_id, outcome)
-            .await
+        self.execute_outcome(
+            app,
+            session_store,
+            handles,
+            worktree_path,
+            &chat_session_id,
+            outcome,
+        )
+        .await
     }
 
     /// autoモードのタグ検出。rulesの定義順で最初にマッチしたルールを返す。
@@ -749,55 +900,135 @@ impl WorkflowEngine {
         text
     }
 
-    /// 現在のステップのAgentSessionを開始し、プロンプトを送信する。
+    /// 現在のステップ用に新しいChatSessionを生成し、AgentSessionを開始してプロンプトを送信する。
     async fn start_step_session(
         &self,
         app: &tauri::AppHandle,
         handles: &Arc<Mutex<AgentProcessMap>>,
         session_store: &Arc<SessionStore>,
-        chat_session_id: &str,
+        worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
-        let (worktree_path, prompt) = {
+        let (chat_session_id, prompt_ref) = {
             let execs = self.executions.lock().await;
-            let exec = execs.get(chat_session_id).ok_or_else(|| {
-                WorkflowEngineError::ExecutionNotFound(chat_session_id.to_string())
-            })?;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let step = &exec.workflow.steps[exec.current_step_index];
-            (exec.worktree_path.clone(), step.prompt.clone())
+            (exec.chat_session_id.clone(), step.prompt.clone())
         };
 
         let data_dir = crate::session::resolve_data_dir(app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
-        let session = session_store
-            .get_session(&data_dir, chat_session_id)
+        let prompt = Self::resolve_step_prompt(&prompt_ref, worktree_path)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve prompt: {e}")))?;
+        let parent_session = session_store
+            .get_session(&data_dir, &chat_session_id)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
-            .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.to_string()))?;
-        let permission_mode = session.permission_mode;
+            .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.clone()))?;
+        let permission_mode = parent_session.permission_mode;
 
-        // AgentSession開始
+        // ステップ用の新しいChatSessionを生成
+        let step_session =
+            crate::session::create_session_internal(session_store, &data_dir, worktree_path)
+                .map_err(|e| {
+                    WorkflowEngineError::SessionStore(format!("create step session: {e}"))
+                })?;
+        let step_session_id = step_session.id.clone();
+
+        // ステップセッションID → worktree_pathのマッピングを登録
+        {
+            let mut map = self.session_worktree_map.lock().await;
+            map.insert(step_session_id.clone(), worktree_path.to_string());
+        }
+
+        // AgentSession開始（ステップ用セッションIDを使用）
         crate::agent_sdk::start_agent_session_internal(
             app,
             handles,
             session_store,
-            chat_session_id,
-            &worktree_path,
+            &step_session_id,
+            worktree_path,
             None,
         )
         .await
         .map_err(WorkflowEngineError::AgentSession)?;
 
-        // プロンプト送信
+        // ステップセッションIDをワークフロー実行に紐付け
+        {
+            let mut execs = self.executions.lock().await;
+            if let Some(exec) = execs.get_mut(worktree_path) {
+                exec.current_session_id = Some(step_session_id.clone());
+            }
+        }
+
+        // プロンプト送信（ステップ用セッションIDを使用）
         crate::agent_sdk::start_agent_turn_internal(
             app,
             handles,
             session_store,
-            chat_session_id,
-            &worktree_path,
+            &step_session_id,
+            worktree_path,
             &permission_mode,
             &prompt,
         )
         .await
         .map_err(WorkflowEngineError::AgentSession)
+    }
+
+    /// step.prompt を実行用プロンプト本文へ展開する。
+    fn resolve_step_prompt(prompt_ref: &StepPrompt, worktree_path: &str) -> Result<String, String> {
+        match prompt_ref {
+            StepPrompt::Template(t) => Self::load_prompt_template(&t.template, worktree_path),
+            StepPrompt::InlineObject(o) => Ok(o.inline.clone()),
+            StepPrompt::Inline(inline) => {
+                // 旧builtin YAML互換: `prompt: fixer` のような1語参照は、
+                // 同名テンプレートが存在する場合だけテンプレートとして扱う。
+                let prompt_path = storage::prompts_dir().join(format!("{inline}.yml"));
+                if prompt_path.exists() {
+                    log::warn!(
+                        "Deprecated workflow prompt syntax `prompt: {inline}` resolved as template. Use `prompt: {{ template: {inline} }}` instead."
+                    );
+                    Self::load_prompt_template(inline, worktree_path)
+                } else {
+                    Ok(inline.clone())
+                }
+            }
+        }
+    }
+
+    fn load_prompt_template(template_name: &str, worktree_path: &str) -> Result<String, String> {
+        let prompt_path = storage::prompts_dir().join(format!("{template_name}.yml"));
+        if !prompt_path.exists() {
+            return Err(format!("Prompt template not found: {template_name}"));
+        }
+
+        let template = storage::load_prompt(&prompt_path).map_err(|e| e.to_string())?;
+        Ok(Self::render_prompt_template(&template, worktree_path))
+    }
+
+    fn render_prompt_template(
+        template: &crate::workflow::prompt_schema::PromptTemplate,
+        worktree_path: &str,
+    ) -> String {
+        let mut content = template.content.clone();
+        for var in &template.variables {
+            let value = if var.name == "project_name" {
+                Self::project_name_from_worktree(worktree_path)
+            } else {
+                var.default.clone().unwrap_or_default()
+            };
+            content = content.replace(&format!("{{{{{}}}}}", var.name), &value);
+        }
+        content
+    }
+
+    fn project_name_from_worktree(worktree_path: &str) -> String {
+        Path::new(worktree_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(worktree_path)
+            .to_string()
     }
 
     /// AgentSessionを中断する。
@@ -903,6 +1134,7 @@ impl WorkflowEngine {
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
         chat_session_id: &str,
         outcome: StepOutcome,
     ) -> Result<(), WorkflowEngineError> {
@@ -910,24 +1142,65 @@ impl WorkflowEngine {
             StepOutcome::Persist(snapshot) => {
                 self.persist_state(app, session_store, chat_session_id, snapshot.clone())
                     .await?;
-                self.broadcast_state(app, chat_session_id, snapshot);
+                self.broadcast_state(app, worktree_path, snapshot.clone());
+                if matches!(
+                    snapshot.state,
+                    WorkflowExecutionState::Completed
+                        | WorkflowExecutionState::Failed { .. }
+                        | WorkflowExecutionState::Aborted
+                ) {
+                    // Completedの場合のみ最後のステップの完了ログを書く
+                    // (TransitionAndStart経由の場合は既にexecute_outcome内で記録済み)
+                    if matches!(snapshot.state, WorkflowExecutionState::Completed) {
+                        self.write_last_step_completed_log(app, &snapshot);
+                    }
+                    self.write_terminal_log(app, &snapshot);
+                    self.cleanup_session_worktree_map(worktree_path).await;
+                }
                 Ok(())
             }
             StepOutcome::TransitionAndStart(snapshot) => {
                 self.persist_state(app, session_store, chat_session_id, snapshot.clone())
                     .await?;
-                self.broadcast_state(app, chat_session_id, snapshot);
+                self.broadcast_state(app, worktree_path, snapshot.clone());
+
+                // 直前のステップ完了ログ + 新ステップ開始ログ
+                self.write_last_step_completed_log(app, &snapshot);
+                let exec_count = snapshot
+                    .step_execution_counts
+                    .get(&snapshot.current_step_name)
+                    .copied()
+                    .unwrap_or(1);
+                self.write_log(
+                    app,
+                    WorkflowLogEvent::StepStarted {
+                        execution_id: snapshot.execution_id.clone(),
+                        workflow_name: snapshot.workflow_name.clone(),
+                        step_name: snapshot.current_step_name.clone(),
+                        execution_count: exec_count,
+                        timestamp: snapshot.updated_at,
+                    },
+                );
 
                 // AgentSession起動。失敗時はFailed状態に遷移。
                 if let Err(e) = self
-                    .start_step_session(app, handles, session_store, chat_session_id)
+                    .start_step_session(app, handles, session_store, worktree_path)
                     .await
                 {
+                    {
+                        let mut execs = self.executions.lock().await;
+                        if let Some(exec) = execs.get_mut(worktree_path) {
+                            let entry = exec.make_step_history_entry(Some(format!(
+                                "session_start_failed: {e}"
+                            )));
+                            exec.step_history.push(entry);
+                        }
+                    }
                     let _ = self
                         .set_execution_state(
                             app,
                             session_store,
-                            chat_session_id,
+                            worktree_path,
                             WorkflowExecutionState::Failed {
                                 reason: format!("Failed to start step session: {e}"),
                             },
@@ -966,29 +1239,109 @@ impl WorkflowEngine {
 
     /// ワークフロー状態をブロードキャストする。
     /// スナップショットは呼び出し元がロック内で確定したものを受け取る。
+    /// worktree_pathベースでイベントを発行するため、同一worktreeの全セッションが受信可能。
     fn broadcast_state(
         &self,
         app: &tauri::AppHandle,
-        chat_session_id: &str,
+        worktree_path: &str,
         workflow_state: WorkflowState,
     ) {
-        let payload = WorkflowStatePayload {
-            chat_session_id: chat_session_id.to_string(),
-            workflow_state,
-        };
-
         let center: Option<tauri::State<'_, Arc<AgentStatusCenter>>> =
             app.try_state::<Arc<AgentStatusCenter>>();
         if let Some(center) = center {
-            // ワークフロー状態変更イベントを emit
-            center.emit_workflow_state_changed(&payload);
+            // worktree_pathでイベントを emit
+            center.emit_workflow_state_changed(worktree_path, &workflow_state);
 
-            // SessionStatusのworkflowフィールドも更新
-            if let Some(mut status) = center.get_session(chat_session_id) {
-                status.workflow_step = Some(payload.workflow_state.current_step_name.clone());
-                status.workflow_execution_state =
-                    Some(payload.workflow_state.state.as_str().to_string());
-                center.update_session(status);
+            // 同一worktreeの全セッションのworkflowフィールドを更新
+            for status in center.list_sessions() {
+                if status.worktree_path == worktree_path {
+                    let mut updated = status;
+                    updated.workflow_step = Some(workflow_state.current_step_name.clone());
+                    updated.workflow_execution_state =
+                        Some(workflow_state.state.as_str().to_string());
+                    center.update_session(updated);
+                }
+            }
+        }
+    }
+
+    /// 終了状態（Completed/Failed/Aborted）のログを書き込む。
+    /// StepCompletedログは呼び出し元で書き込み済みのため、ここでは書かない。
+    fn write_terminal_log(&self, app: &tauri::AppHandle, snapshot: &WorkflowState) {
+        // ワークフロー終了ログ
+        match &snapshot.state {
+            WorkflowExecutionState::Completed => {
+                self.write_log(
+                    app,
+                    WorkflowLogEvent::WorkflowCompleted {
+                        execution_id: snapshot.execution_id.clone(),
+                        workflow_name: snapshot.workflow_name.clone(),
+                        total_token_usage: snapshot.total_token_usage.clone(),
+                        timestamp: snapshot.updated_at,
+                    },
+                );
+            }
+            WorkflowExecutionState::Failed { reason } => {
+                // 失敗ステップのログ
+                self.write_log(
+                    app,
+                    WorkflowLogEvent::StepFailed {
+                        execution_id: snapshot.execution_id.clone(),
+                        workflow_name: snapshot.workflow_name.clone(),
+                        step_name: snapshot.current_step_name.clone(),
+                        reason: reason.clone(),
+                        timestamp: snapshot.updated_at,
+                    },
+                );
+                self.write_log(
+                    app,
+                    WorkflowLogEvent::WorkflowFailed {
+                        execution_id: snapshot.execution_id.clone(),
+                        workflow_name: snapshot.workflow_name.clone(),
+                        reason: reason.clone(),
+                        timestamp: snapshot.updated_at,
+                    },
+                );
+            }
+            WorkflowExecutionState::Aborted => {
+                self.write_log(
+                    app,
+                    WorkflowLogEvent::WorkflowAborted {
+                        execution_id: snapshot.execution_id.clone(),
+                        workflow_name: snapshot.workflow_name.clone(),
+                        timestamp: snapshot.updated_at,
+                    },
+                );
+            }
+            // Running/WaitingApproval は終了状態ではないのでログ不要
+            _ => {}
+        }
+    }
+
+    /// 最後のステップのStepCompletedログを書き込む。
+    fn write_last_step_completed_log(&self, app: &tauri::AppHandle, snapshot: &WorkflowState) {
+        if let Some(last_entry) = snapshot.step_history.last() {
+            self.write_log(
+                app,
+                WorkflowLogEvent::StepCompleted {
+                    execution_id: snapshot.execution_id.clone(),
+                    workflow_name: snapshot.workflow_name.clone(),
+                    step_name: last_entry.step_name.clone(),
+                    result: last_entry.result.clone(),
+                    session_id: last_entry.session_id.clone(),
+                    token_usage: last_entry.token_usage.clone(),
+                    timestamp: last_entry.completed_at,
+                },
+            );
+        }
+    }
+
+    /// NDJSONログにイベントを書き込む。失敗してもワークフロー実行には影響しない。
+    fn write_log(&self, app: &tauri::AppHandle, event: WorkflowLogEvent) {
+        if let Ok(data_dir) = crate::session::resolve_data_dir(app) {
+            let log = WorkflowEventLog::new(&data_dir);
+            if let Err(e) = log.append(&event) {
+                log::warn!("Failed to write workflow log: {e}");
             }
         }
     }
@@ -1121,6 +1474,57 @@ mod tests {
         assert_eq!(text, "");
     }
 
+    // ---- prompt template rendering ----
+
+    #[test]
+    fn render_prompt_template_substitutes_project_name_from_worktree() {
+        let template = crate::workflow::prompt_schema::PromptTemplate {
+            name: "fixer".to_string(),
+            description: "Fix prompt".to_string(),
+            content: "{{project_name}} の問題を修正してください。".to_string(),
+            variables: vec![crate::workflow::prompt_schema::PromptVariable {
+                name: "project_name".to_string(),
+                description: "Project name".to_string(),
+                default: None,
+            }],
+            builtin: true,
+        };
+
+        let prompt = WorkflowEngine::render_prompt_template(&template, "/work/releash");
+
+        assert_eq!(prompt, "releash の問題を修正してください。");
+    }
+
+    #[test]
+    fn render_prompt_template_uses_variable_defaults() {
+        let template = crate::workflow::prompt_schema::PromptTemplate {
+            name: "custom".to_string(),
+            description: "Custom prompt".to_string(),
+            content: "対象: {{target}}".to_string(),
+            variables: vec![crate::workflow::prompt_schema::PromptVariable {
+                name: "target".to_string(),
+                description: "Target".to_string(),
+                default: Some("unit tests".to_string()),
+            }],
+            builtin: false,
+        };
+
+        let prompt = WorkflowEngine::render_prompt_template(&template, "/work/releash");
+
+        assert_eq!(prompt, "対象: unit tests");
+    }
+
+    #[test]
+    fn resolve_step_prompt_keeps_inline_prompt_when_template_file_is_missing() {
+        let prompt = WorkflowEngine::resolve_step_prompt(
+            &StepPrompt::inline("この文字列はテンプレート名ではなく、そのまま送る"),
+            "/work/releash",
+        )
+        .unwrap();
+
+        assert_eq!(prompt, "この文字列はテンプレート名ではなく、そのまま送る");
+    }
+
     // ---- WorkflowExecution ----
 
     fn make_test_workflow() -> Workflow {
@@ -1132,21 +1536,21 @@ mod tests {
                 Step {
                     name: "plan".to_string(),
                     mode: StepMode::Interactive,
-                    prompt: "Plan the work".to_string(),
+                    prompt: StepPrompt::inline("Plan the work"),
                     rules: vec![],
                     cycle_guard: None,
                 },
                 Step {
                     name: "implement".to_string(),
                     mode: StepMode::Auto,
-                    prompt: "Implement the plan".to_string(),
+                    prompt: StepPrompt::inline("Implement the plan"),
                     rules: vec![],
                     cycle_guard: None,
                 },
                 Step {
                     name: "review".to_string(),
                     mode: StepMode::Auto,
-                    prompt: "Review the implementation".to_string(),
+                    prompt: StepPrompt::inline("Review the implementation"),
                     rules: vec![
                         TransitionRule {
                             r#match: "NEEDS_FIX".to_string(),
@@ -1162,7 +1566,7 @@ mod tests {
                 Step {
                     name: "report".to_string(),
                     mode: StepMode::Approval,
-                    prompt: "Generate report".to_string(),
+                    prompt: StepPrompt::inline("Generate report"),
                     rules: vec![TransitionRule {
                         r#match: "reject".to_string(),
                         next: "implement".to_string(),
@@ -1184,9 +1588,11 @@ mod tests {
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
 
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
 
         let state = exec.to_workflow_state();
@@ -1210,9 +1616,11 @@ mod tests {
             current_step_index: 0,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
         assert!(exec.is_active());
     }
@@ -1226,9 +1634,11 @@ mod tests {
             current_step_index: 0,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
         assert!(exec.is_active());
     }
@@ -1242,9 +1652,11 @@ mod tests {
             current_step_index: 0,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
         assert!(!exec.is_active());
     }
@@ -1260,9 +1672,11 @@ mod tests {
             current_step_index: 0,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
         assert!(!exec.is_active());
     }
@@ -1276,9 +1690,11 @@ mod tests {
             current_step_index: 0,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
         assert!(!exec.is_active());
     }
@@ -1295,9 +1711,11 @@ mod tests {
             current_step_index: 3,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1001.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
@@ -1320,10 +1738,14 @@ mod tests {
                 step_name: "plan".to_string(),
                 completed_at: 1000.5,
                 result: None,
+                session_id: None,
+                token_usage: None,
             }],
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1001.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
         let ws = exec.to_workflow_state();
         assert_eq!(
@@ -1346,9 +1768,11 @@ mod tests {
             current_step_index: 0,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1001.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Aborted);
@@ -1364,9 +1788,11 @@ mod tests {
             current_step_index: 3,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1002.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Completed);
@@ -1450,9 +1876,11 @@ mod tests {
             current_step_index: step_index,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
-            worktree_path: "/repo".to_string(),
+            chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
         }
     }
 
@@ -1785,5 +2213,80 @@ mod tests {
         let mut exec = make_exec(0);
         exec.state = WorkflowExecutionState::WaitingApproval;
         assert!(!exec.is_terminal());
+    }
+
+    // ---- step_states computation ----
+
+    #[test]
+    fn step_states_all_pending_at_start() {
+        let exec = make_exec(0);
+        let ws = exec.to_workflow_state();
+        assert_eq!(ws.step_states["plan"], "running");
+        assert_eq!(ws.step_states["implement"], "pending");
+        assert_eq!(ws.step_states["review"], "pending");
+        assert_eq!(ws.step_states["report"], "pending");
+    }
+
+    #[test]
+    fn step_states_completed_steps() {
+        let mut exec = make_exec(2);
+        exec.step_history = vec![
+            StepHistoryEntry {
+                step_name: "plan".to_string(),
+                completed_at: 1000.5,
+                result: None,
+                session_id: None,
+                token_usage: None,
+            },
+            StepHistoryEntry {
+                step_name: "implement".to_string(),
+                completed_at: 1001.0,
+                result: None,
+                session_id: None,
+                token_usage: None,
+            },
+        ];
+        let ws = exec.to_workflow_state();
+        assert_eq!(ws.step_states["plan"], "completed");
+        assert_eq!(ws.step_states["implement"], "completed");
+        assert_eq!(ws.step_states["review"], "running");
+        assert_eq!(ws.step_states["report"], "pending");
+    }
+
+    #[test]
+    fn step_states_failed_step() {
+        let mut exec = make_exec(1);
+        exec.state = WorkflowExecutionState::Failed {
+            reason: "error".to_string(),
+        };
+        exec.step_history = vec![StepHistoryEntry {
+            step_name: "plan".to_string(),
+            completed_at: 1000.5,
+            result: None,
+            session_id: None,
+            token_usage: None,
+        }];
+        let ws = exec.to_workflow_state();
+        assert_eq!(ws.step_states["plan"], "completed");
+        assert_eq!(ws.step_states["implement"], "failed");
+        assert_eq!(ws.step_states["review"], "pending");
+        assert_eq!(ws.step_states["report"], "pending");
+    }
+
+    #[test]
+    fn step_states_waiting_approval() {
+        let mut exec = make_exec(1);
+        exec.state = WorkflowExecutionState::WaitingApproval;
+        exec.step_history = vec![StepHistoryEntry {
+            step_name: "plan".to_string(),
+            completed_at: 1000.5,
+            result: None,
+            session_id: None,
+            token_usage: None,
+        }];
+        let ws = exec.to_workflow_state();
+        assert_eq!(ws.step_states["plan"], "completed");
+        assert_eq!(ws.step_states["implement"], "waiting_approval");
+        assert_eq!(ws.step_states["review"], "pending");
     }
 }

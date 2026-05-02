@@ -1,3 +1,5 @@
+import type { WorkflowStatePayload } from "@/types/workflow";
+
 // --- 認証 ---
 
 interface AuthChallenge {
@@ -175,6 +177,7 @@ export type WsMessage =
 	| { type: "branch_info_response"; payload: BranchInfoResponse }
 	| { type: "branch_list_sync"; payload: BranchListSync }
 	| { type: "agent_state_sync"; payload: AgentStateSync }
+	| { type: "workflow_state_sync"; payload: WorkflowStatePayload }
 	| { type: "error"; payload: ErrorMsg };
 
 export function serializeMessage(msg: WsMessage): string {

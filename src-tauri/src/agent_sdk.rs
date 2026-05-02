@@ -105,6 +105,9 @@ pub struct AgentProcess {
     pub available_models: Vec<ModelInfo>,
     /// Currently selected model for this session (None = SDK default).
     pub selected_model: Option<String>,
+    /// Token usage from the latest `result` message (extracted from modelUsage).
+    /// Consumed by turn_complete handler and passed to WorkflowEngine.
+    pub last_result_token_usage: Option<(u64, u64)>,
 }
 
 impl AgentProcess {
@@ -908,6 +911,7 @@ async fn spawn_bridge_process(
                 current_permission_mode: initial_permission_mode.clone(),
                 available_models: Vec::new(),
                 selected_model,
+                last_result_token_usage: None,
             },
         );
     }
@@ -998,17 +1002,47 @@ async fn spawn_bridge_process(
                             }),
                         );
                     }
+                    "result" => {
+                        // Extract token usage from modelUsage in SDK result message
+                        let mut total_input: u64 = 0;
+                        let mut total_output: u64 = 0;
+                        if let Some(model_usage) = msg.get("modelUsage").and_then(|v| v.as_object())
+                        {
+                            for (_model, usage) in model_usage {
+                                total_input += usage
+                                    .get("inputTokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                total_output += usage
+                                    .get("outputTokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                            }
+                        }
+                        if total_input > 0 || total_output > 0 {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                proc.last_result_token_usage = Some((total_input, total_output));
+                            }
+                        }
+                        // Forward result message to frontend
+                        let _ = app_stdout.emit("agent-sdk-message", &msg);
+                    }
                     "turn_complete" => {
                         let exit_code = msg.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
                         let was_streaming;
                         let raw_parts;
                         let final_msg_id;
+                        let turn_token_usage;
                         {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 was_streaming = proc.state == BridgeState::Streaming;
                                 proc.state = BridgeState::Ready;
                                 proc.turn_phase = TurnPhase::Idle;
+
+                                // Take token usage from preceding result message
+                                turn_token_usage = proc.last_result_token_usage.take();
 
                                 // Capture streaming buffer for consolidation outside lock.
                                 // Keep parts in buffer so post-turn_complete background task
@@ -1043,6 +1077,7 @@ async fn spawn_bridge_process(
                                 was_streaming = false;
                                 raw_parts = Vec::new();
                                 final_msg_id = None;
+                                turn_token_usage = None;
                             }
                         }
 
@@ -1120,6 +1155,7 @@ async fn spawn_bridge_process(
                                     let h_wf = Arc::clone(&handles_stdout);
                                     let csid_wf = csid_stdout.clone();
                                     let parts_wf = final_parts.clone();
+                                    let token_usage_wf = turn_token_usage;
                                     let handle = tokio::runtime::Handle::current();
                                     std::thread::spawn(move || {
                                         handle.block_on(async move {
@@ -1128,6 +1164,7 @@ async fn spawn_bridge_process(
                                                     .on_turn_complete(
                                                         &app_wf, &ss_wf, &h_wf, &csid_wf,
                                                         exit_code, &parts_wf,
+                                                        token_usage_wf,
                                                     )
                                                     .await
                                                 {
