@@ -20,30 +20,32 @@ export function StepDetail({
 		if (stepState === "running") {
 			return (
 				<div className="px-3 py-2 text-xs text-blue-600 dark:text-blue-400">
-					実行中
+					Running
 				</div>
 			);
 		}
 		if (stepState === "waiting_approval") {
 			return (
 				<div className="px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400">
-					承認待ち
+					Waiting for approval
 				</div>
 			);
 		}
 		return (
-			<div className="px-3 py-2 text-xs text-muted-foreground">未実行</div>
+			<div className="px-3 py-2 text-xs text-muted-foreground">
+				Not executed
+			</div>
 		);
 	}
 
 	return (
 		<div className="flex flex-col gap-1 px-3 py-2">
 			{stepState === "running" && (
-				<div className="text-xs text-blue-600 dark:text-blue-400">実行中</div>
+				<div className="text-xs text-blue-600 dark:text-blue-400">Running</div>
 			)}
 			{stepState === "waiting_approval" && (
 				<div className="text-xs text-yellow-600 dark:text-yellow-400">
-					承認待ち
+					Waiting for approval
 				</div>
 			)}
 			{entries.map((entry, i) => (

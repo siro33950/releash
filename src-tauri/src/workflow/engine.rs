@@ -418,8 +418,16 @@ impl WorkflowEngine {
         }
 
         // 永続化・ブロードキャスト（ロック内で確定したスナップショットを使用）
-        self.persist_state(app, session_store, chat_session_id, snapshot.clone())
-            .await?;
+        if let Err(e) = self
+            .persist_state(app, session_store, chat_session_id, snapshot.clone())
+            .await
+        {
+            let mut execs = self.executions.lock().await;
+            execs.remove(&worktree_path);
+            drop(execs);
+            self.cleanup_session_worktree_map(&worktree_path).await;
+            return Err(e);
+        }
         self.broadcast_state(app, &worktree_path, snapshot.clone());
 
         // NDJSONログ: workflow_started + step_started
@@ -430,6 +438,7 @@ impl WorkflowEngine {
                 workflow_name: snapshot.workflow_name.clone(),
                 workflow_file_stem: file_stem.to_string(),
                 worktree_path: worktree_path.clone(),
+                workflow_definition: Some(workflow.clone()),
                 timestamp: now,
             },
         );
@@ -969,10 +978,8 @@ impl WorkflowEngine {
     /// step.prompt を実行用プロンプト本文へ展開する。
     fn resolve_step_prompt(prompt_ref: &StepPrompt, worktree_path: &str) -> Result<String, String> {
         match prompt_ref {
-            StepPrompt::Template { template } => {
-                Self::load_prompt_template(template, worktree_path)
-            }
-            StepPrompt::InlineObject { inline } => Ok(inline.clone()),
+            StepPrompt::Template(t) => Self::load_prompt_template(&t.template, worktree_path),
+            StepPrompt::InlineObject(o) => Ok(o.inline.clone()),
             StepPrompt::Inline(inline) => {
                 // 旧builtin YAML互換: `prompt: fixer` のような1語参照は、
                 // 同名テンプレートが存在する場合だけテンプレートとして扱う。

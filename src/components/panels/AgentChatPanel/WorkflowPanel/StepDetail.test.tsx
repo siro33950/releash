@@ -34,11 +34,11 @@ function makeWorkflowState(
 }
 
 describe("StepDetail", () => {
-	it("shows '未実行' when step has no history entries", () => {
+	it("shows 'Not executed' when step has no history entries", () => {
 		render(
 			<StepDetail stepName="step-1" workflowState={makeWorkflowState()} />,
 		);
-		expect(screen.getByText("未実行")).toBeInTheDocument();
+		expect(screen.getByText("Not executed")).toBeInTheDocument();
 	});
 
 	it("shows execution history entries for a step", () => {

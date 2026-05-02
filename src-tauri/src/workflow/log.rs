@@ -18,6 +18,8 @@ pub enum WorkflowLogEvent {
         #[serde(default)]
         workflow_file_stem: String,
         worktree_path: String,
+        #[serde(default)]
+        workflow_definition: Option<Workflow>,
         timestamp: f64,
     },
     StepStarted {
@@ -322,6 +324,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
+            workflow_definition: None,
             timestamp: 1000.0,
         };
         let event2 = WorkflowLogEvent::StepStarted {
@@ -378,6 +381,7 @@ mod tests {
             workflow_name: "wf-a".to_string(),
             workflow_file_stem: "wf-a".to_string(),
             worktree_path: "/repo-1".to_string(),
+            workflow_definition: None,
             timestamp: 1000.0,
         })
         .unwrap();
@@ -386,6 +390,7 @@ mod tests {
             workflow_name: "wf-b".to_string(),
             workflow_file_stem: "wf-b".to_string(),
             worktree_path: "/repo-2".to_string(),
+            workflow_definition: None,
             timestamp: 1001.0,
         })
         .unwrap();
@@ -394,6 +399,7 @@ mod tests {
             workflow_name: "wf-c".to_string(),
             workflow_file_stem: "wf-c".to_string(),
             worktree_path: "/repo-1".to_string(),
+            workflow_definition: None,
             timestamp: 1002.0,
         })
         .unwrap();
@@ -417,6 +423,7 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: "/repo".to_string(),
+                workflow_definition: None,
                 timestamp: 1.0,
             },
             WorkflowLogEvent::StepStarted {
@@ -527,6 +534,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
+            workflow_definition: None,
             timestamp: 1000.0,
         })
         .unwrap();
@@ -611,6 +619,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
+            workflow_definition: None,
             timestamp: 2000.0,
         })
         .unwrap();

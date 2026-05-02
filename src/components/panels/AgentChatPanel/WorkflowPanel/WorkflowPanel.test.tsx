@@ -27,7 +27,7 @@ vi.mock("@xyflow/react", () => ({
 
 vi.mock("./WorkflowHistory", () => ({
 	WorkflowHistory: () => (
-		<div data-testid="workflow-history">過去の実行履歴はありません</div>
+		<div data-testid="workflow-history">No execution history</div>
 	),
 }));
 
@@ -165,7 +165,7 @@ describe("WorkflowPanel", () => {
 				chatSessionId="session-1"
 			/>,
 		);
-		expect(screen.getByText("過去の実行履歴はありません")).toBeInTheDocument();
+		expect(screen.getByText("No execution history")).toBeInTheDocument();
 	});
 
 	it("shows WorkflowHistory when running", () => {
@@ -177,7 +177,7 @@ describe("WorkflowPanel", () => {
 				chatSessionId="session-1"
 			/>,
 		);
-		expect(screen.getByText("過去の実行履歴はありません")).toBeInTheDocument();
+		expect(screen.getByText("No execution history")).toBeInTheDocument();
 	});
 
 	it("shows WorkflowHistory in empty state (no workflow running)", () => {
@@ -189,7 +189,7 @@ describe("WorkflowPanel", () => {
 				chatSessionId="session-1"
 			/>,
 		);
-		expect(screen.getByText("過去の実行履歴はありません")).toBeInTheDocument();
+		expect(screen.getByText("No execution history")).toBeInTheDocument();
 	});
 
 	it("displays correct status badge color class for each state", () => {

@@ -225,9 +225,10 @@ pub async fn get_workflow_execution_state(
     tokio::task::spawn_blocking(move || {
         let event_log = WorkflowEventLog::new(&data_dir);
         let events = event_log.read_log(&execution_id)?;
-        // ログからworkflow_file_stemを取得（旧ログではworkflow_nameにフォールバック）
-        let file_stem = events.iter().find_map(|e| match e {
+        // ログからワークフロー定義を取得（スナップショット優先、なければYAMLファイルにフォールバック）
+        let started = events.iter().find_map(|e| match e {
             super::log::WorkflowLogEvent::WorkflowStarted {
+                workflow_definition,
                 workflow_file_stem,
                 workflow_name,
                 ..
@@ -237,24 +238,28 @@ pub async fn get_workflow_execution_state(
                 } else {
                     workflow_file_stem.clone()
                 };
-                Some(stem)
+                Some((workflow_definition.clone(), stem))
             }
             _ => None,
         });
-        let Some(file_stem) = file_stem else {
+        let Some((snapshot_def, file_stem)) = started else {
             return Ok(None);
         };
-        let file_path = workflows_dir.join(format!("{file_stem}.yml"));
-        let workflow = match storage::load_workflow(&file_path) {
-            Ok(w) => w,
-            Err(e) => {
-                if file_path.exists() {
-                    log::warn!(
-                        "Failed to load workflow definition '{}': {e}",
-                        file_path.display()
-                    );
+        let workflow = if let Some(def) = snapshot_def {
+            def
+        } else {
+            let file_path = workflows_dir.join(format!("{file_stem}.yml"));
+            match storage::load_workflow(&file_path) {
+                Ok(w) => w,
+                Err(e) => {
+                    if file_path.exists() {
+                        log::warn!(
+                            "Failed to load workflow definition '{}': {e}",
+                            file_path.display()
+                        );
+                    }
+                    return Ok(None);
                 }
-                return Ok(None);
             }
         };
         WorkflowEventLog::reconstruct_state_from_events(&execution_id, &events, &workflow)

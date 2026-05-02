@@ -20,7 +20,7 @@ export function WorkflowPanel({
 	chatSessionId,
 	onSessionClick,
 }: WorkflowPanelProps) {
-	if (!workflowState || !chatSessionId) {
+	if (!workflowState) {
 		return (
 			<WorkflowEmptyState
 				chatSessionId={chatSessionId}

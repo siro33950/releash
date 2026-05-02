@@ -15,6 +15,9 @@ export function useWorkflowState(worktreePath: string | undefined) {
 			return;
 		}
 
+		// 別 worktree へ切り替わった直後は一旦クリアして古い表示を防ぐ
+		setWorkflowState(null);
+
 		let cancelled = false;
 
 		// 初期状態を取得（nullの場合も反映し、前セッションの古い状態をリセット）

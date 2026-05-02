@@ -68,7 +68,7 @@ describe("WorkflowHistory", () => {
 		render(<WorkflowHistory worktreePath="/repo" />);
 		await waitFor(() => {
 			expect(
-				screen.getByText("過去の実行履歴はありません"),
+				screen.getByText("No execution history"),
 			).toBeInTheDocument();
 		});
 	});
@@ -196,7 +196,7 @@ describe("WorkflowHistory", () => {
 		fireEvent.click(screen.getByText("exec-001"));
 
 		await waitFor(() => {
-			expect(screen.getByText(/合計:/)).toBeInTheDocument();
+			expect(screen.getByText(/Total:/)).toBeInTheDocument();
 			expect(screen.getByText(/700/)).toBeInTheDocument();
 		});
 	});

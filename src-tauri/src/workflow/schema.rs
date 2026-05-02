@@ -24,8 +24,20 @@ pub struct Step {
 #[serde(untagged)]
 pub enum StepPrompt {
     Inline(String),
-    InlineObject { inline: String },
-    Template { template: String },
+    InlineObject(InlinePrompt),
+    Template(TemplatePrompt),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct InlinePrompt {
+    pub inline: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TemplatePrompt {
+    pub template: String,
 }
 
 #[cfg(test)]
@@ -110,9 +122,9 @@ steps:
         assert_eq!(plan.mode, StepMode::Interactive);
         assert_eq!(
             plan.prompt,
-            StepPrompt::Template {
+            StepPrompt::Template(TemplatePrompt {
                 template: "planner".to_string()
-            }
+            })
         );
         assert!(plan.rules.is_empty());
         assert!(plan.cycle_guard.is_none());
@@ -193,9 +205,9 @@ steps:
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(
             wf.steps[0].prompt,
-            StepPrompt::InlineObject {
+            StepPrompt::InlineObject(InlinePrompt {
                 inline: "Run tests".to_string()
-            }
+            })
         );
     }
 }

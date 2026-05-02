@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkflowLogEvent, WorkflowState } from "@/types/workflow";
 import { StepDetail } from "./StepDetail";
 import { WorkflowGraph } from "./WorkflowGraph";
@@ -16,6 +16,7 @@ export function WorkflowHistory({
 	const [events, setEvents] = useState<WorkflowLogEvent[]>([]);
 	const [historyState, setHistoryState] = useState<WorkflowState | null>(null);
 	const [selectedStep, setSelectedStep] = useState<string | null>(null);
+	const selectionReqRef = useRef(0);
 
 	const fetchExecutionIds = useCallback(() => {
 		invoke<string[]>("list_workflow_executions", { worktreePath })
@@ -43,19 +44,30 @@ export function WorkflowHistory({
 	}, [stateType, fetchExecutionIds]);
 
 	const selectExecution = useCallback((id: string) => {
+		const reqId = ++selectionReqRef.current;
 		setSelectedId(id);
 		setSelectedStep(null);
+		setEvents([]);
+		setHistoryState(null);
 		invoke<WorkflowLogEvent[]>("get_workflow_execution_log", {
 			executionId: id,
 		})
-			.then(setEvents)
+			.then((nextEvents) => {
+				if (selectionReqRef.current === reqId) {
+					setEvents(nextEvents);
+				}
+			})
 			.catch((e) =>
 				console.warn("[WorkflowHistory] get_workflow_execution_log failed", e),
 			);
 		invoke<WorkflowState | null>("get_workflow_execution_state", {
 			executionId: id,
 		})
-			.then(setHistoryState)
+			.then((nextState) => {
+				if (selectionReqRef.current === reqId) {
+					setHistoryState(nextState ?? null);
+				}
+			})
 			.catch((e) =>
 				console.warn(
 					"[WorkflowHistory] get_workflow_execution_state failed",
@@ -67,7 +79,7 @@ export function WorkflowHistory({
 	if (executionIds.length === 0) {
 		return (
 			<div className="px-3 py-2 text-xs text-muted-foreground">
-				過去の実行履歴はありません
+				No execution history
 			</div>
 		);
 	}
@@ -75,7 +87,7 @@ export function WorkflowHistory({
 	return (
 		<div className="flex flex-col gap-1">
 			<div className="px-3 py-1 text-xs font-medium text-muted-foreground">
-				過去の実行
+				Past executions
 			</div>
 			{executionIds.map((id) => (
 				<button
@@ -92,7 +104,7 @@ export function WorkflowHistory({
 					{(historyState.totalTokenUsage.inputTokens > 0 ||
 						historyState.totalTokenUsage.outputTokens > 0) && (
 						<div className="px-3 py-1 text-xs text-muted-foreground">
-							合計:{" "}
+							Total:{" "}
 							{historyState.totalTokenUsage.inputTokens +
 								historyState.totalTokenUsage.outputTokens}{" "}
 							tokens
