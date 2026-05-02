@@ -31,6 +31,7 @@ function makeWorkflowState(
 		totalSteps: 2,
 		stepHistory: [],
 		stepExecutionCounts: {},
+		stepOutputs: {},
 		workflowDefinition: {
 			name: "test-workflow",
 			description: "test",

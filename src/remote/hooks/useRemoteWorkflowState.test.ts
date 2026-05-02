@@ -13,6 +13,7 @@ const makeState = (overrides: Partial<WorkflowState> = {}): WorkflowState => ({
 	totalSteps: 2,
 	stepHistory: [],
 	stepExecutionCounts: {},
+	stepOutputs: {},
 	workflowDefinition: {
 		name: "test-wf",
 		description: "",

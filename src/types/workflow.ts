@@ -9,6 +9,8 @@ export interface StepHistoryEntry {
 	result: string | null;
 	sessionId?: string;
 	tokenUsage?: TokenUsage;
+	outputText?: string;
+	runIndex?: number;
 }
 
 export type WorkflowExecutionState =
@@ -34,16 +36,41 @@ export type StepPrompt = string | { inline: string } | { template: string };
 export interface Step {
 	name: string;
 	mode: StepMode;
-	prompt: StepPrompt;
+	prompt: StepPrompt | null;
 	rules: TransitionRule[];
 	cycleGuard?: CycleGuard;
+	passPreviousResponse?: boolean;
+	passOutputFrom?: string[];
+	collect?: CollectConfig;
 }
+
+export interface CollectConfig {
+	from: string[];
+	reduce: ReduceStrategy;
+}
+
+export type ReduceStrategy =
+	| "last"
+	| "concat"
+	| "grouped"
+	| "any_needs_fix"
+	| "all_passed";
 
 export interface Workflow {
 	name: string;
 	description: string;
 	builtin: boolean;
 	steps: Step[];
+}
+
+export interface StepOutput {
+	stepName: string;
+	runIndex: number;
+	sessionId?: string;
+	result?: string;
+	outputText: string;
+	tokenUsage?: TokenUsage;
+	completedAt: number;
 }
 
 export interface WorkflowState {
@@ -57,6 +84,7 @@ export interface WorkflowState {
 	totalSteps: number;
 	stepHistory: StepHistoryEntry[];
 	stepExecutionCounts: Record<string, number>;
+	stepOutputs: Record<string, StepOutput>;
 	workflowDefinition: Workflow;
 	totalTokenUsage: TokenUsage;
 	stepStates: Record<string, string>;
@@ -94,6 +122,8 @@ export type WorkflowLogEvent =
 			result: string | null;
 			session_id?: string;
 			token_usage?: TokenUsage;
+			output_text?: string;
+			run_index?: number;
 			timestamp: number;
 	  }
 	| {
@@ -123,4 +153,21 @@ export type WorkflowLogEvent =
 			execution_id: string;
 			workflow_name: string;
 			timestamp: number;
+	  }
+	| {
+			event: "output_collected";
+			execution_id: string;
+			workflow_name: string;
+			step_name: string;
+			step_outputs: CollectedOutputEntry[];
+			reduce_strategy: string;
+			reduce_result?: string;
+			reduce_text: string;
+			timestamp: number;
 	  };
+
+export interface CollectedOutputEntry {
+	stepName: string;
+	result?: string;
+	outputTextLen: number;
+}
