@@ -1,0 +1,135 @@
+name: step-output-collect-test
+description: StepOutput collect/reduce test workflow
+builtin: true
+
+steps:
+  - name: draft
+    mode: auto
+    prompt:
+      inline: |
+        StepOutput test workflow.
+
+        Reply with exactly:
+        DRAFT_OUTPUT
+
+  - name: review_a
+    mode: auto
+    pass_previous_response: true
+    prompt:
+      inline: |
+        This step verifies pass_previous_response.
+        The previous step output is appended below as a step_output block.
+
+        Reply with exactly:
+        LGTM
+    rules:
+      - match: LGTM
+        next: review_b
+      - match: NEEDS_FIX
+        next: review_b
+
+  - name: review_b
+    mode: auto
+    pass_output_from:
+      - draft
+      - review_a
+    prompt:
+      inline: |
+        This step verifies pass_output_from with multiple source steps.
+        Outputs from draft and review_a are appended below as step_output blocks.
+
+        Reply with exactly:
+        NEEDS_FIX
+    rules:
+      - match: NEEDS_FIX
+        next: collect_reviews
+      - match: LGTM
+        next: collect_reviews
+
+  - name: collect_reviews
+    mode: auto
+    collect:
+      from:
+        - review_a
+        - review_b
+      reduce: any_needs_fix
+    rules:
+      - match: NEEDS_FIX
+        next: fix_summary
+      - match: LGTM
+        next: final_approval
+
+  - name: fix_summary
+    mode: auto
+    pass_output_from:
+      - collect_reviews
+    prompt:
+      inline: |
+        This step verifies that a collect step output can be passed forward.
+        The collect_reviews output is appended below.
+
+        Reply with exactly:
+        FIX_DONE
+    rules:
+      - match: FIX_DONE
+        next: test_a
+
+  - name: test_a
+    mode: auto
+    prompt:
+      inline: |
+        This step is the first source for all_passed.
+
+        Reply with exactly:
+        PASSED
+    rules:
+      - match: PASSED
+        next: test_b
+      - match: FAILED
+        next: test_b
+
+  - name: test_b
+    mode: auto
+    prompt:
+      inline: |
+        This step is the second source for all_passed.
+
+        Reply with exactly:
+        PASSED
+    rules:
+      - match: PASSED
+        next: collect_tests
+      - match: FAILED
+        next: collect_tests
+
+  - name: collect_tests
+    mode: auto
+    collect:
+      from:
+        - test_a
+        - test_b
+      reduce: all_passed
+    rules:
+      - match: PASSED
+        next: final_approval
+      - match: FAILED
+        next: final_approval
+
+  - name: final_approval
+    mode: approval
+    pass_output_from:
+      - collect_reviews
+      - collect_tests
+    prompt:
+      inline: |
+        Final approval gate for StepOutput collect/reduce testing.
+
+        Expected trace:
+        - draft output is saved as StepOutput.
+        - review_a receives draft via pass_previous_response.
+        - review_b receives draft and review_a via pass_output_from.
+        - collect_reviews reduces LGTM + NEEDS_FIX to NEEDS_FIX.
+        - fix_summary receives collect_reviews output.
+        - collect_tests reduces PASSED + PASSED to PASSED.
+
+        Approve to complete the workflow.

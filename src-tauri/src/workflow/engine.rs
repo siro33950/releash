@@ -11,9 +11,28 @@ use crate::agent_sdk::AgentProcessMap;
 use crate::agent_status::{current_timestamp, AgentStatusCenter};
 use crate::session::SessionStore;
 use crate::workflow::log::{WorkflowEventLog, WorkflowLogEvent};
-use crate::workflow::schema::{StepMode, StepPrompt, TransitionRule, Workflow};
-use crate::workflow::state::{StepHistoryEntry, TokenUsage, WorkflowExecutionState, WorkflowState};
+use crate::workflow::schema::{
+    CollectConfig, ReduceStrategy, StepMode, StepPrompt, TransitionRule, Workflow,
+};
+use crate::workflow::state::{
+    StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState, WorkflowState,
+};
 use crate::workflow::storage;
+
+const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
+
+fn truncate_output(text: String) -> String {
+    if text.len() <= MAX_OUTPUT_SIZE {
+        return text;
+    }
+    let mut end = MAX_OUTPUT_SIZE;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = text[..end].to_string();
+    truncated.push_str("... (truncated)");
+    truncated
+}
 
 /// ワークフローエンジンのエラー型。
 #[derive(Debug)]
@@ -74,6 +93,8 @@ struct WorkflowExecution {
     current_session_id: Option<String>,
     /// 現在のステップで累計したトークン使用量。
     current_step_token_usage: TokenUsage,
+    /// step_name → 最新StepOutput のマップ。
+    step_outputs: HashMap<String, StepOutput>,
 }
 
 impl WorkflowExecution {
@@ -183,19 +204,54 @@ impl WorkflowExecution {
             workflow_definition: self.workflow.clone(),
             total_token_usage,
             step_states,
+            step_outputs: self.step_outputs.clone(),
             started_at: self.started_at,
             updated_at: self.updated_at,
         }
     }
 
     /// 現在のステップの完了履歴エントリを生成し、トークン使用量をリセットする。
-    fn make_step_history_entry(&mut self, result: Option<String>) -> StepHistoryEntry {
+    /// output_textが100KBを超える場合はtruncateする。
+    fn make_step_history_entry(
+        &mut self,
+        result: Option<String>,
+        output_text: Option<String>,
+    ) -> StepHistoryEntry {
+        let output_text = output_text.map(truncate_output);
+
+        let step_name = self.workflow.steps[self.current_step_index].name.clone();
+        let run_index = self
+            .step_execution_counts
+            .get(&step_name)
+            .copied()
+            .unwrap_or(1);
+        let completed_at = current_timestamp();
+        let token_usage = Some(std::mem::take(&mut self.current_step_token_usage));
+
+        // StepOutputを更新
+        if let Some(ref text) = output_text {
+            self.step_outputs.insert(
+                step_name.clone(),
+                StepOutput {
+                    step_name: step_name.clone(),
+                    run_index,
+                    session_id: self.current_session_id.clone(),
+                    result: result.clone(),
+                    output_text: text.clone(),
+                    token_usage: token_usage.clone(),
+                    completed_at,
+                },
+            );
+        }
+
         let entry = StepHistoryEntry {
-            step_name: self.workflow.steps[self.current_step_index].name.clone(),
-            completed_at: current_timestamp(),
+            step_name,
+            completed_at,
             result,
             session_id: self.current_session_id.clone(),
-            token_usage: Some(std::mem::take(&mut self.current_step_token_usage)),
+            token_usage,
+            output_text,
+            run_index,
         };
         self.current_session_id = None;
         entry
@@ -343,12 +399,20 @@ enum InteractiveAction {
     Abort,
 }
 
-/// ロック内で確定した遷移結果。ロック外で永続化・AgentSession起動を行うための情報を持つ。
+/// ロック内で確定した遷移結果。ロ��ク外で永続化・AgentSession起動を行うための情報を持つ。
 enum StepOutcome {
-    /// 状態を永続化・ブロードキャストするだけ（終了状態遷移など）
+    /// 状態を永続化・ブロードキャストするだけ（終了状態遷移���ど）
     Persist(WorkflowState),
     /// 次のステップに遷移し、AgentSession を起動する
     TransitionAndStart(WorkflowState),
+    /// collect仮想stepに遷移し、reduce処理を実行する
+    ReduceAndTransition(WorkflowState),
+}
+
+/// reduce処理の結果。
+struct ReduceResult {
+    result: Option<String>,
+    text: String,
 }
 
 /// ワークフローのステップを順次実行するステートマシンエンジン。
@@ -401,6 +465,7 @@ impl WorkflowEngine {
             updated_at: now,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
 
         // validate_start → insert → スナップショット確定を同一ロックで原子的に実行
@@ -464,8 +529,8 @@ impl WorkflowEngine {
             {
                 let mut execs = self.executions.lock().await;
                 if let Some(exec) = execs.get_mut(&worktree_path) {
-                    let entry =
-                        exec.make_step_history_entry(Some(format!("session_start_failed: {e}")));
+                    let entry = exec
+                        .make_step_history_entry(Some(format!("session_start_failed: {e}")), None);
                     exec.step_history.push(entry);
                 }
             }
@@ -531,8 +596,10 @@ impl WorkflowEngine {
                     if exec.is_terminal() {
                         return Ok(());
                     }
-                    let entry = exec
-                        .make_step_history_entry(Some(format!("error (exit_code: {})", exit_code)));
+                    let entry = exec.make_step_history_entry(
+                        Some(format!("error (exit_code: {})", exit_code)),
+                        None,
+                    );
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!(
@@ -600,6 +667,11 @@ impl WorkflowEngine {
             ApprovalDecision::Abort => "abort",
         };
 
+        // ロック外でoutput_textを事前取得（approvalはAgentSession完了後なので取得可能）
+        let output_text = self
+            .fetch_current_output(app, session_store, worktree_path)
+            .await?;
+
         // 判定 + 状態変更 + 履歴記録を原子的に実行
         let (chat_session_id, outcome) = {
             let mut execs = self.executions.lock().await;
@@ -611,17 +683,20 @@ impl WorkflowEngine {
 
             let outcome = match action {
                 ApprovalAction::Advance => {
-                    let entry = exec.make_step_history_entry(Some(result_tag.to_string()));
+                    let entry =
+                        exec.make_step_history_entry(Some(result_tag.to_string()), output_text);
                     exec.step_history.push(entry);
                     Self::apply_advance(exec)
                 }
                 ApprovalAction::TransitionTo(target) => {
-                    let entry = exec.make_step_history_entry(Some(result_tag.to_string()));
+                    let entry =
+                        exec.make_step_history_entry(Some(result_tag.to_string()), output_text);
                     exec.step_history.push(entry);
                     Self::apply_transition(exec, &target)?
                 }
                 ApprovalAction::FailedNoRejectRule(name) => {
-                    let entry = exec.make_step_history_entry(Some(result_tag.to_string()));
+                    let entry =
+                        exec.make_step_history_entry(Some(result_tag.to_string()), output_text);
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!("No reject rule defined for step '{}'", name),
@@ -659,6 +734,14 @@ impl WorkflowEngine {
         worktree_path: &str,
         abort: bool,
     ) -> Result<(), WorkflowEngineError> {
+        // ロック外でoutput_textを事前取得
+        let output_text = if !abort {
+            self.fetch_current_output(app, session_store, worktree_path)
+                .await?
+        } else {
+            None
+        };
+
         let (chat_session_id, outcome) = {
             let mut execs = self.executions.lock().await;
             let exec = execs
@@ -674,7 +757,8 @@ impl WorkflowEngine {
                     StepOutcome::Persist(exec.to_workflow_state())
                 }
                 InteractiveAction::Advance => {
-                    let entry = exec.make_step_history_entry(Some("complete".to_string()));
+                    let entry =
+                        exec.make_step_history_entry(Some("complete".to_string()), output_text);
                     exec.step_history.push(entry);
                     Self::apply_advance(exec)
                 }
@@ -829,22 +913,24 @@ impl WorkflowEngine {
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let chat_session_id = exec.chat_session_id.clone();
 
+            let output_text = Some(text.clone());
             let outcome = match rule_match {
                 None => {
                     // ルールなし → 定義順で次へ
-                    let entry = exec.make_step_history_entry(None);
+                    let entry = exec.make_step_history_entry(None, output_text);
                     exec.step_history.push(entry);
                     Self::apply_advance(exec)
                 }
                 Some(Some((next_step, matched_rule))) => {
                     // ルールマッチ → 指定ステップへ遷移
-                    let entry = exec.make_step_history_entry(Some(matched_rule));
+                    let entry = exec.make_step_history_entry(Some(matched_rule), output_text);
                     exec.step_history.push(entry);
                     Self::apply_transition(exec, &next_step)?
                 }
                 Some(None) => {
                     // マッチなし → Failed
-                    let entry = exec.make_step_history_entry(Some("no_matching_rule".to_string()));
+                    let entry = exec
+                        .make_step_history_entry(Some("no_matching_rule".to_string()), output_text);
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!("No matching rule found for step '{}' output", step_name),
@@ -910,19 +996,37 @@ impl WorkflowEngine {
         session_store: &Arc<SessionStore>,
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
-        let (chat_session_id, prompt_ref) = {
+        let (chat_session_id, prompt_ref, step_clone, step_outputs_clone, step_history_clone) = {
             let execs = self.executions.lock().await;
             let exec = execs
                 .get(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let step = &exec.workflow.steps[exec.current_step_index];
-            (exec.chat_session_id.clone(), step.prompt.clone())
+            let prompt_ref = step.prompt.clone().ok_or_else(|| {
+                WorkflowEngineError::InvalidWorkflow(format!(
+                    "Step '{}' has no prompt (collect steps should not start sessions)",
+                    step.name
+                ))
+            })?;
+            (
+                exec.chat_session_id.clone(),
+                prompt_ref,
+                step.clone(),
+                exec.step_outputs.clone(),
+                exec.step_history.clone(),
+            )
         };
 
         let data_dir = crate::session::resolve_data_dir(app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
-        let prompt = Self::resolve_step_prompt(&prompt_ref, worktree_path)
+        let base_prompt = Self::resolve_step_prompt(&prompt_ref, worktree_path)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve prompt: {e}")))?;
+        let prompt = Self::inject_step_outputs(
+            &base_prompt,
+            &step_clone,
+            &step_outputs_clone,
+            &step_history_clone,
+        );
         let parent_session = session_store
             .get_session(&data_dir, &chat_session_id)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
@@ -1042,6 +1146,224 @@ impl WorkflowEngine {
             .to_string()
     }
 
+    /// 現在のステップセッションからoutput_textを取得する。
+    /// handle_approval / complete_interactive の共通パターン。
+    async fn fetch_current_output(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        worktree_path: &str,
+    ) -> Result<Option<String>, WorkflowEngineError> {
+        let current_session_id = {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            exec.current_session_id.clone()
+        };
+        Ok(if let Some(ref sid) = current_session_id {
+            Self::extract_last_assistant_output(app, session_store, sid).await
+        } else {
+            None
+        })
+    }
+
+    /// セッションから最後のAgentメッセージのテキストを抽出する。
+    async fn extract_last_assistant_output(
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        session_id: &str,
+    ) -> Option<String> {
+        let data_dir = crate::session::resolve_data_dir(app).ok()?;
+        let session = session_store.get_session(&data_dir, session_id).ok()??;
+
+        let agent_msg = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == crate::session::MessageRole::Agent)?;
+
+        let text = if let Some(ref parts) = agent_msg.parts {
+            Self::extract_text_from_parts(parts)
+        } else {
+            agent_msg.content.clone()
+        };
+
+        if text.is_empty() {
+            return None;
+        }
+
+        Some(truncate_output(text))
+    }
+
+    /// ステップの出力をプロンプトにコンテキストブロックとして注入する。
+    fn inject_step_outputs(
+        prompt: &str,
+        step: &crate::workflow::schema::Step,
+        step_outputs: &HashMap<String, StepOutput>,
+        step_history: &[StepHistoryEntry],
+    ) -> String {
+        let mut result = prompt.to_string();
+
+        // pass_previous_response: true → step_historyの最後のエントリのstep_nameからstep_outputsを参照
+        if step.pass_previous_response == Some(true) {
+            if let Some(last_entry) = step_history.last() {
+                let text = match step_outputs.get(&last_entry.step_name) {
+                    Some(o) => o.output_text.as_str(),
+                    None => "(not yet completed)",
+                };
+                Self::append_step_output_block(&mut result, &last_entry.step_name, text);
+            }
+        }
+
+        // pass_output_from: ["step_a", "step_b"] → 指定step名のoutputをcontext block追加
+        if let Some(ref refs) = step.pass_output_from {
+            for step_name in refs {
+                let text = match step_outputs.get(step_name.as_str()) {
+                    Some(o) => o.output_text.as_str(),
+                    None => "(not yet completed)",
+                };
+                Self::append_step_output_block(&mut result, step_name, text);
+            }
+        }
+
+        result
+    }
+
+    fn append_step_output_block(result: &mut String, step_name: &str, text: &str) {
+        result.push_str(&format!(
+            "\n\n<step_output name=\"{}\">\n{}\n</step_output>",
+            step_name, text
+        ));
+    }
+
+    /// collect設定に基づいてstep_outputsをreduce処理する。
+    fn apply_reduce(
+        collect: &CollectConfig,
+        step_outputs: &HashMap<String, StepOutput>,
+    ) -> ReduceResult {
+        match collect.reduce {
+            ReduceStrategy::Last => {
+                let last_output = collect
+                    .from
+                    .iter()
+                    .filter_map(|name| step_outputs.get(name.as_str()))
+                    .max_by(|a, b| {
+                        a.completed_at
+                            .partial_cmp(&b.completed_at)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                match last_output {
+                    Some(output) => ReduceResult {
+                        result: output.result.clone(),
+                        text: output.output_text.clone(),
+                    },
+                    None => ReduceResult {
+                        result: None,
+                        text: String::new(),
+                    },
+                }
+            }
+            ReduceStrategy::Concat => {
+                let mut parts = Vec::new();
+                for step_name in &collect.from {
+                    if let Some(output) = step_outputs.get(step_name.as_str()) {
+                        parts.push(format!("## {}\n{}", step_name, output.output_text));
+                    }
+                }
+                ReduceResult {
+                    result: None,
+                    text: parts.join("\n\n"),
+                }
+            }
+            ReduceStrategy::Grouped => {
+                let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+                for step_name in &collect.from {
+                    if let Some(output) = step_outputs.get(step_name.as_str()) {
+                        let key = output
+                            .result
+                            .clone()
+                            .unwrap_or_else(|| "unknown".to_string());
+                        groups.entry(key).or_default().push(step_name.clone());
+                    }
+                }
+                let mut text = String::new();
+                for (result_key, steps) in &groups {
+                    text.push_str(&format!("## {}\n", result_key));
+                    for step in steps {
+                        text.push_str(&format!("- {}\n", step));
+                    }
+                    text.push('\n');
+                }
+                ReduceResult { result: None, text }
+            }
+            ReduceStrategy::AnyNeedsFix => {
+                let mut any_needs_fix = false;
+                let mut parts = Vec::new();
+                for step_name in &collect.from {
+                    if let Some(output) = step_outputs.get(step_name.as_str()) {
+                        let step_result =
+                            Self::resolve_step_result(output, &["NEEDS_FIX", "needs_fix"]);
+                        if matches!(
+                            step_result.as_deref(),
+                            Some("NEEDS_FIX") | Some("needs_fix")
+                        ) {
+                            any_needs_fix = true;
+                        }
+                        parts.push(format!("## {}\n{}", step_name, output.output_text));
+                    } else {
+                        any_needs_fix = true;
+                        parts.push(format!("## {}\n<MISSING OUTPUT>", step_name));
+                    }
+                }
+                ReduceResult {
+                    result: Some(if any_needs_fix { "NEEDS_FIX" } else { "LGTM" }.to_string()),
+                    text: parts.join("\n\n"),
+                }
+            }
+            ReduceStrategy::AllPassed => {
+                let mut all_passed = true;
+                let mut parts = Vec::new();
+                for step_name in &collect.from {
+                    if let Some(output) = step_outputs.get(step_name.as_str()) {
+                        let step_result =
+                            Self::resolve_step_result(output, &["PASSED", "passed", "LGTM"]);
+                        if !matches!(
+                            step_result.as_deref(),
+                            Some("PASSED") | Some("passed") | Some("LGTM")
+                        ) {
+                            all_passed = false;
+                        }
+                        parts.push(format!("## {}\n{}", step_name, output.output_text));
+                    } else {
+                        all_passed = false;
+                        parts.push(format!("## {}\n<MISSING OUTPUT>", step_name));
+                    }
+                }
+                ReduceResult {
+                    result: Some(if all_passed { "PASSED" } else { "FAILED" }.to_string()),
+                    text: parts.join("\n\n"),
+                }
+            }
+        }
+    }
+
+    /// StepOutputからresultを解決する。result直接値があればそれを優先、
+    /// なければoutput_textからregexフォールバック。
+    fn resolve_step_result(output: &StepOutput, patterns: &[&str]) -> Option<String> {
+        if output.result.is_some() {
+            return output.result.clone();
+        }
+        for pattern in patterns {
+            if let Ok(re) = RegexBuilder::new(pattern).size_limit(1 << 20).build() {
+                if re.is_match(&output.output_text) {
+                    return Some(pattern.to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// AgentSessionを中断する。
     async fn interrupt_agent(&self, handles: &Arc<Mutex<AgentProcessMap>>, chat_session_id: &str) {
         use tokio::io::AsyncWriteExt;
@@ -1084,7 +1406,11 @@ impl WorkflowEngine {
                 exec.state = WorkflowExecutionState::Running;
                 *exec.step_execution_counts.entry(name).or_insert(0) += 1;
                 exec.updated_at = current_timestamp();
-                StepOutcome::TransitionAndStart(exec.to_workflow_state())
+                if exec.workflow.steps[idx].collect.is_some() {
+                    StepOutcome::ReduceAndTransition(exec.to_workflow_state())
+                } else {
+                    StepOutcome::TransitionAndStart(exec.to_workflow_state())
+                }
             }
         }
     }
@@ -1134,7 +1460,11 @@ impl WorkflowEngine {
                     .entry(target_step_name.to_string())
                     .or_insert(0) += 1;
                 exec.updated_at = current_timestamp();
-                Ok(StepOutcome::TransitionAndStart(exec.to_workflow_state()))
+                if exec.workflow.steps[idx].collect.is_some() {
+                    Ok(StepOutcome::ReduceAndTransition(exec.to_workflow_state()))
+                } else {
+                    Ok(StepOutcome::TransitionAndStart(exec.to_workflow_state()))
+                }
             }
         }
     }
@@ -1201,9 +1531,10 @@ impl WorkflowEngine {
                     {
                         let mut execs = self.executions.lock().await;
                         if let Some(exec) = execs.get_mut(worktree_path) {
-                            let entry = exec.make_step_history_entry(Some(format!(
-                                "session_start_failed: {e}"
-                            )));
+                            let entry = exec.make_step_history_entry(
+                                Some(format!("session_start_failed: {e}")),
+                                None,
+                            );
                             exec.step_history.push(entry);
                         }
                     }
@@ -1220,6 +1551,110 @@ impl WorkflowEngine {
                     return Err(e);
                 }
                 Ok(())
+            }
+            StepOutcome::ReduceAndTransition(snapshot) => {
+                self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+                    .await?;
+                self.broadcast_state(app, worktree_path, snapshot.clone());
+
+                // 直前ステップの完了ログ
+                self.write_last_step_completed_log(app, &snapshot);
+
+                // reduce実行
+                let (collect_config_clone, reduce_result, step_rules) = {
+                    let execs = self.executions.lock().await;
+                    let exec = execs.get(worktree_path).ok_or_else(|| {
+                        WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
+                    })?;
+                    let step = &exec.workflow.steps[exec.current_step_index];
+                    let collect = step
+                        .collect
+                        .clone()
+                        .expect("ReduceAndTransition requires collect config");
+                    let result = Self::apply_reduce(&collect, &exec.step_outputs);
+                    (collect, result, step.rules.clone())
+                };
+
+                // collect step自体のStepHistoryEntryを記録 + 遷移判定
+                let (next_outcome, log_step_name, log_exec_id, log_wf_name) = {
+                    let mut execs = self.executions.lock().await;
+                    let exec = execs.get_mut(worktree_path).ok_or_else(|| {
+                        WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
+                    })?;
+
+                    let entry = exec.make_step_history_entry(
+                        reduce_result.result.clone(),
+                        Some(reduce_result.text.clone()),
+                    );
+                    exec.step_history.push(entry);
+
+                    let step_name = exec.workflow.steps[exec.current_step_index].name.clone();
+                    let exec_id = exec.id.clone();
+                    let wf_name = exec.workflow.name.clone();
+
+                    log::info!(
+                        "OutputCollected: step='{}', strategy={:?}, result={:?}, from={:?}",
+                        step_name,
+                        collect_config_clone.reduce,
+                        reduce_result.result,
+                        collect_config_clone.from,
+                    );
+
+                    // reduce resultに基づく遷移判定
+                    let outcome = if step_rules.is_empty() {
+                        Self::apply_advance(exec)
+                    } else if let Some(ref result_str) = reduce_result.result {
+                        match Self::evaluate_auto_rules(result_str, &step_rules) {
+                            Some((next_step, _)) => Self::apply_transition(exec, &next_step)?,
+                            None => Self::apply_advance(exec),
+                        }
+                    } else {
+                        match Self::evaluate_auto_rules(&reduce_result.text, &step_rules) {
+                            Some((next_step, _)) => Self::apply_transition(exec, &next_step)?,
+                            None => Self::apply_advance(exec),
+                        }
+                    };
+                    (outcome, step_name, exec_id, wf_name)
+                };
+
+                // OutputCollected NDJSONログ永続化（ロック外）
+                let collected_entries: Vec<crate::workflow::log::CollectedOutputEntry> =
+                    collect_config_clone
+                        .from
+                        .iter()
+                        .map(|name| {
+                            let output = snapshot.step_outputs.get(name);
+                            crate::workflow::log::CollectedOutputEntry {
+                                step_name: name.clone(),
+                                result: output.and_then(|o| o.result.clone()),
+                                output_text_len: output.map_or(0, |o| o.output_text.len()),
+                            }
+                        })
+                        .collect();
+                self.write_log(
+                    app,
+                    WorkflowLogEvent::OutputCollected {
+                        execution_id: log_exec_id,
+                        workflow_name: log_wf_name,
+                        step_name: log_step_name,
+                        step_outputs: collected_entries,
+                        reduce_strategy: format!("{:?}", collect_config_clone.reduce),
+                        reduce_result: reduce_result.result.clone(),
+                        reduce_text: reduce_result.text.clone(),
+                        timestamp: crate::session::now_timestamp(),
+                    },
+                );
+
+                // 再帰的にexecute_outcomeを呼ぶ（次ステップがcollectの可能性）
+                Box::pin(self.execute_outcome(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    chat_session_id,
+                    next_outcome,
+                ))
+                .await
             }
         }
     }
@@ -1341,6 +1776,8 @@ impl WorkflowEngine {
                     result: last_entry.result.clone(),
                     session_id: last_entry.session_id.clone(),
                     token_usage: last_entry.token_usage.clone(),
+                    output_text: last_entry.output_text.clone(),
+                    run_index: Some(last_entry.run_index),
                     timestamp: last_entry.completed_at,
                 },
             );
@@ -1527,16 +1964,33 @@ mod tests {
 
     #[test]
     fn resolve_step_prompt_keeps_inline_prompt_when_template_file_is_missing() {
-        let prompt = WorkflowEngine::resolve_step_prompt(
-            &StepPrompt::inline("この文字列はテンプレート名ではなく、そのまま送る"),
-            "/work/releash",
-        )
-        .unwrap();
+        let prompt_ref =
+            StepPrompt::inline("この文字列はテンプレート名ではなく、そのまま送る").unwrap();
+        let prompt = WorkflowEngine::resolve_step_prompt(&prompt_ref, "/work/releash").unwrap();
 
         assert_eq!(prompt, "この文字列はテンプレート名ではなく、そのまま送る");
     }
 
     // ---- WorkflowExecution ----
+
+    fn make_test_step(
+        name: &str,
+        mode: StepMode,
+        prompt: &str,
+        rules: Vec<TransitionRule>,
+        cycle_guard: Option<CycleGuard>,
+    ) -> Step {
+        Step {
+            name: name.to_string(),
+            mode,
+            prompt: StepPrompt::inline(prompt),
+            rules,
+            cycle_guard,
+            pass_previous_response: None,
+            pass_output_from: None,
+            collect: None,
+        }
+    }
 
     fn make_test_workflow() -> Workflow {
         Workflow {
@@ -1544,25 +1998,19 @@ mod tests {
             description: "Test workflow".to_string(),
             builtin: false,
             steps: vec![
-                Step {
-                    name: "plan".to_string(),
-                    mode: StepMode::Interactive,
-                    prompt: StepPrompt::inline("Plan the work"),
-                    rules: vec![],
-                    cycle_guard: None,
-                },
-                Step {
-                    name: "implement".to_string(),
-                    mode: StepMode::Auto,
-                    prompt: StepPrompt::inline("Implement the plan"),
-                    rules: vec![],
-                    cycle_guard: None,
-                },
-                Step {
-                    name: "review".to_string(),
-                    mode: StepMode::Auto,
-                    prompt: StepPrompt::inline("Review the implementation"),
-                    rules: vec![
+                make_test_step("plan", StepMode::Interactive, "Plan the work", vec![], None),
+                make_test_step(
+                    "implement",
+                    StepMode::Auto,
+                    "Implement the plan",
+                    vec![],
+                    None,
+                ),
+                make_test_step(
+                    "review",
+                    StepMode::Auto,
+                    "Review the implementation",
+                    vec![
                         TransitionRule {
                             r#match: "NEEDS_FIX".to_string(),
                             next: "implement".to_string(),
@@ -1572,18 +2020,18 @@ mod tests {
                             next: "report".to_string(),
                         },
                     ],
-                    cycle_guard: Some(CycleGuard { max_iterations: 3 }),
-                },
-                Step {
-                    name: "report".to_string(),
-                    mode: StepMode::Approval,
-                    prompt: StepPrompt::inline("Generate report"),
-                    rules: vec![TransitionRule {
+                    Some(CycleGuard { max_iterations: 3 }),
+                ),
+                make_test_step(
+                    "report",
+                    StepMode::Approval,
+                    "Generate report",
+                    vec![TransitionRule {
                         r#match: "reject".to_string(),
                         next: "implement".to_string(),
                     }],
-                    cycle_guard: None,
-                },
+                    None,
+                ),
             ],
         }
     }
@@ -1604,6 +2052,7 @@ mod tests {
             updated_at: 1000.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
 
         let state = exec.to_workflow_state();
@@ -1632,6 +2081,7 @@ mod tests {
             updated_at: 1000.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
         assert!(exec.is_active());
     }
@@ -1650,6 +2100,7 @@ mod tests {
             updated_at: 1000.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
         assert!(exec.is_active());
     }
@@ -1668,6 +2119,7 @@ mod tests {
             updated_at: 1000.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
         assert!(!exec.is_active());
     }
@@ -1688,6 +2140,7 @@ mod tests {
             updated_at: 1000.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
         assert!(!exec.is_active());
     }
@@ -1706,6 +2159,7 @@ mod tests {
             updated_at: 1000.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
         assert!(!exec.is_active());
     }
@@ -1727,6 +2181,7 @@ mod tests {
             updated_at: 1001.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
@@ -1751,12 +2206,15 @@ mod tests {
                 result: None,
                 session_id: None,
                 token_usage: None,
+                output_text: None,
+                run_index: 0,
             }],
             chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1001.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
         let ws = exec.to_workflow_state();
         assert_eq!(
@@ -1784,6 +2242,7 @@ mod tests {
             updated_at: 1001.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Aborted);
@@ -1804,6 +2263,7 @@ mod tests {
             updated_at: 1002.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Completed);
@@ -1887,6 +2347,7 @@ mod tests {
             current_step_index: step_index,
             step_execution_counts: HashMap::new(),
             step_history: Vec::new(),
+            step_outputs: HashMap::new(),
             chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
             updated_at: 1000.0,
@@ -2248,6 +2709,8 @@ mod tests {
                 result: None,
                 session_id: None,
                 token_usage: None,
+                output_text: None,
+                run_index: 0,
             },
             StepHistoryEntry {
                 step_name: "implement".to_string(),
@@ -2255,6 +2718,8 @@ mod tests {
                 result: None,
                 session_id: None,
                 token_usage: None,
+                output_text: None,
+                run_index: 0,
             },
         ];
         let ws = exec.to_workflow_state();
@@ -2276,6 +2741,8 @@ mod tests {
             result: None,
             session_id: None,
             token_usage: None,
+            output_text: None,
+            run_index: 0,
         }];
         let ws = exec.to_workflow_state();
         assert_eq!(ws.step_states["plan"], "completed");
@@ -2294,10 +2761,326 @@ mod tests {
             result: None,
             session_id: None,
             token_usage: None,
+            output_text: None,
+            run_index: 0,
         }];
         let ws = exec.to_workflow_state();
         assert_eq!(ws.step_states["plan"], "completed");
         assert_eq!(ws.step_states["implement"], "waiting_approval");
         assert_eq!(ws.step_states["review"], "pending");
+    }
+
+    // ---- inject_step_outputs ----
+
+    fn make_step_output(step_name: &str, output_text: &str, result: Option<&str>) -> StepOutput {
+        StepOutput {
+            step_name: step_name.to_string(),
+            run_index: 0,
+            session_id: None,
+            result: result.map(|s| s.to_string()),
+            output_text: output_text.to_string(),
+            token_usage: None,
+            completed_at: 1000.0,
+        }
+    }
+
+    #[test]
+    fn inject_step_outputs_pass_previous_response() {
+        let mut step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        step.pass_previous_response = Some(true);
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "step_a".to_string(),
+            make_step_output("step_a", "output from A", None),
+        );
+        let history = vec![StepHistoryEntry {
+            step_name: "step_a".to_string(),
+            completed_at: 1000.0,
+            result: None,
+            session_id: None,
+            token_usage: None,
+            output_text: None,
+            run_index: 0,
+        }];
+        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history);
+        assert!(result.contains("<step_output name=\"step_a\">"));
+        assert!(result.contains("output from A"));
+    }
+
+    #[test]
+    fn inject_step_outputs_no_pass_previous_response() {
+        let step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        let outputs = HashMap::new();
+        let history = vec![];
+        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history);
+        assert_eq!(result, "Do B");
+    }
+
+    #[test]
+    fn inject_step_outputs_pass_output_from_single() {
+        let mut step = make_test_step("step_c", StepMode::Auto, "Do C", vec![], None);
+        step.pass_output_from = Some(vec!["step_a".to_string()]);
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "step_a".to_string(),
+            make_step_output("step_a", "output A", None),
+        );
+        let result = WorkflowEngine::inject_step_outputs("Do C", &step, &outputs, &[]);
+        assert!(result.contains("<step_output name=\"step_a\">"));
+        assert!(result.contains("output A"));
+    }
+
+    #[test]
+    fn inject_step_outputs_pass_output_from_multiple() {
+        let mut step = make_test_step("step_c", StepMode::Auto, "Do C", vec![], None);
+        step.pass_output_from = Some(vec!["step_a".to_string(), "step_b".to_string()]);
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "step_a".to_string(),
+            make_step_output("step_a", "output A", None),
+        );
+        outputs.insert(
+            "step_b".to_string(),
+            make_step_output("step_b", "output B", None),
+        );
+        let result = WorkflowEngine::inject_step_outputs("Do C", &step, &outputs, &[]);
+        assert!(result.contains("<step_output name=\"step_a\">"));
+        assert!(result.contains("output A"));
+        assert!(result.contains("<step_output name=\"step_b\">"));
+        assert!(result.contains("output B"));
+    }
+
+    #[test]
+    fn inject_step_outputs_missing_step_shows_not_completed() {
+        let mut step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        step.pass_output_from = Some(vec!["step_a".to_string()]);
+
+        let outputs = HashMap::new(); // step_a not present
+        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &[]);
+        assert!(result.contains("<step_output name=\"step_a\">"));
+        assert!(result.contains("(not yet completed)"));
+    }
+
+    // ---- apply_reduce ----
+
+    use crate::workflow::schema::{CollectConfig, ReduceStrategy};
+
+    fn make_collect(from: Vec<&str>, reduce: ReduceStrategy) -> CollectConfig {
+        CollectConfig {
+            from: from.iter().map(|s| s.to_string()).collect(),
+            reduce,
+        }
+    }
+
+    fn make_outputs(entries: Vec<(&str, &str, Option<&str>)>) -> HashMap<String, StepOutput> {
+        let mut map = HashMap::new();
+        for (name, text, result) in entries {
+            map.insert(name.to_string(), make_step_output(name, text, result));
+        }
+        map
+    }
+
+    #[test]
+    fn reduce_last_returns_latest_completed_entry() {
+        let collect = make_collect(vec!["a", "b", "c"], ReduceStrategy::Last);
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "a".to_string(),
+            StepOutput {
+                completed_at: 1000.0,
+                ..make_step_output("a", "text_a", Some("LGTM"))
+            },
+        );
+        outputs.insert(
+            "b".to_string(),
+            StepOutput {
+                completed_at: 3000.0, // bが最後に完了
+                ..make_step_output("b", "text_b", Some("NEEDS_FIX"))
+            },
+        );
+        outputs.insert(
+            "c".to_string(),
+            StepOutput {
+                completed_at: 2000.0,
+                ..make_step_output("c", "text_c", Some("LGTM"))
+            },
+        );
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        // 設定順ではcが最後だが、completed_at最大のbが選ばれる
+        assert_eq!(r.result, Some("NEEDS_FIX".to_string()));
+        assert_eq!(r.text, "text_b");
+    }
+
+    #[test]
+    fn reduce_concat_joins_all() {
+        let collect = make_collect(vec!["a", "b"], ReduceStrategy::Concat);
+        let outputs = make_outputs(vec![
+            ("a", "output from a", None),
+            ("b", "output from b", None),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert!(r.result.is_none());
+        assert!(r.text.contains("## a\noutput from a"));
+        assert!(r.text.contains("## b\noutput from b"));
+    }
+
+    #[test]
+    fn reduce_grouped_groups_by_result() {
+        let collect = make_collect(vec!["a", "b", "c"], ReduceStrategy::Grouped);
+        let outputs = make_outputs(vec![
+            ("a", "text_a", Some("LGTM")),
+            ("b", "text_b", Some("NEEDS_FIX")),
+            ("c", "text_c", Some("LGTM")),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert!(r.result.is_none());
+        assert!(r.text.contains("## LGTM"));
+        assert!(r.text.contains("- a"));
+        assert!(r.text.contains("- c"));
+        assert!(r.text.contains("## NEEDS_FIX"));
+        assert!(r.text.contains("- b"));
+    }
+
+    #[test]
+    fn reduce_any_needs_fix_one_needs_fix() {
+        let collect = make_collect(vec!["a", "b", "c"], ReduceStrategy::AnyNeedsFix);
+        let outputs = make_outputs(vec![
+            ("a", "text_a", Some("LGTM")),
+            ("b", "text_b", Some("NEEDS_FIX")),
+            ("c", "text_c", Some("LGTM")),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert_eq!(r.result, Some("NEEDS_FIX".to_string()));
+    }
+
+    #[test]
+    fn reduce_any_needs_fix_all_lgtm() {
+        let collect = make_collect(vec!["a", "b", "c"], ReduceStrategy::AnyNeedsFix);
+        let outputs = make_outputs(vec![
+            ("a", "text_a", Some("LGTM")),
+            ("b", "text_b", Some("LGTM")),
+            ("c", "text_c", Some("LGTM")),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert_eq!(r.result, Some("LGTM".to_string()));
+    }
+
+    #[test]
+    fn reduce_any_needs_fix_regex_fallback() {
+        let collect = make_collect(vec!["a", "b"], ReduceStrategy::AnyNeedsFix);
+        // result is None but output_text contains NEEDS_FIX
+        let outputs = make_outputs(vec![
+            ("a", "Everything looks good", None),
+            ("b", "Found issues: NEEDS_FIX", None),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert_eq!(r.result, Some("NEEDS_FIX".to_string()));
+    }
+
+    #[test]
+    fn reduce_all_passed_all_pass() {
+        let collect = make_collect(vec!["a", "b"], ReduceStrategy::AllPassed);
+        let outputs = make_outputs(vec![
+            ("a", "text_a", Some("PASSED")),
+            ("b", "text_b", Some("PASSED")),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert_eq!(r.result, Some("PASSED".to_string()));
+    }
+
+    #[test]
+    fn reduce_all_passed_one_failed() {
+        let collect = make_collect(vec!["a", "b"], ReduceStrategy::AllPassed);
+        let outputs = make_outputs(vec![
+            ("a", "text_a", Some("PASSED")),
+            ("b", "text_b", Some("FAILED")),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert_eq!(r.result, Some("FAILED".to_string()));
+    }
+
+    #[test]
+    fn reduce_all_passed_regex_fallback() {
+        let collect = make_collect(vec!["a", "b"], ReduceStrategy::AllPassed);
+        let outputs = make_outputs(vec![
+            ("a", "All tests PASSED", None),
+            ("b", "Some tests failed", None),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert_eq!(r.result, Some("FAILED".to_string()));
+    }
+
+    // ---- resolve_step_result ----
+
+    #[test]
+    fn resolve_step_result_prefers_direct_result() {
+        let output = make_step_output("s", "output with NEEDS_FIX text", Some("LGTM"));
+        let r = WorkflowEngine::resolve_step_result(&output, &["NEEDS_FIX"]);
+        assert_eq!(r, Some("LGTM".to_string()));
+    }
+
+    #[test]
+    fn resolve_step_result_regex_fallback() {
+        let output = make_step_output("s", "found NEEDS_FIX issue", None);
+        let r = WorkflowEngine::resolve_step_result(&output, &["NEEDS_FIX", "needs_fix"]);
+        assert_eq!(r, Some("NEEDS_FIX".to_string()));
+    }
+
+    #[test]
+    fn resolve_step_result_no_match_returns_none() {
+        let output = make_step_output("s", "everything is fine", None);
+        let r = WorkflowEngine::resolve_step_result(&output, &["NEEDS_FIX"]);
+        assert!(r.is_none());
+    }
+
+    // ---- truncate_output ----
+
+    #[test]
+    fn truncate_output_within_limit() {
+        let text = "hello".to_string();
+        assert_eq!(super::truncate_output(text), "hello");
+    }
+
+    #[test]
+    fn truncate_output_exceeds_limit_ascii() {
+        let text = "a".repeat(super::MAX_OUTPUT_SIZE + 100);
+        let result = super::truncate_output(text);
+        assert!(result.ends_with("... (truncated)"));
+        assert!(result.len() <= super::MAX_OUTPUT_SIZE + 20);
+    }
+
+    #[test]
+    fn truncate_output_multibyte_boundary() {
+        // 日本語文字（3バイト）でMAX_OUTPUT_SIZEの境界がバイト途中になるケース
+        let text = "あ".repeat(super::MAX_OUTPUT_SIZE); // 3 * MAX_OUTPUT_SIZE bytes
+        let result = super::truncate_output(text);
+        assert!(result.ends_with("... (truncated)"));
+        // 結果がvalidなUTF-8であることの確認（panicしないこと自体がテスト）
+        assert!(!result.is_empty());
+    }
+
+    // ---- evaluate_auto_rules (reduce結果による遷移判定) ----
+
+    #[test]
+    fn reduce_result_triggers_transition_via_evaluate_auto_rules() {
+        let rules = vec![TransitionRule {
+            r#match: "NEEDS_FIX".to_string(),
+            next: "fix".to_string(),
+        }];
+        let result = WorkflowEngine::evaluate_auto_rules("NEEDS_FIX", &rules);
+        assert_eq!(result, Some(("fix".to_string(), "NEEDS_FIX".to_string())));
+    }
+
+    #[test]
+    fn reduce_result_lgtm_no_matching_rule_returns_none() {
+        let rules = vec![TransitionRule {
+            r#match: "NEEDS_FIX".to_string(),
+            next: "fix".to_string(),
+        }];
+        let result = WorkflowEngine::evaluate_auto_rules("LGTM", &rules);
+        assert!(result.is_none());
     }
 }

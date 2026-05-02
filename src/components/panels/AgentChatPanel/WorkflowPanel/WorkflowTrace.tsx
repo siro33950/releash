@@ -2,10 +2,13 @@ import {
 	AlertTriangle,
 	Ban,
 	CheckCircle2,
+	ChevronDown,
+	ChevronRight,
 	Circle,
 	Clock,
 	Loader2,
 } from "lucide-react";
+import { useState } from "react";
 import type {
 	Step,
 	StepHistoryEntry,
@@ -254,25 +257,33 @@ function TraceItemSummary({
 		const tokenTotal = item.entry.tokenUsage
 			? item.entry.tokenUsage.inputTokens + item.entry.tokenUsage.outputTokens
 			: null;
+		const isCollectStep = item.step?.collect != null;
+		const reduceResult = isCollectStep ? item.entry.result : null;
 
 		return (
-			<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-				<span className="min-w-0 flex-1 truncate">
-					Result: {item.entry.result ?? "completed"}
-				</span>
-				{tokenTotal != null && (
-					<span className="shrink-0">{tokenTotal} tokens</span>
-				)}
-				{item.sessionId && onSessionClick && (
-					<button
-						type="button"
-						className="shrink-0 text-primary hover:underline"
-						onClick={() => {
-							if (item.sessionId) onSessionClick(item.sessionId);
-						}}
-					>
-						View
-					</button>
+			<div className="mt-1 space-y-1">
+				<div className="flex items-center gap-2 text-xs text-muted-foreground">
+					<span className="min-w-0 flex-1 truncate">
+						Result: {item.entry.result ?? "completed"}
+					</span>
+					{reduceResult && <ReduceResultBadge result={reduceResult} />}
+					{tokenTotal != null && (
+						<span className="shrink-0">{tokenTotal} tokens</span>
+					)}
+					{item.sessionId && onSessionClick && (
+						<button
+							type="button"
+							className="shrink-0 text-primary hover:underline"
+							onClick={() => {
+								if (item.sessionId) onSessionClick(item.sessionId);
+							}}
+						>
+							View
+						</button>
+					)}
+				</div>
+				{item.entry.outputText && (
+					<OutputTextToggle text={item.entry.outputText} />
 				)}
 			</div>
 		);
@@ -320,6 +331,59 @@ function TraceItemSummary({
 	if (item.state === "failed") {
 		return <div className="mt-1 text-xs text-red-600">Failed</div>;
 	}
+}
+
+const OUTPUT_PREVIEW_LENGTH = 200;
+
+function OutputTextToggle({ text }: { text: string }) {
+	const [expanded, setExpanded] = useState(false);
+	const preview =
+		text.length > OUTPUT_PREVIEW_LENGTH
+			? `${text.slice(0, OUTPUT_PREVIEW_LENGTH)}...`
+			: text;
+
+	return (
+		<div className="text-xs">
+			<button
+				type="button"
+				className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+				onClick={() => setExpanded((v) => !v)}
+			>
+				{expanded ? (
+					<ChevronDown className="size-3" />
+				) : (
+					<ChevronRight className="size-3" />
+				)}
+				Output
+			</button>
+			{expanded && (
+				<pre className="mt-1 max-h-40 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap break-words">
+					{text}
+				</pre>
+			)}
+			{!expanded && text.length > OUTPUT_PREVIEW_LENGTH && (
+				<div className="mt-0.5 text-muted-foreground truncate">{preview}</div>
+			)}
+		</div>
+	);
+}
+
+const reduceBadgeClasses: Record<string, string> = {
+	LGTM: "bg-green-500/20 text-green-700 dark:text-green-300",
+	PASSED: "bg-green-500/20 text-green-700 dark:text-green-300",
+	NEEDS_FIX: "bg-red-500/20 text-red-700 dark:text-red-300",
+	FAILED: "bg-red-500/20 text-red-700 dark:text-red-300",
+};
+
+function ReduceResultBadge({ result }: { result: string }) {
+	const cls = reduceBadgeClasses[result] ?? "bg-muted text-muted-foreground";
+	return (
+		<span
+			className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}
+		>
+			{result}
+		</span>
+	);
 }
 
 function EventTrace({ events }: { events: WorkflowLogEvent[] }) {

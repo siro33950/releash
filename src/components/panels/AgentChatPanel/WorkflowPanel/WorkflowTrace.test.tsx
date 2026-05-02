@@ -15,6 +15,7 @@ function makeWorkflowState(
 		totalSteps: 3,
 		stepHistory: [],
 		stepExecutionCounts: {},
+		stepOutputs: {},
 		workflowDefinition: {
 			name: "test-workflow",
 			description: "test",
@@ -192,5 +193,104 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("workflow_started")).toBeInTheDocument();
 		expect(screen.getByText("step_started")).toBeInTheDocument();
 		expect(screen.getByText("(plan)")).toBeInTheDocument();
+	});
+
+	it("shows Output toggle when stepHistory entry has outputText", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					stepStates: {
+						plan: "completed",
+						review: "pending",
+						fix: "pending",
+					},
+					stepHistory: [
+						{
+							stepName: "plan",
+							completedAt: 1001,
+							result: "done",
+							outputText: "This is the step output text",
+						},
+					],
+				})}
+			/>,
+		);
+		expect(screen.getByText("Output")).toBeInTheDocument();
+	});
+
+	it("expands outputText on Output toggle click", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					stepStates: {
+						plan: "completed",
+						review: "pending",
+						fix: "pending",
+					},
+					stepHistory: [
+						{
+							stepName: "plan",
+							completedAt: 1001,
+							result: "done",
+							outputText: "Full output text content",
+						},
+					],
+				})}
+			/>,
+		);
+		fireEvent.click(screen.getByText("Output"));
+		expect(screen.getByText("Full output text content")).toBeInTheDocument();
+	});
+
+	it("shows ReduceResultBadge for collect step", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					stepStates: {
+						plan: "completed",
+						review: "pending",
+						fix: "pending",
+					},
+					stepHistory: [
+						{
+							stepName: "plan",
+							completedAt: 1001,
+							result: "NEEDS_FIX",
+						},
+					],
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "test",
+						builtin: false,
+						steps: [
+							{
+								name: "plan",
+								mode: "auto",
+								prompt: "p1",
+								rules: [],
+								collect: {
+									from: ["a", "b"],
+									reduce: "any_needs_fix",
+								},
+							},
+							{
+								name: "review",
+								mode: "approval",
+								prompt: "p2",
+								rules: [],
+							},
+							{
+								name: "fix",
+								mode: "interactive",
+								prompt: "p3",
+								rules: [],
+							},
+						],
+					},
+				})}
+			/>,
+		);
+		const badges = screen.getAllByText("NEEDS_FIX");
+		expect(badges.length).toBeGreaterThanOrEqual(1);
 	});
 });

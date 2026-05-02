@@ -22,6 +22,8 @@ pub struct WorkflowState {
     pub workflow_definition: Workflow,
     pub total_token_usage: TokenUsage,
     pub step_states: HashMap<String, String>,
+    #[serde(default)]
+    pub step_outputs: HashMap<String, StepOutput>,
     pub started_at: f64,
     pub updated_at: f64,
 }
@@ -96,4 +98,23 @@ pub struct StepHistoryEntry {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_usage: Option<TokenUsage>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output_text: Option<String>,
+    #[serde(default)]
+    pub run_index: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepOutput {
+    pub step_name: String,
+    pub run_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result: Option<String>,
+    pub output_text: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub token_usage: Option<TokenUsage>,
+    pub completed_at: f64,
 }

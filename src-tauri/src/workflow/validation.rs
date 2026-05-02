@@ -13,6 +13,9 @@ pub enum ValidationError {
     UnknownNextStep { step: String, next: String },
     EmptyTemplateContent,
     DuplicateVariable { name: String },
+    MissingPrompt { step: String },
+    UnknownOutputFrom { step: String, reference: String },
+    UnknownCollectFrom { step: String, reference: String },
 }
 
 impl fmt::Display for ValidationError {
@@ -37,6 +40,20 @@ impl fmt::Display for ValidationError {
             Self::DuplicateVariable { name } => {
                 write!(f, "変数名 '{name}' が重複しています")
             }
+            Self::MissingPrompt { step } => {
+                write!(
+                    f,
+                    "ステップ '{step}' にはpromptが必要です（collectステップのみprompt省略可）"
+                )
+            }
+            Self::UnknownOutputFrom { step, reference } => write!(
+                f,
+                "ステップ '{step}' のpass_output_fromが存在しないステップ '{reference}' を参照しています"
+            ),
+            Self::UnknownCollectFrom { step, reference } => write!(
+                f,
+                "ステップ '{step}' のcollect.fromが存在しないステップ '{reference}' を参照しています"
+            ),
         }
     }
 }
@@ -111,6 +128,58 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 });
             }
         }
+
+        // collect なしの step は prompt 必須
+        if step.collect.is_none() && step.prompt.is_none() {
+            return Err(ValidationError::MissingPrompt {
+                step: step.name.clone(),
+            });
+        }
+
+        // pass_output_from の参照先 step 名が存在するか検証
+        if let Some(ref refs) = step.pass_output_from {
+            for r in refs {
+                if !step_names.contains(r.as_str()) {
+                    return Err(ValidationError::UnknownOutputFrom {
+                        step: step.name.clone(),
+                        reference: r.clone(),
+                    });
+                }
+            }
+        }
+
+        // collect.from の参照先 step 名が存在するか検証
+        if let Some(ref collect) = step.collect {
+            for r in &collect.from {
+                if !step_names.contains(r.as_str()) {
+                    return Err(ValidationError::UnknownCollectFrom {
+                        step: step.name.clone(),
+                        reference: r.clone(),
+                    });
+                }
+            }
+
+            // any_needs_fix / all_passed 使用時に参照先 step の rules 未定義を警告
+            if matches!(
+                collect.reduce,
+                super::schema::ReduceStrategy::AnyNeedsFix
+                    | super::schema::ReduceStrategy::AllPassed
+            ) {
+                for r in &collect.from {
+                    let referenced_step = workflow.steps.iter().find(|s| s.name == *r);
+                    if let Some(rs) = referenced_step {
+                        if rs.rules.is_empty() {
+                            log::warn!(
+                                "collect step '{}' uses {:?} reducer but source step '{}' has no rules defined (result may be None)",
+                                step.name,
+                                collect.reduce,
+                                r
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
@@ -130,25 +199,30 @@ mod tests {
         }
     }
 
+    fn make_step(name: &str, mode: StepMode, rules: Vec<TransitionRule>) -> Step {
+        Step {
+            name: name.to_string(),
+            mode,
+            prompt: StepPrompt::inline("test prompt"),
+            rules,
+            cycle_guard: None,
+            pass_previous_response: None,
+            pass_output_from: None,
+            collect: None,
+        }
+    }
+
     #[test]
     fn valid_workflow_passes() {
         let wf = make_workflow(vec![
+            make_step("plan", StepMode::Interactive, vec![]),
             Step {
-                name: "plan".to_string(),
-                mode: StepMode::Interactive,
-                prompt: StepPrompt::inline("planner"),
-                rules: vec![],
-                cycle_guard: None,
-            },
-            Step {
-                name: "implement".to_string(),
-                mode: StepMode::Auto,
-                prompt: StepPrompt::inline("coder"),
+                cycle_guard: Some(CycleGuard { max_iterations: 3 }),
                 rules: vec![TransitionRule {
                     r#match: "DONE".to_string(),
                     next: "plan".to_string(),
                 }],
-                cycle_guard: Some(CycleGuard { max_iterations: 3 }),
+                ..make_step("implement", StepMode::Auto, vec![])
             },
         ]);
         assert!(validate(&wf).is_ok());
@@ -157,14 +231,11 @@ mod tests {
     #[test]
     fn invalid_transition_target_fails() {
         let wf = make_workflow(vec![Step {
-            name: "plan".to_string(),
-            mode: StepMode::Interactive,
-            prompt: StepPrompt::inline("planner"),
             rules: vec![TransitionRule {
                 r#match: "DONE".to_string(),
                 next: "nonexistent".to_string(),
             }],
-            cycle_guard: None,
+            ..make_step("plan", StepMode::Interactive, vec![])
         }]);
         let result = validate(&wf);
         assert!(result.is_err());
@@ -214,26 +285,84 @@ mod tests {
     #[test]
     fn duplicate_step_names_fails() {
         let wf = make_workflow(vec![
-            Step {
-                name: "plan".to_string(),
-                mode: StepMode::Interactive,
-                prompt: StepPrompt::inline("planner"),
-                rules: vec![],
-                cycle_guard: None,
-            },
-            Step {
-                name: "plan".to_string(),
-                mode: StepMode::Auto,
-                prompt: StepPrompt::inline("coder"),
-                rules: vec![],
-                cycle_guard: None,
-            },
+            make_step("plan", StepMode::Interactive, vec![]),
+            make_step("plan", StepMode::Auto, vec![]),
         ]);
         let result = validate(&wf);
         assert!(matches!(
             result.unwrap_err(),
             ValidationError::DuplicateStep { ref name } if name == "plan"
         ));
+    }
+
+    #[test]
+    fn missing_prompt_without_collect_fails() {
+        let wf = make_workflow(vec![Step {
+            prompt: None,
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::MissingPrompt { ref step } if step == "step1"
+        ));
+    }
+
+    #[test]
+    fn collect_step_without_prompt_passes() {
+        use crate::workflow::schema::{CollectConfig, ReduceStrategy};
+        let wf = make_workflow(vec![
+            make_step("review_a", StepMode::Auto, vec![]),
+            Step {
+                prompt: None,
+                collect: Some(CollectConfig {
+                    from: vec!["review_a".to_string()],
+                    reduce: ReduceStrategy::Concat,
+                }),
+                ..make_step("collect_reviews", StepMode::Auto, vec![])
+            },
+        ]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn unknown_output_from_fails() {
+        let wf = make_workflow(vec![Step {
+            pass_output_from: Some(vec!["nonexistent".to_string()]),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::UnknownOutputFrom { ref reference, .. } if reference == "nonexistent"
+        ));
+    }
+
+    #[test]
+    fn unknown_collect_from_fails() {
+        use crate::workflow::schema::{CollectConfig, ReduceStrategy};
+        let wf = make_workflow(vec![Step {
+            prompt: None,
+            collect: Some(CollectConfig {
+                from: vec!["nonexistent".to_string()],
+                reduce: ReduceStrategy::Concat,
+            }),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::UnknownCollectFrom { ref reference, .. } if reference == "nonexistent"
+        ));
+    }
+
+    #[test]
+    fn valid_pass_output_from_passes() {
+        let wf = make_workflow(vec![
+            make_step("step_a", StepMode::Auto, vec![]),
+            Step {
+                pass_output_from: Some(vec!["step_a".to_string()]),
+                ..make_step("step_b", StepMode::Auto, vec![])
+            },
+        ]);
+        assert!(validate(&wf).is_ok());
     }
 
     // --- Prompt template validation tests ---

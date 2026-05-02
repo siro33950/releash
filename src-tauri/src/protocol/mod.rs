@@ -319,6 +319,7 @@ mod tests {
                     total_steps: 1,
                     step_history: vec![],
                     step_execution_counts: std::collections::HashMap::new(),
+                    step_outputs: std::collections::HashMap::new(),
                     workflow_definition: crate::workflow::schema::Workflow {
                         name: "test".to_string(),
                         description: "test".to_string(),

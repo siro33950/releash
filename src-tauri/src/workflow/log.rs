@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::workflow::schema::Workflow;
-use crate::workflow::state::{StepHistoryEntry, TokenUsage, WorkflowExecutionState, WorkflowState};
+use crate::workflow::state::{
+    StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState, WorkflowState,
+};
 
 /// NDJSONログに書き込むイベントの種類。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,11 +35,16 @@ pub enum WorkflowLogEvent {
         execution_id: String,
         workflow_name: String,
         step_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         token_usage: Option<TokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_text: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_index: Option<u32>,
         timestamp: f64,
     },
     StepFailed {
@@ -64,6 +71,26 @@ pub enum WorkflowLogEvent {
         workflow_name: String,
         timestamp: f64,
     },
+    OutputCollected {
+        execution_id: String,
+        workflow_name: String,
+        step_name: String,
+        step_outputs: Vec<CollectedOutputEntry>,
+        reduce_strategy: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reduce_result: Option<String>,
+        reduce_text: String,
+        timestamp: f64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectedOutputEntry {
+    pub step_name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result: Option<String>,
+    pub output_text_len: usize,
 }
 
 /// ワークフロー実行ログの書き込み・読み込み。
@@ -93,7 +120,8 @@ impl WorkflowEventLog {
             | WorkflowLogEvent::StepFailed { execution_id, .. }
             | WorkflowLogEvent::WorkflowCompleted { execution_id, .. }
             | WorkflowLogEvent::WorkflowFailed { execution_id, .. }
-            | WorkflowLogEvent::WorkflowAborted { execution_id, .. } => execution_id,
+            | WorkflowLogEvent::WorkflowAborted { execution_id, .. }
+            | WorkflowLogEvent::OutputCollected { execution_id, .. } => execution_id,
         };
 
         let path = self.log_path(execution_id);
@@ -155,6 +183,7 @@ impl WorkflowEventLog {
         let mut updated_at = 0.0;
         let mut step_history: Vec<StepHistoryEntry> = Vec::new();
         let mut step_execution_counts: HashMap<String, u32> = HashMap::new();
+        let mut step_outputs: HashMap<String, StepOutput> = HashMap::new();
         let mut total_token_usage = TokenUsage::default();
         let mut exec_state = WorkflowExecutionState::Running;
         let mut current_step_name = workflow
@@ -196,16 +225,37 @@ impl WorkflowEventLog {
                     result,
                     session_id,
                     token_usage,
+                    output_text,
+                    run_index,
                     timestamp,
                     ..
                 } => {
+                    let ri = run_index.unwrap_or_else(|| {
+                        step_execution_counts.get(step_name).copied().unwrap_or(0)
+                    });
                     step_history.push(StepHistoryEntry {
                         step_name: step_name.clone(),
                         completed_at: *timestamp,
                         result: result.clone(),
                         session_id: session_id.clone(),
                         token_usage: token_usage.clone(),
+                        output_text: output_text.clone(),
+                        run_index: ri,
                     });
+                    if let Some(ref ot) = output_text {
+                        step_outputs.insert(
+                            step_name.clone(),
+                            StepOutput {
+                                step_name: step_name.clone(),
+                                run_index: ri,
+                                session_id: session_id.clone(),
+                                result: result.clone(),
+                                output_text: ot.clone(),
+                                token_usage: token_usage.clone(),
+                                completed_at: *timestamp,
+                            },
+                        );
+                    }
                     if let Some(ref usage) = token_usage {
                         total_token_usage.add(usage);
                     }
@@ -240,6 +290,9 @@ impl WorkflowEventLog {
                     exec_state = WorkflowExecutionState::Aborted;
                     updated_at = *timestamp;
                 }
+                WorkflowLogEvent::OutputCollected { timestamp, .. } => {
+                    updated_at = *timestamp;
+                }
             }
         }
 
@@ -263,6 +316,7 @@ impl WorkflowEventLog {
             step_execution_counts,
             workflow_definition: workflow.clone(),
             total_token_usage,
+            step_outputs,
             step_states,
             started_at,
             updated_at,
@@ -346,6 +400,8 @@ mod tests {
                 input_tokens: 100,
                 output_tokens: 50,
             }),
+            output_text: None,
+            run_index: None,
             timestamp: 1002.0,
         };
 
@@ -442,6 +498,8 @@ mod tests {
                 result: None,
                 session_id: None,
                 token_usage: None,
+                output_text: None,
+                run_index: None,
                 timestamp: 3.0,
             },
             WorkflowLogEvent::StepFailed {
@@ -471,6 +529,20 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 timestamp: 7.0,
             },
+            WorkflowLogEvent::OutputCollected {
+                execution_id: "e1".to_string(),
+                workflow_name: "wf".to_string(),
+                step_name: "collect".to_string(),
+                step_outputs: vec![CollectedOutputEntry {
+                    step_name: "s1".to_string(),
+                    result: Some("LGTM".to_string()),
+                    output_text_len: 100,
+                }],
+                reduce_strategy: "AnyNeedsFix".to_string(),
+                reduce_result: Some("LGTM".to_string()),
+                reduce_text: "## s1\noutput".to_string(),
+                timestamp: 8.0,
+            },
         ];
 
         for event in &events {
@@ -494,6 +566,9 @@ mod tests {
                     prompt: StepPrompt::inline(""),
                     rules: vec![],
                     cycle_guard: None,
+                    pass_previous_response: None,
+                    pass_output_from: None,
+                    collect: None,
                 },
                 Step {
                     name: "implement".to_string(),
@@ -504,6 +579,9 @@ mod tests {
                         next: "review".to_string(),
                     }],
                     cycle_guard: None,
+                    pass_previous_response: None,
+                    pass_output_from: None,
+                    collect: None,
                 },
                 Step {
                     name: "review".to_string(),
@@ -511,6 +589,9 @@ mod tests {
                     prompt: StepPrompt::inline(""),
                     rules: vec![],
                     cycle_guard: Some(CycleGuard { max_iterations: 3 }),
+                    pass_previous_response: None,
+                    pass_output_from: None,
+                    collect: None,
                 },
             ],
         }
@@ -558,6 +639,8 @@ mod tests {
                 input_tokens: 100,
                 output_tokens: 50,
             }),
+            output_text: Some("plan output text".to_string()),
+            run_index: Some(1),
             timestamp: 1002.0,
         })
         .unwrap();
@@ -576,7 +659,24 @@ mod tests {
             result: None,
             session_id: Some("sess-impl".to_string()),
             token_usage: None,
+            output_text: None,
+            run_index: None,
             timestamp: 1004.0,
+        })
+        .unwrap();
+        log.append(&WorkflowLogEvent::OutputCollected {
+            execution_id: "exec-1".to_string(),
+            workflow_name: "test-wf".to_string(),
+            step_name: "collect".to_string(),
+            step_outputs: vec![CollectedOutputEntry {
+                step_name: "plan".to_string(),
+                result: Some("done".to_string()),
+                output_text_len: 16,
+            }],
+            reduce_strategy: "Last".to_string(),
+            reduce_result: Some("done".to_string()),
+            reduce_text: "plan output text".to_string(),
+            timestamp: 1004.5,
         })
         .unwrap();
         log.append(&WorkflowLogEvent::WorkflowCompleted {
@@ -599,6 +699,13 @@ mod tests {
             Some("sess-plan".to_string())
         );
         assert_eq!(
+            state.step_history[0].output_text,
+            Some("plan output text".to_string())
+        );
+        assert_eq!(state.step_history[0].run_index, 1);
+        assert!(state.step_outputs.contains_key("plan"));
+        assert_eq!(state.step_outputs["plan"].output_text, "plan output text");
+        assert_eq!(
             state.step_history[1].session_id,
             Some("sess-impl".to_string())
         );
@@ -607,6 +714,7 @@ mod tests {
         assert_eq!(state.step_states["implement"], "completed");
         assert_eq!(state.step_states["review"], "pending");
         assert_eq!(state.started_at, 1000.0);
+        // OutputCollectedのtimestamp=1004.5よりWorkflowCompletedの1005.0が最終
         assert_eq!(state.updated_at, 1005.0);
     }
 

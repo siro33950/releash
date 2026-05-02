@@ -245,6 +245,9 @@ mod tests {
                 prompt: StepPrompt::inline("test-prompt"),
                 rules: vec![],
                 cycle_guard: None,
+                pass_previous_response: None,
+                pass_output_from: None,
+                collect: None,
             }],
         }
     }
