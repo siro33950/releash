@@ -243,7 +243,7 @@ collect stepはAgentSessionを起動しない仮想stepとして動作する。`
 ### resultの意味づけ
 
 - `StepOutput.result` → step自身の遷移判定結果（`evaluate_auto_rules` のマッチ結果、approval: `"approve"`/`"reject"` 等）。stepの自律的な判定値
-- `ReduceResult.result` → `Option<String>`。reducerの集約結果。`any_needs_fix` / `all_passed` / `last` では `Some` を返し、`concat` / `grouped` では `None` を返す
+- `ReduceResult.result` → `Option<String>`。reducerの集約結果。`any_needs_fix` / `all_passed` では `Some` を返し、`last` はソースstepの `result` をそのまま返す（`None` ならそのまま）。`concat` / `grouped` では `None` を返す
 - 遷移判定: `ReduceResult.result` が `Some` ならその値を `evaluate_auto_rules` に渡す。`None` なら `ReduceResult.text` を渡す
 
 ### reducer動作の詳細

@@ -1311,6 +1311,9 @@ impl WorkflowEngine {
                             any_needs_fix = true;
                         }
                         parts.push(format!("## {}\n{}", step_name, output.output_text));
+                    } else {
+                        any_needs_fix = true;
+                        parts.push(format!("## {}\n<MISSING OUTPUT>", step_name));
                     }
                 }
                 ReduceResult {
@@ -1332,6 +1335,9 @@ impl WorkflowEngine {
                             all_passed = false;
                         }
                         parts.push(format!("## {}\n{}", step_name, output.output_text));
+                    } else {
+                        all_passed = false;
+                        parts.push(format!("## {}\n<MISSING OUTPUT>", step_name));
                     }
                 }
                 ReduceResult {

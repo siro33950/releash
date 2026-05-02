@@ -230,7 +230,9 @@ impl WorkflowEventLog {
                     timestamp,
                     ..
                 } => {
-                    let ri = run_index.unwrap_or(0);
+                    let ri = run_index.unwrap_or_else(|| {
+                        step_execution_counts.get(step_name).copied().unwrap_or(0)
+                    });
                     step_history.push(StepHistoryEntry {
                         step_name: step_name.clone(),
                         completed_at: *timestamp,
