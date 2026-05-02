@@ -55,6 +55,7 @@ impl Serialize for BuiltinInitError {
 
 const BUILTIN_QUICK_FIX: &str = include_str!("builtin/quick-fix.yml");
 const BUILTIN_PLAN_IMPLEMENT_REVIEW: &str = include_str!("builtin/plan-implement-review.yml");
+const BUILTIN_TRACE_LOOP_TEST: &str = include_str!("builtin/trace-loop-test.yml");
 
 const BUILTIN_PROMPT_FIXER: &str = include_str!("builtin_prompts/fixer.yml");
 const BUILTIN_PROMPT_VERIFIER: &str = include_str!("builtin_prompts/verifier.yml");
@@ -76,6 +77,10 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "plan-implement-review.yml",
         content: BUILTIN_PLAN_IMPLEMENT_REVIEW,
+    },
+    BuiltinEntry {
+        filename: "trace-loop-test.yml",
+        content: BUILTIN_TRACE_LOOP_TEST,
     },
 ];
 
@@ -151,6 +156,7 @@ mod tests {
 
         assert!(dir.join("quick-fix.yml").exists());
         assert!(dir.join("plan-implement-review.yml").exists());
+        assert!(dir.join("trace-loop-test.yml").exists());
 
         let wf: Workflow =
             serde_saphyr::from_str(&std::fs::read_to_string(dir.join("quick-fix.yml")).unwrap())

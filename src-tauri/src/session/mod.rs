@@ -1205,9 +1205,11 @@ mod tests {
         let state = WorkflowState {
             execution_id: "exec-1".to_string(),
             workflow_name: "review-cycle".to_string(),
+            chat_session_id: Some("chat-1".to_string()),
             state: WorkflowExecutionState::Running,
             current_step_index: 2,
             current_step_name: "review".to_string(),
+            current_session_id: Some("sess-current".to_string()),
             total_steps: 4,
             step_history: vec![
                 StepHistoryEntry {
@@ -1297,9 +1299,11 @@ mod tests {
             workflow_state: Some(WorkflowState {
                 execution_id: "exec-1".to_string(),
                 workflow_name: "test-wf".to_string(),
+                chat_session_id: Some("s1".to_string()),
                 state: WorkflowExecutionState::WaitingApproval,
                 current_step_index: 1,
                 current_step_name: "review".to_string(),
+                current_session_id: None,
                 total_steps: 3,
                 step_history: vec![StepHistoryEntry {
                     step_name: "implement".to_string(),

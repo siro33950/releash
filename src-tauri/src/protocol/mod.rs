@@ -311,9 +311,11 @@ mod tests {
                 workflow_state: crate::session::WorkflowState {
                     execution_id: "exec-1".to_string(),
                     workflow_name: "test".to_string(),
+                    chat_session_id: Some("chat-1".to_string()),
                     state: crate::workflow::state::WorkflowExecutionState::Running,
                     current_step_index: 0,
                     current_step_name: "step1".to_string(),
+                    current_session_id: Some("step-session-1".to_string()),
                     total_steps: 1,
                     step_history: vec![],
                     step_execution_counts: std::collections::HashMap::new(),

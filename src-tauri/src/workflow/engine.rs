@@ -172,9 +172,11 @@ impl WorkflowExecution {
         WorkflowState {
             execution_id: self.id.clone(),
             workflow_name: self.workflow.name.clone(),
+            chat_session_id: Some(self.chat_session_id.clone()),
             state: self.state.clone(),
             current_step_index: self.current_step_index,
             current_step_name: self.workflow.steps[self.current_step_index].name.clone(),
+            current_session_id: self.current_session_id.clone(),
             total_steps: self.workflow.steps.len(),
             step_history: self.step_history.clone(),
             step_execution_counts: self.step_execution_counts.clone(),
@@ -954,11 +956,20 @@ impl WorkflowEngine {
         .map_err(WorkflowEngineError::AgentSession)?;
 
         // ステップセッションIDをワークフロー実行に紐付け
-        {
+        let snapshot = {
             let mut execs = self.executions.lock().await;
             if let Some(exec) = execs.get_mut(worktree_path) {
                 exec.current_session_id = Some(step_session_id.clone());
+                Some(exec.to_workflow_state())
+            } else {
+                None
             }
+        };
+
+        if let Some(snapshot) = snapshot {
+            self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
+                .await?;
+            self.broadcast_state(app, worktree_path, snapshot);
         }
 
         // プロンプト送信（ステップ用セッションIDを使用）

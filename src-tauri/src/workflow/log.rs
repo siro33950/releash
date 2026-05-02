@@ -253,9 +253,11 @@ impl WorkflowEventLog {
         Ok(Some(WorkflowState {
             execution_id: execution_id.to_string(),
             workflow_name,
+            chat_session_id: None,
             state: exec_state,
             current_step_index,
             current_step_name,
+            current_session_id: None,
             total_steps: workflow.steps.len(),
             step_history,
             step_execution_counts,

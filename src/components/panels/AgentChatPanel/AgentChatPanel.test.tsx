@@ -48,14 +48,6 @@ vi.mock("@/hooks/useWorkflowConfig", () => ({
 	useWorkflowConfig: () => ({ workflows: [] }),
 }));
 
-vi.mock("@xyflow/react", () => ({
-	ReactFlow: ({ children }: { children?: React.ReactNode }) => (
-		<div data-testid="react-flow">{children}</div>
-	),
-	Handle: () => <div />,
-	Position: { Top: "top", Bottom: "bottom" },
-}));
-
 // Must import after mocks
 const { AgentChatPanel } = await import("./AgentChatPanel");
 
@@ -1395,6 +1387,50 @@ describe("AgentChatPanel image drag and drop", () => {
 });
 
 describe("AgentChatPanel workflow panel visibility", () => {
+	it("refreshes session tabs when workflow exposes a new step session", async () => {
+		const refreshSessions = vi.fn();
+		useWorkflowStateMock.mockReturnValue({
+			workflowState: {
+				executionId: "exec-001",
+				workflowName: "test-wf",
+				chatSessionId: "s1",
+				state: { type: "running" },
+				currentStepIndex: 0,
+				currentStepName: "step-1",
+				currentSessionId: "step-session-1",
+				totalSteps: 1,
+				stepHistory: [],
+				stepExecutionCounts: { "step-1": 1 },
+				workflowDefinition: {
+					name: "test-wf",
+					description: "",
+					builtin: false,
+					steps: [{ name: "step-1", mode: "auto", prompt: "p", rules: [] }],
+				},
+				totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
+				stepStates: {},
+				startedAt: 1000,
+				updatedAt: 2000,
+			},
+		});
+		mockUseAgentChat({
+			sessions: [{ id: "s1", label: "S1" }],
+			activeSession: { id: "s1", label: "S1", messages: [] },
+			refreshSessions,
+		});
+
+		render(
+			<AgentChatPanel
+				worktreePath="/test"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(refreshSessions).toHaveBeenCalled();
+		});
+	});
+
 	it("shows WorkflowPanel when workflowState is present", () => {
 		useWorkflowStateMock.mockReturnValue({
 			workflowState: {
@@ -1429,7 +1465,7 @@ describe("AgentChatPanel workflow panel visibility", () => {
 			/>,
 		);
 		expect(screen.getByText("test-wf")).toBeInTheDocument();
-		expect(screen.getByText("running")).toBeInTheDocument();
+		expect(screen.getAllByText("running").length).toBeGreaterThan(0);
 	});
 
 	it("does not show WorkflowPanel when workflowState is null", () => {

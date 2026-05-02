@@ -269,6 +269,7 @@ export function AgentChatPanel({
 		reorderSessions,
 		setPermissionMode,
 		respondPermission,
+		refreshSessions,
 		refreshClosedSessions,
 		availableModels,
 		selectedModel,
@@ -276,6 +277,29 @@ export function AgentChatPanel({
 	} = useAgentChat(worktreePath);
 
 	const { workflowState } = useWorkflowState(worktreePath);
+	const knownWorkflowSessionIds = useMemo(() => {
+		return new Set(sessions.map((session) => session.id));
+	}, [sessions]);
+
+	useEffect(() => {
+		const workflowSessionIds = [
+			workflowState?.chatSessionId,
+			workflowState?.currentSessionId,
+		].filter((id): id is string => Boolean(id));
+
+		if (
+			workflowSessionIds.some(
+				(sessionId) => !knownWorkflowSessionIds.has(sessionId),
+			)
+		) {
+			refreshSessions();
+		}
+	}, [
+		workflowState?.chatSessionId,
+		workflowState?.currentSessionId,
+		knownWorkflowSessionIds,
+		refreshSessions,
+	]);
 
 	// Expose sendMessage to parent via ref (without images parameter)
 	useEffect(() => {
@@ -483,103 +507,105 @@ export function AgentChatPanel({
 
 	return (
 		<div data-testid="agent-chat-panel" className="flex flex-col h-full">
-			<Tabs
-				value={activeSession?.id ?? ""}
-				onValueChange={selectSession}
-				className="flex flex-col h-full gap-0"
-			>
-				<div
-					data-tauri-drag-region
-					className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background border-b"
-				>
-					<TabsList
-						data-testid="session-tab-list"
-						className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
+			<Group orientation="horizontal" className="flex-1 min-h-0">
+				<Panel defaultSize="60%" minSize="30%">
+					<Tabs
+						value={activeSession?.id ?? ""}
+						onValueChange={selectSession}
+						className="flex flex-col h-full gap-0"
 					>
-						{orderedSessions.map((session) => (
-							<TabsTrigger key={session.id} value={session.id} asChild>
-								{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}
-								{/* biome-ignore lint/a11y/useKeyWithClickEvents: TabsTrigger がキーボード操作を処理 */}
-								<div
-									className="gap-2"
-									draggable={sessions.length > 1}
-									onDragStart={(e) => handleDragStart(e, session.id)}
-									onDragOver={handleDragOver}
-									onDrop={(e) => handleDrop(e, session.id)}
-									onDragEnd={handleDragEnd}
-									onClick={() => handleTabClick(session.id)}
-								>
-									<AgentStateIcon state={sessionAgentStates.get(session.id)} />
-									<span className="truncate max-w-[120px]">
-										{session.firstMessage || "New session"}
-									</span>
-									{sessions.length > 1 && (
-										<button
-											type="button"
-											onPointerDown={(e) => e.stopPropagation()}
-											onMouseDown={(e) => e.stopPropagation()}
-											onClick={(e) => {
-												e.stopPropagation();
-												closeSession(session.id);
-											}}
-											className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
-											aria-label={`Close ${session.firstMessage || "New session"}`}
+						<div
+							data-tauri-drag-region
+							className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background border-b"
+						>
+							<TabsList
+								data-testid="session-tab-list"
+								className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
+							>
+								{orderedSessions.map((session) => (
+									<TabsTrigger key={session.id} value={session.id} asChild>
+										{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}
+										{/* biome-ignore lint/a11y/useKeyWithClickEvents: TabsTrigger がキーボード操作を処理 */}
+										<div
+											className="gap-2"
+											draggable={sessions.length > 1}
+											onDragStart={(e) => handleDragStart(e, session.id)}
+											onDragOver={handleDragOver}
+											onDrop={(e) => handleDrop(e, session.id)}
+											onDragEnd={handleDragEnd}
+											onClick={() => handleTabClick(session.id)}
 										>
-											<X className="size-3.5" />
-										</button>
-									)}
-								</div>
-							</TabsTrigger>
-						))}
-					</TabsList>
-					<div data-tauri-drag-region className="flex-1" />
-					<button
-						type="button"
-						onClick={() => createNewSession()}
-						aria-label="New session"
-						className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
-					>
-						+
-					</button>
-					<Popover open={historyOpen} onOpenChange={handleHistoryOpen}>
-						<PopoverTrigger asChild>
+											<AgentStateIcon
+												state={sessionAgentStates.get(session.id)}
+											/>
+											<span className="truncate max-w-[120px]">
+												{session.firstMessage || "New session"}
+											</span>
+											{sessions.length > 1 && (
+												<button
+													type="button"
+													onPointerDown={(e) => e.stopPropagation()}
+													onMouseDown={(e) => e.stopPropagation()}
+													onClick={(e) => {
+														e.stopPropagation();
+														closeSession(session.id);
+													}}
+													className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
+													aria-label={`Close ${session.firstMessage || "New session"}`}
+												>
+													<X className="size-3.5" />
+												</button>
+											)}
+										</div>
+									</TabsTrigger>
+								))}
+							</TabsList>
+							<div data-tauri-drag-region className="flex-1" />
 							<button
 								type="button"
-								aria-label="Session history"
-								className="p-1 rounded hover:bg-muted-foreground/20 transition-colors shrink-0 ml-auto"
+								onClick={() => createNewSession()}
+								aria-label="New session"
+								className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
 							>
-								<History className="size-3.5" />
+								+
 							</button>
-						</PopoverTrigger>
-						<PopoverContent align="end" className="w-64 p-0">
-							{closedSessions.length > 0 ? (
-								<ul className="max-h-60 overflow-y-auto">
-									{closedSessions.map((session) => (
-										<li key={session.id}>
-											<button
-												type="button"
-												className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors truncate"
-												onClick={() => handleRestore(session.id)}
-											>
-												{session.firstMessage || "New session"}
-											</button>
-										</li>
-									))}
-								</ul>
-							) : (
-								<p className="px-3 py-4 text-sm text-muted-foreground text-center">
-									No closed sessions
-								</p>
-							)}
-						</PopoverContent>
-					</Popover>
-				</div>
-				<Group orientation="horizontal" className="flex-1 min-h-0">
-					<Panel defaultSize="60%" minSize="30%">
+							<Popover open={historyOpen} onOpenChange={handleHistoryOpen}>
+								<PopoverTrigger asChild>
+									<button
+										type="button"
+										aria-label="Session history"
+										className="p-1 rounded hover:bg-muted-foreground/20 transition-colors shrink-0 ml-auto"
+									>
+										<History className="size-3.5" />
+									</button>
+								</PopoverTrigger>
+								<PopoverContent align="end" className="w-64 p-0">
+									{closedSessions.length > 0 ? (
+										<ul className="max-h-60 overflow-y-auto">
+											{closedSessions.map((session) => (
+												<li key={session.id}>
+													<button
+														type="button"
+														className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors truncate"
+														onClick={() => handleRestore(session.id)}
+													>
+														{session.firstMessage || "New session"}
+													</button>
+												</li>
+											))}
+										</ul>
+									) : (
+										<p className="px-3 py-4 text-sm text-muted-foreground text-center">
+											No closed sessions
+										</p>
+									)}
+								</PopoverContent>
+							</Popover>
+						</div>
 						{/* biome-ignore lint/a11y/noStaticElementInteractions: native file drop target */}
 						<div
 							ref={agentDropZoneRef}
-							className="flex flex-col h-full relative"
+							className="flex flex-col flex-1 min-h-0 relative"
 							onDragOver={handleFileDragOver}
 							onDragLeave={handleFileDragLeave}
 						>
@@ -667,18 +693,18 @@ export function AgentChatPanel({
 								/>
 							</div>
 						</div>
-					</Panel>
-					<Separator className="w-px bg-border" />
-					<Panel defaultSize="40%" minSize="20%">
-						<WorkflowPanel
-							workflowState={workflowState ?? null}
-							worktreePath={worktreePath}
-							chatSessionId={activeSession?.id ?? null}
-							onSessionClick={selectSession}
-						/>
-					</Panel>
-				</Group>
-			</Tabs>
+					</Tabs>
+				</Panel>
+				<Separator className="w-px bg-border" />
+				<Panel defaultSize="40%" minSize="20%">
+					<WorkflowPanel
+						workflowState={workflowState ?? null}
+						worktreePath={worktreePath}
+						chatSessionId={activeSession?.id ?? null}
+						onSessionClick={selectSession}
+					/>
+				</Panel>
+			</Group>
 		</div>
 	);
 }

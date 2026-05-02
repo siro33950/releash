@@ -17,20 +17,6 @@ vi.mock("@tauri-apps/api/event", () => ({
 	listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
-vi.mock("@xyflow/react", () => ({
-	ReactFlow: ({ children }: { children?: React.ReactNode }) => (
-		<div data-testid="react-flow">{children}</div>
-	),
-	Handle: () => <div />,
-	Position: { Top: "top", Bottom: "bottom" },
-}));
-
-vi.mock("./WorkflowHistory", () => ({
-	WorkflowHistory: () => (
-		<div data-testid="workflow-history">No execution history</div>
-	),
-}));
-
 const { WorkflowPanel } = await import("./WorkflowPanel");
 
 function makeWorkflowState(
@@ -72,7 +58,7 @@ describe("WorkflowPanel", () => {
 			/>,
 		);
 		expect(screen.getByText("test-workflow")).toBeInTheDocument();
-		expect(screen.getByText("running")).toBeInTheDocument();
+		expect(screen.getAllByText("running").length).toBeGreaterThan(0);
 	});
 
 	it("displays total token usage", () => {
@@ -156,32 +142,20 @@ describe("WorkflowPanel", () => {
 		});
 	});
 
-	it("shows WorkflowHistory when completed", () => {
-		mockInvoke.mockResolvedValue([]);
+	it("shows current execution as a tab with workflow name", () => {
 		render(
 			<WorkflowPanel
-				workflowState={makeWorkflowState({ state: { type: "completed" } })}
+				workflowState={makeWorkflowState()}
 				worktreePath="/repo"
 				chatSessionId="session-1"
 			/>,
 		);
-		expect(screen.getByText("No execution history")).toBeInTheDocument();
+		const tabs = screen.getAllByRole("tab");
+		expect(tabs.length).toBeGreaterThanOrEqual(1);
+		expect(tabs[0]).toHaveTextContent("test-workflow");
 	});
 
-	it("shows WorkflowHistory when running", () => {
-		mockInvoke.mockResolvedValue([]);
-		render(
-			<WorkflowPanel
-				workflowState={makeWorkflowState({ state: { type: "running" } })}
-				worktreePath="/repo"
-				chatSessionId="session-1"
-			/>,
-		);
-		expect(screen.getByText("No execution history")).toBeInTheDocument();
-	});
-
-	it("shows WorkflowHistory in empty state (no workflow running)", () => {
-		mockInvoke.mockResolvedValue([]);
+	it("shows empty state when no workflow and no history", () => {
 		render(
 			<WorkflowPanel
 				workflowState={null}
@@ -189,7 +163,7 @@ describe("WorkflowPanel", () => {
 				chatSessionId="session-1"
 			/>,
 		);
-		expect(screen.getByText("No execution history")).toBeInTheDocument();
+		expect(screen.getByText("No workflow running")).toBeInTheDocument();
 	});
 
 	it("displays correct status badge color class for each state", () => {

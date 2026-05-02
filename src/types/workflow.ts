@@ -49,9 +49,11 @@ export interface Workflow {
 export interface WorkflowState {
 	executionId: string;
 	workflowName: string;
+	chatSessionId?: string;
 	state: WorkflowExecutionState;
 	currentStepIndex: number;
 	currentStepName: string;
+	currentSessionId?: string;
 	totalSteps: number;
 	stepHistory: StepHistoryEntry[];
 	stepExecutionCounts: Record<string, number>;

@@ -1,11 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Check, Play, Square, X } from "lucide-react";
-import { useCallback, useState } from "react";
+import { Check, History, Square, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@/components/ui/popover";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
-import type { WorkflowState } from "@/types/workflow";
-import { StepDetail } from "./StepDetail";
-import { WorkflowGraph } from "./WorkflowGraph";
-import { WorkflowHistory } from "./WorkflowHistory";
+import type { WorkflowLogEvent, WorkflowState } from "@/types/workflow";
+import { WorkflowTrace } from "./WorkflowTrace";
 
 interface WorkflowPanelProps {
 	workflowState: WorkflowState | null;
@@ -20,37 +24,201 @@ export function WorkflowPanel({
 	chatSessionId,
 	onSessionClick,
 }: WorkflowPanelProps) {
-	if (!workflowState) {
-		return (
-			<WorkflowEmptyState
-				chatSessionId={chatSessionId}
-				worktreePath={worktreePath}
-			/>
-		);
+	const [executionIds, setExecutionIds] = useState<string[]>([]);
+	const [openPastIds, setOpenPastIds] = useState<string[]>([]);
+	const [activeTab, setActiveTab] = useState<string>("current");
+	const [historyOpen, setHistoryOpen] = useState(false);
+
+	const fetchExecutionIds = useCallback(() => {
+		invoke<string[]>("list_workflow_executions", { worktreePath })
+			.then(setExecutionIds)
+			.catch((e) =>
+				console.warn("[WorkflowPanel] list_workflow_executions failed", e),
+			);
+	}, [worktreePath]);
+
+	useEffect(() => {
+		fetchExecutionIds();
+	}, [fetchExecutionIds]);
+
+	// Refresh on workflow completion
+	const stateType = workflowState?.state.type;
+	useEffect(() => {
+		if (
+			stateType === "completed" ||
+			stateType === "failed" ||
+			stateType === "aborted"
+		) {
+			fetchExecutionIds();
+		}
+	}, [stateType, fetchExecutionIds]);
+
+	// Switch to current tab when a new workflow starts
+	const executionId = workflowState?.executionId;
+	useEffect(() => {
+		if (executionId) {
+			setActiveTab("current");
+		}
+	}, [executionId]);
+
+	// Reset when worktree changes
+	// biome-ignore lint/correctness/useExhaustiveDependencies: worktreePath change should reset state
+	useEffect(() => {
+		setActiveTab("current");
+		setOpenPastIds([]);
+	}, [worktreePath]);
+
+	const pastExecutionIds = useMemo(
+		() => executionIds.filter((id) => id !== executionId),
+		[executionIds, executionId],
+	);
+
+	const visiblePastIds = useMemo(
+		() => openPastIds.filter((id) => pastExecutionIds.includes(id)),
+		[openPastIds, pastExecutionIds],
+	);
+
+	const closedPastIds = useMemo(
+		() => pastExecutionIds.filter((id) => !openPastIds.includes(id)),
+		[pastExecutionIds, openPastIds],
+	);
+
+	const hasCurrent = workflowState !== null;
+	const hasVisibleTabs = hasCurrent || visiblePastIds.length > 0;
+
+	// Compute effective tab (handle invalid active tab)
+	let effectiveTab = activeTab;
+	if (!hasVisibleTabs) {
+		effectiveTab = "";
+	} else if (activeTab === "current" && !hasCurrent) {
+		effectiveTab = visiblePastIds[0] ?? "";
+	} else if (activeTab !== "current" && !visiblePastIds.includes(activeTab)) {
+		effectiveTab = hasCurrent ? "current" : (visiblePastIds[0] ?? "");
 	}
 
+	const handleClosePastTab = useCallback(
+		(id: string) => {
+			setOpenPastIds((prev) => prev.filter((pid) => pid !== id));
+			if (activeTab === id) {
+				const remaining = visiblePastIds.filter((pid) => pid !== id);
+				setActiveTab(hasCurrent ? "current" : (remaining[0] ?? ""));
+			}
+		},
+		[activeTab, visiblePastIds, hasCurrent],
+	);
+
+	const handleRestoreExecution = useCallback((id: string) => {
+		setOpenPastIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+		setActiveTab(id);
+		setHistoryOpen(false);
+	}, []);
+
 	return (
-		<WorkflowActivePanel
-			workflowState={workflowState}
-			worktreePath={worktreePath}
-			onSessionClick={onSessionClick}
-		/>
+		<Tabs
+			value={effectiveTab}
+			onValueChange={setActiveTab}
+			className="flex flex-col h-full gap-0"
+		>
+			<div className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background border-b">
+				<TabsList className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+					{hasCurrent && (
+						<TabsTrigger value="current" className="gap-1.5">
+							<span className="truncate max-w-[120px]">
+								{workflowState.workflowName}
+							</span>
+							<StatusBadge state={workflowState.state.type} />
+						</TabsTrigger>
+					)}
+					{visiblePastIds.map((id) => (
+						<TabsTrigger key={id} value={id} asChild>
+							{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild assigns role */}
+							{/* biome-ignore lint/a11y/useKeyWithClickEvents: TabsTrigger handles keyboard */}
+							<div className="gap-2" onClick={() => setActiveTab(id)}>
+								<span className="truncate max-w-[120px]">{id.slice(0, 8)}</span>
+								<button
+									type="button"
+									onPointerDown={(e) => e.stopPropagation()}
+									onMouseDown={(e) => e.stopPropagation()}
+									onClick={(e) => {
+										e.stopPropagation();
+										handleClosePastTab(id);
+									}}
+									className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
+									aria-label={`Close ${id.slice(0, 8)}`}
+								>
+									<X className="size-3.5" />
+								</button>
+							</div>
+						</TabsTrigger>
+					))}
+				</TabsList>
+				<div className="flex-1" />
+				{chatSessionId && <NewWorkflowButton chatSessionId={chatSessionId} />}
+				<Popover open={historyOpen} onOpenChange={setHistoryOpen}>
+					<PopoverTrigger asChild>
+						<button
+							type="button"
+							aria-label="Execution history"
+							className="p-1 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
+						>
+							<History className="size-3.5" />
+						</button>
+					</PopoverTrigger>
+					<PopoverContent align="end" className="w-64 p-0">
+						{closedPastIds.length > 0 ? (
+							<ul className="max-h-60 overflow-y-auto">
+								{closedPastIds.map((id) => (
+									<li key={id}>
+										<button
+											type="button"
+											className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors truncate"
+											onClick={() => handleRestoreExecution(id)}
+										>
+											{id}
+										</button>
+									</li>
+								))}
+							</ul>
+						) : (
+							<p className="px-3 py-4 text-sm text-muted-foreground text-center">
+								No execution history
+							</p>
+						)}
+					</PopoverContent>
+				</Popover>
+			</div>
+
+			{hasCurrent && (
+				<TabsContent value="current" className="flex-1 min-h-0 mt-0">
+					<WorkflowActivePanel
+						workflowState={workflowState}
+						worktreePath={worktreePath}
+						onSessionClick={onSessionClick}
+					/>
+				</TabsContent>
+			)}
+
+			{visiblePastIds.map((id) => (
+				<TabsContent key={id} value={id} className="flex-1 min-h-0 mt-0">
+					<ExecutionView executionId={id} onSessionClick={onSessionClick} />
+				</TabsContent>
+			))}
+
+			{!hasVisibleTabs && (
+				<div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+					No workflow running
+				</div>
+			)}
+		</Tabs>
 	);
 }
 
-function WorkflowEmptyState({
-	chatSessionId,
-	worktreePath,
-}: {
-	chatSessionId: string | null;
-	worktreePath: string;
-}) {
+function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 	const [open, setOpen] = useState(false);
 	const { workflows } = useWorkflowConfig(open);
 
 	const handleStart = useCallback(
 		(workflowName: string) => {
-			if (!chatSessionId) return;
 			setOpen(false);
 			invoke("start_workflow", {
 				workflowName,
@@ -61,63 +229,103 @@ function WorkflowEmptyState({
 	);
 
 	return (
-		<div className="flex flex-col h-full overflow-hidden">
-			<div className="flex items-center px-3 py-2 border-b shrink-0">
-				<span className="text-sm font-medium">Workflow</span>
-			</div>
-			<div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground">
-				{open ? (
-					<div className="w-full max-w-[200px]">
-						{workflows.length > 0 ? (
-							<ul className="border rounded overflow-hidden">
-								{workflows.map((wf) => (
-									<li key={wf.name}>
-										<button
-											type="button"
-											className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
-											onClick={() => handleStart(wf.name)}
-										>
-											<div className="font-medium truncate text-foreground">
-												{wf.name}
-											</div>
-											{wf.description && (
-												<div className="text-xs text-muted-foreground truncate">
-													{wf.description}
-												</div>
-											)}
-										</button>
-									</li>
-								))}
-							</ul>
-						) : (
-							<p className="text-sm text-center">No workflows</p>
-						)}
-						<button
-							type="button"
-							className="mt-2 w-full text-xs text-center text-muted-foreground hover:text-foreground transition-colors"
-							onClick={() => setOpen(false)}
-						>
-							Cancel
-						</button>
-					</div>
+		<Popover open={open} onOpenChange={setOpen}>
+			<PopoverTrigger asChild>
+				<button
+					type="button"
+					aria-label="New workflow"
+					className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
+				>
+					+
+				</button>
+			</PopoverTrigger>
+			<PopoverContent align="end" className="w-48 p-0">
+				{workflows.length > 0 ? (
+					<ul>
+						{workflows.map((wf) => (
+							<li key={wf.name}>
+								<button
+									type="button"
+									className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
+									onClick={() => handleStart(wf.name)}
+								>
+									<div className="font-medium truncate text-foreground">
+										{wf.name}
+									</div>
+									{wf.description && (
+										<div className="text-xs text-muted-foreground truncate">
+											{wf.description}
+										</div>
+									)}
+								</button>
+							</li>
+						))}
+					</ul>
 				) : (
-					<>
-						<p className="text-sm">No workflow running</p>
-						{chatSessionId && (
-							<button
-								type="button"
-								onClick={() => setOpen(true)}
-								className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md border hover:bg-muted transition-colors text-foreground"
-							>
-								<Play className="size-3.5" />
-								Start workflow
-							</button>
-						)}
-					</>
+					<p className="px-3 py-4 text-sm text-muted-foreground text-center">
+						No workflows configured
+					</p>
 				)}
+			</PopoverContent>
+		</Popover>
+	);
+}
+
+function ExecutionView({
+	executionId,
+	onSessionClick,
+}: {
+	executionId: string;
+	onSessionClick?: (sessionId: string) => void;
+}) {
+	const [historyState, setHistoryState] = useState<WorkflowState | null>(null);
+	const [events, setEvents] = useState<WorkflowLogEvent[]>([]);
+
+	useEffect(() => {
+		invoke<WorkflowState | null>("get_workflow_execution_state", {
+			executionId,
+		})
+			.then((state) => setHistoryState(state ?? null))
+			.catch((e) =>
+				console.warn("[ExecutionView] get_workflow_execution_state failed", e),
+			);
+
+		invoke<WorkflowLogEvent[]>("get_workflow_execution_log", {
+			executionId,
+		})
+			.then(setEvents)
+			.catch((e) =>
+				console.warn("[ExecutionView] get_workflow_execution_log failed", e),
+			);
+	}, [executionId]);
+
+	if (!historyState) {
+		return (
+			<div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+				Loading...
 			</div>
-			<div className="border-t shrink-0 max-h-[30%] overflow-auto">
-				<WorkflowHistory worktreePath={worktreePath} workflowState={null} />
+		);
+	}
+
+	return (
+		<div className="flex flex-col h-full overflow-hidden">
+			{/* Header */}
+			<div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+				<div className="flex items-center gap-2">
+					<span className="text-sm font-medium">
+						{historyState.workflowName}
+					</span>
+					<StatusBadge state={historyState.state.type} />
+				</div>
+			</div>
+
+			{/* Trace */}
+			<div className="flex-1 overflow-auto min-h-0">
+				<WorkflowTrace
+					workflowState={historyState}
+					events={events}
+					onSessionClick={onSessionClick}
+				/>
 			</div>
 		</div>
 	);
@@ -132,8 +340,6 @@ function WorkflowActivePanel({
 	worktreePath: string;
 	onSessionClick?: (sessionId: string) => void;
 }) {
-	const [selectedStep, setSelectedStep] = useState<string | null>(null);
-
 	const isRunning =
 		workflowState.state.type === "running" ||
 		workflowState.state.type === "waiting_approval";
@@ -180,20 +386,9 @@ function WorkflowActivePanel({
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden">
-			{/* Header */}
-			<div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
+			{/* Action bar */}
+			<div className="flex items-center justify-end px-3 py-1.5 border-b shrink-0">
 				<div className="flex items-center gap-2">
-					<span className="text-sm font-medium">
-						{workflowState.workflowName}
-					</span>
-					<StatusBadge state={workflowState.state.type} />
-				</div>
-				<div className="flex items-center gap-2">
-					<span className="text-xs text-muted-foreground">
-						{workflowState.totalTokenUsage.inputTokens +
-							workflowState.totalTokenUsage.outputTokens}{" "}
-						tokens
-					</span>
 					{isWaitingApproval && (
 						<>
 							<button
@@ -241,40 +436,11 @@ function WorkflowActivePanel({
 				</div>
 			</div>
 
-			{/* Graph */}
+			{/* Trace */}
 			<div className="flex-1 overflow-auto min-h-0">
-				<WorkflowGraph
+				<WorkflowTrace
 					workflowState={workflowState}
-					onStepClick={setSelectedStep}
-				/>
-			</div>
-
-			{/* Step Detail */}
-			{selectedStep && (
-				<div className="border-t shrink-0 max-h-[30%] overflow-auto">
-					<div className="flex items-center justify-between px-3 py-1 border-b">
-						<span className="text-xs font-medium">{selectedStep}</span>
-						<button
-							type="button"
-							className="text-xs text-muted-foreground hover:text-foreground"
-							onClick={() => setSelectedStep(null)}
-						>
-							Close
-						</button>
-					</div>
-					<StepDetail
-						stepName={selectedStep}
-						workflowState={workflowState}
-						onSessionClick={onSessionClick}
-					/>
-				</div>
-			)}
-
-			{/* History */}
-			<div className="border-t shrink-0 max-h-[30%] overflow-auto">
-				<WorkflowHistory
-					worktreePath={worktreePath}
-					workflowState={workflowState}
+					onSessionClick={onSessionClick}
 				/>
 			</div>
 		</div>
