@@ -5,13 +5,15 @@ builtin: true
 steps:
   - name: fix
     mode: auto
-    prompt:
-      template: fixer
+    persona: coder
+    instruction: fix
+    policy: coding
 
   - name: verify
     mode: auto
-    prompt:
-      template: verifier
+    persona: reviewer
+    instruction: verify
+    policy: review
     rules:
       - match: NEEDS_FIX
         next: fix
@@ -22,5 +24,4 @@ steps:
 
   - name: done
     mode: approval
-    prompt:
-      template: reporter
+    instruction: report

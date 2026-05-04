@@ -14,7 +14,15 @@ pub struct Step {
     pub name: String,
     pub mode: StepMode,
     #[serde(default)]
-    pub prompt: Option<StepPrompt>,
+    pub persona: Option<String>,
+    #[serde(default)]
+    pub policy: Option<String>,
+    #[serde(default)]
+    pub knowledge: Option<String>,
+    #[serde(default)]
+    pub instruction: Option<String>,
+    #[serde(default)]
+    pub output_contract: Option<String>,
     #[serde(default)]
     pub rules: Vec<TransitionRule>,
     #[serde(default)]
@@ -27,30 +35,13 @@ pub struct Step {
     pub collect: Option<CollectConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum StepPrompt {
-    Inline(String),
-    InlineObject(InlinePrompt),
-    Template(TemplatePrompt),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct InlinePrompt {
-    pub inline: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct TemplatePrompt {
-    pub template: String,
-}
-
-#[cfg(test)]
-impl StepPrompt {
-    pub fn inline(prompt: impl Into<String>) -> Option<Self> {
-        Some(Self::Inline(prompt.into()))
+impl Step {
+    pub fn has_facet_refs(&self) -> bool {
+        self.persona.is_some()
+            || self.policy.is_some()
+            || self.knowledge.is_some()
+            || self.instruction.is_some()
+            || self.output_contract.is_some()
     }
 }
 
@@ -109,18 +100,20 @@ description: 計画→実装→レビュー→修正ループ
 steps:
   - name: plan
     mode: interactive
-    prompt:
-      template: planner
+    persona: planner
+    instruction: plan
 
   - name: implement
     mode: auto
-    prompt:
-      template: coder
+    persona: coder
+    instruction: implement
+    policy: coding
 
   - name: review
     mode: auto
-    prompt:
-      template: reviewer
+    persona: reviewer
+    instruction: review
+    policy: review
     rules:
       - match: NEEDS_FIX
         next: implement
@@ -131,8 +124,7 @@ steps:
 
   - name: report
     mode: approval
-    prompt:
-      template: reporter
+    instruction: report
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(wf.name, "plan-implement-review");
@@ -143,12 +135,8 @@ steps:
         let plan = &wf.steps[0];
         assert_eq!(plan.name, "plan");
         assert_eq!(plan.mode, StepMode::Interactive);
-        assert_eq!(
-            plan.prompt,
-            Some(StepPrompt::Template(TemplatePrompt {
-                template: "planner".to_string()
-            }))
-        );
+        assert_eq!(plan.persona.as_deref(), Some("planner"));
+        assert_eq!(plan.instruction.as_deref(), Some("plan"));
         assert!(plan.rules.is_empty());
         assert!(plan.cycle_guard.is_none());
 
@@ -174,8 +162,7 @@ description: bad workflow
 steps:
   - name: step1
     mode: unknown
-    prompt:
-      inline: test
+    instruction: test
 "#;
         let result: Result<Workflow, _> = serde_saphyr::from_str(yaml);
         assert!(result.is_err());
@@ -190,39 +177,22 @@ builtin: true
 steps:
   - name: fix
     mode: auto
-    prompt:
-      template: fixer
+    persona: coder
+    instruction: fix
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert!(wf.builtin);
     }
 
     #[test]
-    fn parse_legacy_inline_prompt_string() {
-        let yaml = r#"
-name: legacy
-description: legacy string prompt
-steps:
-  - name: step1
-    mode: auto
-    prompt: Run tests
-"#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(
-            wf.steps[0].prompt,
-            Some(StepPrompt::Inline("Run tests".to_string()))
-        );
-    }
-
-    #[test]
-    fn parse_collect_step_without_prompt() {
+    fn parse_collect_step_without_facets() {
         let yaml = r#"
 name: collect-test
 description: collect step test
 steps:
   - name: review_a
     mode: auto
-    prompt: Review A
+    instruction: review
     rules:
       - match: LGTM
         next: collect_reviews
@@ -241,7 +211,7 @@ steps:
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         let collect_step = &wf.steps[1];
         assert_eq!(collect_step.name, "collect_reviews");
-        assert_eq!(collect_step.prompt, None);
+        assert!(!collect_step.has_facet_refs());
         let collect = collect_step.collect.as_ref().unwrap();
         assert_eq!(collect.from, vec!["review_a".to_string()]);
         assert_eq!(collect.reduce, ReduceStrategy::AnyNeedsFix);
@@ -255,10 +225,10 @@ description: pass previous response test
 steps:
   - name: step_a
     mode: auto
-    prompt: Do A
+    instruction: implement
   - name: step_b
     mode: auto
-    prompt: Do B
+    instruction: review
     pass_previous_response: true
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
@@ -274,13 +244,13 @@ description: pass output from test
 steps:
   - name: step_a
     mode: auto
-    prompt: Do A
+    instruction: plan
   - name: step_b
     mode: auto
-    prompt: Do B
+    instruction: implement
   - name: step_c
     mode: auto
-    prompt: Do C
+    instruction: review
     pass_output_from:
       - step_a
       - step_b
@@ -293,22 +263,47 @@ steps:
     }
 
     #[test]
-    fn parse_inline_prompt_object() {
+    fn parse_step_with_facet_refs() {
         let yaml = r#"
-name: inline-object
-description: explicit inline prompt
+name: facet-test
+description: facet test
 steps:
-  - name: step1
+  - name: implement
     mode: auto
-    prompt:
-      inline: Run tests
+    persona: coder
+    policy: coding
+    instruction: implement
+    knowledge: architecture
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(
-            wf.steps[0].prompt,
-            Some(StepPrompt::InlineObject(InlinePrompt {
-                inline: "Run tests".to_string()
-            }))
-        );
+        let step = &wf.steps[0];
+        assert_eq!(step.persona.as_deref(), Some("coder"));
+        assert_eq!(step.policy.as_deref(), Some("coding"));
+        assert_eq!(step.instruction.as_deref(), Some("implement"));
+        assert_eq!(step.knowledge.as_deref(), Some("architecture"));
+        assert_eq!(step.output_contract, None);
+        assert!(step.has_facet_refs());
+    }
+
+    #[test]
+    fn step_without_facet_refs() {
+        let step = Step {
+            name: "collect".to_string(),
+            mode: StepMode::Auto,
+            persona: None,
+            policy: None,
+            knowledge: None,
+            instruction: None,
+            output_contract: None,
+            rules: vec![],
+            cycle_guard: None,
+            pass_previous_response: None,
+            pass_output_from: None,
+            collect: Some(CollectConfig {
+                from: vec!["a".to_string()],
+                reduce: ReduceStrategy::Concat,
+            }),
+        };
+        assert!(!step.has_facet_refs());
     }
 }

@@ -833,6 +833,7 @@ async fn spawn_bridge_process(
     cwd: &str,
     permission_mode: Option<String>,
     selected_model: Option<String>,
+    system_prompt: Option<String>,
 ) -> Result<(), String> {
     let bridge_path = resolve_bridge_script(app)?;
     if !bridge_path.exists() {
@@ -874,12 +875,7 @@ async fn spawn_bridge_process(
 
     // Send init command
     let initial_permission_mode = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
-    let init_cmd = serde_json::json!({
-        "type": "init",
-        "cwd": cwd,
-        "permissionMode": initial_permission_mode,
-        "sessionId": session_id,
-    });
+    let init_cmd = build_init_cmd(cwd, &initial_permission_mode, &session_id, system_prompt);
     let init_data = format!("{}\n", init_cmd);
     stdin
         .write_all(init_data.as_bytes())
@@ -1655,6 +1651,7 @@ pub(crate) async fn start_agent_session_internal(
     chat_session_id: &str,
     cwd: &str,
     permission_mode: Option<String>,
+    system_prompt: Option<String>,
 ) -> Result<(), String> {
     {
         let mut map = handles.lock().await;
@@ -1678,6 +1675,7 @@ pub(crate) async fn start_agent_session_internal(
         cwd,
         permission_mode,
         selected_model,
+        system_prompt,
     )
     .await
 }
@@ -1698,6 +1696,7 @@ pub async fn start_agent_session(
         &chat_session_id,
         &cwd,
         permission_mode,
+        None,
     )
     .await
 }
@@ -1742,6 +1741,7 @@ async fn start_agent_turn(
             cwd,
             Some(permission_mode.to_string()),
             selected_model,
+            None,
         )
         .await?;
     }
@@ -2386,6 +2386,7 @@ pub async fn init_agent_sessions(
             &session.id,
             &worktree_path,
             Some(session_pm),
+            None,
         )
         .await
         .unwrap_or_else(|e| {
@@ -2415,6 +2416,7 @@ pub async fn init_agent_sessions(
                 &s.id,
                 &worktree_path,
                 Some(s.permission_mode.clone()),
+                None,
             )
             .await
             {
@@ -2544,6 +2546,24 @@ pub async fn scan_slash_commands(cwd: String) -> Result<Vec<SlashCommandEntry>, 
 // --- Image attachment support ---
 
 /// Build a JSON command to send a user message (with optional images) to the Bridge.
+fn build_init_cmd(
+    cwd: &str,
+    permission_mode: &str,
+    session_id: &Option<String>,
+    system_prompt: Option<String>,
+) -> serde_json::Value {
+    let mut cmd = serde_json::json!({
+        "type": "init",
+        "cwd": cwd,
+        "permissionMode": permission_mode,
+        "sessionId": session_id,
+    });
+    if let Some(sp) = system_prompt {
+        cmd["systemPrompt"] = serde_json::Value::String(sp);
+    }
+    cmd
+}
+
 fn build_message_cmd(prompt: &str, images: &[ImageAttachment]) -> serde_json::Value {
     if images.is_empty() {
         serde_json::json!({
@@ -4277,6 +4297,38 @@ mod tests {
                 .await
                 .unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn build_init_cmd_without_system_prompt() {
+        let cmd = build_init_cmd("/repo", "acceptEdits", &None, None);
+        assert_eq!(cmd["type"], "init");
+        assert_eq!(cmd["cwd"], "/repo");
+        assert_eq!(cmd["permissionMode"], "acceptEdits");
+        assert!(cmd["sessionId"].is_null());
+        assert!(cmd.get("systemPrompt").is_none());
+    }
+
+    #[test]
+    fn build_init_cmd_with_system_prompt() {
+        let cmd = build_init_cmd(
+            "/repo",
+            "acceptEdits",
+            &Some("prev-session".to_string()),
+            Some("You are a coder.".to_string()),
+        );
+        assert_eq!(cmd["type"], "init");
+        assert_eq!(cmd["cwd"], "/repo");
+        assert_eq!(cmd["permissionMode"], "acceptEdits");
+        assert_eq!(cmd["sessionId"], "prev-session");
+        assert_eq!(cmd["systemPrompt"], "You are a coder.");
+    }
+
+    #[test]
+    fn build_init_cmd_bypass_permissions() {
+        let cmd = build_init_cmd("/repo", "bypassPermissions", &None, None);
+        assert_eq!(cmd["permissionMode"], "bypassPermissions");
+        assert!(cmd.get("systemPrompt").is_none());
     }
 
     #[test]

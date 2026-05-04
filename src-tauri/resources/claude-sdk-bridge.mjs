@@ -1,5 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import crypto from "node:crypto";
+import { buildSystemPromptOption } from "./bridge-utils.mjs";
 
 const pendingPermissions = new Map();
 const messageQueue = [];
@@ -173,6 +174,7 @@ async function handleInit(cmd) {
 		stderr: (data) => {
 			stderrChunks.push(data);
 		},
+		...buildSystemPromptOption(cmd.systemPrompt),
 	};
 
 	if (permissionMode === "bypassPermissions") {

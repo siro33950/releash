@@ -1,4 +1,3 @@
-use super::prompt_schema::PromptTemplate;
 use super::schema::{Summary, Workflow};
 use super::validation::{self, ValidationError};
 use serde::Serialize;
@@ -83,6 +82,10 @@ pub fn workflows_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("releash")
         .join("workflows")
+}
+
+pub fn facets_base_dir() -> PathBuf {
+    workflows_dir()
 }
 
 pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
@@ -201,37 +204,10 @@ pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
-pub fn prompts_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("releash")
-        .join("prompts")
-}
-
-pub fn load_prompt(path: &Path) -> Result<PromptTemplate, StorageError> {
-    let content = fs::read_to_string(path)?;
-    let template: PromptTemplate = serde_saphyr::from_str(&content)?;
-    validation::validate_prompt_template(&template)?;
-    Ok(template)
-}
-
-pub fn list_prompts(dir: &Path) -> Result<Vec<Summary>, StorageError> {
-    list_yml_summaries(
-        dir,
-        load_prompt,
-        |tpl| Summary {
-            name: tpl.name,
-            description: tpl.description,
-            builtin: tpl.builtin,
-        },
-        "プロンプト",
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::schema::{Step, StepMode, StepPrompt};
+    use crate::workflow::schema::{Step, StepMode};
     use tempfile::TempDir;
 
     fn sample_workflow(name: &str, builtin: bool) -> Workflow {
@@ -242,7 +218,11 @@ mod tests {
             steps: vec![Step {
                 name: "step1".to_string(),
                 mode: StepMode::Auto,
-                prompt: StepPrompt::inline("test-prompt"),
+                persona: None,
+                policy: None,
+                knowledge: None,
+                instruction: Some("implement".to_string()),
+                output_contract: None,
                 rules: vec![],
                 cycle_guard: None,
                 pass_previous_response: None,
@@ -351,70 +331,6 @@ mod tests {
             result.unwrap_err(),
             StorageError::NotFound { ref name } if name == "nope"
         ));
-    }
-
-    // --- Prompt template storage tests ---
-
-    use crate::workflow::prompt_schema::{PromptTemplate, PromptVariable};
-    use crate::workflow::validation;
-
-    fn sample_prompt(name: &str, builtin: bool) -> PromptTemplate {
-        PromptTemplate {
-            name: name.to_string(),
-            description: format!("{name} prompt"),
-            content: "テスト用プロンプト".to_string(),
-            variables: vec![PromptVariable {
-                name: "project_name".to_string(),
-                description: "プロジェクト名".to_string(),
-                default: None,
-            }],
-            builtin,
-        }
-    }
-
-    fn save_prompt(dir: &Path, template: &PromptTemplate) -> Result<(), StorageError> {
-        validation::validate_prompt_template(template)?;
-        ensure_dir(dir)?;
-        let content = serde_saphyr::to_string(template)?;
-        let file_path = dir.join(format!("{}.yml", template.name));
-        let tmp_path = file_path.with_extension("yml.tmp");
-        fs::write(&tmp_path, &content)?;
-        fs::rename(&tmp_path, &file_path)?;
-        Ok(())
-    }
-
-    #[test]
-    fn save_and_load_prompt() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        let tpl = sample_prompt("my-prompt", false);
-        save_prompt(dir, &tpl).unwrap();
-
-        let file_path = dir.join("my-prompt.yml");
-        assert!(file_path.exists());
-
-        let loaded = load_prompt(&file_path).unwrap();
-        assert_eq!(loaded.name, "my-prompt");
-        assert_eq!(loaded.description, "my-prompt prompt");
-        assert_eq!(loaded.variables.len(), 1);
-    }
-
-    #[test]
-    fn list_prompts_returns_sorted() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        save_prompt(dir, &sample_prompt("charlie", false)).unwrap();
-        save_prompt(dir, &sample_prompt("alpha", false)).unwrap();
-        save_prompt(dir, &sample_prompt("bravo", true)).unwrap();
-
-        let list = list_prompts(dir).unwrap();
-        assert_eq!(list.len(), 3);
-        assert_eq!(list[0].name, "alpha");
-        assert_eq!(list[1].name, "bravo");
-        assert!(list[1].builtin);
-        assert_eq!(list[2].name, "charlie");
     }
 
     // --- resolve_workflow_path tests ---

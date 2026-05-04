@@ -1,4 +1,5 @@
 use super::engine::{ApprovalDecision, WorkflowEngine};
+use super::facet::FacetKind;
 use super::log::{WorkflowEventLog, WorkflowLogEvent};
 use super::schema::{Summary, Workflow};
 use super::storage;
@@ -7,6 +8,17 @@ use crate::config::AppConfig;
 use crate::session::{resolve_data_dir, SessionStore, WorkflowState};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
+    match kind {
+        "persona" => Ok(FacetKind::Persona),
+        "policy" => Ok(FacetKind::Policy),
+        "knowledge" => Ok(FacetKind::Knowledge),
+        "instruction" => Ok(FacetKind::Instruction),
+        "output_contract" => Ok(FacetKind::OutputContract),
+        _ => Err(format!("Unknown facet kind: {kind}")),
+    }
+}
 
 #[tauri::command]
 pub async fn list_workflows() -> Result<Vec<Summary>, String> {
@@ -67,14 +79,6 @@ pub fn open_workflow_in_editor(
     )
 }
 
-#[tauri::command]
-pub async fn list_prompt_templates() -> Result<Vec<Summary>, String> {
-    let dir = storage::prompts_dir();
-    tokio::task::spawn_blocking(move || storage::list_prompts(&dir).map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| format!("task join error: {e}"))?
-}
-
 // ---- ワークフロー実行コマンド ----
 
 #[tauri::command]
@@ -85,6 +89,7 @@ pub async fn start_workflow(
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     workflow_name: String,
     chat_session_id: String,
+    task: Option<String>,
 ) -> Result<(), String> {
     let dir = storage::workflows_dir();
     let file_stem = workflow_name.clone();
@@ -104,6 +109,7 @@ pub async fn start_workflow(
             workflow,
             &chat_session_id,
             &file_stem,
+            task,
         )
         .await
         .map_err(|e| e.to_string())
@@ -266,4 +272,76 @@ pub async fn get_workflow_execution_state(
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
+}
+
+// ---- ファセットCRUDコマンド ----
+
+#[tauri::command]
+pub async fn list_facets(kind: String) -> Result<Vec<String>, String> {
+    let facet_kind = parse_facet_kind(&kind)?;
+    let base_dir = storage::facets_base_dir();
+    tokio::task::spawn_blocking(move || {
+        super::facet::list_facets(facet_kind, &base_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_facet(kind: String, key: String) -> Result<String, String> {
+    let facet_kind = parse_facet_kind(&kind)?;
+    let base_dir = storage::facets_base_dir();
+    tokio::task::spawn_blocking(move || {
+        super::facet::load_facet(facet_kind, &key, &base_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn save_facet(kind: String, key: String, content: String) -> Result<(), String> {
+    let facet_kind = parse_facet_kind(&kind)?;
+    let base_dir = storage::facets_base_dir();
+    tokio::task::spawn_blocking(move || {
+        super::facet::save_facet(facet_kind, &key, &content, &base_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn delete_facet(kind: String, key: String) -> Result<(), String> {
+    let facet_kind = parse_facet_kind(&kind)?;
+    let base_dir = storage::facets_base_dir();
+    tokio::task::spawn_blocking(move || {
+        super::facet::delete_facet(facet_kind, &key, &base_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_facet_kind_valid_kinds() {
+        assert_eq!(parse_facet_kind("persona").unwrap(), FacetKind::Persona);
+        assert_eq!(parse_facet_kind("policy").unwrap(), FacetKind::Policy);
+        assert_eq!(parse_facet_kind("knowledge").unwrap(), FacetKind::Knowledge);
+        assert_eq!(
+            parse_facet_kind("instruction").unwrap(),
+            FacetKind::Instruction
+        );
+        assert_eq!(
+            parse_facet_kind("output_contract").unwrap(),
+            FacetKind::OutputContract
+        );
+    }
+
+    #[test]
+    fn parse_facet_kind_unknown_returns_error() {
+        assert!(parse_facet_kind("unknown").is_err());
+        assert!(parse_facet_kind("").is_err());
+    }
 }

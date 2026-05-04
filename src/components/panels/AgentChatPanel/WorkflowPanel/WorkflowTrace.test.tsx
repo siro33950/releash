@@ -21,9 +21,9 @@ function makeWorkflowState(
 			description: "test",
 			builtin: false,
 			steps: [
-				{ name: "plan", mode: "auto", prompt: "p1", rules: [] },
-				{ name: "review", mode: "approval", prompt: "p2", rules: [] },
-				{ name: "fix", mode: "interactive", prompt: "p3", rules: [] },
+				{ name: "plan", mode: "auto", instruction: "plan", rules: [] },
+				{ name: "review", mode: "approval", instruction: "review", rules: [] },
+				{ name: "fix", mode: "interactive", instruction: "fix", rules: [] },
 			],
 		},
 		totalTokenUsage: { inputTokens: 100, outputTokens: 200 },
@@ -266,7 +266,7 @@ describe("WorkflowTrace", () => {
 							{
 								name: "plan",
 								mode: "auto",
-								prompt: "p1",
+								instruction: "plan",
 								rules: [],
 								collect: {
 									from: ["a", "b"],
@@ -276,13 +276,13 @@ describe("WorkflowTrace", () => {
 							{
 								name: "review",
 								mode: "approval",
-								prompt: "p2",
+								instruction: "review",
 								rules: [],
 							},
 							{
 								name: "fix",
 								mode: "interactive",
-								prompt: "p3",
+								instruction: "fix",
 								rules: [],
 							},
 						],

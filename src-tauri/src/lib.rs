@@ -199,11 +199,11 @@ pub fn run() {
                 log::error!("ビルトインワークフローの初期化に失敗: {e}");
             }
 
-            // Initialize builtin prompt templates
+            // Initialize builtin facets
             if let Err(e) =
-                workflow::builtin::init_builtin_prompts(&workflow::storage::prompts_dir())
+                workflow::builtin::init_builtin_facets(&workflow::storage::facets_base_dir())
             {
-                log::error!("ビルトインプロンプトテンプレートの初期化に失敗: {e}");
+                log::error!("ビルトインファセットの初期化に失敗: {e}");
             }
 
             if telemetry_enabled {
@@ -389,7 +389,6 @@ pub fn run() {
             workflow::commands::save_workflow,
             workflow::commands::delete_workflow,
             workflow::commands::open_workflow_in_editor,
-            workflow::commands::list_prompt_templates,
             workflow::commands::start_workflow,
             workflow::commands::abort_workflow,
             workflow::commands::get_workflow_state,
@@ -398,6 +397,10 @@ pub fn run() {
             workflow::commands::list_workflow_executions,
             workflow::commands::get_workflow_execution_log,
             workflow::commands::get_workflow_execution_state,
+            workflow::commands::list_facets,
+            workflow::commands::get_facet,
+            workflow::commands::save_facet,
+            workflow::commands::delete_facet,
             // Menu
             menu::set_menu_items_enabled,
         ])

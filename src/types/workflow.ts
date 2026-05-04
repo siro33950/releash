@@ -31,12 +31,14 @@ export interface CycleGuard {
 
 export type StepMode = "auto" | "approval" | "interactive";
 
-export type StepPrompt = string | { inline: string } | { template: string };
-
 export interface Step {
 	name: string;
 	mode: StepMode;
-	prompt: StepPrompt | null;
+	persona?: string;
+	policy?: string;
+	knowledge?: string;
+	instruction?: string;
+	output_contract?: string;
 	rules: TransitionRule[];
 	cycleGuard?: CycleGuard;
 	passPreviousResponse?: boolean;

@@ -554,7 +554,7 @@ mod tests {
     }
 
     fn make_test_workflow() -> Workflow {
-        use crate::workflow::schema::{CycleGuard, Step, StepPrompt, TransitionRule};
+        use crate::workflow::schema::{CycleGuard, Step, TransitionRule};
         Workflow {
             name: "test-wf".to_string(),
             description: "".to_string(),
@@ -563,9 +563,13 @@ mod tests {
                 Step {
                     name: "plan".to_string(),
                     mode: crate::workflow::schema::StepMode::Auto,
-                    prompt: StepPrompt::inline(""),
                     rules: vec![],
                     cycle_guard: None,
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("plan".to_string()),
+                    output_contract: None,
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,
@@ -573,12 +577,16 @@ mod tests {
                 Step {
                     name: "implement".to_string(),
                     mode: crate::workflow::schema::StepMode::Auto,
-                    prompt: StepPrompt::inline(""),
                     rules: vec![TransitionRule {
                         r#match: "review".to_string(),
                         next: "review".to_string(),
                     }],
                     cycle_guard: None,
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("implement".to_string()),
+                    output_contract: None,
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,
@@ -586,9 +594,13 @@ mod tests {
                 Step {
                     name: "review".to_string(),
                     mode: crate::workflow::schema::StepMode::Approval,
-                    prompt: StepPrompt::inline(""),
                     rules: vec![],
                     cycle_guard: Some(CycleGuard { max_iterations: 3 }),
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("review".to_string()),
+                    output_contract: None,
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,

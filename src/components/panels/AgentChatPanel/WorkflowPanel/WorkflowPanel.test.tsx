@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowState } from "@/types/workflow";
 
 vi.mock("react-resizable-panels", () => ({
@@ -37,8 +37,8 @@ function makeWorkflowState(
 			description: "test",
 			builtin: false,
 			steps: [
-				{ name: "step-1", mode: "auto", prompt: "p1", rules: [] },
-				{ name: "step-2", mode: "approval", prompt: "p2", rules: [] },
+				{ name: "step-1", mode: "auto", instruction: "implement", rules: [] },
+				{ name: "step-2", mode: "approval", instruction: "review", rules: [] },
 			],
 		},
 		totalTokenUsage: { inputTokens: 100, outputTokens: 200 },
@@ -245,10 +245,15 @@ describe("WorkflowPanel", () => {
 							{
 								name: "step-1",
 								mode: "interactive",
-								prompt: "p1",
+								instruction: "implement",
 								rules: [],
 							},
-							{ name: "step-2", mode: "auto", prompt: "p2", rules: [] },
+							{
+								name: "step-2",
+								mode: "auto",
+								instruction: "review",
+								rules: [],
+							},
 						],
 					},
 				})}
@@ -275,10 +280,15 @@ describe("WorkflowPanel", () => {
 							{
 								name: "step-1",
 								mode: "interactive",
-								prompt: "p1",
+								instruction: "implement",
 								rules: [],
 							},
-							{ name: "step-2", mode: "auto", prompt: "p2", rules: [] },
+							{
+								name: "step-2",
+								mode: "auto",
+								instruction: "review",
+								rules: [],
+							},
 						],
 					},
 				})}
@@ -290,6 +300,112 @@ describe("WorkflowPanel", () => {
 		expect(mockInvoke).toHaveBeenCalledWith("complete_interactive_step", {
 			worktreePath: "/repo",
 			abort: false,
+		});
+	});
+
+	describe("NewWorkflowButton", () => {
+		beforeEach(() => {
+			mockInvoke.mockReset();
+			mockInvoke.mockImplementation((cmd: string) => {
+				if (cmd === "list_workflows") {
+					return Promise.resolve([
+						{
+							name: "quick-fix",
+							description: "Quick fix workflow",
+							builtin: true,
+						},
+						{
+							name: "plan-implement-review",
+							description: "Full workflow",
+							builtin: true,
+						},
+					]);
+				}
+				if (cmd === "list_workflow_executions") {
+					return Promise.resolve([]);
+				}
+				return Promise.resolve(undefined);
+			});
+		});
+
+		it("shows workflow list when + button is clicked", async () => {
+			render(
+				<WorkflowPanel
+					workflowState={null}
+					worktreePath="/repo"
+					chatSessionId="session-1"
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+			await waitFor(() => {
+				expect(screen.getByText("quick-fix")).toBeInTheDocument();
+				expect(screen.getByText("plan-implement-review")).toBeInTheDocument();
+			});
+		});
+
+		it("shows task input after selecting a workflow", async () => {
+			render(
+				<WorkflowPanel
+					workflowState={null}
+					worktreePath="/repo"
+					chatSessionId="session-1"
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+			await waitFor(() => {
+				expect(screen.getByText("quick-fix")).toBeInTheDocument();
+			});
+			fireEvent.click(screen.getByText("quick-fix"));
+			expect(
+				screen.getByPlaceholderText("Task description (optional)"),
+			).toBeInTheDocument();
+			expect(screen.getByText("Start")).toBeInTheDocument();
+		});
+
+		it("invokes start_workflow with task when Start is clicked", async () => {
+			render(
+				<WorkflowPanel
+					workflowState={null}
+					worktreePath="/repo"
+					chatSessionId="session-1"
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+			await waitFor(() => {
+				expect(screen.getByText("quick-fix")).toBeInTheDocument();
+			});
+			fireEvent.click(screen.getByText("quick-fix"));
+			fireEvent.change(
+				screen.getByPlaceholderText("Task description (optional)"),
+				{ target: { value: "Fix the login bug" } },
+			);
+			fireEvent.click(screen.getByText("Start"));
+			expect(mockInvoke).toHaveBeenCalledWith("start_workflow", {
+				workflowName: "quick-fix",
+				chatSessionId: "session-1",
+				task: "Fix the login bug",
+			});
+		});
+
+		it("invokes start_workflow with task: null when task input is empty", async () => {
+			render(
+				<WorkflowPanel
+					workflowState={null}
+					worktreePath="/repo"
+					chatSessionId="session-1"
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
+			await waitFor(() => {
+				expect(screen.getByText("quick-fix")).toBeInTheDocument();
+			});
+			fireEvent.click(screen.getByText("quick-fix"));
+			fireEvent.click(screen.getByText("Start"));
+			expect(mockInvoke).toHaveBeenCalledWith("start_workflow", {
+				workflowName: "quick-fix",
+				chatSessionId: "session-1",
+				task: null,
+			});
 		});
 	});
 
