@@ -217,6 +217,7 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 	const [open, setOpen] = useState(false);
 	const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
 	const [taskInput, setTaskInput] = useState("");
+	const [isPending, setIsPending] = useState(false);
 	const { workflows } = useWorkflowConfig(open);
 
 	const handleSelect = useCallback((workflowName: string) => {
@@ -225,7 +226,8 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 	}, []);
 
 	const handleStart = useCallback(() => {
-		if (!selectedWorkflow) return;
+		if (!selectedWorkflow || isPending) return;
+		setIsPending(true);
 		invoke("start_workflow", {
 			workflowName: selectedWorkflow,
 			chatSessionId,
@@ -236,8 +238,9 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 				setSelectedWorkflow(null);
 				setTaskInput("");
 			})
-			.catch((e) => console.warn("[WorkflowPanel] start_workflow failed", e));
-	}, [selectedWorkflow, chatSessionId, taskInput]);
+			.catch((e) => console.warn("[WorkflowPanel] start_workflow failed", e))
+			.finally(() => setIsPending(false));
+	}, [selectedWorkflow, chatSessionId, taskInput, isPending]);
 
 	const handleBack = useCallback(() => {
 		setSelectedWorkflow(null);
@@ -293,9 +296,10 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 						<button
 							type="button"
 							onClick={handleStart}
-							className="w-full px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+							disabled={isPending}
+							className="w-full px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
 						>
-							Start
+							{isPending ? "Starting..." : "Start"}
 						</button>
 					</div>
 				) : workflows.length > 0 ? (

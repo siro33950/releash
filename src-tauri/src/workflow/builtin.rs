@@ -275,6 +275,8 @@ steps:
         assert!(dir.join("instructions/verify.md").exists());
         assert!(dir.join("instructions/report.md").exists());
         assert!(dir.join("instructions/test-step.md").exists());
+        assert!(dir.join("knowledge/test-context.md").exists());
+        assert!(dir.join("output_contracts/test-report.md").exists());
     }
 
     #[test]
