@@ -1,0 +1,36 @@
+name: trace-test
+description: ワークフロー動作テスト用（全ファセット確認 + ループ）
+builtin: true
+
+steps:
+  - name: plan
+    mode: interactive
+    persona: planner
+    instruction: test-step
+    knowledge: test-context
+    output_contract: test-report
+
+  - name: execute
+    mode: auto
+    persona: coder
+    instruction: test-step
+    policy: coding
+    knowledge: test-context
+    output_contract: test-report
+    pass_previous_response: true
+    rules:
+      - match: NEEDS_FIX
+        next: execute
+      - match: DONE
+        next: confirm
+    cycle_guard:
+      max_iterations: 3
+
+  - name: confirm
+    mode: approval
+    persona: reviewer
+    instruction: test-step
+    policy: review
+    knowledge: test-context
+    output_contract: test-report
+    pass_previous_response: true

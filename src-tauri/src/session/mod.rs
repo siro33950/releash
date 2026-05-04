@@ -500,7 +500,7 @@ pub fn update_session_agent_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::schema::{Step, StepMode, StepPrompt, Workflow};
+    use crate::workflow::schema::{Step, StepMode, Workflow};
     use crate::workflow::state::{StepHistoryEntry, TokenUsage, WorkflowExecutionState};
 
     #[test]
@@ -1171,9 +1171,13 @@ mod tests {
                 Step {
                     name: "plan".to_string(),
                     mode: StepMode::Interactive,
-                    prompt: StepPrompt::inline("Plan"),
                     rules: vec![],
                     cycle_guard: None,
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("plan".to_string()),
+                    output_contract: None,
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,
@@ -1181,9 +1185,13 @@ mod tests {
                 Step {
                     name: "implement".to_string(),
                     mode: StepMode::Auto,
-                    prompt: StepPrompt::inline("Implement"),
                     rules: vec![],
                     cycle_guard: None,
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("implement".to_string()),
+                    output_contract: None,
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,
@@ -1191,9 +1199,13 @@ mod tests {
                 Step {
                     name: "review".to_string(),
                     mode: StepMode::Auto,
-                    prompt: StepPrompt::inline("Review"),
                     rules: vec![],
                     cycle_guard: None,
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("review".to_string()),
+                    output_contract: None,
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,
@@ -1201,9 +1213,13 @@ mod tests {
                 Step {
                     name: "report".to_string(),
                     mode: StepMode::Approval,
-                    prompt: StepPrompt::inline("Report"),
                     rules: vec![],
                     cycle_guard: None,
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("report".to_string()),
+                    output_contract: None,
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,

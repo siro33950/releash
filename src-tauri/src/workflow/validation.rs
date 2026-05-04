@@ -1,4 +1,3 @@
-use super::prompt_schema::PromptTemplate;
 use super::schema::Workflow;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -11,9 +10,7 @@ pub enum ValidationError {
     EmptySteps,
     DuplicateStep { name: String },
     UnknownNextStep { step: String, next: String },
-    EmptyTemplateContent,
-    DuplicateVariable { name: String },
-    MissingPrompt { step: String },
+    MissingFacet { step: String },
     UnknownOutputFrom { step: String, reference: String },
     UnknownCollectFrom { step: String, reference: String },
 }
@@ -34,16 +31,10 @@ impl fmt::Display for ValidationError {
                 f,
                 "ステップ '{step}' のルールが存在しないステップ '{next}' を参照しています"
             ),
-            Self::EmptyTemplateContent => {
-                write!(f, "プロンプトテンプレートの内容が空です")
-            }
-            Self::DuplicateVariable { name } => {
-                write!(f, "変数名 '{name}' が重複しています")
-            }
-            Self::MissingPrompt { step } => {
+            Self::MissingFacet { step } => {
                 write!(
                     f,
-                    "ステップ '{step}' にはpromptが必要です（collectステップのみprompt省略可）"
+                    "ステップ '{step}' にはファセット参照が必要です（collectステップのみ省略可）"
                 )
             }
             Self::UnknownOutputFrom { step, reference } => write!(
@@ -84,25 +75,6 @@ pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-pub fn validate_prompt_template(template: &PromptTemplate) -> Result<(), ValidationError> {
-    validate_name(&template.name)?;
-
-    if template.content.trim().is_empty() {
-        return Err(ValidationError::EmptyTemplateContent);
-    }
-
-    let mut var_names = HashSet::new();
-    for var in &template.variables {
-        if !var_names.insert(var.name.as_str()) {
-            return Err(ValidationError::DuplicateVariable {
-                name: var.name.clone(),
-            });
-        }
-    }
-
-    Ok(())
-}
-
 pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
     validate_name(&workflow.name)?;
 
@@ -129,9 +101,9 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
             }
         }
 
-        // collect なしの step は prompt 必須
-        if step.collect.is_none() && step.prompt.is_none() {
-            return Err(ValidationError::MissingPrompt {
+        // collect なしの step: ファセット参照が必要
+        if step.collect.is_none() && !step.has_facet_refs() {
+            return Err(ValidationError::MissingFacet {
                 step: step.name.clone(),
             });
         }
@@ -188,7 +160,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::schema::{CycleGuard, Step, StepMode, StepPrompt, TransitionRule};
+    use crate::workflow::schema::{CycleGuard, Step, StepMode, TransitionRule};
 
     fn make_workflow(steps: Vec<Step>) -> Workflow {
         Workflow {
@@ -203,7 +175,11 @@ mod tests {
         Step {
             name: name.to_string(),
             mode,
-            prompt: StepPrompt::inline("test prompt"),
+            persona: None,
+            policy: None,
+            knowledge: None,
+            instruction: Some("implement".to_string()),
+            output_contract: None,
             rules,
             cycle_guard: None,
             pass_previous_response: None,
@@ -296,24 +272,34 @@ mod tests {
     }
 
     #[test]
-    fn missing_prompt_without_collect_fails() {
+    fn missing_facet_without_collect_fails() {
         let wf = make_workflow(vec![Step {
-            prompt: None,
+            instruction: None,
             ..make_step("step1", StepMode::Auto, vec![])
         }]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::MissingPrompt { ref step } if step == "step1"
+            ValidationError::MissingFacet { ref step } if step == "step1"
         ));
     }
 
     #[test]
-    fn collect_step_without_prompt_passes() {
+    fn facet_only_step_passes() {
+        let wf = make_workflow(vec![Step {
+            persona: Some("coder".to_string()),
+            instruction: Some("implement".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn collect_step_without_facets_passes() {
         use crate::workflow::schema::{CollectConfig, ReduceStrategy};
         let wf = make_workflow(vec![
             make_step("review_a", StepMode::Auto, vec![]),
             Step {
-                prompt: None,
+                instruction: None,
                 collect: Some(CollectConfig {
                     from: vec!["review_a".to_string()],
                     reduce: ReduceStrategy::Concat,
@@ -340,7 +326,7 @@ mod tests {
     fn unknown_collect_from_fails() {
         use crate::workflow::schema::{CollectConfig, ReduceStrategy};
         let wf = make_workflow(vec![Step {
-            prompt: None,
+            instruction: None,
             collect: Some(CollectConfig {
                 from: vec!["nonexistent".to_string()],
                 reduce: ReduceStrategy::Concat,
@@ -363,88 +349,5 @@ mod tests {
             },
         ]);
         assert!(validate(&wf).is_ok());
-    }
-
-    // --- Prompt template validation tests ---
-
-    use crate::workflow::prompt_schema::{PromptTemplate, PromptVariable};
-
-    fn make_prompt(name: &str, content: &str, vars: Vec<PromptVariable>) -> PromptTemplate {
-        PromptTemplate {
-            name: name.to_string(),
-            description: "テスト用".to_string(),
-            content: content.to_string(),
-            variables: vars,
-            builtin: false,
-        }
-    }
-
-    #[test]
-    fn valid_prompt_template_passes() {
-        let tpl = make_prompt(
-            "fixer",
-            "プロンプト内容",
-            vec![PromptVariable {
-                name: "project_name".to_string(),
-                description: "プロジェクト名".to_string(),
-                default: None,
-            }],
-        );
-        assert!(validate_prompt_template(&tpl).is_ok());
-    }
-
-    #[test]
-    fn prompt_template_empty_content_fails() {
-        let tpl = make_prompt("fixer", "", vec![]);
-        assert!(matches!(
-            validate_prompt_template(&tpl).unwrap_err(),
-            ValidationError::EmptyTemplateContent
-        ));
-    }
-
-    #[test]
-    fn prompt_template_whitespace_only_content_fails() {
-        let cases = ["   ", "\n", "\t", "  \n\t  "];
-        for content in &cases {
-            let tpl = make_prompt("fixer", content, vec![]);
-            assert!(
-                matches!(
-                    validate_prompt_template(&tpl).unwrap_err(),
-                    ValidationError::EmptyTemplateContent
-                ),
-                "whitespace-only content {:?} should fail validation",
-                content
-            );
-        }
-    }
-
-    #[test]
-    fn prompt_template_invalid_name_fails() {
-        let tpl = make_prompt("../evil", "content", vec![]);
-        assert!(validate_prompt_template(&tpl).is_err());
-    }
-
-    #[test]
-    fn prompt_template_duplicate_variables_fails() {
-        let tpl = make_prompt(
-            "test",
-            "content",
-            vec![
-                PromptVariable {
-                    name: "var1".to_string(),
-                    description: "a".to_string(),
-                    default: None,
-                },
-                PromptVariable {
-                    name: "var1".to_string(),
-                    description: "b".to_string(),
-                    default: None,
-                },
-            ],
-        );
-        assert!(matches!(
-            validate_prompt_template(&tpl).unwrap_err(),
-            ValidationError::DuplicateVariable { ref name } if name == "var1"
-        ));
     }
 }

@@ -215,21 +215,42 @@ export function WorkflowPanel({
 
 function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 	const [open, setOpen] = useState(false);
+	const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
+	const [taskInput, setTaskInput] = useState("");
 	const { workflows } = useWorkflowConfig(open);
 
-	const handleStart = useCallback(
-		(workflowName: string) => {
-			setOpen(false);
-			invoke("start_workflow", {
-				workflowName,
-				chatSessionId,
-			}).catch((e) => console.warn("[WorkflowPanel] start_workflow failed", e));
-		},
-		[chatSessionId],
-	);
+	const handleSelect = useCallback((workflowName: string) => {
+		setSelectedWorkflow(workflowName);
+		setTaskInput("");
+	}, []);
+
+	const handleStart = useCallback(() => {
+		if (!selectedWorkflow) return;
+		setOpen(false);
+		setSelectedWorkflow(null);
+		setTaskInput("");
+		invoke("start_workflow", {
+			workflowName: selectedWorkflow,
+			chatSessionId,
+			task: taskInput.trim() || null,
+		}).catch((e) => console.warn("[WorkflowPanel] start_workflow failed", e));
+	}, [selectedWorkflow, chatSessionId, taskInput]);
+
+	const handleBack = useCallback(() => {
+		setSelectedWorkflow(null);
+		setTaskInput("");
+	}, []);
+
+	const handleOpenChange = useCallback((isOpen: boolean) => {
+		setOpen(isOpen);
+		if (!isOpen) {
+			setSelectedWorkflow(null);
+			setTaskInput("");
+		}
+	}, []);
 
 	return (
-		<Popover open={open} onOpenChange={setOpen}>
+		<Popover open={open} onOpenChange={handleOpenChange}>
 			<PopoverTrigger asChild>
 				<button
 					type="button"
@@ -239,15 +260,49 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 					+
 				</button>
 			</PopoverTrigger>
-			<PopoverContent align="end" className="w-48 p-0">
-				{workflows.length > 0 ? (
+			<PopoverContent align="end" className="w-64 p-0">
+				{selectedWorkflow ? (
+					<div className="p-3 flex flex-col gap-2">
+						<div className="flex items-center gap-2">
+							<button
+								type="button"
+								onClick={handleBack}
+								className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+								aria-label="Back to workflow list"
+							>
+								←
+							</button>
+							<span className="text-sm font-medium truncate">
+								{selectedWorkflow}
+							</span>
+						</div>
+						<textarea
+							value={taskInput}
+							onChange={(e) => setTaskInput(e.target.value)}
+							placeholder="Task description (optional)"
+							className="w-full min-h-[60px] max-h-[120px] rounded border bg-background px-2 py-1.5 text-sm resize-y focus:outline-none focus:ring-1 focus:ring-ring"
+							onKeyDown={(e) => {
+								if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+									handleStart();
+								}
+							}}
+						/>
+						<button
+							type="button"
+							onClick={handleStart}
+							className="w-full px-3 py-1.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+						>
+							Start
+						</button>
+					</div>
+				) : workflows.length > 0 ? (
 					<ul>
 						{workflows.map((wf) => (
 							<li key={wf.name}>
 								<button
 									type="button"
 									className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
-									onClick={() => handleStart(wf.name)}
+									onClick={() => handleSelect(wf.name)}
 								>
 									<div className="font-medium truncate text-foreground">
 										{wf.name}

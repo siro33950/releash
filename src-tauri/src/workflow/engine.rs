@@ -11,9 +11,7 @@ use crate::agent_sdk::AgentProcessMap;
 use crate::agent_status::{current_timestamp, AgentStatusCenter};
 use crate::session::SessionStore;
 use crate::workflow::log::{WorkflowEventLog, WorkflowLogEvent};
-use crate::workflow::schema::{
-    CollectConfig, ReduceStrategy, StepMode, StepPrompt, TransitionRule, Workflow,
-};
+use crate::workflow::schema::{CollectConfig, ReduceStrategy, StepMode, TransitionRule, Workflow};
 use crate::workflow::state::{
     StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState, WorkflowState,
 };
@@ -95,6 +93,8 @@ struct WorkflowExecution {
     current_step_token_usage: TokenUsage,
     /// step_name → 最新StepOutput のマップ。
     step_outputs: HashMap<String, StepOutput>,
+    /// ワークフロー実行時のタスク内容（テンプレート変数 {{task}} の展開に使用）。
+    task: Option<String>,
 }
 
 impl WorkflowExecution {
@@ -433,6 +433,7 @@ impl WorkflowEngine {
 
     /// ワークフローを開始する。
     /// ChatSessionは既に作成済みの前提で、最初のステップのプロンプトを送信する。
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_workflow(
         &self,
         app: &tauri::AppHandle,
@@ -441,6 +442,7 @@ impl WorkflowEngine {
         workflow: Workflow,
         chat_session_id: &str,
         file_stem: &str,
+        task: Option<String>,
     ) -> Result<(), WorkflowEngineError> {
         // worktree_pathはセッションから取得（唯一のソース）
         // ロック前に非同期I/Oを完了させる
@@ -466,6 +468,7 @@ impl WorkflowEngine {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task,
         };
 
         // validate_start → insert → スナップショット確定を同一ロックで原子的に実行
@@ -989,6 +992,7 @@ impl WorkflowEngine {
     }
 
     /// 現在のステップ用に新しいChatSessionを生成し、AgentSessionを開始してプロンプトを送信する。
+    /// ファセット方式と旧prompt方式を自動判別する。
     async fn start_step_session(
         &self,
         app: &tauri::AppHandle,
@@ -996,37 +1000,35 @@ impl WorkflowEngine {
         session_store: &Arc<SessionStore>,
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
-        let (chat_session_id, prompt_ref, step_clone, step_outputs_clone, step_history_clone) = {
+        let (chat_session_id, step_clone, step_outputs_clone, step_history_clone, task_clone) = {
             let execs = self.executions.lock().await;
             let exec = execs
                 .get(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let step = &exec.workflow.steps[exec.current_step_index];
-            let prompt_ref = step.prompt.clone().ok_or_else(|| {
-                WorkflowEngineError::InvalidWorkflow(format!(
-                    "Step '{}' has no prompt (collect steps should not start sessions)",
-                    step.name
-                ))
-            })?;
             (
                 exec.chat_session_id.clone(),
-                prompt_ref,
                 step.clone(),
                 exec.step_outputs.clone(),
                 exec.step_history.clone(),
+                exec.task.clone(),
             )
         };
 
         let data_dir = crate::session::resolve_data_dir(app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
-        let base_prompt = Self::resolve_step_prompt(&prompt_ref, worktree_path)
-            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve prompt: {e}")))?;
-        let prompt = Self::inject_step_outputs(
-            &base_prompt,
+
+        // ファセット方式: compose_facets → render_facet_variables → inject_step_outputs
+        let base_dir = storage::facets_base_dir();
+        let (system_prompt, prompt) = Self::build_step_prompt(
             &step_clone,
+            &base_dir,
+            worktree_path,
+            task_clone.as_deref(),
             &step_outputs_clone,
             &step_history_clone,
-        );
+        )?;
+
         let parent_session = session_store
             .get_session(&data_dir, &chat_session_id)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
@@ -1047,7 +1049,7 @@ impl WorkflowEngine {
             map.insert(step_session_id.clone(), worktree_path.to_string());
         }
 
-        // AgentSession開始（ステップ用セッションIDを使用）
+        // AgentSession開始（ステップ用セッションIDを使用、ファセット方式ではsystem_promptを渡す）
         crate::agent_sdk::start_agent_session_internal(
             app,
             handles,
@@ -1055,6 +1057,7 @@ impl WorkflowEngine {
             &step_session_id,
             worktree_path,
             None,
+            system_prompt,
         )
         .await
         .map_err(WorkflowEngineError::AgentSession)?;
@@ -1090,60 +1093,49 @@ impl WorkflowEngine {
         .map_err(WorkflowEngineError::AgentSession)
     }
 
-    /// step.prompt を実行用プロンプト本文へ展開する。
-    fn resolve_step_prompt(prompt_ref: &StepPrompt, worktree_path: &str) -> Result<String, String> {
-        match prompt_ref {
-            StepPrompt::Template(t) => Self::load_prompt_template(&t.template, worktree_path),
-            StepPrompt::InlineObject(o) => Ok(o.inline.clone()),
-            StepPrompt::Inline(inline) => {
-                // 旧builtin YAML互換: `prompt: fixer` のような1語参照は、
-                // 同名テンプレートが存在する場合だけテンプレートとして扱う。
-                let prompt_path = storage::prompts_dir().join(format!("{inline}.yml"));
-                if prompt_path.exists() {
-                    log::warn!(
-                        "Deprecated workflow prompt syntax `prompt: {inline}` resolved as template. Use `prompt: {{ template: {inline} }}` instead."
-                    );
-                    Self::load_prompt_template(inline, worktree_path)
-                } else {
-                    Ok(inline.clone())
-                }
-            }
-        }
-    }
-
-    fn load_prompt_template(template_name: &str, worktree_path: &str) -> Result<String, String> {
-        let prompt_path = storage::prompts_dir().join(format!("{template_name}.yml"));
-        if !prompt_path.exists() {
-            return Err(format!("Prompt template not found: {template_name}"));
-        }
-
-        let template = storage::load_prompt(&prompt_path).map_err(|e| e.to_string())?;
-        Ok(Self::render_prompt_template(&template, worktree_path))
-    }
-
-    fn render_prompt_template(
-        template: &crate::workflow::prompt_schema::PromptTemplate,
+    /// ファセット合成パイプライン: compose → 変数展開 → step output注入
+    /// start_step_session の中核ロジックを純粋関数として切り出し、テスト可能にする。
+    pub(crate) fn build_step_prompt(
+        step: &crate::workflow::schema::Step,
+        facets_base_dir: &Path,
         worktree_path: &str,
-    ) -> String {
-        let mut content = template.content.clone();
-        for var in &template.variables {
-            let value = if var.name == "project_name" {
-                Self::project_name_from_worktree(worktree_path)
-            } else {
-                var.default.clone().unwrap_or_default()
-            };
-            content = content.replace(&format!("{{{{{}}}}}", var.name), &value);
+        task: Option<&str>,
+        step_outputs: &HashMap<String, StepOutput>,
+        step_history: &[StepHistoryEntry],
+    ) -> Result<(Option<String>, String), WorkflowEngineError> {
+        if !step.has_facet_refs() {
+            return Err(WorkflowEngineError::InvalidWorkflow(format!(
+                "Step '{}' has no facet refs (persona/policy/knowledge/instruction). All steps must use facet-based prompts.",
+                step.name
+            )));
         }
-        content
+        let composed = crate::workflow::facet::compose_facets(step, facets_base_dir)
+            .map_err(|e| WorkflowEngineError::InvalidWorkflow(format!("facet composition: {e}")))?;
+        let system_prompt = composed
+            .system_prompt
+            .map(|s| Self::render_facet_variables(&s, worktree_path, task));
+        let rendered_user = Self::render_facet_variables(&composed.user_message, worktree_path, task);
+        let prompt = Self::inject_step_outputs(&rendered_user, step, step_outputs, step_history);
+        Ok((system_prompt, prompt))
     }
 
-    fn project_name_from_worktree(worktree_path: &str) -> String {
-        Path::new(worktree_path)
+    /// ファセット内容中のテンプレート変数を展開する。
+    /// - `{{task}}` → タスク内容（未指定時はプレースホルダーをそのまま残す）
+    /// - `{{project_name}}` → worktree_pathの末尾ディレクトリ名
+    pub(crate) fn render_facet_variables(
+        content: &str,
+        worktree_path: &str,
+        task: Option<&str>,
+    ) -> String {
+        let project_name = Path::new(worktree_path)
             .file_name()
-            .and_then(|s| s.to_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or(worktree_path)
-            .to_string()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let result = content.replace("{{project_name}}", project_name);
+        match task {
+            Some(t) => result.replace("{{task}}", t),
+            None => result.replace("{{task}}", ""),
+        }
     }
 
     /// 現在のステップセッションからoutput_textを取得する。
@@ -1922,68 +1914,23 @@ mod tests {
         assert_eq!(text, "");
     }
 
-    // ---- prompt template rendering ----
-
-    #[test]
-    fn render_prompt_template_substitutes_project_name_from_worktree() {
-        let template = crate::workflow::prompt_schema::PromptTemplate {
-            name: "fixer".to_string(),
-            description: "Fix prompt".to_string(),
-            content: "{{project_name}} の問題を修正してください。".to_string(),
-            variables: vec![crate::workflow::prompt_schema::PromptVariable {
-                name: "project_name".to_string(),
-                description: "Project name".to_string(),
-                default: None,
-            }],
-            builtin: true,
-        };
-
-        let prompt = WorkflowEngine::render_prompt_template(&template, "/work/releash");
-
-        assert_eq!(prompt, "releash の問題を修正してください。");
-    }
-
-    #[test]
-    fn render_prompt_template_uses_variable_defaults() {
-        let template = crate::workflow::prompt_schema::PromptTemplate {
-            name: "custom".to_string(),
-            description: "Custom prompt".to_string(),
-            content: "対象: {{target}}".to_string(),
-            variables: vec![crate::workflow::prompt_schema::PromptVariable {
-                name: "target".to_string(),
-                description: "Target".to_string(),
-                default: Some("unit tests".to_string()),
-            }],
-            builtin: false,
-        };
-
-        let prompt = WorkflowEngine::render_prompt_template(&template, "/work/releash");
-
-        assert_eq!(prompt, "対象: unit tests");
-    }
-
-    #[test]
-    fn resolve_step_prompt_keeps_inline_prompt_when_template_file_is_missing() {
-        let prompt_ref =
-            StepPrompt::inline("この文字列はテンプレート名ではなく、そのまま送る").unwrap();
-        let prompt = WorkflowEngine::resolve_step_prompt(&prompt_ref, "/work/releash").unwrap();
-
-        assert_eq!(prompt, "この文字列はテンプレート名ではなく、そのまま送る");
-    }
-
     // ---- WorkflowExecution ----
 
     fn make_test_step(
         name: &str,
         mode: StepMode,
-        prompt: &str,
+        instruction: &str,
         rules: Vec<TransitionRule>,
         cycle_guard: Option<CycleGuard>,
     ) -> Step {
         Step {
             name: name.to_string(),
             mode,
-            prompt: StepPrompt::inline(prompt),
+            persona: None,
+            policy: None,
+            knowledge: None,
+            instruction: Some(instruction.to_string()),
+            output_contract: None,
             rules,
             cycle_guard,
             pass_previous_response: None,
@@ -2053,6 +2000,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
 
         let state = exec.to_workflow_state();
@@ -2082,6 +2030,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
         assert!(exec.is_active());
     }
@@ -2101,6 +2050,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
         assert!(exec.is_active());
     }
@@ -2120,6 +2070,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
         assert!(!exec.is_active());
     }
@@ -2141,6 +2092,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
         assert!(!exec.is_active());
     }
@@ -2160,6 +2112,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
         assert!(!exec.is_active());
     }
@@ -2182,6 +2135,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
@@ -2215,6 +2169,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(
@@ -2243,6 +2198,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Aborted);
@@ -2264,6 +2220,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            task: None,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Completed);
@@ -2353,6 +2310,7 @@ mod tests {
             updated_at: 1000.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
+            task: None,
         }
     }
 
@@ -3082,5 +3040,132 @@ mod tests {
         }];
         let result = WorkflowEngine::evaluate_auto_rules("LGTM", &rules);
         assert!(result.is_none());
+    }
+
+    // ---- render_facet_variables ----
+
+    #[test]
+    fn render_facet_variables_replaces_task_and_project_name() {
+        let content = "Task: {{task}}\nProject: {{project_name}}";
+        let result = WorkflowEngine::render_facet_variables(
+            content,
+            "/home/user/my-project",
+            Some("Fix bug"),
+        );
+        assert_eq!(result, "Task: Fix bug\nProject: my-project");
+    }
+
+    #[test]
+    fn render_facet_variables_task_none_replaces_with_empty() {
+        let content = "Do: {{task}}";
+        let result = WorkflowEngine::render_facet_variables(content, "/home/user/proj", None);
+        assert_eq!(result, "Do: ");
+    }
+
+    #[test]
+    fn render_facet_variables_no_variables_unchanged() {
+        let content = "No variables here";
+        let result =
+            WorkflowEngine::render_facet_variables(content, "/home/user/proj", Some("task"));
+        assert_eq!(result, "No variables here");
+    }
+
+    // ---- build_step_prompt ----
+
+    #[test]
+    fn build_step_prompt_full_pipeline() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path();
+        let personas = base.join("personas");
+        let instructions = base.join("instructions");
+        let policies = base.join("policies");
+        std::fs::create_dir_all(&personas).unwrap();
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::create_dir_all(&policies).unwrap();
+        std::fs::write(personas.join("coder.md"), "You are a coder for {{project_name}}.").unwrap();
+        std::fs::write(
+            instructions.join("impl.md"),
+            "Task: {{task}}\nImplement the feature.",
+        )
+        .unwrap();
+        std::fs::write(policies.join("coding.md"), "Follow best practices.").unwrap();
+
+        let mut step = make_test_step("build", StepMode::Auto, "unused", vec![], None);
+        step.persona = Some("coder".to_string());
+        step.instruction = Some("impl".to_string());
+        step.policy = Some("coding".to_string());
+        step.pass_previous_response = Some(true);
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "plan".to_string(),
+            make_step_output("plan", "Plan output text", None),
+        );
+        let history = vec![StepHistoryEntry {
+            step_name: "plan".to_string(),
+            completed_at: 2000.0,
+            result: None,
+            session_id: None,
+            token_usage: None,
+            output_text: None,
+            run_index: 0,
+        }];
+
+        let (sys, prompt) =
+            WorkflowEngine::build_step_prompt(&step, base, "/home/user/my-app", Some("Fix bug"), &outputs, &history)
+                .unwrap();
+
+        // persona → system_prompt with variable expansion
+        assert_eq!(sys.as_deref(), Some("You are a coder for my-app."));
+        // instruction + policy in order, with variable expansion
+        assert!(prompt.contains("Task: Fix bug"));
+        assert!(prompt.contains("Implement the feature."));
+        assert!(prompt.contains("Follow best practices."));
+        // inject_step_outputs: pass_previous_response includes plan output
+        assert!(prompt.contains("<step_output name=\"plan\">"));
+        assert!(prompt.contains("Plan output text"));
+    }
+
+    #[test]
+    fn build_step_prompt_no_facet_refs_returns_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let step = Step {
+            name: "empty".to_string(),
+            mode: StepMode::Auto,
+            persona: None,
+            policy: None,
+            knowledge: None,
+            instruction: None,
+            output_contract: None,
+            rules: vec![],
+            cycle_guard: None,
+            pass_previous_response: None,
+            pass_output_from: None,
+            collect: None,
+        };
+        let result =
+            WorkflowEngine::build_step_prompt(&step, tmp.path(), "/repo", None, &HashMap::new(), &[]);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no facet refs"));
+    }
+
+    #[test]
+    fn build_step_prompt_persona_only_system_prompt_set() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let personas = tmp.path().join("personas");
+        std::fs::create_dir_all(&personas).unwrap();
+        std::fs::write(personas.join("reviewer.md"), "You review code.").unwrap();
+
+        let mut step = make_test_step("review", StepMode::Auto, "unused", vec![], None);
+        step.persona = Some("reviewer".to_string());
+        step.instruction = None;
+
+        let (sys, prompt) =
+            WorkflowEngine::build_step_prompt(&step, tmp.path(), "/repo", None, &HashMap::new(), &[])
+                .unwrap();
+
+        assert_eq!(sys.as_deref(), Some("You review code."));
+        assert_eq!(prompt, "");
     }
 }
