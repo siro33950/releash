@@ -1114,7 +1114,8 @@ impl WorkflowEngine {
         let system_prompt = composed
             .system_prompt
             .map(|s| Self::render_facet_variables(&s, worktree_path, task));
-        let rendered_user = Self::render_facet_variables(&composed.user_message, worktree_path, task);
+        let rendered_user =
+            Self::render_facet_variables(&composed.user_message, worktree_path, task);
         let prompt = Self::inject_step_outputs(&rendered_user, step, step_outputs, step_history);
         Ok((system_prompt, prompt))
     }
@@ -3082,7 +3083,11 @@ mod tests {
         std::fs::create_dir_all(&personas).unwrap();
         std::fs::create_dir_all(&instructions).unwrap();
         std::fs::create_dir_all(&policies).unwrap();
-        std::fs::write(personas.join("coder.md"), "You are a coder for {{project_name}}.").unwrap();
+        std::fs::write(
+            personas.join("coder.md"),
+            "You are a coder for {{project_name}}.",
+        )
+        .unwrap();
         std::fs::write(
             instructions.join("impl.md"),
             "Task: {{task}}\nImplement the feature.",
@@ -3111,9 +3116,15 @@ mod tests {
             run_index: 0,
         }];
 
-        let (sys, prompt) =
-            WorkflowEngine::build_step_prompt(&step, base, "/home/user/my-app", Some("Fix bug"), &outputs, &history)
-                .unwrap();
+        let (sys, prompt) = WorkflowEngine::build_step_prompt(
+            &step,
+            base,
+            "/home/user/my-app",
+            Some("Fix bug"),
+            &outputs,
+            &history,
+        )
+        .unwrap();
 
         // persona → system_prompt with variable expansion
         assert_eq!(sys.as_deref(), Some("You are a coder for my-app."));
@@ -3143,8 +3154,14 @@ mod tests {
             pass_output_from: None,
             collect: None,
         };
-        let result =
-            WorkflowEngine::build_step_prompt(&step, tmp.path(), "/repo", None, &HashMap::new(), &[]);
+        let result = WorkflowEngine::build_step_prompt(
+            &step,
+            tmp.path(),
+            "/repo",
+            None,
+            &HashMap::new(),
+            &[],
+        );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("no facet refs"));
@@ -3161,9 +3178,15 @@ mod tests {
         step.persona = Some("reviewer".to_string());
         step.instruction = None;
 
-        let (sys, prompt) =
-            WorkflowEngine::build_step_prompt(&step, tmp.path(), "/repo", None, &HashMap::new(), &[])
-                .unwrap();
+        let (sys, prompt) = WorkflowEngine::build_step_prompt(
+            &step,
+            tmp.path(),
+            "/repo",
+            None,
+            &HashMap::new(),
+            &[],
+        )
+        .unwrap();
 
         assert_eq!(sys.as_deref(), Some("You review code."));
         assert_eq!(prompt, "");
