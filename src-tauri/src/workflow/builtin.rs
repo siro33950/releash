@@ -140,6 +140,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         content: include_str!("builtin_facets/policies/review.md"),
     },
     BuiltinFacetEntry {
+        kind: FacetKind::Knowledge,
+        key: "test-context",
+        content: include_str!("builtin_facets/knowledge/test-context.md"),
+    },
+    BuiltinFacetEntry {
         kind: FacetKind::Instruction,
         key: "plan",
         content: include_str!("builtin_facets/instructions/plan.md"),
@@ -173,6 +178,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "test-step",
         content: include_str!("builtin_facets/instructions/test-step.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::OutputContract,
+        key: "test-report",
+        content: include_str!("builtin_facets/output_contracts/test-report.md"),
     },
 ];
 

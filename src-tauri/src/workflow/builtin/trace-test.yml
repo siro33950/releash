@@ -1,5 +1,5 @@
 name: trace-test
-description: ワークフロー動作テスト用（全ファセット確認 + ループ）
+description: Workflow behavior test (all facets + loop)
 builtin: true
 
 steps:

@@ -226,14 +226,17 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 
 	const handleStart = useCallback(() => {
 		if (!selectedWorkflow) return;
-		setOpen(false);
-		setSelectedWorkflow(null);
-		setTaskInput("");
 		invoke("start_workflow", {
 			workflowName: selectedWorkflow,
 			chatSessionId,
 			task: taskInput.trim() || null,
-		}).catch((e) => console.warn("[WorkflowPanel] start_workflow failed", e));
+		})
+			.then(() => {
+				setOpen(false);
+				setSelectedWorkflow(null);
+				setTaskInput("");
+			})
+			.catch((e) => console.warn("[WorkflowPanel] start_workflow failed", e));
 	}, [selectedWorkflow, chatSessionId, taskInput]);
 
 	const handleBack = useCallback(() => {
