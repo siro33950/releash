@@ -1,5 +1,5 @@
 name: trace-test
-description: Workflow behavior test (all facets + loop)
+description: Workflow behavior test (all facets + loop + parallel)
 builtin: true
 
 steps:
@@ -22,15 +22,37 @@ steps:
       - match: NEEDS_FIX
         next: execute
       - match: DONE
-        next: confirm
+        next: parallel-check
     cycle_guard:
       max_iterations: 3
 
+  - name: parallel-check
+    parallel:
+      - name: check-a
+        mode: auto
+        persona: reviewer
+        instruction: test-step
+        knowledge: test-context
+        output_contract: test-report
+        pass_output_from:
+          - execute
+      - name: check-b
+        mode: auto
+        persona: coder
+        instruction: test-step
+        policy: coding
+        output_contract: test-report
+        pass_output_from:
+          - execute
+    aggregate:
+      all_match: DONE
+      then: confirm
+      else: execute
+
   - name: confirm
     mode: approval
-    persona: reviewer
+    persona: planner
     instruction: test-step
-    policy: review
     knowledge: test-context
     output_contract: test-report
     pass_previous_response: true

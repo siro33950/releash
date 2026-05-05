@@ -154,24 +154,31 @@ pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, Face
     Ok(keys)
 }
 
-pub fn compose_facets(step: &Step, base_dir: &Path) -> Result<ComposedPrompt, FacetError> {
-    let system_prompt = match &step.persona {
+pub fn compose_facets_from_refs(
+    persona: Option<&str>,
+    policy: Option<&str>,
+    knowledge: Option<&str>,
+    instruction: Option<&str>,
+    output_contract: Option<&str>,
+    base_dir: &Path,
+) -> Result<ComposedPrompt, FacetError> {
+    let system_prompt = match persona {
         Some(key) => Some(load_facet(FacetKind::Persona, key, base_dir)?),
         None => None,
     };
 
     let mut parts: Vec<String> = Vec::new();
 
-    if let Some(key) = &step.knowledge {
+    if let Some(key) = knowledge {
         parts.push(load_facet(FacetKind::Knowledge, key, base_dir)?);
     }
-    if let Some(key) = &step.instruction {
+    if let Some(key) = instruction {
         parts.push(load_facet(FacetKind::Instruction, key, base_dir)?);
     }
-    if let Some(key) = &step.output_contract {
+    if let Some(key) = output_contract {
         parts.push(load_facet(FacetKind::OutputContract, key, base_dir)?);
     }
-    if let Some(key) = &step.policy {
+    if let Some(key) = policy {
         parts.push(load_facet(FacetKind::Policy, key, base_dir)?);
     }
 
@@ -179,6 +186,17 @@ pub fn compose_facets(step: &Step, base_dir: &Path) -> Result<ComposedPrompt, Fa
         system_prompt,
         user_message: parts.join("\n\n"),
     })
+}
+
+pub fn compose_facets(step: &Step, base_dir: &Path) -> Result<ComposedPrompt, FacetError> {
+    compose_facets_from_refs(
+        step.persona.as_deref(),
+        step.policy.as_deref(),
+        step.knowledge.as_deref(),
+        step.instruction.as_deref(),
+        step.output_contract.as_deref(),
+        base_dir,
+    )
 }
 
 #[cfg(test)]
@@ -196,7 +214,7 @@ mod tests {
     ) -> Step {
         Step {
             name: "test".to_string(),
-            mode: StepMode::Auto,
+            mode: Some(StepMode::Auto),
             persona: persona.map(String::from),
             policy: policy.map(String::from),
             knowledge: knowledge.map(String::from),
@@ -207,6 +225,8 @@ mod tests {
             pass_previous_response: None,
             pass_output_from: None,
             collect: None,
+            parallel: None,
+            aggregate: None,
         }
     }
 

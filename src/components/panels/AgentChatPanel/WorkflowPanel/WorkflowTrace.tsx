@@ -6,10 +6,12 @@ import {
 	ChevronRight,
 	Circle,
 	Clock,
+	GitBranch,
 	Loader2,
 } from "lucide-react";
 import { useState } from "react";
 import type {
+	ParallelStepState,
 	Step,
 	StepHistoryEntry,
 	WorkflowLogEvent,
@@ -91,7 +93,7 @@ function CurrentAction({
 		state === "failed" && "reason" in workflowState.state
 			? workflowState.state.reason
 			: currentStep
-				? `${currentStep.mode} step`
+				? `${currentStep.parallel ? "parallel" : (currentStep.mode ?? "auto")} step`
 				: `${workflowState.stepHistory.length} recorded steps`;
 
 	return (
@@ -128,6 +130,15 @@ type TraceItem =
 			occurrence: number;
 			sessionId?: string;
 			state: "running" | "waiting_approval" | "failed";
+	  }
+	| {
+			kind: "parallel";
+			step: Step | undefined;
+			stepName: string;
+			occurrence: number;
+			childSteps: ParallelStepState[];
+			state: "running" | "completed";
+			entry?: StepHistoryEntry;
 	  };
 
 function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
@@ -138,9 +149,34 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 	const items: TraceItem[] = workflowState.stepHistory.map((entry) => {
 		const occurrence = (seenCounts.get(entry.stepName) ?? 0) + 1;
 		seenCounts.set(entry.stepName, occurrence);
+		const step = stepsByName.get(entry.stepName);
+
+		if (step?.parallel && step.parallel.length > 0) {
+			const childSteps: ParallelStepState[] = step.parallel.map((child) => {
+				const childOutput = workflowState.stepOutputs[child.name];
+				return {
+					stepName: child.name,
+					state: childOutput ? "completed" : "pending",
+					sessionId: childOutput?.sessionId,
+					result: childOutput?.result,
+					runIndex: childOutput?.runIndex ?? 1,
+					completedAt: childOutput?.completedAt,
+				};
+			});
+			return {
+				kind: "parallel" as const,
+				step,
+				stepName: entry.stepName,
+				occurrence,
+				childSteps,
+				state: "completed" as const,
+				entry,
+			};
+		}
+
 		return {
 			kind: "completed",
-			step: stepsByName.get(entry.stepName),
+			step,
 			stepName: entry.stepName,
 			occurrence,
 			entry,
@@ -160,14 +196,31 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 		const startedCount =
 			workflowState.stepExecutionCounts[workflowState.currentStepName] ??
 			completedCount + 1;
-		items.push({
-			kind: "current",
-			step: stepsByName.get(workflowState.currentStepName),
-			stepName: workflowState.currentStepName,
-			occurrence: Math.max(startedCount, completedCount + 1),
-			sessionId: workflowState.currentSessionId ?? workflowState.chatSessionId,
-			state,
-		});
+		const currentStep = stepsByName.get(workflowState.currentStepName);
+		const activeParallel = workflowState.activeParallelSteps;
+		if (currentStep?.parallel && activeParallel && activeParallel.length > 0) {
+			const allCompleted = activeParallel.every(
+				(ps) => ps.state === "completed" || ps.state === "failed",
+			);
+			items.push({
+				kind: "parallel",
+				step: currentStep,
+				stepName: workflowState.currentStepName,
+				occurrence: Math.max(startedCount, completedCount + 1),
+				childSteps: activeParallel,
+				state: allCompleted ? "completed" : "running",
+			});
+		} else {
+			items.push({
+				kind: "current",
+				step: currentStep,
+				stepName: workflowState.currentStepName,
+				occurrence: Math.max(startedCount, completedCount + 1),
+				sessionId:
+					workflowState.currentSessionId ?? workflowState.chatSessionId,
+				state,
+			});
+		}
 	}
 
 	return items;
@@ -176,6 +229,9 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 function traceItemKey(item: TraceItem, index: number) {
 	if (item.kind === "completed") {
 		return `${item.stepName}-${item.occurrence}-${item.entry.completedAt}-${item.entry.sessionId ?? item.entry.result ?? "done"}`;
+	}
+	if (item.kind === "parallel") {
+		return `parallel-${item.stepName}-${item.occurrence}-${item.state}`;
 	}
 	return `${item.stepName}-${item.occurrence}-${item.state}-${index}`;
 }
@@ -191,6 +247,17 @@ function TraceItemRow({
 	isLast: boolean;
 	onSessionClick?: (sessionId: string) => void;
 }) {
+	if (item.kind === "parallel") {
+		return (
+			<ParallelBlockRow
+				item={item}
+				index={index}
+				isLast={isLast}
+				onSessionClick={onSessionClick}
+			/>
+		);
+	}
+
 	const stepMode = item.step?.mode ?? "unknown";
 
 	return (
@@ -237,6 +304,133 @@ function TraceItemRow({
 	);
 }
 
+function ParallelBlockRow({
+	item,
+	index,
+	isLast,
+	onSessionClick,
+}: {
+	item: Extract<TraceItem, { kind: "parallel" }>;
+	index: number;
+	isLast: boolean;
+	onSessionClick?: (sessionId: string) => void;
+}) {
+	const completedCount = item.childSteps.filter(
+		(cs) => cs.state === "completed",
+	).length;
+	const totalCount = item.childSteps.length;
+	const tokenTotal = item.entry?.tokenUsage
+		? item.entry.tokenUsage.inputTokens + item.entry.tokenUsage.outputTokens
+		: null;
+
+	return (
+		<div className="grid grid-cols-[24px_1fr] gap-2">
+			<div className="flex flex-col items-center">
+				<div
+					className={`mt-2 flex size-5 items-center justify-center rounded-full border ${stateClasses[item.state] ?? stateClasses.pending}`}
+				>
+					{item.state === "running" ? (
+						<Loader2 className="size-3 animate-spin" />
+					) : (
+						<CheckCircle2 className="size-3" />
+					)}
+				</div>
+				{!isLast && <div className="w-px flex-1 min-h-4 bg-border" />}
+			</div>
+			<div
+				className={`mb-2 rounded-md border px-3 py-2 ${
+					item.state === "running"
+						? "border-primary/60 bg-primary/5"
+						: "border-border"
+				}`}
+			>
+				<div className="flex items-start justify-between gap-3">
+					<div className="min-w-0">
+						<div className="flex items-center gap-2">
+							<GitBranch className="size-3.5 text-muted-foreground" />
+							<span className="text-sm font-medium truncate">
+								{item.stepName}
+							</span>
+							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+								parallel
+							</span>
+							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+								#{index + 1}
+							</span>
+							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+								run {item.occurrence}
+							</span>
+						</div>
+						<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+							<span>
+								{completedCount}/{totalCount} completed
+							</span>
+							{item.entry?.result && <span>Result: {item.entry.result}</span>}
+							{tokenTotal != null && (
+								<span className="shrink-0">{tokenTotal} tokens</span>
+							)}
+						</div>
+					</div>
+					<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+						{item.state}
+					</span>
+				</div>
+				<div className="mt-2 flex flex-col gap-1 pl-2 border-l-2 border-border">
+					{item.childSteps.map((child) => (
+						<ParallelChildRow
+							key={`${child.stepName}-${child.runIndex}`}
+							child={child}
+							onSessionClick={onSessionClick}
+						/>
+					))}
+				</div>
+				{item.entry?.outputText && (
+					<div className="mt-2">
+						<OutputTextToggle text={item.entry.outputText} />
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
+
+function ParallelChildRow({
+	child,
+	onSessionClick,
+}: {
+	child: ParallelStepState;
+	onSessionClick?: (sessionId: string) => void;
+}) {
+	return (
+		<div className="flex items-center gap-2 rounded px-2 py-1 text-xs">
+			<div
+				className={`flex size-4 items-center justify-center rounded-full border ${stateClasses[child.state] ?? stateClasses.pending}`}
+			>
+				<StateIcon state={child.state} />
+			</div>
+			<span className="min-w-0 flex-1 truncate font-medium">
+				{child.stepName}
+			</span>
+			{child.result && (
+				<span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
+					{child.result}
+				</span>
+			)}
+			{child.sessionId && onSessionClick && (
+				<button
+					type="button"
+					className="shrink-0 text-primary hover:underline"
+					onClick={() => {
+						if (child.sessionId) onSessionClick(child.sessionId);
+					}}
+				>
+					View
+				</button>
+			)}
+		</div>
+	);
+}
+
 function StateIcon({ state }: { state: string }) {
 	if (state === "running") return <Loader2 className="size-3 animate-spin" />;
 	if (state === "completed") return <CheckCircle2 className="size-3" />;
@@ -250,7 +444,7 @@ function TraceItemSummary({
 	item,
 	onSessionClick,
 }: {
-	item: TraceItem;
+	item: Exclude<TraceItem, { kind: "parallel" }>;
 	onSessionClick?: (sessionId: string) => void;
 }) {
 	if (item.kind === "completed") {

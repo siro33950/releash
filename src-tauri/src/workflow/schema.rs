@@ -12,7 +12,8 @@ pub struct Workflow {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Step {
     pub name: String,
-    pub mode: StepMode,
+    #[serde(default)]
+    pub mode: Option<StepMode>,
     #[serde(default)]
     pub persona: Option<String>,
     #[serde(default)]
@@ -33,16 +34,95 @@ pub struct Step {
     pub pass_output_from: Option<Vec<String>>,
     #[serde(default)]
     pub collect: Option<CollectConfig>,
+    #[serde(default)]
+    pub parallel: Option<Vec<ParallelStep>>,
+    #[serde(default)]
+    pub aggregate: Option<AggregateConfig>,
+}
+
+fn has_any_facet_ref(
+    persona: &Option<String>,
+    policy: &Option<String>,
+    knowledge: &Option<String>,
+    instruction: &Option<String>,
+    output_contract: &Option<String>,
+) -> bool {
+    persona.is_some()
+        || policy.is_some()
+        || knowledge.is_some()
+        || instruction.is_some()
+        || output_contract.is_some()
 }
 
 impl Step {
     pub fn has_facet_refs(&self) -> bool {
-        self.persona.is_some()
-            || self.policy.is_some()
-            || self.knowledge.is_some()
-            || self.instruction.is_some()
-            || self.output_contract.is_some()
+        has_any_facet_ref(
+            &self.persona,
+            &self.policy,
+            &self.knowledge,
+            &self.instruction,
+            &self.output_contract,
+        )
     }
+
+    /// validation通過後の通常stepではSomeが保証される。
+    /// parallel blockではpanicするため、呼び出し前にis_parallel_block()で確認すること。
+    pub fn mode_unwrap(&self) -> &StepMode {
+        self.mode
+            .as_ref()
+            .expect("mode is required for non-parallel steps")
+    }
+
+    /// このステップがparallel blockかどうかを返す。
+    pub fn is_parallel_block(&self) -> bool {
+        self.parallel.is_some()
+    }
+}
+
+/// 並列ブロック内の子ステップ定義。
+/// 通常Stepとは別型で、許可するフィールドを制限する。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ParallelStep {
+    pub name: String,
+    pub mode: StepMode,
+    #[serde(default)]
+    pub persona: Option<String>,
+    #[serde(default)]
+    pub policy: Option<String>,
+    #[serde(default)]
+    pub knowledge: Option<String>,
+    #[serde(default)]
+    pub instruction: Option<String>,
+    #[serde(default)]
+    pub output_contract: Option<String>,
+    #[serde(default)]
+    pub pass_previous_response: Option<bool>,
+    #[serde(default)]
+    pub pass_output_from: Option<Vec<String>>,
+}
+
+impl ParallelStep {
+    pub fn has_facet_refs(&self) -> bool {
+        has_any_facet_ref(
+            &self.persona,
+            &self.policy,
+            &self.knowledge,
+            &self.instruction,
+            &self.output_contract,
+        )
+    }
+}
+
+/// 並列ブロック完了後の集約条件。
+/// all_matchとany_matchは排他（どちらか一方を必須）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AggregateConfig {
+    #[serde(default)]
+    pub all_match: Option<String>,
+    #[serde(default)]
+    pub any_match: Option<String>,
+    pub then: String,
+    pub r#else: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -134,7 +214,7 @@ steps:
 
         let plan = &wf.steps[0];
         assert_eq!(plan.name, "plan");
-        assert_eq!(plan.mode, StepMode::Interactive);
+        assert_eq!(plan.mode, Some(StepMode::Interactive));
         assert_eq!(plan.persona.as_deref(), Some("planner"));
         assert_eq!(plan.instruction.as_deref(), Some("plan"));
         assert!(plan.rules.is_empty());
@@ -142,7 +222,7 @@ steps:
 
         let review = &wf.steps[2];
         assert_eq!(review.name, "review");
-        assert_eq!(review.mode, StepMode::Auto);
+        assert_eq!(review.mode, Some(StepMode::Auto));
         assert_eq!(review.rules.len(), 2);
         assert_eq!(review.rules[0].r#match, "NEEDS_FIX");
         assert_eq!(review.rules[0].next, "implement");
@@ -151,7 +231,7 @@ steps:
         assert_eq!(review.cycle_guard.as_ref().unwrap().max_iterations, 5);
 
         let report = &wf.steps[3];
-        assert_eq!(report.mode, StepMode::Approval);
+        assert_eq!(report.mode, Some(StepMode::Approval));
     }
 
     #[test]
@@ -289,7 +369,7 @@ steps:
     fn step_without_facet_refs() {
         let step = Step {
             name: "collect".to_string(),
-            mode: StepMode::Auto,
+            mode: Some(StepMode::Auto),
             persona: None,
             policy: None,
             knowledge: None,
@@ -303,7 +383,91 @@ steps:
                 from: vec!["a".to_string()],
                 reduce: ReduceStrategy::Concat,
             }),
+            parallel: None,
+            aggregate: None,
         };
         assert!(!step.has_facet_refs());
+    }
+
+    #[test]
+    fn parse_parallel_block() {
+        let yaml = r#"
+name: parallel-test
+description: parallel block test
+steps:
+  - name: implement
+    mode: auto
+    instruction: implement
+  - name: parallel-review
+    parallel:
+      - name: arch-review
+        mode: auto
+        persona: reviewer
+        instruction: architecture-review
+      - name: security-review
+        mode: auto
+        persona: reviewer
+        instruction: security-review
+    aggregate:
+      all_match: "LGTM"
+      then: report
+      else: implement
+  - name: report
+    mode: auto
+    instruction: report
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(wf.steps.len(), 3);
+
+        let parallel_step = &wf.steps[1];
+        assert_eq!(parallel_step.name, "parallel-review");
+        assert!(parallel_step.is_parallel_block());
+        assert_eq!(parallel_step.mode, None);
+
+        let children = parallel_step.parallel.as_ref().unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].name, "arch-review");
+        assert_eq!(children[0].mode, StepMode::Auto);
+        assert_eq!(children[0].persona.as_deref(), Some("reviewer"));
+        assert_eq!(
+            children[0].instruction.as_deref(),
+            Some("architecture-review")
+        );
+        assert_eq!(children[1].name, "security-review");
+
+        let agg = parallel_step.aggregate.as_ref().unwrap();
+        assert_eq!(agg.all_match.as_deref(), Some("LGTM"));
+        assert!(agg.any_match.is_none());
+        assert_eq!(agg.then, "report");
+        assert_eq!(agg.r#else, "implement");
+    }
+
+    #[test]
+    fn parallel_step_has_facet_refs() {
+        let ps = ParallelStep {
+            name: "review".to_string(),
+            mode: StepMode::Auto,
+            persona: Some("reviewer".to_string()),
+            policy: None,
+            knowledge: None,
+            instruction: Some("review".to_string()),
+            output_contract: None,
+            pass_previous_response: None,
+            pass_output_from: None,
+        };
+        assert!(ps.has_facet_refs());
+
+        let ps_no_facet = ParallelStep {
+            name: "empty".to_string(),
+            mode: StepMode::Auto,
+            persona: None,
+            policy: None,
+            knowledge: None,
+            instruction: None,
+            output_contract: None,
+            pass_previous_response: None,
+            pass_output_from: None,
+        };
+        assert!(!ps_no_facet.has_facet_refs());
     }
 }

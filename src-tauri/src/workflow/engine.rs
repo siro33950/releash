@@ -11,9 +11,13 @@ use crate::agent_sdk::AgentProcessMap;
 use crate::agent_status::{current_timestamp, AgentStatusCenter};
 use crate::session::SessionStore;
 use crate::workflow::log::{WorkflowEventLog, WorkflowLogEvent};
-use crate::workflow::schema::{CollectConfig, ReduceStrategy, StepMode, TransitionRule, Workflow};
+use crate::workflow::schema::{
+    AggregateConfig, CollectConfig, ParallelStep, ReduceStrategy, StepMode, TransitionRule,
+    Workflow,
+};
 use crate::workflow::state::{
-    StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState, WorkflowState,
+    ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
+    WorkflowState,
 };
 use crate::workflow::storage;
 
@@ -95,6 +99,52 @@ struct WorkflowExecution {
     step_outputs: HashMap<String, StepOutput>,
     /// ワークフロー実行時のタスク内容（テンプレート変数 {{task}} の展開に使用）。
     task: Option<String>,
+    /// 並列実行中の場合の状態。
+    parallel_run: Option<ParallelRunState>,
+}
+
+/// 並列実行中の内部状態。
+struct ParallelRunState {
+    parent_step_name: String,
+    aggregate: Option<AggregateConfig>,
+    children: Vec<ParallelChildRun>,
+}
+
+/// 並列子ステップの実行状態。
+struct ParallelChildRun {
+    step_name: String,
+    session_id: String,
+    state: ParallelChildState,
+    result: Option<String>,
+    output_text: Option<String>,
+    token_usage: TokenUsage,
+    run_index: u32,
+}
+
+/// 並列子ステップの状態。
+#[derive(Clone, PartialEq)]
+enum ParallelChildState {
+    Running,
+    Completed,
+    Failed,
+}
+
+/// session_workflow_refsの値型。セッションの種別情報を保持する。
+#[derive(Clone)]
+struct SessionWorkflowRef {
+    worktree_path: String,
+    kind: SessionRefKind,
+}
+
+/// セッションの種別。
+#[derive(Clone, PartialEq)]
+enum SessionRefKind {
+    /// 親セッション（ワークフロー開始元のChatSession）
+    Parent,
+    /// 逐次実行中のステップセッション
+    SequentialStep,
+    /// 並列実行中の子ステップセッション
+    ParallelChild { parent_step_name: String },
 }
 
 impl WorkflowExecution {
@@ -205,9 +255,32 @@ impl WorkflowExecution {
             total_token_usage,
             step_states,
             step_outputs: self.step_outputs.clone(),
+            active_parallel_steps: self.build_active_parallel_steps(),
             started_at: self.started_at,
             updated_at: self.updated_at,
         }
+    }
+
+    /// parallel_runからactive_parallel_stepsを生成する。
+    fn build_active_parallel_steps(&self) -> Vec<ParallelStepState> {
+        let Some(ref pr) = self.parallel_run else {
+            return vec![];
+        };
+        pr.children
+            .iter()
+            .map(|child| ParallelStepState {
+                step_name: child.step_name.clone(),
+                state: match child.state {
+                    ParallelChildState::Running => "running".to_string(),
+                    ParallelChildState::Completed => "completed".to_string(),
+                    ParallelChildState::Failed => "failed".to_string(),
+                },
+                session_id: Some(child.session_id.clone()),
+                result: child.result.clone(),
+                run_index: child.run_index,
+                completed_at: None,
+            })
+            .collect()
     }
 
     /// 現在のステップの完了履歴エントリを生成し、トークン使用量をリセットする。
@@ -319,7 +392,7 @@ impl WorkflowExecution {
             };
         }
 
-        match step.mode {
+        match step.mode_unwrap() {
             StepMode::Auto => TurnCompleteAction::AutoEvaluate {
                 rules: step.rules.clone(),
                 step_name: step.name.clone(),
@@ -361,7 +434,7 @@ impl WorkflowExecution {
             ));
         }
         let step = &self.workflow.steps[self.current_step_index];
-        if step.mode != StepMode::Interactive {
+        if step.mode_unwrap() != &StepMode::Interactive {
             return Err(WorkflowEngineError::InvalidState(
                 "Current step is not interactive mode".to_string(),
             ));
@@ -407,6 +480,8 @@ enum StepOutcome {
     TransitionAndStart(WorkflowState),
     /// collect仮想stepに遷移し、reduce処理を実行する
     ReduceAndTransition(WorkflowState),
+    /// 並列ブロックに遷移し、子ステップを並列起動する
+    StartParallel(WorkflowState),
 }
 
 /// reduce処理の結果。
@@ -419,15 +494,15 @@ struct ReduceResult {
 pub struct WorkflowEngine {
     /// worktree_path → WorkflowExecution のマッピング
     executions: Mutex<HashMap<String, WorkflowExecution>>,
-    /// session_id（親・ステップ両方） → worktree_path のマッピング
-    session_worktree_map: Mutex<HashMap<String, String>>,
+    /// session_id（親・ステップ・並列子） → SessionWorkflowRef のマッピング
+    session_workflow_refs: Mutex<HashMap<String, SessionWorkflowRef>>,
 }
 
 impl WorkflowEngine {
     pub fn new() -> Self {
         Self {
             executions: Mutex::new(HashMap::new()),
-            session_worktree_map: Mutex::new(HashMap::new()),
+            session_workflow_refs: Mutex::new(HashMap::new()),
         }
     }
 
@@ -469,6 +544,7 @@ impl WorkflowEngine {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task,
+            parallel_run: None,
         };
 
         // validate_start → insert → スナップショット確定を同一ロックで原子的に実行
@@ -481,10 +557,16 @@ impl WorkflowEngine {
             execs.get(&worktree_path).unwrap().to_workflow_state()
         };
 
-        // session_worktree_map に親セッションIDを登録
+        // session_workflow_refs に親セッションIDを登録
         {
-            let mut map = self.session_worktree_map.lock().await;
-            map.insert(chat_session_id.to_string(), worktree_path.clone());
+            let mut map = self.session_workflow_refs.lock().await;
+            map.insert(
+                chat_session_id.to_string(),
+                SessionWorkflowRef {
+                    worktree_path: worktree_path.clone(),
+                    kind: SessionRefKind::Parent,
+                },
+            );
         }
 
         // 永続化・ブロードキャスト（ロック内で確定したスナップショットを使用）
@@ -495,7 +577,7 @@ impl WorkflowEngine {
             let mut execs = self.executions.lock().await;
             execs.remove(&worktree_path);
             drop(execs);
-            self.cleanup_session_worktree_map(&worktree_path).await;
+            self.cleanup_session_workflow_refs(&worktree_path).await;
             return Err(e);
         }
         self.broadcast_state(app, &worktree_path, snapshot.clone());
@@ -512,42 +594,67 @@ impl WorkflowEngine {
                 timestamp: now,
             },
         );
-        self.write_log(
-            app,
-            WorkflowLogEvent::StepStarted {
-                execution_id: snapshot.execution_id,
-                workflow_name: snapshot.workflow_name,
-                step_name: step_name.clone(),
-                execution_count: 1,
-                timestamp: now,
-            },
-        );
+        // 最初のステップが並列ブロックかどうかで分岐
+        let first_step_is_parallel = workflow.steps[0].is_parallel_block();
 
-        // 最初のステップのAgentSession開始＋プロンプト送信
-        // 失敗時はFailed状態に遷移して永続化する
-        if let Err(e) = self
-            .start_step_session(app, handles, session_store, &worktree_path)
-            .await
-        {
+        if first_step_is_parallel {
+            // 並列ブロック → start_parallel_children を呼ぶ
+            // (StepStartedログは書かず、start_parallel_children内でParallelStarted等を記録)
+            if let Err(e) = self
+                .start_parallel_children(app, session_store, handles, &worktree_path)
+                .await
             {
-                let mut execs = self.executions.lock().await;
-                if let Some(exec) = execs.get_mut(&worktree_path) {
-                    let entry = exec
-                        .make_step_history_entry(Some(format!("session_start_failed: {e}")), None);
-                    exec.step_history.push(entry);
-                }
+                let _ = self
+                    .set_execution_state(
+                        app,
+                        session_store,
+                        &worktree_path,
+                        WorkflowExecutionState::Failed {
+                            reason: format!("Failed to start parallel children: {e}"),
+                        },
+                    )
+                    .await;
+                return Err(e);
             }
-            let _ = self
-                .set_execution_state(
-                    app,
-                    session_store,
-                    &worktree_path,
-                    WorkflowExecutionState::Failed {
-                        reason: format!("Failed to start step session: {e}"),
-                    },
-                )
-                .await;
-            return Err(e);
+        } else {
+            // 逐次ステップ → StepStartedログ + start_step_session
+            self.write_log(
+                app,
+                WorkflowLogEvent::StepStarted {
+                    execution_id: snapshot.execution_id,
+                    workflow_name: snapshot.workflow_name,
+                    step_name: step_name.clone(),
+                    execution_count: 1,
+                    timestamp: now,
+                },
+            );
+
+            if let Err(e) = self
+                .start_step_session(app, handles, session_store, &worktree_path)
+                .await
+            {
+                {
+                    let mut execs = self.executions.lock().await;
+                    if let Some(exec) = execs.get_mut(&worktree_path) {
+                        let entry = exec.make_step_history_entry(
+                            Some(format!("session_start_failed: {e}")),
+                            None,
+                        );
+                        exec.step_history.push(entry);
+                    }
+                }
+                let _ = self
+                    .set_execution_state(
+                        app,
+                        session_store,
+                        &worktree_path,
+                        WorkflowExecutionState::Failed {
+                            reason: format!("Failed to start step session: {e}"),
+                        },
+                    )
+                    .await;
+                return Err(e);
+            }
         }
         Ok(())
     }
@@ -567,10 +674,28 @@ impl WorkflowEngine {
         final_parts: &[crate::session::MessagePart],
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
-        // session_id から worktree_path を解決（ワークフロー既終了なら何もしない）
-        let Some(worktree_path) = self.resolve_worktree_path(session_id).await else {
+        // session_id からSessionWorkflowRefを解決（ワークフロー既終了なら何もしない）
+        let Some(session_ref) = self.resolve_session_ref(session_id).await else {
             return Ok(());
         };
+        let worktree_path = session_ref.worktree_path.clone();
+
+        // 並列子ステップからの完了通知の場合は専用ハンドラに委譲
+        if let SessionRefKind::ParallelChild { parent_step_name } = &session_ref.kind {
+            return self
+                .handle_parallel_child_complete(
+                    app,
+                    session_store,
+                    handles,
+                    &worktree_path,
+                    session_id,
+                    parent_step_name,
+                    exit_code,
+                    final_parts,
+                    token_usage,
+                )
+                .await;
+        }
 
         // 判定 + 状態変更を原子的に実行（AutoEvaluate以外）
         let (chat_session_id, action_or_outcome) = {
@@ -788,7 +913,7 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
-        let current_step_session_id;
+        let (current_step_session_id, parallel_session_ids);
         {
             let execs = self.executions.lock().await;
             let exec = execs
@@ -800,11 +925,25 @@ impl WorkflowEngine {
                 return Ok(());
             }
             current_step_session_id = exec.current_session_id.clone();
+            parallel_session_ids = exec.parallel_run.as_ref().map(|pr| {
+                pr.children
+                    .iter()
+                    .filter(|c| c.state == ParallelChildState::Running)
+                    .map(|c| c.session_id.clone())
+                    .collect::<Vec<_>>()
+            });
         }
 
         // 実行中のステップセッションを中断
         if let Some(ref step_sid) = current_step_session_id {
             self.interrupt_agent(handles, step_sid).await;
+        }
+
+        // 並列子ステップのセッションも中断
+        if let Some(session_ids) = parallel_session_ids {
+            for sid in &session_ids {
+                self.interrupt_agent(handles, sid).await;
+            }
         }
 
         self.set_execution_state(
@@ -816,10 +955,352 @@ impl WorkflowEngine {
         .await
     }
 
-    /// 指定worktree_pathに関連する session_worktree_map エントリを削除する。
-    async fn cleanup_session_worktree_map(&self, worktree_path: &str) {
-        let mut map = self.session_worktree_map.lock().await;
-        map.retain(|_, wt| wt != worktree_path);
+    /// 並列子ステップの完了を処理する。
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_parallel_child_complete(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        session_id: &str,
+        _parent_step_name: &str,
+        exit_code: i64,
+        final_parts: &[crate::session::MessagePart],
+        token_usage: Option<(u64, u64)>,
+    ) -> Result<(), WorkflowEngineError> {
+        // 子ステップのoutput_textを取得
+        let output_text = {
+            let text = Self::extract_text_from_parts(final_parts);
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        };
+
+        // ロック内: 子ステップの状態更新 + 全完了チェック
+        let (chat_session_id, all_completed, outcome_opt) = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs
+                .get_mut(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+
+            if exec.is_terminal() {
+                return Ok(());
+            }
+
+            let chat_session_id = exec.chat_session_id.clone();
+            let pr = exec.parallel_run.as_mut().ok_or_else(|| {
+                WorkflowEngineError::InvalidState("No parallel_run active".to_string())
+            })?;
+
+            // 対象の子ステップを見つけて更新
+            let child = pr
+                .children
+                .iter_mut()
+                .find(|c| c.session_id == session_id)
+                .ok_or_else(|| {
+                    WorkflowEngineError::InvalidState(format!(
+                        "Parallel child session '{session_id}' not found"
+                    ))
+                })?;
+
+            if let Some((input, output)) = token_usage {
+                child.token_usage.add(&TokenUsage {
+                    input_tokens: input,
+                    output_tokens: output,
+                });
+            }
+
+            if exit_code != 0 {
+                // 子ステップ失敗 → ワークフロー全体をFailed
+                child.state = ParallelChildState::Failed;
+                let child_name = child.step_name.clone();
+
+                // 他の実行中子ステップをinterruptするためのIDを集める
+                let running_ids: Vec<String> = pr
+                    .children
+                    .iter()
+                    .filter(|c| c.state == ParallelChildState::Running)
+                    .map(|c| c.session_id.clone())
+                    .collect();
+
+                exec.state = WorkflowExecutionState::Failed {
+                    reason: format!(
+                        "Parallel child '{}' failed (exit_code: {})",
+                        child_name, exit_code
+                    ),
+                };
+                exec.updated_at = current_timestamp();
+                let snapshot = exec.to_workflow_state();
+                drop(execs);
+
+                // 他の子ステップをinterrupt
+                for sid in &running_ids {
+                    self.interrupt_agent(handles, sid).await;
+                }
+
+                self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
+                    .await?;
+                self.broadcast_state(app, worktree_path, snapshot.clone());
+                self.write_terminal_log(app, &snapshot);
+                self.cleanup_session_workflow_refs(worktree_path).await;
+                return Ok(());
+            }
+
+            // 成功
+            child.state = ParallelChildState::Completed;
+            child.result = None;
+            child.output_text = output_text.clone();
+            let child_name = child.step_name.clone();
+            let child_token_usage = child.token_usage.clone();
+            let child_run_index = child.run_index;
+
+            // step_outputsに登録（空出力でも登録してevaluate_aggregateが正しく動作するように）
+            let truncated = output_text
+                .as_ref()
+                .map(|ot| truncate_output(ot.clone()))
+                .unwrap_or_default();
+            exec.step_outputs.insert(
+                child_name.clone(),
+                StepOutput {
+                    step_name: child_name.clone(),
+                    run_index: child_run_index,
+                    session_id: Some(session_id.to_string()),
+                    result: None,
+                    output_text: truncated,
+                    token_usage: Some(child_token_usage.clone()),
+                    completed_at: current_timestamp(),
+                },
+            );
+
+            // ParallelStepCompleted ログ
+            self.write_log(
+                app,
+                WorkflowLogEvent::ParallelStepCompleted {
+                    execution_id: exec.id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    parent_step_name: pr.parent_step_name.clone(),
+                    child_step_name: child_name,
+                    result: None,
+                    session_id: session_id.to_string(),
+                    token_usage: Some(child_token_usage),
+                    output_text: output_text.map(truncate_output),
+                    run_index: child_run_index,
+                    timestamp: current_timestamp(),
+                },
+            );
+
+            // 全完了チェック
+            let all_done = pr
+                .children
+                .iter()
+                .all(|c| c.state == ParallelChildState::Completed);
+
+            if !all_done {
+                // まだ未完了の子がある → ブロードキャストのみ
+                exec.updated_at = current_timestamp();
+                let snapshot = exec.to_workflow_state();
+                (chat_session_id, false, Some(StepOutcome::Persist(snapshot)))
+            } else {
+                // 全完了 → 親ブロック名でstep_outputsに集約登録 + aggregate評価 + 遷移
+                let aggregate = pr.aggregate.clone();
+                let parent_step_name = pr.parent_step_name.clone();
+                let child_step_names: Vec<String> =
+                    pr.children.iter().map(|c| c.step_name.clone()).collect();
+
+                // 親ブロック名で集約StepOutputを登録（pass_previous_response等で参照可能にする）
+                let parent_run_index = exec
+                    .step_execution_counts
+                    .get(&parent_step_name)
+                    .copied()
+                    .unwrap_or(1);
+                let mut combined_text = String::new();
+                let mut combined_tokens = TokenUsage::default();
+                for child in &pr.children {
+                    if !combined_text.is_empty() {
+                        combined_text.push_str("\n\n---\n\n");
+                    }
+                    combined_text.push_str(&format!("## {}\n\n", child.step_name));
+                    if let Some(ref ot) = child.output_text {
+                        combined_text.push_str(ot);
+                    }
+                    combined_tokens.add(&child.token_usage);
+                }
+                exec.step_outputs.insert(
+                    parent_step_name.clone(),
+                    StepOutput {
+                        step_name: parent_step_name.clone(),
+                        run_index: parent_run_index,
+                        session_id: None,
+                        result: None,
+                        output_text: truncate_output(combined_text),
+                        token_usage: Some(combined_tokens),
+                        completed_at: current_timestamp(),
+                    },
+                );
+
+                exec.parallel_run = None;
+                exec.updated_at = current_timestamp();
+
+                let outcome = if let Some(ref agg) = aggregate {
+                    // aggregate評価
+                    let agg_result =
+                        self.evaluate_aggregate(agg, &exec.step_outputs, &child_step_names);
+                    let target = if agg_result { &agg.then } else { &agg.r#else };
+
+                    // ParallelCompleted ログ
+                    self.write_log(
+                        app,
+                        WorkflowLogEvent::ParallelCompleted {
+                            execution_id: exec.id.clone(),
+                            workflow_name: exec.workflow.name.clone(),
+                            parent_step_name: parent_step_name.clone(),
+                            aggregate_result: if agg_result {
+                                "then".to_string()
+                            } else {
+                                "else".to_string()
+                            },
+                            timestamp: current_timestamp(),
+                        },
+                    );
+
+                    // 履歴エントリ追加（並列ブロックの完了として）
+                    // step_outputsの集約データからoutput_text/token_usageを取得
+                    let combined = exec.step_outputs.get(&parent_step_name);
+                    let entry = StepHistoryEntry {
+                        step_name: parent_step_name.clone(),
+                        completed_at: current_timestamp(),
+                        result: Some(if agg_result {
+                            "then".to_string()
+                        } else {
+                            "else".to_string()
+                        }),
+                        session_id: None,
+                        token_usage: combined.and_then(|o| o.token_usage.clone()),
+                        output_text: combined.map(|o| o.output_text.clone()),
+                        run_index: parent_run_index,
+                    };
+                    exec.current_step_token_usage = TokenUsage::default();
+                    exec.current_session_id = None;
+                    exec.step_history.push(entry);
+
+                    Self::apply_transition(exec, target)?
+                } else {
+                    // aggregateなし → 通常のadvance
+
+                    // ParallelCompleted ログ
+                    self.write_log(
+                        app,
+                        WorkflowLogEvent::ParallelCompleted {
+                            execution_id: exec.id.clone(),
+                            workflow_name: exec.workflow.name.clone(),
+                            parent_step_name: parent_step_name.clone(),
+                            aggregate_result: "advance".to_string(),
+                            timestamp: current_timestamp(),
+                        },
+                    );
+
+                    let combined = exec.step_outputs.get(&parent_step_name);
+                    let entry = StepHistoryEntry {
+                        step_name: parent_step_name.clone(),
+                        completed_at: current_timestamp(),
+                        result: Some("complete".to_string()),
+                        session_id: None,
+                        token_usage: combined.and_then(|o| o.token_usage.clone()),
+                        output_text: combined.map(|o| o.output_text.clone()),
+                        run_index: parent_run_index,
+                    };
+                    exec.current_step_token_usage = TokenUsage::default();
+                    exec.current_session_id = None;
+                    exec.step_history.push(entry);
+
+                    Self::apply_advance(exec)
+                };
+                (chat_session_id, true, Some(outcome))
+            }
+        };
+
+        if let Some(outcome) = outcome_opt {
+            if all_completed {
+                self.execute_outcome(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    &chat_session_id,
+                    outcome,
+                )
+                .await?;
+            } else {
+                // まだ完了していない → Persistのみ
+                if let StepOutcome::Persist(snapshot) = outcome {
+                    self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
+                        .await?;
+                    self.broadcast_state(app, worktree_path, snapshot);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// aggregate条件を評価する。trueなら`then`、falseなら`else`。
+    /// child_step_namesで指定された並列子ステップの出力のみを対象にする。
+    /// result優先、未設定時はoutput_textでregex fallback。
+    fn evaluate_aggregate(
+        &self,
+        agg: &AggregateConfig,
+        step_outputs: &HashMap<String, StepOutput>,
+        child_step_names: &[String],
+    ) -> bool {
+        let child_outputs: Vec<&StepOutput> = child_step_names
+            .iter()
+            .filter_map(|name| step_outputs.get(name))
+            .collect();
+
+        let matches_pattern = |output: &&StepOutput, pattern: &str, re: &Option<regex::Regex>| {
+            if let Some(ref result) = output.result {
+                if let Some(ref re) = re {
+                    re.is_match(result)
+                } else {
+                    result.contains(pattern)
+                }
+            } else if !output.output_text.is_empty() {
+                if let Some(ref re) = re {
+                    re.is_match(&output.output_text)
+                } else {
+                    output.output_text.contains(pattern)
+                }
+            } else {
+                false
+            }
+        };
+
+        if let Some(ref pattern) = agg.all_match {
+            // all_match: 子ステップのStepOutputが1つでも欠けていればfalse
+            if child_outputs.len() != child_step_names.len() {
+                return false;
+            }
+            let re = RegexBuilder::new(pattern).size_limit(1 << 20).build().ok();
+            child_outputs
+                .iter()
+                .all(|o| matches_pattern(o, pattern, &re))
+        } else if let Some(ref pattern) = agg.any_match {
+            let re = RegexBuilder::new(pattern).size_limit(1 << 20).build().ok();
+            child_outputs
+                .iter()
+                .any(|o| matches_pattern(o, pattern, &re))
+        } else {
+            true
+        }
+    }
+
+    /// 指定worktree_pathに関連する session_workflow_refs エントリを削除する。
+    async fn cleanup_session_workflow_refs(&self, worktree_path: &str) {
+        let mut map = self.session_workflow_refs.lock().await;
+        map.retain(|_, r| r.worktree_path != worktree_path);
     }
 
     /// 状態取得。worktree_pathで直接検索する。
@@ -838,9 +1319,15 @@ impl WorkflowEngine {
     }
 
     /// セッションIDからworktree_pathを解決する。
-    /// session_worktree_mapに登録されていない場合はNoneを返す。
+    /// session_workflow_refsに登録されていない場合はNoneを返す。
     async fn resolve_worktree_path(&self, session_id: &str) -> Option<String> {
-        let map = self.session_worktree_map.lock().await;
+        let map = self.session_workflow_refs.lock().await;
+        map.get(session_id).map(|r| r.worktree_path.clone())
+    }
+
+    /// セッションIDからSessionWorkflowRefを解決する。
+    async fn resolve_session_ref(&self, session_id: &str) -> Option<SessionWorkflowRef> {
+        let map = self.session_workflow_refs.lock().await;
         map.get(session_id).cloned()
     }
 
@@ -880,7 +1367,7 @@ impl WorkflowEngine {
                 self.write_last_step_completed_log(app, &snapshot);
             }
             self.write_terminal_log(app, &snapshot);
-            self.cleanup_session_worktree_map(worktree_path).await;
+            self.cleanup_session_workflow_refs(worktree_path).await;
         }
         Ok(())
     }
@@ -1043,10 +1530,16 @@ impl WorkflowEngine {
                 })?;
         let step_session_id = step_session.id.clone();
 
-        // ステップセッションID → worktree_pathのマッピングを登録
+        // ステップセッションID → SessionWorkflowRefのマッピングを登録
         {
-            let mut map = self.session_worktree_map.lock().await;
-            map.insert(step_session_id.clone(), worktree_path.to_string());
+            let mut map = self.session_workflow_refs.lock().await;
+            map.insert(
+                step_session_id.clone(),
+                SessionWorkflowRef {
+                    worktree_path: worktree_path.to_string(),
+                    kind: SessionRefKind::SequentialStep,
+                },
+            );
         }
 
         // AgentSession開始（ステップ用セッションIDを使用、ファセット方式ではsystem_promptを渡す）
@@ -1399,7 +1892,10 @@ impl WorkflowEngine {
                 exec.state = WorkflowExecutionState::Running;
                 *exec.step_execution_counts.entry(name).or_insert(0) += 1;
                 exec.updated_at = current_timestamp();
-                if exec.workflow.steps[idx].collect.is_some() {
+                let step = &exec.workflow.steps[idx];
+                if step.is_parallel_block() {
+                    StepOutcome::StartParallel(exec.to_workflow_state())
+                } else if step.collect.is_some() {
                     StepOutcome::ReduceAndTransition(exec.to_workflow_state())
                 } else {
                     StepOutcome::TransitionAndStart(exec.to_workflow_state())
@@ -1453,7 +1949,10 @@ impl WorkflowEngine {
                     .entry(target_step_name.to_string())
                     .or_insert(0) += 1;
                 exec.updated_at = current_timestamp();
-                if exec.workflow.steps[idx].collect.is_some() {
+                let step = &exec.workflow.steps[idx];
+                if step.is_parallel_block() {
+                    Ok(StepOutcome::StartParallel(exec.to_workflow_state()))
+                } else if step.collect.is_some() {
                     Ok(StepOutcome::ReduceAndTransition(exec.to_workflow_state()))
                 } else {
                     Ok(StepOutcome::TransitionAndStart(exec.to_workflow_state()))
@@ -1489,7 +1988,7 @@ impl WorkflowEngine {
                         self.write_last_step_completed_log(app, &snapshot);
                     }
                     self.write_terminal_log(app, &snapshot);
-                    self.cleanup_session_worktree_map(worktree_path).await;
+                    self.cleanup_session_workflow_refs(worktree_path).await;
                 }
                 Ok(())
             }
@@ -1649,7 +2148,323 @@ impl WorkflowEngine {
                 ))
                 .await
             }
+            StepOutcome::StartParallel(snapshot) => {
+                self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+                    .await?;
+                self.broadcast_state(app, worktree_path, snapshot.clone());
+
+                // 直前ステップの完了ログ
+                self.write_last_step_completed_log(app, &snapshot);
+
+                // 並列子ステップの起動（失敗時はFailed状態に遷移）
+                if let Err(e) = self
+                    .start_parallel_children(app, session_store, handles, worktree_path)
+                    .await
+                {
+                    let _ = self
+                        .set_execution_state(
+                            app,
+                            session_store,
+                            worktree_path,
+                            WorkflowExecutionState::Failed {
+                                reason: format!("Failed to start parallel children: {e}"),
+                            },
+                        )
+                        .await;
+                    return Err(e);
+                }
+                Ok(())
+            }
         }
+    }
+
+    /// 並列ブロックの子ステップをすべて起動する。
+    #[allow(clippy::too_many_arguments)]
+    async fn start_parallel_children(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        // ロック内: 子ステップ定義取得 + ParallelRunState構築
+        let (
+            parallel_steps,
+            parent_step_name,
+            aggregate,
+            execution_id,
+            workflow_name,
+            chat_session_id,
+            task_clone,
+        ) = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs
+                .get_mut(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+
+            let step = &exec.workflow.steps[exec.current_step_index];
+            let parallel = step
+                .parallel
+                .clone()
+                .expect("StartParallel requires parallel field");
+            let agg = step.aggregate.clone();
+            let parent_name = step.name.clone();
+            let exec_id = exec.id.clone();
+            let wf_name = exec.workflow.name.clone();
+            let chat_sid = exec.chat_session_id.clone();
+            let task = exec.task.clone();
+
+            (parallel, parent_name, agg, exec_id, wf_name, chat_sid, task)
+        };
+
+        // ParallelStarted ログ
+        let child_step_names: Vec<String> =
+            parallel_steps.iter().map(|ps| ps.name.clone()).collect();
+        self.write_log(
+            app,
+            WorkflowLogEvent::ParallelStarted {
+                execution_id: execution_id.clone(),
+                workflow_name: workflow_name.clone(),
+                parent_step_name: parent_step_name.clone(),
+                child_step_names: child_step_names.clone(),
+                timestamp: current_timestamp(),
+            },
+        );
+
+        // 各子ステップのセッション生成 + AgentSession起動
+        let data_dir = crate::session::resolve_data_dir(app)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
+
+        let parent_session = session_store
+            .get_session(&data_dir, &chat_session_id)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
+            .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.clone()))?;
+        let permission_mode = parent_session.permission_mode;
+
+        // step_outputsのスナップショットをロック外で取得
+        let step_outputs_snapshot = {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            exec.step_outputs.clone()
+        };
+
+        // Phase 1: セッション生成 + ref登録 + プロンプト構築（AgentSessionはまだ起動しない）
+        struct ChildSetup {
+            step_name: String,
+            session_id: String,
+            system_prompt: Option<String>,
+            user_message: String,
+        }
+        let mut child_setups: Vec<ChildSetup> = Vec::new();
+
+        for ps in &parallel_steps {
+            let step_session =
+                crate::session::create_session_internal(session_store, &data_dir, worktree_path)
+                    .map_err(|e| {
+                        WorkflowEngineError::SessionStore(format!("create parallel session: {e}"))
+                    })?;
+            let step_session_id = step_session.id.clone();
+
+            // session_workflow_refs に ParallelChild として登録
+            {
+                let mut map = self.session_workflow_refs.lock().await;
+                map.insert(
+                    step_session_id.clone(),
+                    SessionWorkflowRef {
+                        worktree_path: worktree_path.to_string(),
+                        kind: SessionRefKind::ParallelChild {
+                            parent_step_name: parent_step_name.clone(),
+                        },
+                    },
+                );
+            }
+
+            // ファセットからプロンプト構築
+            let (system_prompt, user_message) = self.build_parallel_step_prompt(
+                ps,
+                worktree_path,
+                task_clone.as_deref(),
+                &step_outputs_snapshot,
+                ps.pass_previous_response.unwrap_or(false),
+                ps.pass_output_from.as_deref(),
+            )?;
+
+            child_setups.push(ChildSetup {
+                step_name: ps.name.clone(),
+                session_id: step_session_id,
+                system_prompt,
+                user_message,
+            });
+        }
+
+        // Phase 2: ParallelRunState を先に設定（レース条件防止）
+        // step_execution_countsをインクリメントし、run_indexに反映する
+        let (child_run_indices, snapshot) = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs
+                .get_mut(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+
+            let indices: Vec<u32> = child_setups
+                .iter()
+                .map(|cs| {
+                    let count = exec
+                        .step_execution_counts
+                        .entry(cs.step_name.clone())
+                        .or_insert(0);
+                    *count += 1;
+                    *count
+                })
+                .collect();
+
+            let children: Vec<ParallelChildRun> = child_setups
+                .iter()
+                .zip(indices.iter())
+                .map(|(cs, &run_index)| ParallelChildRun {
+                    step_name: cs.step_name.clone(),
+                    session_id: cs.session_id.clone(),
+                    state: ParallelChildState::Running,
+                    result: None,
+                    output_text: None,
+                    token_usage: TokenUsage::default(),
+                    run_index,
+                })
+                .collect();
+
+            exec.parallel_run = Some(ParallelRunState {
+                parent_step_name: parent_step_name.clone(),
+                aggregate,
+                children,
+            });
+            let snap = exec.to_workflow_state();
+
+            (indices, snap)
+        };
+        // ロック解放後にI/O操作を実行
+        self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
+            .await?;
+        self.broadcast_state(app, worktree_path, snapshot);
+
+        // Phase 3a: 全子セッション作成（AgentSessionプロセス起動）
+        // Note: AppHandleが!Sendのためtokio::spawnによる真の並列化は不可能。
+        // セッション作成とターン開始を分離し、全セッション準備完了後に
+        // 全ターンを開始することで「ほぼ同時起動」を実現する。
+        for cs in &child_setups {
+            crate::agent_sdk::start_agent_session_internal(
+                app,
+                handles,
+                session_store,
+                &cs.session_id,
+                worktree_path,
+                None,
+                cs.system_prompt.clone(),
+            )
+            .await
+            .map_err(|e| {
+                WorkflowEngineError::AgentSession(format!(
+                    "Failed to start parallel child '{}': {e}",
+                    cs.step_name
+                ))
+            })?;
+        }
+
+        // Phase 3b: 全子ターン開始（ここが実際のAgent作業トリガー）
+        let mut started_session_ids: Vec<String> = Vec::new();
+        for (i, cs) in child_setups.iter().enumerate() {
+            if let Err(e) = crate::agent_sdk::start_agent_turn_internal(
+                app,
+                handles,
+                session_store,
+                &cs.session_id,
+                worktree_path,
+                &permission_mode,
+                &cs.user_message,
+            )
+            .await
+            {
+                // 開始済み子セッションを中断してからエラーを返す
+                for sid in &started_session_ids {
+                    self.interrupt_agent(handles, sid).await;
+                }
+                return Err(WorkflowEngineError::AgentSession(format!(
+                    "Failed to start turn for parallel child '{}': {e}",
+                    cs.step_name
+                )));
+            }
+            started_session_ids.push(cs.session_id.clone());
+
+            // ParallelStepStarted ログ
+            self.write_log(
+                app,
+                WorkflowLogEvent::ParallelStepStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: workflow_name.clone(),
+                    parent_step_name: parent_step_name.clone(),
+                    child_step_name: cs.step_name.clone(),
+                    session_id: cs.session_id.clone(),
+                    execution_count: child_run_indices[i],
+                    timestamp: current_timestamp(),
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    /// 並列子ステップ用のプロンプトを構築する。
+    fn build_parallel_step_prompt(
+        &self,
+        ps: &ParallelStep,
+        worktree_path: &str,
+        task: Option<&str>,
+        step_outputs: &HashMap<String, StepOutput>,
+        pass_previous_response: bool,
+        pass_output_from: Option<&[String]>,
+    ) -> Result<(Option<String>, String), WorkflowEngineError> {
+        let base_dir = storage::facets_base_dir();
+        let composed = crate::workflow::facet::compose_facets_from_refs(
+            ps.persona.as_deref(),
+            ps.policy.as_deref(),
+            ps.knowledge.as_deref(),
+            ps.instruction.as_deref(),
+            ps.output_contract.as_deref(),
+            &base_dir,
+        )
+        .map_err(|e| WorkflowEngineError::InvalidWorkflow(format!("Facet error: {e}")))?;
+
+        let system_prompt = composed
+            .system_prompt
+            .map(|s| Self::render_facet_variables(&s, worktree_path, task));
+        let mut user_message =
+            Self::render_facet_variables(&composed.user_message, worktree_path, task);
+
+        // pass_output_from による出力注入
+        if let Some(from_steps) = pass_output_from {
+            let mut injections = Vec::new();
+            for step_name in from_steps {
+                if let Some(output) = step_outputs.get(step_name) {
+                    injections.push(format!(
+                        "<step_output name=\"{step_name}\">\n{}\n</step_output>",
+                        output.output_text
+                    ));
+                }
+            }
+            if !injections.is_empty() {
+                user_message = format!("{}\n\n{}", injections.join("\n\n"), user_message);
+            }
+        } else if pass_previous_response {
+            // 直前ステップの出力を注入（逐次ステップの最後の出力）
+            if let Some(last_output) = step_outputs.values().max_by_key(|o| o.completed_at as u64) {
+                user_message = format!(
+                    "<step_output name=\"{}\">\n{}\n</step_output>\n\n{}",
+                    last_output.step_name, last_output.output_text, user_message
+                );
+            }
+        }
+
+        Ok((system_prompt, user_message))
     }
 
     /// ワークフロー状態をChatSessionに永続化する。
@@ -1926,7 +2741,7 @@ mod tests {
     ) -> Step {
         Step {
             name: name.to_string(),
-            mode,
+            mode: Some(mode),
             persona: None,
             policy: None,
             knowledge: None,
@@ -1937,6 +2752,8 @@ mod tests {
             pass_previous_response: None,
             pass_output_from: None,
             collect: None,
+            parallel: None,
+            aggregate: None,
         }
     }
 
@@ -2002,6 +2819,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
 
         let state = exec.to_workflow_state();
@@ -2032,6 +2850,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
         assert!(exec.is_active());
     }
@@ -2052,6 +2871,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
         assert!(exec.is_active());
     }
@@ -2072,6 +2892,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
         assert!(!exec.is_active());
     }
@@ -2094,6 +2915,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
         assert!(!exec.is_active());
     }
@@ -2114,6 +2936,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
         assert!(!exec.is_active());
     }
@@ -2137,6 +2960,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
@@ -2171,6 +2995,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(
@@ -2200,6 +3025,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Aborted);
@@ -2222,6 +3048,7 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
             task: None,
+            parallel_run: None,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Completed);
@@ -2312,6 +3139,7 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             task: None,
+            parallel_run: None,
         }
     }
 
@@ -3142,7 +3970,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let step = Step {
             name: "empty".to_string(),
-            mode: StepMode::Auto,
+            mode: Some(StepMode::Auto),
             persona: None,
             policy: None,
             knowledge: None,
@@ -3153,6 +3981,8 @@ mod tests {
             pass_previous_response: None,
             pass_output_from: None,
             collect: None,
+            parallel: None,
+            aggregate: None,
         };
         let result = WorkflowEngine::build_step_prompt(
             &step,
@@ -3190,5 +4020,237 @@ mod tests {
 
         assert_eq!(sys.as_deref(), Some("You review code."));
         assert_eq!(prompt, "");
+    }
+
+    // ---- evaluate_aggregate ----
+
+    #[test]
+    fn evaluate_aggregate_all_match_all_children_match() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: Some("LGTM".to_string()),
+            any_match: None,
+            then: "report".to_string(),
+            r#else: "implement".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "looks good", Some("LGTM")),
+        );
+        outputs.insert(
+            "security-review".to_string(),
+            make_step_output("security-review", "no issues", Some("LGTM")),
+        );
+        // 逐次ステップの出力（フィルタで除外されるべき）
+        outputs.insert(
+            "implement".to_string(),
+            make_step_output("implement", "done", Some("DONE")),
+        );
+        let children = vec!["arch-review".to_string(), "security-review".to_string()];
+        assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_all_match_one_child_mismatch() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: Some("LGTM".to_string()),
+            any_match: None,
+            then: "report".to_string(),
+            r#else: "implement".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "ok", Some("LGTM")),
+        );
+        outputs.insert(
+            "security-review".to_string(),
+            make_step_output("security-review", "problems", Some("NEEDS_FIX")),
+        );
+        let children = vec!["arch-review".to_string(), "security-review".to_string()];
+        assert!(!engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_any_match_one_child_matches() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: None,
+            any_match: Some("NEEDS_FIX".to_string()),
+            then: "implement".to_string(),
+            r#else: "report".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "ok", Some("LGTM")),
+        );
+        outputs.insert(
+            "security-review".to_string(),
+            make_step_output("security-review", "problems", Some("NEEDS_FIX")),
+        );
+        let children = vec!["arch-review".to_string(), "security-review".to_string()];
+        assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_any_match_no_child_matches() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: None,
+            any_match: Some("NEEDS_FIX".to_string()),
+            then: "implement".to_string(),
+            r#else: "report".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "ok", Some("LGTM")),
+        );
+        outputs.insert(
+            "security-review".to_string(),
+            make_step_output("security-review", "ok", Some("LGTM")),
+        );
+        let children = vec!["arch-review".to_string(), "security-review".to_string()];
+        assert!(!engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_no_condition_returns_true() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: None,
+            any_match: None,
+            then: "next".to_string(),
+            r#else: "fallback".to_string(),
+        };
+        let outputs = HashMap::new();
+        let children: Vec<String> = vec![];
+        assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_output_text_fallback_when_result_is_none() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: Some("LGTM".to_string()),
+            any_match: None,
+            then: "report".to_string(),
+            r#else: "implement".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        // result=None, output_textにLGTMが含まれる
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "Review result: LGTM", None),
+        );
+        outputs.insert(
+            "security-review".to_string(),
+            make_step_output("security-review", "All good. LGTM", None),
+        );
+        let children = vec!["arch-review".to_string(), "security-review".to_string()];
+        assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_filters_only_child_steps() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: Some("LGTM".to_string()),
+            any_match: None,
+            then: "report".to_string(),
+            r#else: "implement".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "", Some("LGTM")),
+        );
+        // 逐次ステップがLGTMでなくても結果に影響しない
+        outputs.insert(
+            "implement".to_string(),
+            make_step_output("implement", "done", Some("DONE")),
+        );
+        let children = vec!["arch-review".to_string()];
+        assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_all_match_missing_child_output_returns_false() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: Some("LGTM".to_string()),
+            any_match: None,
+            then: "report".to_string(),
+            r#else: "implement".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        // arch-reviewの出力のみ（security-reviewはまだ未完了で出力なし）
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "ok", Some("LGTM")),
+        );
+        let children = vec!["arch-review".to_string(), "security-review".to_string()];
+        // 子step出力が欠けている場合はfalse
+        assert!(!engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_invalid_regex_falls_back_to_contains() {
+        let engine = WorkflowEngine::new();
+        // 不正なregexパターン（validationで弾かれるべきだが、エンジン側もgraceful）
+        let agg = AggregateConfig {
+            all_match: Some("[invalid(regex".to_string()),
+            any_match: None,
+            then: "report".to_string(),
+            r#else: "implement".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        // output_textに"[invalid(regex"を含む（containsでマッチ可能）
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "has [invalid(regex inside", None),
+        );
+        let children = vec!["arch-review".to_string()];
+        // regex compile失敗 → contains fallbackでマッチ
+        assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_invalid_regex_contains_no_match() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: Some("[invalid(regex".to_string()),
+            any_match: None,
+            then: "report".to_string(),
+            r#else: "implement".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        // output_textに"[invalid(regex"を含まない
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "LGTM", None),
+        );
+        let children = vec!["arch-review".to_string()];
+        // regex compile失敗 → contains fallbackでもマッチしない
+        assert!(!engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    #[test]
+    fn evaluate_aggregate_empty_children_all_match_returns_true() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: Some("LGTM".to_string()),
+            any_match: None,
+            then: "report".to_string(),
+            r#else: "implement".to_string(),
+        };
+        let outputs = HashMap::new();
+        let children: Vec<String> = vec![];
+        // 空childrenの場合: child_outputs.len()==0, child_step_names.len()==0 → 等しいので
+        // all()が空イテレータでtrueを返す
+        assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
     }
 }

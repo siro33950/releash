@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::workflow::schema::Workflow;
 use crate::workflow::state::{
-    StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState, WorkflowState,
+    ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
+    WorkflowState,
 };
 
 /// NDJSONログに書き込むイベントの種類。
@@ -82,6 +83,44 @@ pub enum WorkflowLogEvent {
         reduce_text: String,
         timestamp: f64,
     },
+    ParallelStarted {
+        execution_id: String,
+        workflow_name: String,
+        parent_step_name: String,
+        child_step_names: Vec<String>,
+        timestamp: f64,
+    },
+    ParallelStepStarted {
+        execution_id: String,
+        workflow_name: String,
+        parent_step_name: String,
+        child_step_name: String,
+        session_id: String,
+        execution_count: u32,
+        timestamp: f64,
+    },
+    ParallelStepCompleted {
+        execution_id: String,
+        workflow_name: String,
+        parent_step_name: String,
+        child_step_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_usage: Option<TokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_text: Option<String>,
+        run_index: u32,
+        timestamp: f64,
+    },
+    ParallelCompleted {
+        execution_id: String,
+        workflow_name: String,
+        parent_step_name: String,
+        aggregate_result: String,
+        timestamp: f64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,7 +160,11 @@ impl WorkflowEventLog {
             | WorkflowLogEvent::WorkflowCompleted { execution_id, .. }
             | WorkflowLogEvent::WorkflowFailed { execution_id, .. }
             | WorkflowLogEvent::WorkflowAborted { execution_id, .. }
-            | WorkflowLogEvent::OutputCollected { execution_id, .. } => execution_id,
+            | WorkflowLogEvent::OutputCollected { execution_id, .. }
+            | WorkflowLogEvent::ParallelStarted { execution_id, .. }
+            | WorkflowLogEvent::ParallelStepStarted { execution_id, .. }
+            | WorkflowLogEvent::ParallelStepCompleted { execution_id, .. }
+            | WorkflowLogEvent::ParallelCompleted { execution_id, .. } => execution_id,
         };
 
         let path = self.log_path(execution_id);
@@ -193,6 +236,7 @@ impl WorkflowEventLog {
             .unwrap_or_default();
         let mut current_step_index = 0usize;
         let mut workflow_name = String::new();
+        let mut active_parallel_steps: Vec<ParallelStepState> = Vec::new();
 
         for event in events {
             match event {
@@ -293,6 +337,82 @@ impl WorkflowEventLog {
                 WorkflowLogEvent::OutputCollected { timestamp, .. } => {
                     updated_at = *timestamp;
                 }
+                WorkflowLogEvent::ParallelStarted {
+                    parent_step_name,
+                    timestamp,
+                    ..
+                } => {
+                    current_step_name = parent_step_name.clone();
+                    current_step_index = workflow
+                        .steps
+                        .iter()
+                        .position(|s| s.name == *parent_step_name)
+                        .unwrap_or(current_step_index);
+                    active_parallel_steps.clear();
+                    updated_at = *timestamp;
+                }
+                WorkflowLogEvent::ParallelStepStarted {
+                    child_step_name,
+                    session_id,
+                    execution_count,
+                    timestamp,
+                    ..
+                } => {
+                    step_execution_counts.insert(child_step_name.clone(), *execution_count);
+                    active_parallel_steps.push(ParallelStepState {
+                        step_name: child_step_name.clone(),
+                        state: "running".to_string(),
+                        session_id: Some(session_id.clone()),
+                        result: None,
+                        run_index: *execution_count,
+                        completed_at: None,
+                    });
+                    updated_at = *timestamp;
+                }
+                WorkflowLogEvent::ParallelStepCompleted {
+                    child_step_name,
+                    result,
+                    session_id,
+                    token_usage,
+                    output_text,
+                    run_index,
+                    timestamp,
+                    ..
+                } => {
+                    // active_parallel_stepsの該当エントリを更新
+                    if let Some(ps) = active_parallel_steps
+                        .iter_mut()
+                        .find(|p| p.step_name == *child_step_name)
+                    {
+                        ps.state = "completed".to_string();
+                        ps.result = result.clone();
+                        ps.completed_at = Some(*timestamp);
+                    }
+                    // step_historyへの追加はParallelCompletedで親ブロックとして合成する
+                    // （ライブ実行と同じ構造にするため）
+                    step_outputs.insert(
+                        child_step_name.clone(),
+                        StepOutput {
+                            step_name: child_step_name.clone(),
+                            run_index: *run_index,
+                            session_id: Some(session_id.clone()),
+                            result: result.clone(),
+                            output_text: output_text.clone().unwrap_or_default(),
+                            token_usage: token_usage.clone(),
+                            completed_at: *timestamp,
+                        },
+                    );
+                    if let Some(ref usage) = token_usage {
+                        total_token_usage.add(usage);
+                    }
+                    updated_at = *timestamp;
+                }
+                WorkflowLogEvent::ParallelCompleted { timestamp, .. } => {
+                    // step_historyへの追加は後続のStepCompletedが正本。
+                    // ここではactive_parallel_stepsのクリアのみ行う。
+                    active_parallel_steps.clear();
+                    updated_at = *timestamp;
+                }
             }
         }
 
@@ -318,6 +438,7 @@ impl WorkflowEventLog {
             total_token_usage,
             step_outputs,
             step_states,
+            active_parallel_steps,
             started_at,
             updated_at,
         }))
@@ -543,6 +664,44 @@ mod tests {
                 reduce_text: "## s1\noutput".to_string(),
                 timestamp: 8.0,
             },
+            WorkflowLogEvent::ParallelStarted {
+                execution_id: "e1".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                child_step_names: vec!["arch-review".to_string(), "security-review".to_string()],
+                timestamp: 9.0,
+            },
+            WorkflowLogEvent::ParallelStepStarted {
+                execution_id: "e1".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                child_step_name: "arch-review".to_string(),
+                session_id: "sess-1".to_string(),
+                execution_count: 1,
+                timestamp: 10.0,
+            },
+            WorkflowLogEvent::ParallelStepCompleted {
+                execution_id: "e1".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                child_step_name: "arch-review".to_string(),
+                result: None,
+                session_id: "sess-1".to_string(),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 50,
+                    output_tokens: 25,
+                }),
+                output_text: Some("LGTM".to_string()),
+                run_index: 0,
+                timestamp: 11.0,
+            },
+            WorkflowLogEvent::ParallelCompleted {
+                execution_id: "e1".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                aggregate_result: "then".to_string(),
+                timestamp: 12.0,
+            },
         ];
 
         for event in &events {
@@ -562,7 +721,7 @@ mod tests {
             steps: vec![
                 Step {
                     name: "plan".to_string(),
-                    mode: crate::workflow::schema::StepMode::Auto,
+                    mode: Some(crate::workflow::schema::StepMode::Auto),
                     rules: vec![],
                     cycle_guard: None,
                     persona: None,
@@ -573,10 +732,12 @@ mod tests {
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,
+                    parallel: None,
+                    aggregate: None,
                 },
                 Step {
                     name: "implement".to_string(),
-                    mode: crate::workflow::schema::StepMode::Auto,
+                    mode: Some(crate::workflow::schema::StepMode::Auto),
                     rules: vec![TransitionRule {
                         r#match: "review".to_string(),
                         next: "review".to_string(),
@@ -590,10 +751,12 @@ mod tests {
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,
+                    parallel: None,
+                    aggregate: None,
                 },
                 Step {
                     name: "review".to_string(),
-                    mode: crate::workflow::schema::StepMode::Approval,
+                    mode: Some(crate::workflow::schema::StepMode::Approval),
                     rules: vec![],
                     cycle_guard: Some(CycleGuard { max_iterations: 3 }),
                     persona: None,
@@ -604,6 +767,8 @@ mod tests {
                     pass_previous_response: None,
                     pass_output_from: None,
                     collect: None,
+                    parallel: None,
+                    aggregate: None,
                 },
             ],
         }
@@ -778,5 +943,235 @@ mod tests {
         );
         assert_eq!(state.step_states["plan"], "failed");
         assert_eq!(state.step_states["implement"], "pending");
+    }
+
+    /// 並列ブロックを含むワークフローのNDJSON復元テスト。
+    /// ParallelCompleted + StepCompleted で親ステップが重複しないことを検証する。
+    #[test]
+    fn reconstruct_state_parallel_block_no_duplicate_history() {
+        use crate::workflow::schema::{AggregateConfig, ParallelStep, Step, StepMode};
+
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+
+        let wf = Workflow {
+            name: "parallel-wf".to_string(),
+            description: "".to_string(),
+            builtin: false,
+            steps: vec![
+                Step {
+                    name: "plan".to_string(),
+                    mode: Some(StepMode::Auto),
+                    rules: vec![],
+                    cycle_guard: None,
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("plan".to_string()),
+                    output_contract: None,
+                    pass_previous_response: None,
+                    pass_output_from: None,
+                    collect: None,
+                    parallel: None,
+                    aggregate: None,
+                },
+                Step {
+                    name: "parallel-review".to_string(),
+                    mode: Some(StepMode::Auto),
+                    rules: vec![],
+                    cycle_guard: None,
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: None,
+                    output_contract: None,
+                    pass_previous_response: None,
+                    pass_output_from: None,
+                    collect: None,
+                    parallel: Some(vec![
+                        ParallelStep {
+                            name: "arch-review".to_string(),
+                            mode: StepMode::Auto,
+                            persona: None,
+                            policy: None,
+                            knowledge: None,
+                            instruction: Some("arch".to_string()),
+                            output_contract: None,
+                            pass_previous_response: None,
+                            pass_output_from: None,
+                        },
+                        ParallelStep {
+                            name: "security-review".to_string(),
+                            mode: StepMode::Auto,
+                            persona: None,
+                            policy: None,
+                            knowledge: None,
+                            instruction: Some("security".to_string()),
+                            output_contract: None,
+                            pass_previous_response: None,
+                            pass_output_from: None,
+                        },
+                    ]),
+                    aggregate: Some(AggregateConfig {
+                        all_match: Some("LGTM".to_string()),
+                        any_match: None,
+                        then: "_complete".to_string(),
+                        r#else: "_complete".to_string(),
+                    }),
+                },
+            ],
+        };
+
+        // NDJSON: plan完了 → 並列開始 → 子2つ完了 → ParallelCompleted → StepCompleted(親)
+        let events = vec![
+            WorkflowLogEvent::WorkflowStarted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                workflow_file_stem: "parallel-wf".to_string(),
+                worktree_path: "/repo".to_string(),
+                workflow_definition: None,
+                timestamp: 1000.0,
+            },
+            WorkflowLogEvent::StepStarted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                step_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowLogEvent::StepCompleted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                step_name: "plan".to_string(),
+                result: Some("done".to_string()),
+                session_id: Some("sess-plan".to_string()),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                }),
+                output_text: Some("plan output".to_string()),
+                run_index: Some(1),
+                timestamp: 1002.0,
+            },
+            WorkflowLogEvent::ParallelStarted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                child_step_names: vec!["arch-review".to_string(), "security-review".to_string()],
+                timestamp: 1003.0,
+            },
+            WorkflowLogEvent::ParallelStepStarted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                child_step_name: "arch-review".to_string(),
+                session_id: "sess-arch".to_string(),
+                execution_count: 1,
+                timestamp: 1004.0,
+            },
+            WorkflowLogEvent::ParallelStepStarted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                child_step_name: "security-review".to_string(),
+                session_id: "sess-sec".to_string(),
+                execution_count: 1,
+                timestamp: 1004.0,
+            },
+            WorkflowLogEvent::ParallelStepCompleted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                child_step_name: "arch-review".to_string(),
+                result: Some("LGTM".to_string()),
+                session_id: "sess-arch".to_string(),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 200,
+                    output_tokens: 100,
+                }),
+                output_text: Some("arch review output".to_string()),
+                run_index: 1,
+                timestamp: 1005.0,
+            },
+            WorkflowLogEvent::ParallelStepCompleted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                child_step_name: "security-review".to_string(),
+                result: Some("LGTM".to_string()),
+                session_id: "sess-sec".to_string(),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 150,
+                    output_tokens: 75,
+                }),
+                output_text: Some("security review output".to_string()),
+                run_index: 1,
+                timestamp: 1006.0,
+            },
+            WorkflowLogEvent::ParallelCompleted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                parent_step_name: "parallel-review".to_string(),
+                aggregate_result: "then".to_string(),
+                timestamp: 1007.0,
+            },
+            // engine.rsのwrite_last_step_completed_logが親ステップのStepCompletedを出力
+            WorkflowLogEvent::StepCompleted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                step_name: "parallel-review".to_string(),
+                result: Some("then".to_string()),
+                session_id: None,
+                token_usage: Some(TokenUsage {
+                    input_tokens: 350,
+                    output_tokens: 175,
+                }),
+                output_text: Some("combined output".to_string()),
+                run_index: Some(1),
+                timestamp: 1007.0,
+            },
+            WorkflowLogEvent::WorkflowCompleted {
+                execution_id: "exec-p".to_string(),
+                workflow_name: "parallel-wf".to_string(),
+                total_token_usage: TokenUsage {
+                    input_tokens: 450,
+                    output_tokens: 225,
+                },
+                timestamp: 1008.0,
+            },
+        ];
+
+        for event in &events {
+            log.append(event).unwrap();
+        }
+
+        let state = log.reconstruct_state("exec-p", &wf).unwrap().unwrap();
+
+        // step_historyは「plan」と「parallel-review」の2エントリのみ（重複なし）
+        assert_eq!(
+            state.step_history.len(),
+            2,
+            "step_history should have exactly 2 entries, not duplicated"
+        );
+        assert_eq!(state.step_history[0].step_name, "plan");
+        assert_eq!(state.step_history[1].step_name, "parallel-review");
+        assert_eq!(state.step_history[1].result, Some("then".to_string()));
+        assert_eq!(
+            state.step_history[1].output_text,
+            Some("combined output".to_string())
+        );
+
+        // current_step はParallelStartedで更新された並列ブロック
+        assert_eq!(state.current_step_name, "parallel-review");
+        assert_eq!(state.current_step_index, 1);
+
+        // step_outputsに子ステップの出力が存在
+        assert!(state.step_outputs.contains_key("arch-review"));
+        assert!(state.step_outputs.contains_key("security-review"));
+
+        // 並列ブロック完了後はactive_parallel_stepsがクリアされる
+        assert!(state.active_parallel_steps.is_empty());
+
+        assert_eq!(state.state, WorkflowExecutionState::Completed);
     }
 }

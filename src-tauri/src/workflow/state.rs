@@ -24,6 +24,8 @@ pub struct WorkflowState {
     pub step_states: HashMap<String, String>,
     #[serde(default)]
     pub step_outputs: HashMap<String, StepOutput>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_parallel_steps: Vec<ParallelStepState>,
     pub started_at: f64,
     pub updated_at: f64,
 }
@@ -102,6 +104,20 @@ pub struct StepHistoryEntry {
     pub output_text: Option<String>,
     #[serde(default)]
     pub run_index: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParallelStepState {
+    pub step_name: String,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result: Option<String>,
+    pub run_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub completed_at: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

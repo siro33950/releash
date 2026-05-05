@@ -328,6 +328,7 @@ mod tests {
                     },
                     total_token_usage: crate::workflow::state::TokenUsage::default(),
                     step_states: std::collections::HashMap::new(),
+                    active_parallel_steps: vec![],
                     started_at: 1000.0,
                     updated_at: 1000.0,
                 },
