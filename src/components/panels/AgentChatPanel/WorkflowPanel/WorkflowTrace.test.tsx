@@ -440,6 +440,38 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("Output")).toBeInTheDocument();
 	});
 
+	it("displays reject result and comment in trace view", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					stepStates: {
+						plan: "completed",
+						review: "completed",
+						fix: "running",
+					},
+					stepHistory: [
+						{
+							stepName: "plan",
+							completedAt: 1001,
+							result: "done",
+						},
+						{
+							stepName: "review",
+							completedAt: 1002,
+							result: "reject",
+							outputText: "Please fix the naming convention",
+						},
+					],
+				})}
+			/>,
+		);
+		expect(screen.getByText("Result: reject")).toBeInTheDocument();
+		fireEvent.click(screen.getByText("Output"));
+		expect(
+			screen.getByText("Please fix the naming convention"),
+		).toBeInTheDocument();
+	});
+
 	it("renders parallel block as completed when all children done", () => {
 		render(
 			<WorkflowTrace

@@ -418,10 +418,12 @@ impl WorkflowExecution {
         let step = &self.workflow.steps[self.current_step_index];
         match decision {
             ApprovalDecision::Approve => Ok(ApprovalAction::Advance),
-            ApprovalDecision::Reject => match step.rules.iter().find(|r| r.r#match == "reject") {
-                Some(r) => Ok(ApprovalAction::TransitionTo(r.next.clone())),
-                None => Ok(ApprovalAction::FailedNoRejectRule(step.name.clone())),
-            },
+            ApprovalDecision::Reject { .. } => {
+                match step.rules.iter().find(|r| r.r#match == "reject") {
+                    Some(r) => Ok(ApprovalAction::TransitionTo(r.next.clone())),
+                    None => Ok(ApprovalAction::FailedNoRejectRule(step.name.clone())),
+                }
+            }
             ApprovalDecision::Abort => Ok(ApprovalAction::Abort),
         }
     }
@@ -455,7 +457,7 @@ impl WorkflowExecution {
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
     Approve,
-    Reject,
+    Reject { comment: String },
     Abort,
 }
 
@@ -790,6 +792,18 @@ impl WorkflowEngine {
         }
     }
 
+    /// ApprovalDecisionのバリデーション。Reject時に空コメントを拒否する。
+    fn validate_approval_decision(decision: &ApprovalDecision) -> Result<(), WorkflowEngineError> {
+        if let ApprovalDecision::Reject { ref comment } = decision {
+            if comment.trim().is_empty() {
+                return Err(WorkflowEngineError::InvalidState(
+                    "Reject comment must not be empty".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// approvalモードでのユーザー判定を処理する。
     /// 判定 + 状態変更 + 履歴記録を1回のロックで原子的に実行し、
     /// ロック外では永続化・ブロードキャスト・AgentSession起動のみ行う。
@@ -801,16 +815,24 @@ impl WorkflowEngine {
         worktree_path: &str,
         decision: ApprovalDecision,
     ) -> Result<(), WorkflowEngineError> {
+        // Reject時: 空コメントバリデーション（副作用の前に実施）
+        Self::validate_approval_decision(&decision)?;
+
         let result_tag = match &decision {
             ApprovalDecision::Approve => "approve",
-            ApprovalDecision::Reject => "reject",
+            ApprovalDecision::Reject { .. } => "reject",
             ApprovalDecision::Abort => "abort",
         };
 
         // ロック外でoutput_textを事前取得（approvalはAgentSession完了後なので取得可能）
-        let output_text = self
-            .fetch_current_output(app, session_store, worktree_path)
-            .await?;
+        // Reject時はコメントをoutput_textとして使用するため、fetch不要だがApprove時に必要
+        let output_text = match &decision {
+            ApprovalDecision::Reject { ref comment } => Some(comment.clone()),
+            _ => {
+                self.fetch_current_output(app, session_store, worktree_path)
+                    .await?
+            }
+        };
 
         // 判定 + 状態変更 + 履歴記録を原子的に実行
         let (chat_session_id, outcome) = {
@@ -3369,8 +3391,10 @@ mod tests {
         let mut exec = make_exec(3); // report (approval, reject→implement)
         exec.state = WorkflowExecutionState::WaitingApproval;
         assert_eq!(
-            exec.decide_approval_action(&ApprovalDecision::Reject)
-                .unwrap(),
+            exec.decide_approval_action(&ApprovalDecision::Reject {
+                comment: "Needs fix".to_string()
+            })
+            .unwrap(),
             ApprovalAction::TransitionTo("implement".to_string())
         );
     }
@@ -3380,8 +3404,10 @@ mod tests {
         let mut exec = make_exec(0); // plan (interactive, no reject rule)
         exec.state = WorkflowExecutionState::WaitingApproval;
         assert_eq!(
-            exec.decide_approval_action(&ApprovalDecision::Reject)
-                .unwrap(),
+            exec.decide_approval_action(&ApprovalDecision::Reject {
+                comment: "Needs fix".to_string()
+            })
+            .unwrap(),
             ApprovalAction::FailedNoRejectRule("plan".to_string())
         );
     }
@@ -3664,6 +3690,21 @@ mod tests {
         let result = WorkflowEngine::inject_step_outputs("Do C", &step, &outputs, &[]);
         assert!(result.contains("<step_output name=\"step_a\">"));
         assert!(result.contains("output A"));
+    }
+
+    #[test]
+    fn reject_comment_accessible_via_pass_output_from() {
+        let mut step = make_test_step("fix", StepMode::Auto, "Fix issues", vec![], None);
+        step.pass_output_from = Some(vec!["review".to_string()]);
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "review".to_string(),
+            make_step_output("review", "Fix the naming convention", Some("reject")),
+        );
+        let result = WorkflowEngine::inject_step_outputs("Fix issues", &step, &outputs, &[]);
+        assert!(result.contains("<step_output name=\"review\">"));
+        assert!(result.contains("Fix the naming convention"));
     }
 
     #[test]
@@ -4300,5 +4341,259 @@ mod tests {
         // 空childrenの場合: child_outputs.len()==0, child_step_names.len()==0 → 等しいので
         // all()が空イテレータでtrueを返す
         assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    // ---- decide_approval_action ----
+
+    fn make_approval_exec(
+        state: WorkflowExecutionState,
+        rules: Vec<TransitionRule>,
+    ) -> WorkflowExecution {
+        WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: Workflow {
+                name: "test".to_string(),
+                description: "test".to_string(),
+                builtin: false,
+                steps: vec![Step {
+                    name: "review".to_string(),
+                    mode: Some(StepMode::Approval),
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("Review the code".to_string()),
+                    output_contract: None,
+                    rules,
+                    cycle_guard: None,
+                    pass_previous_response: None,
+                    pass_output_from: None,
+                    collect: None,
+                    parallel: None,
+                    aggregate: None,
+                }],
+            },
+            state,
+            current_step_index: 0,
+            step_execution_counts: HashMap::new(),
+            step_history: vec![],
+            chat_session_id: "session-1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+        }
+    }
+
+    // ---- validate_approval_decision ----
+
+    #[test]
+    fn validate_approval_decision_reject_empty_comment_returns_error() {
+        let result = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Reject {
+            comment: "".to_string(),
+        });
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Reject comment must not be empty"));
+    }
+
+    #[test]
+    fn validate_approval_decision_reject_whitespace_only_returns_error() {
+        let result = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Reject {
+            comment: "   \n\t  ".to_string(),
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_approval_decision_reject_with_comment_ok() {
+        let result = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Reject {
+            comment: "Please fix the bug".to_string(),
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_approval_decision_approve_ok() {
+        let result = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Approve);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_approval_decision_abort_ok() {
+        let result = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Abort);
+        assert!(result.is_ok());
+    }
+
+    // ---- make_step_history_entry ----
+
+    #[test]
+    fn make_step_history_entry_stores_reject_comment_in_step_outputs() {
+        let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        let reject_comment = "Please fix the formatting".to_string();
+        let entry =
+            exec.make_step_history_entry(Some("reject".to_string()), Some(reject_comment.clone()));
+        assert_eq!(entry.result.as_deref(), Some("reject"));
+        assert_eq!(
+            entry.output_text.as_deref(),
+            Some("Please fix the formatting")
+        );
+        let stored = exec.step_outputs.get("review").unwrap();
+        assert_eq!(stored.output_text, reject_comment);
+        assert_eq!(stored.result.as_deref(), Some("reject"));
+    }
+
+    // ---- handle_approval integration (lock-inner logic) ----
+
+    #[test]
+    fn reject_comment_flows_through_approval_to_transition_and_history() {
+        // handle_approval() のロック内ロジックを再現:
+        // validate → decide → make_step_history_entry → apply_transition
+        let decision = ApprovalDecision::Reject {
+            comment: "Fix the naming convention".to_string(),
+        };
+
+        // 1. validate
+        WorkflowEngine::validate_approval_decision(&decision).unwrap();
+
+        // 2. output_text をRejectコメントから取得（handle_approval L692-693相当）
+        let output_text = match &decision {
+            ApprovalDecision::Reject { ref comment } => Some(comment.clone()),
+            _ => None,
+        };
+        let result_tag = "reject".to_string();
+
+        // 3. 遷移先 "fix" ステップを含むワークフローを構築
+        let mut exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: Workflow {
+                name: "review-fix".to_string(),
+                description: "test".to_string(),
+                builtin: false,
+                steps: vec![
+                    Step {
+                        name: "review".to_string(),
+                        mode: Some(StepMode::Approval),
+                        persona: None,
+                        policy: None,
+                        knowledge: None,
+                        instruction: Some("Review the code".to_string()),
+                        output_contract: None,
+                        rules: vec![TransitionRule {
+                            r#match: "reject".to_string(),
+                            next: "fix".to_string(),
+                        }],
+                        cycle_guard: None,
+                        pass_previous_response: None,
+                        pass_output_from: None,
+                        collect: None,
+                        parallel: None,
+                        aggregate: None,
+                    },
+                    Step {
+                        name: "fix".to_string(),
+                        mode: Some(StepMode::Auto),
+                        persona: None,
+                        policy: None,
+                        knowledge: None,
+                        instruction: Some("Fix the issues".to_string()),
+                        output_contract: None,
+                        rules: vec![],
+                        cycle_guard: None,
+                        pass_previous_response: Some(true),
+                        pass_output_from: None,
+                        collect: None,
+                        parallel: None,
+                        aggregate: None,
+                    },
+                ],
+            },
+            state: WorkflowExecutionState::WaitingApproval,
+            current_step_index: 0,
+            step_execution_counts: HashMap::new(),
+            step_history: vec![],
+            chat_session_id: "session-1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+        };
+
+        // 4. decide
+        let action = exec.decide_approval_action(&decision).unwrap();
+        assert_eq!(action, ApprovalAction::TransitionTo("fix".to_string()));
+
+        // 5. make_step_history_entry + push
+        let entry = exec.make_step_history_entry(Some(result_tag), output_text);
+        exec.step_history.push(entry);
+
+        // 6. apply_transition
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+
+        // 検証: step_history にRejectコメントが記録されている
+        assert_eq!(exec.step_history.len(), 1);
+        let hist = &exec.step_history[0];
+        assert_eq!(hist.step_name, "review");
+        assert_eq!(hist.result.as_deref(), Some("reject"));
+        assert_eq!(
+            hist.output_text.as_deref(),
+            Some("Fix the naming convention")
+        );
+
+        // 検証: step_outputs にRejectコメントが格納されている
+        let output = exec.step_outputs.get("review").unwrap();
+        assert_eq!(output.output_text, "Fix the naming convention");
+        assert_eq!(output.result.as_deref(), Some("reject"));
+
+        // 検証: 遷移先 "fix" ステップに移動している
+        assert_eq!(exec.current_step_index, 1);
+        assert_eq!(exec.workflow.steps[exec.current_step_index].name, "fix");
+
+        // 検証: inject_step_outputs で Reject コメントが遷移先 step の prompt に注入される
+        let fix_step = &exec.workflow.steps[exec.current_step_index];
+        let injected_prompt = WorkflowEngine::inject_step_outputs(
+            fix_step.instruction.as_deref().unwrap_or(""),
+            fix_step,
+            &exec.step_outputs,
+            &exec.step_history,
+        );
+        assert!(injected_prompt.contains("<step_output name=\"review\">"));
+        assert!(injected_prompt.contains("Fix the naming convention"));
+    }
+
+    // ---- ApprovalDecision serde ----
+
+    #[test]
+    fn approval_decision_deserialize_approve() {
+        let json = r#""approve""#;
+        let decision: ApprovalDecision = serde_json::from_str(json).unwrap();
+        assert_eq!(decision, ApprovalDecision::Approve);
+    }
+
+    #[test]
+    fn approval_decision_deserialize_reject_with_comment() {
+        let json = r#"{"reject":{"comment":"Please fix this"}}"#;
+        let decision: ApprovalDecision = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            decision,
+            ApprovalDecision::Reject {
+                comment: "Please fix this".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn approval_decision_deserialize_abort() {
+        let json = r#""abort""#;
+        let decision: ApprovalDecision = serde_json::from_str(json).unwrap();
+        assert_eq!(decision, ApprovalDecision::Abort);
     }
 }

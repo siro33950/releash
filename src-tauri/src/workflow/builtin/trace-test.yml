@@ -56,3 +56,6 @@ steps:
     knowledge: test-context
     output_contract: test-report
     pass_previous_response: true
+    rules:
+      - match: reject
+        next: execute

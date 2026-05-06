@@ -413,6 +413,19 @@ function WorkflowActivePanel({
 		currentStep?.mode === "interactive" &&
 		workflowState.state.type === "running";
 
+	const [rejectMode, setRejectMode] = useState(false);
+	const [rejectComment, setRejectComment] = useState("");
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset reject form when step/execution/approval state changes
+	useEffect(() => {
+		setRejectMode(false);
+		setRejectComment("");
+	}, [
+		workflowState.executionId,
+		workflowState.currentStepName,
+		isWaitingApproval,
+	]);
+
 	const handleAbort = useCallback(() => {
 		invoke("abort_workflow", { worktreePath }).catch((e) =>
 			console.warn("[WorkflowPanel] abort_workflow failed", e),
@@ -428,14 +441,28 @@ function WorkflowActivePanel({
 		);
 	}, [worktreePath]);
 
-	const handleReject = useCallback(() => {
+	const handleRejectClick = useCallback(() => {
+		setRejectMode(true);
+	}, []);
+
+	const handleRejectSubmit = useCallback(() => {
 		invoke("approve_workflow_step", {
 			worktreePath,
-			decision: "reject",
-		}).catch((e) =>
-			console.warn("[WorkflowPanel] approve_workflow_step failed", e),
-		);
-	}, [worktreePath]);
+			decision: { reject: { comment: rejectComment } },
+		})
+			.then(() => {
+				setRejectMode(false);
+				setRejectComment("");
+			})
+			.catch((e) =>
+				console.warn("[WorkflowPanel] approve_workflow_step failed", e),
+			);
+	}, [worktreePath, rejectComment]);
+
+	const handleRejectCancel = useCallback(() => {
+		setRejectMode(false);
+		setRejectComment("");
+	}, []);
 
 	const handleCompleteInteractive = useCallback(() => {
 		invoke("complete_interactive_step", {
@@ -448,10 +475,41 @@ function WorkflowActivePanel({
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden">
+			{/* Reject comment input */}
+			{isWaitingApproval && rejectMode && (
+				<div className="flex flex-col gap-1.5 px-3 py-2 border-b shrink-0">
+					<textarea
+						className="w-full px-2 py-1 text-xs rounded border bg-background resize-none"
+						rows={3}
+						placeholder="Reject comment..."
+						value={rejectComment}
+						onChange={(e) => setRejectComment(e.target.value)}
+						aria-label="Reject comment"
+					/>
+					<div className="flex items-center gap-2 justify-end">
+						<button
+							type="button"
+							onClick={handleRejectCancel}
+							className="px-2 py-0.5 text-xs rounded bg-muted hover:bg-muted/80 transition-colors"
+						>
+							Cancel
+						</button>
+						<button
+							type="button"
+							onClick={handleRejectSubmit}
+							disabled={rejectComment.trim().length === 0}
+							className="px-2 py-0.5 text-xs rounded bg-yellow-500/20 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+							aria-label="Submit reject"
+						>
+							Reject
+						</button>
+					</div>
+				</div>
+			)}
 			{/* Action bar */}
 			<div className="flex items-center justify-end px-3 py-1.5 border-b shrink-0">
 				<div className="flex items-center gap-2">
-					{isWaitingApproval && (
+					{isWaitingApproval && !rejectMode && (
 						<>
 							<button
 								type="button"
@@ -464,7 +522,7 @@ function WorkflowActivePanel({
 							</button>
 							<button
 								type="button"
-								onClick={handleReject}
+								onClick={handleRejectClick}
 								className="flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-yellow-500/20 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-500/30 transition-colors"
 								aria-label="Reject step"
 							>
