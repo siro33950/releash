@@ -127,6 +127,7 @@ enum ParallelChildState {
     Running,
     Completed,
     Failed,
+    Interrupted,
 }
 
 /// session_workflow_refsの値型。セッションの種別情報を保持する。
@@ -274,6 +275,7 @@ impl WorkflowExecution {
                     ParallelChildState::Running => "running".to_string(),
                     ParallelChildState::Completed => "completed".to_string(),
                     ParallelChildState::Failed => "failed".to_string(),
+                    ParallelChildState::Interrupted => "interrupted".to_string(),
                 },
                 session_id: Some(child.session_id.clone()),
                 result: child.result.clone(),
@@ -325,6 +327,7 @@ impl WorkflowExecution {
             token_usage,
             output_text,
             run_index,
+            child_outputs: None,
         };
         self.current_session_id = None;
         entry
@@ -1018,12 +1021,15 @@ impl WorkflowEngine {
                 child.state = ParallelChildState::Failed;
                 let child_name = child.step_name.clone();
 
-                // 他の実行中子ステップをinterruptするためのIDを集める
+                // 他の実行中子ステップのstateをInterruptedに更新し、IDを集める
                 let running_ids: Vec<String> = pr
                     .children
-                    .iter()
+                    .iter_mut()
                     .filter(|c| c.state == ParallelChildState::Running)
-                    .map(|c| c.session_id.clone())
+                    .map(|c| {
+                        c.state = ParallelChildState::Interrupted;
+                        c.session_id.clone()
+                    })
                     .collect();
 
                 exec.state = WorkflowExecutionState::Failed {
@@ -1032,6 +1038,7 @@ impl WorkflowEngine {
                         child_name, exit_code
                     ),
                 };
+                exec.parallel_run = None;
                 exec.updated_at = current_timestamp();
                 let snapshot = exec.to_workflow_state();
                 drop(execs);
@@ -1141,6 +1148,24 @@ impl WorkflowEngine {
                     },
                 );
 
+                // 並列子ステップのスナップショットを保存（履歴表示用）
+                let child_snapshots: Vec<crate::workflow::state::ChildOutputSnapshot> = pr
+                    .children
+                    .iter()
+                    .map(|child| {
+                        let child_so = exec.step_outputs.get(&child.step_name);
+                        crate::workflow::state::ChildOutputSnapshot {
+                            step_name: child.step_name.clone(),
+                            session_id: child_so.and_then(|o| o.session_id.clone()),
+                            result: child_so.and_then(|o| o.result.clone()),
+                            run_index: child.run_index,
+                            completed_at: child_so
+                                .map(|o| o.completed_at)
+                                .unwrap_or_else(current_timestamp),
+                        }
+                    })
+                    .collect();
+
                 exec.parallel_run = None;
                 exec.updated_at = current_timestamp();
 
@@ -1181,6 +1206,7 @@ impl WorkflowEngine {
                         token_usage: combined.and_then(|o| o.token_usage.clone()),
                         output_text: combined.map(|o| o.output_text.clone()),
                         run_index: parent_run_index,
+                        child_outputs: Some(child_snapshots.clone()),
                     };
                     exec.current_step_token_usage = TokenUsage::default();
                     exec.current_session_id = None;
@@ -1211,6 +1237,7 @@ impl WorkflowEngine {
                         token_usage: combined.and_then(|o| o.token_usage.clone()),
                         output_text: combined.map(|o| o.output_text.clone()),
                         run_index: parent_run_index,
+                        child_outputs: Some(child_snapshots),
                     };
                     exec.current_step_token_usage = TokenUsage::default();
                     exec.current_session_id = None;
@@ -2351,8 +2378,9 @@ impl WorkflowEngine {
         // Note: AppHandleが!Sendのためtokio::spawnによる真の並列化は不可能。
         // セッション作成とターン開始を分離し、全セッション準備完了後に
         // 全ターンを開始することで「ほぼ同時起動」を実現する。
+        let mut created_session_ids: Vec<String> = Vec::new();
         for cs in &child_setups {
-            crate::agent_sdk::start_agent_session_internal(
+            if let Err(e) = crate::agent_sdk::start_agent_session_internal(
                 app,
                 handles,
                 session_store,
@@ -2362,16 +2390,20 @@ impl WorkflowEngine {
                 cs.system_prompt.clone(),
             )
             .await
-            .map_err(|e| {
-                WorkflowEngineError::AgentSession(format!(
+            {
+                // 作成済みセッションを中断してからエラーを返す
+                for sid in &created_session_ids {
+                    self.interrupt_agent(handles, sid).await;
+                }
+                return Err(WorkflowEngineError::AgentSession(format!(
                     "Failed to start parallel child '{}': {e}",
                     cs.step_name
-                ))
-            })?;
+                )));
+            }
+            created_session_ids.push(cs.session_id.clone());
         }
 
         // Phase 3b: 全子ターン開始（ここが実際のAgent作業トリガー）
-        let mut started_session_ids: Vec<String> = Vec::new();
         for (i, cs) in child_setups.iter().enumerate() {
             if let Err(e) = crate::agent_sdk::start_agent_turn_internal(
                 app,
@@ -2384,8 +2416,8 @@ impl WorkflowEngine {
             )
             .await
             {
-                // 開始済み子セッションを中断してからエラーを返す
-                for sid in &started_session_ids {
+                // 全作成済みセッションを中断してからエラーを返す
+                for sid in &created_session_ids {
                     self.interrupt_agent(handles, sid).await;
                 }
                 return Err(WorkflowEngineError::AgentSession(format!(
@@ -2393,7 +2425,6 @@ impl WorkflowEngine {
                     cs.step_name
                 )));
             }
-            started_session_ids.push(cs.session_id.clone());
 
             // ParallelStepStarted ログ
             self.write_log(
@@ -2456,7 +2487,11 @@ impl WorkflowEngine {
             }
         } else if pass_previous_response {
             // 直前ステップの出力を注入（逐次ステップの最後の出力）
-            if let Some(last_output) = step_outputs.values().max_by_key(|o| o.completed_at as u64) {
+            if let Some(last_output) = step_outputs.values().max_by(|a, b| {
+                a.completed_at
+                    .partial_cmp(&b.completed_at)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }) {
                 user_message = format!(
                     "<step_output name=\"{}\">\n{}\n</step_output>\n\n{}",
                     last_output.step_name, last_output.output_text, user_message
@@ -2987,6 +3022,7 @@ mod tests {
                 token_usage: None,
                 output_text: None,
                 run_index: 0,
+                child_outputs: None,
             }],
             chat_session_id: "session-1".to_string(),
             started_at: 1000.0,
@@ -3498,6 +3534,7 @@ mod tests {
                 token_usage: None,
                 output_text: None,
                 run_index: 0,
+                child_outputs: None,
             },
             StepHistoryEntry {
                 step_name: "implement".to_string(),
@@ -3507,6 +3544,7 @@ mod tests {
                 token_usage: None,
                 output_text: None,
                 run_index: 0,
+                child_outputs: None,
             },
         ];
         let ws = exec.to_workflow_state();
@@ -3530,6 +3568,7 @@ mod tests {
             token_usage: None,
             output_text: None,
             run_index: 0,
+            child_outputs: None,
         }];
         let ws = exec.to_workflow_state();
         assert_eq!(ws.step_states["plan"], "completed");
@@ -3550,6 +3589,7 @@ mod tests {
             token_usage: None,
             output_text: None,
             run_index: 0,
+            child_outputs: None,
         }];
         let ws = exec.to_workflow_state();
         assert_eq!(ws.step_states["plan"], "completed");
@@ -3589,6 +3629,7 @@ mod tests {
             token_usage: None,
             output_text: None,
             run_index: 0,
+            child_outputs: None,
         }];
         let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history);
         assert!(result.contains("<step_output name=\"step_a\">"));
@@ -3942,6 +3983,7 @@ mod tests {
             token_usage: None,
             output_text: None,
             run_index: 0,
+            child_outputs: None,
         }];
 
         let (sys, prompt) = WorkflowEngine::build_step_prompt(

@@ -1256,6 +1256,7 @@ mod tests {
                     token_usage: None,
                     output_text: None,
                     run_index: 0,
+                    child_outputs: None,
                 },
                 StepHistoryEntry {
                     step_name: "implement".to_string(),
@@ -1268,6 +1269,7 @@ mod tests {
                     }),
                     output_text: None,
                     run_index: 0,
+                    child_outputs: None,
                 },
             ],
             step_execution_counts: std::collections::HashMap::new(),
@@ -1355,6 +1357,7 @@ mod tests {
                     token_usage: None,
                     output_text: None,
                     run_index: 0,
+                    child_outputs: None,
                 }],
                 step_execution_counts: std::collections::HashMap::new(),
                 step_outputs: std::collections::HashMap::new(),

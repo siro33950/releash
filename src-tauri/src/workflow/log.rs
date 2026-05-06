@@ -285,6 +285,7 @@ impl WorkflowEventLog {
                         token_usage: token_usage.clone(),
                         output_text: output_text.clone(),
                         run_index: ri,
+                        child_outputs: None,
                     });
                     if let Some(ref ot) = output_text {
                         step_outputs.insert(

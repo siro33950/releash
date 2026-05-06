@@ -153,6 +153,21 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 
 		if (step?.parallel && step.parallel.length > 0) {
 			const childSteps: ParallelStepState[] = step.parallel.map((child) => {
+				// 履歴エントリにchild snapshotがあればそれを使用（run固有の情報）
+				const childSnapshot = entry.childOutputs?.find(
+					(co) => co.stepName === child.name,
+				);
+				if (childSnapshot) {
+					return {
+						stepName: child.name,
+						state: "completed" as const,
+						sessionId: childSnapshot.sessionId,
+						result: childSnapshot.result,
+						runIndex: childSnapshot.runIndex,
+						completedAt: childSnapshot.completedAt,
+					};
+				}
+				// フォールバック: グローバルstepOutputsを参照
 				const childOutput = workflowState.stepOutputs[child.name];
 				return {
 					stepName: child.name,

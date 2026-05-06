@@ -180,18 +180,21 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
         return Err(ValidationError::EmptySteps);
     }
 
-    // グローバル名前空間: 通常step名 + 並列子step名
-    let mut step_names = HashSet::new();
+    // 遷移先名前空間: トップレベルstep名のみ（aggregate.then/else, rule.nextの検証用）
+    let mut transition_target_names = HashSet::new();
+    // 参照可能名前空間: トップレベルstep名 + 並列子step名（pass_output_from等の検証用）
+    let mut referenceable_step_names = HashSet::new();
     for step in &workflow.steps {
-        if !step_names.insert(step.name.as_str()) {
+        if !transition_target_names.insert(step.name.as_str()) {
             return Err(ValidationError::DuplicateStep {
                 name: step.name.clone(),
             });
         }
-        // 並列子step名もグローバル名前空間に追加
+        referenceable_step_names.insert(step.name.as_str());
+        // 並列子step名は参照可能名前空間にのみ追加（遷移先には不可）
         if let Some(ref children) = step.parallel {
             for child in children {
-                if !step_names.insert(child.name.as_str()) {
+                if !referenceable_step_names.insert(child.name.as_str()) {
                     return Err(ValidationError::ParallelChildNameConflict {
                         child: child.name.clone(),
                     });
@@ -307,14 +310,14 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                     }
                 }
 
-                // then/else の遷移先存在チェック
-                if !step_names.contains(agg.then.as_str()) {
+                // then/else の遷移先存在チェック（トップレベルstepのみ）
+                if !transition_target_names.contains(agg.then.as_str()) {
                     return Err(ValidationError::AggregateUnknownTarget {
                         step: step.name.clone(),
                         target: agg.then.clone(),
                     });
                 }
-                if !step_names.contains(agg.r#else.as_str()) {
+                if !transition_target_names.contains(agg.r#else.as_str()) {
                     return Err(ValidationError::AggregateUnknownTarget {
                         step: step.name.clone(),
                         target: agg.r#else.clone(),
@@ -345,9 +348,9 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 });
             }
 
-            // rules の遷移先チェック
+            // rules の遷移先チェック（トップレベルstepのみ）
             for rule in &step.rules {
-                if !step_names.contains(rule.next.as_str()) {
+                if !transition_target_names.contains(rule.next.as_str()) {
                     return Err(ValidationError::UnknownNextStep {
                         step: step.name.clone(),
                         next: rule.next.clone(),
@@ -355,10 +358,10 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 }
             }
 
-            // pass_output_from の参照先 step 名が存在するか検証
+            // pass_output_from の参照先 step 名が存在するか検証（並列子stepも参照可）
             if let Some(ref refs) = step.pass_output_from {
                 for r in refs {
-                    if !step_names.contains(r.as_str()) {
+                    if !referenceable_step_names.contains(r.as_str()) {
                         return Err(ValidationError::UnknownOutputFrom {
                             step: step.name.clone(),
                             reference: r.clone(),
@@ -367,10 +370,10 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 }
             }
 
-            // collect.from の参照先 step 名が存在するか検証
+            // collect.from の参照先 step 名が存在するか検証（並列子stepも参照可）
             if let Some(ref collect) = step.collect {
                 for r in &collect.from {
-                    if !step_names.contains(r.as_str()) {
+                    if !referenceable_step_names.contains(r.as_str()) {
                         return Err(ValidationError::UnknownCollectFrom {
                             step: step.name.clone(),
                             reference: r.clone(),

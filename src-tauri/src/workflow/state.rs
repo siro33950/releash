@@ -104,6 +104,18 @@ pub struct StepHistoryEntry {
     pub output_text: Option<String>,
     #[serde(default)]
     pub run_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub child_outputs: Option<Vec<ChildOutputSnapshot>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildOutputSnapshot {
+    pub step_name: String,
+    pub session_id: Option<String>,
+    pub result: Option<String>,
+    pub run_index: u32,
+    pub completed_at: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,6 +3,14 @@ export interface TokenUsage {
 	outputTokens: number;
 }
 
+export interface ChildOutputSnapshot {
+	stepName: string;
+	sessionId?: string;
+	result?: string;
+	runIndex: number;
+	completedAt: number;
+}
+
 export interface StepHistoryEntry {
 	stepName: string;
 	completedAt: number;
@@ -11,6 +19,7 @@ export interface StepHistoryEntry {
 	tokenUsage?: TokenUsage;
 	outputText?: string;
 	runIndex?: number;
+	childOutputs?: ChildOutputSnapshot[];
 }
 
 export type WorkflowExecutionState =
@@ -39,8 +48,8 @@ export interface ParallelStep {
 	knowledge?: string;
 	instruction?: string;
 	output_contract?: string;
-	passPreviousResponse?: boolean;
-	passOutputFrom?: string[];
+	pass_previous_response?: boolean;
+	pass_output_from?: string[];
 }
 
 export interface AggregateConfig {
@@ -59,9 +68,9 @@ export interface Step {
 	instruction?: string;
 	output_contract?: string;
 	rules: TransitionRule[];
-	cycleGuard?: CycleGuard;
-	passPreviousResponse?: boolean;
-	passOutputFrom?: string[];
+	cycle_guard?: CycleGuard;
+	pass_previous_response?: boolean;
+	pass_output_from?: string[];
 	collect?: CollectConfig;
 	parallel?: ParallelStep[];
 	aggregate?: AggregateConfig;
