@@ -293,4 +293,204 @@ describe("WorkflowTrace", () => {
 		const badges = screen.getAllByText("NEEDS_FIX");
 		expect(badges.length).toBeGreaterThanOrEqual(1);
 	});
+
+	it("renders parallel block with child steps", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					currentStepName: "parallel-review",
+					currentStepIndex: 0,
+					totalSteps: 2,
+					stepStates: {
+						"parallel-review": "running",
+						report: "pending",
+					},
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "test",
+						builtin: false,
+						steps: [
+							{
+								name: "parallel-review",
+								rules: [],
+								parallel: [
+									{ name: "arch-review", mode: "auto" },
+									{ name: "security-review", mode: "auto" },
+								],
+							},
+							{
+								name: "report",
+								mode: "auto",
+								instruction: "report",
+								rules: [],
+							},
+						],
+					},
+					activeParallelSteps: [
+						{
+							stepName: "arch-review",
+							state: "running",
+							runIndex: 0,
+						},
+						{
+							stepName: "security-review",
+							state: "completed",
+							sessionId: "sess-2",
+							runIndex: 0,
+							completedAt: 2001,
+						},
+					],
+				})}
+			/>,
+		);
+		expect(screen.getByText("parallel-review")).toBeInTheDocument();
+		expect(screen.getByText("parallel")).toBeInTheDocument();
+		expect(screen.getByText("arch-review")).toBeInTheDocument();
+		expect(screen.getByText("security-review")).toBeInTheDocument();
+		expect(screen.getByText("1/2 completed")).toBeInTheDocument();
+	});
+
+	it("renders completed parallel block from stepHistory with child steps and output", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "completed" },
+					currentStepName: "report",
+					currentStepIndex: 1,
+					totalSteps: 2,
+					stepStates: {
+						"parallel-review": "completed",
+						report: "completed",
+					},
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "test",
+						builtin: false,
+						steps: [
+							{
+								name: "parallel-review",
+								rules: [],
+								parallel: [
+									{ name: "arch-review", mode: "auto" },
+									{ name: "security-review", mode: "auto" },
+								],
+								aggregate: {
+									all_match: "LGTM",
+									// biome-ignore lint/suspicious/noThenProperty: AggregateConfig domain type
+									then: "report",
+									else: "fix",
+								},
+							},
+							{
+								name: "report",
+								mode: "auto",
+								instruction: "report",
+								rules: [],
+							},
+						],
+					},
+					stepHistory: [
+						{
+							stepName: "parallel-review",
+							completedAt: 2001,
+							result: "then",
+							tokenUsage: { inputTokens: 100, outputTokens: 50 },
+							outputText:
+								"## arch-review\n\nLGTM\n\n---\n\n## security-review\n\nLGTM",
+						},
+					],
+					stepOutputs: {
+						"arch-review": {
+							stepName: "arch-review",
+							runIndex: 1,
+							sessionId: "sess-arch",
+							result: "LGTM",
+							outputText: "LGTM",
+							tokenUsage: { inputTokens: 50, outputTokens: 25 },
+							completedAt: 2000,
+						},
+						"security-review": {
+							stepName: "security-review",
+							runIndex: 1,
+							sessionId: "sess-sec",
+							result: "LGTM",
+							outputText: "LGTM",
+							tokenUsage: { inputTokens: 50, outputTokens: 25 },
+							completedAt: 2001,
+						},
+						"parallel-review": {
+							stepName: "parallel-review",
+							runIndex: 1,
+							outputText:
+								"## arch-review\n\nLGTM\n\n---\n\n## security-review\n\nLGTM",
+							tokenUsage: { inputTokens: 100, outputTokens: 50 },
+							completedAt: 2001,
+						},
+					},
+				})}
+			/>,
+		);
+		expect(screen.getByText("parallel-review")).toBeInTheDocument();
+		expect(screen.getByText("parallel")).toBeInTheDocument();
+		expect(screen.getByText("arch-review")).toBeInTheDocument();
+		expect(screen.getByText("security-review")).toBeInTheDocument();
+		expect(screen.getByText("2/2 completed")).toBeInTheDocument();
+		expect(screen.getByText("Result: then")).toBeInTheDocument();
+		expect(screen.getByText("150 tokens")).toBeInTheDocument();
+		expect(screen.getByText("Output")).toBeInTheDocument();
+	});
+
+	it("renders parallel block as completed when all children done", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					currentStepName: "parallel-review",
+					currentStepIndex: 0,
+					totalSteps: 2,
+					stepStates: {
+						"parallel-review": "running",
+						report: "pending",
+					},
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "test",
+						builtin: false,
+						steps: [
+							{
+								name: "parallel-review",
+								rules: [],
+								parallel: [
+									{ name: "arch-review", mode: "auto" },
+									{ name: "security-review", mode: "auto" },
+								],
+							},
+							{
+								name: "report",
+								mode: "auto",
+								instruction: "report",
+								rules: [],
+							},
+						],
+					},
+					activeParallelSteps: [
+						{
+							stepName: "arch-review",
+							state: "completed",
+							sessionId: "sess-1",
+							runIndex: 0,
+							completedAt: 2001,
+						},
+						{
+							stepName: "security-review",
+							state: "completed",
+							sessionId: "sess-2",
+							runIndex: 0,
+							completedAt: 2002,
+						},
+					],
+				})}
+			/>,
+		);
+		expect(screen.getByText("2/2 completed")).toBeInTheDocument();
+	});
 });

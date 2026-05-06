@@ -3,6 +3,14 @@ export interface TokenUsage {
 	outputTokens: number;
 }
 
+export interface ChildOutputSnapshot {
+	stepName: string;
+	sessionId?: string;
+	result?: string;
+	runIndex: number;
+	completedAt: number;
+}
+
 export interface StepHistoryEntry {
 	stepName: string;
 	completedAt: number;
@@ -11,6 +19,7 @@ export interface StepHistoryEntry {
 	tokenUsage?: TokenUsage;
 	outputText?: string;
 	runIndex?: number;
+	childOutputs?: ChildOutputSnapshot[];
 }
 
 export type WorkflowExecutionState =
@@ -31,7 +40,7 @@ export interface CycleGuard {
 
 export type StepMode = "auto" | "approval" | "interactive";
 
-export interface Step {
+export interface ParallelStep {
 	name: string;
 	mode: StepMode;
 	persona?: string;
@@ -39,11 +48,32 @@ export interface Step {
 	knowledge?: string;
 	instruction?: string;
 	output_contract?: string;
+	pass_previous_response?: boolean;
+	pass_output_from?: string[];
+}
+
+export interface AggregateConfig {
+	all_match?: string;
+	any_match?: string;
+	then: string;
+	else: string;
+}
+
+export interface Step {
+	name: string;
+	mode?: StepMode;
+	persona?: string;
+	policy?: string;
+	knowledge?: string;
+	instruction?: string;
+	output_contract?: string;
 	rules: TransitionRule[];
-	cycleGuard?: CycleGuard;
-	passPreviousResponse?: boolean;
-	passOutputFrom?: string[];
+	cycle_guard?: CycleGuard;
+	pass_previous_response?: boolean;
+	pass_output_from?: string[];
 	collect?: CollectConfig;
+	parallel?: ParallelStep[];
+	aggregate?: AggregateConfig;
 }
 
 export interface CollectConfig {
@@ -75,6 +105,15 @@ export interface StepOutput {
 	completedAt: number;
 }
 
+export interface ParallelStepState {
+	stepName: string;
+	state: string;
+	sessionId?: string;
+	result?: string;
+	runIndex: number;
+	completedAt?: number;
+}
+
 export interface WorkflowState {
 	executionId: string;
 	workflowName: string;
@@ -90,6 +129,7 @@ export interface WorkflowState {
 	workflowDefinition: Workflow;
 	totalTokenUsage: TokenUsage;
 	stepStates: Record<string, string>;
+	activeParallelSteps?: ParallelStepState[];
 	startedAt: number;
 	updatedAt: number;
 }
@@ -165,6 +205,45 @@ export type WorkflowLogEvent =
 			reduce_strategy: string;
 			reduce_result?: string;
 			reduce_text: string;
+			timestamp: number;
+	  }
+	| {
+			event: "parallel_started";
+			execution_id: string;
+			workflow_name: string;
+			parent_step_name: string;
+			child_step_names: string[];
+			timestamp: number;
+	  }
+	| {
+			event: "parallel_step_started";
+			execution_id: string;
+			workflow_name: string;
+			parent_step_name: string;
+			child_step_name: string;
+			session_id: string;
+			execution_count: number;
+			timestamp: number;
+	  }
+	| {
+			event: "parallel_step_completed";
+			execution_id: string;
+			workflow_name: string;
+			parent_step_name: string;
+			child_step_name: string;
+			result: string | null;
+			session_id: string;
+			token_usage?: TokenUsage;
+			output_text?: string;
+			run_index: number;
+			timestamp: number;
+	  }
+	| {
+			event: "parallel_completed";
+			execution_id: string;
+			workflow_name: string;
+			parent_step_name: string;
+			aggregate_result: string;
 			timestamp: number;
 	  };
 

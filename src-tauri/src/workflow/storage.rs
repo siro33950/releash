@@ -217,7 +217,7 @@ mod tests {
             builtin,
             steps: vec![Step {
                 name: "step1".to_string(),
-                mode: StepMode::Auto,
+                mode: Some(StepMode::Auto),
                 persona: None,
                 policy: None,
                 knowledge: None,
@@ -228,6 +228,8 @@ mod tests {
                 pass_previous_response: None,
                 pass_output_from: None,
                 collect: None,
+                parallel: None,
+                aggregate: None,
             }],
         }
     }
