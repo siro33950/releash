@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import type {
+	JsonValue,
 	ParallelStepState,
 	Step,
 	StepHistoryEntry,
@@ -22,6 +23,7 @@ interface WorkflowTraceProps {
 	workflowState: WorkflowState;
 	events?: WorkflowLogEvent[];
 	onSessionClick?: (sessionId: string) => void;
+	onFileClick?: (path: string) => void;
 }
 
 const stateClasses: Record<string, string> = {
@@ -39,6 +41,7 @@ export function WorkflowTrace({
 	workflowState,
 	events = [],
 	onSessionClick,
+	onFileClick,
 }: WorkflowTraceProps) {
 	const totalTokens =
 		workflowState.totalTokenUsage.inputTokens +
@@ -60,6 +63,7 @@ export function WorkflowTrace({
 							index={index}
 							isLast={index === traceItems.length - 1}
 							onSessionClick={onSessionClick}
+							onFileClick={onFileClick}
 						/>
 					))}
 				</div>
@@ -165,6 +169,8 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 						result: childSnapshot.result,
 						runIndex: childSnapshot.runIndex,
 						completedAt: childSnapshot.completedAt,
+						structuredOutput: childSnapshot.structuredOutput,
+						outputContract: childSnapshot.outputContract,
 					};
 				}
 				// フォールバック: グローバルstepOutputsを参照
@@ -176,6 +182,8 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 					result: childOutput?.result,
 					runIndex: childOutput?.runIndex ?? 1,
 					completedAt: childOutput?.completedAt,
+					structuredOutput: childOutput?.structuredOutput,
+					outputContract: childOutput?.outputContract,
 				};
 			});
 			return {
@@ -201,10 +209,16 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 	});
 
 	const state = workflowState.state.type;
+	// ワークフロー失敗時、current stepが既にstep_historyに完了記録があれば
+	// ghostエントリを追加しない（cycle_guard超過等のワークフローレベル失敗）
+	const currentAlreadyCompleted =
+		state === "failed" &&
+		workflowState.currentStepName &&
+		seenCounts.has(workflowState.currentStepName);
 	if (
 		(state === "running" ||
 			state === "waiting_approval" ||
-			state === "failed") &&
+			(state === "failed" && !currentAlreadyCompleted)) &&
 		workflowState.currentStepName
 	) {
 		const completedCount = seenCounts.get(workflowState.currentStepName) ?? 0;
@@ -257,11 +271,13 @@ function TraceItemRow({
 	index,
 	isLast,
 	onSessionClick,
+	onFileClick,
 }: {
 	item: TraceItem;
 	index: number;
 	isLast: boolean;
 	onSessionClick?: (sessionId: string) => void;
+	onFileClick?: (path: string) => void;
 }) {
 	if (item.kind === "parallel") {
 		return (
@@ -270,6 +286,7 @@ function TraceItemRow({
 				index={index}
 				isLast={isLast}
 				onSessionClick={onSessionClick}
+				onFileClick={onFileClick}
 			/>
 		);
 	}
@@ -309,7 +326,11 @@ function TraceItemRow({
 								run {item.occurrence}
 							</span>
 						</div>
-						<TraceItemSummary item={item} onSessionClick={onSessionClick} />
+						<TraceItemSummary
+							item={item}
+							onSessionClick={onSessionClick}
+							onFileClick={onFileClick}
+						/>
 					</div>
 					<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
 						{item.state}
@@ -325,11 +346,13 @@ function ParallelBlockRow({
 	index,
 	isLast,
 	onSessionClick,
+	onFileClick,
 }: {
 	item: Extract<TraceItem, { kind: "parallel" }>;
 	index: number;
 	isLast: boolean;
 	onSessionClick?: (sessionId: string) => void;
+	onFileClick?: (path: string) => void;
 }) {
 	const completedCount = item.childSteps.filter(
 		(cs) => cs.state === "completed",
@@ -395,12 +418,16 @@ function ParallelBlockRow({
 							key={`${child.stepName}-${child.runIndex}`}
 							child={child}
 							onSessionClick={onSessionClick}
+							onFileClick={onFileClick}
 						/>
 					))}
 				</div>
-				{item.entry?.outputText && (
+				{item.entry?.structuredOutput && (
 					<div className="mt-2">
-						<OutputTextToggle text={item.entry.outputText} />
+						<StructuredOutputToggle
+							output={item.entry.structuredOutput}
+							onFileClick={onFileClick}
+						/>
 					</div>
 				)}
 			</div>
@@ -411,35 +438,53 @@ function ParallelBlockRow({
 function ParallelChildRow({
 	child,
 	onSessionClick,
+	onFileClick,
 }: {
 	child: ParallelStepState;
 	onSessionClick?: (sessionId: string) => void;
+	onFileClick?: (path: string) => void;
 }) {
+	const so = child.structuredOutput;
+	const verdict =
+		so != null && typeof so === "object" && !Array.isArray(so)
+			? ((so as Record<string, unknown>).verdict as string | undefined)
+			: undefined;
 	return (
-		<div className="flex items-center gap-2 rounded px-2 py-1 text-xs">
-			<div
-				className={`flex size-4 items-center justify-center rounded-full border ${stateClasses[child.state] ?? stateClasses.pending}`}
-			>
-				<StateIcon state={child.state} />
-			</div>
-			<span className="min-w-0 flex-1 truncate font-medium">
-				{child.stepName}
-			</span>
-			{child.result && (
-				<span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
-					{child.result}
-				</span>
-			)}
-			{child.sessionId && onSessionClick && (
-				<button
-					type="button"
-					className="shrink-0 text-primary hover:underline"
-					onClick={() => {
-						if (child.sessionId) onSessionClick(child.sessionId);
-					}}
+		<div className="flex flex-col gap-1 rounded px-2 py-1 text-xs">
+			<div className="flex items-center gap-2">
+				<div
+					className={`flex size-4 items-center justify-center rounded-full border ${stateClasses[child.state] ?? stateClasses.pending}`}
 				>
-					View
-				</button>
+					<StateIcon state={child.state} />
+				</div>
+				<span className="min-w-0 flex-1 truncate font-medium">
+					{child.stepName}
+				</span>
+				{verdict && <VerdictBadge verdict={verdict} />}
+				{!verdict && child.result && (
+					<span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
+						{child.result}
+					</span>
+				)}
+				{child.sessionId && onSessionClick && (
+					<button
+						type="button"
+						className="shrink-0 text-primary hover:underline"
+						onClick={() => {
+							if (child.sessionId) onSessionClick(child.sessionId);
+						}}
+					>
+						View
+					</button>
+				)}
+			</div>
+			{child.structuredOutput && (
+				<div className="ml-6">
+					<StructuredOutputToggle
+						output={child.structuredOutput}
+						onFileClick={onFileClick}
+					/>
+				</div>
 			)}
 		</div>
 	);
@@ -457,9 +502,11 @@ function StateIcon({ state }: { state: string }) {
 function TraceItemSummary({
 	item,
 	onSessionClick,
+	onFileClick,
 }: {
 	item: Exclude<TraceItem, { kind: "parallel" }>;
 	onSessionClick?: (sessionId: string) => void;
+	onFileClick?: (path: string) => void;
 }) {
 	if (item.kind === "completed") {
 		const tokenTotal = item.entry.tokenUsage
@@ -474,7 +521,8 @@ function TraceItemSummary({
 					<span className="min-w-0 flex-1 truncate">
 						Result: {item.entry.result ?? "completed"}
 					</span>
-					{reduceResult && <ReduceResultBadge result={reduceResult} />}
+					{item.entry.result && <VerdictBadge verdict={item.entry.result} />}
+					{reduceResult && <VerdictBadge verdict={reduceResult} />}
 					{tokenTotal != null && (
 						<span className="shrink-0">{tokenTotal} tokens</span>
 					)}
@@ -490,8 +538,11 @@ function TraceItemSummary({
 						</button>
 					)}
 				</div>
-				{item.entry.outputText && (
-					<OutputTextToggle text={item.entry.outputText} />
+				{item.entry.structuredOutput && (
+					<StructuredOutputToggle
+						output={item.entry.structuredOutput}
+						onFileClick={onFileClick}
+					/>
 				)}
 			</div>
 		);
@@ -541,17 +592,34 @@ function TraceItemSummary({
 	}
 }
 
-const OUTPUT_PREVIEW_LENGTH = 200;
-
-function OutputTextToggle({ text }: { text: string }) {
+function StructuredOutputToggle({
+	output,
+	onFileClick,
+}: {
+	output: JsonValue;
+	onFileClick?: (path: string) => void;
+}) {
 	const [expanded, setExpanded] = useState(false);
-	const preview =
-		text.length > OUTPUT_PREVIEW_LENGTH
-			? `${text.slice(0, OUTPUT_PREVIEW_LENGTH)}...`
-			: text;
+	const json = JSON.stringify(output, null, 2);
+	const specFilePath =
+		output != null &&
+		typeof output === "object" &&
+		!Array.isArray(output) &&
+		typeof (output as Record<string, unknown>).spec_file_path === "string"
+			? ((output as Record<string, unknown>).spec_file_path as string)
+			: undefined;
 
 	return (
 		<div className="text-xs">
+			{specFilePath && (
+				<button
+					type="button"
+					className="text-primary hover:underline"
+					onClick={() => onFileClick?.(specFilePath)}
+				>
+					{specFilePath}
+				</button>
+			)}
 			<button
 				type="button"
 				className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
@@ -562,34 +630,34 @@ function OutputTextToggle({ text }: { text: string }) {
 				) : (
 					<ChevronRight className="size-3" />
 				)}
-				Output
+				Structured Output
 			</button>
 			{expanded && (
 				<pre className="mt-1 max-h-40 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap break-words">
-					{text}
+					{json}
 				</pre>
-			)}
-			{!expanded && text.length > OUTPUT_PREVIEW_LENGTH && (
-				<div className="mt-0.5 text-muted-foreground truncate">{preview}</div>
 			)}
 		</div>
 	);
 }
 
-const reduceBadgeClasses: Record<string, string> = {
+const verdictBadgeClasses: Record<string, string> = {
 	LGTM: "bg-green-500/20 text-green-700 dark:text-green-300",
-	PASSED: "bg-green-500/20 text-green-700 dark:text-green-300",
 	NEEDS_FIX: "bg-red-500/20 text-red-700 dark:text-red-300",
+	FIXED: "bg-green-500/20 text-green-700 dark:text-green-300",
+	PARTIAL: "bg-yellow-500/20 text-yellow-700 dark:text-yellow-300",
+	BLOCKED: "bg-red-500/20 text-red-700 dark:text-red-300",
+	PASSED: "bg-green-500/20 text-green-700 dark:text-green-300",
 	FAILED: "bg-red-500/20 text-red-700 dark:text-red-300",
 };
 
-function ReduceResultBadge({ result }: { result: string }) {
-	const cls = reduceBadgeClasses[result] ?? "bg-muted text-muted-foreground";
+function VerdictBadge({ verdict }: { verdict: string }) {
+	const cls = verdictBadgeClasses[verdict] ?? "bg-muted text-muted-foreground";
 	return (
 		<span
 			className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}
 		>
-			{result}
+			{verdict}
 		</span>
 	);
 }
@@ -610,6 +678,14 @@ function EventTrace({ events }: { events: WorkflowLogEvent[] }) {
 						{"step_name" in event && event.step_name && (
 							<span className="ml-1">({event.step_name})</span>
 						)}
+						{event.event === "contract_repair_requested" &&
+							"attempt" in event && (
+								<span className="ml-1 text-yellow-600 dark:text-yellow-400">
+									retry #{event.attempt as number}
+									{"violation_reason" in event &&
+										`: ${event.violation_reason as string}`}
+								</span>
+							)}
 					</div>
 				))}
 			</div>

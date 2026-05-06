@@ -1254,7 +1254,8 @@ mod tests {
                     result: None,
                     session_id: None,
                     token_usage: None,
-                    output_text: None,
+                    structured_output: None,
+
                     run_index: 0,
                     child_outputs: None,
                 },
@@ -1267,7 +1268,8 @@ mod tests {
                         input_tokens: 100,
                         output_tokens: 50,
                     }),
-                    output_text: None,
+                    structured_output: None,
+
                     run_index: 0,
                     child_outputs: None,
                 },
@@ -1281,6 +1283,7 @@ mod tests {
             },
             step_states: std::collections::HashMap::new(),
             active_parallel_steps: vec![],
+            workflow_variables: std::collections::HashMap::new(),
             started_at: 999.0,
             updated_at: 1001.0,
         };
@@ -1355,7 +1358,8 @@ mod tests {
                     result: None,
                     session_id: None,
                     token_usage: None,
-                    output_text: None,
+                    structured_output: None,
+
                     run_index: 0,
                     child_outputs: None,
                 }],
@@ -1365,6 +1369,7 @@ mod tests {
                 total_token_usage: TokenUsage::default(),
                 step_states: std::collections::HashMap::new(),
                 active_parallel_steps: vec![],
+                workflow_variables: std::collections::HashMap::new(),
                 started_at: 999.0,
                 updated_at: 1000.5,
             }),

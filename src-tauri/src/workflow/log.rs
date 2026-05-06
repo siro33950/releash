@@ -43,7 +43,7 @@ pub enum WorkflowLogEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         token_usage: Option<TokenUsage>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        output_text: Option<String>,
+        structured_output: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         run_index: Option<u32>,
         timestamp: f64,
@@ -80,7 +80,8 @@ pub enum WorkflowLogEvent {
         reduce_strategy: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         reduce_result: Option<String>,
-        reduce_text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reduce_structured_output: Option<serde_json::Value>,
         timestamp: f64,
     },
     ParallelStarted {
@@ -110,7 +111,7 @@ pub enum WorkflowLogEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         token_usage: Option<TokenUsage>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        output_text: Option<String>,
+        structured_output: Option<serde_json::Value>,
         run_index: u32,
         timestamp: f64,
     },
@@ -121,6 +122,14 @@ pub enum WorkflowLogEvent {
         aggregate_result: String,
         timestamp: f64,
     },
+    ContractRepairRequested {
+        execution_id: String,
+        workflow_name: String,
+        step_name: String,
+        attempt: u32,
+        violation_reason: String,
+        timestamp: f64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,7 +138,8 @@ pub struct CollectedOutputEntry {
     pub step_name: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub result: Option<String>,
-    pub output_text_len: usize,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub structured_output: Option<serde_json::Value>,
 }
 
 /// ワークフロー実行ログの書き込み・読み込み。
@@ -164,7 +174,8 @@ impl WorkflowEventLog {
             | WorkflowLogEvent::ParallelStarted { execution_id, .. }
             | WorkflowLogEvent::ParallelStepStarted { execution_id, .. }
             | WorkflowLogEvent::ParallelStepCompleted { execution_id, .. }
-            | WorkflowLogEvent::ParallelCompleted { execution_id, .. } => execution_id,
+            | WorkflowLogEvent::ParallelCompleted { execution_id, .. }
+            | WorkflowLogEvent::ContractRepairRequested { execution_id, .. } => execution_id,
         };
 
         let path = self.log_path(execution_id);
@@ -269,7 +280,7 @@ impl WorkflowEventLog {
                     result,
                     session_id,
                     token_usage,
-                    output_text,
+                    structured_output,
                     run_index,
                     timestamp,
                     ..
@@ -283,11 +294,11 @@ impl WorkflowEventLog {
                         result: result.clone(),
                         session_id: session_id.clone(),
                         token_usage: token_usage.clone(),
-                        output_text: output_text.clone(),
+                        structured_output: structured_output.clone(),
                         run_index: ri,
                         child_outputs: None,
                     });
-                    if let Some(ref ot) = output_text {
+                    if structured_output.is_some() {
                         step_outputs.insert(
                             step_name.clone(),
                             StepOutput {
@@ -295,7 +306,8 @@ impl WorkflowEventLog {
                                 run_index: ri,
                                 session_id: session_id.clone(),
                                 result: result.clone(),
-                                output_text: ot.clone(),
+                                structured_output: structured_output.clone(),
+                                output_contract: None,
                                 token_usage: token_usage.clone(),
                                 completed_at: *timestamp,
                             },
@@ -364,6 +376,8 @@ impl WorkflowEventLog {
                             result: None,
                             run_index: 0,
                             completed_at: None,
+                            structured_output: None,
+                            output_contract: None,
                         })
                         .collect();
                     updated_at = *timestamp;
@@ -393,6 +407,8 @@ impl WorkflowEventLog {
                             result: None,
                             run_index: *execution_count,
                             completed_at: None,
+                            structured_output: None,
+                            output_contract: None,
                         });
                     }
                     updated_at = *timestamp;
@@ -402,7 +418,7 @@ impl WorkflowEventLog {
                     result,
                     session_id,
                     token_usage,
-                    output_text,
+                    structured_output,
                     run_index,
                     timestamp,
                     ..
@@ -415,6 +431,7 @@ impl WorkflowEventLog {
                         ps.state = "completed".to_string();
                         ps.result = result.clone();
                         ps.completed_at = Some(*timestamp);
+                        ps.structured_output = structured_output.clone();
                     }
                     // step_historyへの追加はParallelCompletedで親ブロックとして合成する
                     // （ライブ実行と同じ構造にするため）
@@ -425,7 +442,8 @@ impl WorkflowEventLog {
                             run_index: *run_index,
                             session_id: Some(session_id.clone()),
                             result: result.clone(),
-                            output_text: output_text.clone().unwrap_or_default(),
+                            structured_output: structured_output.clone(),
+                            output_contract: None,
                             token_usage: token_usage.clone(),
                             completed_at: *timestamp,
                         },
@@ -439,6 +457,9 @@ impl WorkflowEventLog {
                     // step_historyへの追加は後続のStepCompletedが正本。
                     // ここではactive_parallel_stepsのクリアのみ行う。
                     active_parallel_steps.clear();
+                    updated_at = *timestamp;
+                }
+                WorkflowLogEvent::ContractRepairRequested { timestamp, .. } => {
                     updated_at = *timestamp;
                 }
             }
@@ -467,6 +488,7 @@ impl WorkflowEventLog {
             step_outputs,
             step_states,
             active_parallel_steps,
+            workflow_variables: HashMap::new(),
             started_at,
             updated_at,
         }))
@@ -549,7 +571,7 @@ mod tests {
                 input_tokens: 100,
                 output_tokens: 50,
             }),
-            output_text: None,
+            structured_output: None,
             run_index: None,
             timestamp: 1002.0,
         };
@@ -647,7 +669,7 @@ mod tests {
                 result: None,
                 session_id: None,
                 token_usage: None,
-                output_text: None,
+                structured_output: None,
                 run_index: None,
                 timestamp: 3.0,
             },
@@ -685,11 +707,11 @@ mod tests {
                 step_outputs: vec![CollectedOutputEntry {
                     step_name: "s1".to_string(),
                     result: Some("LGTM".to_string()),
-                    output_text_len: 100,
+                    structured_output: None,
                 }],
                 reduce_strategy: "AnyNeedsFix".to_string(),
                 reduce_result: Some("LGTM".to_string()),
-                reduce_text: "## s1\noutput".to_string(),
+                reduce_structured_output: None,
                 timestamp: 8.0,
             },
             WorkflowLogEvent::ParallelStarted {
@@ -719,7 +741,7 @@ mod tests {
                     input_tokens: 50,
                     output_tokens: 25,
                 }),
-                output_text: Some("LGTM".to_string()),
+                structured_output: None,
                 run_index: 0,
                 timestamp: 11.0,
             },
@@ -729,6 +751,14 @@ mod tests {
                 parent_step_name: "parallel-review".to_string(),
                 aggregate_result: "then".to_string(),
                 timestamp: 12.0,
+            },
+            WorkflowLogEvent::ContractRepairRequested {
+                execution_id: "e1".to_string(),
+                workflow_name: "wf".to_string(),
+                step_name: "s1".to_string(),
+                attempt: 1,
+                violation_reason: "missing_field".to_string(),
+                timestamp: 13.0,
             },
         ];
 
@@ -844,7 +874,7 @@ mod tests {
                 input_tokens: 100,
                 output_tokens: 50,
             }),
-            output_text: Some("plan output text".to_string()),
+            structured_output: Some(serde_json::json!({"text": "plan output text"})),
             run_index: Some(1),
             timestamp: 1002.0,
         })
@@ -864,7 +894,7 @@ mod tests {
             result: None,
             session_id: Some("sess-impl".to_string()),
             token_usage: None,
-            output_text: None,
+            structured_output: None,
             run_index: None,
             timestamp: 1004.0,
         })
@@ -876,11 +906,11 @@ mod tests {
             step_outputs: vec![CollectedOutputEntry {
                 step_name: "plan".to_string(),
                 result: Some("done".to_string()),
-                output_text_len: 16,
+                structured_output: None,
             }],
             reduce_strategy: "Last".to_string(),
             reduce_result: Some("done".to_string()),
-            reduce_text: "plan output text".to_string(),
+            reduce_structured_output: None,
             timestamp: 1004.5,
         })
         .unwrap();
@@ -904,12 +934,15 @@ mod tests {
             Some("sess-plan".to_string())
         );
         assert_eq!(
-            state.step_history[0].output_text,
-            Some("plan output text".to_string())
+            state.step_history[0].structured_output,
+            Some(serde_json::json!({"text": "plan output text"}))
         );
         assert_eq!(state.step_history[0].run_index, 1);
         assert!(state.step_outputs.contains_key("plan"));
-        assert_eq!(state.step_outputs["plan"].output_text, "plan output text");
+        assert_eq!(
+            state.step_outputs["plan"].structured_output,
+            Some(serde_json::json!({"text": "plan output text"}))
+        );
         assert_eq!(
             state.step_history[1].session_id,
             Some("sess-impl".to_string())
@@ -1077,7 +1110,7 @@ mod tests {
                     input_tokens: 100,
                     output_tokens: 50,
                 }),
-                output_text: Some("plan output".to_string()),
+                structured_output: Some(serde_json::json!({"text": "plan output"})),
                 run_index: Some(1),
                 timestamp: 1002.0,
             },
@@ -1117,7 +1150,7 @@ mod tests {
                     input_tokens: 200,
                     output_tokens: 100,
                 }),
-                output_text: Some("arch review output".to_string()),
+                structured_output: Some(serde_json::json!({"verdict": "LGTM"})),
                 run_index: 1,
                 timestamp: 1005.0,
             },
@@ -1132,7 +1165,7 @@ mod tests {
                     input_tokens: 150,
                     output_tokens: 75,
                 }),
-                output_text: Some("security review output".to_string()),
+                structured_output: Some(serde_json::json!({"verdict": "LGTM"})),
                 run_index: 1,
                 timestamp: 1006.0,
             },
@@ -1154,7 +1187,7 @@ mod tests {
                     input_tokens: 350,
                     output_tokens: 175,
                 }),
-                output_text: Some("combined output".to_string()),
+                structured_output: None,
                 run_index: Some(1),
                 timestamp: 1007.0,
             },
@@ -1184,10 +1217,7 @@ mod tests {
         assert_eq!(state.step_history[0].step_name, "plan");
         assert_eq!(state.step_history[1].step_name, "parallel-review");
         assert_eq!(state.step_history[1].result, Some("then".to_string()));
-        assert_eq!(
-            state.step_history[1].output_text,
-            Some("combined output".to_string())
-        );
+        assert_eq!(state.step_history[1].structured_output, None);
 
         // current_step はParallelStartedで更新された並列ブロック
         assert_eq!(state.current_step_name, "parallel-review");
@@ -1236,7 +1266,7 @@ mod tests {
                 input_tokens: 200,
                 output_tokens: 80,
             }),
-            output_text: Some("Please fix the naming convention".to_string()),
+            structured_output: None,
             run_index: Some(1),
             timestamp: 1002.0,
         })
@@ -1244,18 +1274,13 @@ mod tests {
 
         let state = log.reconstruct_state("exec-r", &wf).unwrap().unwrap();
 
-        // step_history にRejectコメントが保存されている
+        // step_history にReject結果が保存されている
         assert_eq!(state.step_history.len(), 1);
         assert_eq!(state.step_history[0].step_name, "review");
         assert_eq!(state.step_history[0].result, Some("reject".to_string()));
-        assert_eq!(
-            state.step_history[0].output_text,
-            Some("Please fix the naming convention".to_string())
-        );
+        assert!(state.step_history[0].structured_output.is_none());
 
-        // step_outputs にもRejectコメントが格納されている
-        let output = state.step_outputs.get("review").unwrap();
-        assert_eq!(output.output_text, "Please fix the naming convention");
-        assert_eq!(output.result, Some("reject".to_string()));
+        // Reject時はstructured_outputがないのでstep_outputsには格納されない
+        assert!(state.step_outputs.get("review").is_none());
     }
 }

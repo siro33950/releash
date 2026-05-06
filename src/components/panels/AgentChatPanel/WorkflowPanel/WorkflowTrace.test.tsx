@@ -195,7 +195,7 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("(plan)")).toBeInTheDocument();
 	});
 
-	it("shows Output toggle when stepHistory entry has outputText", () => {
+	it("shows Structured Output toggle when stepHistory entry has structuredOutput", () => {
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState({
@@ -209,16 +209,41 @@ describe("WorkflowTrace", () => {
 							stepName: "plan",
 							completedAt: 1001,
 							result: "done",
-							outputText: "This is the step output text",
+							structuredOutput: { verdict: "LGTM" },
 						},
 					],
 				})}
 			/>,
 		);
-		expect(screen.getByText("Output")).toBeInTheDocument();
+		expect(screen.getByText("Structured Output")).toBeInTheDocument();
 	});
 
-	it("expands outputText on Output toggle click", () => {
+	it("expands structuredOutput on toggle click", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					stepStates: {
+						plan: "completed",
+						review: "pending",
+						fix: "pending",
+					},
+					stepHistory: [
+						{
+							stepName: "plan",
+							completedAt: 1001,
+							result: "LGTM",
+							structuredOutput: { verdict: "LGTM", findings: [] },
+						},
+					],
+				})}
+			/>,
+		);
+		fireEvent.click(screen.getByText("Structured Output"));
+		expect(screen.getByText(/"verdict": "LGTM"/)).toBeInTheDocument();
+	});
+
+	it("renders spec_file_path as clickable link and calls onFileClick", () => {
+		const onFileClick = vi.fn();
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState({
@@ -232,17 +257,22 @@ describe("WorkflowTrace", () => {
 							stepName: "plan",
 							completedAt: 1001,
 							result: "done",
-							outputText: "Full output text content",
+							structuredOutput: {
+								spec_file_path: "docs/spec/issues-909.md",
+							},
 						},
 					],
 				})}
+				onFileClick={onFileClick}
 			/>,
 		);
-		fireEvent.click(screen.getByText("Output"));
-		expect(screen.getByText("Full output text content")).toBeInTheDocument();
+		const link = screen.getByText("docs/spec/issues-909.md");
+		expect(link).toBeInTheDocument();
+		fireEvent.click(link);
+		expect(onFileClick).toHaveBeenCalledWith("docs/spec/issues-909.md");
 	});
 
-	it("shows ReduceResultBadge for collect step", () => {
+	it("shows VerdictBadge for collect step reduce result", () => {
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState({
@@ -395,8 +425,10 @@ describe("WorkflowTrace", () => {
 							completedAt: 2001,
 							result: "then",
 							tokenUsage: { inputTokens: 100, outputTokens: 50 },
-							outputText:
-								"## arch-review\n\nLGTM\n\n---\n\n## security-review\n\nLGTM",
+							structuredOutput: {
+								"arch-review": { verdict: "LGTM" },
+								"security-review": { verdict: "LGTM" },
+							},
 						},
 					],
 					stepOutputs: {
@@ -405,7 +437,7 @@ describe("WorkflowTrace", () => {
 							runIndex: 1,
 							sessionId: "sess-arch",
 							result: "LGTM",
-							outputText: "LGTM",
+							structuredOutput: { verdict: "LGTM" },
 							tokenUsage: { inputTokens: 50, outputTokens: 25 },
 							completedAt: 2000,
 						},
@@ -414,15 +446,17 @@ describe("WorkflowTrace", () => {
 							runIndex: 1,
 							sessionId: "sess-sec",
 							result: "LGTM",
-							outputText: "LGTM",
+							structuredOutput: { verdict: "LGTM" },
 							tokenUsage: { inputTokens: 50, outputTokens: 25 },
 							completedAt: 2001,
 						},
 						"parallel-review": {
 							stepName: "parallel-review",
 							runIndex: 1,
-							outputText:
-								"## arch-review\n\nLGTM\n\n---\n\n## security-review\n\nLGTM",
+							structuredOutput: {
+								"arch-review": { verdict: "LGTM" },
+								"security-review": { verdict: "LGTM" },
+							},
 							tokenUsage: { inputTokens: 100, outputTokens: 50 },
 							completedAt: 2001,
 						},
@@ -437,7 +471,51 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("2/2 completed")).toBeInTheDocument();
 		expect(screen.getByText("Result: then")).toBeInTheDocument();
 		expect(screen.getByText("150 tokens")).toBeInTheDocument();
-		expect(screen.getByText("Output")).toBeInTheDocument();
+		expect(
+			screen.getAllByText("Structured Output").length,
+		).toBeGreaterThanOrEqual(1);
+	});
+
+	it("shows contract_repair_requested event with attempt and violation_reason in event log", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState()}
+				events={[
+					{
+						event: "step_started",
+						execution_id: "exec-001",
+						workflow_name: "test-workflow",
+						step_name: "plan",
+						execution_count: 1,
+						timestamp: 1001,
+					},
+					{
+						event: "contract_repair_requested",
+						execution_id: "exec-001",
+						workflow_name: "test-workflow",
+						step_name: "plan",
+						attempt: 1,
+						violation_reason: "missing verdict field",
+						timestamp: 1002,
+					},
+					{
+						event: "contract_repair_requested",
+						execution_id: "exec-001",
+						workflow_name: "test-workflow",
+						step_name: "plan",
+						attempt: 2,
+						violation_reason: "invalid format",
+						timestamp: 1003,
+					},
+				]}
+			/>,
+		);
+		expect(screen.getByText("Event log")).toBeInTheDocument();
+		expect(screen.getAllByText("contract_repair_requested")).toHaveLength(2);
+		expect(
+			screen.getByText("retry #1: missing verdict field"),
+		).toBeInTheDocument();
+		expect(screen.getByText("retry #2: invalid format")).toBeInTheDocument();
 	});
 
 	it("displays reject result and comment in trace view", () => {
@@ -459,16 +537,18 @@ describe("WorkflowTrace", () => {
 							stepName: "review",
 							completedAt: 1002,
 							result: "reject",
-							outputText: "Please fix the naming convention",
+							structuredOutput: {
+								comment: "Please fix the naming convention",
+							},
 						},
 					],
 				})}
 			/>,
 		);
 		expect(screen.getByText("Result: reject")).toBeInTheDocument();
-		fireEvent.click(screen.getByText("Output"));
+		fireEvent.click(screen.getByText("Structured Output"));
 		expect(
-			screen.getByText("Please fix the naming convention"),
+			screen.getByText(/"Please fix the naming convention"/),
 		).toBeInTheDocument();
 	});
 

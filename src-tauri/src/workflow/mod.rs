@@ -1,5 +1,6 @@
 pub mod builtin;
 pub mod commands;
+pub mod contract;
 pub mod engine;
 pub mod facet;
 pub mod log;

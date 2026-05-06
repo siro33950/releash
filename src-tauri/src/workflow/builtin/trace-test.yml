@@ -8,7 +8,7 @@ steps:
     persona: planner
     instruction: test-step
     knowledge: test-context
-    output_contract: test-report
+    output_contract: review-verdict
 
   - name: execute
     mode: auto
@@ -16,12 +16,12 @@ steps:
     instruction: test-step
     policy: coding
     knowledge: test-context
-    output_contract: test-report
+    output_contract: review-verdict
     pass_previous_response: true
     rules:
       - match: NEEDS_FIX
         next: execute
-      - match: DONE
+      - match: LGTM
         next: parallel-check
     cycle_guard:
       max_iterations: 3
@@ -33,7 +33,7 @@ steps:
         persona: reviewer
         instruction: test-step
         knowledge: test-context
-        output_contract: test-report
+        output_contract: review-verdict
         pass_output_from:
           - execute
       - name: check-b
@@ -41,11 +41,11 @@ steps:
         persona: coder
         instruction: test-step
         policy: coding
-        output_contract: test-report
+        output_contract: review-verdict
         pass_output_from:
           - execute
     aggregate:
-      all_match: DONE
+      all_match: LGTM
       then: confirm
       else: execute
 
@@ -54,7 +54,7 @@ steps:
     persona: planner
     instruction: test-step
     knowledge: test-context
-    output_contract: test-report
+    output_contract: review-verdict
     pass_previous_response: true
     rules:
       - match: reject
