@@ -1247,10 +1247,7 @@ mod tests {
         // step_history にRejectコメントが保存されている
         assert_eq!(state.step_history.len(), 1);
         assert_eq!(state.step_history[0].step_name, "review");
-        assert_eq!(
-            state.step_history[0].result,
-            Some("reject".to_string())
-        );
+        assert_eq!(state.step_history[0].result, Some("reject".to_string()));
         assert_eq!(
             state.step_history[0].output_text,
             Some("Please fix the naming convention".to_string())
