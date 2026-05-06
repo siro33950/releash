@@ -976,7 +976,7 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
         session_id: &str,
-        _parent_step_name: &str,
+        parent_step_name: &str,
         exit_code: i64,
         final_parts: &[crate::session::MessagePart],
         token_usage: Option<(u64, u64)>,
@@ -1003,20 +1003,17 @@ impl WorkflowEngine {
             }
 
             let chat_session_id = exec.chat_session_id.clone();
-            let pr = exec.parallel_run.as_mut().ok_or_else(|| {
-                WorkflowEngineError::InvalidState("No parallel_run active".to_string())
-            })?;
+            let Some(pr) = exec.parallel_run.as_mut() else {
+                return Ok(());
+            };
+            if pr.parent_step_name != parent_step_name {
+                return Ok(());
+            }
 
             // 対象の子ステップを見つけて更新
-            let child = pr
-                .children
-                .iter_mut()
-                .find(|c| c.session_id == session_id)
-                .ok_or_else(|| {
-                    WorkflowEngineError::InvalidState(format!(
-                        "Parallel child session '{session_id}' not found"
-                    ))
-                })?;
+            let Some(child) = pr.children.iter_mut().find(|c| c.session_id == session_id) else {
+                return Ok(());
+            };
 
             if let Some((input, output)) = token_usage {
                 child.token_usage.add(&TokenUsage {

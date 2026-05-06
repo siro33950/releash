@@ -309,6 +309,11 @@ impl WorkflowEventLog {
                 WorkflowLogEvent::StepFailed {
                     reason, timestamp, ..
                 } => {
+                    for ps in &mut active_parallel_steps {
+                        if ps.state == "running" {
+                            ps.state = "failed".to_string();
+                        }
+                    }
                     exec_state = WorkflowExecutionState::Failed {
                         reason: reason.clone(),
                     };
@@ -371,14 +376,25 @@ impl WorkflowEventLog {
                     ..
                 } => {
                     step_execution_counts.insert(child_step_name.clone(), *execution_count);
-                    active_parallel_steps.push(ParallelStepState {
-                        step_name: child_step_name.clone(),
-                        state: "running".to_string(),
-                        session_id: Some(session_id.clone()),
-                        result: None,
-                        run_index: *execution_count,
-                        completed_at: None,
-                    });
+                    if let Some(ps) = active_parallel_steps
+                        .iter_mut()
+                        .find(|p| p.step_name == *child_step_name)
+                    {
+                        ps.state = "running".to_string();
+                        ps.session_id = Some(session_id.clone());
+                        ps.result = None;
+                        ps.run_index = *execution_count;
+                        ps.completed_at = None;
+                    } else {
+                        active_parallel_steps.push(ParallelStepState {
+                            step_name: child_step_name.clone(),
+                            state: "running".to_string(),
+                            session_id: Some(session_id.clone()),
+                            result: None,
+                            run_index: *execution_count,
+                            completed_at: None,
+                        });
+                    }
                     updated_at = *timestamp;
                 }
                 WorkflowLogEvent::ParallelStepCompleted {
