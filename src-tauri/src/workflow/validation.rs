@@ -358,10 +358,10 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 }
             }
 
-            // pass_output_from の参照先 step 名が存在するか検証（並列子stepも参照可）
+            // pass_output_from の参照先 step 名が先行stepに存在するか検証（並列子stepも参照可）
             if let Some(ref refs) = step.pass_output_from {
                 for r in refs {
-                    if !referenceable_step_names.contains(r.as_str()) {
+                    if !preceding_step_names.contains(r.as_str()) {
                         return Err(ValidationError::UnknownOutputFrom {
                             step: step.name.clone(),
                             reference: r.clone(),
@@ -370,10 +370,10 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 }
             }
 
-            // collect.from の参照先 step 名が存在するか検証（並列子stepも参照可）
+            // collect.from の参照先 step 名が先行stepに存在するか検証（並列子stepも参照可）
             if let Some(ref collect) = step.collect {
                 for r in &collect.from {
-                    if !referenceable_step_names.contains(r.as_str()) {
+                    if !preceding_step_names.contains(r.as_str()) {
                         return Err(ValidationError::UnknownCollectFrom {
                             step: step.name.clone(),
                             reference: r.clone(),

@@ -137,7 +137,7 @@ type TraceItem =
 			stepName: string;
 			occurrence: number;
 			childSteps: ParallelStepState[];
-			state: "running" | "completed";
+			state: "running" | "completed" | "failed";
 			entry?: StepHistoryEntry;
 	  };
 
@@ -214,7 +214,8 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 		const currentStep = stepsByName.get(workflowState.currentStepName);
 		const activeParallel = workflowState.activeParallelSteps;
 		if (currentStep?.parallel && activeParallel && activeParallel.length > 0) {
-			const allCompleted = activeParallel.every(
+			const hasFailed = activeParallel.some((ps) => ps.state === "failed");
+			const allFinished = activeParallel.every(
 				(ps) => ps.state === "completed" || ps.state === "failed",
 			);
 			items.push({
@@ -223,7 +224,7 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 				stepName: workflowState.currentStepName,
 				occurrence: Math.max(startedCount, completedCount + 1),
 				childSteps: activeParallel,
-				state: allCompleted ? "completed" : "running",
+				state: hasFailed ? "failed" : allFinished ? "completed" : "running",
 			});
 		} else {
 			items.push({
@@ -344,11 +345,7 @@ function ParallelBlockRow({
 				<div
 					className={`mt-2 flex size-5 items-center justify-center rounded-full border ${stateClasses[item.state] ?? stateClasses.pending}`}
 				>
-					{item.state === "running" ? (
-						<Loader2 className="size-3 animate-spin" />
-					) : (
-						<CheckCircle2 className="size-3" />
-					)}
+					<StateIcon state={item.state} />
 				</div>
 				{!isLast && <div className="w-px flex-1 min-h-4 bg-border" />}
 			</div>
@@ -356,7 +353,9 @@ function ParallelBlockRow({
 				className={`mb-2 rounded-md border px-3 py-2 ${
 					item.state === "running"
 						? "border-primary/60 bg-primary/5"
-						: "border-border"
+						: item.state === "failed"
+							? "border-red-500/30 bg-red-500/5"
+							: "border-border"
 				}`}
 			>
 				<div className="flex items-start justify-between gap-3">

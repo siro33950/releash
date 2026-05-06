@@ -683,21 +683,25 @@ impl WorkflowEngine {
         };
         let worktree_path = session_ref.worktree_path.clone();
 
-        // 並列子ステップからの完了通知の場合は専用ハンドラに委譲
-        if let SessionRefKind::ParallelChild { parent_step_name } = &session_ref.kind {
-            return self
-                .handle_parallel_child_complete(
-                    app,
-                    session_store,
-                    handles,
-                    &worktree_path,
-                    session_id,
-                    parent_step_name,
-                    exit_code,
-                    final_parts,
-                    token_usage,
-                )
-                .await;
+        // セッション種別に応じたディスパッチ
+        match &session_ref.kind {
+            SessionRefKind::ParallelChild { parent_step_name } => {
+                return self
+                    .handle_parallel_child_complete(
+                        app,
+                        session_store,
+                        handles,
+                        &worktree_path,
+                        session_id,
+                        parent_step_name,
+                        exit_code,
+                        final_parts,
+                        token_usage,
+                    )
+                    .await;
+            }
+            SessionRefKind::Parent => return Ok(()),
+            SessionRefKind::SequentialStep => {}
         }
 
         // 判定 + 状態変更を原子的に実行（AutoEvaluate以外）
@@ -706,6 +710,11 @@ impl WorkflowEngine {
             let exec = execs
                 .get_mut(&worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.clone()))?;
+
+            // 現行ステップのセッション以外からの完了通知は無視
+            if exec.current_session_id.as_deref() != Some(session_id) {
+                return Ok(());
+            }
 
             // トークン使用量を現在のステップに累計
             if let Some((input, output)) = token_usage {

@@ -340,6 +340,7 @@ impl WorkflowEventLog {
                 }
                 WorkflowLogEvent::ParallelStarted {
                     parent_step_name,
+                    child_step_names,
                     timestamp,
                     ..
                 } => {
@@ -349,7 +350,17 @@ impl WorkflowEventLog {
                         .iter()
                         .position(|s| s.name == *parent_step_name)
                         .unwrap_or(current_step_index);
-                    active_parallel_steps.clear();
+                    active_parallel_steps = child_step_names
+                        .iter()
+                        .map(|name| ParallelStepState {
+                            step_name: name.clone(),
+                            state: "running".to_string(),
+                            session_id: None,
+                            result: None,
+                            run_index: 0,
+                            completed_at: None,
+                        })
+                        .collect();
                     updated_at = *timestamp;
                 }
                 WorkflowLogEvent::ParallelStepStarted {
