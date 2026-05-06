@@ -214,7 +214,7 @@ describe("WorkflowPanel", () => {
 		});
 	});
 
-	it("invokes approve_workflow_step with reject when Reject is clicked", () => {
+	it("shows reject comment form when Reject is clicked", () => {
 		render(
 			<WorkflowPanel
 				workflowState={makeWorkflowState({
@@ -225,10 +225,116 @@ describe("WorkflowPanel", () => {
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
+		expect(screen.getByLabelText("Reject comment")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Submit reject" }),
+		).toBeDisabled();
+	});
+
+	it("invokes approve_workflow_step with reject comment when submitted", async () => {
+		render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+				})}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
+		fireEvent.change(screen.getByLabelText("Reject comment"), {
+			target: { value: "Please fix the bug" },
+		});
+		expect(
+			screen.getByRole("button", { name: "Submit reject" }),
+		).not.toBeDisabled();
+		fireEvent.click(screen.getByRole("button", { name: "Submit reject" }));
 		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
 			worktreePath: "/repo",
-			decision: "reject",
+			decision: { reject: { comment: "Please fix the bug" } },
 		});
+		await waitFor(() => {
+			expect(screen.queryByLabelText("Reject comment")).not.toBeInTheDocument();
+		});
+	});
+
+	it("hides reject form after successful submit", async () => {
+		render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+				})}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
+		fireEvent.change(screen.getByLabelText("Reject comment"), {
+			target: { value: "Please fix" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Submit reject" }));
+		await waitFor(() => {
+			expect(screen.queryByLabelText("Reject comment")).not.toBeInTheDocument();
+		});
+	});
+
+	it("does not allow submitting reject with empty comment", () => {
+		render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+				})}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
+		fireEvent.change(screen.getByLabelText("Reject comment"), {
+			target: { value: "   " },
+		});
+		expect(
+			screen.getByRole("button", { name: "Submit reject" }),
+		).toBeDisabled();
+	});
+
+	it("cancels reject mode when Cancel is clicked", () => {
+		render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+				})}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
+		expect(screen.getByLabelText("Reject comment")).toBeInTheDocument();
+		fireEvent.click(screen.getByText("Cancel"));
+		expect(screen.queryByLabelText("Reject comment")).not.toBeInTheDocument();
+	});
+
+	it("hides reject form when state changes from waiting_approval to running", () => {
+		const { rerender } = render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+				})}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
+		expect(screen.getByLabelText("Reject comment")).toBeInTheDocument();
+		rerender(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({
+					state: { type: "running" },
+				})}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		expect(screen.queryByLabelText("Reject comment")).not.toBeInTheDocument();
 	});
 
 	it("shows Complete button for interactive mode when running", () => {

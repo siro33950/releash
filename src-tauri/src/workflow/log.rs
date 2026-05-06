@@ -1202,4 +1202,60 @@ mod tests {
 
         assert_eq!(state.state, WorkflowExecutionState::Completed);
     }
+
+    #[test]
+    fn reconstruct_state_reject_comment_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        let wf = make_test_workflow();
+
+        log.append(&WorkflowLogEvent::WorkflowStarted {
+            execution_id: "exec-r".to_string(),
+            workflow_name: "test-wf".to_string(),
+            workflow_file_stem: "test-wf".to_string(),
+            worktree_path: "/repo".to_string(),
+            workflow_definition: None,
+            timestamp: 1000.0,
+        })
+        .unwrap();
+        log.append(&WorkflowLogEvent::StepStarted {
+            execution_id: "exec-r".to_string(),
+            workflow_name: "test-wf".to_string(),
+            step_name: "review".to_string(),
+            execution_count: 1,
+            timestamp: 1001.0,
+        })
+        .unwrap();
+        log.append(&WorkflowLogEvent::StepCompleted {
+            execution_id: "exec-r".to_string(),
+            workflow_name: "test-wf".to_string(),
+            step_name: "review".to_string(),
+            result: Some("reject".to_string()),
+            session_id: Some("sess-review".to_string()),
+            token_usage: Some(TokenUsage {
+                input_tokens: 200,
+                output_tokens: 80,
+            }),
+            output_text: Some("Please fix the naming convention".to_string()),
+            run_index: Some(1),
+            timestamp: 1002.0,
+        })
+        .unwrap();
+
+        let state = log.reconstruct_state("exec-r", &wf).unwrap().unwrap();
+
+        // step_history にRejectコメントが保存されている
+        assert_eq!(state.step_history.len(), 1);
+        assert_eq!(state.step_history[0].step_name, "review");
+        assert_eq!(state.step_history[0].result, Some("reject".to_string()));
+        assert_eq!(
+            state.step_history[0].output_text,
+            Some("Please fix the naming convention".to_string())
+        );
+
+        // step_outputs にもRejectコメントが格納されている
+        let output = state.step_outputs.get("review").unwrap();
+        assert_eq!(output.output_text, "Please fix the naming convention");
+        assert_eq!(output.result, Some("reject".to_string()));
+    }
 }
