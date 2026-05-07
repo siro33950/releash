@@ -53,27 +53,25 @@ pub fn extract_workflow_output(text: &str) -> ExtractionResult {
         let abs_tag_start = search_start + tag_start;
         let after_tag = &text[abs_tag_start + open_tag.len()..];
 
-        // type属性を抽出
-        let type_name = if let Some(type_start) = after_tag.find("type=\"") {
-            let value_start = type_start + 6;
-            if let Some(value_end) = after_tag[value_start..].find('"') {
-                after_tag[value_start..value_start + value_end].to_string()
-            } else {
-                String::new()
-            }
-        } else if let Some(type_start) = after_tag.find("type='") {
-            let value_start = type_start + 6;
-            if let Some(value_end) = after_tag[value_start..].find('\'') {
-                after_tag[value_start..value_start + value_end].to_string()
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-
         // `>` を見つけてcontent開始位置を確定
         if let Some(gt_pos) = after_tag.find('>') {
+            // 開きタグ内でのみtype属性を抽出（本文中のtype="..."を誤検出しないよう）
+            let header = &after_tag[..gt_pos];
+            let type_name = if let Some(type_start) = header.find("type=\"") {
+                let value_start = type_start + 6;
+                header[value_start..]
+                    .find('"')
+                    .map(|end| header[value_start..value_start + end].to_string())
+                    .unwrap_or_default()
+            } else if let Some(type_start) = header.find("type='") {
+                let value_start = type_start + 6;
+                header[value_start..]
+                    .find('\'')
+                    .map(|end| header[value_start..value_start + end].to_string())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
             let content_start = abs_tag_start + open_tag.len() + gt_pos + 1;
             if let Some(close_pos) = text[content_start..].find(close_tag) {
                 let content = text[content_start..content_start + close_pos].trim();
@@ -231,7 +229,11 @@ fn validate_spec_file_path(json: Value) -> ContractValidationResult {
     let path = json.get("spec_file_path").and_then(|v| v.as_str());
     match path {
         Some(p) if !p.is_empty() => {
-            if p.starts_with('/') || p.starts_with('\\') {
+            let is_drive_letter_abs = p.len() >= 3
+                && p.as_bytes()[0].is_ascii_alphabetic()
+                && p.as_bytes()[1] == b':'
+                && (p.as_bytes()[2] == b'/' || p.as_bytes()[2] == b'\\');
+            if p.starts_with('/') || p.starts_with('\\') || is_drive_letter_abs {
                 return ContractValidationResult::Invalid(ContractViolation {
                     reason: "invalid_path".to_string(),
                     details: format!(
@@ -676,6 +678,51 @@ Some text after"#;
                 assert_eq!(v.reason, "invalid_path");
             }
             other => panic!("Expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_spec_file_path_windows_drive_letter_rejected() {
+        for path in &["C:\\repo\\spec.md", "C:/repo/spec.md", "D:\\file.md"] {
+            let extraction = ExtractionResult::Found {
+                type_name: "spec-file-path".to_string(),
+                json: json!({"spec_file_path": path}),
+            };
+            match validate_contract("spec-file-path", extraction) {
+                ContractValidationResult::Invalid(v) => {
+                    assert_eq!(v.reason, "invalid_path", "path: {path}");
+                    assert!(v.details.contains("absolute"), "path: {path}");
+                }
+                other => panic!("Expected Invalid for path '{path}', got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn extract_type_attr_not_from_body() {
+        let text =
+            r#"<workflow_output>body has type="fake" here {"key":"value"}</workflow_output>"#;
+        match extract_workflow_output(text) {
+            ExtractionResult::InvalidJson(_) => {
+                // type="fake"がbodyから拾われていたら type_name="fake" になるが、
+                // 修正後は開きタグ内のみ走査するので type_name="" になる
+                // JSONパース失敗は別問題（body全体がJSONではない）
+            }
+            ExtractionResult::Found { type_name, .. } => {
+                assert_eq!(type_name, "", "type should be empty when only in body");
+            }
+            other => panic!("Expected Found or InvalidJson, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn extract_type_attr_only_from_opening_tag() {
+        let text = r#"<workflow_output type="review-verdict">{"verdict":"LGTM"}</workflow_output>"#;
+        match extract_workflow_output(text) {
+            ExtractionResult::Found { type_name, .. } => {
+                assert_eq!(type_name, "review-verdict");
+            }
+            other => panic!("Expected Found, got {:?}", other),
         }
     }
 

@@ -25,9 +25,11 @@ use crate::workflow::state::{
 };
 use crate::workflow::storage;
 
+#[allow(dead_code)]
 const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
 const MAX_CONTRACT_RETRIES: u32 = 2;
 
+#[allow(dead_code)]
 fn truncate_output(text: String) -> String {
     if text.len() <= MAX_OUTPUT_SIZE {
         return text;
@@ -2272,7 +2274,7 @@ impl WorkflowEngine {
             return None;
         }
 
-        Some(truncate_output(text))
+        Some(text)
     }
 
     /// ステップの出力をプロンプトにコンテキストブロックとして注入する。
