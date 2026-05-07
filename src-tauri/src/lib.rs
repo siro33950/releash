@@ -192,6 +192,18 @@ pub fn run() {
                 });
             }
 
+            // Clean up orphan agent processes from previous crashes (non-blocking)
+            #[cfg(unix)]
+            {
+                let data_dir_clone = data_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = tokio::task::spawn_blocking(move || {
+                        agent_sdk::cleanup_orphan_processes(&data_dir_clone);
+                    })
+                    .await;
+                });
+            }
+
             // Initialize builtin workflows
             if let Err(e) =
                 workflow::builtin::init_builtin_workflows(&workflow::storage::workflows_dir())

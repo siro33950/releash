@@ -83,8 +83,11 @@ pub struct AgentProcess {
     pub state: BridgeState,
     pub turn_phase: TurnPhase,
     pub sdk_session_id: Option<String>,
+    #[cfg_attr(unix, allow(dead_code))]
     pub child: tokio::process::Child,
     pub generation_id: u64,
+    #[cfg(unix)]
+    pub pgid: Option<u32>,
     pub streaming_message_id: Option<String>,
     pub streaming_parts: Vec<crate::session::MessagePart>,
     /// Retained after turn_complete so post-turn background task events
@@ -139,6 +142,91 @@ impl AgentProcess {
 
 /// Per-session agent process map: chat_session_id → AgentProcess
 pub type AgentProcessMap = HashMap<String, AgentProcess>;
+
+#[cfg(unix)]
+fn pids_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("pids")
+}
+
+#[cfg(unix)]
+fn validate_session_id_for_path(chat_session_id: &str) -> Result<(), String> {
+    if chat_session_id.is_empty()
+        || chat_session_id.contains('/')
+        || chat_session_id.contains('\\')
+        || chat_session_id.contains("..")
+        || chat_session_id.contains('\0')
+    {
+        return Err(format!(
+            "Invalid chat_session_id for PID file: {chat_session_id:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn save_pgid(app_data_dir: &Path, chat_session_id: &str, pgid: u32) -> Result<(), String> {
+    validate_session_id_for_path(chat_session_id)?;
+    let dir = pids_dir(app_data_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create pids dir: {e}"))?;
+    let file = dir.join(format!("{chat_session_id}.pid"));
+    std::fs::write(&file, pgid.to_string())
+        .map_err(|e| format!("Failed to write pid file: {e}"))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_pgid(app_data_dir: &Path, chat_session_id: &str) {
+    if validate_session_id_for_path(chat_session_id).is_err() {
+        return;
+    }
+    let file = pids_dir(app_data_dir).join(format!("{chat_session_id}.pid"));
+    let _ = std::fs::remove_file(file);
+}
+
+#[cfg(unix)]
+pub fn cleanup_orphan_processes(app_data_dir: &Path) {
+    let dir = pids_dir(app_data_dir);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return, // No pids dir — nothing to clean up
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "pid") {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(pgid) = contents.trim().parse::<i32>() {
+                    if pgid <= 1 {
+                        log::warn!("Invalid PGID {pgid} in {}, removing file", path.display());
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    // Check if the process group is still alive
+                    let alive = unsafe { libc::killpg(pgid, 0) } == 0;
+                    if alive {
+                        log::info!(
+                            "Cleaning up orphan process group {pgid} from {}",
+                            path.display()
+                        );
+                        unsafe {
+                            libc::killpg(pgid, libc::SIGTERM);
+                        }
+                        // Give processes time to exit, then force kill
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        let still_alive = unsafe { libc::killpg(pgid, 0) } == 0;
+                        if still_alive {
+                            log::warn!("Orphan process group {pgid} did not exit, sending SIGKILL");
+                            unsafe {
+                                libc::killpg(pgid, libc::SIGKILL);
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
 
 fn dev_bridge_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -843,22 +931,57 @@ async fn spawn_bridge_process(
         ));
     }
 
-    let mut child = Command::new("node")
-        .arg(
-            bridge_path
-                .to_str()
-                .ok_or_else(|| "Bridge script path contains invalid UTF-8".to_string())?,
-        )
-        .current_dir(cwd)
-        // Remove Claude Code nesting-detection env vars so the SDK-spawned
-        // `claude` CLI does not refuse to start.
-        .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+    let mut cmd = Command::new("node");
+    cmd.arg(
+        bridge_path
+            .to_str()
+            .ok_or_else(|| "Bridge script path contains invalid UTF-8".to_string())?,
+    )
+    .current_dir(cwd)
+    // Remove Claude Code nesting-detection env vars so the SDK-spawned
+    // `claude` CLI does not refuse to start.
+    .env_remove("CLAUDECODE")
+    .env_remove("CLAUDE_CODE_ENTRYPOINT")
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
+
+    #[cfg(unix)]
+    // SAFETY: setsid() is async-signal-safe per POSIX.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn node process: {e}"))?;
+
+    #[cfg(unix)]
+    let pgid = child.id();
+    #[cfg(unix)]
+    if let Some(pg) = pgid {
+        let data_dir = resolve_data_dir(app).map_err(|e| {
+            log::error!("Failed to resolve data dir, killing spawned process group: {e}");
+            unsafe {
+                libc::killpg(pg as libc::pid_t, libc::SIGKILL);
+            }
+            format!("Failed to resolve data dir for session {chat_session_id}: {e}")
+        })?;
+        if let Err(e) = save_pgid(&data_dir, chat_session_id, pg) {
+            log::error!("Failed to save PGID file, killing spawned process group: {e}");
+            unsafe {
+                libc::killpg(pg as libc::pid_t, libc::SIGKILL);
+            }
+            return Err(format!(
+                "Failed to save PGID file for session {chat_session_id}: {e}"
+            ));
+        }
+    }
 
     let mut stdin = child
         .stdin
@@ -899,6 +1022,8 @@ async fn spawn_bridge_process(
                 sdk_session_id: session_id,
                 child,
                 generation_id: gen_id,
+                #[cfg(unix)]
+                pgid,
                 streaming_message_id: None,
                 streaming_parts: Vec::new(),
                 last_message_id: None,
@@ -1952,12 +2077,20 @@ pub async fn interrupt_agent_query(
 
 #[tauri::command]
 pub async fn close_agent_session(
+    app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     chat_session_id: String,
 ) -> Result<(), String> {
+    #[cfg(unix)]
+    let pgid: Option<u32>;
+
     {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get_mut(&chat_session_id) {
+            #[cfg(unix)]
+            {
+                pgid = proc.pgid;
+            }
             if let Err(e) = proc.stdin.write_all(b"{\"type\":\"close\"}\n").await {
                 log::warn!("Failed to send close command for session {chat_session_id}: {e}");
             }
@@ -1977,22 +2110,107 @@ pub async fn close_agent_session(
         let map = handles_clone.lock().await;
         map.get(&csid).map(|p| p.generation_id)
     };
+    #[cfg(unix)]
+    let app_clone = app.clone();
+    #[cfg(unix)]
+    let csid_for_pid = chat_session_id.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(CLOSE_TIMEOUT_SECS)).await;
         let mut map = handles_clone.lock().await;
         if let Some(proc) = map.get_mut(&csid) {
             if timeout_gen_id == Some(proc.generation_id) {
-                log::warn!("Close timeout for session {csid}, killing process");
-                let _ = proc.child.kill().await;
+                log::warn!("Close timeout for session {csid}, killing process group");
+                #[cfg(unix)]
+                if let Some(pg) = proc.pgid {
+                    unsafe {
+                        libc::killpg(pg as libc::pid_t, libc::SIGKILL);
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = proc.child.kill().await;
+                }
             } else {
                 // Generation mismatch: a new process has been spawned; skip kill and remove
                 return;
             }
         }
         map.remove(&csid);
+        drop(map);
+        // Sweep any remaining group members (grandchild processes) and clean up pid file
+        #[cfg(unix)]
+        {
+            if let Some(pg) = pgid {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                unsafe {
+                    libc::killpg(pg as libc::pid_t, libc::SIGTERM);
+                }
+            }
+            if let Ok(data_dir) = resolve_data_dir(&app_clone) {
+                remove_pgid(&data_dir, &csid_for_pid);
+            }
+        }
     });
 
     Ok(())
+}
+
+/// Force kill remaining processes in the map and clear it.
+/// Returns the list of session IDs that were in the map (for pid file cleanup).
+async fn force_kill_all_sessions(map: &mut AgentProcessMap) -> Vec<String> {
+    let session_ids: Vec<String> = map.keys().cloned().collect();
+    for csid in &session_ids {
+        if let Some(proc) = map.get_mut(csid) {
+            #[cfg(unix)]
+            if let Some(pg) = proc.pgid {
+                unsafe {
+                    libc::killpg(pg as libc::pid_t, libc::SIGKILL);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = proc.child.kill().await;
+            }
+        }
+    }
+    map.clear();
+    session_ids
+}
+
+pub async fn close_all_agent_sessions(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+) {
+    // Send graceful close command to all sessions in a single lock
+    {
+        let mut map = handles.lock().await;
+        let ids: Vec<String> = map.keys().cloned().collect();
+        for csid in &ids {
+            if let Some(proc) = map.get_mut(csid) {
+                let _ = proc.stdin.write_all(b"{\"type\":\"close\"}\n").await;
+                let _ = proc.stdin.flush().await;
+            }
+        }
+    }
+
+    // Wait for graceful shutdown
+    tokio::time::sleep(std::time::Duration::from_secs(CLOSE_TIMEOUT_SECS)).await;
+
+    // Force kill remaining processes
+    let mut map = handles.lock().await;
+    let session_ids = force_kill_all_sessions(&mut map).await;
+    drop(map);
+
+    // Remove all pid files
+    #[cfg(unix)]
+    if let Ok(data_dir) = resolve_data_dir(app) {
+        for csid in &session_ids {
+            remove_pgid(&data_dir, csid);
+        }
+    }
+
+    #[cfg(not(unix))]
+    let _ = app;
 }
 
 #[tauri::command]
@@ -4352,5 +4570,367 @@ mod tests {
         assert_eq!(imgs.len(), 1);
         assert_eq!(imgs[0]["data"], "base64data");
         assert_eq!(imgs[0]["mediaType"], "image/png");
+    }
+
+    #[cfg(unix)]
+    mod process_group_tests {
+        use super::*;
+        use std::os::unix::process::CommandExt as _;
+
+        #[test]
+        fn save_and_remove_pgid() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+
+            save_pgid(app_data_dir, "session-1", 12345).unwrap();
+
+            let pid_file = pids_dir(app_data_dir).join("session-1.pid");
+            assert!(pid_file.exists());
+            let contents = std::fs::read_to_string(&pid_file).unwrap();
+            assert_eq!(contents, "12345");
+
+            remove_pgid(app_data_dir, "session-1");
+            assert!(!pid_file.exists());
+        }
+
+        #[test]
+        fn save_pgid_rejects_path_traversal() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+
+            assert!(save_pgid(app_data_dir, "../escape", 12345).is_err());
+            assert!(save_pgid(app_data_dir, "a/b", 12345).is_err());
+            assert!(save_pgid(app_data_dir, "", 12345).is_err());
+            assert!(save_pgid(app_data_dir, "valid-session-id", 12345).is_ok());
+        }
+
+        #[test]
+        fn cleanup_orphan_processes_removes_stale_pid_files() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            // Write a PID file with a PGID that doesn't exist (use a very high number)
+            let pid_file = dir.join("stale-session.pid");
+            std::fs::write(&pid_file, "999999999").unwrap();
+            assert!(pid_file.exists());
+
+            cleanup_orphan_processes(app_data_dir);
+
+            // PID file should be removed
+            assert!(!pid_file.exists());
+        }
+
+        #[test]
+        fn cleanup_orphan_processes_handles_empty_dir() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            cleanup_orphan_processes(app_data_dir);
+        }
+
+        #[test]
+        fn cleanup_orphan_processes_handles_no_dir() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path().join("nonexistent");
+
+            cleanup_orphan_processes(&app_data_dir);
+        }
+
+        #[test]
+        fn cleanup_orphan_processes_ignores_non_pid_files() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let other_file = dir.join("notes.txt");
+            std::fs::write(&other_file, "not a pid").unwrap();
+
+            cleanup_orphan_processes(app_data_dir);
+
+            assert!(other_file.exists());
+        }
+
+        /// Spawn a process in a new process group via setsid(), verify it
+        /// becomes a process group leader (pgid == pid), then verify that
+        /// killpg terminates the entire group.
+        #[test]
+        fn setsid_creates_new_process_group_leader() {
+            use std::process::Command;
+
+            let child = unsafe {
+                Command::new("sleep")
+                    .arg("999")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .pre_exec(|| {
+                        if libc::setsid() == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    })
+                    .spawn()
+                    .unwrap()
+            };
+
+            let pid = child.id() as libc::pid_t;
+
+            // After setsid(), the child's PGID should equal its PID
+            let pgid = unsafe { libc::getpgid(pid) };
+            assert_eq!(
+                pgid, pid,
+                "setsid child should be its own process group leader"
+            );
+
+            // killpg should successfully terminate the group
+            let ret = unsafe { libc::killpg(pid, libc::SIGKILL) };
+            assert_eq!(ret, 0, "killpg should succeed");
+
+            // Reap the child
+            let mut child = child;
+            let _ = child.wait();
+
+            // Verify process is gone
+            let alive = unsafe { libc::kill(pid, 0) };
+            assert_ne!(alive, 0, "process should be terminated");
+        }
+
+        /// Verify killpg kills grandchild processes within the same group.
+        #[test]
+        fn killpg_kills_grandchild_processes() {
+            use std::process::Command;
+
+            // Spawn a shell that itself spawns a grandchild (sleep).
+            // Both shell and sleep will be in the new process group.
+            let child = unsafe {
+                Command::new("sh")
+                    .args(["-c", "sleep 999 & wait"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .pre_exec(|| {
+                        if libc::setsid() == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    })
+                    .spawn()
+                    .unwrap()
+            };
+
+            let pgid = child.id() as libc::pid_t;
+
+            // Give the grandchild time to spawn
+            std::thread::sleep(std::time::Duration::from_millis(200));
+
+            // Kill the entire process group
+            let ret = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+            assert_eq!(ret, 0, "killpg should succeed");
+
+            // Reap the child
+            let mut child = child;
+            let _ = child.wait();
+
+            // Verify no processes remain in this group
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let group_alive = unsafe { libc::killpg(pgid, 0) };
+            assert_ne!(
+                group_alive, 0,
+                "no processes should remain in the killed group"
+            );
+        }
+
+        #[test]
+        fn cleanup_orphan_processes_kills_alive_process_group() {
+            use std::process::Command;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            // Spawn a process in a new process group via setsid()
+            let child = unsafe {
+                Command::new("sleep")
+                    .arg("999")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .pre_exec(|| {
+                        if libc::setsid() == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    })
+                    .spawn()
+                    .unwrap()
+            };
+
+            let pgid = child.id() as libc::pid_t;
+
+            // Write a PID file for this process group
+            let pid_file = dir.join("alive-session.pid");
+            std::fs::write(&pid_file, pgid.to_string()).unwrap();
+
+            // Verify process is alive
+            assert_eq!(
+                unsafe { libc::killpg(pgid, 0) },
+                0,
+                "process group should be alive before cleanup"
+            );
+
+            cleanup_orphan_processes(app_data_dir);
+
+            // Give processes time to be reaped
+            std::thread::sleep(std::time::Duration::from_secs(3));
+
+            // Verify process group is terminated
+            let still_alive = unsafe { libc::killpg(pgid, 0) };
+            assert_ne!(
+                still_alive, 0,
+                "process group should be terminated after cleanup"
+            );
+
+            // PID file should be removed
+            assert!(!pid_file.exists());
+        }
+
+        #[test]
+        fn cleanup_orphan_processes_ignores_invalid_pgid_zero() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            // Write a PID file with pgid=0 (dangerous: would target caller's group)
+            let pid_file = dir.join("bad-zero.pid");
+            std::fs::write(&pid_file, "0").unwrap();
+
+            cleanup_orphan_processes(app_data_dir);
+
+            // PID file should be removed without calling killpg(0, ...)
+            assert!(!pid_file.exists());
+        }
+
+        #[test]
+        fn cleanup_orphan_processes_ignores_invalid_pgid_one() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            // Write a PID file with pgid=1 (init process)
+            let pid_file = dir.join("bad-one.pid");
+            std::fs::write(&pid_file, "1").unwrap();
+
+            cleanup_orphan_processes(app_data_dir);
+
+            // PID file should be removed without calling killpg(1, ...)
+            assert!(!pid_file.exists());
+        }
+
+        #[test]
+        fn cleanup_orphan_processes_ignores_negative_pgid() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let pid_file = dir.join("bad-negative.pid");
+            std::fs::write(&pid_file, "-1").unwrap();
+
+            cleanup_orphan_processes(app_data_dir);
+
+            assert!(!pid_file.exists());
+        }
+
+        fn make_dummy_agent_process(
+            child: tokio::process::Child,
+            stdin: tokio::process::ChildStdin,
+            pgid: Option<u32>,
+        ) -> AgentProcess {
+            AgentProcess {
+                stdin,
+                state: BridgeState::Initializing,
+                turn_phase: TurnPhase::Idle,
+                sdk_session_id: None,
+                child,
+                generation_id: 1,
+                pgid,
+                streaming_message_id: None,
+                streaming_parts: Vec::new(),
+                last_message_id: None,
+                task_id_map: HashMap::new(),
+                pending_message: None,
+                current_permission_mode: "default".to_string(),
+                available_models: Vec::new(),
+                selected_model: None,
+                last_result_token_usage: None,
+            }
+        }
+
+        /// Spawn processes with setsid into AgentProcessMap, then verify
+        /// force_kill_all_sessions actually terminates them.
+        #[tokio::test]
+        async fn force_kill_all_sessions_clears_map_and_kills_processes() {
+            let mut map: AgentProcessMap = HashMap::new();
+            let mut pids: Vec<u32> = Vec::new();
+
+            for id in ["sess-a", "sess-b"] {
+                let mut cmd = tokio::process::Command::new("sleep");
+                cmd.arg("999")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                unsafe {
+                    cmd.pre_exec(|| {
+                        if libc::setsid() == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                let mut child = cmd.spawn().unwrap();
+                let stdin = child.stdin.take().unwrap();
+                let pid = child.id();
+                if let Some(p) = pid {
+                    pids.push(p);
+                }
+                map.insert(id.to_string(), make_dummy_agent_process(child, stdin, pid));
+            }
+
+            assert_eq!(map.len(), 2);
+
+            let returned_ids = force_kill_all_sessions(&mut map).await;
+
+            assert!(map.is_empty());
+            assert_eq!(returned_ids.len(), 2);
+            assert!(returned_ids.contains(&"sess-a".to_string()));
+            assert!(returned_ids.contains(&"sess-b".to_string()));
+
+            // Give processes time to be reaped
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            // Verify all processes are actually dead
+            for pid in &pids {
+                let alive = unsafe { libc::kill(*pid as libc::pid_t, 0) };
+                assert_ne!(
+                    alive, 0,
+                    "process {pid} should be terminated after force_kill_all_sessions"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn force_kill_all_sessions_handles_empty_map() {
+            let mut map: AgentProcessMap = HashMap::new();
+
+            let returned_ids = force_kill_all_sessions(&mut map).await;
+
+            assert!(map.is_empty());
+            assert!(returned_ids.is_empty());
+        }
     }
 }
