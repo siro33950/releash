@@ -102,7 +102,7 @@ function CurrentAction({
 
 	return (
 		<div
-			className={`rounded-md border px-3 py-2 ${stateClasses[state] ?? stateClasses.pending}`}
+			className={`overflow-hidden rounded-md border px-3 py-2 ${stateClasses[state] ?? stateClasses.pending}`}
 		>
 			<div className="flex items-center justify-between gap-3">
 				<div className="min-w-0">
@@ -304,38 +304,29 @@ function TraceItemRow({
 				{!isLast && <div className="w-px flex-1 min-h-4 bg-border" />}
 			</div>
 			<div
-				className={`mb-2 rounded-md border px-3 py-2 ${
+				className={`mb-2 overflow-hidden rounded-md border px-3 py-2 ${
 					item.kind === "current"
 						? "border-primary/60 bg-primary/5"
 						: "border-border"
 				}`}
 			>
-				<div className="flex items-start justify-between gap-3">
-					<div className="min-w-0">
-						<div className="flex items-center gap-2">
-							<span className="text-sm font-medium truncate">
-								{item.stepName}
-							</span>
-							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-								{stepMode}
-							</span>
-							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-								#{index + 1}
-							</span>
-							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-								run {item.occurrence}
-							</span>
-						</div>
-						<TraceItemSummary
-							item={item}
-							onSessionClick={onSessionClick}
-							onFileClick={onFileClick}
-						/>
-					</div>
-					<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-						{item.state}
+				<div className="flex min-w-0 flex-wrap items-center gap-2">
+					<span className="text-sm font-medium truncate">{item.stepName}</span>
+					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+						{stepMode}
+					</span>
+					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+						#{index + 1}
+					</span>
+					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+						run {item.occurrence}
 					</span>
 				</div>
+				<TraceItemSummary
+					item={item}
+					onSessionClick={onSessionClick}
+					onFileClick={onFileClick}
+				/>
 			</div>
 		</div>
 	);
@@ -373,7 +364,7 @@ function ParallelBlockRow({
 				{!isLast && <div className="w-px flex-1 min-h-4 bg-border" />}
 			</div>
 			<div
-				className={`mb-2 rounded-md border px-3 py-2 ${
+				className={`mb-2 overflow-hidden rounded-md border px-3 py-2 ${
 					item.state === "running"
 						? "border-primary/60 bg-primary/5"
 						: item.state === "failed"
@@ -381,36 +372,27 @@ function ParallelBlockRow({
 							: "border-border"
 				}`}
 			>
-				<div className="flex items-start justify-between gap-3">
-					<div className="min-w-0">
-						<div className="flex items-center gap-2">
-							<GitBranch className="size-3.5 text-muted-foreground" />
-							<span className="text-sm font-medium truncate">
-								{item.stepName}
-							</span>
-							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-								parallel
-							</span>
-							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-								#{index + 1}
-							</span>
-							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-								run {item.occurrence}
-							</span>
-						</div>
-						<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-							<span>
-								{completedCount}/{totalCount} completed
-							</span>
-							{item.entry?.result && <span>Result: {item.entry.result}</span>}
-							{tokenTotal != null && (
-								<span className="shrink-0">{tokenTotal} tokens</span>
-							)}
-						</div>
-					</div>
-					<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-						{item.state}
+				<div className="flex min-w-0 flex-wrap items-center gap-2">
+					<GitBranch className="size-3.5 text-muted-foreground" />
+					<span className="text-sm font-medium truncate">{item.stepName}</span>
+					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+						parallel
 					</span>
+					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+						#{index + 1}
+					</span>
+					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+						run {item.occurrence}
+					</span>
+				</div>
+				<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+					<span>
+						{completedCount}/{totalCount} completed
+					</span>
+					{item.entry?.result && <span>Result: {item.entry.result}</span>}
+					{tokenTotal != null && (
+						<span className="shrink-0">{tokenTotal} tokens</span>
+					)}
 				</div>
 				<div className="mt-2 flex flex-col gap-1 pl-2 border-l-2 border-border">
 					{item.childSteps.map((child) => (
@@ -450,7 +432,7 @@ function ParallelChildRow({
 			? ((so as Record<string, unknown>).verdict as string | undefined)
 			: undefined;
 	return (
-		<div className="flex flex-col gap-1 rounded px-2 py-1 text-xs">
+		<div className="flex min-w-0 flex-col gap-1 rounded px-2 py-1 text-xs">
 			<div className="flex items-center gap-2">
 				<div
 					className={`flex size-4 items-center justify-center rounded-full border ${stateClasses[child.state] ?? stateClasses.pending}`}
