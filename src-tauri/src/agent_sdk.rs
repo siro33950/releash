@@ -4760,7 +4760,7 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
 
             // Spawn a process in a new process group via setsid()
-            let child = unsafe {
+            let mut child = unsafe {
                 Command::new("sleep")
                     .arg("999")
                     .stdout(std::process::Stdio::null())
@@ -4790,8 +4790,10 @@ mod tests {
 
             cleanup_orphan_processes(app_data_dir);
 
-            // Give processes time to be reaped
-            std::thread::sleep(std::time::Duration::from_secs(3));
+            // Reap the child to clear zombie state from process table.
+            // cleanup_orphan_processes sends SIGTERM/SIGKILL via killpg, but without
+            // wait() the child becomes a zombie and killpg(pgid, 0) still returns 0.
+            let _ = child.wait();
 
             // Verify process group is terminated
             let still_alive = unsafe { libc::killpg(pgid, 0) };
