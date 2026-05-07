@@ -192,6 +192,17 @@ pub fn run() {
                 });
             }
 
+            // Clean up orphan agent processes from previous crashes.
+            // Must complete before init_agent_sessions() to prevent killing newly spawned processes.
+            #[cfg(unix)]
+            {
+                let data_dir_clone = data_dir.clone();
+                let _ = std::thread::spawn(move || {
+                    agent_sdk::cleanup_orphan_processes(&data_dir_clone);
+                })
+                .join();
+            }
+
             // Initialize builtin workflows
             if let Err(e) =
                 workflow::builtin::init_builtin_workflows(&workflow::storage::workflows_dir())

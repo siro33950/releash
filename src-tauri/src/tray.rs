@@ -84,6 +84,12 @@ fn handle_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
             QUIT_REQUESTED.store(true, Ordering::SeqCst);
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
+                // Kill all agent sessions before stopping the server
+                if let Some(handles) =
+                    app.try_state::<std::sync::Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
+                {
+                    crate::agent_sdk::close_all_agent_sessions(&app, handles.inner()).await;
+                }
                 let _ = crate::ws_server::commands::stop_server_core(&app).await;
                 app.exit(0);
             });
