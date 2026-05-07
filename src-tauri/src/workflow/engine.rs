@@ -1684,9 +1684,11 @@ impl WorkflowEngine {
                             retry_count + 1,
                         )
                         .await?;
+                        return Ok(ContractCheckResult::RetrySent);
                     }
-                    Ok(ContractCheckResult::RetrySent)
-                } else {
+                }
+                // retry不可またはsession_idなし → Failed遷移
+                {
                     let (chat_session_id, snapshot) = {
                         let mut execs = self.executions.lock().await;
                         let exec = execs.get_mut(worktree_path).ok_or_else(|| {
@@ -1699,11 +1701,19 @@ impl WorkflowEngine {
                             output_contract.clone(),
                         );
                         exec.step_history.push(entry);
-                        exec.state = WorkflowExecutionState::Failed {
-                            reason: format!(
+                        let fail_reason = if should_retry {
+                            format!(
+                                "Contract violation at step '{}': no active session for repair: {}",
+                                step_name, violation.details
+                            )
+                        } else {
+                            format!(
                                 "Contract violation at step '{}' after {} retries: {}",
                                 step_name, MAX_CONTRACT_RETRIES, violation.details
-                            ),
+                            )
+                        };
+                        exec.state = WorkflowExecutionState::Failed {
+                            reason: fail_reason,
                         };
                         exec.updated_at = current_timestamp();
                         (chat_session_id, exec.to_workflow_state())
