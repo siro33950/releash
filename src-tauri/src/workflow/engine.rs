@@ -445,9 +445,11 @@ impl WorkflowExecution {
     }
 
     /// interactiveモードの判定ロジック（純粋関数）。
+    /// rulesが定義されている場合はeffective_resultに基づいてルール評価を行う。
     fn decide_interactive_action(
         &self,
         abort: bool,
+        effective_result: &str,
     ) -> Result<InteractiveAction, WorkflowEngineError> {
         if self.state != WorkflowExecutionState::Running {
             return Err(WorkflowEngineError::InvalidState(
@@ -461,9 +463,14 @@ impl WorkflowExecution {
             ));
         }
         if abort {
-            Ok(InteractiveAction::Abort)
-        } else {
-            Ok(InteractiveAction::Advance)
+            return Ok(InteractiveAction::Abort);
+        }
+        if step.rules.is_empty() {
+            return Ok(InteractiveAction::Advance);
+        }
+        match WorkflowEngine::evaluate_auto_rules(effective_result, &step.rules) {
+            Some((next_step, _matched)) => Ok(InteractiveAction::TransitionTo(next_step)),
+            None => Ok(InteractiveAction::Advance),
         }
     }
 }
@@ -491,6 +498,7 @@ enum ApprovalAction {
 enum InteractiveAction {
     Advance,
     Abort,
+    TransitionTo(String),
 }
 
 /// ロック内で確定した遷移結果。ロ��ク外で永続化・AgentSession起動を行うための情報を持つ。
@@ -1049,7 +1057,7 @@ impl WorkflowEngine {
                 .get_mut(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let chat_session_id = exec.chat_session_id.clone();
-            let action = exec.decide_interactive_action(abort)?;
+            let action = exec.decide_interactive_action(abort, &effective_result)?;
 
             let outcome = match action {
                 InteractiveAction::Abort => {
@@ -1065,6 +1073,15 @@ impl WorkflowEngine {
                     );
                     exec.step_history.push(entry);
                     Self::apply_advance(exec)
+                }
+                InteractiveAction::TransitionTo(target) => {
+                    let entry = exec.make_step_history_entry(
+                        Some(effective_result),
+                        structured_output.clone(),
+                        output_contract.clone(),
+                    );
+                    exec.step_history.push(entry);
+                    Self::apply_transition(exec, &target)?
                 }
             };
             (chat_session_id, outcome)
@@ -4072,7 +4089,7 @@ mod tests {
     fn decide_interactive_action_complete() {
         let exec = make_exec(0); // plan (interactive, state=Running)
         assert_eq!(
-            exec.decide_interactive_action(false).unwrap(),
+            exec.decide_interactive_action(false, "complete").unwrap(),
             InteractiveAction::Advance
         );
     }
@@ -4081,7 +4098,7 @@ mod tests {
     fn decide_interactive_action_abort() {
         let exec = make_exec(0); // plan (interactive, state=Running)
         assert_eq!(
-            exec.decide_interactive_action(true).unwrap(),
+            exec.decide_interactive_action(true, "complete").unwrap(),
             InteractiveAction::Abort
         );
     }
@@ -4090,13 +4107,54 @@ mod tests {
     fn decide_interactive_action_not_running() {
         let mut exec = make_exec(0);
         exec.state = WorkflowExecutionState::Completed;
-        assert!(exec.decide_interactive_action(false).is_err());
+        assert!(exec.decide_interactive_action(false, "complete").is_err());
     }
 
     #[test]
     fn decide_interactive_action_wrong_mode() {
         let exec = make_exec(1); // implement (auto mode, state=Running)
-        assert!(exec.decide_interactive_action(false).is_err());
+        assert!(exec.decide_interactive_action(false, "complete").is_err());
+    }
+
+    #[test]
+    fn decide_interactive_action_with_rules_transition() {
+        let mut exec = make_exec(0); // plan (interactive)
+        exec.workflow.steps[0].rules = vec![TransitionRule {
+            r#match: "NEEDS_FIX".to_string(),
+            next: "implement".to_string(),
+        }];
+        assert_eq!(
+            exec.decide_interactive_action(false, "NEEDS_FIX").unwrap(),
+            InteractiveAction::TransitionTo("implement".to_string())
+        );
+    }
+
+    #[test]
+    fn decide_interactive_action_with_rules_no_match_advances() {
+        let mut exec = make_exec(0); // plan (interactive)
+        exec.workflow.steps[0].rules = vec![TransitionRule {
+            r#match: "NEEDS_FIX".to_string(),
+            next: "implement".to_string(),
+        }];
+        // LGTM はルールにマッチしないので Advance
+        assert_eq!(
+            exec.decide_interactive_action(false, "LGTM").unwrap(),
+            InteractiveAction::Advance
+        );
+    }
+
+    #[test]
+    fn decide_interactive_action_abort_ignores_rules() {
+        let mut exec = make_exec(0); // plan (interactive)
+        exec.workflow.steps[0].rules = vec![TransitionRule {
+            r#match: "NEEDS_FIX".to_string(),
+            next: "implement".to_string(),
+        }];
+        // abortの場合はrulesに関係なくAbort
+        assert_eq!(
+            exec.decide_interactive_action(true, "NEEDS_FIX").unwrap(),
+            InteractiveAction::Abort
+        );
     }
 
     // ---- validate_start ----

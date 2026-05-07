@@ -1,6 +1,8 @@
+use super::builtin;
 use super::schema::Step;
 use super::storage;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -9,6 +11,7 @@ use std::path::Path;
 pub enum FacetError {
     InvalidKey { key: String },
     NotFound { kind: FacetKind, key: String },
+    BuiltinProtected { kind: FacetKind, key: String },
     Io(std::io::Error),
 }
 
@@ -22,6 +25,11 @@ impl fmt::Display for FacetError {
             Self::NotFound { kind, key } => write!(
                 f,
                 "ファセット '{key}' ({}) が見つかりません",
+                kind.dir_name()
+            ),
+            Self::BuiltinProtected { kind, key } => write!(
+                f,
+                "ビルトインファセット '{key}' ({}) は削除できません",
                 kind.dir_name()
             ),
             Self::Io(e) => write!(f, "I/Oエラー: {e}"),
@@ -99,13 +107,16 @@ pub fn validate_facet_key(key: &str) -> Result<(), FacetError> {
 pub fn load_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<String, FacetError> {
     validate_facet_key(key)?;
     let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
-    if !path.exists() {
-        return Err(FacetError::NotFound {
-            kind,
-            key: key.to_string(),
-        });
+    if path.exists() {
+        return Ok(fs::read_to_string(&path)?);
     }
-    Ok(fs::read_to_string(&path)?)
+    if let Some(content) = builtin::get_builtin_facet(kind, key) {
+        return Ok(content.to_string());
+    }
+    Err(FacetError::NotFound {
+        kind,
+        key: key.to_string(),
+    })
 }
 
 pub fn save_facet(
@@ -125,33 +136,40 @@ pub fn save_facet(
 pub fn delete_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<(), FacetError> {
     validate_facet_key(key)?;
     let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
-    if !path.exists() {
-        return Err(FacetError::NotFound {
+    if path.exists() {
+        fs::remove_file(&path)?;
+        return Ok(());
+    }
+    if builtin::is_builtin_facet(kind, key) {
+        return Err(FacetError::BuiltinProtected {
             kind,
             key: key.to_string(),
         });
     }
-    fs::remove_file(&path)?;
-    Ok(())
+    Err(FacetError::NotFound {
+        kind,
+        key: key.to_string(),
+    })
 }
 
 pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, FacetError> {
+    let mut keys = BTreeSet::new();
     let dir = base_dir.join(kind.dir_name());
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-    let mut keys = Vec::new();
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                keys.push(stem.to_string());
+    if dir.exists() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    keys.insert(stem.to_string());
+                }
             }
         }
     }
-    keys.sort();
-    Ok(keys)
+    for k in builtin::list_builtin_facet_keys(kind) {
+        keys.insert(k.to_string());
+    }
+    Ok(keys.into_iter().collect())
 }
 
 pub fn compose_facets_from_refs(
