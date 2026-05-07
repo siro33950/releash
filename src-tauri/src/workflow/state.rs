@@ -26,6 +26,8 @@ pub struct WorkflowState {
     pub step_outputs: HashMap<String, StepOutput>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_parallel_steps: Vec<ParallelStepState>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub workflow_variables: HashMap<String, String>,
     pub started_at: f64,
     pub updated_at: f64,
 }
@@ -78,9 +80,17 @@ pub fn compute_step_states(
         .iter()
         .enumerate()
         .map(|(i, step)| {
+            let in_history = step_history.iter().any(|h| h.step_name == step.name);
             let s = if i == current_step_index {
-                state.as_str()
-            } else if step_history.iter().any(|h| h.step_name == step.name) {
+                // ワークフローがfailedでも、このステップ自体が完了済みならcompletedとする。
+                // cycle_guard超過やcontract violation等のワークフローレベル失敗で、
+                // 完了済みステップがfailed表示になるのを防ぐ。
+                if matches!(state, WorkflowExecutionState::Failed { .. }) && in_history {
+                    "completed"
+                } else {
+                    state.as_str()
+                }
+            } else if in_history {
                 "completed"
             } else {
                 "pending"
@@ -101,7 +111,7 @@ pub struct StepHistoryEntry {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_usage: Option<TokenUsage>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_text: Option<String>,
+    pub structured_output: Option<serde_json::Value>,
     #[serde(default)]
     pub run_index: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -116,6 +126,10 @@ pub struct ChildOutputSnapshot {
     pub result: Option<String>,
     pub run_index: u32,
     pub completed_at: f64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub structured_output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output_contract: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +144,10 @@ pub struct ParallelStepState {
     pub run_index: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub completed_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub structured_output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output_contract: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,7 +159,10 @@ pub struct StepOutput {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub result: Option<String>,
-    pub output_text: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub structured_output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output_contract: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_usage: Option<TokenUsage>,
     pub completed_at: f64,

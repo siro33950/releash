@@ -1,3 +1,11 @@
+export type JsonValue =
+	| string
+	| number
+	| boolean
+	| null
+	| JsonValue[]
+	| { [key: string]: JsonValue };
+
 export interface TokenUsage {
 	inputTokens: number;
 	outputTokens: number;
@@ -9,6 +17,8 @@ export interface ChildOutputSnapshot {
 	result?: string;
 	runIndex: number;
 	completedAt: number;
+	structuredOutput?: JsonValue;
+	outputContract?: string;
 }
 
 export interface StepHistoryEntry {
@@ -17,7 +27,7 @@ export interface StepHistoryEntry {
 	result: string | null;
 	sessionId?: string;
 	tokenUsage?: TokenUsage;
-	outputText?: string;
+	structuredOutput?: JsonValue;
 	runIndex?: number;
 	childOutputs?: ChildOutputSnapshot[];
 }
@@ -100,7 +110,8 @@ export interface StepOutput {
 	runIndex: number;
 	sessionId?: string;
 	result?: string;
-	outputText: string;
+	structuredOutput?: JsonValue;
+	outputContract?: string;
 	tokenUsage?: TokenUsage;
 	completedAt: number;
 }
@@ -112,6 +123,8 @@ export interface ParallelStepState {
 	result?: string;
 	runIndex: number;
 	completedAt?: number;
+	structuredOutput?: JsonValue;
+	outputContract?: string;
 }
 
 export interface WorkflowState {
@@ -126,6 +139,7 @@ export interface WorkflowState {
 	stepHistory: StepHistoryEntry[];
 	stepExecutionCounts: Record<string, number>;
 	stepOutputs: Record<string, StepOutput>;
+	workflowVariables?: Record<string, string>;
 	workflowDefinition: Workflow;
 	totalTokenUsage: TokenUsage;
 	stepStates: Record<string, string>;
@@ -164,7 +178,7 @@ export type WorkflowLogEvent =
 			result: string | null;
 			session_id?: string;
 			token_usage?: TokenUsage;
-			output_text?: string;
+			structured_output?: JsonValue;
 			run_index?: number;
 			timestamp: number;
 	  }
@@ -204,7 +218,16 @@ export type WorkflowLogEvent =
 			step_outputs: CollectedOutputEntry[];
 			reduce_strategy: string;
 			reduce_result?: string;
-			reduce_text: string;
+			reduce_structured_output?: JsonValue;
+			timestamp: number;
+	  }
+	| {
+			event: "contract_repair_requested";
+			execution_id: string;
+			workflow_name: string;
+			step_name: string;
+			attempt: number;
+			violation_reason: string;
 			timestamp: number;
 	  }
 	| {
@@ -234,7 +257,7 @@ export type WorkflowLogEvent =
 			result: string | null;
 			session_id: string;
 			token_usage?: TokenUsage;
-			output_text?: string;
+			structured_output?: JsonValue;
 			run_index: number;
 			timestamp: number;
 	  }
@@ -250,5 +273,5 @@ export type WorkflowLogEvent =
 export interface CollectedOutputEntry {
 	stepName: string;
 	result?: string;
-	outputTextLen: number;
+	structuredOutput?: JsonValue;
 }

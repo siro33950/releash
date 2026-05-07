@@ -10,6 +10,10 @@ use tokio::sync::Mutex;
 use crate::agent_sdk::AgentProcessMap;
 use crate::agent_status::{current_timestamp, AgentStatusCenter};
 use crate::session::SessionStore;
+use crate::workflow::contract::{
+    build_repair_prompt, extract_workflow_output, validate_contract, ContractValidationResult,
+    ExtractionResult,
+};
 use crate::workflow::log::{WorkflowEventLog, WorkflowLogEvent};
 use crate::workflow::schema::{
     AggregateConfig, CollectConfig, ParallelStep, ReduceStrategy, StepMode, TransitionRule,
@@ -21,8 +25,11 @@ use crate::workflow::state::{
 };
 use crate::workflow::storage;
 
+#[allow(dead_code)]
 const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
+const MAX_CONTRACT_RETRIES: u32 = 2;
 
+#[allow(dead_code)]
 fn truncate_output(text: String) -> String {
     if text.len() <= MAX_OUTPUT_SIZE {
         return text;
@@ -101,6 +108,10 @@ struct WorkflowExecution {
     task: Option<String>,
     /// 並列実行中の場合の状態。
     parallel_run: Option<ParallelRunState>,
+    /// ワークフローレベルの変数（spec-file-path等のcontract結果から設定）。
+    workflow_variables: HashMap<String, String>,
+    /// 現在のステップでのcontractリトライ回数。
+    contract_retry_count: u32,
 }
 
 /// 並列実行中の内部状態。
@@ -116,9 +127,11 @@ struct ParallelChildRun {
     session_id: String,
     state: ParallelChildState,
     result: Option<String>,
-    output_text: Option<String>,
+    structured_output: Option<serde_json::Value>,
+    output_contract: Option<String>,
     token_usage: TokenUsage,
     run_index: u32,
+    contract_retry_count: u32,
 }
 
 /// 並列子ステップの状態。
@@ -257,6 +270,7 @@ impl WorkflowExecution {
             step_states,
             step_outputs: self.step_outputs.clone(),
             active_parallel_steps: self.build_active_parallel_steps(),
+            workflow_variables: self.workflow_variables.clone(),
             started_at: self.started_at,
             updated_at: self.updated_at,
         }
@@ -281,19 +295,19 @@ impl WorkflowExecution {
                 result: child.result.clone(),
                 run_index: child.run_index,
                 completed_at: None,
+                structured_output: child.structured_output.clone(),
+                output_contract: child.output_contract.clone(),
             })
             .collect()
     }
 
     /// 現在のステップの完了履歴エントリを生成し、トークン使用量をリセットする。
-    /// output_textが100KBを超える場合はtruncateする。
     fn make_step_history_entry(
         &mut self,
         result: Option<String>,
-        output_text: Option<String>,
+        structured_output: Option<serde_json::Value>,
+        output_contract: Option<String>,
     ) -> StepHistoryEntry {
-        let output_text = output_text.map(truncate_output);
-
         let step_name = self.workflow.steps[self.current_step_index].name.clone();
         let run_index = self
             .step_execution_counts
@@ -303,8 +317,8 @@ impl WorkflowExecution {
         let completed_at = current_timestamp();
         let token_usage = Some(std::mem::take(&mut self.current_step_token_usage));
 
-        // StepOutputを更新
-        if let Some(ref text) = output_text {
+        // StepOutputを更新（structured_outputがある場合のみ）
+        if structured_output.is_some() {
             self.step_outputs.insert(
                 step_name.clone(),
                 StepOutput {
@@ -312,7 +326,8 @@ impl WorkflowExecution {
                     run_index,
                     session_id: self.current_session_id.clone(),
                     result: result.clone(),
-                    output_text: text.clone(),
+                    structured_output: structured_output.clone(),
+                    output_contract: output_contract.clone(),
                     token_usage: token_usage.clone(),
                     completed_at,
                 },
@@ -325,11 +340,12 @@ impl WorkflowExecution {
             result,
             session_id: self.current_session_id.clone(),
             token_usage,
-            output_text,
+            structured_output,
             run_index,
             child_outputs: None,
         };
         self.current_session_id = None;
+        self.contract_retry_count = 0;
         entry
     }
 
@@ -492,7 +508,22 @@ enum StepOutcome {
 /// reduce処理の結果。
 struct ReduceResult {
     result: Option<String>,
-    text: String,
+    structured_output: Option<serde_json::Value>,
+}
+
+/// Contract検証の結果（呼び出し元の次アクションを示す）
+enum ContractCheckResult {
+    /// contractなし → 通常フローで続行
+    NoContract,
+    /// 検証成功
+    Valid {
+        structured_output: serde_json::Value,
+        result: Option<String>,
+    },
+    /// repair prompt送信済み → 呼び出し元はreturn Ok(())
+    RetrySent,
+    /// workflow Failed化済み → 呼び出し元はreturn Ok(())
+    Failed,
 }
 
 /// ワークフローのステップを順次実行するステートマシンエンジン。
@@ -550,6 +581,8 @@ impl WorkflowEngine {
             step_outputs: HashMap::new(),
             task,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
 
         // validate_start → insert → スナップショット確定を同一ロックで原子的に実行
@@ -643,6 +676,7 @@ impl WorkflowEngine {
                     if let Some(exec) = execs.get_mut(&worktree_path) {
                         let entry = exec.make_step_history_entry(
                             Some(format!("session_start_failed: {e}")),
+                            None,
                             None,
                         );
                         exec.step_history.push(entry);
@@ -741,6 +775,7 @@ impl WorkflowEngine {
                     let entry = exec.make_step_history_entry(
                         Some(format!("error (exit_code: {})", exit_code)),
                         None,
+                        None,
                     );
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
@@ -834,6 +869,54 @@ impl WorkflowEngine {
             }
         };
 
+        // output_contractとstep_nameを取得
+        let (output_contract, current_session_id, step_name_for_contract) = {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            let step = &exec.workflow.steps[exec.current_step_index];
+            (
+                step.output_contract.clone(),
+                exec.current_session_id.clone(),
+                step.name.clone(),
+            )
+        };
+
+        // contract検証（Approve時のみ）
+        let (structured_output, contract_result) = if matches!(decision, ApprovalDecision::Approve)
+        {
+            match self
+                .validate_and_handle_contract(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    &output_contract,
+                    output_text.as_deref(),
+                    &current_session_id,
+                    &step_name_for_contract,
+                )
+                .await?
+            {
+                ContractCheckResult::NoContract => (None, None),
+                ContractCheckResult::Valid {
+                    structured_output,
+                    result,
+                } => (Some(structured_output), result),
+                ContractCheckResult::RetrySent | ContractCheckResult::Failed => return Ok(()),
+            }
+        } else {
+            (None, None)
+        };
+
+        // contract検証成功時のworkflow_variables反映
+        self.apply_contract_variables(worktree_path, &output_contract, &structured_output)
+            .await;
+
+        // contract resultがあればそちらを優先、なければresult_tag
+        let effective_result = contract_result.unwrap_or_else(|| result_tag.to_string());
+
         // 判定 + 状態変更 + 履歴記録を原子的に実行
         let (chat_session_id, outcome) = {
             let mut execs = self.executions.lock().await;
@@ -845,20 +928,29 @@ impl WorkflowEngine {
 
             let outcome = match action {
                 ApprovalAction::Advance => {
-                    let entry =
-                        exec.make_step_history_entry(Some(result_tag.to_string()), output_text);
+                    let entry = exec.make_step_history_entry(
+                        Some(effective_result.clone()),
+                        structured_output.clone(),
+                        output_contract.clone(),
+                    );
                     exec.step_history.push(entry);
                     Self::apply_advance(exec)
                 }
                 ApprovalAction::TransitionTo(target) => {
-                    let entry =
-                        exec.make_step_history_entry(Some(result_tag.to_string()), output_text);
+                    let entry = exec.make_step_history_entry(
+                        Some(effective_result.clone()),
+                        structured_output.clone(),
+                        output_contract.clone(),
+                    );
                     exec.step_history.push(entry);
                     Self::apply_transition(exec, &target)?
                 }
                 ApprovalAction::FailedNoRejectRule(name) => {
-                    let entry =
-                        exec.make_step_history_entry(Some(result_tag.to_string()), output_text);
+                    let entry = exec.make_step_history_entry(
+                        Some(effective_result.clone()),
+                        structured_output.clone(),
+                        output_contract.clone(),
+                    );
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!("No reject rule defined for step '{}'", name),
@@ -904,6 +996,53 @@ impl WorkflowEngine {
             None
         };
 
+        // output_contractとstep_nameを取得
+        let (output_contract, current_session_id, step_name_for_contract) = {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            let step = &exec.workflow.steps[exec.current_step_index];
+            (
+                step.output_contract.clone(),
+                exec.current_session_id.clone(),
+                step.name.clone(),
+            )
+        };
+
+        // contract検証（完了時のみ）
+        let (structured_output, contract_result) = if !abort {
+            match self
+                .validate_and_handle_contract(
+                    app,
+                    session_store,
+                    handles,
+                    worktree_path,
+                    &output_contract,
+                    output_text.as_deref(),
+                    &current_session_id,
+                    &step_name_for_contract,
+                )
+                .await?
+            {
+                ContractCheckResult::NoContract => (None, None),
+                ContractCheckResult::Valid {
+                    structured_output,
+                    result,
+                } => (Some(structured_output), result),
+                ContractCheckResult::RetrySent | ContractCheckResult::Failed => return Ok(()),
+            }
+        } else {
+            (None, None)
+        };
+
+        // contract検証成功時のworkflow_variables反映
+        self.apply_contract_variables(worktree_path, &output_contract, &structured_output)
+            .await;
+
+        // contract resultがあればそちらを優先
+        let effective_result = contract_result.unwrap_or_else(|| "complete".to_string());
+
         let (chat_session_id, outcome) = {
             let mut execs = self.executions.lock().await;
             let exec = execs
@@ -919,8 +1058,11 @@ impl WorkflowEngine {
                     StepOutcome::Persist(exec.to_workflow_state())
                 }
                 InteractiveAction::Advance => {
-                    let entry =
-                        exec.make_step_history_entry(Some("complete".to_string()), output_text);
+                    let entry = exec.make_step_history_entry(
+                        Some(effective_result),
+                        structured_output.clone(),
+                        output_contract.clone(),
+                    );
                     exec.step_history.push(entry);
                     Self::apply_advance(exec)
                 }
@@ -1013,6 +1155,149 @@ impl WorkflowEngine {
             }
         };
 
+        // 子ステップのoutput_contractを取得し、contract検証を実行（ロック外）
+        let child_output_contract = {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            let step = &exec.workflow.steps[exec.current_step_index];
+            step.parallel.as_ref().and_then(|children| {
+                let pr = exec.parallel_run.as_ref()?;
+                let child_run = pr.children.iter().find(|c| c.session_id == session_id)?;
+                children
+                    .iter()
+                    .find(|c| c.name == child_run.step_name)
+                    .and_then(|c| c.output_contract.clone())
+            })
+        };
+
+        // contract検証（exit_code == 0 かつ output_contractが設定されている場合のみ）
+        let (child_result, child_structured_output) = if exit_code == 0 {
+            if let Some(ref contract) = child_output_contract {
+                // output_textがNoneの場合もNoBlockとして検証する
+                let extraction = match &output_text {
+                    Some(text) => extract_workflow_output(text),
+                    None => ExtractionResult::NoBlock,
+                };
+                match validate_contract(contract, extraction) {
+                    ContractValidationResult::Valid {
+                        structured_output,
+                        result,
+                    } => (result, Some(structured_output)),
+                    ContractValidationResult::Invalid(violation) => {
+                        // contract violation: child単位のリトライまたは失敗
+                        let (should_retry, retry_count, exec_id, wf_name, child_step_name) = {
+                            let mut execs = self.executions.lock().await;
+                            let exec = execs.get_mut(worktree_path).ok_or_else(|| {
+                                WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
+                            })?;
+                            let exec_id = exec.id.clone();
+                            let wf_name = exec.workflow.name.clone();
+                            let pr = exec.parallel_run.as_mut().ok_or_else(|| {
+                                WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
+                            })?;
+                            let child = pr
+                                .children
+                                .iter_mut()
+                                .find(|c| c.session_id == session_id)
+                                .ok_or_else(|| {
+                                    WorkflowEngineError::ExecutionNotFound(
+                                        worktree_path.to_string(),
+                                    )
+                                })?;
+                            let retry_count = child.contract_retry_count;
+                            let child_step_name = child.step_name.clone();
+                            if retry_count < MAX_CONTRACT_RETRIES {
+                                child.contract_retry_count += 1;
+                                (true, retry_count, exec_id, wf_name, child_step_name)
+                            } else {
+                                (false, retry_count, exec_id, wf_name, child_step_name)
+                            }
+                        };
+
+                        if should_retry {
+                            self.send_contract_repair(
+                                app,
+                                session_store,
+                                handles,
+                                worktree_path,
+                                session_id,
+                                contract,
+                                &violation,
+                                &exec_id,
+                                &wf_name,
+                                &child_step_name,
+                                retry_count + 1,
+                            )
+                            .await?;
+                            return Ok(());
+                        } else {
+                            // リトライ上限超過 → ワークフロー全体をFailed
+                            let (chat_session_id, snapshot, running_ids) = {
+                                let mut execs = self.executions.lock().await;
+                                let exec = execs.get_mut(worktree_path).ok_or_else(|| {
+                                    WorkflowEngineError::ExecutionNotFound(
+                                        worktree_path.to_string(),
+                                    )
+                                })?;
+                                let chat_session_id = exec.chat_session_id.clone();
+                                let running_ids: Vec<String> = exec
+                                    .parallel_run
+                                    .as_mut()
+                                    .map(|pr| {
+                                        pr.children
+                                            .iter_mut()
+                                            .filter(|c| c.state == ParallelChildState::Running)
+                                            .map(|c| {
+                                                c.state = ParallelChildState::Interrupted;
+                                                c.session_id.clone()
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                exec.state = WorkflowExecutionState::Failed {
+                                        reason: format!(
+                                        "Contract violation at parallel child '{}' after {} retries: {}",
+                                        child_step_name, MAX_CONTRACT_RETRIES, violation.details
+                                    ),
+                                    };
+                                exec.parallel_run = None;
+                                exec.updated_at = current_timestamp();
+                                (chat_session_id, exec.to_workflow_state(), running_ids)
+                            };
+                            for sid in &running_ids {
+                                self.interrupt_agent(handles, sid).await;
+                            }
+                            self.persist_state(
+                                app,
+                                session_store,
+                                &chat_session_id,
+                                snapshot.clone(),
+                            )
+                            .await?;
+                            self.broadcast_state(app, worktree_path, snapshot.clone());
+                            self.write_terminal_log(app, &snapshot);
+                            self.cleanup_session_workflow_refs(worktree_path).await;
+                            return Ok(());
+                        }
+                    }
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
+        // contract検証成功時のworkflow_variables反映
+        self.apply_contract_variables(
+            worktree_path,
+            &child_output_contract,
+            &child_structured_output,
+        )
+        .await;
+
         // ロック内: 子ステップの状態更新 + 全完了チェック
         let (chat_session_id, all_completed, outcome_opt) = {
             let mut execs = self.executions.lock().await;
@@ -1086,29 +1371,30 @@ impl WorkflowEngine {
 
             // 成功
             child.state = ParallelChildState::Completed;
-            child.result = None;
-            child.output_text = output_text.clone();
+            child.result = child_result.clone();
+            child.structured_output = child_structured_output.clone();
             let child_name = child.step_name.clone();
             let child_token_usage = child.token_usage.clone();
             let child_run_index = child.run_index;
 
-            // step_outputsに登録（空出力でも登録してevaluate_aggregateが正しく動作するように）
-            let truncated = output_text
-                .as_ref()
-                .map(|ot| truncate_output(ot.clone()))
-                .unwrap_or_default();
-            exec.step_outputs.insert(
-                child_name.clone(),
-                StepOutput {
-                    step_name: child_name.clone(),
-                    run_index: child_run_index,
-                    session_id: Some(session_id.to_string()),
-                    result: None,
-                    output_text: truncated,
-                    token_usage: Some(child_token_usage.clone()),
-                    completed_at: current_timestamp(),
-                },
-            );
+            // output_contractがあるstepのみStepOutputを生成する（Spec準拠）
+            let log_result = child_result.clone();
+            let log_structured_output = child_structured_output.clone();
+            if child_structured_output.is_some() {
+                exec.step_outputs.insert(
+                    child_name.clone(),
+                    StepOutput {
+                        step_name: child_name.clone(),
+                        run_index: child_run_index,
+                        session_id: Some(session_id.to_string()),
+                        result: child_result,
+                        structured_output: child_structured_output,
+                        output_contract: child_output_contract,
+                        token_usage: Some(child_token_usage.clone()),
+                        completed_at: current_timestamp(),
+                    },
+                );
+            }
 
             // ParallelStepCompleted ログ
             self.write_log(
@@ -1118,10 +1404,10 @@ impl WorkflowEngine {
                     workflow_name: exec.workflow.name.clone(),
                     parent_step_name: pr.parent_step_name.clone(),
                     child_step_name: child_name,
-                    result: None,
+                    result: log_result,
                     session_id: session_id.to_string(),
                     token_usage: Some(child_token_usage),
-                    output_text: output_text.map(truncate_output),
+                    structured_output: log_structured_output,
                     run_index: child_run_index,
                     timestamp: current_timestamp(),
                 },
@@ -1145,38 +1431,20 @@ impl WorkflowEngine {
                 let child_step_names: Vec<String> =
                     pr.children.iter().map(|c| c.step_name.clone()).collect();
 
-                // 親ブロック名で集約StepOutputを登録（pass_previous_response等で参照可能にする）
+                // output_contractがない親ステップはStepOutputを生成しない（Spec準拠）
+                // token_usageはStepHistoryEntryに直接渡す
                 let parent_run_index = exec
                     .step_execution_counts
                     .get(&parent_step_name)
                     .copied()
                     .unwrap_or(1);
-                let mut combined_text = String::new();
                 let mut combined_tokens = TokenUsage::default();
                 for child in &pr.children {
-                    if !combined_text.is_empty() {
-                        combined_text.push_str("\n\n---\n\n");
-                    }
-                    combined_text.push_str(&format!("## {}\n\n", child.step_name));
-                    if let Some(ref ot) = child.output_text {
-                        combined_text.push_str(ot);
-                    }
                     combined_tokens.add(&child.token_usage);
                 }
-                exec.step_outputs.insert(
-                    parent_step_name.clone(),
-                    StepOutput {
-                        step_name: parent_step_name.clone(),
-                        run_index: parent_run_index,
-                        session_id: None,
-                        result: None,
-                        output_text: truncate_output(combined_text),
-                        token_usage: Some(combined_tokens),
-                        completed_at: current_timestamp(),
-                    },
-                );
 
                 // 並列子ステップのスナップショットを保存（履歴表示用）
+                // StepOutputがない子（output_contractなし）はParallelChildRunからフォールバック
                 let child_snapshots: Vec<crate::workflow::state::ChildOutputSnapshot> = pr
                     .children
                     .iter()
@@ -1184,12 +1452,18 @@ impl WorkflowEngine {
                         let child_so = exec.step_outputs.get(&child.step_name);
                         crate::workflow::state::ChildOutputSnapshot {
                             step_name: child.step_name.clone(),
-                            session_id: child_so.and_then(|o| o.session_id.clone()),
-                            result: child_so.and_then(|o| o.result.clone()),
+                            session_id: child_so
+                                .and_then(|o| o.session_id.clone())
+                                .or_else(|| Some(child.session_id.clone())),
+                            result: child_so
+                                .and_then(|o| o.result.clone())
+                                .or(child.result.clone()),
                             run_index: child.run_index,
                             completed_at: child_so
                                 .map(|o| o.completed_at)
                                 .unwrap_or_else(current_timestamp),
+                            structured_output: child_so.and_then(|o| o.structured_output.clone()),
+                            output_contract: child_so.and_then(|o| o.output_contract.clone()),
                         }
                     })
                     .collect();
@@ -1220,8 +1494,6 @@ impl WorkflowEngine {
                     );
 
                     // 履歴エントリ追加（並列ブロックの完了として）
-                    // step_outputsの集約データからoutput_text/token_usageを取得
-                    let combined = exec.step_outputs.get(&parent_step_name);
                     let entry = StepHistoryEntry {
                         step_name: parent_step_name.clone(),
                         completed_at: current_timestamp(),
@@ -1231,8 +1503,9 @@ impl WorkflowEngine {
                             "else".to_string()
                         }),
                         session_id: None,
-                        token_usage: combined.and_then(|o| o.token_usage.clone()),
-                        output_text: combined.map(|o| o.output_text.clone()),
+                        token_usage: Some(combined_tokens),
+                        structured_output: None,
+
                         run_index: parent_run_index,
                         child_outputs: Some(child_snapshots.clone()),
                     };
@@ -1256,14 +1529,14 @@ impl WorkflowEngine {
                         },
                     );
 
-                    let combined = exec.step_outputs.get(&parent_step_name);
                     let entry = StepHistoryEntry {
                         step_name: parent_step_name.clone(),
                         completed_at: current_timestamp(),
                         result: Some("complete".to_string()),
                         session_id: None,
-                        token_usage: combined.and_then(|o| o.token_usage.clone()),
-                        output_text: combined.map(|o| o.output_text.clone()),
+                        token_usage: Some(combined_tokens),
+                        structured_output: None,
+
                         run_index: parent_run_index,
                         child_outputs: Some(child_snapshots),
                     };
@@ -1303,7 +1576,7 @@ impl WorkflowEngine {
 
     /// aggregate条件を評価する。trueなら`then`、falseなら`else`。
     /// child_step_namesで指定された並列子ステップの出力のみを対象にする。
-    /// result優先、未設定時はoutput_textでregex fallback。
+    /// StepOutput.resultのみで判定する。
     fn evaluate_aggregate(
         &self,
         agg: &AggregateConfig,
@@ -1321,12 +1594,6 @@ impl WorkflowEngine {
                     re.is_match(result)
                 } else {
                     result.contains(pattern)
-                }
-            } else if !output.output_text.is_empty() {
-                if let Some(ref re) = re {
-                    re.is_match(&output.output_text)
-                } else {
-                    output.output_text.contains(pattern)
                 }
             } else {
                 false
@@ -1350,6 +1617,185 @@ impl WorkflowEngine {
         } else {
             true
         }
+    }
+
+    /// 非並列stepのcontract検証を共通処理する。
+    /// approval / interactive / auto の3パスで同一のcontract検証・retry・failure処理を行う。
+    #[allow(clippy::too_many_arguments)]
+    async fn validate_and_handle_contract(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        output_contract: &Option<String>,
+        output_text: Option<&str>,
+        current_session_id: &Option<String>,
+        step_name: &str,
+    ) -> Result<ContractCheckResult, WorkflowEngineError> {
+        let contract = match output_contract {
+            Some(c) => c,
+            None => return Ok(ContractCheckResult::NoContract),
+        };
+
+        // output_textがNoneの場合もNoBlockとして検証する（Spec: blockが存在しない場合はretry）
+        let extraction = match output_text {
+            Some(text) => extract_workflow_output(text),
+            None => ExtractionResult::NoBlock,
+        };
+        match validate_contract(contract, extraction) {
+            ContractValidationResult::Valid {
+                structured_output,
+                result,
+            } => Ok(ContractCheckResult::Valid {
+                structured_output,
+                result,
+            }),
+            ContractValidationResult::Invalid(violation) => {
+                let (should_retry, retry_count, exec_id, wf_name) = {
+                    let mut execs = self.executions.lock().await;
+                    let exec = execs.get_mut(worktree_path).ok_or_else(|| {
+                        WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
+                    })?;
+                    let retry_count = exec.contract_retry_count;
+                    let exec_id = exec.id.clone();
+                    let wf_name = exec.workflow.name.clone();
+                    if retry_count < MAX_CONTRACT_RETRIES {
+                        exec.contract_retry_count += 1;
+                        (true, retry_count, exec_id, wf_name)
+                    } else {
+                        (false, retry_count, exec_id, wf_name)
+                    }
+                };
+
+                if should_retry {
+                    if let Some(ref sid) = current_session_id {
+                        self.send_contract_repair(
+                            app,
+                            session_store,
+                            handles,
+                            worktree_path,
+                            sid,
+                            contract,
+                            &violation,
+                            &exec_id,
+                            &wf_name,
+                            step_name,
+                            retry_count + 1,
+                        )
+                        .await?;
+                        return Ok(ContractCheckResult::RetrySent);
+                    }
+                }
+                // retry不可またはsession_idなし → Failed遷移
+                {
+                    let (chat_session_id, snapshot) = {
+                        let mut execs = self.executions.lock().await;
+                        let exec = execs.get_mut(worktree_path).ok_or_else(|| {
+                            WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
+                        })?;
+                        let chat_session_id = exec.chat_session_id.clone();
+                        let entry = exec.make_step_history_entry(
+                            Some("contract_violation".to_string()),
+                            None,
+                            output_contract.clone(),
+                        );
+                        exec.step_history.push(entry);
+                        let fail_reason = if should_retry {
+                            format!(
+                                "Contract violation at step '{}': no active session for repair: {}",
+                                step_name, violation.details
+                            )
+                        } else {
+                            format!(
+                                "Contract violation at step '{}' after {} retries: {}",
+                                step_name, MAX_CONTRACT_RETRIES, violation.details
+                            )
+                        };
+                        exec.state = WorkflowExecutionState::Failed {
+                            reason: fail_reason,
+                        };
+                        exec.updated_at = current_timestamp();
+                        (chat_session_id, exec.to_workflow_state())
+                    };
+                    self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
+                        .await?;
+                    self.broadcast_state(app, worktree_path, snapshot.clone());
+                    self.write_terminal_log(app, &snapshot);
+                    self.cleanup_session_workflow_refs(worktree_path).await;
+                    Ok(ContractCheckResult::Failed)
+                }
+            }
+        }
+    }
+
+    /// contract violation時のrepair prompt送信を行う共通ヘルパー。
+    /// ログ書き込み・ファセット読み込み・repair prompt生成・agent turn送信を一箇所にまとめる。
+    #[allow(clippy::too_many_arguments)]
+    async fn send_contract_repair(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        session_id: &str,
+        contract: &str,
+        violation: &crate::workflow::contract::ContractViolation,
+        exec_id: &str,
+        wf_name: &str,
+        step_name: &str,
+        attempt: u32,
+    ) -> Result<(), WorkflowEngineError> {
+        self.write_log(
+            app,
+            WorkflowLogEvent::ContractRepairRequested {
+                execution_id: exec_id.to_string(),
+                workflow_name: wf_name.to_string(),
+                step_name: step_name.to_string(),
+                attempt,
+                violation_reason: violation.reason.clone(),
+                timestamp: current_timestamp(),
+            },
+        );
+
+        let contract_definition = {
+            let base_dir = storage::facets_base_dir();
+            crate::workflow::facet::load_facet(
+                crate::workflow::facet::FacetKind::OutputContract,
+                contract,
+                &base_dir,
+            )
+            .ok()
+        };
+        let repair_prompt =
+            build_repair_prompt(contract, violation, contract_definition.as_deref());
+        let permission_mode = {
+            let data_dir = crate::session::resolve_data_dir(app)
+                .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            let parent_session = session_store
+                .get_session(&data_dir, &exec.chat_session_id)
+                .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
+                .ok_or_else(|| {
+                    WorkflowEngineError::SessionNotFound(exec.chat_session_id.clone())
+                })?;
+            parent_session.permission_mode
+        };
+        crate::agent_sdk::start_agent_turn_internal(
+            app,
+            handles,
+            session_store,
+            session_id,
+            worktree_path,
+            &permission_mode,
+            &repair_prompt,
+        )
+        .await
+        .map_err(WorkflowEngineError::AgentSession)?;
+        Ok(())
     }
 
     /// 指定worktree_pathに関連する session_workflow_refs エントリを削除する。
@@ -1429,6 +1875,8 @@ impl WorkflowEngine {
 
     /// autoモードのタグ検出結果を処理する。
     /// 判定 + 状態変更 + 履歴記録を1回のロックで原子的に実行する。
+    /// output_contractが設定されたステップではcontract検証を実行し、
+    /// 違反時はリトライプロンプトを送信する。
     #[allow(clippy::too_many_arguments)]
     async fn handle_auto_complete(
         &self,
@@ -1443,9 +1891,52 @@ impl WorkflowEngine {
         // テキストパートを結合（ロック外で完了）
         let text = Self::extract_text_from_parts(final_parts);
 
+        // contract検証
+        let (output_contract, current_session_id) = {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            let step = &exec.workflow.steps[exec.current_step_index];
+            (
+                step.output_contract.clone(),
+                exec.current_session_id.clone(),
+            )
+        };
+
+        let (structured_output, contract_result) = match self
+            .validate_and_handle_contract(
+                app,
+                session_store,
+                handles,
+                worktree_path,
+                &output_contract,
+                Some(&text),
+                &current_session_id,
+                step_name,
+            )
+            .await?
+        {
+            ContractCheckResult::NoContract => (None, None),
+            ContractCheckResult::Valid {
+                structured_output,
+                result,
+            } => (Some(structured_output), result),
+            ContractCheckResult::RetrySent | ContractCheckResult::Failed => return Ok(()),
+        };
+
+        // contract検証成功時のworkflow_variables反映
+        self.apply_contract_variables(worktree_path, &output_contract, &structured_output)
+            .await;
+
+        let effective_result = contract_result;
+
         // タグ検出もロック外で完了（純粋関数）
         let rule_match = if rules.is_empty() {
             None // ルールなし → 定義順で次へ
+        } else if let Some(ref result_str) = effective_result {
+            // contract resultがある場合はそれでルール評価
+            Some(Self::evaluate_auto_rules(result_str, rules))
         } else {
             Some(Self::evaluate_auto_rules(&text, rules))
         };
@@ -1458,24 +1949,34 @@ impl WorkflowEngine {
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let chat_session_id = exec.chat_session_id.clone();
 
-            let output_text = Some(text.clone());
             let outcome = match rule_match {
                 None => {
                     // ルールなし → 定義順で次へ
-                    let entry = exec.make_step_history_entry(None, output_text);
+                    let entry = exec.make_step_history_entry(
+                        effective_result,
+                        structured_output,
+                        output_contract,
+                    );
                     exec.step_history.push(entry);
                     Self::apply_advance(exec)
                 }
                 Some(Some((next_step, matched_rule))) => {
                     // ルールマッチ → 指定ステップへ遷移
-                    let entry = exec.make_step_history_entry(Some(matched_rule), output_text);
+                    let entry = exec.make_step_history_entry(
+                        Some(matched_rule),
+                        structured_output,
+                        output_contract,
+                    );
                     exec.step_history.push(entry);
                     Self::apply_transition(exec, &next_step)?
                 }
                 Some(None) => {
                     // マッチなし → Failed
-                    let entry = exec
-                        .make_step_history_entry(Some("no_matching_rule".to_string()), output_text);
+                    let entry = exec.make_step_history_entry(
+                        Some("no_matching_rule".to_string()),
+                        structured_output,
+                        output_contract,
+                    );
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed {
                         reason: format!("No matching rule found for step '{}' output", step_name),
@@ -1542,7 +2043,14 @@ impl WorkflowEngine {
         session_store: &Arc<SessionStore>,
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
-        let (chat_session_id, step_clone, step_outputs_clone, step_history_clone, task_clone) = {
+        let (
+            chat_session_id,
+            step_clone,
+            step_outputs_clone,
+            step_history_clone,
+            task_clone,
+            workflow_variables_clone,
+        ) = {
             let execs = self.executions.lock().await;
             let exec = execs
                 .get(worktree_path)
@@ -1554,6 +2062,7 @@ impl WorkflowEngine {
                 exec.step_outputs.clone(),
                 exec.step_history.clone(),
                 exec.task.clone(),
+                exec.workflow_variables.clone(),
             )
         };
 
@@ -1569,6 +2078,7 @@ impl WorkflowEngine {
             task_clone.as_deref(),
             &step_outputs_clone,
             &step_history_clone,
+            &workflow_variables_clone,
         )?;
 
         let parent_session = session_store
@@ -1650,6 +2160,7 @@ impl WorkflowEngine {
         task: Option<&str>,
         step_outputs: &HashMap<String, StepOutput>,
         step_history: &[StepHistoryEntry],
+        workflow_variables: &HashMap<String, String>,
     ) -> Result<(Option<String>, String), WorkflowEngineError> {
         if !step.has_facet_refs() {
             return Err(WorkflowEngineError::InvalidWorkflow(format!(
@@ -1664,8 +2175,47 @@ impl WorkflowEngine {
             .map(|s| Self::render_facet_variables(&s, worktree_path, task));
         let rendered_user =
             Self::render_facet_variables(&composed.user_message, worktree_path, task);
-        let prompt = Self::inject_step_outputs(&rendered_user, step, step_outputs, step_history);
+        let prompt = Self::inject_step_outputs(
+            &rendered_user,
+            step,
+            step_outputs,
+            step_history,
+            workflow_variables,
+        );
         Ok((system_prompt, prompt))
+    }
+
+    /// contract検証成功時にworkflow_variablesへの反映を行う共通ヘルパー。
+    /// spec-file-path contractの場合、spec_file_pathをworkflow_variablesに設定する。
+    async fn apply_contract_variables(
+        &self,
+        worktree_path: &str,
+        output_contract: &Option<String>,
+        structured_output: &Option<serde_json::Value>,
+    ) {
+        let vars = Self::extract_contract_variables(output_contract, structured_output);
+        if !vars.is_empty() {
+            let mut execs = self.executions.lock().await;
+            if let Some(exec) = execs.get_mut(worktree_path) {
+                exec.workflow_variables.extend(vars);
+            }
+        }
+    }
+
+    /// contractとstructured_outputからworkflow_variablesに設定すべきキー/値を抽出する。
+    fn extract_contract_variables(
+        output_contract: &Option<String>,
+        structured_output: &Option<serde_json::Value>,
+    ) -> HashMap<String, String> {
+        let mut vars = HashMap::new();
+        if let (Some(ref contract), Some(ref so)) = (output_contract, structured_output) {
+            if contract == "spec-file-path" {
+                if let Some(path) = so.get("spec_file_path").and_then(|v| v.as_str()) {
+                    vars.insert("spec_file_path".to_string(), path.to_string());
+                }
+            }
+        }
+        vars
     }
 
     /// ファセット内容中のテンプレート変数を展開する。
@@ -1734,7 +2284,7 @@ impl WorkflowEngine {
             return None;
         }
 
-        Some(truncate_output(text))
+        Some(text)
     }
 
     /// ステップの出力をプロンプトにコンテキストブロックとして注入する。
@@ -1743,17 +2293,18 @@ impl WorkflowEngine {
         step: &crate::workflow::schema::Step,
         step_outputs: &HashMap<String, StepOutput>,
         step_history: &[StepHistoryEntry],
+        workflow_variables: &HashMap<String, String>,
     ) -> String {
         let mut result = prompt.to_string();
 
         // pass_previous_response: true → step_historyの最後のエントリのstep_nameからstep_outputsを参照
+        // 前stepにStepOutputがない場合は何も注入しない（Spec: 何も注入されない）
         if step.pass_previous_response == Some(true) {
             if let Some(last_entry) = step_history.last() {
-                let text = match step_outputs.get(&last_entry.step_name) {
-                    Some(o) => o.output_text.as_str(),
-                    None => "(not yet completed)",
-                };
-                Self::append_step_output_block(&mut result, &last_entry.step_name, text);
+                if let Some(o) = step_outputs.get(&last_entry.step_name) {
+                    let text = Self::format_step_output_block(o);
+                    Self::append_step_output_block(&mut result, &last_entry.step_name, &text);
+                }
             }
         }
 
@@ -1761,14 +2312,31 @@ impl WorkflowEngine {
         if let Some(ref refs) = step.pass_output_from {
             for step_name in refs {
                 let text = match step_outputs.get(step_name.as_str()) {
-                    Some(o) => o.output_text.as_str(),
-                    None => "(not yet completed)",
+                    Some(o) => Self::format_step_output_block(o),
+                    None => "(not yet completed)".to_string(),
                 };
-                Self::append_step_output_block(&mut result, step_name, text);
+                Self::append_step_output_block(&mut result, step_name, &text);
             }
         }
 
+        // workflow_variablesの注入
+        if !workflow_variables.is_empty() {
+            let vars_json = serde_json::to_string_pretty(workflow_variables).unwrap_or_default();
+            result.push_str(&format!(
+                "\n\n<workflow_variables>\n{}\n</workflow_variables>",
+                vars_json
+            ));
+        }
+
         result
+    }
+
+    /// StepOutputのstructured_outputをJSON文字列としてフォーマットする。
+    fn format_step_output_block(output: &StepOutput) -> String {
+        match &output.structured_output {
+            Some(json) => serde_json::to_string_pretty(json).unwrap_or_else(|_| "{}".to_string()),
+            None => "(no structured output)".to_string(),
+        }
     }
 
     fn append_step_output_block(result: &mut String, step_name: &str, text: &str) {
@@ -1797,24 +2365,23 @@ impl WorkflowEngine {
                 match last_output {
                     Some(output) => ReduceResult {
                         result: output.result.clone(),
-                        text: output.output_text.clone(),
+                        structured_output: output.structured_output.clone(),
                     },
                     None => ReduceResult {
                         result: None,
-                        text: String::new(),
+                        structured_output: None,
                     },
                 }
             }
             ReduceStrategy::Concat => {
-                let mut parts = Vec::new();
-                for step_name in &collect.from {
-                    if let Some(output) = step_outputs.get(step_name.as_str()) {
-                        parts.push(format!("## {}\n{}", step_name, output.output_text));
-                    }
-                }
+                let entries = Self::collect_step_output_entries(&collect.from, step_outputs);
                 ReduceResult {
                     result: None,
-                    text: parts.join("\n\n"),
+                    structured_output: if entries.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::Value::Array(entries))
+                    },
                 }
             }
             ReduceStrategy::Grouped => {
@@ -1828,81 +2395,110 @@ impl WorkflowEngine {
                         groups.entry(key).or_default().push(step_name.clone());
                     }
                 }
-                let mut text = String::new();
-                for (result_key, steps) in &groups {
-                    text.push_str(&format!("## {}\n", result_key));
-                    for step in steps {
-                        text.push_str(&format!("- {}\n", step));
-                    }
-                    text.push('\n');
+                let grouped_json: serde_json::Map<String, serde_json::Value> = groups
+                    .into_iter()
+                    .map(|(k, v)| {
+                        (
+                            k,
+                            serde_json::Value::Array(
+                                v.into_iter().map(serde_json::Value::String).collect(),
+                            ),
+                        )
+                    })
+                    .collect();
+                ReduceResult {
+                    result: None,
+                    structured_output: if grouped_json.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::Value::Object(grouped_json))
+                    },
                 }
-                ReduceResult { result: None, text }
             }
             ReduceStrategy::AnyNeedsFix => {
                 let mut any_needs_fix = false;
-                let mut parts = Vec::new();
                 for step_name in &collect.from {
                     if let Some(output) = step_outputs.get(step_name.as_str()) {
-                        let step_result =
-                            Self::resolve_step_result(output, &["NEEDS_FIX", "needs_fix"]);
+                        let step_result = Self::resolve_step_result(output);
                         if matches!(
                             step_result.as_deref(),
                             Some("NEEDS_FIX") | Some("needs_fix")
                         ) {
                             any_needs_fix = true;
                         }
-                        parts.push(format!("## {}\n{}", step_name, output.output_text));
                     } else {
                         any_needs_fix = true;
-                        parts.push(format!("## {}\n<MISSING OUTPUT>", step_name));
                     }
                 }
+                let entries = Self::collect_step_output_entries(&collect.from, step_outputs);
                 ReduceResult {
                     result: Some(if any_needs_fix { "NEEDS_FIX" } else { "LGTM" }.to_string()),
-                    text: parts.join("\n\n"),
+                    structured_output: if entries.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::Value::Array(entries))
+                    },
                 }
             }
             ReduceStrategy::AllPassed => {
                 let mut all_passed = true;
-                let mut parts = Vec::new();
                 for step_name in &collect.from {
                     if let Some(output) = step_outputs.get(step_name.as_str()) {
-                        let step_result =
-                            Self::resolve_step_result(output, &["PASSED", "passed", "LGTM"]);
+                        let step_result = Self::resolve_step_result(output);
                         if !matches!(
                             step_result.as_deref(),
                             Some("PASSED") | Some("passed") | Some("LGTM")
                         ) {
                             all_passed = false;
                         }
-                        parts.push(format!("## {}\n{}", step_name, output.output_text));
                     } else {
                         all_passed = false;
-                        parts.push(format!("## {}\n<MISSING OUTPUT>", step_name));
                     }
                 }
+                let entries = Self::collect_step_output_entries(&collect.from, step_outputs);
                 ReduceResult {
                     result: Some(if all_passed { "PASSED" } else { "FAILED" }.to_string()),
-                    text: parts.join("\n\n"),
+                    structured_output: if entries.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::Value::Array(entries))
+                    },
                 }
             }
         }
     }
 
-    /// StepOutputからresultを解決する。result直接値があればそれを優先、
-    /// なければoutput_textからregexフォールバック。
-    fn resolve_step_result(output: &StepOutput, patterns: &[&str]) -> Option<String> {
-        if output.result.is_some() {
-            return output.result.clone();
-        }
-        for pattern in patterns {
-            if let Ok(re) = RegexBuilder::new(pattern).size_limit(1 << 20).build() {
-                if re.is_match(&output.output_text) {
-                    return Some(pattern.to_string());
+    /// collect.fromのステップ名リストから [{ "stepName": "...", "output": ... }] 形式の配列を構築する。
+    fn collect_step_output_entries(
+        from: &[String],
+        step_outputs: &HashMap<String, StepOutput>,
+    ) -> Vec<serde_json::Value> {
+        let mut entries = Vec::new();
+        for step_name in from {
+            if let Some(output) = step_outputs.get(step_name.as_str()) {
+                if let Some(ref so) = output.structured_output {
+                    entries.push(serde_json::json!({
+                        "stepName": step_name,
+                        "output": so,
+                    }));
                 }
             }
         }
-        None
+        entries
+    }
+
+    /// StepOutputからresultを解決する。
+    /// structured_output.verdict → structured_output.status → result の優先順で参照する。
+    fn resolve_step_result(output: &StepOutput) -> Option<String> {
+        if let Some(ref so) = output.structured_output {
+            if let Some(verdict) = so.get("verdict").and_then(|v| v.as_str()) {
+                return Some(verdict.to_string());
+            }
+            if let Some(status) = so.get("status").and_then(|v| v.as_str()) {
+                return Some(status.to_string());
+            }
+        }
+        output.result.clone()
     }
 
     /// AgentSessionを中断する。
@@ -2081,6 +2677,7 @@ impl WorkflowEngine {
                             let entry = exec.make_step_history_entry(
                                 Some(format!("session_start_failed: {e}")),
                                 None,
+                                None,
                             );
                             exec.step_history.push(entry);
                         }
@@ -2131,7 +2728,8 @@ impl WorkflowEngine {
 
                     let entry = exec.make_step_history_entry(
                         reduce_result.result.clone(),
-                        Some(reduce_result.text.clone()),
+                        reduce_result.structured_output.clone(),
+                        None,
                     );
                     exec.step_history.push(entry);
 
@@ -2156,10 +2754,7 @@ impl WorkflowEngine {
                             None => Self::apply_advance(exec),
                         }
                     } else {
-                        match Self::evaluate_auto_rules(&reduce_result.text, &step_rules) {
-                            Some((next_step, _)) => Self::apply_transition(exec, &next_step)?,
-                            None => Self::apply_advance(exec),
-                        }
+                        Self::apply_advance(exec)
                     };
                     (outcome, step_name, exec_id, wf_name)
                 };
@@ -2174,7 +2769,7 @@ impl WorkflowEngine {
                             crate::workflow::log::CollectedOutputEntry {
                                 step_name: name.clone(),
                                 result: output.and_then(|o| o.result.clone()),
-                                output_text_len: output.map_or(0, |o| o.output_text.len()),
+                                structured_output: output.and_then(|o| o.structured_output.clone()),
                             }
                         })
                         .collect();
@@ -2187,7 +2782,7 @@ impl WorkflowEngine {
                         step_outputs: collected_entries,
                         reduce_strategy: format!("{:?}", collect_config_clone.reduce),
                         reduce_result: reduce_result.result.clone(),
-                        reduce_text: reduce_result.text.clone(),
+                        reduce_structured_output: reduce_result.structured_output.clone(),
                         timestamp: crate::session::now_timestamp(),
                     },
                 );
@@ -2296,13 +2891,13 @@ impl WorkflowEngine {
             .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.clone()))?;
         let permission_mode = parent_session.permission_mode;
 
-        // step_outputsのスナップショットをロック外で取得
-        let step_outputs_snapshot = {
+        // step_outputsとworkflow_variablesのスナップショットをロック外で取得
+        let (step_outputs_snapshot, wf_variables_snapshot) = {
             let execs = self.executions.lock().await;
             let exec = execs
                 .get(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            exec.step_outputs.clone()
+            (exec.step_outputs.clone(), exec.workflow_variables.clone())
         };
 
         // Phase 1: セッション生成 + ref登録 + プロンプト構築（AgentSessionはまだ起動しない）
@@ -2311,6 +2906,7 @@ impl WorkflowEngine {
             session_id: String,
             system_prompt: Option<String>,
             user_message: String,
+            output_contract: Option<String>,
         }
         let mut child_setups: Vec<ChildSetup> = Vec::new();
 
@@ -2344,6 +2940,7 @@ impl WorkflowEngine {
                 &step_outputs_snapshot,
                 ps.pass_previous_response.unwrap_or(false),
                 ps.pass_output_from.as_deref(),
+                &wf_variables_snapshot,
             )?;
 
             child_setups.push(ChildSetup {
@@ -2351,6 +2948,7 @@ impl WorkflowEngine {
                 session_id: step_session_id,
                 system_prompt,
                 user_message,
+                output_contract: ps.output_contract.clone(),
             });
         }
 
@@ -2382,9 +2980,11 @@ impl WorkflowEngine {
                     session_id: cs.session_id.clone(),
                     state: ParallelChildState::Running,
                     result: None,
-                    output_text: None,
+                    structured_output: None,
+                    output_contract: cs.output_contract.clone(),
                     token_usage: TokenUsage::default(),
                     run_index,
+                    contract_retry_count: 0,
                 })
                 .collect();
 
@@ -2473,6 +3073,7 @@ impl WorkflowEngine {
     }
 
     /// 並列子ステップ用のプロンプトを構築する。
+    #[allow(clippy::too_many_arguments)]
     fn build_parallel_step_prompt(
         &self,
         ps: &ParallelStep,
@@ -2481,6 +3082,7 @@ impl WorkflowEngine {
         step_outputs: &HashMap<String, StepOutput>,
         pass_previous_response: bool,
         pass_output_from: Option<&[String]>,
+        workflow_variables: &HashMap<String, String>,
     ) -> Result<(Option<String>, String), WorkflowEngineError> {
         let base_dir = storage::facets_base_dir();
         let composed = crate::workflow::facet::compose_facets_from_refs(
@@ -2504,9 +3106,9 @@ impl WorkflowEngine {
             let mut injections = Vec::new();
             for step_name in from_steps {
                 if let Some(output) = step_outputs.get(step_name) {
+                    let text = Self::format_step_output_block(output);
                     injections.push(format!(
-                        "<step_output name=\"{step_name}\">\n{}\n</step_output>",
-                        output.output_text
+                        "<step_output name=\"{step_name}\">\n{text}\n</step_output>",
                     ));
                 }
             }
@@ -2520,11 +3122,21 @@ impl WorkflowEngine {
                     .partial_cmp(&b.completed_at)
                     .unwrap_or(std::cmp::Ordering::Equal)
             }) {
+                let text = Self::format_step_output_block(last_output);
                 user_message = format!(
                     "<step_output name=\"{}\">\n{}\n</step_output>\n\n{}",
-                    last_output.step_name, last_output.output_text, user_message
+                    last_output.step_name, text, user_message
                 );
             }
+        }
+
+        // workflow_variablesの注入
+        if !workflow_variables.is_empty() {
+            let vars_json = serde_json::to_string_pretty(workflow_variables).unwrap_or_default();
+            user_message.push_str(&format!(
+                "\n\n<workflow_variables>\n{}\n</workflow_variables>",
+                vars_json
+            ));
         }
 
         Ok((system_prompt, user_message))
@@ -2647,7 +3259,7 @@ impl WorkflowEngine {
                     result: last_entry.result.clone(),
                     session_id: last_entry.session_id.clone(),
                     token_usage: last_entry.token_usage.clone(),
-                    output_text: last_entry.output_text.clone(),
+                    structured_output: last_entry.structured_output.clone(),
                     run_index: Some(last_entry.run_index),
                     timestamp: last_entry.completed_at,
                 },
@@ -2883,6 +3495,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
 
         let state = exec.to_workflow_state();
@@ -2914,6 +3528,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
         assert!(exec.is_active());
     }
@@ -2935,6 +3551,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
         assert!(exec.is_active());
     }
@@ -2956,6 +3574,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
         assert!(!exec.is_active());
     }
@@ -2979,6 +3599,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
         assert!(!exec.is_active());
     }
@@ -3000,6 +3622,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
         assert!(!exec.is_active());
     }
@@ -3024,6 +3648,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
@@ -3048,7 +3674,8 @@ mod tests {
                 result: None,
                 session_id: None,
                 token_usage: None,
-                output_text: None,
+                structured_output: None,
+
                 run_index: 0,
                 child_outputs: None,
             }],
@@ -3060,6 +3687,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(
@@ -3090,6 +3719,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Aborted);
@@ -3113,6 +3744,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
         let ws = exec.to_workflow_state();
         assert_eq!(ws.state, WorkflowExecutionState::Completed);
@@ -3204,6 +3837,8 @@ mod tests {
             current_step_token_usage: TokenUsage::default(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         }
     }
 
@@ -3564,7 +4199,8 @@ mod tests {
                 result: None,
                 session_id: None,
                 token_usage: None,
-                output_text: None,
+                structured_output: None,
+
                 run_index: 0,
                 child_outputs: None,
             },
@@ -3574,7 +4210,8 @@ mod tests {
                 result: None,
                 session_id: None,
                 token_usage: None,
-                output_text: None,
+                structured_output: None,
+
                 run_index: 0,
                 child_outputs: None,
             },
@@ -3598,7 +4235,8 @@ mod tests {
             result: None,
             session_id: None,
             token_usage: None,
-            output_text: None,
+            structured_output: None,
+
             run_index: 0,
             child_outputs: None,
         }];
@@ -3619,7 +4257,8 @@ mod tests {
             result: None,
             session_id: None,
             token_usage: None,
-            output_text: None,
+            structured_output: None,
+
             run_index: 0,
             child_outputs: None,
         }];
@@ -3637,7 +4276,8 @@ mod tests {
             run_index: 0,
             session_id: None,
             result: result.map(|s| s.to_string()),
-            output_text: output_text.to_string(),
+            structured_output: Some(serde_json::json!({"text": output_text})),
+            output_contract: None,
             token_usage: None,
             completed_at: 1000.0,
         }
@@ -3659,11 +4299,13 @@ mod tests {
             result: None,
             session_id: None,
             token_usage: None,
-            output_text: None,
+            structured_output: None,
+
             run_index: 0,
             child_outputs: None,
         }];
-        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history);
+        let wv = HashMap::new();
+        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history, &wv);
         assert!(result.contains("<step_output name=\"step_a\">"));
         assert!(result.contains("output from A"));
     }
@@ -3673,7 +4315,8 @@ mod tests {
         let step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
         let outputs = HashMap::new();
         let history = vec![];
-        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history);
+        let wv = HashMap::new();
+        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history, &wv);
         assert_eq!(result, "Do B");
     }
 
@@ -3687,7 +4330,8 @@ mod tests {
             "step_a".to_string(),
             make_step_output("step_a", "output A", None),
         );
-        let result = WorkflowEngine::inject_step_outputs("Do C", &step, &outputs, &[]);
+        let result =
+            WorkflowEngine::inject_step_outputs("Do C", &step, &outputs, &[], &HashMap::new());
         assert!(result.contains("<step_output name=\"step_a\">"));
         assert!(result.contains("output A"));
     }
@@ -3702,7 +4346,13 @@ mod tests {
             "review".to_string(),
             make_step_output("review", "Fix the naming convention", Some("reject")),
         );
-        let result = WorkflowEngine::inject_step_outputs("Fix issues", &step, &outputs, &[]);
+        let result = WorkflowEngine::inject_step_outputs(
+            "Fix issues",
+            &step,
+            &outputs,
+            &[],
+            &HashMap::new(),
+        );
         assert!(result.contains("<step_output name=\"review\">"));
         assert!(result.contains("Fix the naming convention"));
     }
@@ -3721,11 +4371,34 @@ mod tests {
             "step_b".to_string(),
             make_step_output("step_b", "output B", None),
         );
-        let result = WorkflowEngine::inject_step_outputs("Do C", &step, &outputs, &[]);
+        let result =
+            WorkflowEngine::inject_step_outputs("Do C", &step, &outputs, &[], &HashMap::new());
         assert!(result.contains("<step_output name=\"step_a\">"));
         assert!(result.contains("output A"));
         assert!(result.contains("<step_output name=\"step_b\">"));
         assert!(result.contains("output B"));
+    }
+
+    #[test]
+    fn inject_step_outputs_pass_previous_response_no_output_injects_nothing() {
+        let mut step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        step.pass_previous_response = Some(true);
+
+        let outputs = HashMap::new(); // step_a has no StepOutput
+        let history = vec![StepHistoryEntry {
+            step_name: "step_a".to_string(),
+            completed_at: 1000.0,
+            result: None,
+            session_id: None,
+            token_usage: None,
+            structured_output: None,
+
+            run_index: 0,
+            child_outputs: None,
+        }];
+        let wv = HashMap::new();
+        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history, &wv);
+        assert_eq!(result, "Do B");
     }
 
     #[test]
@@ -3734,9 +4407,102 @@ mod tests {
         step.pass_output_from = Some(vec!["step_a".to_string()]);
 
         let outputs = HashMap::new(); // step_a not present
-        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &[]);
+        let result =
+            WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &[], &HashMap::new());
         assert!(result.contains("<step_output name=\"step_a\">"));
         assert!(result.contains("(not yet completed)"));
+    }
+
+    #[test]
+    fn inject_step_outputs_workflow_variables_injected() {
+        let step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        let mut wv = HashMap::new();
+        wv.insert(
+            "spec_file_path".to_string(),
+            "docs/spec/issues-909.md".to_string(),
+        );
+        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &HashMap::new(), &[], &wv);
+        assert!(result.contains("<workflow_variables>"));
+        assert!(result.contains("spec_file_path"));
+        assert!(result.contains("docs/spec/issues-909.md"));
+    }
+
+    #[test]
+    fn inject_step_outputs_empty_workflow_variables_not_injected() {
+        let step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        let wv = HashMap::new();
+        let result = WorkflowEngine::inject_step_outputs("Do B", &step, &HashMap::new(), &[], &wv);
+        assert!(!result.contains("<workflow_variables>"));
+    }
+
+    // ---- extract_contract_variables ----
+
+    #[test]
+    fn extract_contract_variables_spec_file_path() {
+        let contract = Some("spec-file-path".to_string());
+        let so = Some(serde_json::json!({
+            "spec_file_path": "docs/spec/issues-909.md"
+        }));
+        let vars = WorkflowEngine::extract_contract_variables(&contract, &so);
+        assert_eq!(
+            vars.get("spec_file_path").unwrap(),
+            "docs/spec/issues-909.md"
+        );
+    }
+
+    #[test]
+    fn extract_contract_variables_non_spec_contract_returns_empty() {
+        let contract = Some("review-verdict".to_string());
+        let so = Some(serde_json::json!({
+            "verdict": "LGTM",
+            "summary": "All good"
+        }));
+        let vars = WorkflowEngine::extract_contract_variables(&contract, &so);
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn extract_contract_variables_no_contract_returns_empty() {
+        let so = Some(serde_json::json!({"spec_file_path": "docs/spec.md"}));
+        let vars = WorkflowEngine::extract_contract_variables(&None, &so);
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn extract_contract_variables_no_output_returns_empty() {
+        let contract = Some("spec-file-path".to_string());
+        let vars = WorkflowEngine::extract_contract_variables(&contract, &None);
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn extract_contract_variables_missing_field_returns_empty() {
+        let contract = Some("spec-file-path".to_string());
+        let so = Some(serde_json::json!({"other_field": "value"}));
+        let vars = WorkflowEngine::extract_contract_variables(&contract, &so);
+        assert!(vars.is_empty());
+    }
+
+    // ---- contract retry判定 ----
+
+    #[test]
+    fn contract_retry_within_limit() {
+        let retry_count: u32 = 0;
+        assert!(retry_count < MAX_CONTRACT_RETRIES);
+        let retry_count: u32 = 1;
+        assert!(retry_count < MAX_CONTRACT_RETRIES);
+    }
+
+    #[test]
+    fn contract_retry_at_limit_should_fail() {
+        let retry_count: u32 = MAX_CONTRACT_RETRIES;
+        assert!(retry_count >= MAX_CONTRACT_RETRIES);
+    }
+
+    #[test]
+    fn contract_retry_over_limit_should_fail() {
+        let retry_count: u32 = MAX_CONTRACT_RETRIES + 1;
+        assert!(retry_count >= MAX_CONTRACT_RETRIES);
     }
 
     // ---- apply_reduce ----
@@ -3786,7 +4552,8 @@ mod tests {
         let r = WorkflowEngine::apply_reduce(&collect, &outputs);
         // 設定順ではcが最後だが、completed_at最大のbが選ばれる
         assert_eq!(r.result, Some("NEEDS_FIX".to_string()));
-        assert_eq!(r.text, "text_b");
+        let so = r.structured_output.unwrap();
+        assert_eq!(so["text"], "text_b");
     }
 
     #[test]
@@ -3798,8 +4565,13 @@ mod tests {
         ]);
         let r = WorkflowEngine::apply_reduce(&collect, &outputs);
         assert!(r.result.is_none());
-        assert!(r.text.contains("## a\noutput from a"));
-        assert!(r.text.contains("## b\noutput from b"));
+        let so = r.structured_output.unwrap();
+        let arr = so.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["stepName"], "a");
+        assert_eq!(arr[0]["output"]["text"], "output from a");
+        assert_eq!(arr[1]["stepName"], "b");
+        assert_eq!(arr[1]["output"]["text"], "output from b");
     }
 
     #[test]
@@ -3812,11 +4584,12 @@ mod tests {
         ]);
         let r = WorkflowEngine::apply_reduce(&collect, &outputs);
         assert!(r.result.is_none());
-        assert!(r.text.contains("## LGTM"));
-        assert!(r.text.contains("- a"));
-        assert!(r.text.contains("- c"));
-        assert!(r.text.contains("## NEEDS_FIX"));
-        assert!(r.text.contains("- b"));
+        let so = r.structured_output.unwrap();
+        let lgtm = so["LGTM"].as_array().unwrap();
+        assert!(lgtm.contains(&serde_json::Value::String("a".to_string())));
+        assert!(lgtm.contains(&serde_json::Value::String("c".to_string())));
+        let needs_fix = so["NEEDS_FIX"].as_array().unwrap();
+        assert!(needs_fix.contains(&serde_json::Value::String("b".to_string())));
     }
 
     #[test]
@@ -3844,15 +4617,15 @@ mod tests {
     }
 
     #[test]
-    fn reduce_any_needs_fix_regex_fallback() {
+    fn reduce_any_needs_fix_no_result_treated_as_lgtm() {
         let collect = make_collect(vec!["a", "b"], ReduceStrategy::AnyNeedsFix);
-        // result is None but output_text contains NEEDS_FIX
+        // result is None → resolve_step_result returns None → not NEEDS_FIX
         let outputs = make_outputs(vec![
             ("a", "Everything looks good", None),
-            ("b", "Found issues: NEEDS_FIX", None),
+            ("b", "Found issues text", None),
         ]);
         let r = WorkflowEngine::apply_reduce(&collect, &outputs);
-        assert_eq!(r.result, Some("NEEDS_FIX".to_string()));
+        assert_eq!(r.result, Some("LGTM".to_string()));
     }
 
     #[test]
@@ -3878,37 +4651,165 @@ mod tests {
     }
 
     #[test]
-    fn reduce_all_passed_regex_fallback() {
+    fn reduce_all_passed_no_result_treated_as_failed() {
         let collect = make_collect(vec!["a", "b"], ReduceStrategy::AllPassed);
+        // result is None → not PASSED/LGTM → all_passed = false
         let outputs = make_outputs(vec![
-            ("a", "All tests PASSED", None),
-            ("b", "Some tests failed", None),
+            ("a", "All tests ran", None),
+            ("b", "Some tests ran", None),
         ]);
         let r = WorkflowEngine::apply_reduce(&collect, &outputs);
         assert_eq!(r.result, Some("FAILED".to_string()));
     }
 
+    // ---- reduce structured_output array format ----
+
+    #[test]
+    fn reduce_any_needs_fix_structured_output_is_array() {
+        let collect = make_collect(vec!["a", "b"], ReduceStrategy::AnyNeedsFix);
+        let outputs = make_outputs(vec![
+            ("a", "text_a", Some("LGTM")),
+            ("b", "text_b", Some("NEEDS_FIX")),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert_eq!(r.result, Some("NEEDS_FIX".to_string()));
+        let so = r.structured_output.unwrap();
+        let arr = so.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["stepName"], "a");
+        assert_eq!(arr[0]["output"]["text"], "text_a");
+        assert_eq!(arr[1]["stepName"], "b");
+        assert_eq!(arr[1]["output"]["text"], "text_b");
+    }
+
+    #[test]
+    fn reduce_all_passed_structured_output_is_array() {
+        let collect = make_collect(vec!["a", "b"], ReduceStrategy::AllPassed);
+        let outputs = make_outputs(vec![
+            ("a", "text_a", Some("PASSED")),
+            ("b", "text_b", Some("PASSED")),
+        ]);
+        let r = WorkflowEngine::apply_reduce(&collect, &outputs);
+        assert_eq!(r.result, Some("PASSED".to_string()));
+        let so = r.structured_output.unwrap();
+        let arr = so.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["stepName"], "a");
+        assert_eq!(arr[1]["stepName"], "b");
+    }
+
+    // ---- collect_step_output_entries ----
+
+    #[test]
+    fn collect_step_output_entries_returns_array_with_step_name_and_output() {
+        let outputs = make_outputs(vec![
+            ("s1", "out1", Some("LGTM")),
+            ("s2", "out2", Some("NEEDS_FIX")),
+        ]);
+        let from = vec!["s1".to_string(), "s2".to_string()];
+        let entries = WorkflowEngine::collect_step_output_entries(&from, &outputs);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["stepName"], "s1");
+        assert_eq!(entries[0]["output"]["text"], "out1");
+        assert_eq!(entries[1]["stepName"], "s2");
+        assert_eq!(entries[1]["output"]["text"], "out2");
+    }
+
+    #[test]
+    fn collect_step_output_entries_skips_missing_outputs() {
+        let outputs = make_outputs(vec![("s1", "out1", None)]);
+        let from = vec!["s1".to_string(), "s2".to_string()];
+        let entries = WorkflowEngine::collect_step_output_entries(&from, &outputs);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["stepName"], "s1");
+    }
+
+    #[test]
+    fn collect_step_output_entries_skips_none_structured_output() {
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "s1".to_string(),
+            StepOutput {
+                structured_output: None,
+                ..make_step_output("s1", "text", None)
+            },
+        );
+        let from = vec!["s1".to_string()];
+        let entries = WorkflowEngine::collect_step_output_entries(&from, &outputs);
+        assert!(entries.is_empty());
+    }
+
     // ---- resolve_step_result ----
 
     #[test]
-    fn resolve_step_result_prefers_direct_result() {
+    fn resolve_step_result_returns_result_field() {
         let output = make_step_output("s", "output with NEEDS_FIX text", Some("LGTM"));
-        let r = WorkflowEngine::resolve_step_result(&output, &["NEEDS_FIX"]);
+        let r = WorkflowEngine::resolve_step_result(&output);
         assert_eq!(r, Some("LGTM".to_string()));
     }
 
     #[test]
-    fn resolve_step_result_regex_fallback() {
+    fn resolve_step_result_none_when_no_result() {
         let output = make_step_output("s", "found NEEDS_FIX issue", None);
-        let r = WorkflowEngine::resolve_step_result(&output, &["NEEDS_FIX", "needs_fix"]);
-        assert_eq!(r, Some("NEEDS_FIX".to_string()));
+        let r = WorkflowEngine::resolve_step_result(&output);
+        assert!(r.is_none());
     }
 
     #[test]
     fn resolve_step_result_no_match_returns_none() {
         let output = make_step_output("s", "everything is fine", None);
-        let r = WorkflowEngine::resolve_step_result(&output, &["NEEDS_FIX"]);
+        let r = WorkflowEngine::resolve_step_result(&output);
         assert!(r.is_none());
+    }
+
+    #[test]
+    fn resolve_step_result_prefers_structured_verdict() {
+        let output = StepOutput {
+            step_name: "s".to_string(),
+            run_index: 0,
+            session_id: None,
+            result: Some("LGTM".to_string()),
+            structured_output: Some(
+                serde_json::json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error", "message": "bug"}]}),
+            ),
+            output_contract: None,
+            token_usage: None,
+            completed_at: 1000.0,
+        };
+        let r = WorkflowEngine::resolve_step_result(&output);
+        assert_eq!(r, Some("NEEDS_FIX".to_string()));
+    }
+
+    #[test]
+    fn resolve_step_result_prefers_structured_status() {
+        let output = StepOutput {
+            step_name: "s".to_string(),
+            run_index: 0,
+            session_id: None,
+            result: None,
+            structured_output: Some(serde_json::json!({"status": "FIXED"})),
+            output_contract: None,
+            token_usage: None,
+            completed_at: 1000.0,
+        };
+        let r = WorkflowEngine::resolve_step_result(&output);
+        assert_eq!(r, Some("FIXED".to_string()));
+    }
+
+    #[test]
+    fn resolve_step_result_verdict_over_status() {
+        let output = StepOutput {
+            step_name: "s".to_string(),
+            run_index: 0,
+            session_id: None,
+            result: None,
+            structured_output: Some(serde_json::json!({"verdict": "LGTM", "status": "FIXED"})),
+            output_contract: None,
+            token_usage: None,
+            completed_at: 1000.0,
+        };
+        let r = WorkflowEngine::resolve_step_result(&output);
+        assert_eq!(r, Some("LGTM".to_string()));
     }
 
     // ---- truncate_output ----
@@ -4028,7 +4929,8 @@ mod tests {
             result: None,
             session_id: None,
             token_usage: None,
-            output_text: None,
+            structured_output: None,
+
             run_index: 0,
             child_outputs: None,
         }];
@@ -4040,6 +4942,7 @@ mod tests {
             Some("Fix bug"),
             &outputs,
             &history,
+            &HashMap::new(),
         )
         .unwrap();
 
@@ -4080,6 +4983,7 @@ mod tests {
             None,
             &HashMap::new(),
             &[],
+            &HashMap::new(),
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -4104,6 +5008,7 @@ mod tests {
             None,
             &HashMap::new(),
             &[],
+            &HashMap::new(),
         )
         .unwrap();
 
@@ -4221,7 +5126,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_aggregate_output_text_fallback_when_result_is_none() {
+    fn evaluate_aggregate_result_none_does_not_match() {
         let engine = WorkflowEngine::new();
         let agg = AggregateConfig {
             all_match: Some("LGTM".to_string()),
@@ -4230,7 +5135,7 @@ mod tests {
             r#else: "implement".to_string(),
         };
         let mut outputs = HashMap::new();
-        // result=None, output_textにLGTMが含まれる
+        // result=None → matches_pattern returns false regardless of structured_output
         outputs.insert(
             "arch-review".to_string(),
             make_step_output("arch-review", "Review result: LGTM", None),
@@ -4240,7 +5145,7 @@ mod tests {
             make_step_output("security-review", "All good. LGTM", None),
         );
         let children = vec!["arch-review".to_string(), "security-review".to_string()];
-        assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
+        assert!(!engine.evaluate_aggregate(&agg, &outputs, &children));
     }
 
     #[test]
@@ -4297,13 +5202,12 @@ mod tests {
             r#else: "implement".to_string(),
         };
         let mut outputs = HashMap::new();
-        // output_textに"[invalid(regex"を含む（containsでマッチ可能）
+        // resultに"[invalid(regex"を含む → contains fallbackでマッチ
         outputs.insert(
             "arch-review".to_string(),
-            make_step_output("arch-review", "has [invalid(regex inside", None),
+            make_step_output("arch-review", "text", Some("[invalid(regex")),
         );
         let children = vec!["arch-review".to_string()];
-        // regex compile失敗 → contains fallbackでマッチ
         assert!(engine.evaluate_aggregate(&agg, &outputs, &children));
     }
 
@@ -4317,13 +5221,12 @@ mod tests {
             r#else: "implement".to_string(),
         };
         let mut outputs = HashMap::new();
-        // output_textに"[invalid(regex"を含まない
+        // resultに"[invalid(regex"を含まない
         outputs.insert(
             "arch-review".to_string(),
-            make_step_output("arch-review", "LGTM", None),
+            make_step_output("arch-review", "LGTM text", Some("LGTM")),
         );
         let children = vec!["arch-review".to_string()];
-        // regex compile失敗 → contains fallbackでもマッチしない
         assert!(!engine.evaluate_aggregate(&agg, &outputs, &children));
     }
 
@@ -4384,6 +5287,8 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         }
     }
 
@@ -4432,19 +5337,13 @@ mod tests {
     // ---- make_step_history_entry ----
 
     #[test]
-    fn make_step_history_entry_stores_reject_comment_in_step_outputs() {
+    fn make_step_history_entry_reject_no_structured_output() {
         let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
-        let reject_comment = "Please fix the formatting".to_string();
-        let entry =
-            exec.make_step_history_entry(Some("reject".to_string()), Some(reject_comment.clone()));
+        let entry = exec.make_step_history_entry(Some("reject".to_string()), None, None);
         assert_eq!(entry.result.as_deref(), Some("reject"));
-        assert_eq!(
-            entry.output_text.as_deref(),
-            Some("Please fix the formatting")
-        );
-        let stored = exec.step_outputs.get("review").unwrap();
-        assert_eq!(stored.output_text, reject_comment);
-        assert_eq!(stored.result.as_deref(), Some("reject"));
+        assert!(entry.structured_output.is_none());
+        // structured_outputがNoneなのでStepOutputは生成されない
+        assert!(exec.step_outputs.get("review").is_none());
     }
 
     // ---- handle_approval integration (lock-inner logic) ----
@@ -4460,11 +5359,6 @@ mod tests {
         // 1. validate
         WorkflowEngine::validate_approval_decision(&decision).unwrap();
 
-        // 2. output_text をRejectコメントから取得（handle_approval L692-693相当）
-        let output_text = match &decision {
-            ApprovalDecision::Reject { ref comment } => Some(comment.clone()),
-            _ => None,
-        };
         let result_tag = "reject".to_string();
 
         // 3. 遷移先 "fix" ステップを含むワークフローを構築
@@ -4524,49 +5418,31 @@ mod tests {
             step_outputs: HashMap::new(),
             task: None,
             parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
         };
 
         // 4. decide
         let action = exec.decide_approval_action(&decision).unwrap();
         assert_eq!(action, ApprovalAction::TransitionTo("fix".to_string()));
 
-        // 5. make_step_history_entry + push
-        let entry = exec.make_step_history_entry(Some(result_tag), output_text);
+        // 5. make_step_history_entry + push (Reject時はstructured_output/output_contractなし)
+        let entry = exec.make_step_history_entry(Some(result_tag), None, None);
         exec.step_history.push(entry);
 
         // 6. apply_transition
         let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
 
-        // 検証: step_history にRejectコメントが記録されている
+        // 検証: step_history にReject結果が記録されている
         assert_eq!(exec.step_history.len(), 1);
         let hist = &exec.step_history[0];
         assert_eq!(hist.step_name, "review");
         assert_eq!(hist.result.as_deref(), Some("reject"));
-        assert_eq!(
-            hist.output_text.as_deref(),
-            Some("Fix the naming convention")
-        );
-
-        // 検証: step_outputs にRejectコメントが格納されている
-        let output = exec.step_outputs.get("review").unwrap();
-        assert_eq!(output.output_text, "Fix the naming convention");
-        assert_eq!(output.result.as_deref(), Some("reject"));
 
         // 検証: 遷移先 "fix" ステップに移動している
         assert_eq!(exec.current_step_index, 1);
         assert_eq!(exec.workflow.steps[exec.current_step_index].name, "fix");
-
-        // 検証: inject_step_outputs で Reject コメントが遷移先 step の prompt に注入される
-        let fix_step = &exec.workflow.steps[exec.current_step_index];
-        let injected_prompt = WorkflowEngine::inject_step_outputs(
-            fix_step.instruction.as_deref().unwrap_or(""),
-            fix_step,
-            &exec.step_outputs,
-            &exec.step_history,
-        );
-        assert!(injected_prompt.contains("<step_output name=\"review\">"));
-        assert!(injected_prompt.contains("Fix the naming convention"));
     }
 
     // ---- ApprovalDecision serde ----
@@ -4595,5 +5471,104 @@ mod tests {
         let json = r#""abort""#;
         let decision: ApprovalDecision = serde_json::from_str(json).unwrap();
         assert_eq!(decision, ApprovalDecision::Abort);
+    }
+
+    // R4-01: output_contractなしのparallel childはStepOutputを生成しない
+    #[test]
+    fn evaluate_aggregate_child_without_output_contract_has_no_step_output() {
+        let engine = WorkflowEngine::new();
+        let agg = AggregateConfig {
+            all_match: Some("LGTM".to_string()),
+            any_match: None,
+            then: "report".to_string(),
+            r#else: "implement".to_string(),
+        };
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "arch-review".to_string(),
+            make_step_output("arch-review", "ok", Some("LGTM")),
+        );
+        let children = vec!["arch-review".to_string(), "test-step".to_string()];
+        assert!(!engine.evaluate_aggregate(&agg, &outputs, &children));
+    }
+
+    // R4-02: make_step_history_entryがcontract resultをStepOutput.resultに保存する
+    #[test]
+    fn make_step_history_entry_saves_contract_result_to_step_output() {
+        let mut exec = WorkflowExecution {
+            id: "test-exec".to_string(),
+            workflow: make_test_workflow(),
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("plan".to_string(), 1);
+                m
+            },
+            step_history: vec![],
+            chat_session_id: "chat-1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: Some("session-1".to_string()),
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        let structured = serde_json::json!({"verdict": "LGTM", "findings": []});
+        let entry = exec.make_step_history_entry(
+            Some("LGTM".to_string()),
+            Some(structured.clone()),
+            Some("review-verdict".to_string()),
+        );
+
+        assert_eq!(entry.result.as_deref(), Some("LGTM"));
+        assert_eq!(entry.structured_output, Some(structured.clone()));
+
+        let step_output = exec
+            .step_outputs
+            .get("plan")
+            .expect("StepOutput should exist");
+        assert_eq!(step_output.result.as_deref(), Some("LGTM"));
+        assert_eq!(step_output.structured_output, Some(structured));
+        assert_eq!(
+            step_output.output_contract.as_deref(),
+            Some("review-verdict")
+        );
+    }
+
+    #[test]
+    fn make_step_history_entry_no_structured_output_no_step_output() {
+        let mut exec = WorkflowExecution {
+            id: "test-exec".to_string(),
+            workflow: make_test_workflow(),
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("plan".to_string(), 1);
+                m
+            },
+            step_history: vec![],
+            chat_session_id: "chat-1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: Some("session-1".to_string()),
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        let entry = exec.make_step_history_entry(Some("complete".to_string()), None, None);
+
+        assert_eq!(entry.result.as_deref(), Some("complete"));
+        assert!(entry.structured_output.is_none());
+        assert!(exec.step_outputs.get("plan").is_none());
     }
 }
