@@ -2117,6 +2117,8 @@ pub async fn close_agent_session(
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(CLOSE_TIMEOUT_SECS)).await;
         let mut map = handles_clone.lock().await;
+        #[cfg(unix)]
+        let mut force_killed = false;
         if let Some(proc) = map.get_mut(&csid) {
             if timeout_gen_id == Some(proc.generation_id) {
                 log::warn!("Close timeout for session {csid}, killing process group");
@@ -2125,6 +2127,7 @@ pub async fn close_agent_session(
                     unsafe {
                         libc::killpg(pg as libc::pid_t, libc::SIGKILL);
                     }
+                    force_killed = true;
                 }
                 #[cfg(not(unix))]
                 {
@@ -2137,13 +2140,17 @@ pub async fn close_agent_session(
         }
         map.remove(&csid);
         drop(map);
-        // Sweep any remaining group members (grandchild processes) and clean up pid file
         #[cfg(unix)]
         {
-            if let Some(pg) = pgid {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                unsafe {
-                    libc::killpg(pg as libc::pid_t, libc::SIGTERM);
+            // After graceful shutdown (process exited on its own), sweep any remaining
+            // group members (grandchild processes) that may not have received the exit signal.
+            // Skip this if we already sent SIGKILL to the entire group above.
+            if !force_killed {
+                if let Some(pg) = pgid {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    unsafe {
+                        libc::killpg(pg as libc::pid_t, libc::SIGTERM);
+                    }
                 }
             }
             if let Ok(data_dir) = resolve_data_dir(&app_clone) {
