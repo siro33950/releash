@@ -72,7 +72,7 @@ steps:
       - plan_draft
       - plan_approval
     rules:
-      - match: "*"
+      - match: ".*"
         next: plan_review_parallel
     cycle_guard:
       max_iterations: 3
@@ -177,7 +177,7 @@ steps:
     policy: coding
     pass_previous_response: true
     rules:
-      - match: "*"
+      - match: ".*"
         next: code_review_parallel
     cycle_guard:
       max_iterations: 5

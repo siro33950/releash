@@ -17,15 +17,19 @@ pub fn get_builtin_workflow(name: &str) -> Option<Workflow> {
     BUILTINS
         .iter()
         .find(|e| e.filename.strip_suffix(".yml") == Some(name))
-        .and_then(|e| serde_saphyr::from_str(e.content).ok())
+        .map(|e| {
+            serde_saphyr::from_str(e.content)
+                .unwrap_or_else(|err| panic!("Invalid builtin workflow '{}': {err}", e.filename))
+        })
 }
 
 pub fn list_builtin_workflows() -> Vec<Summary> {
     BUILTINS
         .iter()
-        .filter_map(|e| {
-            let wf: Workflow = serde_saphyr::from_str(e.content).ok()?;
-            Some(Summary {
+        .map(|e| {
+            let wf: Workflow = serde_saphyr::from_str(e.content)
+                .unwrap_or_else(|err| panic!("Invalid builtin workflow '{}': {err}", e.filename));
+            Summary {
                 name: e
                     .filename
                     .strip_suffix(".yml")
@@ -33,7 +37,7 @@ pub fn list_builtin_workflows() -> Vec<Summary> {
                     .to_string(),
                 description: wf.description,
                 builtin: true,
-            })
+            }
         })
         .collect()
 }

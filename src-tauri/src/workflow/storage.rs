@@ -200,19 +200,19 @@ pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, StorageE
 
 pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
     validation::validate_name(name)?;
+    let file_path = dir.join(format!("{name}.yml"));
+    if file_path.exists() {
+        fs::remove_file(&file_path)?;
+        return Ok(());
+    }
     if builtin::get_builtin_workflow(name).is_some() {
         return Err(StorageError::BuiltinProtected {
             name: name.to_string(),
         });
     }
-    let file_path = dir.join(format!("{name}.yml"));
-    if !file_path.exists() {
-        return Err(StorageError::NotFound {
-            name: name.to_string(),
-        });
-    }
-    fs::remove_file(&file_path)?;
-    Ok(())
+    Err(StorageError::NotFound {
+        name: name.to_string(),
+    })
 }
 
 #[cfg(test)]
