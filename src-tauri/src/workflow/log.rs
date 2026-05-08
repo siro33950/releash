@@ -792,6 +792,7 @@ mod tests {
                     collect: None,
                     parallel: None,
                     aggregate: None,
+                    resets_cycle_for: None,
                 },
                 Step {
                     name: "implement".to_string(),
@@ -811,12 +812,16 @@ mod tests {
                     collect: None,
                     parallel: None,
                     aggregate: None,
+                    resets_cycle_for: None,
                 },
                 Step {
                     name: "review".to_string(),
                     mode: Some(crate::workflow::schema::StepMode::Approval),
                     rules: vec![],
-                    cycle_guard: Some(CycleGuard { max_iterations: 3 }),
+                    cycle_guard: Some(CycleGuard {
+                        max_iterations: 3,
+                        on_exhausted: None,
+                    }),
                     persona: None,
                     policy: None,
                     knowledge: None,
@@ -827,6 +832,7 @@ mod tests {
                     collect: None,
                     parallel: None,
                     aggregate: None,
+                    resets_cycle_for: None,
                 },
             ],
         }
@@ -1035,6 +1041,7 @@ mod tests {
                     collect: None,
                     parallel: None,
                     aggregate: None,
+                    resets_cycle_for: None,
                 },
                 Step {
                     name: "parallel-review".to_string(),
@@ -1079,6 +1086,7 @@ mod tests {
                         then: "_complete".to_string(),
                         r#else: "_complete".to_string(),
                     }),
+                    resets_cycle_for: None,
                 },
             ],
         };

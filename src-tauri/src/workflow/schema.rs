@@ -38,6 +38,8 @@ pub struct Step {
     pub parallel: Option<Vec<ParallelStep>>,
     #[serde(default)]
     pub aggregate: Option<AggregateConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_cycle_for: Option<Vec<String>>,
 }
 
 fn has_any_facet_ref(
@@ -142,6 +144,8 @@ pub struct TransitionRule {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CycleGuard {
     pub max_iterations: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_exhausted: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -385,6 +389,7 @@ steps:
             }),
             parallel: None,
             aggregate: None,
+            resets_cycle_for: None,
         };
         assert!(!step.has_facet_refs());
     }
@@ -469,5 +474,73 @@ steps:
             pass_output_from: None,
         };
         assert!(!ps_no_facet.has_facet_refs());
+    }
+
+    #[test]
+    fn parse_cycle_guard_with_on_exhausted() {
+        let yaml = r#"
+name: exhausted-test
+description: on_exhausted test
+steps:
+  - name: fix
+    mode: auto
+    instruction: fix
+    rules:
+      - match: ".*"
+        next: review
+    cycle_guard:
+      max_iterations: 2
+      on_exhausted: approval
+  - name: review
+    mode: auto
+    instruction: review
+  - name: approval
+    mode: interactive
+    instruction: approve
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let guard = wf.steps[0].cycle_guard.as_ref().unwrap();
+        assert_eq!(guard.max_iterations, 2);
+        assert_eq!(guard.on_exhausted.as_deref(), Some("approval"));
+    }
+
+    #[test]
+    fn parse_cycle_guard_without_on_exhausted_defaults_to_none() {
+        let yaml = r#"
+name: default-test
+description: default on_exhausted test
+steps:
+  - name: review
+    mode: auto
+    instruction: review
+    cycle_guard:
+      max_iterations: 5
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let guard = wf.steps[0].cycle_guard.as_ref().unwrap();
+        assert_eq!(guard.max_iterations, 5);
+        assert!(guard.on_exhausted.is_none());
+    }
+
+    #[test]
+    fn parse_step_with_resets_cycle_for() {
+        let yaml = r#"
+name: reset-test
+description: resets_cycle_for test
+steps:
+  - name: fix
+    mode: auto
+    instruction: fix
+    cycle_guard:
+      max_iterations: 3
+  - name: approval
+    mode: interactive
+    instruction: approve
+    resets_cycle_for:
+      - fix
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(wf.steps[1].resets_cycle_for, Some(vec!["fix".to_string()]));
+        assert!(wf.steps[0].resets_cycle_for.is_none());
     }
 }

@@ -216,7 +216,11 @@ enum CycleGuardResult {
     /// 許可（ガードなし or 上限内）
     Allowed,
     /// 超過
-    Exceeded { max_iterations: u32, count: u32 },
+    Exceeded {
+        max_iterations: u32,
+        count: u32,
+        on_exhausted: Option<String>,
+    },
 }
 
 /// on_turn_complete後のモード別アクション判定結果。
@@ -387,6 +391,7 @@ impl WorkflowExecution {
                 Ok(CycleGuardResult::Exceeded {
                     max_iterations: guard.max_iterations,
                     count,
+                    on_exhausted: guard.on_exhausted.clone(),
                 })
             } else {
                 Ok(CycleGuardResult::Allowed)
@@ -2591,6 +2596,15 @@ impl WorkflowEngine {
                 exec.state = WorkflowExecutionState::Running;
                 *exec.step_execution_counts.entry(name).or_insert(0) += 1;
                 exec.updated_at = current_timestamp();
+
+                // resets_cycle_for: 遷移先ステップの設定に従い指定ステップのカウントをリセット
+                let resets = exec.workflow.steps[idx].resets_cycle_for.clone();
+                if let Some(targets) = resets {
+                    for target in &targets {
+                        exec.step_execution_counts.remove(target);
+                    }
+                }
+
                 let step = &exec.workflow.steps[idx];
                 if step.is_parallel_block() {
                     StepOutcome::StartParallel(exec.to_workflow_state())
@@ -2613,6 +2627,23 @@ impl WorkflowEngine {
             return Ok(StepOutcome::Persist(exec.to_workflow_state()));
         }
 
+        Self::apply_transition_inner(exec, target_step_name, 0)
+    }
+
+    fn apply_transition_inner(
+        exec: &mut WorkflowExecution,
+        target_step_name: &str,
+        depth: usize,
+    ) -> Result<StepOutcome, WorkflowEngineError> {
+        let max_depth = exec.workflow.steps.len();
+        if depth >= max_depth {
+            exec.state = WorkflowExecutionState::Failed {
+                reason: format!("on_exhausted chain depth exceeded (max={})", max_depth),
+            };
+            exec.updated_at = current_timestamp();
+            return Ok(StepOutcome::Persist(exec.to_workflow_state()));
+        }
+
         let idx = exec
             .workflow
             .steps
@@ -2630,15 +2661,20 @@ impl WorkflowEngine {
             CycleGuardResult::Exceeded {
                 max_iterations,
                 count,
+                on_exhausted,
             } => {
-                exec.state = WorkflowExecutionState::Failed {
-                    reason: format!(
-                        "Cycle guard exceeded for step '{}': max_iterations={}, executed={}",
-                        target_step_name, max_iterations, count
-                    ),
-                };
-                exec.updated_at = current_timestamp();
-                Ok(StepOutcome::Persist(exec.to_workflow_state()))
+                if let Some(fallback_target) = on_exhausted {
+                    Self::apply_transition_inner(exec, &fallback_target, depth + 1)
+                } else {
+                    exec.state = WorkflowExecutionState::Failed {
+                        reason: format!(
+                            "Cycle guard exceeded for step '{}': max_iterations={}, executed={}",
+                            target_step_name, max_iterations, count
+                        ),
+                    };
+                    exec.updated_at = current_timestamp();
+                    Ok(StepOutcome::Persist(exec.to_workflow_state()))
+                }
             }
             CycleGuardResult::Allowed => {
                 exec.current_step_index = idx;
@@ -2648,6 +2684,15 @@ impl WorkflowEngine {
                     .entry(target_step_name.to_string())
                     .or_insert(0) += 1;
                 exec.updated_at = current_timestamp();
+
+                // resets_cycle_for: 遷移先ステップの設定に従い指定ステップのカウントをリセット
+                let resets = exec.workflow.steps[idx].resets_cycle_for.clone();
+                if let Some(targets) = resets {
+                    for target in &targets {
+                        exec.step_execution_counts.remove(target);
+                    }
+                }
+
                 let step = &exec.workflow.steps[idx];
                 if step.is_parallel_block() {
                     Ok(StepOutcome::StartParallel(exec.to_workflow_state()))
@@ -3477,6 +3522,7 @@ mod tests {
             collect: None,
             parallel: None,
             aggregate: None,
+            resets_cycle_for: None,
         }
     }
 
@@ -3508,7 +3554,10 @@ mod tests {
                             next: "report".to_string(),
                         },
                     ],
-                    Some(CycleGuard { max_iterations: 3 }),
+                    Some(CycleGuard {
+                        max_iterations: 3,
+                        on_exhausted: None,
+                    }),
                 ),
                 make_test_step(
                     "report",
@@ -3856,6 +3905,7 @@ mod tests {
             CycleGuardResult::Exceeded {
                 max_iterations: 3,
                 count: 3,
+                on_exhausted: None,
             }
         );
     }
@@ -3943,7 +3993,8 @@ mod tests {
             exec.check_cycle_guard("review").unwrap(),
             CycleGuardResult::Exceeded {
                 max_iterations: 3,
-                count: 3
+                count: 3,
+                on_exhausted: None,
             }
         );
     }
@@ -5158,6 +5209,7 @@ mod tests {
             collect: None,
             parallel: None,
             aggregate: None,
+            resets_cycle_for: None,
         };
         let result = WorkflowEngine::build_step_prompt(
             &step,
@@ -5456,6 +5508,7 @@ mod tests {
                     collect: None,
                     parallel: None,
                     aggregate: None,
+                    resets_cycle_for: None,
                 }],
             },
             state,
@@ -5570,6 +5623,7 @@ mod tests {
                         collect: None,
                         parallel: None,
                         aggregate: None,
+                        resets_cycle_for: None,
                     },
                     Step {
                         name: "fix".to_string(),
@@ -5586,6 +5640,7 @@ mod tests {
                         collect: None,
                         parallel: None,
                         aggregate: None,
+                        resets_cycle_for: None,
                     },
                 ],
             },
@@ -5753,5 +5808,368 @@ mod tests {
         assert_eq!(entry.result.as_deref(), Some("complete"));
         assert!(entry.structured_output.is_none());
         assert!(exec.step_outputs.get("plan").is_none());
+    }
+
+    // ---- on_exhausted: apply_transition テスト ----
+
+    fn make_on_exhausted_workflow() -> Workflow {
+        Workflow {
+            name: "on-exhausted-test".to_string(),
+            description: "Test on_exhausted".to_string(),
+            builtin: false,
+            steps: vec![
+                make_test_step(
+                    "fix",
+                    StepMode::Auto,
+                    "Fix issues",
+                    vec![TransitionRule {
+                        r#match: ".*".to_string(),
+                        next: "review".to_string(),
+                    }],
+                    Some(CycleGuard {
+                        max_iterations: 2,
+                        on_exhausted: Some("approval".to_string()),
+                    }),
+                ),
+                make_test_step(
+                    "review",
+                    StepMode::Auto,
+                    "Review",
+                    vec![TransitionRule {
+                        r#match: "NEEDS_FIX".to_string(),
+                        next: "fix".to_string(),
+                    }],
+                    None,
+                ),
+                Step {
+                    resets_cycle_for: Some(vec!["fix".to_string()]),
+                    ..make_test_step(
+                        "approval",
+                        StepMode::Interactive,
+                        "Approve",
+                        vec![TransitionRule {
+                            r#match: "NEEDS_FIX".to_string(),
+                            next: "fix".to_string(),
+                        }],
+                        None,
+                    )
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn on_exhausted_transitions_to_fallback_step() {
+        let mut exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: make_on_exhausted_workflow(),
+            state: WorkflowExecutionState::Running,
+            current_step_index: 1, // review
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("fix".to_string(), 2); // already at max
+                m
+            },
+            step_history: vec![],
+            step_outputs: HashMap::new(),
+            chat_session_id: "s1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        // fix への遷移を試みる → ガード超過 → on_exhausted で approval へ
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "approval"
+        );
+    }
+
+    #[test]
+    fn on_exhausted_none_fails_workflow() {
+        let mut wf = make_on_exhausted_workflow();
+        // on_exhausted を None に変更
+        wf.steps[0].cycle_guard = Some(CycleGuard {
+            max_iterations: 2,
+            on_exhausted: None,
+        });
+
+        let mut exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: wf,
+            state: WorkflowExecutionState::Running,
+            current_step_index: 1,
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("fix".to_string(), 2);
+                m
+            },
+            step_history: vec![],
+            step_outputs: HashMap::new(),
+            chat_session_id: "s1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
+        assert!(matches!(outcome, StepOutcome::Persist(_)));
+        assert!(matches!(exec.state, WorkflowExecutionState::Failed { .. }));
+    }
+
+    #[test]
+    fn check_cycle_guard_exceeded_with_on_exhausted() {
+        let exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: make_on_exhausted_workflow(),
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("fix".to_string(), 2);
+                m
+            },
+            step_history: vec![],
+            step_outputs: HashMap::new(),
+            chat_session_id: "s1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        assert_eq!(
+            exec.check_cycle_guard("fix").unwrap(),
+            CycleGuardResult::Exceeded {
+                max_iterations: 2,
+                count: 2,
+                on_exhausted: Some("approval".to_string()),
+            }
+        );
+    }
+
+    // ---- resets_cycle_for テスト ----
+
+    #[test]
+    fn resets_cycle_for_clears_execution_count() {
+        let mut exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: make_on_exhausted_workflow(),
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0, // fix
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("fix".to_string(), 2);
+                m
+            },
+            step_history: vec![],
+            step_outputs: HashMap::new(),
+            chat_session_id: "s1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        // approval に遷移 → resets_cycle_for で fix のカウントがリセット
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "approval").unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "approval"
+        );
+        // fix のカウントがリセットされている
+        assert_eq!(exec.step_execution_counts.get("fix"), None);
+    }
+
+    #[test]
+    fn resets_cycle_for_allows_reloop_after_reset() {
+        let mut exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: make_on_exhausted_workflow(),
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("fix".to_string(), 2);
+                m
+            },
+            step_history: vec![],
+            step_outputs: HashMap::new(),
+            chat_session_id: "s1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        // approval に遷移（カウントリセット）
+        WorkflowEngine::apply_transition(&mut exec, "approval").unwrap();
+        assert_eq!(exec.step_execution_counts.get("fix"), None);
+
+        // fix に再遷移可能（リセット後なのでガードに引っかからない）
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(exec.workflow.steps[exec.current_step_index].name, "fix");
+        assert_eq!(exec.step_execution_counts.get("fix"), Some(&1));
+
+        // 2回目も可能
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(exec.step_execution_counts.get("fix"), Some(&2));
+
+        // 3回目は上限到達 → on_exhausted で approval へ
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "approval"
+        );
+    }
+
+    // ---- on_exhausted チェーン遷移テスト ----
+
+    #[test]
+    fn on_exhausted_chain_transitions() {
+        // step_a → (exhausted) → step_b → (exhausted) → step_c
+        let wf = Workflow {
+            name: "chain-test".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            steps: vec![
+                make_test_step(
+                    "step_a",
+                    StepMode::Auto,
+                    "A",
+                    vec![],
+                    Some(CycleGuard {
+                        max_iterations: 1,
+                        on_exhausted: Some("step_b".to_string()),
+                    }),
+                ),
+                make_test_step(
+                    "step_b",
+                    StepMode::Auto,
+                    "B",
+                    vec![],
+                    Some(CycleGuard {
+                        max_iterations: 1,
+                        on_exhausted: Some("step_c".to_string()),
+                    }),
+                ),
+                make_test_step("step_c", StepMode::Interactive, "C", vec![], None),
+            ],
+        };
+        let mut exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: wf,
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("step_a".to_string(), 1);
+                m.insert("step_b".to_string(), 1);
+                m
+            },
+            step_history: vec![],
+            step_outputs: HashMap::new(),
+            chat_session_id: "s1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        // step_a → exhausted → step_b → exhausted → step_c
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "step_a").unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(exec.workflow.steps[exec.current_step_index].name, "step_c");
+    }
+
+    #[test]
+    fn on_exhausted_chain_to_non_exhausted_fails() {
+        // step_a → (exhausted) → step_b (exhausted, no on_exhausted) → Failed
+        let wf = Workflow {
+            name: "chain-fail-test".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            steps: vec![
+                make_test_step(
+                    "step_a",
+                    StepMode::Auto,
+                    "A",
+                    vec![],
+                    Some(CycleGuard {
+                        max_iterations: 1,
+                        on_exhausted: Some("step_b".to_string()),
+                    }),
+                ),
+                make_test_step(
+                    "step_b",
+                    StepMode::Auto,
+                    "B",
+                    vec![],
+                    Some(CycleGuard {
+                        max_iterations: 1,
+                        on_exhausted: None,
+                    }),
+                ),
+            ],
+        };
+        let mut exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: wf,
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("step_a".to_string(), 1);
+                m.insert("step_b".to_string(), 1);
+                m
+            },
+            step_history: vec![],
+            step_outputs: HashMap::new(),
+            chat_session_id: "s1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "step_a").unwrap();
+        assert!(matches!(outcome, StepOutcome::Persist(_)));
+        assert!(matches!(exec.state, WorkflowExecutionState::Failed { .. }));
     }
 }

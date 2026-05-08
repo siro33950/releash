@@ -71,6 +71,25 @@ pub enum ValidationError {
         parent: String,
         child: String,
     },
+    /// on_exhausted が存在しないステップを参照
+    UnknownOnExhausted {
+        step: String,
+        target: String,
+    },
+    /// resets_cycle_for が存在しないステップを参照
+    UnknownResetsCycleFor {
+        step: String,
+        target: String,
+    },
+    /// on_exhausted の遷移チェーンが循環を形成
+    CircularOnExhausted {
+        cycle: Vec<String>,
+    },
+    /// resets_cycle_for が cycle_guard を持たないステップを参照
+    ResetsCycleForNonGuardedStep {
+        step: String,
+        target: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -142,6 +161,23 @@ impl fmt::Display for ValidationError {
             Self::ParallelChildMissingFacet { parent, child } => write!(
                 f,
                 "parallelブロック '{parent}' の子ステップ '{child}' にはファセット参照が必要です"
+            ),
+            Self::UnknownOnExhausted { step, target } => write!(
+                f,
+                "ステップ '{step}' のon_exhaustedが存在しないステップ '{target}' を参照しています"
+            ),
+            Self::UnknownResetsCycleFor { step, target } => write!(
+                f,
+                "ステップ '{step}' のresets_cycle_forが存在しないステップ '{target}' を参照しています"
+            ),
+            Self::CircularOnExhausted { cycle } => write!(
+                f,
+                "on_exhaustedの遷移チェーンが循環しています: {}",
+                cycle.join(" → ")
+            ),
+            Self::ResetsCycleForNonGuardedStep { step, target } => write!(
+                f,
+                "ステップ '{step}' のresets_cycle_forがcycle_guardを持たないステップ '{target}' を参照しています"
             ),
         }
     }
@@ -254,8 +290,8 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                                 reference: r.clone(),
                             });
                         }
-                        // 親parallel blockより前に定義されたステップのみ参照可能
-                        if !preceding_step_names.contains(r.as_str()) {
+                        // 定義済みステップ（兄弟以外）を参照可能（後方参照も許可）
+                        if !referenceable_step_names.contains(r.as_str()) {
                             return Err(ValidationError::UnknownOutputFrom {
                                 step: child.name.clone(),
                                 reference: r.clone(),
@@ -358,10 +394,11 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 }
             }
 
-            // pass_output_from の参照先 step 名が先行stepに存在するか検証（並列子stepも参照可）
+            // pass_output_from の参照先 step 名が定義済みステップに存在するか検証
+            // （後方参照を許可：出力が未生成の場合は空として扱われる）
             if let Some(ref refs) = step.pass_output_from {
                 for r in refs {
-                    if !preceding_step_names.contains(r.as_str()) {
+                    if !referenceable_step_names.contains(r.as_str()) {
                         return Err(ValidationError::UnknownOutputFrom {
                             step: step.name.clone(),
                             reference: r.clone(),
@@ -404,12 +441,74 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
             }
         }
 
+        // on_exhausted の参照先検証
+        if let Some(ref guard) = step.cycle_guard {
+            if let Some(ref target) = guard.on_exhausted {
+                if !transition_target_names.contains(target.as_str()) {
+                    return Err(ValidationError::UnknownOnExhausted {
+                        step: step.name.clone(),
+                        target: target.clone(),
+                    });
+                }
+            }
+        }
+
+        // resets_cycle_for の参照先検証
+        if let Some(ref targets) = step.resets_cycle_for {
+            for target in targets {
+                if !transition_target_names.contains(target.as_str()) {
+                    return Err(ValidationError::UnknownResetsCycleFor {
+                        step: step.name.clone(),
+                        target: target.clone(),
+                    });
+                }
+                // 参照先が cycle_guard を持つか検証
+                let target_step = workflow.steps.iter().find(|s| s.name == *target);
+                if let Some(ts) = target_step {
+                    if ts.cycle_guard.is_none() {
+                        return Err(ValidationError::ResetsCycleForNonGuardedStep {
+                            step: step.name.clone(),
+                            target: target.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
         // 次のステップのvalidationで使えるよう、このステップ名を追加
         preceding_step_names.insert(&step.name);
         // parallel blockの子step名も追加（後続parallel blockの子stepから参照可能にするため）
         if let Some(ref children) = step.parallel {
             for child in children {
                 preceding_step_names.insert(&child.name);
+            }
+        }
+    }
+
+    // on_exhausted の循環参照検出
+    for step in &workflow.steps {
+        if let Some(ref guard) = step.cycle_guard {
+            if let Some(ref target) = guard.on_exhausted {
+                let mut visited = vec![step.name.clone()];
+                let mut current = target.clone();
+                loop {
+                    if visited.contains(&current) {
+                        visited.push(current);
+                        return Err(ValidationError::CircularOnExhausted { cycle: visited });
+                    }
+                    visited.push(current.clone());
+                    // current のステップの on_exhausted を辿る
+                    let next = workflow
+                        .steps
+                        .iter()
+                        .find(|s| s.name == current)
+                        .and_then(|s| s.cycle_guard.as_ref())
+                        .and_then(|g| g.on_exhausted.as_ref());
+                    match next {
+                        Some(n) => current = n.clone(),
+                        None => break,
+                    }
+                }
             }
         }
     }
@@ -450,6 +549,7 @@ mod tests {
             collect: None,
             parallel: None,
             aggregate: None,
+            resets_cycle_for: None,
         }
     }
 
@@ -487,6 +587,7 @@ mod tests {
             collect: None,
             parallel: Some(children),
             aggregate,
+            resets_cycle_for: None,
         }
     }
 
@@ -497,7 +598,10 @@ mod tests {
         let wf = make_workflow(vec![
             make_step("plan", StepMode::Interactive, vec![]),
             Step {
-                cycle_guard: Some(CycleGuard { max_iterations: 3 }),
+                cycle_guard: Some(CycleGuard {
+                    max_iterations: 3,
+                    on_exhausted: None,
+                }),
                 rules: vec![TransitionRule {
                     r#match: "DONE".to_string(),
                     next: "plan".to_string(),
@@ -999,8 +1103,9 @@ mod tests {
     }
 
     #[test]
-    fn parallel_child_pass_output_from_subsequent_step_fails() {
-        // parallel block より後に定義されたステップへの参照は拒否される
+    fn parallel_child_pass_output_from_subsequent_step_passes() {
+        // parallel block より後に定義されたステップへの後方参照は許可される
+        // （出力が未生成の場合は空として扱われる）
         let wf = make_workflow(vec![
             make_step("plan", StepMode::Auto, vec![]),
             make_parallel_block(
@@ -1013,11 +1118,7 @@ mod tests {
             ),
             make_step("report", StepMode::Auto, vec![]),
         ]);
-        let err = validate(&wf).unwrap_err();
-        assert!(matches!(
-            err,
-            ValidationError::UnknownOutputFrom { ref reference, .. } if reference == "report"
-        ));
+        assert!(validate(&wf).is_ok());
     }
 
     #[test]
@@ -1059,6 +1160,132 @@ mod tests {
                 }],
                 None,
             ),
+        ]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    // ---- on_exhausted バリデーション ----
+
+    #[test]
+    fn on_exhausted_valid_target_passes() {
+        let wf = make_workflow(vec![
+            Step {
+                cycle_guard: Some(CycleGuard {
+                    max_iterations: 2,
+                    on_exhausted: Some("approval".to_string()),
+                }),
+                rules: vec![TransitionRule {
+                    r#match: ".*".to_string(),
+                    next: "approval".to_string(),
+                }],
+                ..make_step("fix", StepMode::Auto, vec![])
+            },
+            make_step("approval", StepMode::Interactive, vec![]),
+        ]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn on_exhausted_unknown_target_fails() {
+        let wf = make_workflow(vec![Step {
+            cycle_guard: Some(CycleGuard {
+                max_iterations: 2,
+                on_exhausted: Some("nonexistent".to_string()),
+            }),
+            ..make_step("fix", StepMode::Auto, vec![])
+        }]);
+        let err = validate(&wf).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::UnknownOnExhausted { ref step, ref target }
+                if step == "fix" && target == "nonexistent"
+        ));
+    }
+
+    #[test]
+    fn on_exhausted_circular_fails() {
+        let wf = make_workflow(vec![
+            Step {
+                cycle_guard: Some(CycleGuard {
+                    max_iterations: 2,
+                    on_exhausted: Some("step_b".to_string()),
+                }),
+                ..make_step("step_a", StepMode::Auto, vec![])
+            },
+            Step {
+                cycle_guard: Some(CycleGuard {
+                    max_iterations: 2,
+                    on_exhausted: Some("step_a".to_string()),
+                }),
+                ..make_step("step_b", StepMode::Auto, vec![])
+            },
+        ]);
+        let err = validate(&wf).unwrap_err();
+        assert!(matches!(err, ValidationError::CircularOnExhausted { .. }));
+    }
+
+    // ---- resets_cycle_for バリデーション ----
+
+    #[test]
+    fn resets_cycle_for_valid_target_passes() {
+        let wf = make_workflow(vec![
+            Step {
+                cycle_guard: Some(CycleGuard {
+                    max_iterations: 3,
+                    on_exhausted: None,
+                }),
+                ..make_step("fix", StepMode::Auto, vec![])
+            },
+            Step {
+                resets_cycle_for: Some(vec!["fix".to_string()]),
+                ..make_step("approval", StepMode::Interactive, vec![])
+            },
+        ]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn resets_cycle_for_unknown_target_fails() {
+        let wf = make_workflow(vec![Step {
+            resets_cycle_for: Some(vec!["nonexistent".to_string()]),
+            ..make_step("approval", StepMode::Interactive, vec![])
+        }]);
+        let err = validate(&wf).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::UnknownResetsCycleFor { ref step, ref target }
+                if step == "approval" && target == "nonexistent"
+        ));
+    }
+
+    #[test]
+    fn resets_cycle_for_non_guarded_step_fails() {
+        let wf = make_workflow(vec![
+            make_step("fix", StepMode::Auto, vec![]),
+            Step {
+                resets_cycle_for: Some(vec!["fix".to_string()]),
+                ..make_step("approval", StepMode::Interactive, vec![])
+            },
+        ]);
+        let err = validate(&wf).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::ResetsCycleForNonGuardedStep { ref step, ref target }
+                if step == "approval" && target == "fix"
+        ));
+    }
+
+    // ---- pass_output_from 後方参照 ----
+
+    #[test]
+    fn pass_output_from_backward_reference_passes() {
+        // 定義順で後方のステップを pass_output_from で参照できる
+        let wf = make_workflow(vec![
+            Step {
+                pass_output_from: Some(vec!["step_b".to_string()]),
+                ..make_step("step_a", StepMode::Auto, vec![])
+            },
+            make_step("step_b", StepMode::Auto, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
