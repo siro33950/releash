@@ -311,7 +311,9 @@ function TraceItemRow({
 				}`}
 			>
 				<div className="flex min-w-0 flex-wrap items-center gap-2">
-					<span className="text-sm font-medium truncate">{item.stepName}</span>
+					<span className="min-w-0 flex-1 text-sm font-medium truncate">
+						{item.stepName}
+					</span>
 					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
 						{stepMode}
 					</span>
@@ -374,7 +376,9 @@ function ParallelBlockRow({
 			>
 				<div className="flex min-w-0 flex-wrap items-center gap-2">
 					<GitBranch className="size-3.5 text-muted-foreground" />
-					<span className="text-sm font-medium truncate">{item.stepName}</span>
+					<span className="min-w-0 flex-1 text-sm font-medium truncate">
+						{item.stepName}
+					</span>
 					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
 						parallel
 					</span>
