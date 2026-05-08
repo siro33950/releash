@@ -60,6 +60,7 @@ import {
 	type DesktopNotifyMode,
 	INACTIVE_TIMEOUT_OPTIONS,
 } from "@/types/webhook";
+import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { McpSettingsSection } from "./McpSettingsSection";
 import { NotionSettingsSection } from "./NotionSettingsSection";
 
@@ -547,6 +548,7 @@ function RepositoriesSection({
 	onDirtyChange,
 	error,
 	revision,
+	onRemoveRepo,
 }: {
 	repoPaths: string[];
 	onDirtyChange: (
@@ -556,7 +558,10 @@ function RepositoriesSection({
 	) => void;
 	error: string | null;
 	revision: number;
+	onRemoveRepo?: (path: string) => void;
 }) {
+	const [removeTarget, setRemoveTarget] = useState<string | null>(null);
+
 	if (repoPaths.length === 0) {
 		return (
 			<p className="text-xs text-muted-foreground">
@@ -571,12 +576,40 @@ function RepositoriesSection({
 			{repoPaths.map((repoPath, i) => (
 				<Fragment key={`${repoPath}-${revision}`}>
 					{i > 0 && <Separator className="my-3" />}
-					<RepoBaseBranchItem
-						repoPath={repoPath}
-						onDirtyChange={onDirtyChange}
-					/>
+					<div className="flex items-start gap-1">
+						<div className="flex-1 min-w-0">
+							<RepoBaseBranchItem
+								repoPath={repoPath}
+								onDirtyChange={onDirtyChange}
+							/>
+						</div>
+						{onRemoveRepo && (
+							<Button
+								variant="ghost"
+								size="icon"
+								className="size-7 mt-1.5 shrink-0 text-destructive hover:text-destructive"
+								onClick={() => setRemoveTarget(repoPath)}
+								aria-label={`Remove repository ${repoPath.split(/[\\/]/).pop() ?? repoPath}`}
+								title="Remove repository"
+							>
+								<Trash2 className="size-3.5" />
+							</Button>
+						)}
+					</div>
 				</Fragment>
 			))}
+			{onRemoveRepo && removeTarget && (
+				<DeleteConfirmDialog
+					open={true}
+					itemName={removeTarget.split(/[\\/]/).pop() ?? removeTarget}
+					description="Remove from list? The repository will not be deleted from disk."
+					onConfirm={() => {
+						onRemoveRepo(removeTarget);
+						setRemoveTarget(null);
+					}}
+					onCancel={() => setRemoveTarget(null)}
+				/>
+			)}
 		</div>
 	);
 }
@@ -1287,6 +1320,7 @@ export interface SettingsModalProps {
 	settings: AppSettings;
 	onSave: (settings: AppSettings) => void;
 	repoPaths?: string[];
+	onRemoveRepo?: (path: string) => void;
 }
 
 export function SettingsModal({
@@ -1295,6 +1329,7 @@ export function SettingsModal({
 	settings,
 	onSave,
 	repoPaths = [],
+	onRemoveRepo,
 }: SettingsModalProps) {
 	const [state, dispatchSettings] = useReducer(settingsReducer, {
 		activeSection: "appearance" as SettingsSection,
@@ -1475,6 +1510,7 @@ export function SettingsModal({
 						onDirtyChange={repos.handleDirtyChange}
 						error={repos.error}
 						revision={repos.revision}
+						onRemoveRepo={onRemoveRepo}
 					/>
 				);
 			case "notion":

@@ -28,7 +28,7 @@ function App() {
 	const updateChecker = useUpdateChecker(settings.autoUpdate);
 	const { worktrees, selectedWorktreeId, openWorktreeTab } =
 		useWorkspaceNavigation();
-	const { repoPaths, addRepo, initFromCwd } = useRepoList();
+	const { repoPaths, addRepo, removeRepo, initFromCwd } = useRepoList();
 
 	const [initializing, setInitializing] = useState(true);
 	useRemoteAutoStart(!initializing);
@@ -200,6 +200,7 @@ function App() {
 				settings={settings}
 				onSave={updateSettings}
 				repoPaths={repoPaths}
+				onRemoveRepo={removeRepo}
 			/>
 		</TooltipProvider>
 	);
