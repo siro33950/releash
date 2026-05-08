@@ -1,6 +1,6 @@
-You MUST include exactly one `<workflow_output>` block in your response.
+レスポンスに `<workflow_output>` ブロックを必ず1つだけ含めること。
 
-Format:
+フォーマット:
 ```
 <workflow_output type="spec-file-path">
 {
@@ -9,6 +9,6 @@ Format:
 </workflow_output>
 ```
 
-Rules:
-- `spec_file_path` is required: the relative path to the spec file
-- The path should be relative to the repository root
+ルール:
+- `spec_file_path` は必須: specファイルへの相対パス
+- パスはリポジトリルートからの相対パスとする

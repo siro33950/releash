@@ -1,0 +1,196 @@
+name: spec-driven-development
+description: Spec-driven development workflow (requirements → behavior → spec → review → implement → review → approve)
+builtin: true
+
+steps:
+  # 1. 要求整理（interactive、Spec作成）
+  - name: requirements
+    mode: interactive
+    instruction: plan-requirements
+    policy: planning
+    output_contract: spec-file-path
+
+  # 2. 振る舞い定義（interactive、Spec更新）
+  - name: behavior
+    mode: interactive
+    instruction: plan-behavior
+    policy: planning
+    output_contract: spec-file-path
+    pass_previous_response: true
+
+  # 3. 実装仕様ドラフト（interactive、Spec更新）
+  - name: plan_draft
+    mode: interactive
+    instruction: plan-spec
+    policy: planning
+    output_contract: spec-file-path
+    pass_previous_response: true
+
+  # 4-5. 実装仕様レビュー 4観点（parallel auto）+ 集約
+  - name: plan_review_parallel
+    parallel:
+      - name: plan_review_completeness
+        mode: auto
+        instruction: plan-review-completeness
+        policy: plan-review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+      - name: plan_review_clarity
+        mode: auto
+        instruction: plan-review-clarity
+        policy: plan-review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+      - name: plan_review_security
+        mode: auto
+        instruction: plan-review-security
+        policy: plan-review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+      - name: plan_review_consistency
+        mode: auto
+        instruction: plan-review-consistency
+        policy: plan-review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+    aggregate:
+      all_match: LGTM
+      then: plan_approval
+      else: plan_fix
+
+  # 6. 実装仕様修正（auto、Spec更新）
+  - name: plan_fix
+    mode: auto
+    instruction: plan-fix
+    output_contract: spec-file-path
+    pass_previous_response: true
+    pass_output_from:
+      - plan_review_parallel
+      - plan_draft
+    rules:
+      - match: ".*"
+        next: plan_review_parallel
+    cycle_guard:
+      max_iterations: 3
+
+  # 7. 実装仕様承認（interactive対話 → review-verdictで判定）
+  - name: plan_approval
+    mode: interactive
+    instruction: plan-approval
+    policy: planning
+    output_contract: review-verdict
+    pass_output_from:
+      - plan_draft
+    rules:
+      - match: NEEDS_FIX
+        next: plan_fix
+
+  # 8. 実装（auto）
+  - name: implement
+    mode: auto
+    instruction: implement
+    policy: coding
+    pass_output_from:
+      - plan_draft
+
+  # 9. 品質チェック（auto）
+  - name: quality_check
+    mode: auto
+    instruction: quality-check
+    policy: coding
+    pass_previous_response: true
+
+  # 10-11. コードレビュー 6観点（parallel auto）+ 集約
+  - name: code_review_parallel
+    parallel:
+      - name: code_review_acceptance
+        mode: auto
+        instruction: review-acceptance
+        policy: review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+          - implement
+      - name: code_review_structure
+        mode: auto
+        instruction: review-structure
+        policy: review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+          - implement
+      - name: code_review_quality
+        mode: auto
+        instruction: review-quality
+        policy: review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+          - implement
+      - name: code_review_test
+        mode: auto
+        instruction: review-test
+        policy: review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+          - implement
+      - name: code_review_security
+        mode: auto
+        instruction: review-security
+        policy: review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+          - implement
+      - name: code_review_architecture
+        mode: auto
+        instruction: review-architecture
+        policy: review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_draft
+          - implement
+    aggregate:
+      all_match: LGTM
+      then: implementation_approval
+      else: fix
+
+  # 12. 修正（auto）
+  - name: fix
+    mode: auto
+    instruction: implement-fix
+    policy: coding
+    pass_previous_response: true
+    pass_output_from:
+      - code_review_parallel
+      - plan_draft
+
+  # 13. 修正後品質チェック（auto）
+  - name: fix_quality_check
+    mode: auto
+    instruction: quality-check
+    policy: coding
+    pass_previous_response: true
+    rules:
+      - match: ".*"
+        next: code_review_parallel
+    cycle_guard:
+      max_iterations: 5
+
+  # 14. 実装結果承認（interactive対話 → review-verdictで判定）
+  - name: implementation_approval
+    mode: interactive
+    instruction: implementation-approval
+    policy: coding
+    output_contract: review-verdict
+    pass_output_from:
+      - plan_draft
+      - implement
+    rules:
+      - match: NEEDS_FIX
+        next: fix

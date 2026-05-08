@@ -1,115 +1,48 @@
-use super::schema::Workflow;
-use super::storage;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::fmt;
-use std::path::Path;
+use super::facet::FacetKind;
+use super::schema::{Summary, Workflow};
 
-#[derive(Debug)]
-pub enum BuiltinInitError {
-    Io(std::io::Error),
-    Parse {
-        filename: String,
-        source: Box<serde_saphyr::Error>,
-    },
-    Storage(Box<storage::StorageError>),
-}
-
-impl fmt::Display for BuiltinInitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "I/Oエラー: {e}"),
-            Self::Parse { filename, source } => {
-                write!(f, "ビルトインのパース失敗 ({filename}): {source}")
-            }
-            Self::Storage(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for BuiltinInitError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(e) => Some(e),
-            Self::Parse { source, .. } => Some(source.as_ref()),
-            Self::Storage(e) => Some(e.as_ref()),
-        }
-    }
-}
-
-impl From<storage::StorageError> for BuiltinInitError {
-    fn from(e: storage::StorageError) -> Self {
-        Self::Storage(Box::new(e))
-    }
-}
-
-impl Serialize for BuiltinInitError {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-const BUILTIN_QUICK_FIX: &str = include_str!("builtin/quick-fix.yml");
-const BUILTIN_PLAN_IMPLEMENT_REVIEW: &str = include_str!("builtin/plan-implement-review.yml");
-const BUILTIN_TRACE_TEST: &str = include_str!("builtin/trace-test.yml");
+const BUILTIN_SPEC_DRIVEN_DEVELOPMENT: &str = include_str!("builtin/spec-driven-development.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
     content: &'static str,
 }
 
-const BUILTINS: &[BuiltinEntry] = &[
-    BuiltinEntry {
-        filename: "quick-fix.yml",
-        content: BUILTIN_QUICK_FIX,
-    },
-    BuiltinEntry {
-        filename: "plan-implement-review.yml",
-        content: BUILTIN_PLAN_IMPLEMENT_REVIEW,
-    },
-    BuiltinEntry {
-        filename: "trace-test.yml",
-        content: BUILTIN_TRACE_TEST,
-    },
-];
+const BUILTINS: &[BuiltinEntry] = &[BuiltinEntry {
+    filename: "spec-driven-development.yml",
+    content: BUILTIN_SPEC_DRIVEN_DEVELOPMENT,
+}];
 
-fn init_builtins<T: DeserializeOwned>(
-    dir: &Path,
-    entries: &[BuiltinEntry],
-) -> Result<(), BuiltinInitError> {
-    storage::ensure_dir(dir)?;
-
-    for entry in entries {
-        let file_path = dir.join(entry.filename);
-        if file_path.exists() {
-            if let Ok(existing) = std::fs::read_to_string(&file_path) {
-                if existing == entry.content {
-                    continue;
-                }
-            }
-        }
-
-        let _: T = serde_saphyr::from_str(entry.content).map_err(|e| BuiltinInitError::Parse {
-            filename: entry.filename.to_string(),
-            source: Box::new(e),
-        })?;
-
-        std::fs::write(&file_path, entry.content).map_err(BuiltinInitError::Io)?;
-    }
-
-    Ok(())
+pub fn get_builtin_workflow(name: &str) -> Option<Workflow> {
+    BUILTINS
+        .iter()
+        .find(|e| e.filename.strip_suffix(".yml") == Some(name))
+        .map(|e| {
+            serde_saphyr::from_str(e.content)
+                .unwrap_or_else(|err| panic!("Invalid builtin workflow '{}': {err}", e.filename))
+        })
 }
 
-pub fn init_builtin_workflows(dir: &Path) -> Result<(), BuiltinInitError> {
-    init_builtins::<Workflow>(dir, BUILTINS)
+pub fn list_builtin_workflows() -> Vec<Summary> {
+    BUILTINS
+        .iter()
+        .map(|e| {
+            let wf: Workflow = serde_saphyr::from_str(e.content)
+                .unwrap_or_else(|err| panic!("Invalid builtin workflow '{}': {err}", e.filename));
+            Summary {
+                name: e
+                    .filename
+                    .strip_suffix(".yml")
+                    .unwrap_or(e.filename)
+                    .to_string(),
+                description: wf.description,
+                builtin: true,
+            }
+        })
+        .collect()
 }
 
 // --- Builtin facets ---
-
-use super::facet::FacetKind;
 
 struct BuiltinFacetEntry {
     kind: FacetKind,
@@ -118,21 +51,6 @@ struct BuiltinFacetEntry {
 }
 
 const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
-    BuiltinFacetEntry {
-        kind: FacetKind::Persona,
-        key: "planner",
-        content: include_str!("builtin_facets/personas/planner.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Persona,
-        key: "coder",
-        content: include_str!("builtin_facets/personas/coder.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Persona,
-        key: "reviewer",
-        content: include_str!("builtin_facets/personas/reviewer.md"),
-    },
     BuiltinFacetEntry {
         kind: FacetKind::Policy,
         key: "coding",
@@ -144,14 +62,60 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         content: include_str!("builtin_facets/policies/review.md"),
     },
     BuiltinFacetEntry {
-        kind: FacetKind::Knowledge,
-        key: "test-context",
-        content: include_str!("builtin_facets/knowledge/test-context.md"),
+        kind: FacetKind::Policy,
+        key: "planning",
+        content: include_str!("builtin_facets/policies/planning.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Policy,
+        key: "plan-review",
+        content: include_str!("builtin_facets/policies/plan-review.md"),
+    },
+    // --- Spec-driven development workflow instructions ---
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "plan-requirements",
+        content: include_str!("builtin_facets/instructions/plan-requirements.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan",
-        content: include_str!("builtin_facets/instructions/plan.md"),
+        key: "plan-behavior",
+        content: include_str!("builtin_facets/instructions/plan-behavior.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "plan-spec",
+        content: include_str!("builtin_facets/instructions/plan-spec.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "plan-review-completeness",
+        content: include_str!("builtin_facets/instructions/plan-review-completeness.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "plan-review-clarity",
+        content: include_str!("builtin_facets/instructions/plan-review-clarity.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "plan-review-security",
+        content: include_str!("builtin_facets/instructions/plan-review-security.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "plan-review-consistency",
+        content: include_str!("builtin_facets/instructions/plan-review-consistency.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "plan-fix",
+        content: include_str!("builtin_facets/instructions/plan-fix.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "plan-approval",
+        content: include_str!("builtin_facets/instructions/plan-approval.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -160,28 +124,48 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "review",
-        content: include_str!("builtin_facets/instructions/review.md"),
+        key: "quality-check",
+        content: include_str!("builtin_facets/instructions/quality-check.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "fix",
-        content: include_str!("builtin_facets/instructions/fix.md"),
+        key: "review-acceptance",
+        content: include_str!("builtin_facets/instructions/review-acceptance.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "verify",
-        content: include_str!("builtin_facets/instructions/verify.md"),
+        key: "review-structure",
+        content: include_str!("builtin_facets/instructions/review-structure.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "report",
-        content: include_str!("builtin_facets/instructions/report.md"),
+        key: "review-quality",
+        content: include_str!("builtin_facets/instructions/review-quality.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "test-step",
-        content: include_str!("builtin_facets/instructions/test-step.md"),
+        key: "review-test",
+        content: include_str!("builtin_facets/instructions/review-test.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-security",
+        content: include_str!("builtin_facets/instructions/review-security.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "review-architecture",
+        content: include_str!("builtin_facets/instructions/review-architecture.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "implement-fix",
+        content: include_str!("builtin_facets/instructions/implement-fix.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "implementation-approval",
+        content: include_str!("builtin_facets/instructions/implementation-approval.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::OutputContract,
@@ -200,139 +184,85 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
 ];
 
-pub fn init_builtin_facets(base_dir: &Path) -> Result<(), BuiltinInitError> {
-    for entry in BUILTIN_FACETS {
-        let dir = base_dir.join(entry.kind.dir_name());
-        storage::ensure_dir(&dir)?;
-        let file_path = dir.join(format!("{}.md", entry.key));
-        if file_path.exists() {
-            if let Ok(existing) = std::fs::read_to_string(&file_path) {
-                if existing == entry.content {
-                    continue;
-                }
-            }
-        }
-        std::fs::write(&file_path, entry.content).map_err(BuiltinInitError::Io)?;
-    }
-    Ok(())
+pub fn get_builtin_facet(kind: FacetKind, key: &str) -> Option<&'static str> {
+    BUILTIN_FACETS
+        .iter()
+        .find(|e| e.kind == kind && e.key == key)
+        .map(|e| e.content)
+}
+
+pub fn list_builtin_facet_keys(kind: FacetKind) -> Vec<&'static str> {
+    BUILTIN_FACETS
+        .iter()
+        .filter(|e| e.kind == kind)
+        .map(|e| e.key)
+        .collect()
+}
+
+pub fn is_builtin_facet(kind: FacetKind, key: &str) -> bool {
+    BUILTIN_FACETS
+        .iter()
+        .any(|e| e.kind == kind && e.key == key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
-    fn init_creates_builtins_in_empty_dir() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        init_builtin_workflows(dir).unwrap();
-
-        assert!(dir.join("quick-fix.yml").exists());
-        assert!(dir.join("plan-implement-review.yml").exists());
-        assert!(dir.join("trace-test.yml").exists());
-
-        let wf: Workflow =
-            serde_saphyr::from_str(&std::fs::read_to_string(dir.join("quick-fix.yml")).unwrap())
-                .unwrap();
-        assert_eq!(wf.name, "quick-fix");
+    fn get_builtin_workflow_returns_valid_workflow() {
+        let wf = get_builtin_workflow("spec-driven-development").unwrap();
+        assert_eq!(wf.name, "spec-driven-development");
         assert!(wf.builtin);
     }
 
     #[test]
-    fn init_overwrites_stale_builtin() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        init_builtin_workflows(dir).unwrap();
-
-        // 旧版の内容を書き込み（バンドル版と異なる）
-        let stale_content = r#"name: quick-fix
-description: 旧版
-builtin: true
-steps:
-  - name: old-step
-    mode: auto
-    instruction: fix
-"#;
-        std::fs::write(dir.join("quick-fix.yml"), stale_content).unwrap();
-
-        // 再初期化でバンドル版に上書きされる
-        init_builtin_workflows(dir).unwrap();
-
-        let content = std::fs::read_to_string(dir.join("quick-fix.yml")).unwrap();
-        assert!(!content.contains("旧版"));
+    fn get_builtin_workflow_returns_none_for_unknown() {
+        assert!(get_builtin_workflow("nonexistent").is_none());
     }
 
     #[test]
-    fn init_skips_if_content_unchanged() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        init_builtin_workflows(dir).unwrap();
-        let mtime1 = std::fs::metadata(dir.join("quick-fix.yml"))
-            .unwrap()
-            .modified()
-            .unwrap();
-
-        // 少し待って再初期化（内容同一ならスキップ）
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        init_builtin_workflows(dir).unwrap();
-        let mtime2 = std::fs::metadata(dir.join("quick-fix.yml"))
-            .unwrap()
-            .modified()
-            .unwrap();
-
-        assert_eq!(mtime1, mtime2);
+    fn list_builtin_workflows_returns_all() {
+        let summaries = list_builtin_workflows();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "spec-driven-development");
+        assert!(summaries[0].builtin);
     }
 
     #[test]
-    fn init_creates_dir_if_missing() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("sub").join("workflows");
-
-        init_builtin_workflows(&dir).unwrap();
-
-        assert!(dir.join("quick-fix.yml").exists());
-    }
-
-    // --- Builtin facet tests ---
-
-    #[test]
-    fn init_creates_builtin_facets_in_empty_dir() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        init_builtin_facets(dir).unwrap();
-
-        assert!(dir.join("personas/planner.md").exists());
-        assert!(dir.join("personas/coder.md").exists());
-        assert!(dir.join("personas/reviewer.md").exists());
-        assert!(dir.join("policies/coding.md").exists());
-        assert!(dir.join("policies/review.md").exists());
-        assert!(dir.join("instructions/plan.md").exists());
-        assert!(dir.join("instructions/implement.md").exists());
-        assert!(dir.join("instructions/review.md").exists());
-        assert!(dir.join("instructions/fix.md").exists());
-        assert!(dir.join("instructions/verify.md").exists());
-        assert!(dir.join("instructions/report.md").exists());
-        assert!(dir.join("instructions/test-step.md").exists());
-        assert!(dir.join("knowledge/test-context.md").exists());
-        assert!(dir.join("output_contracts/review-verdict.md").exists());
-        assert!(dir.join("output_contracts/fix-result.md").exists());
-        assert!(dir.join("output_contracts/spec-file-path.md").exists());
+    fn get_builtin_facet_returns_content() {
+        let content = get_builtin_facet(FacetKind::Policy, "coding");
+        assert!(content.is_some());
+        assert!(!content.unwrap().is_empty());
     }
 
     #[test]
-    fn init_builtin_facets_overwrites_stale() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        init_builtin_facets(dir).unwrap();
+    fn get_builtin_facet_returns_none_for_unknown() {
+        assert!(get_builtin_facet(FacetKind::Policy, "nonexistent").is_none());
+    }
 
-        std::fs::write(dir.join("personas/coder.md"), "旧版 persona").unwrap();
-        init_builtin_facets(dir).unwrap();
+    #[test]
+    fn list_builtin_facet_keys_filters_by_kind() {
+        let policies = list_builtin_facet_keys(FacetKind::Policy);
+        assert_eq!(policies.len(), 4);
+        assert!(policies.contains(&"coding"));
+        assert!(policies.contains(&"review"));
+        assert!(policies.contains(&"planning"));
+        assert!(policies.contains(&"plan-review"));
 
-        let content = std::fs::read_to_string(dir.join("personas/coder.md")).unwrap();
-        assert!(!content.contains("旧版"));
+        let instructions = list_builtin_facet_keys(FacetKind::Instruction);
+        assert_eq!(instructions.len(), 19);
+
+        let output_contracts = list_builtin_facet_keys(FacetKind::OutputContract);
+        assert_eq!(output_contracts.len(), 3);
+
+        let personas = list_builtin_facet_keys(FacetKind::Persona);
+        assert!(personas.is_empty());
+    }
+
+    #[test]
+    fn is_builtin_facet_works() {
+        assert!(is_builtin_facet(FacetKind::Policy, "coding"));
+        assert!(!is_builtin_facet(FacetKind::Policy, "custom"));
     }
 }

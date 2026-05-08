@@ -203,20 +203,6 @@ pub fn run() {
                 .join();
             }
 
-            // Initialize builtin workflows
-            if let Err(e) =
-                workflow::builtin::init_builtin_workflows(&workflow::storage::workflows_dir())
-            {
-                log::error!("ビルトインワークフローの初期化に失敗: {e}");
-            }
-
-            // Initialize builtin facets
-            if let Err(e) =
-                workflow::builtin::init_builtin_facets(&workflow::storage::facets_base_dir())
-            {
-                log::error!("ビルトインファセットの初期化に失敗: {e}");
-            }
-
             if telemetry_enabled {
                 let _ = app.track_event("app_started", None);
             }

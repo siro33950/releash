@@ -1,9 +1,43 @@
-Implement the following task in the {{project_name}} project.
+承認済みSpecに基づいて {{project_name}} プロジェクトのコードを実装する。
 
-Task: {{task}}
+## 入力
 
-Follow the implementation plan from the previous step. For each change:
-1. Read the target file first
-2. Make the required modifications
-3. Run related tests
-4. Fix any failures before moving on
+Specファイル（ステップ出力で提供）を読み込む。以下のセクションを含む:
+- `## 要求` — 要求
+- `## 振る舞い定義` — 振る舞い定義（Gherkin Scenario）
+- `## 実装仕様` — 実装仕様
+
+## プロセス
+
+### 1. Scenarioの分析
+
+- 振る舞い定義の全Scenarioを列挙する
+- 各Scenarioについて、必要なコード変更（ファイル、関数、型）を特定する
+- 実装仕様の対象コンポーネントと突き合わせる
+
+### 2. 実装仕様の批判的評価
+
+実装仕様はあくまで参考情報。Scenarioの充足が最優先。
+- **過剰**: 実装仕様にあるがどのScenarioにも不要な変更
+- **不足**: Scenarioに必要だが実装仕様にない変更
+- **矛盾**: 実装仕様の方針がScenarioの意図と矛盾
+
+### 3. 実装
+
+実装仕様の実装順序に従い、各Scenarioを充足するコード変更を行う:
+1. 対象ファイルと関連ファイルを先に読み込む
+2. 必要な変更を実施する
+3. 各コンポーネント実装後に関連テストを実行する
+4. 失敗があれば次に進む前に修正する
+
+### 4. 自己検証
+
+実装完了後、各Scenarioを検証する:
+- 可能な場合はテストを記述する（ユニット/コンポーネントレベル）
+- E2Eレベルの振る舞いはコードマッピング（各Given/When/Thenに対応するコードパスの特定）で確認する
+
+### 実装ルール
+
+- Scenarioを充足するコード変更のみ行う
+- Scenarioが求める以上の機能を追加しない
+- 変更後にlintとフォーマットを実行する

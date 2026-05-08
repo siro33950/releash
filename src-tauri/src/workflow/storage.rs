@@ -1,3 +1,4 @@
+use super::builtin;
 use super::schema::{Summary, Workflow};
 use super::validation::{self, ValidationError};
 use serde::Serialize;
@@ -167,7 +168,7 @@ fn list_yml_summaries<T, E: fmt::Display>(
 }
 
 pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
-    list_yml_summaries(
+    let mut summaries = list_yml_summaries(
         dir,
         load_workflow,
         |wf| Summary {
@@ -176,7 +177,14 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
             builtin: wf.builtin,
         },
         "ワークフロー",
-    )
+    )?;
+    for s in builtin::list_builtin_workflows() {
+        if !summaries.iter().any(|existing| existing.name == s.name) {
+            summaries.push(s);
+        }
+    }
+    summaries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(summaries)
 }
 
 pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, StorageError> {
@@ -191,17 +199,20 @@ pub fn resolve_workflow_path(dir: &Path, name: &str) -> Result<PathBuf, StorageE
 }
 
 pub fn delete_workflow(dir: &Path, name: &str) -> Result<(), StorageError> {
-    let file_path = resolve_workflow_path(dir, name)?;
-
-    let workflow = load_workflow(&file_path)?;
-    if workflow.builtin {
+    validation::validate_name(name)?;
+    let file_path = dir.join(format!("{name}.yml"));
+    if file_path.exists() {
+        fs::remove_file(&file_path)?;
+        return Ok(());
+    }
+    if builtin::get_builtin_workflow(name).is_some() {
         return Err(StorageError::BuiltinProtected {
             name: name.to_string(),
         });
     }
-
-    fs::remove_file(&file_path)?;
-    Ok(())
+    Err(StorageError::NotFound {
+        name: name.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -258,14 +269,16 @@ mod tests {
 
         save_workflow(dir, &sample_workflow("charlie", false)).unwrap();
         save_workflow(dir, &sample_workflow("alpha", false)).unwrap();
-        save_workflow(dir, &sample_workflow("bravo", true)).unwrap();
+        save_workflow(dir, &sample_workflow("bravo", false)).unwrap();
 
         let list = list_workflows(dir).unwrap();
-        assert_eq!(list.len(), 3);
+        // ディスク3件 + ビルトイン(spec-driven-development) = 4件
+        assert_eq!(list.len(), 4);
         assert_eq!(list[0].name, "alpha");
         assert_eq!(list[1].name, "bravo");
-        assert!(list[1].builtin);
         assert_eq!(list[2].name, "charlie");
+        assert_eq!(list[3].name, "spec-driven-development");
+        assert!(list[3].builtin);
     }
 
     #[test]
@@ -280,22 +293,23 @@ mod tests {
         fs::rename(dir.join("original.yml"), dir.join("renamed.yml")).unwrap();
 
         let list = list_workflows(dir).unwrap();
-        assert_eq!(list.len(), 1);
+        // ディスク1件(renamed) + ビルトイン(spec-driven-development) = 2件
+        let disk_entry = list.iter().find(|s| s.name == "renamed").unwrap();
         // Summary.nameはファイルstem（renamed）であるべき、YAML本文（original）ではない
-        assert_eq!(list[0].name, "renamed");
+        assert_eq!(disk_entry.name, "renamed");
     }
 
     #[test]
-    fn list_workflows_empty_dir() {
+    fn list_workflows_empty_dir_includes_builtins() {
         let tmp = TempDir::new().unwrap();
         let list = list_workflows(tmp.path()).unwrap();
-        assert!(list.is_empty());
+        assert!(list.iter().any(|s| s.name == "spec-driven-development"));
     }
 
     #[test]
-    fn list_workflows_nonexistent_dir() {
+    fn list_workflows_nonexistent_dir_includes_builtins() {
         let list = list_workflows(Path::new("/nonexistent/path")).unwrap();
-        assert!(list.is_empty());
+        assert!(list.iter().any(|s| s.name == "spec-driven-development"));
     }
 
     #[test]
@@ -315,14 +329,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, &sample_workflow("quick-fix", true)).unwrap();
-
-        let result = delete_workflow(dir, "quick-fix");
+        let result = delete_workflow(dir, "spec-driven-development");
         assert!(matches!(
             result.unwrap_err(),
-            StorageError::BuiltinProtected { ref name } if name == "quick-fix"
+            StorageError::BuiltinProtected { ref name } if name == "spec-driven-development"
         ));
-        assert!(dir.join("quick-fix.yml").exists());
     }
 
     #[test]

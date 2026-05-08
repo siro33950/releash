@@ -1,19 +1,19 @@
-You MUST include exactly one `<workflow_output>` block in your response.
+レスポンスに `<workflow_output>` ブロックを必ず1つだけ含めること。
 
-Format:
-```
+フォーマット:
+```text
 <workflow_output type="review-verdict">
 {
-  "verdict": "LGTM" or "NEEDS_FIX",
+  "verdict": "LGTM" または "NEEDS_FIX",
   "findings": [
-    { "severity": "error" | "warning" | "info", "message": "description" }
+    { "severity": "error" | "warning" | "info", "message": "説明" }
   ]
 }
 </workflow_output>
 ```
 
-Rules:
-- `verdict` is required: "LGTM" (no issues) or "NEEDS_FIX" (issues found)
-- `findings` is required when verdict is "NEEDS_FIX" (at least one entry)
-- `findings` may be empty or omitted when verdict is "LGTM"
-- Each finding must have `severity` and `message`
+ルール:
+- `verdict` は必須: "LGTM"（問題なし）または "NEEDS_FIX"（問題あり）
+- `findings` は verdict が "NEEDS_FIX" の場合に必須（最低1エントリ）
+- `findings` は verdict が "LGTM" の場合は空または省略可
+- 各findingには `severity` と `message` が必須

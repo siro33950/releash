@@ -1,3 +1,4 @@
+use super::builtin;
 use super::engine::{ApprovalDecision, WorkflowEngine};
 use super::facet::FacetKind;
 use super::log::{WorkflowEventLog, WorkflowLogEvent};
@@ -34,7 +35,11 @@ pub async fn get_workflow(name: String) -> Result<Workflow, String> {
     tokio::task::spawn_blocking(move || {
         super::validation::validate_name(&name).map_err(|e| e.to_string())?;
         let file_path = dir.join(format!("{name}.yml"));
-        storage::load_workflow(&file_path).map_err(|e| e.to_string())
+        if file_path.exists() {
+            return storage::load_workflow(&file_path).map_err(|e| e.to_string());
+        }
+        builtin::get_builtin_workflow(&name)
+            .ok_or_else(|| format!("ワークフロー '{name}' が見つかりません"))
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
@@ -96,7 +101,11 @@ pub async fn start_workflow(
     let workflow = tokio::task::spawn_blocking(move || {
         super::validation::validate_name(&workflow_name).map_err(|e| e.to_string())?;
         let file_path = dir.join(format!("{workflow_name}.yml"));
-        storage::load_workflow(&file_path).map_err(|e| e.to_string())
+        if file_path.exists() {
+            return storage::load_workflow(&file_path).map_err(|e| e.to_string());
+        }
+        builtin::get_builtin_workflow(&workflow_name)
+            .ok_or_else(|| format!("ワークフロー '{workflow_name}' が見つかりません"))
     })
     .await
     .map_err(|e| format!("task join error: {e}"))??;
@@ -255,17 +264,21 @@ pub async fn get_workflow_execution_state(
             def
         } else {
             let file_path = workflows_dir.join(format!("{file_stem}.yml"));
-            match storage::load_workflow(&file_path) {
-                Ok(w) => w,
-                Err(e) => {
-                    if file_path.exists() {
+            if file_path.exists() {
+                match storage::load_workflow(&file_path) {
+                    Ok(w) => w,
+                    Err(e) => {
                         log::warn!(
                             "Failed to load workflow definition '{}': {e}",
                             file_path.display()
                         );
+                        return Ok(None);
                     }
-                    return Ok(None);
                 }
+            } else if let Some(w) = builtin::get_builtin_workflow(&file_stem) {
+                w
+            } else {
+                return Ok(None);
             }
         };
         WorkflowEventLog::reconstruct_state_from_events(&execution_id, &events, &workflow)

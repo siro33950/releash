@@ -1,8 +1,8 @@
-## Coding Policy
+## コーディングポリシー
 
-- Follow the project's existing coding conventions and patterns
-- Do not introduce unnecessary dependencies
-- Keep changes focused on the task; avoid unrelated refactoring
-- Add tests for all new logic
-- Run lint and format checks before considering the task complete
-- Do not modify test expectations to match implementation; fix the implementation if tests fail
+- プロジェクトの既存のコーディング規約とパターンに従う
+- 不要な依存関係を導入しない
+- タスクに集中した変更を行い、無関係なリファクタリングを避ける
+- 全ての新規ロジックにテストを追加する
+- タスク完了前にlintとフォーマットチェックを実行する
+- テストの期待値を実装に合わせて変更しない。テストが失敗する場合は実装を修正する
