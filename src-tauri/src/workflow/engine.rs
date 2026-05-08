@@ -2596,6 +2596,15 @@ impl WorkflowEngine {
                 exec.state = WorkflowExecutionState::Running;
                 *exec.step_execution_counts.entry(name).or_insert(0) += 1;
                 exec.updated_at = current_timestamp();
+
+                // resets_cycle_for: 遷移先ステップの設定に従い指定ステップのカウントをリセット
+                let resets = exec.workflow.steps[idx].resets_cycle_for.clone();
+                if let Some(targets) = resets {
+                    for target in &targets {
+                        exec.step_execution_counts.remove(target);
+                    }
+                }
+
                 let step = &exec.workflow.steps[idx];
                 if step.is_parallel_block() {
                     StepOutcome::StartParallel(exec.to_workflow_state())
