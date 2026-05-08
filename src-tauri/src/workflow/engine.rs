@@ -1448,7 +1448,8 @@ impl WorkflowEngine {
                 let child_step_names: Vec<String> =
                     pr.children.iter().map(|c| c.step_name.clone()).collect();
 
-                // output_contractがない親ステップはStepOutputを生成しない（Spec準拠）
+                // 子ステップの個別StepOutputは既に登録済み（行1401-1413）
+                // 親名での集約登録は parallel_run クリア後に行う
                 // token_usageはStepHistoryEntryに直接渡す
                 let parent_run_index = exec
                     .step_execution_counts
@@ -1487,6 +1488,36 @@ impl WorkflowEngine {
 
                 exec.parallel_run = None;
                 exec.updated_at = current_timestamp();
+
+                // 並列ブロック親名でstep_outputsに集約登録
+                // 後続ステップがpass_output_fromで親名を参照できるようにする
+                {
+                    let mut children_output = serde_json::Map::new();
+                    for child_name in &child_step_names {
+                        if let Some(child_so) = exec.step_outputs.get(child_name) {
+                            children_output.insert(
+                                child_name.clone(),
+                                child_so
+                                    .structured_output
+                                    .clone()
+                                    .unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                    }
+                    exec.step_outputs.insert(
+                        parent_step_name.clone(),
+                        StepOutput {
+                            step_name: parent_step_name.clone(),
+                            run_index: parent_run_index,
+                            session_id: None,
+                            result: None,
+                            structured_output: Some(serde_json::Value::Object(children_output)),
+                            output_contract: None,
+                            token_usage: Some(combined_tokens.clone()),
+                            completed_at: current_timestamp(),
+                        },
+                    );
+                }
 
                 let outcome = if let Some(ref agg) = aggregate {
                     // aggregate評価
@@ -4491,6 +4522,100 @@ mod tests {
         let wv = HashMap::new();
         let result = WorkflowEngine::inject_step_outputs("Do B", &step, &HashMap::new(), &[], &wv);
         assert!(!result.contains("<workflow_variables>"));
+    }
+
+    #[test]
+    fn inject_step_outputs_parallel_parent_aggregated_children() {
+        // 並列ブロック親名で集約された子出力がpass_output_fromで参照できること
+        let mut step = make_test_step("plan_fix", StepMode::Auto, "Fix plan", vec![], None);
+        step.pass_output_from = Some(vec![
+            "plan_review_parallel".to_string(),
+            "plan_draft".to_string(),
+        ]);
+
+        let mut outputs = HashMap::new();
+        // 並列ブロック親の集約StepOutput（子出力をまとめたJSONオブジェクト）
+        outputs.insert(
+            "plan_review_parallel".to_string(),
+            StepOutput {
+                step_name: "plan_review_parallel".to_string(),
+                run_index: 1,
+                session_id: None,
+                result: None,
+                structured_output: Some(serde_json::json!({
+                    "review_completeness": {
+                        "verdict": "NEEDS_FIX",
+                        "findings": [{"severity": "must_fix", "message": "Missing error handling"}]
+                    },
+                    "review_clarity": {
+                        "verdict": "LGTM",
+                        "findings": []
+                    }
+                })),
+                output_contract: None,
+                token_usage: None,
+                completed_at: 1000.0,
+            },
+        );
+        outputs.insert(
+            "plan_draft".to_string(),
+            make_step_output("plan_draft", "Draft spec content", None),
+        );
+
+        let result =
+            WorkflowEngine::inject_step_outputs("Fix plan", &step, &outputs, &[], &HashMap::new());
+        assert!(result.contains("<step_output name=\"plan_review_parallel\">"));
+        assert!(result.contains("NEEDS_FIX"));
+        assert!(result.contains("Missing error handling"));
+        assert!(result.contains("<step_output name=\"plan_draft\">"));
+        assert!(result.contains("Draft spec content"));
+    }
+
+    #[test]
+    fn inject_step_outputs_parallel_parent_via_pass_previous_response() {
+        // pass_previous_response: trueで並列ブロック親の集約出力が参照できること
+        let mut step = make_test_step("plan_fix", StepMode::Auto, "Fix plan", vec![], None);
+        step.pass_previous_response = Some(true);
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "plan_review_parallel".to_string(),
+            StepOutput {
+                step_name: "plan_review_parallel".to_string(),
+                run_index: 1,
+                session_id: None,
+                result: None,
+                structured_output: Some(serde_json::json!({
+                    "review_completeness": {"verdict": "LGTM", "findings": []},
+                    "review_security": {"verdict": "NEEDS_FIX", "findings": [{"severity": "must_fix", "message": "SQL injection risk"}]}
+                })),
+                output_contract: None,
+                token_usage: None,
+                completed_at: 1000.0,
+            },
+        );
+
+        let history = vec![StepHistoryEntry {
+            step_name: "plan_review_parallel".to_string(),
+            completed_at: 1000.0,
+            result: Some("else".to_string()),
+            session_id: None,
+            token_usage: None,
+            structured_output: None,
+            run_index: 1,
+            child_outputs: None,
+        }];
+
+        let result = WorkflowEngine::inject_step_outputs(
+            "Fix plan",
+            &step,
+            &outputs,
+            &history,
+            &HashMap::new(),
+        );
+        assert!(result.contains("<step_output name=\"plan_review_parallel\">"));
+        assert!(result.contains("NEEDS_FIX"));
+        assert!(result.contains("SQL injection risk"));
     }
 
     // ---- extract_contract_variables ----
