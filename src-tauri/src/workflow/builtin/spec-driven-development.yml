@@ -67,10 +67,10 @@ steps:
     mode: auto
     instruction: plan-fix
     output_contract: spec-file-path
+    pass_previous_response: true
     pass_output_from:
       - plan_review_parallel
       - plan_draft
-      - plan_approval
     rules:
       - match: ".*"
         next: plan_review_parallel
@@ -165,10 +165,10 @@ steps:
     mode: auto
     instruction: implement-fix
     policy: coding
+    pass_previous_response: true
     pass_output_from:
       - code_review_parallel
       - plan_draft
-      - implementation_approval
 
   # 13. 修正後品質チェック（auto）
   - name: fix_quality_check
