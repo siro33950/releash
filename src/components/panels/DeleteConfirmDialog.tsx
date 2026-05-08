@@ -12,6 +12,7 @@ import {
 interface DeleteConfirmDialogProps {
 	open: boolean;
 	itemName: string;
+	description?: string;
 	onConfirm: () => void;
 	onCancel: () => void;
 }
@@ -19,6 +20,7 @@ interface DeleteConfirmDialogProps {
 export function DeleteConfirmDialog({
 	open,
 	itemName,
+	description,
 	onConfirm,
 	onCancel,
 }: DeleteConfirmDialogProps) {
@@ -28,7 +30,8 @@ export function DeleteConfirmDialog({
 				<AlertDialogHeader>
 					<AlertDialogTitle>Confirm Deletion</AlertDialogTitle>
 					<AlertDialogDescription>
-						Delete "{itemName}"? This action cannot be undone.
+						{description ??
+							`Delete "${itemName}"? This action cannot be undone.`}
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>

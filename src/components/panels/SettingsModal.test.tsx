@@ -661,4 +661,110 @@ describe("SettingsModal", () => {
 
 		expect(screen.queryByTitle("Delete workflow")).not.toBeInTheDocument();
 	});
+
+	describe("Repository removal", () => {
+		const repoMockSetup = async () => {
+			const { invoke } = await import("@tauri-apps/api/core");
+			vi.mocked(invoke).mockImplementation((cmd: string) => {
+				switch (cmd) {
+					case "list_branches":
+						return Promise.resolve([{ name: "main", is_remote: false }]);
+					case "get_releash_base":
+						return Promise.resolve(null);
+					case "get_notify_config":
+						return Promise.resolve({
+							webhook_url: "",
+							on_running: false,
+							on_done: true,
+							on_error: true,
+							on_waiting: true,
+							desktop_mode: "always",
+							inactive_timeout_minutes: 2,
+						});
+					case "get_remote_config":
+						return Promise.resolve({
+							auto_start: false,
+							auto_start_on_lan: false,
+						});
+					case "get_mcp_config":
+						return Promise.resolve({ port: 19801, token: "test-token" });
+					case "get_configured_agents":
+						return Promise.resolve([]);
+					case "preview_agent_mcp_config":
+						return Promise.resolve("");
+					default:
+						return Promise.resolve(null);
+				}
+			});
+		};
+
+		it("should show remove button when onRemoveRepo is provided", async () => {
+			await repoMockSetup();
+			const onRemoveRepo = vi.fn();
+			render(<SettingsModal {...defaultProps} onRemoveRepo={onRemoveRepo} />);
+			fireEvent.click(screen.getByText("Repositories"));
+			await waitFor(() => {
+				expect(
+					screen.getByRole("button", { name: /Remove repository/ }),
+				).toBeInTheDocument();
+			});
+		});
+
+		it("should not show remove button when onRemoveRepo is not provided", async () => {
+			await repoMockSetup();
+			render(<SettingsModal {...defaultProps} />);
+			fireEvent.click(screen.getByText("Repositories"));
+			await waitFor(() => {
+				expect(screen.getByText("Base branch")).toBeInTheDocument();
+			});
+			expect(
+				screen.queryByRole("button", { name: /Remove repository/ }),
+			).not.toBeInTheDocument();
+		});
+
+		it("should show confirm dialog with unregister message when remove button is clicked", async () => {
+			await repoMockSetup();
+			const user = userEvent.setup();
+			const onRemoveRepo = vi.fn();
+			render(<SettingsModal {...defaultProps} onRemoveRepo={onRemoveRepo} />);
+			fireEvent.click(screen.getByText("Repositories"));
+			const removeBtn = await screen.findByRole("button", {
+				name: /Remove repository/,
+			});
+			await user.click(removeBtn);
+			expect(
+				screen.getByText(
+					"Remove from list? The repository will not be deleted from disk.",
+				),
+			).toBeInTheDocument();
+		});
+
+		it("should call onRemoveRepo when deletion is confirmed", async () => {
+			await repoMockSetup();
+			const user = userEvent.setup();
+			const onRemoveRepo = vi.fn();
+			render(<SettingsModal {...defaultProps} onRemoveRepo={onRemoveRepo} />);
+			fireEvent.click(screen.getByText("Repositories"));
+			const removeBtn = await screen.findByRole("button", {
+				name: /Remove repository/,
+			});
+			await user.click(removeBtn);
+			await user.click(screen.getByRole("button", { name: "Delete" }));
+			expect(onRemoveRepo).toHaveBeenCalledWith("/repos/my-app");
+		});
+
+		it("should not call onRemoveRepo when deletion is cancelled", async () => {
+			await repoMockSetup();
+			const user = userEvent.setup();
+			const onRemoveRepo = vi.fn();
+			render(<SettingsModal {...defaultProps} onRemoveRepo={onRemoveRepo} />);
+			fireEvent.click(screen.getByText("Repositories"));
+			const removeBtn = await screen.findByRole("button", {
+				name: /Remove repository/,
+			});
+			await user.click(removeBtn);
+			await user.click(screen.getByRole("button", { name: "Cancel" }));
+			expect(onRemoveRepo).not.toHaveBeenCalled();
+		});
+	});
 });
