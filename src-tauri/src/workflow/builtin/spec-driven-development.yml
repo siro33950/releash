@@ -36,6 +36,7 @@ steps:
         output_contract: review-verdict
         pass_output_from:
           - plan_spec
+          - plan_approval
       - name: plan_review_clarity
         mode: auto
         instruction: plan-review-clarity
@@ -43,6 +44,7 @@ steps:
         output_contract: review-verdict
         pass_output_from:
           - plan_spec
+          - plan_approval
       - name: plan_review_security
         mode: auto
         instruction: plan-review-security
@@ -50,6 +52,7 @@ steps:
         output_contract: review-verdict
         pass_output_from:
           - plan_spec
+          - plan_approval
       - name: plan_review_consistency
         mode: auto
         instruction: plan-review-consistency
@@ -57,6 +60,7 @@ steps:
         output_contract: review-verdict
         pass_output_from:
           - plan_spec
+          - plan_approval
     aggregate:
       all_match: LGTM
       then: plan_approval
@@ -71,11 +75,13 @@ steps:
     pass_output_from:
       - plan_review_parallel
       - plan_spec
+      - plan_approval
     rules:
       - match: ".*"
         next: plan_review_parallel
     cycle_guard:
-      max_iterations: 3
+      max_iterations: 2
+      on_exhausted: plan_approval
 
   # 7. 実装仕様承認（interactive対話 → review-verdictで判定）
   - name: plan_approval
@@ -85,6 +91,9 @@ steps:
     output_contract: review-verdict
     pass_output_from:
       - plan_spec
+      - plan_review_parallel
+    resets_cycle_for:
+      - plan_fix
     rules:
       - match: NEEDS_FIX
         next: plan_fix
@@ -115,6 +124,7 @@ steps:
         pass_output_from:
           - plan_spec
           - implement
+          - implementation_approval
       - name: code_review_structure
         mode: auto
         instruction: review-structure
@@ -123,6 +133,7 @@ steps:
         pass_output_from:
           - plan_spec
           - implement
+          - implementation_approval
       - name: code_review_quality
         mode: auto
         instruction: review-quality
@@ -131,6 +142,7 @@ steps:
         pass_output_from:
           - plan_spec
           - implement
+          - implementation_approval
       - name: code_review_test
         mode: auto
         instruction: review-test
@@ -139,6 +151,7 @@ steps:
         pass_output_from:
           - plan_spec
           - implement
+          - implementation_approval
       - name: code_review_security
         mode: auto
         instruction: review-security
@@ -147,6 +160,7 @@ steps:
         pass_output_from:
           - plan_spec
           - implement
+          - implementation_approval
       - name: code_review_architecture
         mode: auto
         instruction: review-architecture
@@ -155,6 +169,7 @@ steps:
         pass_output_from:
           - plan_spec
           - implement
+          - implementation_approval
     aggregate:
       all_match: LGTM
       then: implementation_approval
@@ -169,6 +184,10 @@ steps:
     pass_output_from:
       - code_review_parallel
       - plan_spec
+      - implementation_approval
+    cycle_guard:
+      max_iterations: 3
+      on_exhausted: implementation_approval
 
   # 13. 修正後品質チェック（auto）
   - name: fix_quality_check
@@ -179,8 +198,6 @@ steps:
     rules:
       - match: ".*"
         next: code_review_parallel
-    cycle_guard:
-      max_iterations: 5
 
   # 14. 実装結果承認（interactive対話 → review-verdictで判定）
   - name: implementation_approval
@@ -191,6 +208,9 @@ steps:
     pass_output_from:
       - plan_spec
       - implement
+      - code_review_parallel
+    resets_cycle_for:
+      - fix
     rules:
       - match: NEEDS_FIX
         next: fix

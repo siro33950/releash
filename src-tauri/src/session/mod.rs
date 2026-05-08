@@ -1183,6 +1183,7 @@ mod tests {
                     collect: None,
                     parallel: None,
                     aggregate: None,
+                    resets_cycle_for: None,
                 },
                 Step {
                     name: "implement".to_string(),
@@ -1199,6 +1200,7 @@ mod tests {
                     collect: None,
                     parallel: None,
                     aggregate: None,
+                    resets_cycle_for: None,
                 },
                 Step {
                     name: "review".to_string(),
@@ -1215,6 +1217,7 @@ mod tests {
                     collect: None,
                     parallel: None,
                     aggregate: None,
+                    resets_cycle_for: None,
                 },
                 Step {
                     name: "report".to_string(),
@@ -1231,6 +1234,7 @@ mod tests {
                     collect: None,
                     parallel: None,
                     aggregate: None,
+                    resets_cycle_for: None,
                 },
             ],
         }

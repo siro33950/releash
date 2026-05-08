@@ -241,6 +241,7 @@ mod tests {
                 collect: None,
                 parallel: None,
                 aggregate: None,
+                resets_cycle_for: None,
             }],
         }
     }
