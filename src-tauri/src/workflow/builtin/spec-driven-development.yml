@@ -4,22 +4,22 @@ builtin: true
 
 steps:
   # 1. 要求整理（interactive、Spec作成）
-  - name: requirements
+  - name: plan_requirements
     mode: interactive
     instruction: plan-requirements
     policy: planning
     output_contract: spec-file-path
 
   # 2. 振る舞い定義（interactive、Spec更新）
-  - name: behavior
+  - name: plan_behavior
     mode: interactive
     instruction: plan-behavior
     policy: planning
     output_contract: spec-file-path
     pass_previous_response: true
 
-  # 3. 実装仕様ドラフト（interactive、Spec更新）
-  - name: plan_draft
+  # 3. 実装仕様（interactive、Spec更新）
+  - name: plan_spec
     mode: interactive
     instruction: plan-spec
     policy: planning
@@ -35,28 +35,28 @@ steps:
         policy: plan-review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
       - name: plan_review_clarity
         mode: auto
         instruction: plan-review-clarity
         policy: plan-review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
       - name: plan_review_security
         mode: auto
         instruction: plan-review-security
         policy: plan-review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
       - name: plan_review_consistency
         mode: auto
         instruction: plan-review-consistency
         policy: plan-review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
     aggregate:
       all_match: LGTM
       then: plan_approval
@@ -70,7 +70,7 @@ steps:
     pass_previous_response: true
     pass_output_from:
       - plan_review_parallel
-      - plan_draft
+      - plan_spec
     rules:
       - match: ".*"
         next: plan_review_parallel
@@ -84,7 +84,7 @@ steps:
     policy: planning
     output_contract: review-verdict
     pass_output_from:
-      - plan_draft
+      - plan_spec
     rules:
       - match: NEEDS_FIX
         next: plan_fix
@@ -95,7 +95,7 @@ steps:
     instruction: implement
     policy: coding
     pass_output_from:
-      - plan_draft
+      - plan_spec
 
   # 9. 品質チェック（auto）
   - name: quality_check
@@ -113,7 +113,7 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
           - implement
       - name: code_review_structure
         mode: auto
@@ -121,7 +121,7 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
           - implement
       - name: code_review_quality
         mode: auto
@@ -129,7 +129,7 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
           - implement
       - name: code_review_test
         mode: auto
@@ -137,7 +137,7 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
           - implement
       - name: code_review_security
         mode: auto
@@ -145,7 +145,7 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
           - implement
       - name: code_review_architecture
         mode: auto
@@ -153,7 +153,7 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_draft
+          - plan_spec
           - implement
     aggregate:
       all_match: LGTM
@@ -168,7 +168,7 @@ steps:
     pass_previous_response: true
     pass_output_from:
       - code_review_parallel
-      - plan_draft
+      - plan_spec
 
   # 13. 修正後品質チェック（auto）
   - name: fix_quality_check
@@ -189,7 +189,7 @@ steps:
     policy: coding
     output_contract: review-verdict
     pass_output_from:
-      - plan_draft
+      - plan_spec
       - implement
     rules:
       - match: NEEDS_FIX
