@@ -84,8 +84,8 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-spec",
-        content: include_str!("builtin_facets/instructions/plan-spec.md"),
+        key: "plan-architecture",
+        content: include_str!("builtin_facets/instructions/plan-architecture.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
