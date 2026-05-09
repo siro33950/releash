@@ -18,7 +18,7 @@ steps:
     output_contract: spec-file-path
     pass_previous_response: true
 
-  # 3. 実装仕様（interactive、Spec更新）
+  # 3. アーキテクチャ概要（interactive、Spec更新）
   - name: plan_spec
     mode: interactive
     instruction: plan-spec
@@ -26,7 +26,7 @@ steps:
     output_contract: spec-file-path
     pass_previous_response: true
 
-  # 4-5. 実装仕様レビュー 4観点（parallel auto）+ 集約
+  # 4-5. アーキテクチャ概要レビュー 4観点（parallel auto）+ 集約
   - name: plan_review_parallel
     parallel:
       - name: plan_review_completeness
@@ -66,7 +66,7 @@ steps:
       then: plan_approval
       else: plan_fix
 
-  # 6. 実装仕様修正（auto、Spec更新）
+  # 6. アーキテクチャ概要修正（auto、Spec更新）
   - name: plan_fix
     mode: auto
     instruction: plan-fix
@@ -83,7 +83,7 @@ steps:
       max_iterations: 2
       on_exhausted: plan_approval
 
-  # 7. 実装仕様承認（interactive対話 → review-verdictで判定）
+  # 7. アーキテクチャ概要承認（interactive対話 → review-verdictで判定）
   - name: plan_approval
     mode: interactive
     instruction: plan-approval
