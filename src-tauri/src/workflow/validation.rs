@@ -98,7 +98,7 @@ impl fmt::Display for ValidationError {
             Self::EmptyName => write!(f, "ワークフロー名が空です"),
             Self::InvalidChars { name } => write!(
                 f,
-                "ワークフロー名 '{name}' に使用できない文字が含まれています（英数字・ハイフン・アンダースコアのみ許可）"
+                "ワークフロー名 '{name}' は先頭を英数字にし、2文字目以降は英数字・ハイフン・アンダースコアのみ使用できます"
             ),
             Self::EmptySteps => write!(f, "ワークフローにステップが定義されていません"),
             Self::DuplicateStep { name } => {
@@ -111,7 +111,7 @@ impl fmt::Display for ValidationError {
             Self::MissingFacet { step } => {
                 write!(
                     f,
-                    "ステップ '{step}' にはファセット参照が必要です（collectステップのみ省略可）"
+                    "ステップ '{step}' にはファセット参照またはinline_promptが必要です（collectステップのみ両方省略可）"
                 )
             }
             Self::UnknownOutputFrom { step, reference } => write!(
