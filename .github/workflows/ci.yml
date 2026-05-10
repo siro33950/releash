@@ -390,9 +390,9 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-      - name: Build SDK bridge bundle
+      - name: Build frontend assets for Tauri
         working-directory: .
-        run: pnpm install --frozen-lockfile && pnpm build:bridge
+        run: pnpm install --frozen-lockfile && pnpm build:remote && pnpm build:bridge
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy, llvm-tools-preview
