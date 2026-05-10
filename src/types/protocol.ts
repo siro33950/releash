@@ -1,4 +1,5 @@
 import type { WorkflowStatePayload } from "@/types/workflow";
+import type { MessagePart } from "./session";
 
 // --- 認証 ---
 
@@ -153,6 +154,63 @@ export interface BackendListResponse {
 	default_id: string | null;
 }
 
+export interface AgentSessionStartRequest {
+	worktree_path: string;
+	backend_id?: string | null;
+}
+
+export interface AgentSessionStartResponse {
+	success: boolean;
+	session_id?: string | null;
+	backend_id?: string | null;
+	error?: string | null;
+}
+
+export interface AgentMessageRequest {
+	session_id?: string | null;
+	worktree_path: string;
+	content: string;
+	permission_mode?: string | null;
+	backend_id?: string | null;
+}
+
+export interface AgentMessageResponse {
+	success: boolean;
+	session_id?: string | null;
+	human_message_id?: string | null;
+	agent_message_id?: string | null;
+	backend_id?: string | null;
+	error?: string | null;
+}
+
+export interface AgentInterruptRequest {
+	session_id: string;
+}
+
+export interface AgentInterruptResponse {
+	success: boolean;
+	session_id: string;
+	error?: string | null;
+}
+
+export interface AgentModelSetRequest {
+	session_id: string;
+	model_id?: string | null;
+}
+
+export interface AgentModelSetResponse {
+	success: boolean;
+	session_id: string;
+	model_id?: string | null;
+	error?: string | null;
+}
+
+export interface AgentStreamSync {
+	session_id: string;
+	message_id: string;
+	parts: MessagePart[];
+}
+
 // --- 制御 ---
 
 export interface ErrorMsg {
@@ -194,6 +252,15 @@ export type WsMessage =
 	| { type: "agent_state_sync"; payload: AgentStateSync }
 	| { type: "backend_list_request"; payload: BackendListRequest }
 	| { type: "backend_list_response"; payload: BackendListResponse }
+	| { type: "agent_session_start_request"; payload: AgentSessionStartRequest }
+	| { type: "agent_session_start_response"; payload: AgentSessionStartResponse }
+	| { type: "agent_message_request"; payload: AgentMessageRequest }
+	| { type: "agent_message_response"; payload: AgentMessageResponse }
+	| { type: "agent_interrupt_request"; payload: AgentInterruptRequest }
+	| { type: "agent_interrupt_response"; payload: AgentInterruptResponse }
+	| { type: "agent_model_set_request"; payload: AgentModelSetRequest }
+	| { type: "agent_model_set_response"; payload: AgentModelSetResponse }
+	| { type: "agent_stream_sync"; payload: AgentStreamSync }
 	| { type: "workflow_state_sync"; payload: WorkflowStatePayload }
 	| { type: "error"; payload: ErrorMsg };
 

@@ -12,8 +12,8 @@ export default defineConfig({
 		dedupe: ["react", "react-dom"],
 	},
 	build: {
-		outDir: "src-tauri/resources/remote",
-		emptyOutDir: false,
+		outDir: "src-tauri/generated/remote",
+		emptyOutDir: true,
 		rolldownOptions: {
 			input: path.resolve(import.meta.dirname, "remote.html"),
 		},

@@ -230,7 +230,13 @@ impl AgentStatusCenter {
         self.emit_agent_state_changed_compat(&worktree_path, &agent_state, pty_id.as_deref());
 
         // 5. WS broadcast (legacy 互換)
-        self.broadcast_agent_state_sync(&worktree_path, &agent_state, last_activity_at, pty_id);
+        self.broadcast_agent_state_sync(
+            &worktree_path,
+            &agent_state,
+            last_activity_at,
+            Some(chat_session_id),
+            pty_id,
+        );
     }
 
     /// Session を削除し、worktree を再集約する。
@@ -390,17 +396,34 @@ impl AgentStatusCenter {
         worktree_path: &str,
         state: &AgentState,
         timestamp: f64,
+        session_id: Option<String>,
         pty_id: Option<String>,
     ) {
-        let msg = WsMessage::AgentStateSync(AgentStateSync {
+        let msg = WsMessage::AgentStateSync(Self::build_agent_state_sync(
+            worktree_path,
+            state,
+            timestamp,
+            session_id,
+            pty_id,
+        ));
+        self.broadcaster.try_send(msg);
+    }
+
+    fn build_agent_state_sync(
+        worktree_path: &str,
+        state: &AgentState,
+        timestamp: f64,
+        session_id: Option<String>,
+        pty_id: Option<String>,
+    ) -> AgentStateSync {
+        AgentStateSync {
             worktree_path: worktree_path.to_string(),
             state: state.clone(),
             exit_code: None,
             timestamp,
-            session_id: None,
+            session_id,
             pty_id,
-        });
-        self.broadcaster.try_send(msg);
+        }
     }
 }
 
@@ -621,5 +644,20 @@ mod tests {
             let back = TurnPhase::from(repr);
             assert_eq!(tp, back);
         }
+    }
+
+    #[test]
+    fn agent_state_sync_includes_chat_session_id() {
+        let sync = AgentStatusCenter::build_agent_state_sync(
+            "/repo",
+            &AgentState::Running,
+            123.0,
+            Some("chat-session-1".to_string()),
+            None,
+        );
+
+        assert_eq!(sync.session_id, Some("chat-session-1".to_string()));
+        assert_eq!(sync.worktree_path, "/repo");
+        assert_eq!(sync.state, AgentState::Running);
     }
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Subscribe } from "./useMessageBus";
 
-export type Tab = "terminal" | "comments" | "threads";
+export type Tab = "terminal" | "agent" | "comments" | "threads";
 
 interface UseRemoteNavigationOptions {
 	subscribe: Subscribe;

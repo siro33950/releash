@@ -27,6 +27,10 @@ const defaultProps = {
 	models: [],
 	currentModelId: null,
 	onModelChange: vi.fn(),
+	backends: [],
+	currentBackendId: null,
+	onBackendChange: vi.fn(),
+	backendDisabled: true,
 };
 
 describe("MessageInput", () => {
@@ -153,6 +157,22 @@ describe("MessageInput", () => {
 		);
 	});
 
+	it("renders CodexPermissionControl instead of ModeSelector for Codex", () => {
+		render(
+			<MessageInput
+				{...defaultProps}
+				currentBackendId="codex"
+				backends={[
+					{ id: "claude", name: "Claude", available: true },
+					{ id: "codex", name: "Codex", available: true },
+				]}
+			/>,
+		);
+
+		expect(screen.getByTestId("codex-permission-trigger")).toBeDefined();
+		expect(screen.queryByTestId("mode-selector-trigger")).toBeNull();
+	});
+
 	it("renders ModelSelector inside the input container", () => {
 		render(<MessageInput {...defaultProps} />);
 		expect(screen.getByTestId("model-selector-trigger")).toBeDefined();
@@ -176,6 +196,39 @@ describe("MessageInput", () => {
 		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
 			"Claude Opus",
 		);
+	});
+
+	it("renders enabled Agent selector when backends are available and unlocked", () => {
+		render(
+			<MessageInput
+				{...defaultProps}
+				backends={[
+					{ id: "claude", name: "Claude", available: true },
+					{ id: "codex", name: "Codex", available: true },
+				]}
+				currentBackendId="claude"
+				backendDisabled={false}
+			/>,
+		);
+		expect(screen.getByTestId("backend-selector-trigger")).toHaveTextContent(
+			"Claude",
+		);
+		expect(screen.getByTestId("backend-selector-trigger")).toBeEnabled();
+	});
+
+	it("disables Agent selector after backend is locked", () => {
+		render(
+			<MessageInput
+				{...defaultProps}
+				backends={[
+					{ id: "claude", name: "Claude", available: true },
+					{ id: "codex", name: "Codex", available: true },
+				]}
+				currentBackendId="claude"
+				backendDisabled={true}
+			/>,
+		);
+		expect(screen.getByTestId("backend-selector-trigger")).toBeDisabled();
 	});
 });
 

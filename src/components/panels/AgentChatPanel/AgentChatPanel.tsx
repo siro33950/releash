@@ -34,7 +34,7 @@ import {
 	TaskToolActivity,
 	ToolActivity,
 } from "./ActivityLog";
-import { BackendSelector } from "./BackendSelector";
+import { nextCodexPermissionMode } from "./CodexPermissionControl";
 import type { MessageInputHandle } from "./MessageInput";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
@@ -439,10 +439,14 @@ export function AgentChatPanel({
 	]);
 
 	const cycleMode = useCallback(() => {
+		if (selectedBackendId === "codex") {
+			setPermissionMode(nextCodexPermissionMode(permissionMode));
+			return;
+		}
 		const currentIndex = MODES.findIndex((m) => m.value === permissionMode);
 		const nextIndex = (currentIndex + 1) % MODES.length;
 		setPermissionMode(MODES[nextIndex].value);
-	}, [permissionMode, setPermissionMode]);
+	}, [permissionMode, selectedBackendId, setPermissionMode]);
 
 	const handleHistoryOpen = useCallback(
 		(open: boolean) => {
@@ -508,6 +512,11 @@ export function AgentChatPanel({
 		},
 		[selectSession],
 	);
+	const canChangeBackend =
+		!!activeSession &&
+		activeSession.messages.length === 0 &&
+		!activeSession.agentSessionId &&
+		!isStreaming;
 
 	return (
 		<div data-testid="agent-chat-panel" className="flex flex-col h-full">
@@ -565,12 +574,6 @@ export function AgentChatPanel({
 								))}
 							</TabsList>
 							<div data-tauri-drag-region className="flex-1" />
-							<BackendSelector
-								backends={backends}
-								selectedBackendId={selectedBackendId}
-								onBackendChange={setBackend}
-								disabled={isStreaming}
-							/>
 							<button
 								type="button"
 								onClick={() => createNewSession()}
@@ -699,6 +702,10 @@ export function AgentChatPanel({
 									models={availableModels}
 									currentModelId={selectedModel}
 									onModelChange={setModel}
+									backends={backends}
+									currentBackendId={selectedBackendId}
+									onBackendChange={setBackend}
+									backendDisabled={!canChangeBackend}
 									worktreePath={worktreePath}
 								/>
 							</div>

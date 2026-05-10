@@ -36,6 +36,25 @@ vi.mock("./useSessionStore", () => ({
 	closeSession: vi.fn().mockResolvedValue(undefined),
 	restoreSession: vi.fn().mockResolvedValue(undefined),
 	listClosedSessions: vi.fn().mockResolvedValue([]),
+	listAgentBackends: vi.fn().mockResolvedValue({
+		backends: [],
+		defaultId: null,
+	}),
+	setSessionBackend: vi.fn().mockResolvedValue({
+		session: {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 1000,
+			updatedAt: 1000,
+			permissionMode: "acceptEdits",
+			backendId: "codex",
+		},
+		turnPhase: "idle",
+		selectedModel: null,
+		availableModels: [],
+	}),
 	sendAgentMessage: vi.fn().mockResolvedValue({
 		session: {
 			id: "s1",
@@ -85,6 +104,7 @@ describe("useAgentChat", () => {
 		const sessionStore = await import("./useSessionStore");
 		vi.mocked(sessionStore.sendAgentMessage).mockClear();
 		vi.mocked(sessionStore.initAgentSessions).mockClear();
+		vi.mocked(sessionStore.setSessionBackend).mockClear();
 	});
 
 	it("should define the hook", async () => {
@@ -114,6 +134,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"acceptEdits",
+			null,
 			undefined,
 			undefined,
 		);
@@ -136,6 +157,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"check this",
 			"acceptEdits",
+			null,
 			images,
 			undefined,
 		);
@@ -162,6 +184,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"check @src/main.rs:L10-L20",
 			"acceptEdits",
+			null,
 			undefined,
 			mentions,
 		);
@@ -184,6 +207,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"",
 			"acceptEdits",
+			null,
 			images,
 			undefined,
 		);
@@ -205,6 +229,33 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"acceptEdits",
+			null,
+			undefined,
+			undefined,
+		);
+	});
+
+	it("sendMessage passes selected backend when Rust creates the session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		act(() => {
+			result.current.setBackend("codex");
+		});
+
+		await act(async () => {
+			await result.current.sendMessage("hello");
+		});
+
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			null,
+			"/repo",
+			"hello",
+			"acceptEdits",
+			"codex",
 			undefined,
 			undefined,
 		);
@@ -276,6 +327,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"acceptEdits",
+			null,
 			undefined,
 			undefined,
 		);
@@ -303,6 +355,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"second",
 			"acceptEdits",
+			null,
 			undefined,
 			undefined,
 		);
@@ -489,6 +542,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"hello",
 			"plan",
+			null,
 			undefined,
 			undefined,
 		);
@@ -594,6 +648,7 @@ describe("useAgentChat", () => {
 			"/repo",
 			"second",
 			"acceptEdits",
+			null,
 			undefined,
 			undefined,
 		);
@@ -740,22 +795,181 @@ describe("useAgentChat", () => {
 
 		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo", null);
 		expect(result.current.activeSession).toEqual(newSession);
-		expect(mockInvoke).toHaveBeenCalledWith(
+		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"start_agent_session",
-			expect.objectContaining({
-				chatSessionId: "new-s",
-				cwd: "/repo",
-				permissionMode: "acceptEdits",
-			}),
+			expect.anything(),
 		);
 		// R4-02: New session starts with default model (null)
 		expect(result.current.selectedModel).toBeNull();
+	});
+
+	it("createNewSession loads model metadata for the new empty session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: null,
+		} as never);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const newSession = {
+			id: "new-s",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 2000,
+			updatedAt: 2000,
+			permissionMode: "acceptEdits",
+			backendId: "codex",
+		};
+		const models = [{ value: "sonnet", displayName: "Claude Sonnet" }];
+		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
+			newSession as never,
+		);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: newSession,
+			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: models,
+		} as never);
+
+		await act(async () => {
+			await result.current.createNewSession();
+		});
+
+		expect(sessionStore.getSession).toHaveBeenCalledWith("new-s");
+		expect(result.current.availableModels).toEqual(models);
+		expect(result.current.selectedModel).toBeNull();
+	});
+
+	it("createNewSession allows selecting a model before the backend process starts", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: null,
+		} as never);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const newSession = {
+			id: "new-s",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 2000,
+			updatedAt: 2000,
+			permissionMode: "acceptEdits",
+			backendId: "claude",
+		};
+		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
+			newSession as never,
+		);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: newSession,
+			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [{ value: "sonnet", displayName: "Claude Sonnet" }],
+		} as never);
+
+		await act(async () => {
+			await result.current.createNewSession();
+		});
+		mockInvoke.mockClear();
+
+		await act(async () => {
+			result.current.setModel("sonnet");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
+			chatSessionId: "new-s",
+			modelId: "sonnet",
+		});
+		expect(result.current.selectedModel).toBe("sonnet");
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"start_agent_session",
+			expect.anything(),
+		);
+	});
+
+	it("sendMessage after selecting a model in NewSession uses the existing session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: null,
+		} as never);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const newSession = {
+			id: "new-s",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 2000,
+			updatedAt: 2000,
+			permissionMode: "acceptEdits",
+			backendId: "claude",
+		};
+		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
+			newSession as never,
+		);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: newSession,
+			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [{ value: "sonnet", displayName: "Claude Sonnet" }],
+		} as never);
+
+		await act(async () => {
+			await result.current.createNewSession();
+		});
+		act(() => {
+			result.current.setModel("sonnet");
+		});
+		vi.mocked(sessionStore.sendAgentMessage).mockClear();
+
+		await act(async () => {
+			await result.current.sendMessage("hello");
+		});
+
+		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
+			"new-s",
+			"/repo",
+			"hello",
+			"acceptEdits",
+			null,
+			undefined,
+			undefined,
+		);
 	});
 
 	it("createNewSession passes selectedBackendId to createSession", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: null,
+		} as never);
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
@@ -771,6 +985,132 @@ describe("useAgentChat", () => {
 
 		const newSession = {
 			id: "new-s",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 2000,
+			updatedAt: 2000,
+			permissionMode: "acceptEdits",
+			backendId: "claude",
+		};
+		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
+			newSession as never,
+		);
+
+		await act(async () => {
+			await result.current.createNewSession();
+		});
+
+		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo", "claude");
+	});
+
+	it("does not change selected backend while an existing session is active", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: {
+				session: {
+					id: "s-codex",
+					worktreePath: "/repo",
+					messages: [
+						{
+							id: "m1",
+							role: "human",
+							parts: [{ type: "text", content: "hello" }],
+							timestamp: 1000,
+						},
+					],
+					state: "active",
+					createdAt: 1000,
+					updatedAt: 1000,
+					permissionMode: "acceptEdits",
+					backendId: "codex",
+				},
+				turnPhase: "idle",
+				selectedModel: null,
+				availableModels: [],
+			},
+		} as never);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		act(() => {
+			result.current.setBackend("claude");
+		});
+
+		expect(result.current.selectedBackendId).toBe("codex");
+		expect(sessionStore.setSessionBackend).not.toHaveBeenCalled();
+	});
+
+	it("updates selected backend for an empty active session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: {
+				session: {
+					id: "empty-claude",
+					worktreePath: "/repo",
+					messages: [],
+					state: "active",
+					createdAt: 1000,
+					updatedAt: 1000,
+					permissionMode: "acceptEdits",
+					backendId: "claude",
+				},
+				turnPhase: "idle",
+				selectedModel: null,
+				availableModels: [],
+			},
+		} as never);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		vi.mocked(sessionStore.setSessionBackend).mockResolvedValueOnce({
+			session: {
+				id: "empty-claude",
+				worktreePath: "/repo",
+				messages: [],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1100,
+				permissionMode: "acceptEdits",
+				backendId: "codex",
+			},
+			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [{ value: "codex-mini", displayName: "Codex Mini" }],
+		} as never);
+
+		await act(async () => {
+			result.current.setBackend("codex");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		expect(sessionStore.setSessionBackend).toHaveBeenCalledWith(
+			"empty-claude",
+			"codex",
+		);
+		expect(result.current.selectedBackendId).toBe("codex");
+		expect(result.current.availableModels).toEqual([
+			{ value: "codex-mini", displayName: "Codex Mini" },
+		]);
+
+		const newSession = {
+			id: "new-claude",
 			worktreePath: "/repo",
 			messages: [],
 			state: "active",
@@ -958,7 +1298,14 @@ describe("useAgentChat", () => {
 		const restoredSession = {
 			id: "s-closed",
 			worktreePath: "/repo",
-			messages: [],
+			messages: [
+				{
+					id: "m1",
+					role: "human",
+					parts: [{ type: "text", content: "old msg" }],
+					timestamp: 500,
+				},
+			],
 			state: "idle",
 			createdAt: 500,
 			updatedAt: 500,
@@ -983,6 +1330,44 @@ describe("useAgentChat", () => {
 				cwd: "/repo",
 				permissionMode: "acceptEdits",
 			}),
+		);
+	});
+
+	it("restoreSession does not start agent process for an unstarted session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const restoredSession = {
+			id: "s-empty",
+			worktreePath: "/repo",
+			messages: [],
+			state: "idle",
+			createdAt: 500,
+			updatedAt: 500,
+			permissionMode: "acceptEdits",
+		};
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: restoredSession,
+			turnPhase: "idle",
+			selectedModel: null,
+			availableModels: [],
+		} as never);
+		mockInvoke.mockClear();
+
+		await act(async () => {
+			await result.current.restoreSession("s-empty");
+		});
+
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"start_agent_session",
+			expect.anything(),
 		);
 	});
 

@@ -29,6 +29,9 @@ pub(super) async fn route_message(
         WsMessage::AgentSessionStartRequest(req) => {
             handle_agent_session_start_request(req, state).await
         }
+        WsMessage::AgentMessageRequest(req) => handle_agent_message_request(req, state).await,
+        WsMessage::AgentInterruptRequest(req) => handle_agent_interrupt_request(req, state).await,
+        WsMessage::AgentModelSetRequest(req) => handle_agent_model_set_request(req, state).await,
         _ => Some(WsMessage::Error(ErrorMsg {
             code: "INVALID_MESSAGE".to_string(),
             message: "Unexpected message from client".to_string(),

@@ -92,6 +92,20 @@ pub enum WsMessage {
     AgentSessionStartRequest(AgentSessionStartRequest),
     #[serde(rename = "agent_session_start_response")]
     AgentSessionStartResponse(AgentSessionStartResponse),
+    #[serde(rename = "agent_message_request")]
+    AgentMessageRequest(AgentMessageRequest),
+    #[serde(rename = "agent_message_response")]
+    AgentMessageResponse(AgentMessageResponse),
+    #[serde(rename = "agent_interrupt_request")]
+    AgentInterruptRequest(AgentInterruptRequest),
+    #[serde(rename = "agent_interrupt_response")]
+    AgentInterruptResponse(AgentInterruptResponse),
+    #[serde(rename = "agent_model_set_request")]
+    AgentModelSetRequest(AgentModelSetRequest),
+    #[serde(rename = "agent_model_set_response")]
+    AgentModelSetResponse(AgentModelSetResponse),
+    #[serde(rename = "agent_stream_sync")]
+    AgentStreamSync(AgentStreamSync),
 
     // 制御
     #[serde(rename = "error")]

@@ -63,7 +63,7 @@ pub async fn start_server_core(
 
     let remote_dir = if cfg!(debug_assertions) {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
+            .join("generated")
             .join("remote");
         if dir.exists() {
             Some(dir)
@@ -74,7 +74,7 @@ pub async fn start_server_core(
         app.path()
             .resource_dir()
             .ok()
-            .map(|d| d.join("resources").join("remote"))
+            .map(|d| d.join("generated").join("remote"))
     };
     let backend_registry = app.state::<Arc<crate::backends::AgentBackendRegistry>>();
     let server_state = Arc::new(WsServerState::new(

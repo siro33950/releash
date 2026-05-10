@@ -1,6 +1,8 @@
-import { Terminal } from "lucide-react";
+import { Bot, Terminal } from "lucide-react";
+import type { ComponentType } from "react";
 import { useState } from "react";
 import { ConnectionForm } from "./components/ConnectionForm";
+import { RemoteAgentPanel } from "./components/RemoteAgentPanel";
 import { RemoteAppHeader } from "./components/RemoteAppHeader";
 import { RemoteDashboard } from "./components/RemoteDashboard";
 import { TabBar } from "./components/TabBar";
@@ -9,14 +11,20 @@ import { useBrowserBackGuard } from "./hooks/useBrowserBackGuard";
 import { useMessageBus } from "./hooks/useMessageBus";
 import { usePtyManagement } from "./hooks/usePtyManagement";
 import { useRemoteAppActions } from "./hooks/useRemoteAppActions";
+import { useRemoteBackends } from "./hooks/useRemoteBackends";
 import { useRemoteContent } from "./hooks/useRemoteContent";
 import { type Tab, useRemoteNavigation } from "./hooks/useRemoteNavigation";
 import { useRemoteWorkflowState } from "./hooks/useRemoteWorkflowState";
 import { useRemoteWorktrees } from "./hooks/useRemoteWorktrees";
 import { useWebSocket } from "./hooks/useWebSocket";
 
-const tabs: { id: Tab; label: string; icon: typeof Terminal }[] = [
+const tabs: {
+	id: Tab;
+	label: string;
+	icon: ComponentType<{ className?: string }>;
+}[] = [
 	{ id: "terminal", label: "Terminal", icon: Terminal },
+	{ id: "agent", label: "Agent", icon: Bot },
 ];
 
 export function RemoteApp() {
@@ -56,6 +64,18 @@ export function RemoteApp() {
 	} = usePtyManagement({ subscribe, send });
 
 	const { branchName, setBranchName } = useRemoteContent({ subscribe });
+
+	const {
+		backends,
+		selectedBackendId,
+		setSelectedBackendId,
+		loading: backendLoading,
+		refresh: refreshBackends,
+	} = useRemoteBackends({
+		subscribe,
+		send,
+		connected: status === "connected",
+	});
 
 	const { workflowState } = useRemoteWorkflowState({
 		subscribe,
@@ -150,6 +170,25 @@ export function RemoteApp() {
 								setActivePtyId={setActivePtyId}
 								spawnPty={spawnPty}
 								killPty={killPty}
+							/>
+						</div>
+						<div
+							className="absolute inset-0 flex flex-col"
+							style={{
+								visibility: activeTab === "agent" ? "visible" : "hidden",
+								pointerEvents: activeTab === "agent" ? "auto" : "none",
+							}}
+						>
+							<RemoteAgentPanel
+								selectedWorktree={selectedWorktree}
+								backends={backends}
+								selectedBackendId={selectedBackendId}
+								backendLoading={backendLoading}
+								status={status}
+								send={send}
+								subscribe={subscribe}
+								onBackendChange={setSelectedBackendId}
+								onRefreshBackends={refreshBackends}
 							/>
 						</div>
 					</main>
