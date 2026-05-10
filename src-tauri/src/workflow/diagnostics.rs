@@ -287,15 +287,17 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::UnknownCollectFrom { step, .. } => {
             (Some(step.clone()), Some("collect.from".to_string()))
         }
-        ValidationError::UnknownOnExhausted { step, .. } => {
-            (Some(step.clone()), Some("cycle_guard.on_exhausted".to_string()))
-        }
+        ValidationError::UnknownOnExhausted { step, .. } => (
+            Some(step.clone()),
+            Some("cycle_guard.on_exhausted".to_string()),
+        ),
         ValidationError::UnknownResetsCycleFor { step, .. } => {
             (Some(step.clone()), Some("resets_cycle_for".to_string()))
         }
-        ValidationError::CircularOnExhausted { cycle } => {
-            (cycle.first().cloned(), Some("cycle_guard.on_exhausted".to_string()))
-        }
+        ValidationError::CircularOnExhausted { cycle } => (
+            cycle.first().cloned(),
+            Some("cycle_guard.on_exhausted".to_string()),
+        ),
         ValidationError::ResetsCycleForNonGuardedStep { step, .. } => {
             (Some(step.clone()), Some("resets_cycle_for".to_string()))
         }
@@ -1327,8 +1329,11 @@ mod tests {
 
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
-            !report.items.iter().any(|i| i.severity == Severity::Error
-                && i.field.as_deref() == Some("pass_output_from")),
+            !report
+                .items
+                .iter()
+                .any(|i| i.severity == Severity::Error
+                    && i.field.as_deref() == Some("pass_output_from")),
             "Backward reference in pass_output_from should not be an error, got: {:?}",
             report.items
         );

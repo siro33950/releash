@@ -661,10 +661,13 @@ describe("SettingsModal", () => {
 			expect(screen.getByText("my-workflow")).toBeInTheDocument();
 		});
 
+		vi.spyOn(window, "confirm").mockReturnValue(true);
 		await user.click(screen.getByTitle("Delete"));
 
-		expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_workflow", {
-			name: "my-workflow",
+		await waitFor(() => {
+			expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_workflow", {
+				name: "my-workflow",
+			});
 		});
 	});
 
