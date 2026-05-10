@@ -30,17 +30,26 @@ export function FacetEditor({
 	const variables = useMemo(() => extractTemplateVariables(content), [content]);
 
 	const handlePreview = useCallback(async () => {
-		const rendered = await renderPreview(content, sampleValues);
-		setPreview(rendered);
+		try {
+			const rendered = await renderPreview(content, sampleValues);
+			setPreview(rendered);
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+		}
 	}, [content, sampleValues, renderPreview]);
 
 	const handleSave = async () => {
 		setSaving(true);
 		setError(null);
-		const result = await onSave(content);
-		setSaving(false);
-		if (!result.ok) {
-			setError(result.error ?? "Save failed");
+		try {
+			const result = await onSave(content);
+			if (!result.ok) {
+				setError(result.error ?? "Save failed");
+			}
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSaving(false);
 		}
 	};
 

@@ -399,9 +399,9 @@ fn diagnose_workflow(
 ) {
     let name = &wf.name;
 
-    // 保存時バリデーション（validation::validate）を実行し、
+    // バリデーション（validate_all）を実行し、
     // 診断側で個別チェックしていない項目をエラーとして報告
-    if let Err(e) = validation::validate(wf) {
+    for e in validation::validate_all(wf) {
         let (step_name, field) = validation_error_context(&e);
         if !is_covered_by_diagnostics(&e) {
             let item = DiagnosticItem {

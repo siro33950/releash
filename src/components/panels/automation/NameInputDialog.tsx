@@ -1,5 +1,5 @@
 import { Loader2 } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -30,18 +30,30 @@ export function NameInputDialog({
 	const [error, setError] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 
+	useEffect(() => {
+		if (!open) {
+			setValue("");
+			setError(null);
+		}
+	}, [open]);
+
 	const handleSubmit = async (e: FormEvent) => {
 		e.preventDefault();
 		if (!value.trim()) return;
 		setSaving(true);
 		setError(null);
-		const result = await onSubmit(value.trim());
-		setSaving(false);
-		if (result.ok) {
-			setValue("");
-			onOpenChange(false);
-		} else {
-			setError(result.error ?? "Unknown error");
+		try {
+			const result = await onSubmit(value.trim());
+			if (result.ok) {
+				setValue("");
+				onOpenChange(false);
+			} else {
+				setError(result.error ?? "Unknown error");
+			}
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSaving(false);
 		}
 	};
 

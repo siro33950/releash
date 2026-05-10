@@ -2225,9 +2225,21 @@ impl WorkflowEngine {
         step_history: &[StepHistoryEntry],
         workflow_variables: &HashMap<String, String>,
     ) -> Result<(Option<String>, String), WorkflowEngineError> {
+        // inline_prompt のみ（ファセット参照なし）のステップ: inline_prompt をそのまま使用
         if !step.has_facet_refs() {
+            if let Some(ref inline) = step.inline_prompt {
+                let rendered = Self::render_facet_variables(inline, worktree_path, task);
+                let prompt = Self::inject_step_outputs(
+                    &rendered,
+                    step,
+                    step_outputs,
+                    step_history,
+                    workflow_variables,
+                );
+                return Ok((None, prompt));
+            }
             return Err(WorkflowEngineError::InvalidWorkflow(format!(
-                "Step '{}' has no facet refs (persona/policy/knowledge/instruction). All steps must use facet-based prompts.",
+                "Step '{}' has no facet refs and no inline_prompt.",
                 step.name
             )));
         }

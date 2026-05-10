@@ -180,11 +180,15 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
         |wf| Summary {
             name: wf.name.clone(),
             description: wf.description,
-            builtin: builtin::is_builtin_workflow(&wf.name),
+            builtin: false, // name がファイル stem で上書きされた後に再計算する
             is_running: false,
         },
         "ワークフロー",
     )?;
+    // ファイル stem で上書きされた最終的な name に基づいて builtin を再計算
+    for s in &mut summaries {
+        s.builtin = builtin::is_builtin_workflow(&s.name);
+    }
     for s in builtin::list_builtin_workflows() {
         if !summaries.iter().any(|existing| existing.name == s.name) {
             summaries.push(s);

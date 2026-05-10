@@ -325,6 +325,7 @@ export function AutomationSection({
 							{selectedWorkflow ? (
 								editingWorkflow ? (
 									<WorkflowEditor
+										key={selectedWorkflow.name}
 										workflow={selectedWorkflow}
 										allFacetKeys={allFacetKeys}
 										onSave={handleSaveWorkflow}

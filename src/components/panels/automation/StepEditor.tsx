@@ -69,6 +69,7 @@ export function StepEditor({
 				<button
 					type="button"
 					onClick={() => setExpanded(!expanded)}
+					aria-expanded={expanded}
 					className="flex items-center gap-2 flex-1 text-left"
 				>
 					<span className="text-xs text-muted-foreground">{index + 1}.</span>
@@ -86,6 +87,7 @@ export function StepEditor({
 						className="size-6"
 						onClick={() => onMove("up")}
 						disabled={index === 0}
+						aria-label="Move step up"
 					>
 						<ChevronUp className="size-3" />
 					</Button>
@@ -95,6 +97,7 @@ export function StepEditor({
 						className="size-6"
 						onClick={() => onMove("down")}
 						disabled={index === totalSteps - 1}
+						aria-label="Move step down"
 					>
 						<ChevronDown className="size-3" />
 					</Button>
@@ -103,6 +106,7 @@ export function StepEditor({
 						size="icon"
 						className="size-6 text-destructive hover:text-destructive"
 						onClick={onRemove}
+						aria-label="Remove step"
 					>
 						<Trash2 className="size-3" />
 					</Button>
@@ -220,6 +224,7 @@ export function StepEditor({
 										rules: [...s.rules, { match: "", next: "" }],
 									}))
 								}
+								aria-label="Add transition rule"
 							>
 								<Plus className="size-3" />
 							</Button>
@@ -278,6 +283,7 @@ export function StepEditor({
 											rules: s.rules.filter((_, j) => j !== ri),
 										}))
 									}
+									aria-label="Remove transition rule"
 								>
 									<Trash2 className="size-3" />
 								</Button>

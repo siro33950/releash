@@ -33,7 +33,9 @@ export function FacetDetail({
 			<div className="flex items-center justify-between">
 				<div>
 					<h4 className="text-sm font-medium">{facetKey}</h4>
-					<p className="text-xs text-muted-foreground capitalize">{kind}</p>
+					<p className="text-xs text-muted-foreground capitalize">
+						{kind.replace(/_/g, " ")}
+					</p>
 				</div>
 				{!builtin && (
 					<Button variant="outline" size="sm" onClick={onEdit}>

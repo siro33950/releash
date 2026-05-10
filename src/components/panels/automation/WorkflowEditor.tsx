@@ -149,6 +149,7 @@ export function WorkflowEditor({
 					size="icon"
 					className="size-6"
 					onClick={addStep}
+					aria-label="Add step"
 				>
 					<Plus className="size-3.5" />
 				</Button>
@@ -157,7 +158,8 @@ export function WorkflowEditor({
 			<div className="flex flex-col gap-2">
 				{draft.steps.map((step, idx) => (
 					<StepEditor
-						key={step.name || `step-${idx}`}
+						// biome-ignore lint/suspicious/noArrayIndexKey: steps have no stable unique id; name can be duplicated by user edit
+						key={idx}
 						step={step}
 						index={idx}
 						totalSteps={draft.steps.length}

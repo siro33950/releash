@@ -520,6 +520,274 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// 診断用: 全てのバリデーションエラーを収集して返す。
+/// `validate` は最初のエラーで早期リターンするが、診断エンジンでは全エラーを網羅的に報告したいため、
+/// 構造的に安全な範囲でエラーを蓄積する。
+/// 名前空間構築に失敗するレベルのエラー（EmptyName, EmptySteps, DuplicateStep等）は
+/// 後続チェックが信頼できないため、そこで打ち切って返す。
+pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+
+    if let Err(e) = validate_name(&workflow.name) {
+        errors.push(e);
+        return errors;
+    }
+
+    if workflow.steps.is_empty() {
+        errors.push(ValidationError::EmptySteps);
+        return errors;
+    }
+
+    // 名前空間構築: 重複があれば蓄積するが、以降のチェックは続行
+    let mut transition_target_names = HashSet::new();
+    let mut referenceable_step_names = HashSet::new();
+    let mut has_dup = false;
+    for step in &workflow.steps {
+        if !transition_target_names.insert(step.name.as_str()) {
+            errors.push(ValidationError::DuplicateStep {
+                name: step.name.clone(),
+            });
+            has_dup = true;
+        }
+        referenceable_step_names.insert(step.name.as_str());
+        if let Some(ref children) = step.parallel {
+            for child in children {
+                if !referenceable_step_names.insert(child.name.as_str()) {
+                    errors.push(ValidationError::ParallelChildNameConflict {
+                        child: child.name.clone(),
+                    });
+                    has_dup = true;
+                }
+            }
+        }
+    }
+    // 名前重複がある場合、参照チェックが不正確になるため打ち切り
+    if has_dup {
+        return errors;
+    }
+
+    let mut preceding_step_names: HashSet<&str> = HashSet::new();
+
+    for step in &workflow.steps {
+        if step.is_parallel_block() {
+            if step.mode.is_some() {
+                errors.push(ValidationError::ParallelBlockHasMode {
+                    step: step.name.clone(),
+                });
+            }
+
+            let children = step.parallel.as_ref().unwrap();
+            if children.is_empty() {
+                errors.push(ValidationError::AggregateInvalidConfig {
+                    step: step.name.clone(),
+                    reason: "parallelブロックには1つ以上の子ステップが必要です".to_string(),
+                });
+            }
+            let child_names: HashSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
+
+            for child in children {
+                if child.mode != StepMode::Auto {
+                    errors.push(ValidationError::ParallelChildNotAuto {
+                        parent: step.name.clone(),
+                        child: child.name.clone(),
+                    });
+                }
+                if !child.has_facet_refs() {
+                    errors.push(ValidationError::ParallelChildMissingFacet {
+                        parent: step.name.clone(),
+                        child: child.name.clone(),
+                    });
+                }
+                if let Some(ref refs) = child.pass_output_from {
+                    for r in refs {
+                        if child_names.contains(r.as_str()) {
+                            errors.push(ValidationError::ParallelChildSiblingRef {
+                                parent: step.name.clone(),
+                                child: child.name.clone(),
+                                reference: r.clone(),
+                            });
+                        }
+                        if !referenceable_step_names.contains(r.as_str()) {
+                            errors.push(ValidationError::UnknownOutputFrom {
+                                step: child.name.clone(),
+                                reference: r.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            if let Some(ref agg) = step.aggregate {
+                match (&agg.all_match, &agg.any_match) {
+                    (Some(_), Some(_)) => {
+                        errors.push(ValidationError::AggregateInvalidConfig {
+                            step: step.name.clone(),
+                            reason: "all_matchとany_matchは同時に指定できません".to_string(),
+                        });
+                    }
+                    (None, None) => {
+                        errors.push(ValidationError::AggregateInvalidConfig {
+                            step: step.name.clone(),
+                            reason: "all_matchまたはany_matchのいずれかが必要です".to_string(),
+                        });
+                    }
+                    _ => {}
+                }
+                if let Some(ref pattern) = agg.all_match {
+                    if RegexBuilder::new(pattern)
+                        .size_limit(1 << 20)
+                        .build()
+                        .is_err()
+                    {
+                        errors.push(ValidationError::AggregateInvalidConfig {
+                            step: step.name.clone(),
+                            reason: format!("all_matchのパターンが不正な正規表現です: {pattern}"),
+                        });
+                    }
+                }
+                if let Some(ref pattern) = agg.any_match {
+                    if RegexBuilder::new(pattern)
+                        .size_limit(1 << 20)
+                        .build()
+                        .is_err()
+                    {
+                        errors.push(ValidationError::AggregateInvalidConfig {
+                            step: step.name.clone(),
+                            reason: format!("any_matchのパターンが不正な正規表現です: {pattern}"),
+                        });
+                    }
+                }
+                if !transition_target_names.contains(agg.then.as_str()) {
+                    errors.push(ValidationError::AggregateUnknownTarget {
+                        step: step.name.clone(),
+                        target: agg.then.clone(),
+                    });
+                }
+                if !transition_target_names.contains(agg.r#else.as_str()) {
+                    errors.push(ValidationError::AggregateUnknownTarget {
+                        step: step.name.clone(),
+                        target: agg.r#else.clone(),
+                    });
+                }
+            }
+        } else {
+            if step.mode.is_none() {
+                errors.push(ValidationError::MissingMode {
+                    step: step.name.clone(),
+                });
+            }
+            if step.aggregate.is_some() {
+                errors.push(ValidationError::AggregateWithoutParallel {
+                    step: step.name.clone(),
+                });
+            }
+            if step.collect.is_none() && !step.has_facet_refs() && step.inline_prompt.is_none() {
+                errors.push(ValidationError::MissingFacet {
+                    step: step.name.clone(),
+                });
+            }
+            for rule in &step.rules {
+                if !transition_target_names.contains(rule.next.as_str()) {
+                    errors.push(ValidationError::UnknownNextStep {
+                        step: step.name.clone(),
+                        next: rule.next.clone(),
+                    });
+                }
+            }
+            if let Some(ref refs) = step.pass_output_from {
+                for r in refs {
+                    if !referenceable_step_names.contains(r.as_str()) {
+                        errors.push(ValidationError::UnknownOutputFrom {
+                            step: step.name.clone(),
+                            reference: r.clone(),
+                        });
+                    }
+                }
+            }
+            if let Some(ref collect) = step.collect {
+                for r in &collect.from {
+                    if !preceding_step_names.contains(r.as_str()) {
+                        errors.push(ValidationError::UnknownCollectFrom {
+                            step: step.name.clone(),
+                            reference: r.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // on_exhausted の参照先検証
+        if let Some(ref guard) = step.cycle_guard {
+            if let Some(ref target) = guard.on_exhausted {
+                if !transition_target_names.contains(target.as_str()) {
+                    errors.push(ValidationError::UnknownOnExhausted {
+                        step: step.name.clone(),
+                        target: target.clone(),
+                    });
+                }
+            }
+        }
+
+        // resets_cycle_for の参照先検証
+        if let Some(ref targets) = step.resets_cycle_for {
+            for target in targets {
+                if !transition_target_names.contains(target.as_str()) {
+                    errors.push(ValidationError::UnknownResetsCycleFor {
+                        step: step.name.clone(),
+                        target: target.clone(),
+                    });
+                }
+                let target_step = workflow.steps.iter().find(|s| s.name == *target);
+                if let Some(ts) = target_step {
+                    if ts.cycle_guard.is_none() {
+                        errors.push(ValidationError::ResetsCycleForNonGuardedStep {
+                            step: step.name.clone(),
+                            target: target.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        preceding_step_names.insert(&step.name);
+        if let Some(ref children) = step.parallel {
+            for child in children {
+                preceding_step_names.insert(&child.name);
+            }
+        }
+    }
+
+    // on_exhausted の循環参照検出
+    for step in &workflow.steps {
+        if let Some(ref guard) = step.cycle_guard {
+            if let Some(ref target) = guard.on_exhausted {
+                let mut visited = vec![step.name.clone()];
+                let mut current = target.clone();
+                loop {
+                    if visited.contains(&current) {
+                        visited.push(current);
+                        errors.push(ValidationError::CircularOnExhausted { cycle: visited });
+                        break;
+                    }
+                    visited.push(current.clone());
+                    let next = workflow
+                        .steps
+                        .iter()
+                        .find(|s| s.name == current)
+                        .and_then(|s| s.cycle_guard.as_ref())
+                        .and_then(|g| g.on_exhausted.as_ref());
+                    match next {
+                        Some(n) => current = n.clone(),
+                        None => break,
+                    }
+                }
+            }
+        }
+    }
+
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
