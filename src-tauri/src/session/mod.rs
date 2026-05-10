@@ -1530,10 +1530,7 @@ mod tests {
             fn name(&self) -> &str {
                 "Mock"
             }
-            async fn start_session(
-                &self,
-                _config: SessionConfig,
-            ) -> Result<SessionHandle, String> {
+            async fn start_session(&self, _config: SessionConfig) -> Result<SessionHandle, String> {
                 Ok(SessionHandle {
                     chat_session_id: "test".to_string(),
                     backend_id: self.backend_id.clone(),
