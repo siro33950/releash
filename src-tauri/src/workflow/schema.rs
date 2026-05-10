@@ -33,6 +33,8 @@ pub struct Step {
     #[serde(default)]
     pub pass_output_from: Option<Vec<String>>,
     #[serde(default)]
+    pub inline_prompt: Option<String>,
+    #[serde(default)]
     pub collect: Option<CollectConfig>,
     #[serde(default)]
     pub parallel: Option<Vec<ParallelStep>>,
@@ -167,6 +169,16 @@ pub enum ReduceStrategy {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Summary {
     pub name: String,
+    pub description: String,
+    pub builtin: bool,
+    #[serde(default)]
+    pub is_running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FacetSummary {
+    pub key: String,
+    pub kind: String,
     pub description: String,
     pub builtin: bool,
 }
@@ -383,6 +395,7 @@ steps:
             cycle_guard: None,
             pass_previous_response: None,
             pass_output_from: None,
+            inline_prompt: None,
             collect: Some(CollectConfig {
                 from: vec!["a".to_string()],
                 reduce: ReduceStrategy::Concat,
@@ -542,5 +555,37 @@ steps:
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(wf.steps[1].resets_cycle_for, Some(vec!["fix".to_string()]));
         assert!(wf.steps[0].resets_cycle_for.is_none());
+    }
+
+    #[test]
+    fn parse_step_with_inline_prompt() {
+        let yaml = r#"
+name: inline-test
+description: inline prompt test
+steps:
+  - name: quick
+    mode: auto
+    inline_prompt: "Do a quick analysis"
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(
+            wf.steps[0].inline_prompt.as_deref(),
+            Some("Do a quick analysis")
+        );
+        assert!(!wf.steps[0].has_facet_refs());
+    }
+
+    #[test]
+    fn parse_step_without_inline_prompt_defaults_to_none() {
+        let yaml = r#"
+name: no-inline-test
+description: no inline prompt
+steps:
+  - name: step1
+    mode: auto
+    instruction: implement
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert!(wf.steps[0].inline_prompt.is_none());
     }
 }

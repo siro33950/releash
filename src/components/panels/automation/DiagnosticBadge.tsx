@@ -1,0 +1,48 @@
+import { AlertCircle, AlertTriangle, Info } from "lucide-react";
+import type { DiagnosticItem, DiagnosticSummary } from "@/types/workflow";
+
+export function DiagnosticBadge({ summary }: { summary?: DiagnosticSummary }) {
+	if (!summary) return null;
+	const { error_count, warning_count, info_count } = summary;
+	if (error_count === 0 && warning_count === 0 && info_count === 0) return null;
+	return (
+		<div className="flex items-center gap-1">
+			{error_count > 0 && (
+				<span className="flex items-center gap-0.5 text-[10px] text-destructive">
+					<AlertCircle className="size-3" />
+					{error_count}
+				</span>
+			)}
+			{warning_count > 0 && (
+				<span className="flex items-center gap-0.5 text-[10px] text-yellow-500">
+					<AlertTriangle className="size-3" />
+					{warning_count}
+				</span>
+			)}
+			{info_count > 0 && (
+				<span className="flex items-center gap-0.5 text-[10px] text-blue-500">
+					<Info className="size-3" />
+					{info_count}
+				</span>
+			)}
+		</div>
+	);
+}
+
+export function DiagnosticItemRow({ item }: { item: DiagnosticItem }) {
+	const icon =
+		item.severity === "error" ? (
+			<AlertCircle className="size-3 text-destructive shrink-0" />
+		) : item.severity === "warning" ? (
+			<AlertTriangle className="size-3 text-yellow-500 shrink-0" />
+		) : (
+			<Info className="size-3 text-blue-500 shrink-0" />
+		);
+
+	return (
+		<div className="flex items-start gap-1.5 text-xs">
+			{icon}
+			<span className="text-muted-foreground">{item.message}</span>
+		</div>
+	);
+}

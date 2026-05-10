@@ -398,6 +398,13 @@ pub fn run() {
             workflow::commands::get_facet,
             workflow::commands::save_facet,
             workflow::commands::delete_facet,
+            workflow::commands::diagnose_all_cmd,
+            workflow::commands::list_facet_summaries,
+            workflow::commands::duplicate_workflow,
+            workflow::commands::duplicate_facet,
+            workflow::commands::open_facet_in_editor,
+            workflow::commands::render_facet_preview,
+            workflow::commands::get_automation_config_dir,
             // Menu
             menu::set_menu_items_enabled,
         ])

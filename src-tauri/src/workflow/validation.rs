@@ -98,7 +98,7 @@ impl fmt::Display for ValidationError {
             Self::EmptyName => write!(f, "ワークフロー名が空です"),
             Self::InvalidChars { name } => write!(
                 f,
-                "ワークフロー名 '{name}' に使用できない文字が含まれています（英数字・ハイフン・アンダースコアのみ許可）"
+                "ワークフロー名 '{name}' は先頭を英数字にし、2文字目以降は英数字・ハイフン・アンダースコアのみ使用できます"
             ),
             Self::EmptySteps => write!(f, "ワークフローにステップが定義されていません"),
             Self::DuplicateStep { name } => {
@@ -111,7 +111,7 @@ impl fmt::Display for ValidationError {
             Self::MissingFacet { step } => {
                 write!(
                     f,
-                    "ステップ '{step}' にはファセット参照が必要です（collectステップのみ省略可）"
+                    "ステップ '{step}' にはファセット参照またはinline_promptが必要です（collectステップのみ両方省略可）"
                 )
             }
             Self::UnknownOutputFrom { step, reference } => write!(
@@ -198,10 +198,14 @@ pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     if name.is_empty() {
         return Err(ValidationError::EmptyName);
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphanumeric() {
+        return Err(ValidationError::InvalidChars {
+            name: name.to_string(),
+        });
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(ValidationError::InvalidChars {
             name: name.to_string(),
         });
@@ -377,8 +381,8 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 });
             }
 
-            // collect なしの step: ファセット参照が必要
-            if step.collect.is_none() && !step.has_facet_refs() {
+            // collect なしの step: ファセット参照または inline_prompt が必要
+            if step.collect.is_none() && !step.has_facet_refs() && step.inline_prompt.is_none() {
                 return Err(ValidationError::MissingFacet {
                     step: step.name.clone(),
                 });
@@ -516,6 +520,274 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// 診断用: 全てのバリデーションエラーを収集して返す。
+/// `validate` は最初のエラーで早期リターンするが、診断エンジンでは全エラーを網羅的に報告したいため、
+/// 構造的に安全な範囲でエラーを蓄積する。
+/// 名前空間構築に失敗するレベルのエラー（EmptyName, EmptySteps, DuplicateStep等）は
+/// 後続チェックが信頼できないため、そこで打ち切って返す。
+pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+
+    if let Err(e) = validate_name(&workflow.name) {
+        errors.push(e);
+        return errors;
+    }
+
+    if workflow.steps.is_empty() {
+        errors.push(ValidationError::EmptySteps);
+        return errors;
+    }
+
+    // 名前空間構築: 重複があれば蓄積するが、以降のチェックは続行
+    let mut transition_target_names = HashSet::new();
+    let mut referenceable_step_names = HashSet::new();
+    let mut has_dup = false;
+    for step in &workflow.steps {
+        if !transition_target_names.insert(step.name.as_str()) {
+            errors.push(ValidationError::DuplicateStep {
+                name: step.name.clone(),
+            });
+            has_dup = true;
+        }
+        referenceable_step_names.insert(step.name.as_str());
+        if let Some(ref children) = step.parallel {
+            for child in children {
+                if !referenceable_step_names.insert(child.name.as_str()) {
+                    errors.push(ValidationError::ParallelChildNameConflict {
+                        child: child.name.clone(),
+                    });
+                    has_dup = true;
+                }
+            }
+        }
+    }
+    // 名前重複がある場合、参照チェックが不正確になるため打ち切り
+    if has_dup {
+        return errors;
+    }
+
+    let mut preceding_step_names: HashSet<&str> = HashSet::new();
+
+    for step in &workflow.steps {
+        if step.is_parallel_block() {
+            if step.mode.is_some() {
+                errors.push(ValidationError::ParallelBlockHasMode {
+                    step: step.name.clone(),
+                });
+            }
+
+            let children = step.parallel.as_ref().unwrap();
+            if children.is_empty() {
+                errors.push(ValidationError::AggregateInvalidConfig {
+                    step: step.name.clone(),
+                    reason: "parallelブロックには1つ以上の子ステップが必要です".to_string(),
+                });
+            }
+            let child_names: HashSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
+
+            for child in children {
+                if child.mode != StepMode::Auto {
+                    errors.push(ValidationError::ParallelChildNotAuto {
+                        parent: step.name.clone(),
+                        child: child.name.clone(),
+                    });
+                }
+                if !child.has_facet_refs() {
+                    errors.push(ValidationError::ParallelChildMissingFacet {
+                        parent: step.name.clone(),
+                        child: child.name.clone(),
+                    });
+                }
+                if let Some(ref refs) = child.pass_output_from {
+                    for r in refs {
+                        if child_names.contains(r.as_str()) {
+                            errors.push(ValidationError::ParallelChildSiblingRef {
+                                parent: step.name.clone(),
+                                child: child.name.clone(),
+                                reference: r.clone(),
+                            });
+                        }
+                        if !referenceable_step_names.contains(r.as_str()) {
+                            errors.push(ValidationError::UnknownOutputFrom {
+                                step: child.name.clone(),
+                                reference: r.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            if let Some(ref agg) = step.aggregate {
+                match (&agg.all_match, &agg.any_match) {
+                    (Some(_), Some(_)) => {
+                        errors.push(ValidationError::AggregateInvalidConfig {
+                            step: step.name.clone(),
+                            reason: "all_matchとany_matchは同時に指定できません".to_string(),
+                        });
+                    }
+                    (None, None) => {
+                        errors.push(ValidationError::AggregateInvalidConfig {
+                            step: step.name.clone(),
+                            reason: "all_matchまたはany_matchのいずれかが必要です".to_string(),
+                        });
+                    }
+                    _ => {}
+                }
+                if let Some(ref pattern) = agg.all_match {
+                    if RegexBuilder::new(pattern)
+                        .size_limit(1 << 20)
+                        .build()
+                        .is_err()
+                    {
+                        errors.push(ValidationError::AggregateInvalidConfig {
+                            step: step.name.clone(),
+                            reason: format!("all_matchのパターンが不正な正規表現です: {pattern}"),
+                        });
+                    }
+                }
+                if let Some(ref pattern) = agg.any_match {
+                    if RegexBuilder::new(pattern)
+                        .size_limit(1 << 20)
+                        .build()
+                        .is_err()
+                    {
+                        errors.push(ValidationError::AggregateInvalidConfig {
+                            step: step.name.clone(),
+                            reason: format!("any_matchのパターンが不正な正規表現です: {pattern}"),
+                        });
+                    }
+                }
+                if !transition_target_names.contains(agg.then.as_str()) {
+                    errors.push(ValidationError::AggregateUnknownTarget {
+                        step: step.name.clone(),
+                        target: agg.then.clone(),
+                    });
+                }
+                if !transition_target_names.contains(agg.r#else.as_str()) {
+                    errors.push(ValidationError::AggregateUnknownTarget {
+                        step: step.name.clone(),
+                        target: agg.r#else.clone(),
+                    });
+                }
+            }
+        } else {
+            if step.mode.is_none() {
+                errors.push(ValidationError::MissingMode {
+                    step: step.name.clone(),
+                });
+            }
+            if step.aggregate.is_some() {
+                errors.push(ValidationError::AggregateWithoutParallel {
+                    step: step.name.clone(),
+                });
+            }
+            if step.collect.is_none() && !step.has_facet_refs() && step.inline_prompt.is_none() {
+                errors.push(ValidationError::MissingFacet {
+                    step: step.name.clone(),
+                });
+            }
+            for rule in &step.rules {
+                if !transition_target_names.contains(rule.next.as_str()) {
+                    errors.push(ValidationError::UnknownNextStep {
+                        step: step.name.clone(),
+                        next: rule.next.clone(),
+                    });
+                }
+            }
+            if let Some(ref refs) = step.pass_output_from {
+                for r in refs {
+                    if !referenceable_step_names.contains(r.as_str()) {
+                        errors.push(ValidationError::UnknownOutputFrom {
+                            step: step.name.clone(),
+                            reference: r.clone(),
+                        });
+                    }
+                }
+            }
+            if let Some(ref collect) = step.collect {
+                for r in &collect.from {
+                    if !preceding_step_names.contains(r.as_str()) {
+                        errors.push(ValidationError::UnknownCollectFrom {
+                            step: step.name.clone(),
+                            reference: r.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // on_exhausted の参照先検証
+        if let Some(ref guard) = step.cycle_guard {
+            if let Some(ref target) = guard.on_exhausted {
+                if !transition_target_names.contains(target.as_str()) {
+                    errors.push(ValidationError::UnknownOnExhausted {
+                        step: step.name.clone(),
+                        target: target.clone(),
+                    });
+                }
+            }
+        }
+
+        // resets_cycle_for の参照先検証
+        if let Some(ref targets) = step.resets_cycle_for {
+            for target in targets {
+                if !transition_target_names.contains(target.as_str()) {
+                    errors.push(ValidationError::UnknownResetsCycleFor {
+                        step: step.name.clone(),
+                        target: target.clone(),
+                    });
+                }
+                let target_step = workflow.steps.iter().find(|s| s.name == *target);
+                if let Some(ts) = target_step {
+                    if ts.cycle_guard.is_none() {
+                        errors.push(ValidationError::ResetsCycleForNonGuardedStep {
+                            step: step.name.clone(),
+                            target: target.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        preceding_step_names.insert(&step.name);
+        if let Some(ref children) = step.parallel {
+            for child in children {
+                preceding_step_names.insert(&child.name);
+            }
+        }
+    }
+
+    // on_exhausted の循環参照検出
+    for step in &workflow.steps {
+        if let Some(ref guard) = step.cycle_guard {
+            if let Some(ref target) = guard.on_exhausted {
+                let mut visited = vec![step.name.clone()];
+                let mut current = target.clone();
+                loop {
+                    if visited.contains(&current) {
+                        visited.push(current);
+                        errors.push(ValidationError::CircularOnExhausted { cycle: visited });
+                        break;
+                    }
+                    visited.push(current.clone());
+                    let next = workflow
+                        .steps
+                        .iter()
+                        .find(|s| s.name == current)
+                        .and_then(|s| s.cycle_guard.as_ref())
+                        .and_then(|g| g.on_exhausted.as_ref());
+                    match next {
+                        Some(n) => current = n.clone(),
+                        None => break,
+                    }
+                }
+            }
+        }
+    }
+
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,6 +818,7 @@ mod tests {
             cycle_guard: None,
             pass_previous_response: None,
             pass_output_from: None,
+            inline_prompt: None,
             collect: None,
             parallel: None,
             aggregate: None,
@@ -584,6 +857,7 @@ mod tests {
             cycle_guard: None,
             pass_previous_response: None,
             pass_output_from: None,
+            inline_prompt: None,
             collect: None,
             parallel: Some(children),
             aggregate,
@@ -664,6 +938,12 @@ mod tests {
             validate_name("").unwrap_err(),
             ValidationError::EmptyName
         ));
+    }
+
+    #[test]
+    fn invalid_name_leading_hyphen_or_underscore() {
+        assert!(validate_name("-leading-hyphen").is_err());
+        assert!(validate_name("_leading-underscore").is_err());
     }
 
     #[test]
@@ -1287,6 +1567,16 @@ mod tests {
             },
             make_step("step_b", StepMode::Auto, vec![]),
         ]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn inline_prompt_step_without_facets_passes() {
+        let wf = make_workflow(vec![Step {
+            instruction: None,
+            inline_prompt: Some("Do analysis".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
         assert!(validate(&wf).is_ok());
     }
 }

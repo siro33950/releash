@@ -45,7 +45,7 @@ export interface TransitionRule {
 }
 
 export interface CycleGuard {
-	maxIterations: number;
+	max_iterations: number;
 }
 
 export type StepMode = "auto" | "approval" | "interactive";
@@ -81,6 +81,7 @@ export interface Step {
 	cycle_guard?: CycleGuard;
 	pass_previous_response?: boolean;
 	pass_output_from?: string[];
+	inline_prompt?: string;
 	collect?: CollectConfig;
 	parallel?: ParallelStep[];
 	aggregate?: AggregateConfig;
@@ -274,4 +275,56 @@ export interface CollectedOutputEntry {
 	stepName: string;
 	result?: string;
 	structuredOutput?: JsonValue;
+}
+
+export type WorkflowSummary = {
+	name: string;
+	description: string;
+	builtin: boolean;
+	is_running: boolean;
+};
+
+export type FacetKind =
+	| "persona"
+	| "policy"
+	| "knowledge"
+	| "instruction"
+	| "output_contract";
+
+export interface FacetSummary {
+	key: string;
+	kind: string;
+	description: string;
+	builtin: boolean;
+}
+
+export type DiagnosticSeverity = "error" | "warning" | "info";
+
+export interface DiagnosticItem {
+	severity: DiagnosticSeverity;
+	message: string;
+	workflow_name?: string;
+	step_name?: string;
+	facet_key?: string;
+	facet_kind?: string;
+	field?: string;
+}
+
+export interface DiagnosticSummary {
+	error_count: number;
+	warning_count: number;
+	info_count: number;
+}
+
+export interface FacetUsageEntry {
+	workflow_name: string;
+	step_name: string;
+	slot: string;
+}
+
+export interface DiagnosticReport {
+	items: DiagnosticItem[];
+	workflow_summaries: Record<string, DiagnosticSummary>;
+	facet_summaries: Record<string, DiagnosticSummary>;
+	facet_usage: Record<string, FacetUsageEntry[]>;
 }
