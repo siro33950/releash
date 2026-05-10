@@ -138,6 +138,21 @@ export interface AgentStateSync {
 	pty_id?: string | null;
 }
 
+// --- バックエンド ---
+
+export type BackendListRequest = Record<string, never>;
+
+export interface BackendInfoMsg {
+	id: string;
+	name: string;
+	available: boolean;
+}
+
+export interface BackendListResponse {
+	backends: BackendInfoMsg[];
+	default_id: string | null;
+}
+
 // --- 制御 ---
 
 export interface ErrorMsg {
@@ -177,6 +192,8 @@ export type WsMessage =
 	| { type: "branch_info_response"; payload: BranchInfoResponse }
 	| { type: "branch_list_sync"; payload: BranchListSync }
 	| { type: "agent_state_sync"; payload: AgentStateSync }
+	| { type: "backend_list_request"; payload: BackendListRequest }
+	| { type: "backend_list_response"; payload: BackendListResponse }
 	| { type: "workflow_state_sync"; payload: WorkflowStatePayload }
 	| { type: "error"; payload: ErrorMsg };
 

@@ -81,6 +81,18 @@ pub enum WsMessage {
     #[serde(rename = "workflow_state_sync")]
     WorkflowStateSync(Box<WorkflowStateSync>),
 
+    // バックエンド一覧
+    #[serde(rename = "backend_list_request")]
+    BackendListRequest(BackendListRequest),
+    #[serde(rename = "backend_list_response")]
+    BackendListResponse(BackendListResponse),
+
+    // エージェントセッション
+    #[serde(rename = "agent_session_start_request")]
+    AgentSessionStartRequest(AgentSessionStartRequest),
+    #[serde(rename = "agent_session_start_response")]
+    AgentSessionStartResponse(AgentSessionStartResponse),
+
     // 制御
     #[serde(rename = "error")]
     Error(ErrorMsg),
@@ -334,6 +346,25 @@ mod tests {
                     updated_at: 1000.0,
                 },
             })),
+            WsMessage::BackendListRequest(BackendListRequest {}),
+            WsMessage::BackendListResponse(BackendListResponse {
+                backends: vec![BackendInfoMsg {
+                    id: "claude".to_string(),
+                    name: "Claude".to_string(),
+                    available: true,
+                }],
+                default_id: Some("claude".to_string()),
+            }),
+            WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
+                worktree_path: "/repo".to_string(),
+                backend_id: Some("claude".to_string()),
+            }),
+            WsMessage::AgentSessionStartResponse(AgentSessionStartResponse {
+                success: true,
+                session_id: Some("sess-1".to_string()),
+                backend_id: Some("claude".to_string()),
+                error: None,
+            }),
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),
                 message: "M".to_string(),

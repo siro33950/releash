@@ -1,5 +1,6 @@
 mod agent_sdk;
 mod agent_status;
+mod backends;
 mod config;
 mod diff_comment_sender;
 mod diff_comment_store;
@@ -140,6 +141,10 @@ pub fn run() {
             ));
             app.manage(agent_status_center);
             app.manage(Arc::new(workflow::engine::WorkflowEngine::new()));
+
+            // AgentBackendRegistry を構築・登録
+            let registry = Arc::new(backends::build_registry(&app_config));
+            app.manage(registry);
 
             menu::setup_menu(app)?;
             tray::setup_tray(app)?;
@@ -357,6 +362,8 @@ pub fn run() {
             pty::oneshot::find_oneshot_pty,
             // File Mention
             file_mention::list_mentionable_files,
+            // Agent Backend Registry
+            backends::list_agent_backends,
             // Agent SDK
             agent_sdk::start_agent_session,
             agent_sdk::execute_agent_query,

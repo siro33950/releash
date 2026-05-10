@@ -738,7 +738,7 @@ describe("useAgentChat", () => {
 			await result.current.createNewSession();
 		});
 
-		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo");
+		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo", null);
 		expect(result.current.activeSession).toEqual(newSession);
 		expect(mockInvoke).toHaveBeenCalledWith(
 			"start_agent_session",
@@ -750,6 +750,44 @@ describe("useAgentChat", () => {
 		);
 		// R4-02: New session starts with default model (null)
 		expect(result.current.selectedModel).toBeNull();
+	});
+
+	it("createNewSession passes selectedBackendId to createSession", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		// Wait for mount effect
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		// Select a backend
+		act(() => {
+			result.current.setBackend("claude");
+		});
+
+		const newSession = {
+			id: "new-s",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 2000,
+			updatedAt: 2000,
+			permissionMode: "acceptEdits",
+			backendId: "claude",
+		};
+		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
+			newSession as never,
+		);
+
+		await act(async () => {
+			await result.current.createNewSession();
+		});
+
+		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo", "claude");
 	});
 
 	it("closeSession on non-active session keeps activeSession unchanged", async () => {

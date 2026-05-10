@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { AgentState } from "@/types/protocol";
 import type {
+	BackendInfo,
 	ChatMessage,
 	ChatSession,
 	ImageAttachment,
@@ -22,6 +23,7 @@ import {
 	createSession,
 	getSession,
 	initAgentSessions,
+	listAgentBackends,
 	listClosedSessions,
 	listSessions,
 	restoreSession as restoreSessionApi,
@@ -63,6 +65,9 @@ export interface UseAgentChatResult {
 	availableModels: ModelInfo[];
 	selectedModel: string | null;
 	setModel: (modelId: string | null) => void;
+	backends: BackendInfo[];
+	selectedBackendId: string | null;
+	setBackend: (backendId: string | null) => void;
 }
 
 function startAgentProcess(
@@ -188,6 +193,8 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 	permissionModeRef.current = state.permissionMode;
 	const turnPhasesRef = useRef(state.turnPhases);
 	turnPhasesRef.current = state.turnPhases;
+	const selectedBackendIdRef = useRef(state.selectedBackendId);
+	selectedBackendIdRef.current = state.selectedBackendId;
 
 	const refreshSessions = useCallback(async (): Promise<SessionSummary[]> => {
 		try {
@@ -368,7 +375,10 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 
 	const createNewSession = useCallback(async () => {
 		try {
-			const session = await createSession(worktreePathRef.current);
+			const session = await createSession(
+				worktreePathRef.current,
+				selectedBackendIdRef.current,
+			);
 			dispatch({ type: "SET_ACTIVE_SESSION", session });
 			dispatch({ type: "SET_PERMISSION_MODE", mode: session.permissionMode });
 			// Prewarm: start agent process in background
@@ -445,11 +455,28 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		});
 	}, []);
 
+	const setBackend = useCallback((backendId: string | null) => {
+		dispatch({ type: "SET_SELECTED_BACKEND", backendId });
+	}, []);
+
 	useAgentSdkListeners({
 		dispatch,
 		activeSessionRef,
 		refreshSessions,
 	});
+
+	const fetchBackends = useCallback(async () => {
+		try {
+			const result = await listAgentBackends();
+			dispatch({
+				type: "SET_BACKENDS",
+				backends: result.backends,
+				defaultId: result.defaultId,
+			});
+		} catch (e) {
+			console.error("Failed to fetch agent backends:", e);
+		}
+	}, []);
 
 	const initSessions = useCallback(async () => {
 		try {
@@ -474,10 +501,11 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		}
 	}, []);
 
-	// Load sessions on mount
+	// Load sessions and backends on mount
 	useEffect(() => {
 		initSessions();
-	}, [initSessions]);
+		fetchBackends();
+	}, [initSessions, fetchBackends]);
 
 	// Reset when worktreePath changes
 	const prevWorktreePathRef = useRef(worktreePath);
@@ -546,5 +574,8 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		availableModels: state.availableModels,
 		selectedModel,
 		setModel,
+		backends: state.backends,
+		selectedBackendId: state.selectedBackendId,
+		setBackend,
 	};
 }

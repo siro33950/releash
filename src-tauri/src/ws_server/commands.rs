@@ -76,6 +76,7 @@ pub async fn start_server_core(
             .ok()
             .map(|d| d.join("resources").join("remote"))
     };
+    let backend_registry = app.state::<Arc<crate::backends::AgentBackendRegistry>>();
     let server_state = Arc::new(WsServerState::new(
         remote_dir,
         Arc::clone(&broadcaster),
@@ -85,6 +86,7 @@ pub async fn start_server_core(
         Some(app.clone()),
         cfg.server.tls.enabled,
         Arc::clone(&pr_cache),
+        Arc::clone(backend_registry.inner()),
     ));
 
     start_ws_server(&cfg, Arc::clone(&server_state), shutdown_rx).await?;

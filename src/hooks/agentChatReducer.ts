@@ -1,4 +1,5 @@
 import type {
+	BackendInfo,
 	ChatMessage,
 	ChatSession,
 	MessagePart,
@@ -21,6 +22,8 @@ export interface AgentChatState {
 	pendingPermissions: Record<string, PermissionRequest>;
 	availableModels: ModelInfo[];
 	sessionModels: Record<string, string | null>;
+	backends: BackendInfo[];
+	selectedBackendId: string | null;
 }
 
 export type AgentChatAction =
@@ -54,7 +57,9 @@ export type AgentChatAction =
 			sessionId: string;
 			modelId: string | null;
 	  }
-	| { type: "CLEANUP_SESSION"; sessionId: string };
+	| { type: "CLEANUP_SESSION"; sessionId: string }
+	| { type: "SET_BACKENDS"; backends: BackendInfo[]; defaultId: string | null }
+	| { type: "SET_SELECTED_BACKEND"; backendId: string | null };
 
 /**
  * Merge delta parts into existing parts.
@@ -240,6 +245,19 @@ export function reducer(
 				sessionModels: restSessionModels,
 			};
 		}
+		case "SET_BACKENDS": {
+			const selectedBackendId =
+				state.selectedBackendId ??
+				action.defaultId ??
+				(action.backends.length > 0 ? action.backends[0].id : null);
+			return {
+				...state,
+				backends: action.backends,
+				selectedBackendId,
+			};
+		}
+		case "SET_SELECTED_BACKEND":
+			return { ...state, selectedBackendId: action.backendId };
 	}
 }
 
@@ -254,4 +272,6 @@ export const INITIAL_STATE: AgentChatState = {
 	pendingPermissions: {},
 	availableModels: [],
 	sessionModels: {},
+	backends: [],
+	selectedBackendId: null,
 };

@@ -20,6 +20,50 @@ pub struct AgentStateSync {
     pub pty_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendListRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendListResponse {
+    pub backends: Vec<BackendInfoMsg>,
+    pub default_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendInfoMsg {
+    pub id: String,
+    pub name: String,
+    pub available: bool,
+}
+
+impl From<crate::backends::BackendInfo> for BackendInfoMsg {
+    fn from(info: crate::backends::BackendInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            available: info.available,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionStartRequest {
+    pub worktree_path: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub backend_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSessionStartResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub backend_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

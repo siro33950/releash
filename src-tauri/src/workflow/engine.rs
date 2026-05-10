@@ -2149,13 +2149,16 @@ impl WorkflowEngine {
             .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
             .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.clone()))?;
         let permission_mode = parent_session.permission_mode;
+        let backend_id = parent_session.backend_id.clone();
 
         // ステップ用の新しいChatSessionを生成
-        let step_session =
-            crate::session::create_session_internal(session_store, &data_dir, worktree_path)
-                .map_err(|e| {
-                    WorkflowEngineError::SessionStore(format!("create step session: {e}"))
-                })?;
+        let step_session = crate::session::create_session_internal(
+            session_store,
+            &data_dir,
+            worktree_path,
+            backend_id,
+        )
+        .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))?;
         let step_session_id = step_session.id.clone();
 
         // ステップセッションID → SessionWorkflowRefのマッピングを登録
@@ -3005,6 +3008,7 @@ impl WorkflowEngine {
             .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
             .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.clone()))?;
         let permission_mode = parent_session.permission_mode;
+        let backend_id = parent_session.backend_id.clone();
 
         // step_outputsとworkflow_variablesのスナップショットをロック外で取得
         let (step_outputs_snapshot, wf_variables_snapshot) = {
@@ -3026,11 +3030,15 @@ impl WorkflowEngine {
         let mut child_setups: Vec<ChildSetup> = Vec::new();
 
         for ps in &parallel_steps {
-            let step_session =
-                crate::session::create_session_internal(session_store, &data_dir, worktree_path)
-                    .map_err(|e| {
-                        WorkflowEngineError::SessionStore(format!("create parallel session: {e}"))
-                    })?;
+            let step_session = crate::session::create_session_internal(
+                session_store,
+                &data_dir,
+                worktree_path,
+                backend_id.clone(),
+            )
+            .map_err(|e| {
+                WorkflowEngineError::SessionStore(format!("create parallel session: {e}"))
+            })?;
             let step_session_id = step_session.id.clone();
 
             // session_workflow_refs に ParallelChild として登録

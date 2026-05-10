@@ -176,6 +176,8 @@ pub struct ChatSession {
     pub selected_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub workflow_state: Option<WorkflowState>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub backend_id: Option<String>,
 }
 
 fn default_permission_mode() -> String {
@@ -204,6 +206,8 @@ pub struct SessionSummary {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
     pub permission_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub backend_id: Option<String>,
 }
 
 impl ChatSession {
@@ -240,6 +244,7 @@ impl ChatSession {
             message_count: self.messages.len(),
             agent_session_id: self.agent_session_id.clone(),
             permission_mode: self.permission_mode.clone(),
+            backend_id: self.backend_id.clone(),
         }
     }
 }
@@ -351,6 +356,7 @@ pub fn create_session_internal(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
     worktree_path: &str,
+    backend_id: Option<String>,
 ) -> Result<ChatSession, String> {
     let now = now_timestamp();
     let session = ChatSession {
@@ -364,6 +370,7 @@ pub fn create_session_internal(
         permission_mode: default_permission_mode(),
         selected_model: None,
         workflow_state: None,
+        backend_id,
     };
     session_store.save_session(data_dir, &session)?;
     Ok(session)
@@ -402,11 +409,14 @@ pub fn add_message_internal(
 #[tauri::command]
 pub fn create_session(
     state: State<'_, Arc<SessionStore>>,
+    registry: State<'_, Arc<crate::backends::AgentBackendRegistry>>,
     app: tauri::AppHandle,
     worktree_path: String,
+    backend_id: Option<String>,
 ) -> Result<ChatSession, String> {
+    let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
     let data_dir = resolve_data_dir(&app)?;
-    create_session_internal(&state, &data_dir, &worktree_path)
+    create_session_internal(&state, &data_dir, &worktree_path, Some(resolved_backend_id))
 }
 
 #[tauri::command]
@@ -454,9 +464,32 @@ pub fn close_session(
     Ok(())
 }
 
+/// セッション復元時の backend_id 検証・解決ロジック。
+/// - backend_id が Some かつ registry に存在 → Ok
+/// - backend_id が Some だが registry に不在 → Err
+/// - backend_id が None → デフォルトを代入して Ok
+pub fn resolve_session_backend(
+    session: &mut ChatSession,
+    registry: &crate::backends::AgentBackendRegistry,
+) -> Result<(), String> {
+    if let Some(ref bid) = session.backend_id {
+        if registry.get(bid).is_none() {
+            return Err(format!(
+                "バックエンド '{}' がレジストリに登録されていません",
+                bid
+            ));
+        }
+    } else {
+        let default_id = registry.resolve_default_id()?;
+        session.backend_id = Some(default_id);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn restore_session(
     state: State<'_, Arc<SessionStore>>,
+    registry: State<'_, Arc<crate::backends::AgentBackendRegistry>>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<(), String> {
@@ -464,6 +497,7 @@ pub fn restore_session(
     let mut session = state
         .get_session(&data_dir, &session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    resolve_session_backend(&mut session, &registry)?;
     session.state = SessionState::Idle;
     session.updated_at = now_timestamp();
     state.save_session(&data_dir, &session)?;
@@ -525,6 +559,7 @@ mod tests {
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
             workflow_state: None,
+            backend_id: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.id, "s1");
@@ -556,6 +591,7 @@ mod tests {
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
             workflow_state: None,
+            backend_id: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message.len(), 100 + "…".len());
@@ -586,6 +622,7 @@ mod tests {
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
             workflow_state: None,
+            backend_id: None,
         };
         let summary = session.to_summary();
         // 100 chars of "あ" (300 bytes) + "…" (3 bytes)
@@ -607,6 +644,7 @@ mod tests {
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
             workflow_state: None,
+            backend_id: None,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message, "");
@@ -727,6 +765,7 @@ mod tests {
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
             workflow_state: None,
+            backend_id: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         let back: ChatSession = serde_json::from_str(&json).unwrap();
@@ -756,6 +795,7 @@ mod tests {
             permission_mode: "acceptEdits".to_string(),
             selected_model: Some("claude-opus-4-6".to_string()),
             workflow_state: None,
+            backend_id: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("selectedModel"));
@@ -1381,6 +1421,7 @@ mod tests {
                 started_at: 999.0,
                 updated_at: 1000.5,
             }),
+            backend_id: None,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("workflowState"));
@@ -1389,5 +1430,188 @@ mod tests {
         assert_eq!(ws.execution_id, "exec-1");
         assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
         assert_eq!(ws.step_history.len(), 1);
+    }
+
+    #[test]
+    fn create_session_internal_with_backend_id() {
+        let store = SessionStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let session =
+            create_session_internal(&store, dir.path(), "/repo", Some("claude".to_string()))
+                .unwrap();
+        assert_eq!(session.backend_id, Some("claude".to_string()));
+        assert_eq!(session.state, SessionState::Active);
+        assert_eq!(session.worktree_path, "/repo");
+    }
+
+    #[test]
+    fn create_session_internal_without_backend_id() {
+        let store = SessionStore::default();
+        let dir = tempfile::tempdir().unwrap();
+        let session = create_session_internal(&store, dir.path(), "/repo", None).unwrap();
+        assert_eq!(session.backend_id, None);
+    }
+
+    #[test]
+    fn chat_session_without_backend_id_deserializes() {
+        let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0}"#;
+        let session: ChatSession = serde_json::from_str(json).unwrap();
+        assert_eq!(session.backend_id, None);
+    }
+
+    #[test]
+    fn chat_session_with_backend_id_roundtrip() {
+        let session = ChatSession {
+            id: "s1".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![],
+            state: SessionState::Active,
+            created_at: 1000.0,
+            updated_at: 1001.0,
+            agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: Some("claude".to_string()),
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("\"backendId\":\"claude\""));
+        let back: ChatSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.backend_id, Some("claude".to_string()));
+    }
+
+    #[test]
+    fn session_summary_includes_backend_id() {
+        let session = ChatSession {
+            id: "s1".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![ChatMessage {
+                id: "m1".to_string(),
+                role: MessageRole::Human,
+                content: "Hello".to_string(),
+                thinking: None,
+                activities: None,
+                parts: None,
+                timestamp: 1000.0,
+                mentions: None,
+            }],
+            state: SessionState::Active,
+            created_at: 1000.0,
+            updated_at: 1000.0,
+            agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: Some("claude".to_string()),
+        };
+        let summary = session.to_summary();
+        assert_eq!(summary.backend_id, Some("claude".to_string()));
+    }
+
+    // --- resolve_session_backend テスト ---
+
+    mod resolve_session_backend_tests {
+        use super::*;
+        use crate::backends::{
+            AgentBackend, AgentBackendRegistry, AgentMessage, ModelInfo, PermissionResponse,
+            SessionConfig, SessionHandle,
+        };
+        use async_trait::async_trait;
+
+        struct MockBackend {
+            backend_id: String,
+        }
+
+        #[async_trait]
+        impl AgentBackend for MockBackend {
+            fn id(&self) -> &str {
+                &self.backend_id
+            }
+            fn name(&self) -> &str {
+                "Mock"
+            }
+            async fn start_session(&self, _config: SessionConfig) -> Result<SessionHandle, String> {
+                Ok(SessionHandle {
+                    chat_session_id: "test".to_string(),
+                    backend_id: self.backend_id.clone(),
+                })
+            }
+            async fn send_message(
+                &self,
+                _session: &SessionHandle,
+                _message: AgentMessage,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            async fn interrupt(&self, _session: &SessionHandle) -> Result<(), String> {
+                Ok(())
+            }
+            async fn respond_permission(
+                &self,
+                _session: &SessionHandle,
+                _response: PermissionResponse,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            async fn available_models(&self) -> Result<Vec<ModelInfo>, String> {
+                Ok(vec![])
+            }
+            async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        fn make_session(backend_id: Option<&str>) -> ChatSession {
+            ChatSession {
+                id: "s_test".to_string(),
+                worktree_path: "/repo".to_string(),
+                messages: vec![],
+                state: SessionState::Closed,
+                created_at: 1000.0,
+                updated_at: 1000.0,
+                agent_session_id: None,
+                permission_mode: "acceptEdits".to_string(),
+                selected_model: None,
+                workflow_state: None,
+                backend_id: backend_id.map(|s| s.to_string()),
+            }
+        }
+
+        fn make_registry_with_claude() -> AgentBackendRegistry {
+            let mut reg = AgentBackendRegistry::new();
+            reg.register(Arc::new(MockBackend {
+                backend_id: "claude".to_string(),
+            }));
+            reg.set_default(Some("claude".to_string()));
+            reg
+        }
+
+        #[test]
+        fn restore_with_valid_backend_id_succeeds() {
+            let registry = make_registry_with_claude();
+            let mut session = make_session(Some("claude"));
+            let result = resolve_session_backend(&mut session, &registry);
+            assert!(result.is_ok());
+            assert_eq!(session.backend_id, Some("claude".to_string()));
+        }
+
+        #[test]
+        fn restore_with_invalid_backend_id_returns_error() {
+            let registry = make_registry_with_claude();
+            let mut session = make_session(Some("codex"));
+            let result = resolve_session_backend(&mut session, &registry);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("codex"));
+        }
+
+        #[test]
+        fn restore_without_backend_id_assigns_default() {
+            let registry = make_registry_with_claude();
+            let mut session = make_session(None);
+            assert_eq!(session.backend_id, None);
+            let result = resolve_session_backend(&mut session, &registry);
+            assert!(result.is_ok());
+            assert_eq!(session.backend_id, Some("claude".to_string()));
+        }
     }
 }

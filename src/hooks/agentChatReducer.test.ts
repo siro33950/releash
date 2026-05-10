@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatMessage, ChatSession } from "@/types/session";
+import type { BackendInfo, ChatMessage, ChatSession } from "@/types/session";
 import type { AgentChatState } from "./agentChatReducer";
 import { INITIAL_STATE, mergeDeltaParts, reducer } from "./agentChatReducer";
 
@@ -39,6 +39,8 @@ describe("agentChatReducer", () => {
 			pendingPermissions: {},
 			availableModels: [],
 			sessionModels: {},
+			backends: [],
+			selectedBackendId: null,
 		});
 	});
 
@@ -747,6 +749,97 @@ describe("agentChatReducer", () => {
 			});
 			expect(next.turnPhases).toEqual({ s1: "idle" });
 			expect(next.sessionModels).toEqual({ s1: "claude-4" });
+		});
+	});
+
+	describe("SET_BACKENDS", () => {
+		const backend1: BackendInfo = {
+			id: "b1",
+			name: "Backend 1",
+			available: true,
+		};
+		const backend2: BackendInfo = {
+			id: "b2",
+			name: "Backend 2",
+			available: true,
+		};
+
+		it("sets selectedBackendId to defaultId when selectedBackendId is null", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				selectedBackendId: null,
+			};
+			const next = reducer(state, {
+				type: "SET_BACKENDS",
+				backends: [backend1, backend2],
+				defaultId: "b2",
+			});
+			expect(next.backends).toEqual([backend1, backend2]);
+			expect(next.selectedBackendId).toBe("b2");
+		});
+
+		it("selects the first backend when selectedBackendId is null and defaultId is null", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				selectedBackendId: null,
+			};
+			const next = reducer(state, {
+				type: "SET_BACKENDS",
+				backends: [backend1, backend2],
+				defaultId: null,
+			});
+			expect(next.backends).toEqual([backend1, backend2]);
+			expect(next.selectedBackendId).toBe("b1");
+		});
+
+		it("preserves existing selectedBackendId when already set", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				selectedBackendId: "b2",
+			};
+			const next = reducer(state, {
+				type: "SET_BACKENDS",
+				backends: [backend1, backend2],
+				defaultId: "b1",
+			});
+			expect(next.backends).toEqual([backend1, backend2]);
+			expect(next.selectedBackendId).toBe("b2");
+		});
+
+		it("sets selectedBackendId to null when backends are empty and defaultId is null", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				selectedBackendId: null,
+			};
+			const next = reducer(state, {
+				type: "SET_BACKENDS",
+				backends: [],
+				defaultId: null,
+			});
+			expect(next.backends).toEqual([]);
+			expect(next.selectedBackendId).toBeNull();
+		});
+	});
+
+	describe("SET_SELECTED_BACKEND", () => {
+		it("updates selectedBackendId with backendId", () => {
+			const next = reducer(INITIAL_STATE, {
+				type: "SET_SELECTED_BACKEND",
+				backendId: "b1",
+			});
+			expect(next.selectedBackendId).toBe("b1");
+		});
+
+		it("clears selectedBackendId with null", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				selectedBackendId: "b1",
+			};
+			const next = reducer(state, {
+				type: "SET_SELECTED_BACKEND",
+				backendId: null,
+			});
+			expect(next.selectedBackendId).toBeNull();
 		});
 	});
 });
