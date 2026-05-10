@@ -303,10 +303,36 @@ pub(super) fn handle_backend_list_request(state: &WsServerState) -> Option<WsMes
     }))
 }
 
-pub(super) fn handle_agent_session_start_request(
+pub(super) async fn handle_agent_session_start_request(
     req: &AgentSessionStartRequest,
     state: &WsServerState,
 ) -> Option<WsMessage> {
+    // worktree_pathが管理対象のworktreeリストに含まれるかバリデーション
+    let repo_paths = state.get_repo_paths();
+    let requested_path = req.worktree_path.clone();
+    let valid = tokio::task::spawn_blocking(move || {
+        for repo_path in &repo_paths {
+            let worktrees = crate::git::list_worktrees(repo_path.clone()).unwrap_or_default();
+            if worktrees.iter().any(|w| w.path == requested_path) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+
+    if !valid {
+        return Some(WsMessage::AgentSessionStartResponse(
+            AgentSessionStartResponse {
+                success: false,
+                session_id: None,
+                backend_id: None,
+                error: Some("指定されたworktreeが見つかりません".to_string()),
+            },
+        ));
+    }
+
     let registry = state.get_backend_registry();
 
     let resolved_backend_id = match registry.resolve_backend_id(req.backend_id.clone()) {

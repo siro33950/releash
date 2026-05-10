@@ -22,11 +22,12 @@ export function BackendSelector({
 	onBackendChange,
 	disabled,
 }: BackendSelectorProps) {
-	if (backends.length <= 1) return null;
+	const availableBackends = backends.filter((b) => b.available);
+	if (availableBackends.length <= 1) return null;
 
 	const currentLabel =
-		backends.find((b) => b.id === selectedBackendId)?.name ??
-		backends[0]?.name ??
+		availableBackends.find((b) => b.id === selectedBackendId)?.name ??
+		availableBackends[0]?.name ??
 		"Backend";
 
 	return (
@@ -45,16 +46,18 @@ export function BackendSelector({
 			</DropdownMenuTrigger>
 			<DropdownMenuContent side="bottom" align="start">
 				<DropdownMenuRadioGroup
-					value={selectedBackendId ?? ""}
+					value={
+						availableBackends.some((b) => b.id === selectedBackendId)
+							? (selectedBackendId ?? "")
+							: ""
+					}
 					onValueChange={(v) => onBackendChange(v || null)}
 				>
-					{backends
-						.filter((b) => b.available)
-						.map((b) => (
-							<DropdownMenuRadioItem key={b.id} value={b.id}>
-								{b.name}
-							</DropdownMenuRadioItem>
-						))}
+					{availableBackends.map((b) => (
+						<DropdownMenuRadioItem key={b.id} value={b.id}>
+							{b.name}
+						</DropdownMenuRadioItem>
+					))}
 				</DropdownMenuRadioGroup>
 			</DropdownMenuContent>
 		</DropdownMenu>

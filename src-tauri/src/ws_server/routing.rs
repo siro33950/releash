@@ -26,7 +26,9 @@ pub(super) async fn route_message(
             handle_worktree_select_request(req, state, selected_worktree).await
         }
         WsMessage::BackendListRequest(_) => handle_backend_list_request(state),
-        WsMessage::AgentSessionStartRequest(req) => handle_agent_session_start_request(req, state),
+        WsMessage::AgentSessionStartRequest(req) => {
+            handle_agent_session_start_request(req, state).await
+        }
         _ => Some(WsMessage::Error(ErrorMsg {
             code: "INVALID_MESSAGE".to_string(),
             message: "Unexpected message from client".to_string(),
@@ -251,30 +253,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_route_agent_session_start_invalid_backend() {
+    async fn test_route_agent_session_start_invalid_worktree() {
         let state = test_state_with_registry();
         let wt = test_selected_worktree();
         let msg = WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
-            worktree_path: "/repo".to_string(),
-            backend_id: Some("nonexistent".to_string()),
-        });
-        let result = route_message(&msg, &state, &wt).await;
-        match result {
-            Some(WsMessage::AgentSessionStartResponse(r)) => {
-                assert!(!r.success);
-                assert!(r.error.is_some());
-                assert!(r.error.unwrap().contains("nonexistent"));
-            }
-            _ => panic!("expected AgentSessionStartResponse with error"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_route_agent_session_start_no_app_handle() {
-        let state = test_state_with_registry(); // app_handle = None
-        let wt = test_selected_worktree();
-        let msg = WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
-            worktree_path: "/repo".to_string(),
+            worktree_path: "/nonexistent/repo".to_string(),
             backend_id: Some("claude".to_string()),
         });
         let result = route_message(&msg, &state, &wt).await;
@@ -282,6 +265,7 @@ mod tests {
             Some(WsMessage::AgentSessionStartResponse(r)) => {
                 assert!(!r.success);
                 assert!(r.error.is_some());
+                assert!(r.error.unwrap().contains("worktree"));
             }
             _ => panic!("expected AgentSessionStartResponse with error"),
         }
