@@ -81,7 +81,7 @@ export function CodexPermissionControl({
 				<DropdownMenuRadioGroup
 					value={sandbox}
 					onValueChange={(value) =>
-						onModeChange(modeFromSandbox(value as CodexSandbox))
+						onModeChange(modeFromSandbox(value as CodexSandbox, mode))
 					}
 				>
 					<DropdownMenuRadioItem value="read-only">
@@ -115,14 +115,19 @@ export function CodexPermissionControl({
 	);
 }
 
-function modeFromSandbox(sandbox: CodexSandbox): PermissionMode {
+function modeFromSandbox(
+	sandbox: CodexSandbox,
+	currentMode: PermissionMode,
+): PermissionMode {
 	switch (sandbox) {
 		case "read-only":
 			return "plan";
 		case "full-access":
 			return "bypassPermissions";
 		case "workspace":
-			return "acceptEdits";
+			return approvalFromMode(currentMode) === "ask"
+				? "default"
+				: "acceptEdits";
 	}
 }
 
