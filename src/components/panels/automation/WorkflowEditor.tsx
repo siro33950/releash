@@ -79,10 +79,15 @@ export function WorkflowEditor({
 	const handleSave = async () => {
 		setSaving(true);
 		setError(null);
-		const result = await onSave(draft, originalName);
-		setSaving(false);
-		if (!result.ok) {
-			setError(result.error ?? "Save failed");
+		try {
+			const result = await onSave(draft, originalName);
+			if (!result.ok) {
+				setError(result.error ?? "Save failed");
+			}
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setSaving(false);
 		}
 	};
 
