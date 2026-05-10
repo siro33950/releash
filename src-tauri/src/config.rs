@@ -28,6 +28,13 @@ pub struct ReleashConfig {
     pub remote: RemoteSection,
     #[serde(default)]
     pub app: AppSection,
+    #[serde(default)]
+    pub agents: AgentsSection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentsSection {
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -97,6 +104,7 @@ impl Default for ReleashConfig {
             notion: HashMap::new(),
             remote: RemoteSection::default(),
             app: AppSection::default(),
+            agents: AgentsSection::default(),
         }
     }
 }
@@ -1482,5 +1490,43 @@ token = "existing_token_value_here_with_enough_length_!!"
         // 6 keys, but Notification has 2 entries
         let total_entries: usize = hooks.values().map(|v| v.as_array().unwrap().len()).sum();
         assert_eq!(total_entries, 7);
+    }
+
+    #[test]
+    fn agents_section_defaults() {
+        let agents = AgentsSection::default();
+        assert!(agents.default.is_none());
+    }
+
+    #[test]
+    fn agents_section_with_default_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.agents.default = Some("claude".to_string());
+        write_config(&path, &config).unwrap();
+
+        let reloaded = fs::read_to_string(&path).unwrap();
+        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
+        assert_eq!(reloaded.agents.default, Some("claude".to_string()));
+    }
+
+    #[test]
+    fn existing_config_without_agents_gets_defaults() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+bind = "127.0.0.1"
+port = 9700
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert!(config.agents.default.is_none());
     }
 }

@@ -25,6 +25,8 @@ pub(super) async fn route_message(
         WsMessage::WorktreeSelectRequest(req) => {
             handle_worktree_select_request(req, state, selected_worktree).await
         }
+        WsMessage::BackendListRequest(_) => handle_backend_list_request(state),
+        WsMessage::AgentSessionStartRequest(req) => handle_agent_session_start_request(req, state),
         _ => Some(WsMessage::Error(ErrorMsg {
             code: "INVALID_MESSAGE".to_string(),
             message: "Unexpected message from client".to_string(),
@@ -60,6 +62,7 @@ mod tests {
             None,
             false,
             Arc::new(crate::git_host::PrCache::new()),
+            Arc::new(crate::backends::AgentBackendRegistry::new()),
         )
     }
 
@@ -191,6 +194,96 @@ mod tests {
         match result {
             Some(WsMessage::Error(e)) => assert_eq!(e.code, "NO_PTY"),
             _ => panic!("expected NO_PTY error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_backend_list_empty_registry() {
+        let state = test_state(); // empty registry
+        let wt = test_selected_worktree();
+        let msg = WsMessage::BackendListRequest(BackendListRequest {});
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::BackendListResponse(r)) => {
+                assert!(r.backends.is_empty());
+                assert!(r.default_id.is_none());
+            }
+            _ => panic!("expected BackendListResponse with empty list"),
+        }
+    }
+
+    fn test_state_with_registry() -> WsServerState {
+        let config = crate::config::ReleashConfig::default();
+        let app_config = Arc::new(crate::config::AppConfig::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+        let mut registry = crate::backends::AgentBackendRegistry::new();
+        registry.register(Arc::new(crate::backends::claude::ClaudeBackend::new()));
+        WsServerState::new(
+            None,
+            Arc::new(WsBroadcaster::default()),
+            None,
+            Arc::new(parking_lot::RwLock::new(vec![])),
+            app_config,
+            None,
+            false,
+            Arc::new(crate::git_host::PrCache::new()),
+            Arc::new(registry),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_route_backend_list_with_registry() {
+        let state = test_state_with_registry();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::BackendListRequest(BackendListRequest {});
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::BackendListResponse(r)) => {
+                assert_eq!(r.backends.len(), 1);
+                assert_eq!(r.backends[0].id, "claude");
+                assert_eq!(r.backends[0].name, "Claude");
+                assert!(r.backends[0].available);
+            }
+            _ => panic!("expected BackendListResponse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_agent_session_start_invalid_backend() {
+        let state = test_state_with_registry();
+        let wt = test_selected_worktree();
+        let msg = WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
+            worktree_path: "/repo".to_string(),
+            backend_id: Some("nonexistent".to_string()),
+        });
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::AgentSessionStartResponse(r)) => {
+                assert!(!r.success);
+                assert!(r.error.is_some());
+                assert!(r.error.unwrap().contains("nonexistent"));
+            }
+            _ => panic!("expected AgentSessionStartResponse with error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_agent_session_start_no_app_handle() {
+        let state = test_state_with_registry(); // app_handle = None
+        let wt = test_selected_worktree();
+        let msg = WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
+            worktree_path: "/repo".to_string(),
+            backend_id: Some("claude".to_string()),
+        });
+        let result = route_message(&msg, &state, &wt).await;
+        match result {
+            Some(WsMessage::AgentSessionStartResponse(r)) => {
+                assert!(!r.success);
+                assert!(r.error.is_some());
+            }
+            _ => panic!("expected AgentSessionStartResponse with error"),
         }
     }
 }

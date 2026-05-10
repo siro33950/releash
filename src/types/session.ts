@@ -126,6 +126,7 @@ export interface ChatSession {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode: PermissionMode;
+	backendId?: string | null;
 }
 
 export function getTextContent(parts: MessagePart[]): string {
@@ -145,6 +146,13 @@ export interface SessionSummary {
 	messageCount: number;
 	agentSessionId?: string | null;
 	permissionMode: PermissionMode;
+	backendId?: string | null;
+}
+
+export interface BackendInfo {
+	id: string;
+	name: string;
+	available: boolean;
 }
 
 /**

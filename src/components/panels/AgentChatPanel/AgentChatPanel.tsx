@@ -34,6 +34,7 @@ import {
 	TaskToolActivity,
 	ToolActivity,
 } from "./ActivityLog";
+import { BackendSelector } from "./BackendSelector";
 import type { MessageInputHandle } from "./MessageInput";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
@@ -274,6 +275,9 @@ export function AgentChatPanel({
 		availableModels,
 		selectedModel,
 		setModel,
+		backends,
+		selectedBackendId,
+		setBackend,
 	} = useAgentChat(worktreePath);
 
 	const { workflowState } = useWorkflowState(worktreePath);
@@ -561,6 +565,12 @@ export function AgentChatPanel({
 								))}
 							</TabsList>
 							<div data-tauri-drag-region className="flex-1" />
+							<BackendSelector
+								backends={backends}
+								selectedBackendId={selectedBackendId}
+								onBackendChange={setBackend}
+								disabled={isStreaming}
+							/>
 							<button
 								type="button"
 								onClick={() => createNewSession()}

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+	BackendInfo,
 	ChatMessage,
 	ChatSession,
 	ImageAttachment,
@@ -141,9 +142,11 @@ export async function getSession(
 
 export async function createSession(
 	worktreePath: string,
+	backendId?: string | null,
 ): Promise<ChatSession> {
 	const raw = await invoke<LegacyChatSession>("create_session", {
 		worktreePath,
+		backendId: backendId ?? null,
 	});
 	return convertLegacySession(raw);
 }
@@ -266,4 +269,13 @@ export async function updateSessionAgentInfo(
 		sessionId,
 		agentSessionId,
 	});
+}
+
+export interface BackendListResult {
+	backends: BackendInfo[];
+	defaultId: string | null;
+}
+
+export async function listAgentBackends(): Promise<BackendListResult> {
+	return invoke<BackendListResult>("list_agent_backends");
 }

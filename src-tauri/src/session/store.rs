@@ -199,6 +199,7 @@ mod tests {
             permission_mode: "acceptEdits".to_string(),
             selected_model: None,
             workflow_state: None,
+            backend_id: None,
         }
     }
 
@@ -215,6 +216,35 @@ mod tests {
         let loaded = loaded.unwrap();
         assert_eq!(loaded.id, UUID1);
         assert_eq!(loaded.messages.len(), 1);
+    }
+
+    #[test]
+    fn save_and_load_session_with_backend_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let mut session = make_session(UUID1, "/repo");
+        session.backend_id = Some("claude".to_string());
+
+        store.save_session(tmp.path(), &session).unwrap();
+
+        // Load from a fresh store to verify file persistence
+        let store2 = SessionStore::default();
+        let loaded = store2.get_session(tmp.path(), UUID1).unwrap().unwrap();
+        assert_eq!(loaded.backend_id, Some("claude".to_string()));
+    }
+
+    #[test]
+    fn save_and_load_session_with_none_backend_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let session = make_session(UUID1, "/repo");
+        assert_eq!(session.backend_id, None);
+
+        store.save_session(tmp.path(), &session).unwrap();
+
+        let store2 = SessionStore::default();
+        let loaded = store2.get_session(tmp.path(), UUID1).unwrap().unwrap();
+        assert_eq!(loaded.backend_id, None);
     }
 
     #[test]

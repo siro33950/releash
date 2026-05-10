@@ -76,6 +76,7 @@ pub(crate) struct WsServerState {
     app_handle: Option<tauri::AppHandle>,
     tls_enabled: bool,
     pr_cache: Arc<PrCache>,
+    backend_registry: Arc<crate::backends::AgentBackendRegistry>,
 }
 
 impl WsServerState {
@@ -89,6 +90,7 @@ impl WsServerState {
         app_handle: Option<tauri::AppHandle>,
         tls_enabled: bool,
         pr_cache: Arc<PrCache>,
+        backend_registry: Arc<crate::backends::AgentBackendRegistry>,
     ) -> Self {
         Self {
             active_connection: Arc::new(Mutex::new(false)),
@@ -102,7 +104,29 @@ impl WsServerState {
             app_handle,
             tls_enabled,
             pr_cache,
+            backend_registry,
         }
+    }
+
+    pub(crate) fn get_backend_registry(&self) -> &Arc<crate::backends::AgentBackendRegistry> {
+        &self.backend_registry
+    }
+
+    pub(crate) fn create_session(
+        &self,
+        worktree_path: &str,
+        backend_id: Option<String>,
+    ) -> Result<crate::session::ChatSession, String> {
+        use tauri::Manager;
+        let app = self.app_handle.as_ref().ok_or("App handle not available")?;
+        let session_store = app.state::<Arc<crate::session::SessionStore>>();
+        let data_dir = crate::session::resolve_data_dir(app)?;
+        crate::session::create_session_internal(
+            &session_store,
+            &data_dir,
+            worktree_path,
+            backend_id,
+        )
     }
 
     pub(crate) fn get_repo_paths(&self) -> Vec<String> {
@@ -170,6 +194,7 @@ mod tests {
             None,
             false,
             Arc::new(crate::git_host::PrCache::new()),
+            Arc::new(crate::backends::AgentBackendRegistry::new()),
         );
         assert_eq!(
             state.get_repo_paths(),

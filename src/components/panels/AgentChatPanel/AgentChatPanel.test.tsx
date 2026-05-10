@@ -90,6 +90,9 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		availableModels: [],
 		selectedModel: null,
 		setModel: vi.fn(),
+		backends: [],
+		selectedBackendId: null,
+		setBackend: vi.fn(),
 		...overrides,
 	});
 }

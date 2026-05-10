@@ -289,6 +289,60 @@ pub(super) async fn handle_worktree_select_request(
     None
 }
 
+pub(super) fn handle_backend_list_request(state: &WsServerState) -> Option<WsMessage> {
+    let registry = state.get_backend_registry();
+    let backends = registry
+        .list()
+        .into_iter()
+        .map(BackendInfoMsg::from)
+        .collect();
+    let default_id = registry.resolve_default_id().ok();
+    Some(WsMessage::BackendListResponse(BackendListResponse {
+        backends,
+        default_id,
+    }))
+}
+
+pub(super) fn handle_agent_session_start_request(
+    req: &AgentSessionStartRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    let registry = state.get_backend_registry();
+
+    let resolved_backend_id = match registry.resolve_backend_id(req.backend_id.clone()) {
+        Ok(id) => id,
+        Err(e) => {
+            return Some(WsMessage::AgentSessionStartResponse(
+                AgentSessionStartResponse {
+                    success: false,
+                    session_id: None,
+                    backend_id: None,
+                    error: Some(e),
+                },
+            ));
+        }
+    };
+
+    match state.create_session(&req.worktree_path, Some(resolved_backend_id.clone())) {
+        Ok(session) => Some(WsMessage::AgentSessionStartResponse(
+            AgentSessionStartResponse {
+                success: true,
+                session_id: Some(session.id),
+                backend_id: Some(resolved_backend_id),
+                error: None,
+            },
+        )),
+        Err(e) => Some(WsMessage::AgentSessionStartResponse(
+            AgentSessionStartResponse {
+                success: false,
+                session_id: None,
+                backend_id: None,
+                error: Some(e),
+            },
+        )),
+    }
+}
+
 pub(super) async fn handle_pty_kill_request(
     req: &PtyKillRequest,
     state: &WsServerState,
@@ -343,6 +397,7 @@ mod tests {
             None,
             false,
             std::sync::Arc::new(crate::git_host::PrCache::new()),
+            std::sync::Arc::new(crate::backends::AgentBackendRegistry::new()),
         )
     }
 

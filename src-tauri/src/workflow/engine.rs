@@ -2152,7 +2152,7 @@ impl WorkflowEngine {
 
         // ステップ用の新しいChatSessionを生成
         let step_session =
-            crate::session::create_session_internal(session_store, &data_dir, worktree_path)
+            crate::session::create_session_internal(session_store, &data_dir, worktree_path, None)
                 .map_err(|e| {
                     WorkflowEngineError::SessionStore(format!("create step session: {e}"))
                 })?;
@@ -3026,11 +3026,15 @@ impl WorkflowEngine {
         let mut child_setups: Vec<ChildSetup> = Vec::new();
 
         for ps in &parallel_steps {
-            let step_session =
-                crate::session::create_session_internal(session_store, &data_dir, worktree_path)
-                    .map_err(|e| {
-                        WorkflowEngineError::SessionStore(format!("create parallel session: {e}"))
-                    })?;
+            let step_session = crate::session::create_session_internal(
+                session_store,
+                &data_dir,
+                worktree_path,
+                None,
+            )
+            .map_err(|e| {
+                WorkflowEngineError::SessionStore(format!("create parallel session: {e}"))
+            })?;
             let step_session_id = step_session.id.clone();
 
             // session_workflow_refs に ParallelChild として登録
