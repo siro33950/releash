@@ -57,6 +57,13 @@ describe("SettingsModal", () => {
 					return Promise.resolve([]);
 				case "list_workflows":
 					return Promise.resolve([]);
+				case "diagnose_all_cmd":
+					return Promise.resolve({
+						items: [],
+						workflow_summaries: {},
+						facet_summaries: {},
+						facet_usage: {},
+					});
 				default:
 					return Promise.resolve(null);
 			}
@@ -523,8 +530,14 @@ describe("SettingsModal", () => {
 		});
 	});
 
-	it("should show workflow list in Workflows section", async () => {
+	it("should show workflow list in Automation section", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
+		const emptyReport = {
+			items: [],
+			workflow_summaries: {},
+			facet_summaries: {},
+			facet_usage: {},
+		};
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_workflows":
@@ -540,13 +553,15 @@ describe("SettingsModal", () => {
 							builtin: false,
 						},
 					]);
+				case "diagnose_all_cmd":
+					return Promise.resolve(emptyReport);
 				default:
 					return Promise.resolve(null);
 			}
 		});
 
 		render(<SettingsModal {...defaultProps} />);
-		fireEvent.click(screen.getByText("Workflows"));
+		fireEvent.click(screen.getByText("Automation"));
 
 		await waitFor(() => {
 			expect(screen.getByText("quick-fix")).toBeInTheDocument();
@@ -560,50 +575,66 @@ describe("SettingsModal", () => {
 
 	it("should show empty state when no workflows exist", async () => {
 		render(<SettingsModal {...defaultProps} />);
-		fireEvent.click(screen.getByText("Workflows"));
+		fireEvent.click(screen.getByText("Automation"));
 
 		await waitFor(() => {
-			expect(screen.getByText("No workflows found.")).toBeInTheDocument();
+			expect(
+				screen.getByText("Select a workflow to view details"),
+			).toBeInTheDocument();
 		});
 	});
 
-	it("should call open_workflow_in_editor when Open in editor button is clicked", async () => {
+	it("should call open_workflow_in_editor for custom workflow", async () => {
 		const user = userEvent.setup();
 		const { invoke } = await import("@tauri-apps/api/core");
+		const emptyReport = {
+			items: [],
+			workflow_summaries: {},
+			facet_summaries: {},
+			facet_usage: {},
+		};
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_workflows":
 					return Promise.resolve([
 						{
-							name: "quick-fix",
-							description: "素早いバグ修正",
-							builtin: true,
+							name: "my-workflow",
+							description: "カスタムワークフロー",
+							builtin: false,
 						},
 					]);
 				case "open_workflow_in_editor":
 					return Promise.resolve(null);
+				case "diagnose_all_cmd":
+					return Promise.resolve(emptyReport);
 				default:
 					return Promise.resolve(null);
 			}
 		});
 
 		render(<SettingsModal {...defaultProps} />);
-		fireEvent.click(screen.getByText("Workflows"));
+		fireEvent.click(screen.getByText("Automation"));
 
 		await waitFor(() => {
-			expect(screen.getByText("quick-fix")).toBeInTheDocument();
+			expect(screen.getByText("my-workflow")).toBeInTheDocument();
 		});
 
 		await user.click(screen.getByTitle("Open in editor"));
 
 		expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_workflow_in_editor", {
-			name: "quick-fix",
+			name: "my-workflow",
 		});
 	});
 
 	it("should call delete_workflow when Delete button is clicked", async () => {
 		const user = userEvent.setup();
 		const { invoke } = await import("@tauri-apps/api/core");
+		const emptyReport = {
+			items: [],
+			workflow_summaries: {},
+			facet_summaries: {},
+			facet_usage: {},
+		};
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_workflows":
@@ -616,19 +647,21 @@ describe("SettingsModal", () => {
 					]);
 				case "delete_workflow":
 					return Promise.resolve(null);
+				case "diagnose_all_cmd":
+					return Promise.resolve(emptyReport);
 				default:
 					return Promise.resolve(null);
 			}
 		});
 
 		render(<SettingsModal {...defaultProps} />);
-		fireEvent.click(screen.getByText("Workflows"));
+		fireEvent.click(screen.getByText("Automation"));
 
 		await waitFor(() => {
 			expect(screen.getByText("my-workflow")).toBeInTheDocument();
 		});
 
-		await user.click(screen.getByTitle("Delete workflow"));
+		await user.click(screen.getByTitle("Delete"));
 
 		expect(vi.mocked(invoke)).toHaveBeenCalledWith("delete_workflow", {
 			name: "my-workflow",
@@ -637,6 +670,12 @@ describe("SettingsModal", () => {
 
 	it("should not show delete button for builtin workflows", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
+		const emptyReport = {
+			items: [],
+			workflow_summaries: {},
+			facet_summaries: {},
+			facet_usage: {},
+		};
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
 			switch (cmd) {
 				case "list_workflows":
@@ -647,19 +686,21 @@ describe("SettingsModal", () => {
 							builtin: true,
 						},
 					]);
+				case "diagnose_all_cmd":
+					return Promise.resolve(emptyReport);
 				default:
 					return Promise.resolve(null);
 			}
 		});
 
 		render(<SettingsModal {...defaultProps} />);
-		fireEvent.click(screen.getByText("Workflows"));
+		fireEvent.click(screen.getByText("Automation"));
 
 		await waitFor(() => {
 			expect(screen.getByText("quick-fix")).toBeInTheDocument();
 		});
 
-		expect(screen.queryByTitle("Delete workflow")).not.toBeInTheDocument();
+		expect(screen.queryByTitle("Delete")).not.toBeInTheDocument();
 	});
 
 	describe("Repository removal", () => {

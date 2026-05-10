@@ -1872,6 +1872,16 @@ impl WorkflowEngine {
         execs.get(&worktree_path).is_some_and(|e| e.is_active())
     }
 
+    /// 現在実行中のワークフロー名の集合を返す（全worktreeを集約）。
+    pub async fn running_workflow_names(&self) -> std::collections::HashSet<String> {
+        let execs = self.executions.lock().await;
+        execs
+            .values()
+            .filter(|e| e.is_active())
+            .map(|e| e.workflow.name.clone())
+            .collect()
+    }
+
     /// セッションIDからworktree_pathを解決する。
     /// session_workflow_refsに登録されていない場合はNoneを返す。
     async fn resolve_worktree_path(&self, session_id: &str) -> Option<String> {
@@ -3519,6 +3529,7 @@ mod tests {
             cycle_guard,
             pass_previous_response: None,
             pass_output_from: None,
+            inline_prompt: None,
             collect: None,
             parallel: None,
             aggregate: None,
@@ -5206,6 +5217,7 @@ mod tests {
             cycle_guard: None,
             pass_previous_response: None,
             pass_output_from: None,
+            inline_prompt: None,
             collect: None,
             parallel: None,
             aggregate: None,
@@ -5505,6 +5517,7 @@ mod tests {
                     cycle_guard: None,
                     pass_previous_response: None,
                     pass_output_from: None,
+                    inline_prompt: None,
                     collect: None,
                     parallel: None,
                     aggregate: None,
@@ -5620,6 +5633,7 @@ mod tests {
                         cycle_guard: None,
                         pass_previous_response: None,
                         pass_output_from: None,
+                        inline_prompt: None,
                         collect: None,
                         parallel: None,
                         aggregate: None,
@@ -5637,6 +5651,7 @@ mod tests {
                         cycle_guard: None,
                         pass_previous_response: Some(true),
                         pass_output_from: None,
+                        inline_prompt: None,
                         collect: None,
                         parallel: None,
                         aggregate: None,

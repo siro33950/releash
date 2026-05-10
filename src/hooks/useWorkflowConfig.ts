@@ -1,11 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
-
-export interface WorkflowSummary {
-	name: string;
-	description: string;
-	builtin: boolean;
-}
+import type { WorkflowSummary } from "@/types/workflow";
 
 export function useWorkflowConfig(open: boolean) {
 	const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);

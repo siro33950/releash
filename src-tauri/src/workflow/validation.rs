@@ -198,10 +198,14 @@ pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     if name.is_empty() {
         return Err(ValidationError::EmptyName);
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphanumeric() {
+        return Err(ValidationError::InvalidChars {
+            name: name.to_string(),
+        });
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(ValidationError::InvalidChars {
             name: name.to_string(),
         });
@@ -377,8 +381,8 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 });
             }
 
-            // collect なしの step: ファセット参照が必要
-            if step.collect.is_none() && !step.has_facet_refs() {
+            // collect なしの step: ファセット参照または inline_prompt が必要
+            if step.collect.is_none() && !step.has_facet_refs() && step.inline_prompt.is_none() {
                 return Err(ValidationError::MissingFacet {
                     step: step.name.clone(),
                 });
@@ -546,6 +550,7 @@ mod tests {
             cycle_guard: None,
             pass_previous_response: None,
             pass_output_from: None,
+            inline_prompt: None,
             collect: None,
             parallel: None,
             aggregate: None,
@@ -584,6 +589,7 @@ mod tests {
             cycle_guard: None,
             pass_previous_response: None,
             pass_output_from: None,
+            inline_prompt: None,
             collect: None,
             parallel: Some(children),
             aggregate,
@@ -664,6 +670,12 @@ mod tests {
             validate_name("").unwrap_err(),
             ValidationError::EmptyName
         ));
+    }
+
+    #[test]
+    fn invalid_name_leading_hyphen_or_underscore() {
+        assert!(validate_name("-leading-hyphen").is_err());
+        assert!(validate_name("_leading-underscore").is_err());
     }
 
     #[test]
@@ -1287,6 +1299,16 @@ mod tests {
             },
             make_step("step_b", StepMode::Auto, vec![]),
         ]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn inline_prompt_step_without_facets_passes() {
+        let wf = make_workflow(vec![Step {
+            instruction: None,
+            inline_prompt: Some("Do analysis".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
         assert!(validate(&wf).is_ok());
     }
 }

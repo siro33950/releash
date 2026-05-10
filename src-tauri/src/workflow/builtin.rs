@@ -37,6 +37,7 @@ pub fn list_builtin_workflows() -> Vec<Summary> {
                     .to_string(),
                 description: wf.description,
                 builtin: true,
+                is_running: false,
             }
         })
         .collect()
@@ -199,6 +200,12 @@ pub fn list_builtin_facet_keys(kind: FacetKind) -> Vec<&'static str> {
         .collect()
 }
 
+pub fn is_builtin_workflow(name: &str) -> bool {
+    BUILTINS
+        .iter()
+        .any(|e| e.filename.strip_suffix(".yml") == Some(name))
+}
+
 pub fn is_builtin_facet(kind: FacetKind, key: &str) -> bool {
     BUILTIN_FACETS
         .iter()
@@ -258,6 +265,12 @@ mod tests {
 
         let personas = list_builtin_facet_keys(FacetKind::Persona);
         assert!(personas.is_empty());
+    }
+
+    #[test]
+    fn is_builtin_workflow_works() {
+        assert!(is_builtin_workflow("spec-driven-development"));
+        assert!(!is_builtin_workflow("custom-workflow"));
     }
 
     #[test]

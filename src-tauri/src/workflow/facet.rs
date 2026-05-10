@@ -7,6 +7,9 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+/// システム定義テンプレート変数（commands.rs / diagnostics.rs 両方から参照）
+pub const SYSTEM_TEMPLATE_VARIABLES: &[&str] = &["project_name", "task"];
+
 #[derive(Debug)]
 pub enum FacetError {
     InvalidKey { key: String },
@@ -79,6 +82,48 @@ impl FacetKind {
 pub struct ComposedPrompt {
     pub system_prompt: Option<String>,
     pub user_message: String,
+}
+
+/// ファセット本文からテンプレート変数名を抽出する（`{{var}}` パターン）
+pub fn extract_template_variables(content: &str) -> Vec<String> {
+    let mut vars = Vec::new();
+    let mut start = 0;
+    while let Some(open) = content[start..].find("{{") {
+        let abs_open = start + open + 2;
+        if let Some(close) = content[abs_open..].find("}}") {
+            let var_name = content[abs_open..abs_open + close].trim();
+            if !var_name.is_empty() {
+                vars.push(var_name.to_string());
+            }
+            start = abs_open + close + 2;
+        } else {
+            break;
+        }
+    }
+    vars
+}
+
+/// テンプレート変数がすべてシステム定義変数であることを検証する。
+/// 未定義変数があればそのリストを返す。
+pub fn find_undefined_template_variables(content: &str) -> Vec<String> {
+    extract_template_variables(content)
+        .into_iter()
+        .filter(|v| !SYSTEM_TEMPLATE_VARIABLES.contains(&v.as_str()))
+        .collect()
+}
+
+/// テンプレート変数を指定した値で置換する。
+/// `WorkflowEngine::render_facet_variables` と同一のパターンで展開。
+pub fn render_template_variables(
+    content: &str,
+    values: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut result = content.to_string();
+    for (key, value) in values {
+        let pattern = format!("{{{{{key}}}}}");
+        result = result.replace(&pattern, value);
+    }
+    result
 }
 
 pub fn validate_facet_key(key: &str) -> Result<(), FacetError> {
@@ -172,6 +217,88 @@ pub fn list_facets(kind: FacetKind, base_dir: &Path) -> Result<Vec<String>, Face
     Ok(keys.into_iter().collect())
 }
 
+/// Markdownファイルの先頭行から説明を取得する。
+/// 先頭行が `# ` で始まる場合はその見出しテキストを、そうでなければ先頭の非空行をそのまま使用する。
+pub fn extract_description(content: &str) -> String {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(heading) = trimmed.strip_prefix("# ") {
+            return heading.trim().to_string();
+        }
+        return trimmed.to_string();
+    }
+    String::new()
+}
+
+pub fn list_facet_summaries(
+    kind: FacetKind,
+    base_dir: &Path,
+) -> Result<Vec<super::schema::FacetSummary>, FacetError> {
+    let kind_name = kind.dir_name().to_string();
+    let mut summaries = Vec::new();
+    let dir = base_dir.join(kind.dir_name());
+
+    let mut seen_keys = BTreeSet::new();
+    if dir.exists() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let content = match fs::read_to_string(&path) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::warn!("ファセットファイル読み込み失敗: {}: {e}", path.display());
+                            String::new()
+                        }
+                    };
+                    summaries.push(super::schema::FacetSummary {
+                        key: stem.to_string(),
+                        kind: kind_name.clone(),
+                        description: extract_description(&content),
+                        builtin: builtin::is_builtin_facet(kind, stem),
+                    });
+                    seen_keys.insert(stem.to_string());
+                }
+            }
+        }
+    }
+
+    for key in builtin::list_builtin_facet_keys(kind) {
+        if !seen_keys.contains(key) {
+            let content = builtin::get_builtin_facet(kind, key).unwrap_or("");
+            summaries.push(super::schema::FacetSummary {
+                key: key.to_string(),
+                kind: kind_name.clone(),
+                description: extract_description(content),
+                builtin: true,
+            });
+        }
+    }
+
+    summaries.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(summaries)
+}
+
+pub fn resolve_facet_path(
+    kind: FacetKind,
+    key: &str,
+    base_dir: &Path,
+) -> Result<std::path::PathBuf, FacetError> {
+    validate_facet_key(key)?;
+    let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
+    if !path.exists() {
+        return Err(FacetError::NotFound {
+            kind,
+            key: key.to_string(),
+        });
+    }
+    Ok(path)
+}
+
 pub fn compose_facets_from_refs(
     persona: Option<&str>,
     policy: Option<&str>,
@@ -242,6 +369,7 @@ mod tests {
             cycle_guard: None,
             pass_previous_response: None,
             pass_output_from: None,
+            inline_prompt: None,
             collect: None,
             parallel: None,
             aggregate: None,
@@ -492,5 +620,104 @@ mod tests {
 
         assert_eq!(rendered_system.unwrap(), "You are a coder for my-project.");
         assert_eq!(rendered_user, "Task: Fix the bug\nProject: my-project");
+    }
+
+    // --- extract_description ---
+
+    #[test]
+    fn extract_description_heading() {
+        assert_eq!(extract_description("# My Facet\nContent here"), "My Facet");
+    }
+
+    #[test]
+    fn extract_description_no_heading() {
+        assert_eq!(
+            extract_description("Some content\nMore content"),
+            "Some content"
+        );
+    }
+
+    #[test]
+    fn extract_description_empty() {
+        assert_eq!(extract_description(""), "");
+    }
+
+    #[test]
+    fn extract_description_leading_blank_lines() {
+        assert_eq!(extract_description("\n\n# Title\nBody"), "Title");
+    }
+
+    // --- list_facet_summaries ---
+
+    #[test]
+    fn list_facet_summaries_merges_builtin_and_custom() {
+        let tmp = TempDir::new().unwrap();
+        let policies = tmp.path().join("policies");
+        fs::create_dir_all(&policies).unwrap();
+        fs::write(
+            policies.join("custom-policy.md"),
+            "# Custom Policy\nContent",
+        )
+        .unwrap();
+
+        let summaries = list_facet_summaries(FacetKind::Policy, tmp.path()).unwrap();
+        // 4 builtin policies + 1 custom
+        assert_eq!(summaries.len(), 5);
+
+        let custom = summaries.iter().find(|s| s.key == "custom-policy").unwrap();
+        assert!(!custom.builtin);
+        assert_eq!(custom.description, "Custom Policy");
+
+        let coding = summaries.iter().find(|s| s.key == "coding").unwrap();
+        assert!(coding.builtin);
+    }
+
+    // --- resolve_facet_path ---
+
+    #[test]
+    fn resolve_facet_path_existing() {
+        let tmp = TempDir::new().unwrap();
+        save_facet(FacetKind::Policy, "test", "content", tmp.path()).unwrap();
+        let path = resolve_facet_path(FacetKind::Policy, "test", tmp.path()).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn resolve_facet_path_missing() {
+        let tmp = TempDir::new().unwrap();
+        let result = resolve_facet_path(FacetKind::Policy, "nope", tmp.path());
+        assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
+    }
+
+    // --- 重複チェック用ヘルパーテスト ---
+
+    #[test]
+    fn list_facets_detects_existing_custom_key() {
+        let tmp = TempDir::new().unwrap();
+        save_facet(FacetKind::Policy, "my-policy", "content", tmp.path()).unwrap();
+        let existing = list_facets(FacetKind::Policy, tmp.path()).unwrap();
+        assert!(existing.contains(&"my-policy".to_string()));
+    }
+
+    #[test]
+    fn list_facets_includes_builtin_keys() {
+        let tmp = TempDir::new().unwrap();
+        let existing = list_facets(FacetKind::Policy, tmp.path()).unwrap();
+        // ビルトインのポリシーキーが含まれる
+        assert!(!existing.is_empty());
+    }
+
+    #[test]
+    fn delete_builtin_facet_is_protected() {
+        let tmp = TempDir::new().unwrap();
+        // ビルトインキーの削除はBuiltinProtectedエラー
+        let builtin_keys = builtin::list_builtin_facet_keys(FacetKind::Policy);
+        if let Some(key) = builtin_keys.first() {
+            let result = delete_facet(FacetKind::Policy, key, tmp.path());
+            assert!(matches!(
+                result.unwrap_err(),
+                FacetError::BuiltinProtected { .. }
+            ));
+        }
     }
 }
