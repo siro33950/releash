@@ -92,6 +92,20 @@ pub enum WsMessage {
     AgentSessionStartRequest(AgentSessionStartRequest),
     #[serde(rename = "agent_session_start_response")]
     AgentSessionStartResponse(AgentSessionStartResponse),
+    #[serde(rename = "agent_message_request")]
+    AgentMessageRequest(AgentMessageRequest),
+    #[serde(rename = "agent_message_response")]
+    AgentMessageResponse(AgentMessageResponse),
+    #[serde(rename = "agent_interrupt_request")]
+    AgentInterruptRequest(AgentInterruptRequest),
+    #[serde(rename = "agent_interrupt_response")]
+    AgentInterruptResponse(AgentInterruptResponse),
+    #[serde(rename = "agent_model_set_request")]
+    AgentModelSetRequest(AgentModelSetRequest),
+    #[serde(rename = "agent_model_set_response")]
+    AgentModelSetResponse(AgentModelSetResponse),
+    #[serde(rename = "agent_stream_sync")]
+    AgentStreamSync(AgentStreamSync),
 
     // 制御
     #[serde(rename = "error")]
@@ -364,6 +378,44 @@ mod tests {
                 session_id: Some("sess-1".to_string()),
                 backend_id: Some("claude".to_string()),
                 error: None,
+            }),
+            WsMessage::AgentMessageRequest(AgentMessageRequest {
+                session_id: Some("sess-1".to_string()),
+                worktree_path: "/repo".to_string(),
+                content: "hello".to_string(),
+                permission_mode: Some("acceptEdits".to_string()),
+                backend_id: Some("claude".to_string()),
+            }),
+            WsMessage::AgentMessageResponse(AgentMessageResponse {
+                success: true,
+                session_id: Some("sess-1".to_string()),
+                human_message_id: Some("h-1".to_string()),
+                agent_message_id: Some("a-1".to_string()),
+                backend_id: Some("claude".to_string()),
+                error: None,
+            }),
+            WsMessage::AgentInterruptRequest(AgentInterruptRequest {
+                session_id: "sess-1".to_string(),
+            }),
+            WsMessage::AgentInterruptResponse(AgentInterruptResponse {
+                success: true,
+                session_id: "sess-1".to_string(),
+                error: None,
+            }),
+            WsMessage::AgentModelSetRequest(AgentModelSetRequest {
+                session_id: "sess-1".to_string(),
+                model_id: Some("gpt-5.4".to_string()),
+            }),
+            WsMessage::AgentModelSetResponse(AgentModelSetResponse {
+                success: true,
+                session_id: "sess-1".to_string(),
+                model_id: Some("gpt-5.4".to_string()),
+                error: None,
+            }),
+            WsMessage::AgentStreamSync(AgentStreamSync {
+                session_id: "sess-1".to_string(),
+                message_id: "a-1".to_string(),
+                parts: vec![],
             }),
             WsMessage::Error(ErrorMsg {
                 code: "E".to_string(),

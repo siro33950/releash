@@ -35,6 +35,14 @@ pub struct ReleashConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentsSection {
     pub default: Option<String>,
+    #[serde(default)]
+    pub codex: CodexAgentSection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexAgentSection {
+    pub model: Option<String>,
+    pub cli_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1496,6 +1504,8 @@ token = "existing_token_value_here_with_enough_length_!!"
     fn agents_section_defaults() {
         let agents = AgentsSection::default();
         assert!(agents.default.is_none());
+        assert!(agents.codex.model.is_none());
+        assert!(agents.codex.cli_path.is_none());
     }
 
     #[test]
@@ -1514,6 +1524,26 @@ token = "existing_token_value_here_with_enough_length_!!"
     }
 
     #[test]
+    fn agents_codex_model_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.agents.codex.model = Some("gpt-5.4".to_string());
+        config.agents.codex.cli_path = Some("/opt/bin/codex".to_string());
+        write_config(&path, &config).unwrap();
+
+        let reloaded = fs::read_to_string(&path).unwrap();
+        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
+        assert_eq!(reloaded.agents.codex.model, Some("gpt-5.4".to_string()));
+        assert_eq!(
+            reloaded.agents.codex.cli_path,
+            Some("/opt/bin/codex".to_string())
+        );
+    }
+
+    #[test]
     fn existing_config_without_agents_gets_defaults() {
         let dir = TempDir::new().unwrap();
         let path = config_path(&dir);
@@ -1528,5 +1558,6 @@ token = "existing_token_value_here_with_enough_length_!!"
 
         let config = load_or_create_config(&path).unwrap();
         assert!(config.agents.default.is_none());
+        assert!(config.agents.codex.model.is_none());
     }
 }

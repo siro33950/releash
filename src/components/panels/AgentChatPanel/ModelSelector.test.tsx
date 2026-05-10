@@ -54,6 +54,18 @@ describe("ModelSelector", () => {
 		expect(onModelChange).toHaveBeenCalledWith("claude-4");
 	});
 
+	it("enables trigger when models list is non-empty", () => {
+		render(
+			<ModelSelector
+				models={models}
+				currentModelId={null}
+				onModelChange={vi.fn()}
+				disabled={false}
+			/>,
+		);
+		expect(screen.getByTestId("model-selector-trigger")).toBeEnabled();
+	});
+
 	it("calls onModelChange with null when Auto is selected", async () => {
 		const user = userEvent.setup();
 		const onModelChange = vi.fn();

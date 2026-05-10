@@ -64,6 +64,70 @@ pub struct AgentSessionStartResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessageRequest {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    pub worktree_path: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub permission_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub backend_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessageResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub human_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub agent_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub backend_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInterruptRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInterruptResponse {
+    pub success: bool,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentModelSetRequest {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentModelSetResponse {
+    pub success: bool,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStreamSync {
+    pub session_id: String,
+    pub message_id: String,
+    pub parts: Vec<crate::session::MessagePart>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

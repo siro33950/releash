@@ -36,6 +36,7 @@ use std::sync::Arc;
 use config::{load_or_create_config, AppConfig};
 use tauri::Manager;
 use tauri_plugin_aptabase::EventTracker;
+use tokio::sync::Mutex;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -143,7 +144,17 @@ pub fn run() {
             app.manage(Arc::new(workflow::engine::WorkflowEngine::new()));
 
             // AgentBackendRegistry を構築・登録
-            let registry = Arc::new(backends::build_registry(&app_config));
+            let agent_handles = app
+                .state::<Arc<Mutex<agent_sdk::AgentProcessMap>>>()
+                .inner()
+                .clone();
+            let session_store = app.state::<Arc<session::SessionStore>>().inner().clone();
+            let registry = Arc::new(backends::build_registry_with_runtime(
+                &app_config,
+                app.handle().clone(),
+                agent_handles,
+                session_store,
+            ));
             app.manage(registry);
 
             menu::setup_menu(app)?;
@@ -371,6 +382,7 @@ pub fn run() {
             agent_sdk::close_agent_session,
             agent_sdk::set_agent_permission_mode,
             agent_sdk::set_agent_model,
+            agent_sdk::set_session_backend,
             agent_sdk::respond_agent_permission,
             agent_sdk::send_agent_message,
             agent_sdk::init_agent_sessions,

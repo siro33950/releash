@@ -1,11 +1,22 @@
+pub mod bridge_common;
 pub mod claude;
+pub mod codex;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
+use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
+use crate::session::SessionStore;
+
+/// Backend-specific runtime values consumed by the generic bridge process runner.
+#[derive(Debug, Clone, Default)]
+pub struct BackendRuntimeConfig {
+    pub initial_model: Option<String>,
+    pub bridge_init_options: serde_json::Map<String, serde_json::Value>,
+}
 
 /// バックエンドの表示情報。レジストリからUI向けに返却する。
 #[derive(Debug, Clone, Serialize)]
@@ -100,6 +111,11 @@ pub trait AgentBackend: Send + Sync {
     /// 利用可能なモデル一覧を取得する。
     async fn available_models(&self) -> Result<Vec<ModelInfo>, String>;
 
+    /// Bridge 起動時に必要なバックエンド固有の設定を返す。
+    fn runtime_config(&self, _app: &tauri::AppHandle) -> BackendRuntimeConfig {
+        BackendRuntimeConfig::default()
+    }
+
     /// セッションを終了する。
     async fn close_session(&self, session: &SessionHandle) -> Result<(), String>;
 }
@@ -160,6 +176,18 @@ impl AgentBackendRegistry {
             .iter()
             .find(|(bid, _, _)| bid == id)
             .map(|(_, b, _)| Arc::clone(b))
+    }
+
+    /// 指定バックエンドのモデル一覧を返す。
+    pub async fn available_models(&self, id: &str) -> Result<Vec<ModelInfo>, String> {
+        let backend = self
+            .get(id)
+            .ok_or_else(|| format!("バックエンド '{id}' がレジストリに登録されていません"))?;
+        backend.available_models().await
+    }
+
+    pub fn runtime_config(&self, id: &str, app: &tauri::AppHandle) -> Option<BackendRuntimeConfig> {
+        self.get(id).map(|backend| backend.runtime_config(app))
     }
 
     /// 指定されたバックエンドIDを検証し、未指定の場合はデフォルトを解決する。
@@ -226,12 +254,41 @@ pub fn list_agent_backends(registry: State<'_, Arc<AgentBackendRegistry>>) -> Ba
 }
 
 /// config.toml `[agents]` セクションからレジストリを構築する。
+#[allow(dead_code)]
 pub fn build_registry(config: &AppConfig) -> AgentBackendRegistry {
+    build_registry_inner(config, None)
+}
+
+/// 実アプリ用: CodexBackend に AgentProcess bridge runtime を接続して登録する。
+pub fn build_registry_with_runtime(
+    config: &AppConfig,
+    app: tauri::AppHandle,
+    handles: Arc<Mutex<bridge_common::AgentProcessMap>>,
+    session_store: Arc<SessionStore>,
+) -> AgentBackendRegistry {
+    build_registry_inner(
+        config,
+        Some(Arc::new(codex::CodexBackend::with_agent_process_runtime(
+            app,
+            handles,
+            session_store,
+        ))),
+    )
+}
+
+fn build_registry_inner(
+    config: &AppConfig,
+    codex_backend: Option<Arc<dyn AgentBackend>>,
+) -> AgentBackendRegistry {
     let mut registry = AgentBackendRegistry::new();
 
     // Claude バックエンドは常に利用可能（組み込み）
     let claude = Arc::new(claude::ClaudeBackend::new());
     registry.register(claude);
+
+    // Codex バックエンドもプロジェクト依存として常に利用可能
+    let codex = codex_backend.unwrap_or_else(|| Arc::new(codex::CodexBackend::new()));
+    registry.register(codex);
 
     // config.toml の設定を適用
     if let Ok(cfg) = config.get_config() {
@@ -439,19 +496,22 @@ mod tests {
         );
         let reg = build_registry(&config);
         let list = reg.list();
-        assert_eq!(list.len(), 1);
+        assert_eq!(list.len(), 2);
         assert_eq!(list[0].id, "claude");
         assert_eq!(list[0].name, "Claude");
         assert!(list[0].available);
+        assert_eq!(list[1].id, "codex");
+        assert_eq!(list[1].name, "Codex");
+        assert!(list[1].available);
     }
 
     #[test]
     fn build_registry_applies_default_from_config() {
         let mut cfg = crate::config::ReleashConfig::default();
-        cfg.agents.default = Some("claude".to_string());
+        cfg.agents.default = Some("codex".to_string());
         let config = AppConfig::new(cfg, std::path::PathBuf::from("/tmp/test-releash.toml"));
         let reg = build_registry(&config);
-        assert_eq!(reg.resolve_default_id().unwrap(), "claude");
+        assert_eq!(reg.resolve_default_id().unwrap(), "codex");
     }
 
     #[test]

@@ -303,14 +303,10 @@ pub(super) fn handle_backend_list_request(state: &WsServerState) -> Option<WsMes
     }))
 }
 
-pub(super) async fn handle_agent_session_start_request(
-    req: &AgentSessionStartRequest,
-    state: &WsServerState,
-) -> Option<WsMessage> {
-    // worktree_pathが管理対象のworktreeリストに含まれるかバリデーション
+async fn is_managed_worktree(state: &WsServerState, worktree_path: &str) -> bool {
     let repo_paths = state.get_repo_paths();
-    let requested_path = req.worktree_path.clone();
-    let valid = tokio::task::spawn_blocking(move || {
+    let requested_path = worktree_path.to_string();
+    tokio::task::spawn_blocking(move || {
         for repo_path in &repo_paths {
             let worktrees = crate::git::list_worktrees(repo_path.clone()).unwrap_or_default();
             if worktrees.iter().any(|w| w.path == requested_path) {
@@ -320,16 +316,49 @@ pub(super) async fn handle_agent_session_start_request(
         false
     })
     .await
-    .unwrap_or(false);
+    .unwrap_or(false)
+}
 
-    if !valid {
-        return Some(WsMessage::AgentSessionStartResponse(
-            AgentSessionStartResponse {
-                success: false,
-                session_id: None,
-                backend_id: None,
-                error: Some("指定されたworktreeが見つかりません".to_string()),
-            },
+fn agent_session_start_error(backend_id: Option<String>, error: impl Into<String>) -> WsMessage {
+    WsMessage::AgentSessionStartResponse(AgentSessionStartResponse {
+        success: false,
+        session_id: None,
+        backend_id,
+        error: Some(error.into()),
+    })
+}
+
+fn agent_message_error(req: &AgentMessageRequest, error: impl Into<String>) -> WsMessage {
+    WsMessage::AgentMessageResponse(AgentMessageResponse {
+        success: false,
+        session_id: req.session_id.clone(),
+        human_message_id: None,
+        agent_message_id: None,
+        backend_id: req.backend_id.clone(),
+        error: Some(error.into()),
+    })
+}
+
+fn effective_agent_message_worktree(
+    req: &AgentMessageRequest,
+    persisted_session: Option<&crate::session::ChatSession>,
+) -> Result<String, String> {
+    if let Some(session_id) = req.session_id.as_deref() {
+        let session =
+            persisted_session.ok_or_else(|| format!("Session not found: {session_id}"))?;
+        return Ok(session.worktree_path.clone());
+    }
+    Ok(req.worktree_path.clone())
+}
+
+pub(super) async fn handle_agent_session_start_request(
+    req: &AgentSessionStartRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    if !is_managed_worktree(state, &req.worktree_path).await {
+        return Some(agent_session_start_error(
+            None,
+            "指定されたworktreeが見つかりません",
         ));
     }
 
@@ -338,14 +367,7 @@ pub(super) async fn handle_agent_session_start_request(
     let resolved_backend_id = match registry.resolve_backend_id(req.backend_id.clone()) {
         Ok(id) => id,
         Err(e) => {
-            return Some(WsMessage::AgentSessionStartResponse(
-                AgentSessionStartResponse {
-                    success: false,
-                    session_id: None,
-                    backend_id: None,
-                    error: Some(e),
-                },
-            ));
+            return Some(agent_session_start_error(None, e));
         }
     };
 
@@ -358,15 +380,159 @@ pub(super) async fn handle_agent_session_start_request(
                 error: None,
             },
         )),
-        Err(e) => Some(WsMessage::AgentSessionStartResponse(
-            AgentSessionStartResponse {
-                success: false,
-                session_id: None,
-                backend_id: None,
-                error: Some(e),
-            },
-        )),
+        Err(e) => Some(agent_session_start_error(None, e)),
     }
+}
+
+pub(super) async fn handle_agent_message_request(
+    req: &AgentMessageRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    use tauri::Manager;
+
+    if req.session_id.is_none() && !is_managed_worktree(state, &req.worktree_path).await {
+        return Some(agent_message_error(
+            req,
+            "指定されたworktreeが見つかりません",
+        ));
+    }
+
+    let app = match &state.app_handle {
+        Some(app) => app,
+        None => {
+            return Some(WsMessage::AgentMessageResponse(AgentMessageResponse {
+                success: false,
+                session_id: req.session_id.clone(),
+                human_message_id: None,
+                agent_message_id: None,
+                backend_id: req.backend_id.clone(),
+                error: Some("App handle not available".to_string()),
+            }));
+        }
+    };
+
+    let session_store = app
+        .state::<Arc<crate::session::SessionStore>>()
+        .inner()
+        .clone();
+    let data_dir = match crate::session::resolve_data_dir(app) {
+        Ok(data_dir) => data_dir,
+        Err(e) => return Some(agent_message_error(req, e)),
+    };
+    let persisted_session = if let Some(session_id) = req.session_id.as_deref() {
+        match session_store.get_session(&data_dir, session_id) {
+            Ok(session) => session,
+            Err(e) => return Some(agent_message_error(req, e)),
+        }
+    } else {
+        None
+    };
+    let worktree_path = match effective_agent_message_worktree(req, persisted_session.as_ref()) {
+        Ok(worktree_path) => worktree_path,
+        Err(e) => return Some(agent_message_error(req, e)),
+    };
+    if !is_managed_worktree(state, &worktree_path).await {
+        return Some(agent_message_error(
+            req,
+            "指定されたworktreeが見つかりません",
+        ));
+    }
+
+    let handles = app
+        .state::<Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
+        .inner()
+        .clone();
+    let registry = state.get_backend_registry().clone();
+
+    match crate::agent_sdk::send_agent_message_internal(
+        app,
+        &session_store,
+        &registry,
+        &handles,
+        req.session_id.clone(),
+        worktree_path,
+        req.content.clone(),
+        req.permission_mode.clone(),
+        req.backend_id.clone(),
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(response) => Some(WsMessage::AgentMessageResponse(AgentMessageResponse {
+            success: true,
+            session_id: Some(response.session.id),
+            human_message_id: Some(response.human_message.id),
+            agent_message_id: response.agent_message.map(|m| m.id),
+            backend_id: response.session.backend_id,
+            error: None,
+        })),
+        Err(e) => Some(agent_message_error(req, e)),
+    }
+}
+
+pub(super) async fn handle_agent_interrupt_request(
+    req: &AgentInterruptRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    use tauri::Manager;
+
+    let result = if let Some(app) = &state.app_handle {
+        let handles = app
+            .state::<Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
+            .inner()
+            .clone();
+        crate::backends::bridge_common::write_bridge_command(
+            &handles,
+            &req.session_id,
+            serde_json::json!({"type": "interrupt"}),
+        )
+        .await
+    } else {
+        Err("App handle not available".to_string())
+    };
+
+    Some(WsMessage::AgentInterruptResponse(AgentInterruptResponse {
+        success: result.is_ok(),
+        session_id: req.session_id.clone(),
+        error: result.err(),
+    }))
+}
+
+pub(super) async fn handle_agent_model_set_request(
+    req: &AgentModelSetRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    use tauri::Manager;
+
+    let result = if let Some(app) = &state.app_handle {
+        let session_store = app
+            .state::<Arc<crate::session::SessionStore>>()
+            .inner()
+            .clone();
+        let handles = app
+            .state::<Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
+            .inner()
+            .clone();
+        crate::agent_sdk::set_agent_model_internal(
+            app,
+            &handles,
+            &session_store,
+            Some(state.get_backend_registry()),
+            &req.session_id,
+            req.model_id.clone(),
+        )
+        .await
+    } else {
+        Err("App handle not available".to_string())
+    };
+
+    Some(WsMessage::AgentModelSetResponse(AgentModelSetResponse {
+        success: result.is_ok(),
+        session_id: req.session_id.clone(),
+        model_id: req.model_id.clone(),
+        error: result.err(),
+    }))
 }
 
 pub(super) async fn handle_pty_kill_request(
@@ -405,6 +571,7 @@ pub(super) async fn handle_pty_kill_request(
 mod tests {
     use super::*;
     use crate::git::test_helpers::{add_and_commit, create_initial_commit, create_test_repo};
+    use crate::session::{ChatSession, SessionState};
     use crate::ws_bridge::WsBroadcaster;
     use tempfile::TempDir;
 
@@ -443,6 +610,22 @@ mod tests {
             .unwrap()
             .to_string();
         (dir, repo_path)
+    }
+
+    fn make_chat_session(id: &str, worktree_path: &str) -> ChatSession {
+        ChatSession {
+            id: id.to_string(),
+            worktree_path: worktree_path.to_string(),
+            messages: Vec::new(),
+            state: SessionState::Active,
+            created_at: 1000.0,
+            updated_at: 1000.0,
+            agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: Some("claude".to_string()),
+        }
     }
 
     // --- A. ユーティリティ ---
@@ -487,6 +670,83 @@ mod tests {
                 assert!(e.message.contains("Task join error"));
             }
             _ => panic!("Expected Error variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_is_managed_worktree_accepts_known_worktree() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let state = make_state(vec![repo_path.clone()]);
+
+        assert!(is_managed_worktree(&state, &repo_path).await);
+    }
+
+    #[tokio::test]
+    async fn test_agent_message_request_without_session_rejects_invalid_worktree() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let state = make_state(vec![repo_path]);
+        let req = AgentMessageRequest {
+            session_id: None,
+            worktree_path: "/nonexistent/worktree".to_string(),
+            content: "hello".to_string(),
+            permission_mode: Some("acceptEdits".to_string()),
+            backend_id: Some("claude".to_string()),
+        };
+
+        let result = handle_agent_message_request(&req, &state).await;
+
+        match result {
+            Some(WsMessage::AgentMessageResponse(response)) => {
+                assert!(!response.success);
+                assert!(response.error.unwrap().contains("worktree"));
+            }
+            _ => panic!("expected AgentMessageResponse"),
+        }
+    }
+
+    #[test]
+    fn test_effective_agent_message_worktree_uses_persisted_session_worktree() {
+        let req = AgentMessageRequest {
+            session_id: Some("session-1".to_string()),
+            worktree_path: "/request/worktree".to_string(),
+            content: "hello".to_string(),
+            permission_mode: Some("acceptEdits".to_string()),
+            backend_id: None,
+        };
+        let session = make_chat_session("session-1", "/persisted/worktree");
+
+        let worktree = effective_agent_message_worktree(&req, Some(&session)).unwrap();
+
+        assert_eq!(worktree, "/persisted/worktree");
+    }
+
+    #[test]
+    fn test_effective_agent_message_worktree_missing_session_returns_error() {
+        let req = AgentMessageRequest {
+            session_id: Some("missing-session".to_string()),
+            worktree_path: "/request/worktree".to_string(),
+            content: "hello".to_string(),
+            permission_mode: Some("acceptEdits".to_string()),
+            backend_id: None,
+        };
+
+        let error = effective_agent_message_worktree(&req, None).unwrap_err();
+
+        assert!(error.contains("missing-session"));
+    }
+
+    #[test]
+    fn test_agent_session_start_error_response_is_not_success() {
+        let msg = agent_session_start_error(Some("codex".to_string()), "bridge failed");
+
+        match msg {
+            WsMessage::AgentSessionStartResponse(response) => {
+                assert!(!response.success);
+                assert!(response.session_id.is_none());
+                assert_eq!(response.backend_id, Some("codex".to_string()));
+                assert_eq!(response.error, Some("bridge failed".to_string()));
+            }
+            _ => panic!("expected AgentSessionStartResponse"),
         }
     }
 

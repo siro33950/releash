@@ -28,6 +28,7 @@ import {
 	listSessions,
 	restoreSession as restoreSessionApi,
 	sendAgentMessage,
+	setSessionBackend,
 } from "./useSessionStore";
 import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
 
@@ -248,11 +249,13 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				const sessionId = activeSessionRef.current?.id ?? null;
 				const wPath = worktreePathRef.current;
 				const pm = permissionModeRef.current;
+				const backendId = sessionId ? null : selectedBackendIdRef.current;
 				const response = await sendAgentMessage(
 					sessionId,
 					wPath,
 					trimmed,
 					pm,
+					backendId,
 					images,
 					mentions,
 				);
@@ -354,12 +357,16 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				});
 				if (response) {
 					dispatchSessionMeta(dispatch, sessionId, response);
-					// Start Bridge process for the restored session
-					startAgentProcess(
-						sessionId,
-						worktreePathRef.current,
-						response.session.permissionMode,
-					);
+					if (
+						response.session.messages.length > 0 ||
+						response.session.agentSessionId
+					) {
+						startAgentProcess(
+							sessionId,
+							worktreePathRef.current,
+							response.session.permissionMode,
+						);
+					}
 				}
 				await refreshSessions();
 				await refreshClosedSessions();
@@ -375,18 +382,19 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 
 	const createNewSession = useCallback(async () => {
 		try {
-			const session = await createSession(
-				worktreePathRef.current,
-				selectedBackendIdRef.current,
-			);
-			dispatch({ type: "SET_ACTIVE_SESSION", session });
-			dispatch({ type: "SET_PERMISSION_MODE", mode: session.permissionMode });
-			// Prewarm: start agent process in background
-			startAgentProcess(
-				session.id,
-				worktreePathRef.current,
-				session.permissionMode,
-			);
+			const backendId =
+				activeSessionRef.current?.backendId ?? selectedBackendIdRef.current;
+			const session = await createSession(worktreePathRef.current, backendId);
+			const response = await getSession(session.id);
+			const activeSession = response?.session ?? session;
+			dispatch({ type: "SET_ACTIVE_SESSION", session: activeSession });
+			dispatch({
+				type: "SET_PERMISSION_MODE",
+				mode: activeSession.permissionMode,
+			});
+			if (response) {
+				dispatchSessionMeta(dispatch, session.id, response);
+			}
 			await refreshSessions();
 		} catch (e) {
 			dispatch({
@@ -450,13 +458,47 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		invoke("set_agent_model", {
 			chatSessionId: sessionId,
 			modelId,
-		}).catch((e) => {
-			console.error("Failed to set agent model:", e);
-		});
+		})
+			.then(() => {
+				if (activeSessionRef.current?.id === sessionId) {
+					dispatch({
+						type: "SET_SESSION_MODEL",
+						sessionId,
+						modelId,
+					});
+				}
+			})
+			.catch((e) => {
+				console.error("Failed to set agent model:", e);
+			});
 	}, []);
 
 	const setBackend = useCallback((backendId: string | null) => {
-		dispatch({ type: "SET_SELECTED_BACKEND", backendId });
+		const activeSession = activeSessionRef.current;
+		if (!activeSession) {
+			dispatch({ type: "SET_SELECTED_BACKEND", backendId });
+			return;
+		}
+		if (
+			!backendId ||
+			activeSession.messages.length > 0 ||
+			activeSession.agentSessionId
+		) {
+			return;
+		}
+		setSessionBackend(activeSession.id, backendId)
+			.then((response) => {
+				if (activeSessionRef.current?.id === activeSession.id) {
+					dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
+					dispatchSessionMeta(dispatch, activeSession.id, response);
+				}
+			})
+			.catch((e) => {
+				dispatch({
+					type: "SET_ERROR",
+					error: `Agent の変更に失敗: ${e}`,
+				});
+			});
 	}, []);
 
 	useAgentSdkListeners({
@@ -549,7 +591,6 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 
 	const selectedModel =
 		state.sessionModels[state.activeSession?.id ?? ""] ?? null;
-
 	return {
 		sessions: state.sessions,
 		orderedSessions,
@@ -575,7 +616,9 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 		selectedModel,
 		setModel,
 		backends: state.backends,
-		selectedBackendId: state.selectedBackendId,
+		selectedBackendId: state.activeSession
+			? (state.activeSession?.backendId ?? state.selectedBackendId)
+			: state.selectedBackendId,
 		setBackend,
 	};
 }

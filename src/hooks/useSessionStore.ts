@@ -24,6 +24,7 @@ interface LegacyChatSession {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode?: PermissionMode;
+	backendId?: string | null;
 }
 
 export function legacyToParts(msg: LegacyChatMessage): MessagePart[] {
@@ -84,6 +85,7 @@ function convertLegacySession(session: LegacyChatSession): ChatSession {
 		...session,
 		messages: session.messages.map(convertLegacyMessage),
 		permissionMode: session.permissionMode ?? "acceptEdits",
+		backendId: session.backendId ?? null,
 	};
 }
 
@@ -110,9 +112,31 @@ interface RawGetSessionResponse {
 	updatedAt: number;
 	agentSessionId?: string | null;
 	permissionMode?: PermissionMode;
+	backendId?: string | null;
 	selectedModel?: string | null;
 	availableModels?: ModelInfo[];
 	turnPhase: TurnPhase;
+}
+
+function convertRawGetSessionResponse(
+	raw: RawGetSessionResponse,
+): GetSessionResponse {
+	return {
+		session: convertLegacySession({
+			id: raw.id,
+			worktreePath: raw.worktreePath,
+			messages: raw.messages,
+			state: raw.state,
+			createdAt: raw.createdAt,
+			updatedAt: raw.updatedAt,
+			agentSessionId: raw.agentSessionId,
+			permissionMode: raw.permissionMode,
+			backendId: raw.backendId,
+		}),
+		turnPhase: raw.turnPhase,
+		selectedModel: raw.selectedModel ?? null,
+		availableModels: raw.availableModels ?? [],
+	};
 }
 
 export async function getSession(
@@ -122,22 +146,7 @@ export async function getSession(
 		sessionId,
 	});
 	if (!raw) return null;
-	const session = convertLegacySession({
-		id: raw.id,
-		worktreePath: raw.worktreePath,
-		messages: raw.messages,
-		state: raw.state,
-		createdAt: raw.createdAt,
-		updatedAt: raw.updatedAt,
-		agentSessionId: raw.agentSessionId,
-		permissionMode: raw.permissionMode,
-	});
-	return {
-		session,
-		turnPhase: raw.turnPhase,
-		selectedModel: raw.selectedModel ?? null,
-		availableModels: raw.availableModels ?? [],
-	};
+	return convertRawGetSessionResponse(raw);
 }
 
 export async function createSession(
@@ -197,6 +206,7 @@ export async function sendAgentMessage(
 	worktreePath: string,
 	content: string,
 	permissionMode: string,
+	backendId?: string | null,
 	images?: ImageAttachment[],
 	mentions?: MentionReference[],
 ): Promise<SendMessageResponse> {
@@ -205,6 +215,7 @@ export async function sendAgentMessage(
 		worktreePath,
 		content,
 		permissionMode,
+		backendId: backendId ?? null,
 		images: images && images.length > 0 ? images : undefined,
 		mentions: mentions && mentions.length > 0 ? mentions : undefined,
 	});
@@ -235,23 +246,20 @@ export async function initAgentSessions(
 		worktreePath,
 	});
 	const activeSession = raw.activeSession
-		? {
-				session: convertLegacySession({
-					id: raw.activeSession.id,
-					worktreePath: raw.activeSession.worktreePath,
-					messages: raw.activeSession.messages,
-					state: raw.activeSession.state,
-					createdAt: raw.activeSession.createdAt,
-					updatedAt: raw.activeSession.updatedAt,
-					agentSessionId: raw.activeSession.agentSessionId,
-					permissionMode: raw.activeSession.permissionMode,
-				}),
-				turnPhase: raw.activeSession.turnPhase,
-				selectedModel: raw.activeSession.selectedModel ?? null,
-				availableModels: raw.activeSession.availableModels ?? [],
-			}
+		? convertRawGetSessionResponse(raw.activeSession)
 		: null;
 	return { sessions: raw.sessions, activeSession };
+}
+
+export async function setSessionBackend(
+	chatSessionId: string,
+	backendId: string,
+): Promise<GetSessionResponse> {
+	const raw = await invoke<RawGetSessionResponse>("set_session_backend", {
+		chatSessionId,
+		backendId,
+	});
+	return convertRawGetSessionResponse(raw);
 }
 
 export async function updateSessionState(

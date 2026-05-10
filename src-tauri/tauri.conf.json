@@ -44,8 +44,9 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "resources": [
-      "resources/remote/",
-      "resources/claude-sdk-bridge.bundled.mjs"
+      "generated/remote/",
+      "generated/bridges/claude-sdk-bridge.bundled.mjs",
+      "generated/bridges/codex-sdk-bridge.bundled.mjs"
     ],
     "icon": [
       "icons/32x32.png",

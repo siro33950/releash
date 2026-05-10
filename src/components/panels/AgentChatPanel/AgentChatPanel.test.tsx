@@ -295,6 +295,69 @@ describe("AgentChatPanel session tabs", () => {
 		expect(createNewSession).toHaveBeenCalled();
 	});
 
+	it("enables Agent selector in the input for an empty active session", () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "new-s",
+				worktreePath: "/repo",
+				messages: [],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+				permissionMode: "acceptEdits",
+				backendId: "claude",
+			},
+			backends: [
+				{ id: "claude", name: "Claude", available: true },
+				{ id: "codex", name: "Codex", available: true },
+			],
+			selectedBackendId: "claude",
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		expect(screen.getByTestId("backend-selector-trigger")).toBeEnabled();
+	});
+
+	it("disables Agent selector after the active session has messages", () => {
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					{
+						id: "m1",
+						role: "human",
+						parts: [{ type: "text", content: "hello" }],
+						timestamp: 1000,
+					},
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1000,
+				permissionMode: "acceptEdits",
+				backendId: "claude",
+			},
+			backends: [
+				{ id: "claude", name: "Claude", available: true },
+				{ id: "codex", name: "Codex", available: true },
+			],
+			selectedBackendId: "claude",
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		expect(screen.getByTestId("backend-selector-trigger")).toBeDisabled();
+	});
+
 	it("calls selectSession when tab is clicked", () => {
 		const selectSession = vi.fn();
 		mockUseAgentChat({
@@ -928,6 +991,26 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
 		// acceptEdits (index 0) → default (index 1)
+		expect(setPermissionMode).toHaveBeenCalledWith("default");
+	});
+
+	it("cycles Codex permission modes separately on Shift+Tab", () => {
+		const setPermissionMode = vi.fn();
+		mockUseAgentChat({
+			permissionMode: "plan",
+			selectedBackendId: "codex",
+			setPermissionMode,
+		});
+		render(
+			<AgentChatPanel
+				worktreePath="/repo"
+				registerDropZone={mockRegisterDropZone}
+			/>,
+		);
+
+		const textarea = screen.getByPlaceholderText("Send a message...");
+		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
+
 		expect(setPermissionMode).toHaveBeenCalledWith("default");
 	});
 });

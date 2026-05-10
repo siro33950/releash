@@ -41,9 +41,7 @@ yarn-error.log*
 src-tauri/target/
 src-tauri/WixTools/
 src-tauri/icons/generated/
-src-tauri/resources/remote/*
-!src-tauri/resources/remote/.gitkeep
-src-tauri/resources/claude-sdk-bridge.bundled.mjs
+src-tauri/generated/
 
 # Rust
 *.rs.bk
@@ -56,6 +54,8 @@ debug/
 # Test coverage
 coverage/
 .nyc_output/
+src-tauri/rust-codecov.json
+.qlty/
 
 # Playwright
 test-results/

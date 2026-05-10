@@ -12,11 +12,14 @@ import { Button } from "@/components/ui/button";
 import type { SlashCommand } from "@/hooks/useSlashCommands";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
 import type {
+	BackendInfo,
 	ImageAttachment,
 	MentionReference,
 	ModelInfo,
 	PermissionMode,
 } from "@/types/session";
+import { BackendSelector } from "./BackendSelector";
+import { CodexPermissionControl } from "./CodexPermissionControl";
 import { MentionPopup } from "./MentionPopup";
 import { ModelSelector } from "./ModelSelector";
 import { ModeSelector } from "./ModeSelector";
@@ -76,6 +79,10 @@ interface MessageInputProps {
 	models: ModelInfo[];
 	currentModelId: string | null;
 	onModelChange: (modelId: string | null) => void;
+	backends: BackendInfo[];
+	currentBackendId: string | null;
+	onBackendChange: (backendId: string | null) => void;
+	backendDisabled: boolean;
 	ref?: React.Ref<MessageInputHandle>;
 	worktreePath?: string;
 }
@@ -90,6 +97,10 @@ export function MessageInput({
 	models,
 	currentModelId,
 	onModelChange,
+	backends,
+	currentBackendId,
+	onBackendChange,
+	backendDisabled,
 	ref,
 	worktreePath,
 }: MessageInputProps) {
@@ -438,11 +449,25 @@ export function MessageInput({
 				/>
 				<div className="flex items-center justify-between px-2 pb-2">
 					<div className="flex items-center gap-1">
-						<ModeSelector
-							mode={mode}
-							onModeChange={onModeChange}
-							disabled={false}
+						<BackendSelector
+							backends={backends}
+							selectedBackendId={currentBackendId}
+							onBackendChange={onBackendChange}
+							disabled={backendDisabled}
 						/>
+						{currentBackendId === "codex" ? (
+							<CodexPermissionControl
+								mode={mode}
+								onModeChange={onModeChange}
+								disabled={false}
+							/>
+						) : (
+							<ModeSelector
+								mode={mode}
+								onModeChange={onModeChange}
+								disabled={false}
+							/>
+						)}
 						<ModelSelector
 							models={models}
 							currentModelId={currentModelId}
