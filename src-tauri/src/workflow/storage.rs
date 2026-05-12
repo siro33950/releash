@@ -22,7 +22,7 @@ impl fmt::Display for StorageError {
             Self::Io(e) => write!(f, "I/Oエラー: {e}"),
             Self::YamlDeserialize(e) => write!(f, "YAMLパース失敗: {e}"),
             Self::YamlSerialize(e) => write!(f, "YAMLシリアライズ失敗: {e}"),
-            Self::Validation(e) => write!(f, "{e}"),
+            Self::Validation(e) => write!(f, "validation_error: {e}"),
             Self::NotFound { name } => {
                 write!(f, "ワークフロー '{name}' が見つかりません")
             }
@@ -387,6 +387,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let result = resolve_workflow_path(tmp.path(), "../evil");
         assert!(matches!(result.unwrap_err(), StorageError::Validation(_)));
+    }
+
+    #[test]
+    fn validation_error_display_has_stable_kind_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let result = resolve_workflow_path(tmp.path(), "../evil");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .starts_with("validation_error:"));
     }
 
     #[test]

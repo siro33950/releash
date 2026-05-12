@@ -28,6 +28,7 @@ import {
 	listSessions,
 	restoreSession as restoreSessionApi,
 	sendAgentMessage,
+	sendWorkflowApprovalChatMessage,
 	setSessionBackend,
 } from "./useSessionStore";
 import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
@@ -182,10 +183,17 @@ function deriveActivityStatus(
 	}
 }
 
-export function useAgentChat(worktreePath: string): UseAgentChatResult {
+export function useAgentChat(
+	worktreePath: string,
+	workflowApprovalChatSessionId: string | null = null,
+): UseAgentChatResult {
 	const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 	const worktreePathRef = useRef(worktreePath);
 	worktreePathRef.current = worktreePath;
+	const workflowApprovalChatSessionIdRef = useRef(
+		workflowApprovalChatSessionId,
+	);
+	workflowApprovalChatSessionIdRef.current = workflowApprovalChatSessionId;
 	const activeSessionRef = useRef(state.activeSession);
 	activeSessionRef.current = state.activeSession;
 	const sessionsRef = useRef(state.sessions);
@@ -250,15 +258,27 @@ export function useAgentChat(worktreePath: string): UseAgentChatResult {
 				const wPath = worktreePathRef.current;
 				const pm = permissionModeRef.current;
 				const backendId = sessionId ? null : selectedBackendIdRef.current;
-				const response = await sendAgentMessage(
-					sessionId,
-					wPath,
-					trimmed,
-					pm,
-					backendId,
-					images,
-					mentions,
-				);
+				const workflowApprovalChatSessionId =
+					workflowApprovalChatSessionIdRef.current;
+				const response =
+					sessionId && workflowApprovalChatSessionId === sessionId
+						? await sendWorkflowApprovalChatMessage(
+								sessionId,
+								wPath,
+								trimmed,
+								pm,
+								images,
+								mentions,
+							)
+						: await sendAgentMessage(
+								sessionId,
+								wPath,
+								trimmed,
+								pm,
+								backendId,
+								images,
+								mentions,
+							);
 				// Only update if the user hasn't switched to a different session during await
 				const currentSessionId = activeSessionRef.current?.id ?? null;
 				if (

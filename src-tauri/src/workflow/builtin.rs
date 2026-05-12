@@ -115,6 +115,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "plan-fix-policy",
+        content: include_str!("builtin_facets/instructions/plan-fix-policy.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "plan-approval",
         content: include_str!("builtin_facets/instructions/plan-approval.md"),
     },
@@ -165,6 +170,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "implementation-fix-policy",
+        content: include_str!("builtin_facets/instructions/implementation-fix-policy.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "implementation-approval",
         content: include_str!("builtin_facets/instructions/implementation-approval.md"),
     },
@@ -182,6 +192,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::OutputContract,
         key: "spec-file-path",
         content: include_str!("builtin_facets/output_contracts/spec-file-path.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::OutputContract,
+        key: "approved-fix-policy",
+        content: include_str!("builtin_facets/output_contracts/approved-fix-policy.md"),
     },
 ];
 
@@ -258,10 +273,10 @@ mod tests {
         assert!(policies.contains(&"plan-review"));
 
         let instructions = list_builtin_facet_keys(FacetKind::Instruction);
-        assert_eq!(instructions.len(), 19);
+        assert_eq!(instructions.len(), 21);
 
         let output_contracts = list_builtin_facet_keys(FacetKind::OutputContract);
-        assert_eq!(output_contracts.len(), 3);
+        assert_eq!(output_contracts.len(), 4);
 
         let personas = list_builtin_facet_keys(FacetKind::Persona);
         assert!(personas.is_empty());
@@ -277,5 +292,81 @@ mod tests {
     fn is_builtin_facet_works() {
         assert!(is_builtin_facet(FacetKind::Policy, "coding"));
         assert!(!is_builtin_facet(FacetKind::Policy, "custom"));
+    }
+
+    #[test]
+    fn spec_driven_development_routes_plan_review_needs_fix_to_policy_approval() {
+        let wf = get_builtin_workflow("spec-driven-development").unwrap();
+        let review = wf
+            .steps
+            .iter()
+            .find(|step| step.name == "plan_review_parallel")
+            .unwrap();
+        let aggregate = review.aggregate.as_ref().unwrap();
+        assert_eq!(aggregate.all_match.as_deref(), Some("LGTM"));
+        assert_eq!(aggregate.then, "plan_approval");
+        assert_eq!(aggregate.r#else, "plan_fix_policy");
+
+        let policy = wf
+            .steps
+            .iter()
+            .find(|step| step.name == "plan_fix_policy")
+            .unwrap();
+        assert_eq!(
+            policy.output_contract.as_deref(),
+            Some("approved-fix-policy")
+        );
+        assert!(policy
+            .pass_output_from
+            .as_ref()
+            .unwrap()
+            .contains(&"plan_review_parallel".to_string()));
+        assert!(policy
+            .pass_output_from
+            .as_ref()
+            .unwrap()
+            .contains(&"plan_architecture".to_string()));
+    }
+
+    #[test]
+    fn spec_driven_development_passes_approved_policy_to_fix_steps() {
+        let wf = get_builtin_workflow("spec-driven-development").unwrap();
+        let plan_fix = wf
+            .steps
+            .iter()
+            .find(|step| step.name == "plan_fix")
+            .unwrap();
+        assert_eq!(plan_fix.pass_previous_response, None);
+        let plan_fix_inputs = plan_fix.pass_output_from.as_ref().unwrap();
+        assert!(plan_fix_inputs.contains(&"plan_review_parallel".to_string()));
+        assert!(plan_fix_inputs.contains(&"plan_fix_policy".to_string()));
+
+        let code_review = wf
+            .steps
+            .iter()
+            .find(|step| step.name == "code_review_parallel")
+            .unwrap();
+        let aggregate = code_review.aggregate.as_ref().unwrap();
+        assert_eq!(aggregate.then, "implementation_approval");
+        assert_eq!(aggregate.r#else, "implementation_fix_policy");
+        let implementation_policy = wf
+            .steps
+            .iter()
+            .find(|step| step.name == "implementation_fix_policy")
+            .unwrap();
+        assert_eq!(
+            implementation_policy.output_contract.as_deref(),
+            Some("approved-fix-policy")
+        );
+        let implementation_policy_inputs = implementation_policy.pass_output_from.as_ref().unwrap();
+        assert!(implementation_policy_inputs.contains(&"code_review_parallel".to_string()));
+        assert!(implementation_policy_inputs.contains(&"plan_architecture".to_string()));
+
+        let fix = wf.steps.iter().find(|step| step.name == "fix").unwrap();
+        assert_eq!(fix.pass_previous_response, None);
+        let fix_inputs = fix.pass_output_from.as_ref().unwrap();
+        assert!(fix_inputs.contains(&"code_review_parallel".to_string()));
+        assert!(fix_inputs.contains(&"implementation_fix_policy".to_string()));
+        assert!(fix_inputs.contains(&"plan_architecture".to_string()));
     }
 }

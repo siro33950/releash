@@ -1332,6 +1332,7 @@ mod tests {
             step_states: std::collections::HashMap::new(),
             active_parallel_steps: vec![],
             workflow_variables: std::collections::HashMap::new(),
+            approval_operations: None,
             started_at: 999.0,
             updated_at: 1001.0,
         };
@@ -1418,6 +1419,7 @@ mod tests {
                 step_states: std::collections::HashMap::new(),
                 active_parallel_steps: vec![],
                 workflow_variables: std::collections::HashMap::new(),
+                approval_operations: None,
                 started_at: 999.0,
                 updated_at: 1000.5,
             }),

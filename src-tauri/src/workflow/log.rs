@@ -489,6 +489,7 @@ impl WorkflowEventLog {
             step_states,
             active_parallel_steps,
             workflow_variables: HashMap::new(),
+            approval_operations: None,
             started_at,
             updated_at,
         }))

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use regex::RegexBuilder;
 use tauri::Manager;
@@ -20,14 +20,27 @@ use crate::workflow::schema::{
     Workflow,
 };
 use crate::workflow::state::{
-    ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
-    WorkflowState,
+    ApprovalOperations, ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage,
+    WorkflowExecutionState, WorkflowState,
 };
 use crate::workflow::storage;
 
 #[allow(dead_code)]
 const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
 const MAX_CONTRACT_RETRIES: u32 = 2;
+const MAX_APPROVAL_COMMENT_CHARS: usize = 8192;
+
+static PRIVATE_KEY_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
+        .unwrap()
+});
+static GHP_TOKEN_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\bghp_[A-Za-z0-9_]{20,}\b").unwrap());
+static GITHUB_PAT_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b").unwrap());
+static SECRET_KV_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\b(api_key|apikey|token|password|secret)\s*[:=]\s*([^\s,;]+)").unwrap()
+});
 
 #[allow(dead_code)]
 fn truncate_output(text: String) -> String {
@@ -56,6 +69,12 @@ pub enum WorkflowEngineError {
     AlreadyActive(String),
     /// 不正な状態遷移（WaitingApprovalでない時にapproval等）
     InvalidState(String),
+    /// 入力検証エラー（表示用の安定 kind: validation_error）
+    ValidationError(String),
+    /// 承認操作が指定 worktree の実行を対象にしていない
+    UnauthorizedWorktree(String),
+    /// 承認操作が現在の execution / step を対象にしていない
+    UnauthorizedApprovalTarget(String),
     /// セッションストアのIO/シリアライズエラー
     SessionStore(String),
     /// AgentSession起動エラー
@@ -73,7 +92,12 @@ impl fmt::Display for WorkflowEngineError {
             Self::AlreadyActive(name) => {
                 write!(f, "Workflow '{name}' is already running for this session")
             }
-            Self::InvalidState(msg) => write!(f, "{msg}"),
+            Self::InvalidState(msg) => write!(f, "invalid_state: {msg}"),
+            Self::ValidationError(msg) => write!(f, "validation_error: {msg}"),
+            Self::UnauthorizedWorktree(msg) => write!(f, "unauthorized_worktree: {msg}"),
+            Self::UnauthorizedApprovalTarget(msg) => {
+                write!(f, "unauthorized_approval_target: {msg}")
+            }
             Self::SessionStore(msg) => write!(f, "{msg}"),
             Self::AgentSession(msg) => write!(f, "{msg}"),
         }
@@ -235,8 +259,6 @@ enum TurnCompleteAction {
     },
     /// approvalモード → WaitingApproval
     WaitApproval,
-    /// interactiveモード → 何もしない
-    Noop,
     /// ワークフローが実行中でない → 何もしない
     NotRunning,
 }
@@ -275,9 +297,20 @@ impl WorkflowExecution {
             step_outputs: self.step_outputs.clone(),
             active_parallel_steps: self.build_active_parallel_steps(),
             workflow_variables: self.workflow_variables.clone(),
+            approval_operations: self.build_approval_operations(),
             started_at: self.started_at,
             updated_at: self.updated_at,
         }
+    }
+
+    fn build_approval_operations(&self) -> Option<ApprovalOperations> {
+        if self.state != WorkflowExecutionState::WaitingApproval {
+            return None;
+        }
+        let step = &self.workflow.steps[self.current_step_index];
+        Some(ApprovalOperations {
+            can_reject: step.rules.iter().any(|r| r.r#match == "reject"),
+        })
     }
 
     /// parallel_runからactive_parallel_stepsを生成する。
@@ -422,7 +455,10 @@ impl WorkflowExecution {
                 step_name: step.name.clone(),
             },
             StepMode::Approval => TurnCompleteAction::WaitApproval,
-            StepMode::Interactive => TurnCompleteAction::Noop,
+            StepMode::Interactive => TurnCompleteAction::SessionError {
+                step_name: step.name.clone(),
+                exit_code: 0,
+            },
         }
     }
 
@@ -442,40 +478,13 @@ impl WorkflowExecution {
             ApprovalDecision::Reject { .. } => {
                 match step.rules.iter().find(|r| r.r#match == "reject") {
                     Some(r) => Ok(ApprovalAction::TransitionTo(r.next.clone())),
-                    None => Ok(ApprovalAction::FailedNoRejectRule(step.name.clone())),
+                    None => Err(WorkflowEngineError::InvalidState(format!(
+                        "Step '{}' does not allow reject",
+                        step.name
+                    ))),
                 }
             }
             ApprovalDecision::Abort => Ok(ApprovalAction::Abort),
-        }
-    }
-
-    /// interactiveモードの判定ロジック（純粋関数）。
-    /// rulesが定義されている場合はeffective_resultに基づいてルール評価を行う。
-    fn decide_interactive_action(
-        &self,
-        abort: bool,
-        effective_result: &str,
-    ) -> Result<InteractiveAction, WorkflowEngineError> {
-        if self.state != WorkflowExecutionState::Running {
-            return Err(WorkflowEngineError::InvalidState(
-                "Workflow is not running".to_string(),
-            ));
-        }
-        let step = &self.workflow.steps[self.current_step_index];
-        if step.mode_unwrap() != &StepMode::Interactive {
-            return Err(WorkflowEngineError::InvalidState(
-                "Current step is not interactive mode".to_string(),
-            ));
-        }
-        if abort {
-            return Ok(InteractiveAction::Abort);
-        }
-        if step.rules.is_empty() {
-            return Ok(InteractiveAction::Advance);
-        }
-        match WorkflowEngine::evaluate_auto_rules(effective_result, &step.rules) {
-            Some((next_step, _matched)) => Ok(InteractiveAction::TransitionTo(next_step)),
-            None => Ok(InteractiveAction::Advance),
         }
     }
 }
@@ -495,15 +504,12 @@ enum ApprovalAction {
     Advance,
     TransitionTo(String),
     Abort,
-    FailedNoRejectRule(String),
 }
 
-/// interactiveモードの判定結果（純粋関数用）。
-#[derive(Debug, Clone, PartialEq)]
-enum InteractiveAction {
-    Advance,
-    Abort,
-    TransitionTo(String),
+struct ApprovalApplication {
+    effective_result: String,
+    structured_output: Option<serde_json::Value>,
+    output_contract: Option<String>,
 }
 
 /// ロック内で確定した遷移結果。ロ��ク外で永続化・AgentSession起動を行うための情報を持つ。
@@ -777,7 +783,7 @@ impl WorkflowEngine {
             let action = exec.decide_turn_complete_action(exit_code);
 
             let result = match action {
-                TurnCompleteAction::NotRunning | TurnCompleteAction::Noop => return Ok(()),
+                TurnCompleteAction::NotRunning => return Ok(()),
                 TurnCompleteAction::SessionError {
                     step_name,
                     exit_code,
@@ -844,17 +850,65 @@ impl WorkflowEngine {
     fn validate_approval_decision(decision: &ApprovalDecision) -> Result<(), WorkflowEngineError> {
         if let ApprovalDecision::Reject { ref comment } = decision {
             if comment.trim().is_empty() {
-                return Err(WorkflowEngineError::InvalidState(
+                return Err(WorkflowEngineError::ValidationError(
                     "Reject comment must not be empty".to_string(),
+                ));
+            }
+            if comment.chars().count() > MAX_APPROVAL_COMMENT_CHARS {
+                return Err(WorkflowEngineError::ValidationError(
+                    "Reject comment exceeds 8192 characters".to_string(),
                 ));
             }
         }
         Ok(())
     }
 
+    fn reject_structured_output(comment: &str, configured_secrets: &[String]) -> serde_json::Value {
+        let comment = Self::mask_sensitive_text(comment, configured_secrets);
+        serde_json::json!({
+            "decision": "reject",
+            "comment": comment,
+        })
+    }
+
+    fn apply_approval_application(
+        exec: &mut WorkflowExecution,
+        decision: &ApprovalDecision,
+        application: ApprovalApplication,
+    ) -> Result<StepOutcome, WorkflowEngineError> {
+        let action = exec.decide_approval_action(decision)?;
+        let outcome = match action {
+            ApprovalAction::Advance => {
+                let entry = exec.make_step_history_entry(
+                    Some(application.effective_result),
+                    application.structured_output,
+                    application.output_contract,
+                );
+                exec.step_history.push(entry);
+                Self::apply_advance(exec)
+            }
+            ApprovalAction::TransitionTo(target) => {
+                let entry = exec.make_step_history_entry(
+                    Some(application.effective_result),
+                    application.structured_output,
+                    application.output_contract,
+                );
+                exec.step_history.push(entry);
+                Self::apply_transition(exec, &target)?
+            }
+            ApprovalAction::Abort => {
+                exec.state = WorkflowExecutionState::Aborted;
+                exec.updated_at = current_timestamp();
+                StepOutcome::Persist(exec.to_workflow_state())
+            }
+        };
+        Ok(outcome)
+    }
+
     /// approvalモードでのユーザー判定を処理する。
     /// 判定 + 状態変更 + 履歴記録を1回のロックで原子的に実行し、
     /// ロック外では永続化・ブロードキャスト・AgentSession起動のみ行う。
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_approval(
         &self,
         app: &tauri::AppHandle,
@@ -862,15 +916,53 @@ impl WorkflowEngine {
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
         decision: ApprovalDecision,
+        expected_execution_id: Option<&str>,
+        expected_step_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
-        // Reject時: 空コメントバリデーション（副作用の前に実施）
-        Self::validate_approval_decision(&decision)?;
-
         let result_tag = match &decision {
             ApprovalDecision::Approve => "approve",
             ApprovalDecision::Reject { .. } => "reject",
             ApprovalDecision::Abort => "abort",
         };
+
+        // target検証 + session_id + output_contract + workflow を1回のロックで取得
+        let (
+            current_session_id,
+            output_contract,
+            workflow_for_contract,
+            current_step_index_for_contract,
+        ) = {
+            let execs = self.executions.lock().await;
+            let exec = execs.get(worktree_path).ok_or_else(|| {
+                WorkflowEngineError::UnauthorizedWorktree(worktree_path.to_string())
+            })?;
+            Self::validate_approval_target_snapshot(
+                exec,
+                expected_execution_id,
+                expected_step_name,
+            )?;
+            (
+                exec.current_session_id.clone(),
+                exec.workflow.steps[exec.current_step_index]
+                    .output_contract
+                    .clone(),
+                exec.workflow.clone(),
+                exec.current_step_index,
+            )
+        };
+
+        // Reject時: 空コメントバリデーション（副作用の前に実施）
+        Self::validate_approval_decision(&decision)?;
+
+        if matches!(decision, ApprovalDecision::Approve) {
+            let turn_phase = if let Some(ref sid) = current_session_id {
+                let map = handles.lock().await;
+                map.get(sid).map(|p| p.turn_phase)
+            } else {
+                None
+            };
+            Self::validate_approval_turn_phase(turn_phase)?;
+        }
 
         // ロック外でoutput_textを事前取得（approvalはAgentSession完了後なので取得可能）
         // Reject時はコメントをoutput_textとして使用するため、fetch不要だがApprove時に必要
@@ -882,50 +974,41 @@ impl WorkflowEngine {
             }
         };
 
-        // output_contractとstep_nameを取得
-        let (output_contract, current_session_id, step_name_for_contract) = {
-            let execs = self.executions.lock().await;
-            let exec = execs
-                .get(worktree_path)
-                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            let step = &exec.workflow.steps[exec.current_step_index];
-            (
-                step.output_contract.clone(),
-                exec.current_session_id.clone(),
-                step.name.clone(),
-            )
-        };
-
-        // contract検証（Approve時のみ）
+        // contract検証（Approve時のみ）。approvalではrepair/failに進めず、状態を変えずに
+        // validation_errorとして返す。
         let (structured_output, contract_result) = if matches!(decision, ApprovalDecision::Approve)
         {
-            match self
-                .validate_and_handle_contract(
-                    app,
-                    session_store,
-                    handles,
-                    worktree_path,
-                    &output_contract,
-                    output_text.as_deref(),
-                    &current_session_id,
-                    &step_name_for_contract,
-                )
-                .await?
-            {
+            match Self::validate_approval_output_contract(
+                app,
+                &output_contract,
+                output_text.as_deref(),
+                &workflow_for_contract,
+                current_step_index_for_contract,
+            )? {
                 ContractCheckResult::NoContract => (None, None),
                 ContractCheckResult::Valid {
                     structured_output,
                     result,
                 } => (Some(structured_output), result),
-                ContractCheckResult::RetrySent | ContractCheckResult::Failed => return Ok(()),
+                ContractCheckResult::RetrySent | ContractCheckResult::Failed => unreachable!(),
             }
+        } else if let ApprovalDecision::Reject { ref comment } = decision {
+            let secrets = Self::collect_configured_secret_values(app);
+            (
+                Some(Self::reject_structured_output(comment, &secrets)),
+                None,
+            )
         } else {
             (None, None)
         };
 
-        // contract検証成功時のworkflow_variables反映
-        self.apply_contract_variables(worktree_path, &output_contract, &structured_output)
-            .await;
+        let application_output_contract = if matches!(decision, ApprovalDecision::Approve) {
+            output_contract.clone()
+        } else {
+            None
+        };
+        let contract_variables =
+            Self::extract_contract_variables(&application_output_contract, &structured_output);
 
         // contract resultがあればそちらを優先、なければresult_tag
         let effective_result = contract_result.unwrap_or_else(|| result_tag.to_string());
@@ -936,159 +1019,22 @@ impl WorkflowEngine {
             let exec = execs
                 .get_mut(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            Self::validate_approval_target_snapshot(
+                exec,
+                expected_execution_id,
+                expected_step_name,
+            )?;
             let chat_session_id = exec.chat_session_id.clone();
-            let action = exec.decide_approval_action(&decision)?;
-
-            let outcome = match action {
-                ApprovalAction::Advance => {
-                    let entry = exec.make_step_history_entry(
-                        Some(effective_result.clone()),
-                        structured_output.clone(),
-                        output_contract.clone(),
-                    );
-                    exec.step_history.push(entry);
-                    Self::apply_advance(exec)
-                }
-                ApprovalAction::TransitionTo(target) => {
-                    let entry = exec.make_step_history_entry(
-                        Some(effective_result.clone()),
-                        structured_output.clone(),
-                        output_contract.clone(),
-                    );
-                    exec.step_history.push(entry);
-                    Self::apply_transition(exec, &target)?
-                }
-                ApprovalAction::FailedNoRejectRule(name) => {
-                    let entry = exec.make_step_history_entry(
-                        Some(effective_result.clone()),
-                        structured_output.clone(),
-                        output_contract.clone(),
-                    );
-                    exec.step_history.push(entry);
-                    exec.state = WorkflowExecutionState::Failed {
-                        reason: format!("No reject rule defined for step '{}'", name),
-                    };
-                    exec.updated_at = current_timestamp();
-                    StepOutcome::Persist(exec.to_workflow_state())
-                }
-                ApprovalAction::Abort => {
-                    exec.state = WorkflowExecutionState::Aborted;
-                    exec.updated_at = current_timestamp();
-                    StepOutcome::Persist(exec.to_workflow_state())
-                }
-            };
-            (chat_session_id, outcome)
-        };
-
-        self.execute_outcome(
-            app,
-            session_store,
-            handles,
-            worktree_path,
-            &chat_session_id,
-            outcome,
-        )
-        .await
-    }
-
-    /// interactiveモードの完了/中止を処理する。
-    /// 判定 + 状態変更 + 履歴記録を1回のロックで原子的に実行する。
-    pub async fn complete_interactive(
-        &self,
-        app: &tauri::AppHandle,
-        session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
-        worktree_path: &str,
-        abort: bool,
-    ) -> Result<(), WorkflowEngineError> {
-        // ロック外でoutput_textを事前取得
-        let output_text = if !abort {
-            self.fetch_current_output(app, session_store, worktree_path)
-                .await?
-        } else {
-            None
-        };
-
-        // output_contractとstep_nameを取得
-        let (output_contract, current_session_id, step_name_for_contract) = {
-            let execs = self.executions.lock().await;
-            let exec = execs
-                .get(worktree_path)
-                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            let step = &exec.workflow.steps[exec.current_step_index];
-            (
-                step.output_contract.clone(),
-                exec.current_session_id.clone(),
-                step.name.clone(),
-            )
-        };
-
-        // contract検証（完了時のみ）
-        let (structured_output, contract_result) = if !abort {
-            match self
-                .validate_and_handle_contract(
-                    app,
-                    session_store,
-                    handles,
-                    worktree_path,
-                    &output_contract,
-                    output_text.as_deref(),
-                    &current_session_id,
-                    &step_name_for_contract,
-                )
-                .await?
-            {
-                ContractCheckResult::NoContract => (None, None),
-                ContractCheckResult::Valid {
+            exec.workflow_variables.extend(contract_variables);
+            let outcome = Self::apply_approval_application(
+                exec,
+                &decision,
+                ApprovalApplication {
+                    effective_result,
                     structured_output,
-                    result,
-                } => (Some(structured_output), result),
-                ContractCheckResult::RetrySent | ContractCheckResult::Failed => return Ok(()),
-            }
-        } else {
-            (None, None)
-        };
-
-        // contract検証成功時のworkflow_variables反映
-        self.apply_contract_variables(worktree_path, &output_contract, &structured_output)
-            .await;
-
-        // contract resultがあればそちらを優先
-        let effective_result = contract_result.unwrap_or_else(|| "complete".to_string());
-
-        let (chat_session_id, outcome) = {
-            let mut execs = self.executions.lock().await;
-            let exec = execs
-                .get_mut(worktree_path)
-                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            let chat_session_id = exec.chat_session_id.clone();
-            let action = exec.decide_interactive_action(abort, &effective_result)?;
-
-            let outcome = match action {
-                InteractiveAction::Abort => {
-                    exec.state = WorkflowExecutionState::Aborted;
-                    exec.updated_at = current_timestamp();
-                    StepOutcome::Persist(exec.to_workflow_state())
-                }
-                InteractiveAction::Advance => {
-                    let entry = exec.make_step_history_entry(
-                        Some(effective_result),
-                        structured_output.clone(),
-                        output_contract.clone(),
-                    );
-                    exec.step_history.push(entry);
-                    Self::apply_advance(exec)
-                }
-                InteractiveAction::TransitionTo(target) => {
-                    let entry = exec.make_step_history_entry(
-                        Some(effective_result),
-                        structured_output.clone(),
-                        output_contract.clone(),
-                    );
-                    exec.step_history.push(entry);
-                    Self::apply_transition(exec, &target)?
-                }
-            };
+                    output_contract: application_output_contract,
+                },
+            )?;
             (chat_session_id, outcome)
         };
 
@@ -1206,7 +1152,14 @@ impl WorkflowEngine {
                     ContractValidationResult::Valid {
                         structured_output,
                         result,
-                    } => (result, Some(structured_output)),
+                    } => (
+                        result,
+                        Some(Self::mask_sensitive_structured_output(
+                            app,
+                            contract,
+                            structured_output,
+                        )),
+                    ),
                     ContractValidationResult::Invalid(violation) => {
                         // contract violation: child単位のリトライまたは失敗
                         let (should_retry, retry_count, exec_id, wf_name, child_step_name) = {
@@ -1672,8 +1625,137 @@ impl WorkflowEngine {
         }
     }
 
+    fn validate_approval_output_contract(
+        app: &tauri::AppHandle,
+        output_contract: &Option<String>,
+        output_text: Option<&str>,
+        workflow: &Workflow,
+        current_step_index: usize,
+    ) -> Result<ContractCheckResult, WorkflowEngineError> {
+        let contract = match output_contract {
+            Some(c) => c,
+            None => return Ok(ContractCheckResult::NoContract),
+        };
+        let extraction = match output_text {
+            Some(text) if !text.trim().is_empty() => extract_workflow_output(text),
+            _ => ExtractionResult::NoBlock,
+        };
+        match Self::validate_approval_contract_extraction(
+            contract,
+            extraction,
+            workflow,
+            current_step_index,
+        )? {
+            ContractCheckResult::Valid {
+                structured_output,
+                result,
+            } => Ok(ContractCheckResult::Valid {
+                structured_output: Self::mask_sensitive_structured_output(
+                    app,
+                    contract,
+                    structured_output,
+                ),
+                result,
+            }),
+            other => Ok(other),
+        }
+    }
+
+    fn validate_approval_contract_extraction(
+        contract: &str,
+        extraction: ExtractionResult,
+        workflow: &Workflow,
+        current_step_index: usize,
+    ) -> Result<ContractCheckResult, WorkflowEngineError> {
+        let step_name = workflow
+            .steps
+            .get(current_step_index)
+            .map(|s| s.name.as_str())
+            .unwrap_or("<unknown>");
+        match validate_contract(contract, extraction) {
+            ContractValidationResult::Valid {
+                structured_output,
+                result,
+            } => {
+                Self::validate_approval_contract_semantics(
+                    contract,
+                    &structured_output,
+                    workflow,
+                    current_step_index,
+                )?;
+                Ok(ContractCheckResult::Valid {
+                    structured_output,
+                    result,
+                })
+            }
+            ContractValidationResult::Invalid(violation) => {
+                Err(WorkflowEngineError::ValidationError(format!(
+                    "approval output contract violation at step '{}': {} ({})",
+                    step_name, violation.details, violation.reason
+                )))
+            }
+        }
+    }
+
+    fn validate_approval_contract_semantics(
+        contract: &str,
+        structured_output: &serde_json::Value,
+        workflow: &Workflow,
+        current_step_index: usize,
+    ) -> Result<(), WorkflowEngineError> {
+        if contract != "approved-fix-policy" {
+            return Ok(());
+        }
+        let step = workflow.steps.get(current_step_index).ok_or_else(|| {
+            WorkflowEngineError::InvalidWorkflow(format!(
+                "Current step index {} is out of range",
+                current_step_index
+            ))
+        })?;
+        let review_step = structured_output
+            .get("review_step")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                WorkflowEngineError::ValidationError(format!(
+                    "approval output contract violation at step '{}': Missing required field \"review_step\". (missing_field)",
+                    step.name
+                ))
+            })?;
+        if !step
+            .pass_output_from
+            .as_deref()
+            .is_some_and(|refs| refs.iter().any(|r| r == review_step))
+        {
+            return Err(WorkflowEngineError::ValidationError(format!(
+                "approval output contract violation at step '{}': \"review_step\" must name a review source passed to this approval step. (unknown_review_step)",
+                step.name
+            )));
+        }
+        if !Self::workflow_step_is_review_source(workflow, review_step) {
+            return Err(WorkflowEngineError::ValidationError(format!(
+                "approval output contract violation at step '{}': \"review_step\" must name a review or aggregate step in the current workflow. (unknown_review_step)",
+                step.name
+            )));
+        }
+        Ok(())
+    }
+
+    fn workflow_step_is_review_source(workflow: &Workflow, step_name: &str) -> bool {
+        workflow.steps.iter().any(|step| {
+            (step.name == step_name
+                && (step.aggregate.is_some()
+                    || step.output_contract.as_deref() == Some("review-verdict")))
+                || step.parallel.as_ref().is_some_and(|children| {
+                    children.iter().any(|child| {
+                        child.name == step_name
+                            && child.output_contract.as_deref() == Some("review-verdict")
+                    })
+                })
+        })
+    }
+
     /// 非並列stepのcontract検証を共通処理する。
-    /// approval / interactive / auto の3パスで同一のcontract検証・retry・failure処理を行う。
+    /// auto および並列子ステップの2パスで同一のcontract検証・retry・failure処理を行う。
     #[allow(clippy::too_many_arguments)]
     async fn validate_and_handle_contract(
         &self,
@@ -1701,7 +1783,11 @@ impl WorkflowEngine {
                 structured_output,
                 result,
             } => Ok(ContractCheckResult::Valid {
-                structured_output,
+                structured_output: Self::mask_sensitive_structured_output(
+                    app,
+                    contract,
+                    structured_output,
+                ),
                 result,
             }),
             ContractValidationResult::Invalid(violation) => {
@@ -1872,6 +1958,122 @@ impl WorkflowEngine {
         execs.get(&worktree_path).is_some_and(|e| e.is_active())
     }
 
+    pub async fn validate_approval_chat_instruction(
+        &self,
+        session_id: &str,
+        content: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        let Some(session_ref) = self.resolve_session_ref(session_id).await else {
+            return Ok(());
+        };
+        if session_ref.kind != SessionRefKind::SequentialStep {
+            return Ok(());
+        }
+
+        let execs = self.executions.lock().await;
+        let Some(exec) = execs.get(&session_ref.worktree_path) else {
+            return Ok(());
+        };
+        let step = &exec.workflow.steps[exec.current_step_index];
+        let is_current_approval_session = *step.mode_unwrap() == StepMode::Approval
+            && exec.current_session_id.as_deref() == Some(session_id);
+        if !is_current_approval_session {
+            if Self::is_approval_step_session(exec, session_id) {
+                return Err(WorkflowEngineError::InvalidState(
+                    "Workflow is not waiting for approval".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+        if exec.state != WorkflowExecutionState::WaitingApproval {
+            return Err(WorkflowEngineError::InvalidState(
+                "Workflow is not waiting for approval".to_string(),
+            ));
+        }
+        if content.chars().count() > MAX_APPROVAL_COMMENT_CHARS {
+            return Err(WorkflowEngineError::ValidationError(
+                "approval chat instruction exceeds 8192 characters".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn is_approval_step_session(exec: &WorkflowExecution, session_id: &str) -> bool {
+        let step_is_approval = |step_name: &str| {
+            exec.workflow
+                .steps
+                .iter()
+                .find(|step| step.name == step_name)
+                .is_some_and(|step| *step.mode_unwrap() == StepMode::Approval)
+        };
+
+        if exec.current_session_id.as_deref() == Some(session_id)
+            && step_is_approval(&exec.workflow.steps[exec.current_step_index].name)
+        {
+            return true;
+        }
+
+        exec.step_history.iter().any(|entry| {
+            entry.session_id.as_deref() == Some(session_id) && step_is_approval(&entry.step_name)
+        })
+    }
+
+    #[cfg(test)]
+    pub async fn validate_approval_target(
+        &self,
+        worktree_path: &str,
+        expected_execution_id: Option<&str>,
+        expected_step_name: Option<&str>,
+    ) -> Result<(), WorkflowEngineError> {
+        let execs = self.executions.lock().await;
+        let exec = execs
+            .get(worktree_path)
+            .ok_or_else(|| WorkflowEngineError::UnauthorizedWorktree(worktree_path.to_string()))?;
+        Self::validate_approval_target_snapshot(exec, expected_execution_id, expected_step_name)
+    }
+
+    fn validate_approval_target_snapshot(
+        exec: &WorkflowExecution,
+        expected_execution_id: Option<&str>,
+        expected_step_name: Option<&str>,
+    ) -> Result<(), WorkflowEngineError> {
+        if exec.state != WorkflowExecutionState::WaitingApproval {
+            return Err(WorkflowEngineError::InvalidState(
+                "Workflow is not waiting for approval".to_string(),
+            ));
+        }
+        let expected_execution_id = expected_execution_id.ok_or_else(|| {
+            WorkflowEngineError::UnauthorizedApprovalTarget("execution_id is required".to_string())
+        })?;
+        let expected_step_name = expected_step_name.ok_or_else(|| {
+            WorkflowEngineError::UnauthorizedApprovalTarget("step_name is required".to_string())
+        })?;
+        if expected_execution_id != exec.id {
+            return Err(WorkflowEngineError::UnauthorizedApprovalTarget(
+                "execution_id does not match".to_string(),
+            ));
+        }
+        let current_step = &exec.workflow.steps[exec.current_step_index].name;
+        if expected_step_name != current_step {
+            return Err(WorkflowEngineError::UnauthorizedApprovalTarget(
+                "step does not match".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_approval_turn_phase(
+        turn_phase: Option<crate::agent_sdk::TurnPhase>,
+    ) -> Result<(), WorkflowEngineError> {
+        match turn_phase {
+            Some(crate::agent_sdk::TurnPhase::Streaming)
+            | Some(crate::agent_sdk::TurnPhase::WaitingPermission) => Err(
+                WorkflowEngineError::ValidationError("approval output is not complete".to_string()),
+            ),
+            Some(crate::agent_sdk::TurnPhase::Idle) | None => Ok(()),
+        }
+    }
+
     /// 現在実行中のワークフロー名の集合を返す（全worktreeを集約）。
     pub async fn running_workflow_names(&self) -> std::collections::HashSet<String> {
         let execs = self.executions.lock().await;
@@ -1884,7 +2086,7 @@ impl WorkflowEngine {
 
     /// セッションIDからworktree_pathを解決する。
     /// session_workflow_refsに登録されていない場合はNoneを返す。
-    async fn resolve_worktree_path(&self, session_id: &str) -> Option<String> {
+    pub async fn resolve_worktree_path(&self, session_id: &str) -> Option<String> {
         let map = self.session_workflow_refs.lock().await;
         map.get(session_id).map(|r| r.worktree_path.clone())
     }
@@ -2296,6 +2498,135 @@ impl WorkflowEngine {
         vars
     }
 
+    fn mask_sensitive_structured_output(
+        app: &tauri::AppHandle,
+        contract: &str,
+        value: serde_json::Value,
+    ) -> serde_json::Value {
+        let secrets = Self::collect_configured_secret_values(app);
+        Self::mask_sensitive_structured_output_with_secrets(contract, value, &secrets)
+    }
+
+    fn mask_sensitive_structured_output_with_secrets(
+        contract: &str,
+        mut value: serde_json::Value,
+        secrets: &[String],
+    ) -> serde_json::Value {
+        if contract != "approved-fix-policy" {
+            return value;
+        }
+        Self::mask_json_strings(&mut value, secrets);
+        value
+    }
+
+    fn collect_configured_secret_values(app: &tauri::AppHandle) -> Vec<String> {
+        let mut values = Vec::new();
+        if let Some(config) = app.try_state::<Arc<crate::config::AppConfig>>() {
+            if let Ok(cfg) = config.get_config() {
+                values.extend(Self::collect_configured_secret_values_from_config(&cfg));
+            }
+        }
+        values.extend(Self::collect_secret_values_from_env_vars(std::env::vars()));
+        values.sort();
+        values.dedup();
+        values.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        values
+    }
+
+    fn collect_secret_values_from_env_vars<I>(vars: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        vars.into_iter()
+            .filter_map(|(k, v)| {
+                if v.len() >= 8 && Self::is_secret_env_var_name(&k) {
+                    Some(v)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn is_secret_env_var_name(name: &str) -> bool {
+        let normalized = name.to_ascii_uppercase();
+        [
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "PASSWD",
+            "API_KEY",
+            "ACCESS_KEY",
+            "PRIVATE_KEY",
+            "CREDENTIAL",
+        ]
+        .iter()
+        .any(|pattern| normalized.contains(pattern))
+    }
+
+    fn collect_configured_secret_values_from_config(
+        cfg: &crate::config::ReleashConfig,
+    ) -> Vec<String> {
+        let mut values = Vec::new();
+        for v in [
+            cfg.server.token.as_str(),
+            cfg.server.mcp_token.as_str(),
+            cfg.server.notify.webhook_url.as_str(),
+        ] {
+            if v.len() >= 8 {
+                values.push(v.to_string());
+            }
+        }
+        for notion in cfg.notion.values() {
+            if notion.api_token.len() >= 8 {
+                values.push(notion.api_token.clone());
+            }
+        }
+        values
+    }
+
+    fn mask_json_strings(value: &mut serde_json::Value, configured_secrets: &[String]) {
+        match value {
+            serde_json::Value::String(s) => {
+                *s = Self::mask_sensitive_text(s, configured_secrets);
+            }
+            serde_json::Value::Array(arr) => {
+                for item in arr {
+                    Self::mask_json_strings(item, configured_secrets);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for item in map.values_mut() {
+                    Self::mask_json_strings(item, configured_secrets);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 機密値パターンに該当するテキストを `[REDACTED]` に置換する。
+    /// `configured_secrets` は長さ降順にソート済みであることを前提とする
+    /// (`collect_configured_secret_values` が保証)。
+    fn mask_sensitive_text(text: &str, configured_secrets: &[String]) -> String {
+        let mut masked = text.to_string();
+        masked = PRIVATE_KEY_RE
+            .replace_all(&masked, "[REDACTED]")
+            .into_owned();
+        masked = GHP_TOKEN_RE.replace_all(&masked, "[REDACTED]").into_owned();
+        masked = GITHUB_PAT_RE
+            .replace_all(&masked, "[REDACTED]")
+            .into_owned();
+        masked = SECRET_KV_RE
+            .replace_all(&masked, "$1=[REDACTED]")
+            .into_owned();
+        for secret in configured_secrets {
+            if !secret.is_empty() {
+                masked = masked.replace(secret.as_str(), "[REDACTED]");
+            }
+        }
+        masked
+    }
+
     /// ファセット内容中のテンプレート変数を展開する。
     /// - `{{task}}` → タスク内容（未指定時はプレースホルダーをそのまま残す）
     /// - `{{project_name}}` → worktree_pathの末尾ディレクトリ名
@@ -2316,7 +2647,7 @@ impl WorkflowEngine {
     }
 
     /// 現在のステップセッションからoutput_textを取得する。
-    /// handle_approval / complete_interactive の共通パターン。
+    /// handle_approval で現在ステップの出力を取得する。
     async fn fetch_current_output(
         &self,
         app: &tauri::AppHandle,
@@ -2345,7 +2676,12 @@ impl WorkflowEngine {
     ) -> Option<String> {
         let data_dir = crate::session::resolve_data_dir(app).ok()?;
         let session = session_store.get_session(&data_dir, session_id).ok()??;
+        Self::extract_last_assistant_text_from_session(&session)
+    }
 
+    fn extract_last_assistant_text_from_session(
+        session: &crate::session::ChatSession,
+    ) -> Option<String> {
         let agent_msg = session
             .messages
             .iter()
@@ -2397,14 +2733,7 @@ impl WorkflowEngine {
             }
         }
 
-        // workflow_variablesの注入
-        if !workflow_variables.is_empty() {
-            let vars_json = serde_json::to_string_pretty(workflow_variables).unwrap_or_default();
-            result.push_str(&format!(
-                "\n\n<workflow_variables>\n{}\n</workflow_variables>",
-                vars_json
-            ));
-        }
+        Self::append_workflow_variables_block(&mut result, workflow_variables);
 
         result
     }
@@ -2421,6 +2750,24 @@ impl WorkflowEngine {
         result.push_str(&format!(
             "\n\n<step_output name=\"{}\">\n{}\n</step_output>",
             step_name, text
+        ));
+    }
+
+    fn append_workflow_variables_block(
+        result: &mut String,
+        workflow_variables: &HashMap<String, String>,
+    ) {
+        let filtered_variables: HashMap<_, _> = workflow_variables
+            .iter()
+            .filter(|(key, _)| !key.starts_with("approved_fix_policy"))
+            .collect();
+        if filtered_variables.is_empty() {
+            return;
+        }
+        let vars_json = serde_json::to_string_pretty(&filtered_variables).unwrap_or_default();
+        result.push_str(&format!(
+            "\n\n<workflow_variables>\n{}\n</workflow_variables>",
+            vars_json
         ));
     }
 
@@ -2745,6 +3092,23 @@ impl WorkflowEngine {
                 self.persist_state(app, session_store, chat_session_id, snapshot.clone())
                     .await?;
                 self.broadcast_state(app, worktree_path, snapshot.clone());
+                if let Some((execution_id, step_name)) =
+                    Self::auto_approve_target_for_persisted_snapshot(
+                        &snapshot,
+                        Self::workflow_approval_auto_approve_enabled(app),
+                    )
+                {
+                    return Box::pin(self.handle_approval(
+                        app,
+                        session_store,
+                        handles,
+                        worktree_path,
+                        ApprovalDecision::Approve,
+                        Some(&execution_id),
+                        Some(&step_name),
+                    ))
+                    .await;
+                }
                 if matches!(
                     snapshot.state,
                     WorkflowExecutionState::Completed
@@ -3253,14 +3617,7 @@ impl WorkflowEngine {
             }
         }
 
-        // workflow_variablesの注入
-        if !workflow_variables.is_empty() {
-            let vars_json = serde_json::to_string_pretty(workflow_variables).unwrap_or_default();
-            user_message.push_str(&format!(
-                "\n\n<workflow_variables>\n{}\n</workflow_variables>",
-                vars_json
-            ));
-        }
+        Self::append_workflow_variables_block(&mut user_message, workflow_variables);
 
         Ok((system_prompt, user_message))
     }
@@ -3399,13 +3756,330 @@ impl WorkflowEngine {
             }
         }
     }
+
+    fn workflow_approval_auto_approve_enabled(app: &tauri::AppHandle) -> bool {
+        app.try_state::<Arc<crate::config::AppConfig>>()
+            .and_then(|config| config.get_config().ok())
+            .is_some_and(|cfg| cfg.workflow.approval_auto_approve)
+    }
+
+    fn should_auto_approve_workflow_approval(
+        snapshot: &WorkflowState,
+        approval_auto_approve_enabled: bool,
+    ) -> bool {
+        approval_auto_approve_enabled && snapshot.state == WorkflowExecutionState::WaitingApproval
+    }
+
+    fn auto_approve_target_for_persisted_snapshot(
+        snapshot: &WorkflowState,
+        approval_auto_approve_enabled: bool,
+    ) -> Option<(String, String)> {
+        if Self::should_auto_approve_workflow_approval(snapshot, approval_auto_approve_enabled) {
+            Some((
+                snapshot.execution_id.clone(),
+                snapshot.current_step_name.clone(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    async fn handle_approval_with_output_for_test(
+        &self,
+        worktree_path: &str,
+        decision: ApprovalDecision,
+        expected_execution_id: Option<&str>,
+        expected_step_name: Option<&str>,
+        output_text: Option<String>,
+    ) -> Result<StepOutcome, WorkflowEngineError> {
+        {
+            let execs = self.executions.lock().await;
+            let exec = execs.get(worktree_path).ok_or_else(|| {
+                WorkflowEngineError::UnauthorizedWorktree(worktree_path.to_string())
+            })?;
+            Self::validate_approval_target_snapshot(
+                exec,
+                expected_execution_id,
+                expected_step_name,
+            )?;
+        }
+
+        Self::validate_approval_decision(&decision)?;
+        if matches!(decision, ApprovalDecision::Approve) {
+            Self::validate_approval_turn_phase(None)?;
+        }
+
+        let (output_contract, workflow_for_contract, current_step_index_for_contract) = {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            (
+                exec.workflow.steps[exec.current_step_index]
+                    .output_contract
+                    .clone(),
+                exec.workflow.clone(),
+                exec.current_step_index,
+            )
+        };
+
+        let result_tag = match &decision {
+            ApprovalDecision::Approve => "approve",
+            ApprovalDecision::Reject { .. } => "reject",
+            ApprovalDecision::Abort => "abort",
+        };
+        let (structured_output, contract_result) = if matches!(decision, ApprovalDecision::Approve)
+        {
+            match output_contract.as_deref() {
+                Some(contract) => {
+                    let extraction = match output_text.as_deref() {
+                        Some(text) => extract_workflow_output(text),
+                        None => ExtractionResult::NoBlock,
+                    };
+                    match Self::validate_approval_contract_extraction(
+                        contract,
+                        extraction,
+                        &workflow_for_contract,
+                        current_step_index_for_contract,
+                    )? {
+                        ContractCheckResult::Valid {
+                            structured_output,
+                            result,
+                        } => (Some(structured_output), result),
+                        ContractCheckResult::NoContract => (None, None),
+                        ContractCheckResult::RetrySent | ContractCheckResult::Failed => {
+                            unreachable!()
+                        }
+                    }
+                }
+                None => (None, None),
+            }
+        } else if let ApprovalDecision::Reject { ref comment } = decision {
+            (Some(Self::reject_structured_output(comment, &[])), None)
+        } else {
+            (None, None)
+        };
+
+        let application_output_contract = if matches!(decision, ApprovalDecision::Approve) {
+            output_contract.clone()
+        } else {
+            None
+        };
+        let contract_variables =
+            Self::extract_contract_variables(&application_output_contract, &structured_output);
+        let effective_result = contract_result.unwrap_or_else(|| result_tag.to_string());
+
+        let mut execs = self.executions.lock().await;
+        let exec = execs
+            .get_mut(worktree_path)
+            .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+        Self::validate_approval_target_snapshot(exec, expected_execution_id, expected_step_name)?;
+        exec.workflow_variables.extend(contract_variables);
+        Self::apply_approval_application(
+            exec,
+            &decision,
+            ApprovalApplication {
+                effective_result,
+                structured_output,
+                output_contract: application_output_contract,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    async fn execute_outcome_persist_auto_approve_for_test(
+        &self,
+        worktree_path: &str,
+        snapshot: &WorkflowState,
+        output_text: String,
+    ) -> Result<Option<StepOutcome>, WorkflowEngineError> {
+        if let Some((execution_id, step_name)) =
+            Self::auto_approve_target_for_persisted_snapshot(snapshot, true)
+        {
+            self.handle_approval_with_output_for_test(
+                worktree_path,
+                ApprovalDecision::Approve,
+                Some(&execution_id),
+                Some(&step_name),
+                Some(output_text),
+            )
+            .await
+            .map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_test_approval_execution(
+        &self,
+        worktree_path: &str,
+        chat_session_id: &str,
+        current_session_id: &str,
+        state: WorkflowExecutionState,
+    ) -> WorkflowState {
+        let workflow = Workflow {
+            name: "test-approval-workflow".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            steps: vec![crate::workflow::schema::Step {
+                name: "implementation_fix_policy".to_string(),
+                mode: Some(StepMode::Approval),
+                persona: None,
+                policy: None,
+                knowledge: None,
+                instruction: Some("Review fix policy".to_string()),
+                output_contract: Some("approved-fix-policy".to_string()),
+                rules: vec![],
+                cycle_guard: None,
+                pass_previous_response: None,
+                pass_output_from: None,
+                inline_prompt: None,
+                collect: None,
+                parallel: None,
+                aggregate: None,
+                resets_cycle_for: None,
+            }],
+        };
+        let exec = WorkflowExecution {
+            id: "exec-approval-chat".to_string(),
+            workflow,
+            state,
+            current_step_index: 0,
+            step_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
+            step_history: Vec::new(),
+            chat_session_id: chat_session_id.to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: Some(current_session_id.to_string()),
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+        let snapshot = exec.to_workflow_state();
+        self.executions
+            .lock()
+            .await
+            .insert(worktree_path.to_string(), exec);
+        self.session_workflow_refs.lock().await.insert(
+            current_session_id.to_string(),
+            SessionWorkflowRef {
+                worktree_path: worktree_path.to_string(),
+                kind: SessionRefKind::SequentialStep,
+            },
+        );
+        snapshot
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session::MessagePart;
-    use crate::workflow::schema::{CycleGuard, Step, StepMode, TransitionRule, Workflow};
+    use crate::workflow::schema::{
+        AggregateConfig, CollectConfig, CycleGuard, ReduceStrategy, Step, StepMode, TransitionRule,
+        Workflow,
+    };
+
+    fn approved_fix_policy_output(policy: &str, review_step: &str) -> String {
+        format!(
+            r#"<workflow_output type="approved-fix-policy">{{"policy":"{policy}","review_step":"{review_step}"}}</workflow_output>"#
+        )
+    }
+
+    fn make_approved_fix_policy_workflow() -> Workflow {
+        Workflow {
+            name: "approved-fix-policy-test".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            steps: vec![
+                Step {
+                    name: "code_review_parallel".to_string(),
+                    mode: None,
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: None,
+                    output_contract: None,
+                    rules: vec![],
+                    cycle_guard: None,
+                    pass_previous_response: None,
+                    pass_output_from: None,
+                    inline_prompt: None,
+                    collect: None,
+                    parallel: Some(vec![]),
+                    aggregate: Some(AggregateConfig {
+                        all_match: Some("LGTM".to_string()),
+                        any_match: None,
+                        then: "done".to_string(),
+                        r#else: "implementation_fix_policy".to_string(),
+                    }),
+                    resets_cycle_for: None,
+                },
+                Step {
+                    name: "implementation_fix_policy".to_string(),
+                    mode: Some(StepMode::Approval),
+                    persona: None,
+                    policy: None,
+                    knowledge: None,
+                    instruction: Some("Review fix policy".to_string()),
+                    output_contract: Some("approved-fix-policy".to_string()),
+                    rules: vec![],
+                    cycle_guard: None,
+                    pass_previous_response: None,
+                    pass_output_from: Some(vec!["code_review_parallel".to_string()]),
+                    inline_prompt: None,
+                    collect: None,
+                    parallel: None,
+                    aggregate: None,
+                    resets_cycle_for: None,
+                },
+            ],
+        }
+    }
+
+    fn make_spec_driven_plan_fix_policy_exec(
+        execution_id: &str,
+        current_session_id: &str,
+    ) -> WorkflowExecution {
+        make_spec_driven_fix_policy_exec(execution_id, current_session_id, "plan_fix_policy")
+    }
+
+    fn make_spec_driven_fix_policy_exec(
+        execution_id: &str,
+        current_session_id: &str,
+        step_name: &str,
+    ) -> WorkflowExecution {
+        let workflow = crate::workflow::builtin::get_builtin_workflow("spec-driven-development")
+            .expect("builtin workflow exists");
+        let current_step_index = workflow
+            .steps
+            .iter()
+            .position(|step| step.name == step_name)
+            .unwrap_or_else(|| panic!("{step_name} step exists"));
+        WorkflowExecution {
+            id: execution_id.to_string(),
+            workflow,
+            state: WorkflowExecutionState::WaitingApproval,
+            current_step_index,
+            step_execution_counts: HashMap::from([(step_name.to_string(), 1)]),
+            step_history: Vec::new(),
+            chat_session_id: "parent-session".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: Some(current_session_id.to_string()),
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        }
+    }
 
     // ---- evaluate_auto_rules ----
 
@@ -3783,6 +4457,38 @@ mod tests {
         assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
         assert_eq!(ws.current_step_name, "report");
         assert_eq!(ws.current_step_index, 3);
+        assert_eq!(
+            ws.approval_operations.as_ref().map(|ops| ops.can_reject),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn to_workflow_state_waiting_approval_without_reject_rule_disables_reject() {
+        let workflow = make_test_workflow();
+        let exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow,
+            state: WorkflowExecutionState::WaitingApproval,
+            current_step_index: 0,
+            step_execution_counts: HashMap::new(),
+            step_history: Vec::new(),
+            chat_session_id: "session-1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1001.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+        let ws = exec.to_workflow_state();
+        assert_eq!(
+            ws.approval_operations.as_ref().map(|ops| ops.can_reject),
+            Some(false)
+        );
     }
 
     #[test]
@@ -4095,11 +4801,14 @@ mod tests {
     }
 
     #[test]
-    fn turn_complete_action_interactive_noop() {
+    fn turn_complete_action_interactive_fails_for_validation_only_legacy_definition() {
         let exec = make_exec(0); // plan (interactive)
         assert_eq!(
             exec.decide_turn_complete_action(0),
-            TurnCompleteAction::Noop
+            TurnCompleteAction::SessionError {
+                step_name: "plan".to_string(),
+                exit_code: 0,
+            }
         );
     }
 
@@ -4168,13 +4877,11 @@ mod tests {
     fn decide_approval_action_reject_no_rule() {
         let mut exec = make_exec(0); // plan (interactive, no reject rule)
         exec.state = WorkflowExecutionState::WaitingApproval;
-        assert_eq!(
-            exec.decide_approval_action(&ApprovalDecision::Reject {
+        assert!(exec
+            .decide_approval_action(&ApprovalDecision::Reject {
                 comment: "Needs fix".to_string()
             })
-            .unwrap(),
-            ApprovalAction::FailedNoRejectRule("plan".to_string())
-        );
+            .is_err());
     }
 
     #[test]
@@ -4194,80 +4901,6 @@ mod tests {
         assert!(exec
             .decide_approval_action(&ApprovalDecision::Approve)
             .is_err());
-    }
-
-    // ---- decide_interactive_action ----
-
-    #[test]
-    fn decide_interactive_action_complete() {
-        let exec = make_exec(0); // plan (interactive, state=Running)
-        assert_eq!(
-            exec.decide_interactive_action(false, "complete").unwrap(),
-            InteractiveAction::Advance
-        );
-    }
-
-    #[test]
-    fn decide_interactive_action_abort() {
-        let exec = make_exec(0); // plan (interactive, state=Running)
-        assert_eq!(
-            exec.decide_interactive_action(true, "complete").unwrap(),
-            InteractiveAction::Abort
-        );
-    }
-
-    #[test]
-    fn decide_interactive_action_not_running() {
-        let mut exec = make_exec(0);
-        exec.state = WorkflowExecutionState::Completed;
-        assert!(exec.decide_interactive_action(false, "complete").is_err());
-    }
-
-    #[test]
-    fn decide_interactive_action_wrong_mode() {
-        let exec = make_exec(1); // implement (auto mode, state=Running)
-        assert!(exec.decide_interactive_action(false, "complete").is_err());
-    }
-
-    #[test]
-    fn decide_interactive_action_with_rules_transition() {
-        let mut exec = make_exec(0); // plan (interactive)
-        exec.workflow.steps[0].rules = vec![TransitionRule {
-            r#match: "NEEDS_FIX".to_string(),
-            next: "implement".to_string(),
-        }];
-        assert_eq!(
-            exec.decide_interactive_action(false, "NEEDS_FIX").unwrap(),
-            InteractiveAction::TransitionTo("implement".to_string())
-        );
-    }
-
-    #[test]
-    fn decide_interactive_action_with_rules_no_match_advances() {
-        let mut exec = make_exec(0); // plan (interactive)
-        exec.workflow.steps[0].rules = vec![TransitionRule {
-            r#match: "NEEDS_FIX".to_string(),
-            next: "implement".to_string(),
-        }];
-        // LGTM はルールにマッチしないので Advance
-        assert_eq!(
-            exec.decide_interactive_action(false, "LGTM").unwrap(),
-            InteractiveAction::Advance
-        );
-    }
-
-    #[test]
-    fn decide_interactive_action_abort_ignores_rules() {
-        let mut exec = make_exec(0); // plan (interactive)
-        exec.workflow.steps[0].rules = vec![TransitionRule {
-            r#match: "NEEDS_FIX".to_string(),
-            next: "implement".to_string(),
-        }];
-        // abortの場合はrulesに関係なくAbort
-        assert_eq!(
-            exec.decide_interactive_action(true, "NEEDS_FIX").unwrap(),
-            InteractiveAction::Abort
-        );
     }
 
     // ---- validate_start ----
@@ -4727,6 +5360,317 @@ mod tests {
     }
 
     #[test]
+    fn extract_contract_variables_approved_fix_policy_is_not_global() {
+        let contract = Some("approved-fix-policy".to_string());
+        let so = Some(serde_json::json!({
+            "policy": "Fix only approved findings.",
+            "review_step": "plan_review_parallel"
+        }));
+        let vars = WorkflowEngine::extract_contract_variables(&contract, &so);
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn mask_sensitive_text_redacts_policy_secrets() {
+        let text = "password=secret123 ghp_abcdefghijklmnopqrstuvwxyz1234567890 -----BEGIN PRIVATE KEY-----abc-----END PRIVATE KEY----- MY_TOKEN_VALUE_123456";
+        let masked =
+            WorkflowEngine::mask_sensitive_text(text, &["MY_TOKEN_VALUE_123456".to_string()]);
+        assert!(!masked.contains("secret123"));
+        assert!(!masked.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
+        assert!(!masked.contains("PRIVATE KEY-----abc"));
+        assert!(!masked.contains("MY_TOKEN_VALUE_123456"));
+        assert!(masked.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn configured_secret_values_include_notion_api_tokens() {
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.server.token = "SERVER_TOKEN_123".to_string();
+        cfg.server.mcp_token = "MCP_TOKEN_123456".to_string();
+        cfg.notion.insert(
+            "/repo".to_string(),
+            crate::notion::types::NotionRepoConfig {
+                api_token: "NOTION_TOKEN_123456".to_string(),
+                database_id: "database".to_string(),
+                property_mapping: crate::notion::types::PropertyMapping::default(),
+            },
+        );
+
+        let secrets = WorkflowEngine::collect_configured_secret_values_from_config(&cfg);
+        assert!(secrets.contains(&"SERVER_TOKEN_123".to_string()));
+        assert!(secrets.contains(&"MCP_TOKEN_123456".to_string()));
+        assert!(secrets.contains(&"NOTION_TOKEN_123456".to_string()));
+
+        let masked = WorkflowEngine::mask_sensitive_text(
+            "Use NOTION_TOKEN_123456 in this policy.",
+            &secrets,
+        );
+        assert_eq!(masked, "Use [REDACTED] in this policy.");
+    }
+
+    #[test]
+    fn overlapping_configured_secret_values_are_redacted_longest_first() {
+        let text = "Use abcdefghXYZ and abcdefgh in this policy.";
+        let masked = WorkflowEngine::mask_sensitive_text(
+            text,
+            &["abcdefghXYZ".to_string(), "abcdefgh".to_string()],
+        );
+
+        assert_eq!(masked, "Use [REDACTED] and [REDACTED] in this policy.");
+        assert!(!masked.contains("XYZ"));
+        assert!(!masked.contains("abcdefgh"));
+    }
+
+    #[test]
+    fn environment_secret_values_include_only_named_secret_values_at_least_eight_bytes() {
+        let secrets = WorkflowEngine::collect_secret_values_from_env_vars(vec![
+            (
+                "APPROVED_POLICY_TOKEN".to_string(),
+                "SECRET_VALUE_123".to_string(),
+            ),
+            ("PATH".to_string(), "/bin:/usr/bin".to_string()),
+            (
+                "APPROVED_POLICY_TEXT".to_string(),
+                "GENERAL_VALUE_123".to_string(),
+            ),
+            (
+                "SERVICE_API_KEY".to_string(),
+                "API_KEY_VALUE_123".to_string(),
+            ),
+            ("SHORT_TOKEN".to_string(), "short".to_string()),
+            ("EMPTY".to_string(), String::new()),
+        ]);
+
+        assert!(secrets.contains(&"SECRET_VALUE_123".to_string()));
+        assert!(secrets.contains(&"API_KEY_VALUE_123".to_string()));
+        assert!(!secrets.contains(&"GENERAL_VALUE_123".to_string()));
+        assert!(!secrets.contains(&"/bin:/usr/bin".to_string()));
+        assert!(!secrets.contains(&"short".to_string()));
+    }
+
+    #[test]
+    fn approved_fix_policy_structured_output_is_masked_for_parallel_contract_path() {
+        let masked = WorkflowEngine::mask_sensitive_structured_output_with_secrets(
+            "approved-fix-policy",
+            serde_json::json!({
+                "policy": "Use password=secret123 and MY_TOKEN_VALUE_123456",
+                "review_step": "code_review_parallel"
+            }),
+            &["MY_TOKEN_VALUE_123456".to_string()],
+        );
+        let serialized = serde_json::to_string(&masked).unwrap();
+        assert!(serialized.contains("[REDACTED]"));
+        assert!(!serialized.contains("secret123"));
+        assert!(!serialized.contains("MY_TOKEN_VALUE_123456"));
+    }
+
+    #[test]
+    fn reject_structured_output_redacts_sensitive_comment_before_history_or_sync() {
+        let structured = WorkflowEngine::reject_structured_output(
+            "Reject because password=secret123 and ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+            &[],
+        );
+        let comment = structured["comment"].as_str().unwrap();
+        assert!(!comment.contains("secret123"));
+        assert!(!comment.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
+        assert!(comment.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn approved_policy_injected_output_uses_sanitized_contract_payload_without_global_variables() {
+        let mut step = make_test_step("fix", StepMode::Auto, "Fix", vec![], None);
+        step.pass_output_from = Some(vec!["implementation_fix_policy".to_string()]);
+
+        let sanitized = serde_json::json!({
+            "policy": "Use password=[REDACTED] only in examples.",
+            "review_step": "code_review_parallel"
+        });
+        let vars = WorkflowEngine::extract_contract_variables(
+            &Some("approved-fix-policy".to_string()),
+            &Some(sanitized.clone()),
+        );
+        assert!(vars.is_empty());
+
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "implementation_fix_policy".to_string(),
+            StepOutput {
+                step_name: "implementation_fix_policy".to_string(),
+                run_index: 1,
+                session_id: Some("policy-session".to_string()),
+                result: Some("approved".to_string()),
+                structured_output: Some(sanitized),
+                output_contract: Some("approved-fix-policy".to_string()),
+                token_usage: None,
+                completed_at: 1000.0,
+            },
+        );
+        let injected = WorkflowEngine::inject_step_outputs("Fix", &step, &outputs, &[], &vars);
+        assert!(injected.contains("[REDACTED]"));
+        assert!(injected.contains("<step_output name=\"implementation_fix_policy\">"));
+        assert!(!injected.contains("<workflow_variables>"));
+        assert!(!injected.contains("secret123"));
+    }
+
+    #[test]
+    fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injection() {
+        let mut structured = serde_json::json!({
+            "policy": "Use password=secret123 with ghp_abcdefghijklmnopqrstuvwxyz1234567890 -----BEGIN PRIVATE KEY-----abc-----END PRIVATE KEY----- MY_TOKEN_VALUE_123456",
+            "review_step": "code_review_parallel"
+        });
+        WorkflowEngine::mask_json_strings(&mut structured, &["MY_TOKEN_VALUE_123456".to_string()]);
+        let raw = serde_json::to_string(&structured).unwrap();
+        assert!(!raw.contains("secret123"));
+        assert!(!raw.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
+        assert!(!raw.contains("PRIVATE KEY-----abc"));
+        assert!(!raw.contains("MY_TOKEN_VALUE_123456"));
+
+        let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        exec.workflow.steps[0].output_contract = Some("approved-fix-policy".to_string());
+        exec.workflow.steps.push(Step {
+            name: "fix".to_string(),
+            mode: Some(StepMode::Auto),
+            persona: None,
+            policy: None,
+            knowledge: None,
+            instruction: None,
+            output_contract: None,
+            rules: vec![],
+            cycle_guard: None,
+            pass_previous_response: Some(true),
+            pass_output_from: None,
+            inline_prompt: Some("Fix".to_string()),
+            collect: None,
+            parallel: None,
+            aggregate: None,
+            resets_cycle_for: None,
+        });
+        let outcome = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &ApprovalDecision::Approve,
+            ApprovalApplication {
+                effective_result: "approved".to_string(),
+                structured_output: Some(structured),
+                output_contract: Some("approved-fix-policy".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+
+        let state = exec.to_workflow_state();
+        let state_json = serde_json::to_string(&state).unwrap();
+        assert!(state_json.contains("[REDACTED]"));
+        assert!(!state_json.contains("secret123"));
+        assert!(!state_json.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
+        assert!(!state_json.contains("MY_TOKEN_VALUE_123456"));
+        assert!(!exec.workflow_variables.contains_key("approved_fix_policy"));
+        assert!(!exec.step_history[0]
+            .structured_output
+            .as_ref()
+            .unwrap()
+            .to_string()
+            .contains("secret123"));
+
+        let injected = WorkflowEngine::inject_step_outputs(
+            "Fix",
+            &exec.workflow.steps[exec.current_step_index],
+            &exec.step_outputs,
+            &exec.step_history,
+            &exec.workflow_variables,
+        );
+        assert!(injected.contains("[REDACTED]"));
+        assert!(!injected.contains("<workflow_variables>"));
+        assert!(!injected.contains("secret123"));
+        assert!(!injected.contains("MY_TOKEN_VALUE_123456"));
+    }
+
+    #[test]
+    fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut exec = make_spec_driven_plan_fix_policy_exec("exec-plan-log", "policy-session");
+        let secret_env_value = "MY_TOKEN_VALUE_123456".to_string();
+        let mut structured = serde_json::json!({
+            "policy": "Use password=secret123 with ghp_abcdefghijklmnopqrstuvwxyz1234567890 -----BEGIN PRIVATE KEY-----abc-----END PRIVATE KEY----- MY_TOKEN_VALUE_123456",
+            "review_step": "plan_review_parallel"
+        });
+        WorkflowEngine::mask_json_strings(&mut structured, &[secret_env_value]);
+
+        let outcome = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &ApprovalDecision::Approve,
+            ApprovalApplication {
+                effective_result: "approved".to_string(),
+                structured_output: Some(structured),
+                output_contract: Some("approved-fix-policy".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+
+        let entry = exec
+            .step_history
+            .iter()
+            .find(|entry| entry.step_name == "plan_fix_policy")
+            .unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        log.append(&WorkflowLogEvent::WorkflowStarted {
+            execution_id: exec.id.clone(),
+            workflow_name: exec.workflow.name.clone(),
+            workflow_file_stem: "spec-driven-development".to_string(),
+            worktree_path: "/repo".to_string(),
+            workflow_definition: Some(exec.workflow.clone()),
+            timestamp: 1000.0,
+        })
+        .unwrap();
+        log.append(&WorkflowLogEvent::StepCompleted {
+            execution_id: exec.id.clone(),
+            workflow_name: exec.workflow.name.clone(),
+            step_name: entry.step_name.clone(),
+            result: entry.result.clone(),
+            session_id: entry.session_id.clone(),
+            token_usage: entry.token_usage.clone(),
+            structured_output: entry.structured_output.clone(),
+            run_index: Some(entry.run_index),
+            timestamp: entry.completed_at,
+        })
+        .unwrap();
+
+        let raw_ndjson =
+            std::fs::read_to_string(tmp.path().join("workflow_logs/exec-plan-log.ndjson")).unwrap();
+        assert!(raw_ndjson.contains("[REDACTED]"));
+        assert!(!raw_ndjson.contains("secret123"));
+        assert!(!raw_ndjson.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
+        assert!(!raw_ndjson.contains("PRIVATE KEY-----abc"));
+        assert!(!raw_ndjson.contains("MY_TOKEN_VALUE_123456"));
+
+        let events = log.read_log("exec-plan-log").unwrap();
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(serialized.contains("[REDACTED]"));
+        assert!(!serialized.contains("secret123"));
+        assert!(!serialized.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
+        assert!(!serialized.contains("PRIVATE KEY-----abc"));
+        assert!(!serialized.contains("MY_TOKEN_VALUE_123456"));
+        let completed = events
+            .iter()
+            .find(|event| matches!(event, WorkflowLogEvent::StepCompleted { .. }))
+            .unwrap();
+        match completed {
+            WorkflowLogEvent::StepCompleted {
+                structured_output, ..
+            } => {
+                let policy = structured_output
+                    .as_ref()
+                    .and_then(|output| output.get("policy"))
+                    .and_then(|policy| policy.as_str())
+                    .unwrap();
+                assert!(policy.contains("[REDACTED]"));
+                assert!(!policy.contains("secret123"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
     fn extract_contract_variables_no_contract_returns_empty() {
         let so = Some(serde_json::json!({"spec_file_path": "docs/spec.md"}));
         let vars = WorkflowEngine::extract_contract_variables(&None, &so);
@@ -4771,8 +5715,6 @@ mod tests {
     }
 
     // ---- apply_reduce ----
-
-    use crate::workflow::schema::{CollectConfig, ReduceStrategy};
 
     fn make_collect(from: Vec<&str>, reduce: ReduceStrategy) -> CollectConfig {
         CollectConfig {
@@ -5584,6 +6526,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_approval_decision_reject_over_limit_returns_error() {
+        let result = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Reject {
+            comment: "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1),
+        });
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .starts_with("validation_error:"));
+    }
+
+    #[test]
     fn validate_approval_decision_reject_with_comment_ok() {
         let result = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Reject {
             comment: "Please fix the bug".to_string(),
@@ -5601,6 +6555,517 @@ mod tests {
     fn validate_approval_decision_abort_ok() {
         let result = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Abort);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_approval_target_missing_values_returns_unauthorized_target() {
+        let exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        let result = WorkflowEngine::validate_approval_target_snapshot(&exec, None, Some("review"));
+        assert!(matches!(
+            result.unwrap_err(),
+            WorkflowEngineError::UnauthorizedApprovalTarget(_)
+        ));
+
+        let result = WorkflowEngine::validate_approval_target_snapshot(&exec, Some("exec-1"), None);
+        assert!(matches!(
+            result.unwrap_err(),
+            WorkflowEngineError::UnauthorizedApprovalTarget(_)
+        ));
+    }
+
+    #[test]
+    fn validate_approval_target_mismatch_returns_unauthorized_target() {
+        let exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        let result = WorkflowEngine::validate_approval_target_snapshot(
+            &exec,
+            Some("other-exec"),
+            Some("review"),
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            WorkflowEngineError::UnauthorizedApprovalTarget(_)
+        ));
+
+        let result = WorkflowEngine::validate_approval_target_snapshot(
+            &exec,
+            Some("exec-1"),
+            Some("other-step"),
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            WorkflowEngineError::UnauthorizedApprovalTarget(_)
+        ));
+    }
+
+    #[test]
+    fn validate_approval_target_non_waiting_returns_invalid_state() {
+        let exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
+        let result = WorkflowEngine::validate_approval_target_snapshot(
+            &exec,
+            Some("exec-1"),
+            Some("review"),
+        );
+        let err = result.unwrap_err();
+        assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
+        assert!(err.to_string().starts_with("invalid_state:"));
+    }
+
+    #[test]
+    fn validate_approval_target_terminal_states_return_invalid_state_without_mutation() {
+        for state in [
+            WorkflowExecutionState::Completed,
+            WorkflowExecutionState::Failed {
+                reason: "failed".to_string(),
+            },
+            WorkflowExecutionState::Aborted,
+        ] {
+            let exec = make_approval_exec(state.clone(), vec![]);
+            let result = WorkflowEngine::validate_approval_target_snapshot(
+                &exec,
+                Some("exec-1"),
+                Some("review"),
+            );
+            let err = result.unwrap_err();
+            assert!(matches!(err, WorkflowEngineError::InvalidState(_)));
+            assert_eq!(exec.state, state);
+            assert!(exec.step_history.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_approval_target_wrong_worktree_returns_unauthorized_without_mutating_state() {
+        let engine = WorkflowEngine::new();
+        let exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        {
+            let mut execs = engine.executions.lock().await;
+            execs.insert("/repo-a".to_string(), exec);
+        }
+
+        let result = engine
+            .validate_approval_target("/repo-b", Some("exec-1"), Some("review"))
+            .await;
+        let err = result.unwrap_err();
+        assert!(matches!(err, WorkflowEngineError::UnauthorizedWorktree(_)));
+        assert!(err.to_string().starts_with("unauthorized_worktree:"));
+
+        let execs = engine.executions.lock().await;
+        let original = execs.get("/repo-a").unwrap();
+        assert_eq!(original.state, WorkflowExecutionState::WaitingApproval);
+        assert!(original.step_history.is_empty());
+    }
+
+    #[test]
+    fn validate_approval_turn_phase_rejects_unfinished_turns() {
+        assert!(WorkflowEngine::validate_approval_turn_phase(Some(
+            crate::agent_sdk::TurnPhase::Streaming
+        ))
+        .unwrap_err()
+        .to_string()
+        .starts_with("validation_error:"));
+        assert!(WorkflowEngine::validate_approval_turn_phase(Some(
+            crate::agent_sdk::TurnPhase::WaitingPermission
+        ))
+        .is_err());
+        assert!(WorkflowEngine::validate_approval_turn_phase(Some(
+            crate::agent_sdk::TurnPhase::Idle
+        ))
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_approval_contract_violation_returns_validation_error() {
+        let workflow = make_approved_fix_policy_workflow();
+        let result = WorkflowEngine::validate_approval_contract_extraction(
+            "approved-fix-policy",
+            ExtractionResult::Found {
+                type_name: "approved-fix-policy".to_string(),
+                json: serde_json::json!({
+                    "policy": "   ",
+                    "review_step": "code_review_parallel"
+                }),
+            },
+            &workflow,
+            1,
+        );
+        match result {
+            Err(err) => {
+                let err = err.to_string();
+                assert!(err.starts_with("validation_error:"));
+                assert!(err.contains("empty_policy"));
+            }
+            Ok(_) => panic!("expected validation_error"),
+        }
+    }
+
+    #[test]
+    fn validate_approval_contract_valid_returns_structured_output() {
+        let workflow = make_approved_fix_policy_workflow();
+        let result = WorkflowEngine::validate_approval_contract_extraction(
+            "approved-fix-policy",
+            ExtractionResult::Found {
+                type_name: "approved-fix-policy".to_string(),
+                json: serde_json::json!({
+                    "policy": "Fix the reported issue.",
+                    "review_step": "code_review_parallel"
+                }),
+            },
+            &workflow,
+            1,
+        )
+        .unwrap();
+        match result {
+            ContractCheckResult::Valid {
+                structured_output,
+                result,
+            } => {
+                assert_eq!(result.as_deref(), Some("approved"));
+                assert_eq!(structured_output["review_step"], "code_review_parallel");
+            }
+            _ => panic!("expected valid approval contract"),
+        }
+    }
+
+    #[test]
+    fn validate_approval_contract_rejects_review_step_not_passed_to_approval_step() {
+        let workflow = make_approved_fix_policy_workflow();
+        let result = WorkflowEngine::validate_approval_contract_extraction(
+            "approved-fix-policy",
+            ExtractionResult::Found {
+                type_name: "approved-fix-policy".to_string(),
+                json: serde_json::json!({
+                    "policy": "Fix the reported issue.",
+                    "review_step": "other_review_parallel"
+                }),
+            },
+            &workflow,
+            1,
+        );
+        match result {
+            Err(err) => {
+                let err = err.to_string();
+                assert!(err.starts_with("validation_error:"));
+                assert!(err.contains("unknown_review_step"));
+            }
+            Ok(_) => panic!("expected validation_error"),
+        }
+    }
+
+    #[test]
+    fn approval_contract_without_completed_assistant_output_returns_validation_error() {
+        let workflow = make_approved_fix_policy_workflow();
+        let result = WorkflowEngine::validate_approval_contract_extraction(
+            "approved-fix-policy",
+            ExtractionResult::NoBlock,
+            &workflow,
+            1,
+        );
+        match result {
+            Err(WorkflowEngineError::ValidationError(message)) => {
+                assert!(message.contains("no_block"));
+            }
+            _ => panic!("expected validation_error"),
+        }
+    }
+
+    #[test]
+    fn approval_contract_ignores_valid_policy_from_other_session_when_current_has_no_output() {
+        let workflow = make_approved_fix_policy_workflow();
+        let other_session = crate::session::ChatSession {
+            id: "other-policy-session".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![crate::session::ChatMessage {
+                id: "m1".to_string(),
+                role: crate::session::MessageRole::Agent,
+                content: approved_fix_policy_output(
+                    "Policy from a previous run.",
+                    "code_review_parallel",
+                ),
+                thinking: None,
+                activities: None,
+                parts: None,
+                timestamp: 1.0,
+                mentions: None,
+            }],
+            state: crate::session::SessionState::Idle,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: None,
+        };
+        let current_session = crate::session::ChatSession {
+            id: "current-policy-session".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![],
+            state: crate::session::SessionState::Idle,
+            created_at: 2.0,
+            updated_at: 2.0,
+            agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: None,
+        };
+
+        assert!(WorkflowEngine::extract_last_assistant_text_from_session(&other_session).is_some());
+        assert!(
+            WorkflowEngine::extract_last_assistant_text_from_session(&current_session).is_none()
+        );
+        let result = WorkflowEngine::validate_approval_contract_extraction(
+            "approved-fix-policy",
+            ExtractionResult::NoBlock,
+            &workflow,
+            1,
+        );
+        match result {
+            Err(WorkflowEngineError::ValidationError(_)) => {}
+            _ => panic!("expected validation_error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_approval_chat_instruction_limits_current_approval_session() {
+        let engine = WorkflowEngine::new();
+        let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        exec.current_session_id = Some("step-session".to_string());
+        {
+            let mut execs = engine.executions.lock().await;
+            execs.insert("/repo".to_string(), exec);
+        }
+        {
+            let mut refs = engine.session_workflow_refs.lock().await;
+            refs.insert(
+                "step-session".to_string(),
+                SessionWorkflowRef {
+                    worktree_path: "/repo".to_string(),
+                    kind: SessionRefKind::SequentialStep,
+                },
+            );
+        }
+
+        let result = engine
+            .validate_approval_chat_instruction(
+                "step-session",
+                &"x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1),
+            )
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .starts_with("validation_error:"));
+
+        assert!(engine
+            .validate_approval_chat_instruction("other-session", &"x".repeat(9000))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_approval_chat_instruction_rejects_current_approval_step_before_waiting() {
+        let engine = WorkflowEngine::new();
+        let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
+        exec.current_session_id = Some("step-session".to_string());
+        {
+            let mut execs = engine.executions.lock().await;
+            execs.insert("/repo".to_string(), exec);
+        }
+        {
+            let mut refs = engine.session_workflow_refs.lock().await;
+            refs.insert(
+                "step-session".to_string(),
+                SessionWorkflowRef {
+                    worktree_path: "/repo".to_string(),
+                    kind: SessionRefKind::SequentialStep,
+                },
+            );
+        }
+
+        let result = engine
+            .validate_approval_chat_instruction("step-session", "Please adjust the policy")
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            WorkflowEngineError::InvalidState(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn validate_approval_chat_instruction_rejects_stale_approved_policy_session() {
+        let engine = WorkflowEngine::new();
+        let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
+        exec.workflow.steps[0].name = "implementation_fix_policy".to_string();
+        exec.workflow.steps[0].output_contract = Some("approved-fix-policy".to_string());
+        exec.current_session_id = Some("fix-session".to_string());
+        exec.step_history.push(StepHistoryEntry {
+            step_name: "implementation_fix_policy".to_string(),
+            completed_at: 1000.0,
+            result: Some("approved".to_string()),
+            session_id: Some("stale-policy-session".to_string()),
+            token_usage: None,
+            structured_output: Some(serde_json::json!({
+                "policy": "Already approved.",
+                "review_step": "code_review_parallel"
+            })),
+            run_index: 1,
+            child_outputs: None,
+        });
+        exec.step_outputs.insert(
+            "implementation_fix_policy".to_string(),
+            StepOutput {
+                step_name: "implementation_fix_policy".to_string(),
+                run_index: 1,
+                session_id: Some("stale-policy-session".to_string()),
+                result: Some("approved".to_string()),
+                structured_output: Some(serde_json::json!({
+                    "policy": "Already approved.",
+                    "review_step": "code_review_parallel"
+                })),
+                output_contract: Some("approved-fix-policy".to_string()),
+                token_usage: None,
+                completed_at: 1000.0,
+            },
+        );
+        {
+            let mut execs = engine.executions.lock().await;
+            execs.insert("/repo".to_string(), exec);
+        }
+        {
+            let mut refs = engine.session_workflow_refs.lock().await;
+            refs.insert(
+                "stale-policy-session".to_string(),
+                SessionWorkflowRef {
+                    worktree_path: "/repo".to_string(),
+                    kind: SessionRefKind::SequentialStep,
+                },
+            );
+        }
+
+        let result = engine
+            .validate_approval_chat_instruction("stale-policy-session", "Please change policy")
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            WorkflowEngineError::InvalidState(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn validate_approval_chat_instruction_rejects_stale_rejected_policy_session() {
+        let engine = WorkflowEngine::new();
+        let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
+        exec.workflow.steps[0].name = "implementation_fix_policy".to_string();
+        exec.workflow.steps[0].output_contract = Some("approved-fix-policy".to_string());
+        exec.current_session_id = Some("implementation-approval-session".to_string());
+        exec.step_history.push(StepHistoryEntry {
+            step_name: "implementation_fix_policy".to_string(),
+            completed_at: 1000.0,
+            result: Some("reject".to_string()),
+            session_id: Some("stale-rejected-policy-session".to_string()),
+            token_usage: None,
+            structured_output: Some(serde_json::json!({
+                "decision": "reject",
+                "comment": "Revise policy."
+            })),
+            run_index: 1,
+            child_outputs: None,
+        });
+        exec.step_outputs.insert(
+            "implementation_fix_policy".to_string(),
+            StepOutput {
+                step_name: "implementation_fix_policy".to_string(),
+                run_index: 1,
+                session_id: Some("stale-rejected-policy-session".to_string()),
+                result: Some("reject".to_string()),
+                structured_output: Some(serde_json::json!({
+                    "decision": "reject",
+                    "comment": "Revise policy."
+                })),
+                output_contract: None,
+                token_usage: None,
+                completed_at: 1000.0,
+            },
+        );
+        {
+            let mut execs = engine.executions.lock().await;
+            execs.insert("/repo".to_string(), exec);
+        }
+        {
+            let mut refs = engine.session_workflow_refs.lock().await;
+            refs.insert(
+                "stale-rejected-policy-session".to_string(),
+                SessionWorkflowRef {
+                    worktree_path: "/repo".to_string(),
+                    kind: SessionRefKind::SequentialStep,
+                },
+            );
+        }
+
+        let result = engine
+            .validate_approval_chat_instruction(
+                "stale-rejected-policy-session",
+                "Please change policy",
+            )
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            WorkflowEngineError::InvalidState(_)
+        ));
+    }
+
+    #[test]
+    fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
+        let session = crate::session::ChatSession {
+            id: "policy-session".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![
+                crate::session::ChatMessage {
+                    id: "m1".to_string(),
+                    role: crate::session::MessageRole::Agent,
+                    content: "old policy".to_string(),
+                    thinking: None,
+                    activities: None,
+                    parts: None,
+                    timestamp: 1.0,
+                    mentions: None,
+                },
+                crate::session::ChatMessage {
+                    id: "m2".to_string(),
+                    role: crate::session::MessageRole::Human,
+                    content: "Narrow the fix policy".to_string(),
+                    thinking: None,
+                    activities: None,
+                    parts: None,
+                    timestamp: 2.0,
+                    mentions: None,
+                },
+                crate::session::ChatMessage {
+                    id: "m3".to_string(),
+                    role: crate::session::MessageRole::Agent,
+                    content: String::new(),
+                    thinking: None,
+                    activities: None,
+                    parts: Some(vec![crate::session::MessagePart::Text {
+                        content: "latest approved policy".to_string(),
+                        parent_tool_use_id: None,
+                    }]),
+                    timestamp: 3.0,
+                    mentions: None,
+                },
+            ],
+            state: crate::session::SessionState::Idle,
+            created_at: 1.0,
+            updated_at: 3.0,
+            agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: None,
+        };
+
+        let output = WorkflowEngine::extract_last_assistant_text_from_session(&session).unwrap();
+        assert_eq!(output, "latest approved policy");
     }
 
     // ---- make_step_history_entry ----
@@ -5627,8 +7092,6 @@ mod tests {
 
         // 1. validate
         WorkflowEngine::validate_approval_decision(&decision).unwrap();
-
-        let result_tag = "reject".to_string();
 
         // 3. 遷移先 "fix" ステップを含むワークフローを構築
         let mut exec = WorkflowExecution {
@@ -5699,12 +7162,20 @@ mod tests {
         let action = exec.decide_approval_action(&decision).unwrap();
         assert_eq!(action, ApprovalAction::TransitionTo("fix".to_string()));
 
-        // 5. make_step_history_entry + push (Reject時はstructured_output/output_contractなし)
-        let entry = exec.make_step_history_entry(Some(result_tag), None, None);
-        exec.step_history.push(entry);
-
-        // 6. apply_transition
-        let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
+        // 5. handle_approvalと同じ適用経路でReject commentをStepOutputに保存する
+        let outcome = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &decision,
+            ApprovalApplication {
+                effective_result: "reject".to_string(),
+                structured_output: Some(WorkflowEngine::reject_structured_output(
+                    "Fix the naming convention",
+                    &[],
+                )),
+                output_contract: None,
+            },
+        )
+        .unwrap();
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
 
         // 検証: step_history にReject結果が記録されている
@@ -5712,10 +7183,961 @@ mod tests {
         let hist = &exec.step_history[0];
         assert_eq!(hist.step_name, "review");
         assert_eq!(hist.result.as_deref(), Some("reject"));
+        assert_eq!(
+            hist.structured_output.as_ref().unwrap()["comment"],
+            "Fix the naming convention"
+        );
+        let review_output = exec.step_outputs.get("review").unwrap();
+        assert_eq!(review_output.result.as_deref(), Some("reject"));
+        assert_eq!(
+            review_output.structured_output.as_ref().unwrap()["comment"],
+            "Fix the naming convention"
+        );
 
         // 検証: 遷移先 "fix" ステップに移動している
         assert_eq!(exec.current_step_index, 1);
         assert_eq!(exec.workflow.steps[exec.current_step_index].name, "fix");
+
+        let injected = WorkflowEngine::inject_step_outputs(
+            "Draft next policy",
+            &exec.workflow.steps[exec.current_step_index],
+            &exec.step_outputs,
+            &exec.step_history,
+            &HashMap::new(),
+        );
+        assert!(injected.contains("\"decision\": \"reject\""));
+        assert!(injected.contains("\"comment\": \"Fix the naming convention\""));
+    }
+
+    #[test]
+    fn apply_approval_application_records_approved_policy_and_advances_once() {
+        let mut exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: Workflow {
+                name: "auto-approve".to_string(),
+                description: "test".to_string(),
+                builtin: false,
+                steps: vec![
+                    Step {
+                        name: "fix_policy".to_string(),
+                        mode: Some(StepMode::Approval),
+                        persona: None,
+                        policy: None,
+                        knowledge: None,
+                        instruction: Some("Review fix policy".to_string()),
+                        output_contract: Some("approved-fix-policy".to_string()),
+                        rules: vec![],
+                        cycle_guard: None,
+                        pass_previous_response: None,
+                        pass_output_from: None,
+                        inline_prompt: None,
+                        collect: None,
+                        parallel: None,
+                        aggregate: None,
+                        resets_cycle_for: None,
+                    },
+                    make_test_step("fix", StepMode::Auto, "Fix", vec![], None),
+                ],
+            },
+            state: WorkflowExecutionState::WaitingApproval,
+            current_step_index: 0,
+            step_execution_counts: {
+                let mut m = HashMap::new();
+                m.insert("fix_policy".to_string(), 1);
+                m
+            },
+            step_history: vec![],
+            chat_session_id: "session-1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: Some("policy-session".to_string()),
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+        let structured_output = serde_json::json!({
+            "policy": "Fix only the reported issues.",
+            "review_step": "code_review_parallel"
+        });
+        let first = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &ApprovalDecision::Approve,
+            ApprovalApplication {
+                effective_result: "approved".to_string(),
+                structured_output: Some(structured_output),
+                output_contract: Some("approved-fix-policy".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(matches!(first, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(exec.current_step_index, 1);
+        assert_eq!(exec.step_history.len(), 1);
+        assert_eq!(*exec.step_execution_counts.get("fix").unwrap(), 1);
+        assert!(!exec.workflow_variables.contains_key("approved_fix_policy"));
+
+        let duplicate = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &ApprovalDecision::Approve,
+            ApprovalApplication {
+                effective_result: "approved".to_string(),
+                structured_output: Some(serde_json::json!({
+                    "policy": "Duplicate",
+                    "review_step": "code_review_parallel"
+                })),
+                output_contract: Some("approved-fix-policy".to_string()),
+            },
+        );
+        match duplicate {
+            Err(WorkflowEngineError::InvalidState(_)) => {}
+            _ => panic!("expected invalid_state"),
+        }
+        assert_eq!(exec.step_history.len(), 1);
+        assert_eq!(*exec.step_execution_counts.get("fix").unwrap(), 1);
+    }
+
+    #[test]
+    fn spec_driven_plan_fix_policy_approve_records_policy_and_starts_plan_fix_once() {
+        let mut exec =
+            make_spec_driven_plan_fix_policy_exec("exec-plan-approve", "plan-policy-session");
+        let policy_text = approved_fix_policy_output(
+            "Update the spec only for the approved plan review finding.",
+            "plan_review_parallel",
+        );
+        let contract_result = WorkflowEngine::validate_approval_contract_extraction(
+            "approved-fix-policy",
+            extract_workflow_output(&policy_text),
+            &exec.workflow,
+            exec.current_step_index,
+        )
+        .unwrap();
+        let (structured_output, effective_result) = match contract_result {
+            ContractCheckResult::Valid {
+                structured_output,
+                result,
+            } => (structured_output, result.unwrap()),
+            _ => panic!("expected valid approved-fix-policy output"),
+        };
+
+        let outcome = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &ApprovalDecision::Approve,
+            ApprovalApplication {
+                effective_result,
+                structured_output: Some(structured_output),
+                output_contract: Some("approved-fix-policy".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "plan_fix"
+        );
+        assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
+        assert_eq!(
+            exec.step_history
+                .iter()
+                .filter(|entry| entry.step_name == "plan_fix_policy")
+                .count(),
+            1
+        );
+        assert_eq!(
+            exec.step_outputs
+                .get("plan_fix_policy")
+                .and_then(|output| output.structured_output.as_ref())
+                .and_then(|output| output.get("policy"))
+                .and_then(|policy| policy.as_str()),
+            Some("Update the spec only for the approved plan review finding.")
+        );
+        assert_eq!(
+            exec.step_outputs
+                .get("plan_fix_policy")
+                .and_then(|output| output.output_contract.as_deref()),
+            Some("approved-fix-policy")
+        );
+
+        let duplicate = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &ApprovalDecision::Approve,
+            ApprovalApplication {
+                effective_result: "approved".to_string(),
+                structured_output: Some(serde_json::json!({
+                    "policy": "Duplicate",
+                    "review_step": "plan_review_parallel"
+                })),
+                output_contract: Some("approved-fix-policy".to_string()),
+            },
+        );
+        assert!(matches!(
+            duplicate,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        assert_eq!(
+            exec.step_history
+                .iter()
+                .filter(|entry| entry.step_name == "plan_fix_policy")
+                .count(),
+            1
+        );
+        assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
+    }
+
+    #[test]
+    fn spec_driven_plan_fix_policy_reject_returns_to_plan_approval_without_approved_policy_or_plan_fix(
+    ) {
+        let mut exec =
+            make_spec_driven_plan_fix_policy_exec("exec-plan-reject", "plan-policy-session");
+        let decision = ApprovalDecision::Reject {
+            comment: "Revise the plan policy first.".to_string(),
+        };
+
+        let outcome = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &decision,
+            ApprovalApplication {
+                effective_result: "reject".to_string(),
+                structured_output: Some(WorkflowEngine::reject_structured_output(
+                    "Revise the plan policy first.",
+                    &[],
+                )),
+                output_contract: None,
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "plan_approval"
+        );
+        assert_eq!(exec.step_execution_counts.get("plan_fix"), None);
+        assert!(!exec
+            .step_outputs
+            .values()
+            .any(|output| output.output_contract.as_deref() == Some("approved-fix-policy")));
+        assert_eq!(
+            exec.step_outputs
+                .get("plan_fix_policy")
+                .and_then(|output| output.structured_output.as_ref())
+                .and_then(|output| output.get("decision"))
+                .and_then(|decision| decision.as_str()),
+            Some("reject")
+        );
+    }
+
+    #[test]
+    fn spec_driven_implementation_fix_policy_reject_returns_to_implementation_approval_without_approved_policy_or_fix(
+    ) {
+        let mut exec = make_spec_driven_fix_policy_exec(
+            "exec-implementation-reject",
+            "implementation-policy-session",
+            "implementation_fix_policy",
+        );
+        let decision = ApprovalDecision::Reject {
+            comment: "Revise the implementation policy first.".to_string(),
+        };
+
+        let outcome = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &decision,
+            ApprovalApplication {
+                effective_result: "reject".to_string(),
+                structured_output: Some(WorkflowEngine::reject_structured_output(
+                    "Revise the implementation policy first.",
+                    &[],
+                )),
+                output_contract: None,
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "implementation_approval"
+        );
+        assert_eq!(exec.step_execution_counts.get("fix"), None);
+        assert!(!exec
+            .step_outputs
+            .values()
+            .any(|output| output.output_contract.as_deref() == Some("approved-fix-policy")));
+        assert_eq!(
+            exec.step_outputs
+                .get("implementation_fix_policy")
+                .and_then(|output| output.structured_output.as_ref())
+                .and_then(|output| output.get("decision"))
+                .and_then(|decision| decision.as_str()),
+            Some("reject")
+        );
+    }
+
+    #[test]
+    fn auto_approve_invalid_policy_is_rejected_by_contract_validation() {
+        let workflow = make_approved_fix_policy_workflow();
+        let result = WorkflowEngine::validate_approval_contract_extraction(
+            "approved-fix-policy",
+            ExtractionResult::Found {
+                type_name: "approved-fix-policy".to_string(),
+                json: serde_json::json!({
+                    "policy": "",
+                    "review_step": "code_review_parallel"
+                }),
+            },
+            &workflow,
+            1,
+        );
+        match result {
+            Err(WorkflowEngineError::ValidationError(_)) => {}
+            _ => panic!("expected validation_error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_approval_invalid_approved_fix_policy_preserves_waiting_state_without_outputs() {
+        let engine = WorkflowEngine::new();
+        let worktree_path = "/repo-invalid-policy-handle";
+        let exec = make_spec_driven_plan_fix_policy_exec("exec-invalid-policy", "policy-session");
+        let before = exec.to_workflow_state();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(worktree_path.to_string(), exec);
+        engine.session_workflow_refs.lock().await.insert(
+            "policy-session".to_string(),
+            SessionWorkflowRef {
+                worktree_path: worktree_path.to_string(),
+                kind: SessionRefKind::SequentialStep,
+            },
+        );
+
+        let result = engine
+            .handle_approval_with_output_for_test(
+                worktree_path,
+                ApprovalDecision::Approve,
+                Some("exec-invalid-policy"),
+                Some("plan_fix_policy"),
+                Some(approved_fix_policy_output("   ", "plan_review_parallel")),
+            )
+            .await;
+
+        match result {
+            Err(WorkflowEngineError::ValidationError(_)) => {}
+            _ => panic!("expected validation_error"),
+        }
+        let execs = engine.executions.lock().await;
+        let after = execs.get(worktree_path).unwrap();
+        assert_eq!(after.state, WorkflowExecutionState::WaitingApproval);
+        assert_eq!(
+            after.workflow.steps[after.current_step_index].name,
+            before.current_step_name
+        );
+        assert_eq!(after.current_session_id, before.current_session_id);
+        assert!(after.step_history.is_empty());
+        assert!(after.step_outputs.is_empty());
+        assert_eq!(after.step_execution_counts.get("plan_fix"), None);
+    }
+
+    #[tokio::test]
+    async fn auto_approve_invalid_approved_fix_policy_preserves_waiting_state_without_outputs() {
+        let engine = WorkflowEngine::new();
+        let worktree_path = "/repo-invalid-policy-auto";
+        let exec = make_spec_driven_fix_policy_exec(
+            "exec-invalid-auto-policy",
+            "policy-session",
+            "implementation_fix_policy",
+        );
+        let before = exec.to_workflow_state();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(worktree_path.to_string(), exec);
+        engine.session_workflow_refs.lock().await.insert(
+            "policy-session".to_string(),
+            SessionWorkflowRef {
+                worktree_path: worktree_path.to_string(),
+                kind: SessionRefKind::SequentialStep,
+            },
+        );
+
+        let result = engine
+            .execute_outcome_persist_auto_approve_for_test(
+                worktree_path,
+                &before,
+                approved_fix_policy_output("", "code_review_parallel"),
+            )
+            .await;
+
+        match result {
+            Err(WorkflowEngineError::ValidationError(_)) => {}
+            _ => panic!("expected validation_error"),
+        }
+        let execs = engine.executions.lock().await;
+        let after = execs.get(worktree_path).unwrap();
+        assert_eq!(after.state, WorkflowExecutionState::WaitingApproval);
+        assert_eq!(
+            after.workflow.steps[after.current_step_index].name,
+            before.current_step_name
+        );
+        assert_eq!(after.current_session_id, before.current_session_id);
+        assert!(after.step_history.is_empty());
+        assert!(after.step_outputs.is_empty());
+        assert_eq!(after.step_execution_counts.get("fix"), None);
+    }
+
+    #[test]
+    fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
+        let mut exec = WorkflowExecution {
+            id: "exec-auto-approve".to_string(),
+            workflow: Workflow {
+                name: "auto-approve-path".to_string(),
+                description: "test".to_string(),
+                builtin: false,
+                steps: vec![
+                    Step {
+                        name: "implementation_fix_policy".to_string(),
+                        mode: Some(StepMode::Approval),
+                        persona: None,
+                        policy: None,
+                        knowledge: None,
+                        instruction: Some("Review fix policy".to_string()),
+                        output_contract: Some("approved-fix-policy".to_string()),
+                        rules: vec![],
+                        cycle_guard: None,
+                        pass_previous_response: None,
+                        pass_output_from: Some(vec!["code_review_parallel".to_string()]),
+                        inline_prompt: None,
+                        collect: None,
+                        parallel: None,
+                        aggregate: None,
+                        resets_cycle_for: None,
+                    },
+                    make_test_step("fix", StepMode::Auto, "Fix", vec![], None),
+                    Step {
+                        name: "code_review_parallel".to_string(),
+                        mode: None,
+                        persona: None,
+                        policy: None,
+                        knowledge: None,
+                        instruction: None,
+                        output_contract: None,
+                        rules: vec![],
+                        cycle_guard: None,
+                        pass_previous_response: None,
+                        pass_output_from: None,
+                        inline_prompt: None,
+                        collect: None,
+                        parallel: Some(vec![]),
+                        aggregate: Some(AggregateConfig {
+                            all_match: Some("LGTM".to_string()),
+                            any_match: None,
+                            then: "fix".to_string(),
+                            r#else: "implementation_fix_policy".to_string(),
+                        }),
+                        resets_cycle_for: None,
+                    },
+                ],
+            },
+            state: WorkflowExecutionState::WaitingApproval,
+            current_step_index: 0,
+            step_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
+            step_history: Vec::new(),
+            chat_session_id: "parent-session".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: Some("policy-session".to_string()),
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+        let snapshot = exec.to_workflow_state();
+        assert_eq!(
+            WorkflowEngine::auto_approve_target_for_persisted_snapshot(&snapshot, true),
+            Some((
+                "exec-auto-approve".to_string(),
+                "implementation_fix_policy".to_string()
+            ))
+        );
+
+        let session = crate::session::ChatSession {
+            id: "policy-session".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: vec![
+                crate::session::ChatMessage {
+                    id: "m1".to_string(),
+                    role: crate::session::MessageRole::Agent,
+                    content: approved_fix_policy_output("Old policy.", "code_review_parallel"),
+                    thinking: None,
+                    activities: None,
+                    parts: None,
+                    timestamp: 1.0,
+                    mentions: None,
+                },
+                crate::session::ChatMessage {
+                    id: "m2".to_string(),
+                    role: crate::session::MessageRole::Agent,
+                    content: approved_fix_policy_output(
+                        "Fix only reviewed findings.",
+                        "code_review_parallel",
+                    ),
+                    thinking: None,
+                    activities: None,
+                    parts: None,
+                    timestamp: 2.0,
+                    mentions: None,
+                },
+            ],
+            state: crate::session::SessionState::Idle,
+            created_at: 1.0,
+            updated_at: 2.0,
+            agent_session_id: None,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: None,
+        };
+        let latest = WorkflowEngine::extract_last_assistant_text_from_session(&session).unwrap();
+        let contract_result = WorkflowEngine::validate_approval_contract_extraction(
+            "approved-fix-policy",
+            extract_workflow_output(&latest),
+            &exec.workflow,
+            exec.current_step_index,
+        )
+        .unwrap();
+        let (structured_output, contract_result) = match contract_result {
+            ContractCheckResult::Valid {
+                structured_output,
+                result,
+            } => (structured_output, result),
+            _ => panic!("expected valid approval contract"),
+        };
+        let outcome = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &ApprovalDecision::Approve,
+            ApprovalApplication {
+                effective_result: contract_result.unwrap(),
+                structured_output: Some(structured_output),
+                output_contract: Some("approved-fix-policy".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(exec.current_step_index, 1);
+        assert_eq!(exec.step_history.len(), 1);
+        assert_eq!(exec.step_outputs.len(), 1);
+        assert_eq!(
+            exec.step_outputs["implementation_fix_policy"]
+                .structured_output
+                .as_ref()
+                .unwrap()["policy"],
+            "Fix only reviewed findings."
+        );
+        assert_eq!(exec.workflow_variables.get("approved_fix_policy"), None);
+        assert_eq!(exec.step_execution_counts.get("fix"), Some(&1));
+
+        let duplicate = WorkflowEngine::apply_approval_application(
+            &mut exec,
+            &ApprovalDecision::Approve,
+            ApprovalApplication {
+                effective_result: "approved".to_string(),
+                structured_output: Some(serde_json::json!({
+                    "policy": "Duplicate",
+                    "review_step": "code_review_parallel"
+                })),
+                output_contract: Some("approved-fix-policy".to_string()),
+            },
+        );
+        assert!(matches!(
+            duplicate,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        assert_eq!(exec.step_history.len(), 1);
+        assert_eq!(exec.step_execution_counts.get("fix"), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once() {
+        let engine = WorkflowEngine::new();
+        let worktree_path = "/repo";
+        let policy_session_id = uuid::Uuid::new_v4().to_string();
+
+        let mut fix_step = make_test_step("fix", StepMode::Auto, "Fix", vec![], None);
+        fix_step.collect = Some(CollectConfig {
+            from: vec!["implementation_fix_policy".to_string()],
+            reduce: ReduceStrategy::Last,
+        });
+        let exec = WorkflowExecution {
+            id: "exec-auto-approve".to_string(),
+            workflow: Workflow {
+                name: "auto-approve-execute-outcome".to_string(),
+                description: "test".to_string(),
+                builtin: false,
+                steps: vec![
+                    Step {
+                        name: "code_review_parallel".to_string(),
+                        mode: None,
+                        persona: None,
+                        policy: None,
+                        knowledge: None,
+                        instruction: None,
+                        output_contract: None,
+                        rules: vec![],
+                        cycle_guard: None,
+                        pass_previous_response: None,
+                        pass_output_from: None,
+                        inline_prompt: None,
+                        collect: None,
+                        parallel: Some(vec![]),
+                        aggregate: Some(AggregateConfig {
+                            all_match: Some("LGTM".to_string()),
+                            any_match: None,
+                            then: "done".to_string(),
+                            r#else: "implementation_fix_policy".to_string(),
+                        }),
+                        resets_cycle_for: None,
+                    },
+                    Step {
+                        name: "implementation_fix_policy".to_string(),
+                        mode: Some(StepMode::Approval),
+                        persona: None,
+                        policy: None,
+                        knowledge: None,
+                        instruction: Some("Review fix policy".to_string()),
+                        output_contract: Some("approved-fix-policy".to_string()),
+                        rules: vec![],
+                        cycle_guard: None,
+                        pass_previous_response: None,
+                        pass_output_from: Some(vec!["code_review_parallel".to_string()]),
+                        inline_prompt: None,
+                        collect: None,
+                        parallel: None,
+                        aggregate: None,
+                        resets_cycle_for: None,
+                    },
+                    fix_step,
+                ],
+            },
+            state: WorkflowExecutionState::WaitingApproval,
+            current_step_index: 1,
+            step_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
+            step_history: Vec::new(),
+            chat_session_id: "parent-session".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: Some(policy_session_id.clone()),
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+        let snapshot = exec.to_workflow_state();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(worktree_path.to_string(), exec);
+        engine.session_workflow_refs.lock().await.insert(
+            policy_session_id,
+            SessionWorkflowRef {
+                worktree_path: worktree_path.to_string(),
+                kind: SessionRefKind::SequentialStep,
+            },
+        );
+
+        let outcome = engine
+            .execute_outcome_persist_auto_approve_for_test(
+                worktree_path,
+                &snapshot,
+                approved_fix_policy_output(
+                    "Fix only the approved review finding.",
+                    "code_review_parallel",
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        let execs = engine.executions.lock().await;
+        let exec = execs.get(worktree_path).unwrap();
+        assert!(matches!(outcome, StepOutcome::ReduceAndTransition(_)));
+        assert_eq!(exec.step_execution_counts.get("fix"), Some(&1));
+        assert_eq!(
+            exec.step_history
+                .iter()
+                .filter(|entry| entry.step_name == "implementation_fix_policy")
+                .count(),
+            1
+        );
+        assert_eq!(
+            exec.step_outputs
+                .get("implementation_fix_policy")
+                .and_then(|output| output.structured_output.as_ref())
+                .and_then(|output| output.get("policy"))
+                .and_then(|policy| policy.as_str()),
+            Some("Fix only the approved review finding.")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_outcome_auto_approve_plan_policy_starts_plan_fix_once() {
+        let engine = WorkflowEngine::new();
+        let worktree_path = "/repo";
+        let policy_session_id = uuid::Uuid::new_v4().to_string();
+        let exec =
+            make_spec_driven_plan_fix_policy_exec("exec-plan-auto-approve", &policy_session_id);
+        let snapshot = exec.to_workflow_state();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(worktree_path.to_string(), exec);
+        engine.session_workflow_refs.lock().await.insert(
+            policy_session_id,
+            SessionWorkflowRef {
+                worktree_path: worktree_path.to_string(),
+                kind: SessionRefKind::SequentialStep,
+            },
+        );
+
+        let outcome = engine
+            .execute_outcome_persist_auto_approve_for_test(
+                worktree_path,
+                &snapshot,
+                approved_fix_policy_output(
+                    "Revise the spec using the approved plan policy.",
+                    "plan_review_parallel",
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        let execs = engine.executions.lock().await;
+        let exec = execs.get(worktree_path).unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "plan_fix"
+        );
+        assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
+        assert_eq!(
+            exec.step_history
+                .iter()
+                .filter(|entry| entry.step_name == "plan_fix_policy")
+                .count(),
+            1
+        );
+        assert_eq!(
+            exec.step_outputs
+                .get("plan_fix_policy")
+                .and_then(|output| output.structured_output.as_ref())
+                .and_then(|output| output.get("policy"))
+                .and_then(|policy| policy.as_str()),
+            Some("Revise the spec using the approved plan policy.")
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_approve_and_manual_approve_race_starts_plan_fix_once() {
+        let engine = Arc::new(WorkflowEngine::new());
+        let worktree_path = "/repo";
+        let policy_session_id = uuid::Uuid::new_v4().to_string();
+        let exec =
+            make_spec_driven_plan_fix_policy_exec("exec-plan-approve-race", &policy_session_id);
+        let snapshot = exec.to_workflow_state();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(worktree_path.to_string(), exec);
+        engine.session_workflow_refs.lock().await.insert(
+            policy_session_id,
+            SessionWorkflowRef {
+                worktree_path: worktree_path.to_string(),
+                kind: SessionRefKind::SequentialStep,
+            },
+        );
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let expected_execution_id = snapshot.execution_id.clone();
+        let expected_step_name = snapshot.current_step_name.clone();
+        let auto_snapshot = snapshot.clone();
+
+        let auto_engine = Arc::clone(&engine);
+        let auto_barrier = Arc::clone(&barrier);
+        let auto_worktree_path = worktree_path.to_string();
+        let auto_expected_execution_id = expected_execution_id.clone();
+        let auto_expected_step_name = expected_step_name.clone();
+        let auto = async move {
+            {
+                let execs = auto_engine.executions.lock().await;
+                let exec = execs.get(&auto_worktree_path).unwrap();
+                WorkflowEngine::validate_approval_target_snapshot(
+                    exec,
+                    Some(&auto_expected_execution_id),
+                    Some(&auto_expected_step_name),
+                )
+                .unwrap();
+            }
+            auto_barrier.wait().await;
+            auto_engine
+                .execute_outcome_persist_auto_approve_for_test(
+                    &auto_worktree_path,
+                    &auto_snapshot,
+                    approved_fix_policy_output(
+                        "Revise the spec from the auto approval path.",
+                        "plan_review_parallel",
+                    ),
+                )
+                .await
+                .and_then(|outcome| {
+                    outcome.ok_or_else(|| {
+                        WorkflowEngineError::InvalidState(
+                            "auto approve did not target waiting approval".to_string(),
+                        )
+                    })
+                })
+        };
+
+        let manual_engine = Arc::clone(&engine);
+        let manual_barrier = Arc::clone(&barrier);
+        let manual_worktree_path = worktree_path.to_string();
+        let manual = async move {
+            {
+                let execs = manual_engine.executions.lock().await;
+                let exec = execs.get(&manual_worktree_path).unwrap();
+                WorkflowEngine::validate_approval_target_snapshot(
+                    exec,
+                    Some(&expected_execution_id),
+                    Some(&expected_step_name),
+                )
+                .unwrap();
+            }
+            manual_barrier.wait().await;
+            manual_engine
+                .handle_approval_with_output_for_test(
+                    &manual_worktree_path,
+                    ApprovalDecision::Approve,
+                    Some(&expected_execution_id),
+                    Some(&expected_step_name),
+                    Some(approved_fix_policy_output(
+                        "Revise the spec from the manual approval path.",
+                        "plan_review_parallel",
+                    )),
+                )
+                .await
+        };
+
+        let (auto_result, manual_result) = tokio::join!(auto, manual);
+        let results = [&auto_result, &manual_result];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(results
+            .iter()
+            .any(|result| matches!(result, Ok(StepOutcome::TransitionAndStart(_)))));
+        assert!(results.iter().any(|result| matches!(
+            result,
+            Err(WorkflowEngineError::InvalidState(_))
+                | Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
+        )));
+
+        let execs = engine.executions.lock().await;
+        let exec = execs.get(worktree_path).unwrap();
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "plan_fix"
+        );
+        assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
+        assert_eq!(
+            exec.step_history
+                .iter()
+                .filter(|entry| entry.step_name == "plan_fix_policy")
+                .count(),
+            1
+        );
+        assert_eq!(
+            exec.step_outputs
+                .get("plan_fix_policy")
+                .and_then(|output| output.structured_output.as_ref())
+                .and_then(|output| output.get("review_step"))
+                .and_then(|review_step| review_step.as_str()),
+            Some("plan_review_parallel")
+        );
+    }
+
+    #[test]
+    fn execute_outcome_persist_path_builds_auto_approve_target_for_current_step() {
+        let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        exec.current_session_id = Some("policy-session".to_string());
+        let waiting = exec.to_workflow_state();
+
+        assert_eq!(
+            WorkflowEngine::auto_approve_target_for_persisted_snapshot(&waiting, true),
+            Some(("exec-1".to_string(), "review".to_string()))
+        );
+        assert_eq!(
+            WorkflowEngine::auto_approve_target_for_persisted_snapshot(&waiting, false),
+            None
+        );
+
+        exec.state = WorkflowExecutionState::Running;
+        let running = exec.to_workflow_state();
+        assert_eq!(
+            WorkflowEngine::auto_approve_target_for_persisted_snapshot(&running, true),
+            None
+        );
+    }
+
+    #[test]
+    fn workflow_approval_auto_approve_flag_controls_waiting_approval_snapshots() {
+        let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        exec.current_session_id = Some("policy-session".to_string());
+        let waiting = exec.to_workflow_state();
+        assert!(WorkflowEngine::should_auto_approve_workflow_approval(
+            &waiting, true
+        ));
+        assert!(!WorkflowEngine::should_auto_approve_workflow_approval(
+            &waiting, false
+        ));
+
+        exec.state = WorkflowExecutionState::Running;
+        let running = exec.to_workflow_state();
+        assert!(!WorkflowEngine::should_auto_approve_workflow_approval(
+            &running, true
+        ));
+    }
+
+    #[test]
+    fn workflow_approval_auto_approve_disabled_ignores_agent_auto_approve_permission_mode() {
+        let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        exec.current_session_id = Some("policy-session".to_string());
+        let agent_auto_approve_permission_mode = "bypassPermissions";
+        let workflow_approval_auto_approve_enabled = false;
+        let snapshot = exec.to_workflow_state();
+
+        assert_eq!(agent_auto_approve_permission_mode, "bypassPermissions");
+        assert!(!WorkflowEngine::should_auto_approve_workflow_approval(
+            &snapshot,
+            workflow_approval_auto_approve_enabled
+        ));
+        assert_eq!(
+            WorkflowEngine::auto_approve_target_for_persisted_snapshot(
+                &snapshot,
+                workflow_approval_auto_approve_enabled,
+            ),
+            None
+        );
     }
 
     // ---- ApprovalDecision serde ----

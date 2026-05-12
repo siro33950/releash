@@ -356,6 +356,7 @@ mod tests {
                     workflow_variables: std::collections::HashMap::new(),
                     step_states: std::collections::HashMap::new(),
                     active_parallel_steps: vec![],
+                    approval_operations: None,
                     started_at: 1000.0,
                     updated_at: 1000.0,
                 },

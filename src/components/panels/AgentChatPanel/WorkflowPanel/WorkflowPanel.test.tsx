@@ -50,6 +50,11 @@ function makeWorkflowState(
 }
 
 describe("WorkflowPanel", () => {
+	beforeEach(() => {
+		mockInvoke.mockReset();
+		mockInvoke.mockResolvedValue([]);
+	});
+
 	it("displays workflow name and status badge", () => {
 		render(
 			<WorkflowPanel
@@ -184,6 +189,7 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({
 					state: { type: "waiting_approval" },
+					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
 				chatSessionId="session-1"
@@ -195,6 +201,25 @@ describe("WorkflowPanel", () => {
 		expect(
 			screen.getByRole("button", { name: "Reject step" }),
 		).toBeInTheDocument();
+	});
+
+	it("hides Reject button when waiting_approval cannot reject", () => {
+		render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+					approvalOperations: { canReject: false },
+				})}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		expect(
+			screen.getByRole("button", { name: "Approve step" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Reject step" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("invokes approve_workflow_step with approve when Approve is clicked", () => {
@@ -211,7 +236,35 @@ describe("WorkflowPanel", () => {
 		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
 			worktreePath: "/repo",
 			decision: "approve",
+			executionId: "exec-001",
+			stepName: "step-1",
 		});
+	});
+
+	it("shows approval command errors in the UI", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "approve_workflow_step") {
+				return Promise.reject(
+					"invalid_state: Workflow is not waiting for approval",
+				);
+			}
+			return Promise.resolve([]);
+		});
+
+		render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+				})}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Approve step" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Workflow approval is no longer available for the current step.",
+		);
 	});
 
 	it("shows reject comment form when Reject is clicked", () => {
@@ -219,6 +272,7 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({
 					state: { type: "waiting_approval" },
+					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
 				chatSessionId="session-1"
@@ -236,6 +290,7 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({
 					state: { type: "waiting_approval" },
+					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
 				chatSessionId="session-1"
@@ -252,6 +307,8 @@ describe("WorkflowPanel", () => {
 		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
 			worktreePath: "/repo",
 			decision: { reject: { comment: "Please fix the bug" } },
+			executionId: "exec-001",
+			stepName: "step-1",
 		});
 		await waitFor(() => {
 			expect(screen.queryByLabelText("Reject comment")).not.toBeInTheDocument();
@@ -263,6 +320,7 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({
 					state: { type: "waiting_approval" },
+					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
 				chatSessionId="session-1"
@@ -283,6 +341,7 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({
 					state: { type: "waiting_approval" },
+					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
 				chatSessionId="session-1"
@@ -302,6 +361,7 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({
 					state: { type: "waiting_approval" },
+					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
 				chatSessionId="session-1"
@@ -318,6 +378,7 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({
 					state: { type: "waiting_approval" },
+					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
 				chatSessionId="session-1"
@@ -335,78 +396,6 @@ describe("WorkflowPanel", () => {
 			/>,
 		);
 		expect(screen.queryByLabelText("Reject comment")).not.toBeInTheDocument();
-	});
-
-	it("shows Complete button for interactive mode when running", () => {
-		render(
-			<WorkflowPanel
-				workflowState={makeWorkflowState({
-					state: { type: "running" },
-					currentStepIndex: 0,
-					workflowDefinition: {
-						name: "test-workflow",
-						description: "test",
-						builtin: false,
-						steps: [
-							{
-								name: "step-1",
-								mode: "interactive",
-								instruction: "implement",
-								rules: [],
-							},
-							{
-								name: "step-2",
-								mode: "auto",
-								instruction: "review",
-								rules: [],
-							},
-						],
-					},
-				})}
-				worktreePath="/repo"
-				chatSessionId="session-1"
-			/>,
-		);
-		expect(
-			screen.getByRole("button", { name: "Complete step" }),
-		).toBeInTheDocument();
-	});
-
-	it("invokes complete_interactive_step when Complete is clicked", () => {
-		render(
-			<WorkflowPanel
-				workflowState={makeWorkflowState({
-					state: { type: "running" },
-					currentStepIndex: 0,
-					workflowDefinition: {
-						name: "test-workflow",
-						description: "test",
-						builtin: false,
-						steps: [
-							{
-								name: "step-1",
-								mode: "interactive",
-								instruction: "implement",
-								rules: [],
-							},
-							{
-								name: "step-2",
-								mode: "auto",
-								instruction: "review",
-								rules: [],
-							},
-						],
-					},
-				})}
-				worktreePath="/repo"
-				chatSessionId="session-1"
-			/>,
-		);
-		fireEvent.click(screen.getByRole("button", { name: "Complete step" }));
-		expect(mockInvoke).toHaveBeenCalledWith("complete_interactive_step", {
-			worktreePath: "/repo",
-			abort: false,
-		});
 	});
 
 	describe("NewWorkflowButton", () => {

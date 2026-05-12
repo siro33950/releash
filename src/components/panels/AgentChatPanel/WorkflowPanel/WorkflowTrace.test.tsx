@@ -23,7 +23,7 @@ function makeWorkflowState(
 			steps: [
 				{ name: "plan", mode: "auto", instruction: "plan", rules: [] },
 				{ name: "review", mode: "approval", instruction: "review", rules: [] },
-				{ name: "fix", mode: "interactive", instruction: "fix", rules: [] },
+				{ name: "fix", mode: "approval", instruction: "fix", rules: [] },
 			],
 		},
 		totalTokenUsage: { inputTokens: 100, outputTokens: 200 },
@@ -311,7 +311,7 @@ describe("WorkflowTrace", () => {
 							},
 							{
 								name: "fix",
-								mode: "interactive",
+								mode: "approval",
 								instruction: "fix",
 								rules: [],
 							},
@@ -550,6 +550,83 @@ describe("WorkflowTrace", () => {
 		expect(
 			screen.getByText(/"Please fix the naming convention"/),
 		).toBeInTheDocument();
+	});
+
+	it("displays adopted fix policy structured output in step history", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					stepStates: {
+						plan: "completed",
+						review: "completed",
+						fix: "pending",
+					},
+					stepHistory: [
+						{
+							stepName: "review",
+							completedAt: 1001,
+							result: "approve",
+							structuredOutput: {
+								policy: "Fix only the reported findings without refactoring.",
+								review_step: "code_review_parallel",
+							},
+						},
+					],
+				})}
+			/>,
+		);
+		fireEvent.click(screen.getByText("Structured Output"));
+		expect(
+			screen.getByText(/"Fix only the reported findings without refactoring."/),
+		).toBeInTheDocument();
+		expect(screen.getByText(/"code_review_parallel"/)).toBeInTheDocument();
+	});
+
+	it("shows fix policy step as waiting for approval in trace", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+					currentStepName: "plan_fix_policy",
+					currentStepIndex: 1,
+					stepStates: {
+						plan: "completed",
+						plan_fix_policy: "waiting_approval",
+						fix: "pending",
+					},
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "test",
+						builtin: false,
+						steps: [
+							{
+								name: "plan",
+								mode: "auto",
+								instruction: "plan",
+								rules: [],
+							},
+							{
+								name: "plan_fix_policy",
+								mode: "approval",
+								instruction: "policy",
+								rules: [],
+							},
+							{
+								name: "fix",
+								mode: "auto",
+								instruction: "fix",
+								rules: [],
+							},
+						],
+					},
+				})}
+			/>,
+		);
+		expect(
+			screen.getByText("Waiting for approval: plan_fix_policy"),
+		).toBeInTheDocument();
+		expect(screen.getByText("plan_fix_policy")).toBeInTheDocument();
+		expect(screen.getByText("Waiting for approval")).toBeInTheDocument();
 	});
 
 	it("renders parallel block as completed when all children done", () => {

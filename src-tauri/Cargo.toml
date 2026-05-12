@@ -90,4 +90,3 @@ vendored-openssl = ["git2/vendored-openssl"]
 
 [dev-dependencies]
 tempfile = "3"
-

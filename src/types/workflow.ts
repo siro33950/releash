@@ -48,7 +48,7 @@ export interface CycleGuard {
 	max_iterations: number;
 }
 
-export type StepMode = "auto" | "approval" | "interactive";
+export type StepMode = "auto" | "approval";
 
 export interface ParallelStep {
 	name: string;
@@ -147,6 +147,11 @@ export interface WorkflowState {
 	activeParallelSteps?: ParallelStepState[];
 	startedAt: number;
 	updatedAt: number;
+	approvalOperations?: ApprovalOperations;
+}
+
+export interface ApprovalOperations {
+	canReject: boolean;
 }
 
 export interface WorkflowStatePayload {
