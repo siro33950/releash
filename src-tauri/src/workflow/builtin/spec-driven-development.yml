@@ -6,6 +6,7 @@ steps:
   # 1. 要求整理（approval、Spec作成）
   - name: plan_requirements
     mode: approval
+    model: claude-opus-4-7
     instruction: plan-requirements
     policy: planning
     output_contract: spec-file-path
@@ -13,6 +14,7 @@ steps:
   # 2. 振る舞い定義（approval、Spec更新）
   - name: plan_behavior
     mode: approval
+    model: claude-opus-4-7
     instruction: plan-behavior
     policy: planning
     output_contract: spec-file-path
@@ -21,6 +23,7 @@ steps:
   # 3. アーキテクチャ概要（approval、Spec更新）
   - name: plan_architecture
     mode: approval
+    model: claude-opus-4-7
     instruction: plan-architecture
     policy: planning
     output_contract: spec-file-path
@@ -31,6 +34,7 @@ steps:
     parallel:
       - name: plan_review_completeness
         mode: auto
+        model: gpt-5.5
         instruction: plan-review-completeness
         policy: plan-review
         output_contract: review-verdict
@@ -39,6 +43,7 @@ steps:
           - plan_approval
       - name: plan_review_clarity
         mode: auto
+        model: gpt-5.5
         instruction: plan-review-clarity
         policy: plan-review
         output_contract: review-verdict
@@ -47,6 +52,7 @@ steps:
           - plan_approval
       - name: plan_review_security
         mode: auto
+        model: gpt-5.5
         instruction: plan-review-security
         policy: plan-review
         output_contract: review-verdict
@@ -55,6 +61,7 @@ steps:
           - plan_approval
       - name: plan_review_consistency
         mode: auto
+        model: gpt-5.5
         instruction: plan-review-consistency
         policy: plan-review
         output_contract: review-verdict
@@ -69,6 +76,7 @@ steps:
   # 6. Plan修正方針確認（approval）
   - name: plan_fix_policy
     mode: approval
+    model: claude-opus-4-7
     instruction: plan-fix-policy
     policy: planning
     output_contract: approved-fix-policy
@@ -83,6 +91,7 @@ steps:
   # 7. アーキテクチャ概要修正（auto、Spec更新）
   - name: plan_fix
     mode: auto
+    model: claude-opus-4-7
     instruction: plan-fix
     output_contract: spec-file-path
     pass_output_from:
@@ -100,6 +109,7 @@ steps:
   # 8. アーキテクチャ概要承認（approval）
   - name: plan_approval
     mode: approval
+    model: claude-opus-4-7
     instruction: plan-approval
     policy: planning
     pass_output_from:
@@ -114,6 +124,7 @@ steps:
   # 9. 実装（auto）
   - name: implement
     mode: auto
+    model: claude-opus-4-7
     instruction: implement
     policy: coding
     pass_output_from:
@@ -122,6 +133,7 @@ steps:
   # 9. 品質チェック（auto）
   - name: quality_check
     mode: auto
+    model: claude-opus-4-7
     instruction: quality-check
     policy: coding
     pass_previous_response: true
@@ -131,6 +143,7 @@ steps:
     parallel:
       - name: code_review_acceptance
         mode: auto
+        model: gpt-5.5
         instruction: review-acceptance
         policy: review
         output_contract: review-verdict
@@ -140,6 +153,7 @@ steps:
           - implementation_approval
       - name: code_review_structure
         mode: auto
+        model: gpt-5.5
         instruction: review-structure
         policy: review
         output_contract: review-verdict
@@ -149,6 +163,7 @@ steps:
           - implementation_approval
       - name: code_review_quality
         mode: auto
+        model: gpt-5.5
         instruction: review-quality
         policy: review
         output_contract: review-verdict
@@ -158,6 +173,7 @@ steps:
           - implementation_approval
       - name: code_review_test
         mode: auto
+        model: gpt-5.5
         instruction: review-test
         policy: review
         output_contract: review-verdict
@@ -167,6 +183,7 @@ steps:
           - implementation_approval
       - name: code_review_security
         mode: auto
+        model: gpt-5.5
         instruction: review-security
         policy: review
         output_contract: review-verdict
@@ -176,6 +193,7 @@ steps:
           - implementation_approval
       - name: code_review_architecture
         mode: auto
+        model: gpt-5.5
         instruction: review-architecture
         policy: review
         output_contract: review-verdict
@@ -191,6 +209,7 @@ steps:
   # 13. 実装修正方針確認（approval）
   - name: implementation_fix_policy
     mode: approval
+    model: claude-opus-4-7
     instruction: implementation-fix-policy
     policy: coding
     output_contract: approved-fix-policy
@@ -205,6 +224,7 @@ steps:
   # 14. 修正（auto）
   - name: fix
     mode: auto
+    model: claude-opus-4-7
     instruction: implement-fix
     policy: coding
     pass_output_from:
@@ -219,6 +239,7 @@ steps:
   # 15. 修正後品質チェック（auto）
   - name: fix_quality_check
     mode: auto
+    model: claude-opus-4-7
     instruction: quality-check
     policy: coding
     pass_previous_response: true
@@ -229,6 +250,7 @@ steps:
   # 16. 実装結果承認（approval）
   - name: implementation_approval
     mode: approval
+    model: claude-opus-4-7
     instruction: implementation-approval
     policy: coding
     pass_output_from:
