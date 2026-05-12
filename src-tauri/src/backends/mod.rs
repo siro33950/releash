@@ -241,9 +241,14 @@ impl AgentBackendRegistry {
             if !*available {
                 continue;
             }
-            if let Ok(models) = self.available_models(id).await {
-                for m in models {
-                    values.insert(m.value);
+            match self.available_models(id).await {
+                Ok(models) => {
+                    for m in models {
+                        values.insert(m.value);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("failed to fetch models from backend '{id}': {e}");
                 }
             }
         }
@@ -257,9 +262,14 @@ impl AgentBackendRegistry {
             if !*available {
                 continue;
             }
-            if let Ok(models) = self.available_models(id).await {
-                if models.iter().any(|m| m.value == model) {
-                    return Some(id.clone());
+            match self.available_models(id).await {
+                Ok(models) => {
+                    if models.iter().any(|m| m.value == model) {
+                        return Some(id.clone());
+                    }
+                }
+                Err(e) => {
+                    log::warn!("failed to fetch models from backend '{id}': {e}");
                 }
             }
         }

@@ -607,17 +607,20 @@ impl WorkflowEngine {
         app: &tauri::AppHandle,
         model: &str,
     ) -> Result<Option<String>, WorkflowEngineError> {
-        if let Some(registry) = app.try_state::<Arc<crate::backends::AgentBackendRegistry>>() {
-            let backend_id = registry
-                .resolve_backend_for_model(model)
-                .await
-                .ok_or_else(|| {
-                    WorkflowEngineError::InvalidWorkflow(format!("unknown model: {model}"))
-                })?;
-            Ok(Some(backend_id))
-        } else {
-            Ok(None)
-        }
+        let registry = app
+            .try_state::<Arc<crate::backends::AgentBackendRegistry>>()
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidWorkflow(format!(
+                    "cannot resolve model '{model}': backend registry is unavailable"
+                ))
+            })?;
+        let backend_id = registry
+            .resolve_backend_for_model(model)
+            .await
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidWorkflow(format!("unknown model: {model}"))
+            })?;
+        Ok(Some(backend_id))
     }
 
     /// ステップ設定の解決 → セッション生成 → 解決済み設定の反映 → 保存を一括で行う。
