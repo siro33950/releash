@@ -1550,8 +1550,12 @@ token = "existing_token_value_here_with_enough_length_!!"
         ];
 
         for key in &event_keys {
-            let entries = hooks.get(*key).expect(&format!("{key} should exist"));
-            let arr = entries.as_array().expect(&format!("{key} should be array"));
+            let entries = hooks
+                .get(*key)
+                .unwrap_or_else(|| panic!("{key} should exist"));
+            let arr = entries
+                .as_array()
+                .unwrap_or_else(|| panic!("{key} should be array"));
             for entry in arr {
                 let cmd = entry["hooks"][0]["command"]
                     .as_str()

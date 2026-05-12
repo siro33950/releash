@@ -1309,6 +1309,6 @@ mod tests {
         assert!(state.step_history[0].structured_output.is_none());
 
         // Reject時はstructured_outputがないのでstep_outputsには格納されない
-        assert!(state.step_outputs.get("review").is_none());
+        assert!(!state.step_outputs.contains_key("review"));
     }
 }

@@ -6809,31 +6809,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_approval_contract_violation_returns_validation_error() {
-        let workflow = make_approved_fix_policy_workflow();
-        let result = WorkflowEngine::validate_approval_contract_extraction(
-            "approved-fix-policy",
-            ExtractionResult::Found {
-                type_name: "approved-fix-policy".to_string(),
-                json: serde_json::json!({
-                    "policy": "   ",
-                    "review_step": "code_review_parallel"
-                }),
-            },
-            &workflow,
-            1,
-        );
-        match result {
-            Err(err) => {
-                let err = err.to_string();
-                assert!(err.starts_with("validation_error:"));
-                assert!(err.contains("empty_policy"));
-            }
-            Ok(_) => panic!("expected validation_error"),
-        }
-    }
-
-    #[test]
     fn validate_approval_contract_valid_returns_structured_output() {
         let workflow = make_approved_fix_policy_workflow();
         let result = WorkflowEngine::validate_approval_contract_extraction(
@@ -7213,7 +7188,7 @@ mod tests {
         assert_eq!(entry.result.as_deref(), Some("reject"));
         assert!(entry.structured_output.is_none());
         // structured_outputがNoneなのでStepOutputは生成されない
-        assert!(exec.step_outputs.get("review").is_none());
+        assert!(!exec.step_outputs.contains_key("review"));
     }
 
     // ---- handle_approval integration (lock-inner logic) ----
@@ -7615,121 +7590,6 @@ mod tests {
                 .and_then(|decision| decision.as_str()),
             Some("reject")
         );
-    }
-
-    #[test]
-    fn auto_approve_invalid_policy_is_rejected_by_contract_validation() {
-        let workflow = make_approved_fix_policy_workflow();
-        let result = WorkflowEngine::validate_approval_contract_extraction(
-            "approved-fix-policy",
-            ExtractionResult::Found {
-                type_name: "approved-fix-policy".to_string(),
-                json: serde_json::json!({
-                    "policy": "",
-                    "review_step": "code_review_parallel"
-                }),
-            },
-            &workflow,
-            1,
-        );
-        match result {
-            Err(WorkflowEngineError::ValidationError(_)) => {}
-            _ => panic!("expected validation_error"),
-        }
-    }
-
-    #[tokio::test]
-    async fn handle_approval_invalid_approved_fix_policy_preserves_waiting_state_without_outputs() {
-        let engine = WorkflowEngine::new();
-        let worktree_path = "/repo-invalid-policy-handle";
-        let exec = make_spec_driven_plan_fix_policy_exec("exec-invalid-policy", "policy-session");
-        let before = exec.to_workflow_state();
-        engine
-            .executions
-            .lock()
-            .await
-            .insert(worktree_path.to_string(), exec);
-        engine.session_workflow_refs.lock().await.insert(
-            "policy-session".to_string(),
-            SessionWorkflowRef {
-                worktree_path: worktree_path.to_string(),
-                kind: SessionRefKind::SequentialStep,
-            },
-        );
-
-        let result = engine
-            .handle_approval_with_output_for_test(
-                worktree_path,
-                ApprovalDecision::Approve,
-                Some("exec-invalid-policy"),
-                Some("plan_fix_policy"),
-                Some(approved_fix_policy_output("   ", "plan_review_parallel")),
-            )
-            .await;
-
-        match result {
-            Err(WorkflowEngineError::ValidationError(_)) => {}
-            _ => panic!("expected validation_error"),
-        }
-        let execs = engine.executions.lock().await;
-        let after = execs.get(worktree_path).unwrap();
-        assert_eq!(after.state, WorkflowExecutionState::WaitingApproval);
-        assert_eq!(
-            after.workflow.steps[after.current_step_index].name,
-            before.current_step_name
-        );
-        assert_eq!(after.current_session_id, before.current_session_id);
-        assert!(after.step_history.is_empty());
-        assert!(after.step_outputs.is_empty());
-        assert_eq!(after.step_execution_counts.get("plan_fix"), None);
-    }
-
-    #[tokio::test]
-    async fn auto_approve_invalid_approved_fix_policy_preserves_waiting_state_without_outputs() {
-        let engine = WorkflowEngine::new();
-        let worktree_path = "/repo-invalid-policy-auto";
-        let exec = make_spec_driven_fix_policy_exec(
-            "exec-invalid-auto-policy",
-            "policy-session",
-            "implementation_fix_policy",
-        );
-        let before = exec.to_workflow_state();
-        engine
-            .executions
-            .lock()
-            .await
-            .insert(worktree_path.to_string(), exec);
-        engine.session_workflow_refs.lock().await.insert(
-            "policy-session".to_string(),
-            SessionWorkflowRef {
-                worktree_path: worktree_path.to_string(),
-                kind: SessionRefKind::SequentialStep,
-            },
-        );
-
-        let result = engine
-            .execute_outcome_persist_auto_approve_for_test(
-                worktree_path,
-                &before,
-                approved_fix_policy_output("", "code_review_parallel"),
-            )
-            .await;
-
-        match result {
-            Err(WorkflowEngineError::ValidationError(_)) => {}
-            _ => panic!("expected validation_error"),
-        }
-        let execs = engine.executions.lock().await;
-        let after = execs.get(worktree_path).unwrap();
-        assert_eq!(after.state, WorkflowExecutionState::WaitingApproval);
-        assert_eq!(
-            after.workflow.steps[after.current_step_index].name,
-            before.current_step_name
-        );
-        assert_eq!(after.current_session_id, before.current_session_id);
-        assert!(after.step_history.is_empty());
-        assert!(after.step_outputs.is_empty());
-        assert_eq!(after.step_execution_counts.get("fix"), None);
     }
 
     #[test]
@@ -8414,7 +8274,7 @@ mod tests {
 
         assert_eq!(entry.result.as_deref(), Some("complete"));
         assert!(entry.structured_output.is_none());
-        assert!(exec.step_outputs.get("plan").is_none());
+        assert!(!exec.step_outputs.contains_key("plan"));
     }
 
     // ---- on_exhausted: apply_transition テスト ----

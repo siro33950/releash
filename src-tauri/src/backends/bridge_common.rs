@@ -4255,7 +4255,7 @@ mod tests {
                 continue;
             }
             let msg: serde_json::Value =
-                serde_json::from_str(&line).expect(&format!("Failed to parse: {line}"));
+                serde_json::from_str(&line).unwrap_or_else(|_| panic!("Failed to parse: {line}"));
             messages.push(msg);
         }
 
