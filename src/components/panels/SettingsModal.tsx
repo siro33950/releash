@@ -103,16 +103,25 @@ function useWorkflowSettings(open: boolean) {
 
 	useEffect(() => {
 		if (!open) return;
+		let cancelled = false;
 		setLoading(true);
 		setError(null);
 		invoke<WorkflowConfig>("get_workflow_config")
 			.then((loaded) => {
+				if (cancelled) return;
 				const normalized = loaded ?? DEFAULT_WORKFLOW_CONFIG;
 				setConfig(normalized);
 				setDraft(normalized);
 			})
-			.catch((e) => setError(String(e)))
-			.finally(() => setLoading(false));
+			.catch((e) => {
+				if (!cancelled) setError(String(e));
+			})
+			.finally(() => {
+				if (!cancelled) setLoading(false);
+			});
+		return () => {
+			cancelled = true;
+		};
 	}, [open]);
 
 	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);

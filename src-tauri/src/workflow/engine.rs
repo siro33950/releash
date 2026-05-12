@@ -2086,7 +2086,7 @@ impl WorkflowEngine {
 
     /// セッションIDからworktree_pathを解決する。
     /// session_workflow_refsに登録されていない場合はNoneを返す。
-    async fn resolve_worktree_path(&self, session_id: &str) -> Option<String> {
+    pub async fn resolve_worktree_path(&self, session_id: &str) -> Option<String> {
         let map = self.session_workflow_refs.lock().await;
         map.get(session_id).map(|r| r.worktree_path.clone())
     }

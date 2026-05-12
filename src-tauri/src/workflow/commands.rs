@@ -257,13 +257,18 @@ pub async fn send_workflow_approval_chat_message(
         .await
         .map_err(|e| e.to_string())?;
 
+    let resolved_worktree_path = engine
+        .resolve_worktree_path(&chat_session_id)
+        .await
+        .unwrap_or(worktree_path);
+
     crate::agent_sdk::send_agent_message_internal(
         &app,
         session_store.inner(),
         registry.inner(),
         handles.inner(),
         Some(chat_session_id),
-        worktree_path,
+        resolved_worktree_path,
         content,
         permission_mode,
         None,
