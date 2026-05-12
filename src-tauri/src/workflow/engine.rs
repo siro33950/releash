@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::agent_sdk::AgentProcessMap;
 use crate::agent_status::{current_timestamp, AgentStatusCenter};
-use crate::session::SessionStore;
+use crate::session::{ChatSession, SessionStore};
 use crate::workflow::contract::{
     build_repair_prompt, extract_workflow_output, validate_contract, ContractValidationResult,
     ExtractionResult,
@@ -545,6 +545,46 @@ enum ContractCheckResult {
     Failed,
 }
 
+/// ステップ設定解決の結果。
+/// ステップのmodel/permission指定と親セッション設定のマージ結果を保持する。
+#[derive(Debug, Clone, PartialEq)]
+struct ResolvedStepSettings {
+    backend_id: Option<String>,
+    selected_model: Option<String>,
+    permission_mode: String,
+}
+
+/// ステップの model/permission 設定を親セッション設定とマージして解決する。
+///
+/// - permission: ステップ指定があれば採用、なければ親セッションの値を継承
+/// - backend_id: model指定があれば resolved_backend_id を採用、なければ親セッションの値を継承
+/// - selected_model: ステップ指定があれば採用、なければ親セッションの値を継承
+///
+/// `resolved_backend_id` は、ステップにmodel指定がある場合に
+/// `resolve_backend_for_step_model` で事前に解決されたbackend_id。
+/// model未指定時は無視される。
+fn resolve_step_settings(
+    step_model: Option<String>,
+    step_permission: Option<String>,
+    resolved_backend_id: Option<String>,
+    parent_backend_id: Option<String>,
+    parent_selected_model: Option<String>,
+    parent_permission_mode: String,
+) -> ResolvedStepSettings {
+    let permission_mode = step_permission.unwrap_or(parent_permission_mode);
+    let backend_id = if step_model.is_some() {
+        resolved_backend_id
+    } else {
+        parent_backend_id
+    };
+    let selected_model = step_model.or(parent_selected_model);
+    ResolvedStepSettings {
+        backend_id,
+        selected_model,
+        permission_mode,
+    }
+}
+
 /// ワークフローのステップを順次実行するステートマシンエンジン。
 pub struct WorkflowEngine {
     /// worktree_path → WorkflowExecution のマッピング
@@ -559,6 +599,73 @@ impl WorkflowEngine {
             executions: Mutex::new(HashMap::new()),
             session_workflow_refs: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// ステップの model 値から対応するバックエンドIDを解決する。
+    async fn resolve_backend_for_step_model(
+        &self,
+        app: &tauri::AppHandle,
+        model: &str,
+    ) -> Result<Option<String>, WorkflowEngineError> {
+        let registry = app
+            .try_state::<Arc<crate::backends::AgentBackendRegistry>>()
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidWorkflow(format!(
+                    "cannot resolve model '{model}': backend registry is unavailable"
+                ))
+            })?;
+        let backend_id = registry
+            .resolve_backend_for_model(model)
+            .await
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidWorkflow(format!("unknown model: {model}"))
+            })?;
+        Ok(Some(backend_id))
+    }
+
+    /// ステップ設定の解決 → セッション生成 → 解決済み設定の反映 → 保存を一括で行う。
+    ///
+    /// `start_step_session` と `start_parallel_children` の共通パターンを抽出したヘルパー。
+    #[allow(clippy::too_many_arguments)]
+    async fn create_step_session_with_settings(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &SessionStore,
+        data_dir: &std::path::Path,
+        worktree_path: &str,
+        step_model: Option<String>,
+        step_permission: Option<String>,
+        parent_backend_id: Option<String>,
+        parent_selected_model: Option<String>,
+        parent_permission_mode: String,
+    ) -> Result<ChatSession, WorkflowEngineError> {
+        let resolved_backend_id = match step_model {
+            Some(ref model) => self.resolve_backend_for_step_model(app, model).await?,
+            None => None,
+        };
+        let settings = resolve_step_settings(
+            step_model,
+            step_permission,
+            resolved_backend_id,
+            parent_backend_id,
+            parent_selected_model,
+            parent_permission_mode,
+        );
+
+        let mut step_session = crate::session::create_session_internal(
+            session_store,
+            data_dir,
+            worktree_path,
+            settings.backend_id,
+        )
+        .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))?;
+        step_session.selected_model = settings.selected_model;
+        step_session.permission_mode = settings.permission_mode;
+        session_store
+            .save_session(data_dir, &step_session)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("save step session: {e}")))?;
+
+        Ok(step_session)
     }
 
     /// ワークフローを開始する。
@@ -583,6 +690,13 @@ impl WorkflowEngine {
             .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
             .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.to_string()))?;
         let worktree_path = session.worktree_path.clone();
+
+        // ステップ設定のmodel検証: 全バックエンドの available_models から有効モデルを収集
+        if let Some(registry) = app.try_state::<Arc<crate::backends::AgentBackendRegistry>>() {
+            let valid_models = registry.collect_all_model_values().await;
+            crate::workflow::validation::validate_models(&workflow, &valid_models)
+                .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+        }
 
         let now = current_timestamp();
         let mut execution = WorkflowExecution {
@@ -1911,17 +2025,11 @@ impl WorkflowEngine {
         let permission_mode = {
             let data_dir = crate::session::resolve_data_dir(app)
                 .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
-            let execs = self.executions.lock().await;
-            let exec = execs
-                .get(worktree_path)
-                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            let parent_session = session_store
-                .get_session(&data_dir, &exec.chat_session_id)
+            let step_session = session_store
+                .get_session(&data_dir, session_id)
                 .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
-                .ok_or_else(|| {
-                    WorkflowEngineError::SessionNotFound(exec.chat_session_id.clone())
-                })?;
-            parent_session.permission_mode
+                .ok_or_else(|| WorkflowEngineError::SessionNotFound(session_id.to_string()))?;
+            step_session.permission_mode
         };
         crate::agent_sdk::start_agent_turn_internal(
             app,
@@ -2350,17 +2458,22 @@ impl WorkflowEngine {
             .get_session(&data_dir, &chat_session_id)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
             .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.clone()))?;
-        let permission_mode = parent_session.permission_mode;
-        let backend_id = parent_session.backend_id.clone();
 
-        // ステップ用の新しいChatSessionを生成
-        let step_session = crate::session::create_session_internal(
-            session_store,
-            &data_dir,
-            worktree_path,
-            backend_id,
-        )
-        .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))?;
+        // ステップ設定の解決 → セッション生成
+        let step_session = self
+            .create_step_session_with_settings(
+                app,
+                session_store,
+                &data_dir,
+                worktree_path,
+                step_clone.model.clone(),
+                step_clone.permission.clone(),
+                parent_session.backend_id.clone(),
+                parent_session.selected_model.clone(),
+                parent_session.permission_mode,
+            )
+            .await?;
+        let permission_mode = step_session.permission_mode.clone();
         let step_session_id = step_session.id.clone();
 
         // ステップセッションID → SessionWorkflowRefのマッピングを登録
@@ -3371,8 +3484,9 @@ impl WorkflowEngine {
             .get_session(&data_dir, &chat_session_id)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
             .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.clone()))?;
-        let permission_mode = parent_session.permission_mode;
-        let backend_id = parent_session.backend_id.clone();
+        let parent_permission_mode = parent_session.permission_mode;
+        let parent_backend_id = parent_session.backend_id.clone();
+        let parent_selected_model = parent_session.selected_model.clone();
 
         // step_outputsとworkflow_variablesのスナップショットをロック外で取得
         let (step_outputs_snapshot, wf_variables_snapshot) = {
@@ -3390,19 +3504,26 @@ impl WorkflowEngine {
             system_prompt: Option<String>,
             user_message: String,
             output_contract: Option<String>,
+            permission_mode: String,
         }
         let mut child_setups: Vec<ChildSetup> = Vec::new();
 
         for ps in &parallel_steps {
-            let step_session = crate::session::create_session_internal(
-                session_store,
-                &data_dir,
-                worktree_path,
-                backend_id.clone(),
-            )
-            .map_err(|e| {
-                WorkflowEngineError::SessionStore(format!("create parallel session: {e}"))
-            })?;
+            // 子ステップ設定の解決 → セッション生成
+            let step_session = self
+                .create_step_session_with_settings(
+                    app,
+                    session_store,
+                    &data_dir,
+                    worktree_path,
+                    ps.model.clone(),
+                    ps.permission.clone(),
+                    parent_backend_id.clone(),
+                    parent_selected_model.clone(),
+                    parent_permission_mode.clone(),
+                )
+                .await?;
+            let child_permission_mode = step_session.permission_mode.clone();
             let step_session_id = step_session.id.clone();
 
             // session_workflow_refs に ParallelChild として登録
@@ -3435,6 +3556,7 @@ impl WorkflowEngine {
                 session_id: step_session_id,
                 system_prompt,
                 user_message,
+                permission_mode: child_permission_mode,
                 output_contract: ps.output_contract.clone(),
             });
         }
@@ -3526,7 +3648,7 @@ impl WorkflowEngine {
                 session_store,
                 &cs.session_id,
                 worktree_path,
-                &permission_mode,
+                &cs.permission_mode,
                 &cs.user_message,
             )
             .await
@@ -3940,6 +4062,8 @@ impl WorkflowEngine {
                 parallel: None,
                 aggregate: None,
                 resets_cycle_for: None,
+                model: None,
+                permission: None,
             }],
         };
         let exec = WorkflowExecution {
@@ -4019,6 +4143,8 @@ mod tests {
                         r#else: "implementation_fix_policy".to_string(),
                     }),
                     resets_cycle_for: None,
+                    model: None,
+                    permission: None,
                 },
                 Step {
                     name: "implementation_fix_policy".to_string(),
@@ -4037,6 +4163,8 @@ mod tests {
                     parallel: None,
                     aggregate: None,
                     resets_cycle_for: None,
+                    model: None,
+                    permission: None,
                 },
             ],
         }
@@ -4228,6 +4356,8 @@ mod tests {
             parallel: None,
             aggregate: None,
             resets_cycle_for: None,
+            model: None,
+            permission: None,
         }
     }
 
@@ -5544,6 +5674,8 @@ mod tests {
             parallel: None,
             aggregate: None,
             resets_cycle_for: None,
+            model: None,
+            permission: None,
         });
         let outcome = WorkflowEngine::apply_approval_application(
             &mut exec,
@@ -6184,6 +6316,8 @@ mod tests {
             parallel: None,
             aggregate: None,
             resets_cycle_for: None,
+            model: None,
+            permission: None,
         };
         let result = WorkflowEngine::build_step_prompt(
             &step,
@@ -6484,6 +6618,8 @@ mod tests {
                     parallel: None,
                     aggregate: None,
                     resets_cycle_for: None,
+                    model: None,
+                    permission: None,
                 }],
             },
             state,
@@ -7121,6 +7257,8 @@ mod tests {
                         parallel: None,
                         aggregate: None,
                         resets_cycle_for: None,
+                        model: None,
+                        permission: None,
                     },
                     Step {
                         name: "fix".to_string(),
@@ -7139,6 +7277,8 @@ mod tests {
                         parallel: None,
                         aggregate: None,
                         resets_cycle_for: None,
+                        model: None,
+                        permission: None,
                     },
                 ],
             },
@@ -7235,6 +7375,8 @@ mod tests {
                         parallel: None,
                         aggregate: None,
                         resets_cycle_for: None,
+                        model: None,
+                        permission: None,
                     },
                     make_test_step("fix", StepMode::Auto, "Fix", vec![], None),
                 ],
@@ -7616,6 +7758,8 @@ mod tests {
                         parallel: None,
                         aggregate: None,
                         resets_cycle_for: None,
+                        model: None,
+                        permission: None,
                     },
                     make_test_step("fix", StepMode::Auto, "Fix", vec![], None),
                     Step {
@@ -7640,6 +7784,8 @@ mod tests {
                             r#else: "implementation_fix_policy".to_string(),
                         }),
                         resets_cycle_for: None,
+                        model: None,
+                        permission: None,
                     },
                 ],
             },
@@ -7804,6 +7950,8 @@ mod tests {
                             r#else: "implementation_fix_policy".to_string(),
                         }),
                         resets_cycle_for: None,
+                        model: None,
+                        permission: None,
                     },
                     Step {
                         name: "implementation_fix_policy".to_string(),
@@ -7822,6 +7970,8 @@ mod tests {
                         parallel: None,
                         aggregate: None,
                         resets_cycle_for: None,
+                        model: None,
+                        permission: None,
                     },
                     fix_step,
                 ],
@@ -8628,5 +8778,131 @@ mod tests {
         let outcome = WorkflowEngine::apply_transition(&mut exec, "step_a").unwrap();
         assert!(matches!(outcome, StepOutcome::Persist(_)));
         assert!(matches!(exec.state, WorkflowExecutionState::Failed { .. }));
+    }
+
+    // ---- resolve_step_settings ----
+
+    #[test]
+    fn resolve_step_settings_model_and_permission_specified() {
+        let result = resolve_step_settings(
+            Some("codex-mini".to_string()),
+            Some("bypassPermissions".to_string()),
+            Some("codex".to_string()),
+            Some("claude".to_string()),
+            Some("opus-4".to_string()),
+            "acceptEdits".to_string(),
+        );
+        assert_eq!(
+            result,
+            ResolvedStepSettings {
+                backend_id: Some("codex".to_string()),
+                selected_model: Some("codex-mini".to_string()),
+                permission_mode: "bypassPermissions".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_step_settings_model_only() {
+        let result = resolve_step_settings(
+            Some("haiku".to_string()),
+            None,
+            Some("claude".to_string()),
+            Some("claude".to_string()),
+            Some("opus-4".to_string()),
+            "acceptEdits".to_string(),
+        );
+        assert_eq!(
+            result,
+            ResolvedStepSettings {
+                backend_id: Some("claude".to_string()),
+                selected_model: Some("haiku".to_string()),
+                permission_mode: "acceptEdits".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_step_settings_permission_only() {
+        let result = resolve_step_settings(
+            None,
+            Some("plan".to_string()),
+            None,
+            Some("claude".to_string()),
+            Some("opus-4".to_string()),
+            "acceptEdits".to_string(),
+        );
+        assert_eq!(
+            result,
+            ResolvedStepSettings {
+                backend_id: Some("claude".to_string()),
+                selected_model: Some("opus-4".to_string()),
+                permission_mode: "plan".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_step_settings_nothing_specified() {
+        let result = resolve_step_settings(
+            None,
+            None,
+            None,
+            Some("claude".to_string()),
+            Some("opus-4".to_string()),
+            "acceptEdits".to_string(),
+        );
+        assert_eq!(
+            result,
+            ResolvedStepSettings {
+                backend_id: Some("claude".to_string()),
+                selected_model: Some("opus-4".to_string()),
+                permission_mode: "acceptEdits".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_step_settings_parallel_children_different_configs() {
+        // ステップA: model=opus-4, permission=plan
+        let result_a = resolve_step_settings(
+            Some("opus-4".to_string()),
+            Some("plan".to_string()),
+            Some("claude".to_string()),
+            Some("claude".to_string()),
+            Some("opus-4".to_string()),
+            "acceptEdits".to_string(),
+        );
+        assert_eq!(
+            result_a,
+            ResolvedStepSettings {
+                backend_id: Some("claude".to_string()),
+                selected_model: Some("opus-4".to_string()),
+                permission_mode: "plan".to_string(),
+            }
+        );
+
+        // ステップB: model=codex-mini, permission=bypassPermissions
+        let result_b = resolve_step_settings(
+            Some("codex-mini".to_string()),
+            Some("bypassPermissions".to_string()),
+            Some("codex".to_string()),
+            Some("claude".to_string()),
+            Some("opus-4".to_string()),
+            "acceptEdits".to_string(),
+        );
+        assert_eq!(
+            result_b,
+            ResolvedStepSettings {
+                backend_id: Some("codex".to_string()),
+                selected_model: Some("codex-mini".to_string()),
+                permission_mode: "bypassPermissions".to_string(),
+            }
+        );
+
+        // 並列ステップ間で結果が独立していることを確認
+        assert_ne!(result_a.backend_id, result_b.backend_id);
+        assert_ne!(result_a.selected_model, result_b.selected_model);
+        assert_ne!(result_a.permission_mode, result_b.permission_mode);
     }
 }

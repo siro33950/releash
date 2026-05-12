@@ -233,6 +233,48 @@ impl AgentBackendRegistry {
             .map(|(id, _, _)| id.clone())
             .ok_or_else(|| "利用可能なバックエンドが登録されていません".to_string())
     }
+
+    /// 全バックエンドの `available_models()` を走査し、有効なモデルID（value）の集合を返す。
+    pub async fn collect_all_model_values(&self) -> std::collections::HashSet<String> {
+        let mut values = std::collections::HashSet::new();
+        for (id, _, available) in &self.backends {
+            if !*available {
+                continue;
+            }
+            match self.available_models(id).await {
+                Ok(models) => {
+                    for m in models {
+                        values.insert(m.value);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("failed to fetch models from backend '{id}': {e}");
+                }
+            }
+        }
+        values
+    }
+
+    /// モデルIDから対応するバックエンドIDを解決する。
+    /// 全バックエンドの `available_models()` を走査し、最初に一致したバックエンドIDを返す。
+    pub async fn resolve_backend_for_model(&self, model: &str) -> Option<String> {
+        for (id, _, available) in &self.backends {
+            if !*available {
+                continue;
+            }
+            match self.available_models(id).await {
+                Ok(models) => {
+                    if models.iter().any(|m| m.value == model) {
+                        return Some(id.clone());
+                    }
+                }
+                Err(e) => {
+                    log::warn!("failed to fetch models from backend '{id}': {e}");
+                }
+            }
+        }
+        None
+    }
 }
 
 // --- Tauri コマンド ---
@@ -522,5 +564,153 @@ mod tests {
         );
         let reg = build_registry(&config);
         assert_eq!(reg.resolve_default_id().unwrap(), "claude");
+    }
+
+    struct MockBackendWithModels {
+        backend_id: String,
+        backend_name: String,
+        models: Vec<ModelInfo>,
+    }
+
+    #[async_trait]
+    impl AgentBackend for MockBackendWithModels {
+        fn id(&self) -> &str {
+            &self.backend_id
+        }
+        fn name(&self) -> &str {
+            &self.backend_name
+        }
+        async fn start_session(&self, _config: SessionConfig) -> Result<SessionHandle, String> {
+            Ok(SessionHandle {
+                chat_session_id: "test".to_string(),
+                backend_id: self.backend_id.clone(),
+            })
+        }
+        async fn send_message(
+            &self,
+            _session: &SessionHandle,
+            _message: AgentMessage,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn interrupt(&self, _session: &SessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+        async fn respond_permission(
+            &self,
+            _session: &SessionHandle,
+            _response: PermissionResponse,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn available_models(&self) -> Result<Vec<ModelInfo>, String> {
+            Ok(self.models.clone())
+        }
+        async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn mock_backend_with_models(
+        id: &str,
+        name: &str,
+        models: Vec<(&str, &str)>,
+    ) -> Arc<dyn AgentBackend> {
+        Arc::new(MockBackendWithModels {
+            backend_id: id.to_string(),
+            backend_name: name.to_string(),
+            models: models
+                .into_iter()
+                .map(|(v, d)| ModelInfo {
+                    value: v.to_string(),
+                    display_name: d.to_string(),
+                })
+                .collect(),
+        })
+    }
+
+    #[tokio::test]
+    async fn collect_all_model_values_from_multiple_backends() {
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend_with_models(
+            "claude",
+            "Claude",
+            vec![("opus-4", "Opus 4"), ("haiku", "Haiku")],
+        ));
+        reg.register(mock_backend_with_models(
+            "codex",
+            "Codex",
+            vec![("codex-mini", "Codex Mini")],
+        ));
+        let models = reg.collect_all_model_values().await;
+        assert!(models.contains("opus-4"));
+        assert!(models.contains("haiku"));
+        assert!(models.contains("codex-mini"));
+        assert_eq!(models.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn collect_all_model_values_skips_unavailable_backends() {
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend_with_models(
+            "claude",
+            "Claude",
+            vec![("opus-4", "Opus 4")],
+        ));
+        reg.register(mock_backend_with_models(
+            "codex",
+            "Codex",
+            vec![("codex-mini", "Codex Mini")],
+        ));
+        reg.set_available("codex", false);
+        let models = reg.collect_all_model_values().await;
+        assert!(models.contains("opus-4"));
+        assert!(!models.contains("codex-mini"));
+    }
+
+    #[tokio::test]
+    async fn resolve_backend_for_model_finds_correct_backend() {
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend_with_models(
+            "claude",
+            "Claude",
+            vec![("opus-4", "Opus 4"), ("haiku", "Haiku")],
+        ));
+        reg.register(mock_backend_with_models(
+            "codex",
+            "Codex",
+            vec![("codex-mini", "Codex Mini")],
+        ));
+        assert_eq!(
+            reg.resolve_backend_for_model("opus-4").await,
+            Some("claude".to_string())
+        );
+        assert_eq!(
+            reg.resolve_backend_for_model("codex-mini").await,
+            Some("codex".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_backend_for_model_returns_none_for_unknown() {
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend_with_models(
+            "claude",
+            "Claude",
+            vec![("opus-4", "Opus 4")],
+        ));
+        assert_eq!(reg.resolve_backend_for_model("unknown").await, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_backend_for_model_skips_unavailable_backends() {
+        let mut reg = AgentBackendRegistry::new();
+        reg.register(mock_backend_with_models(
+            "claude",
+            "Claude",
+            vec![("opus-4", "Opus 4")],
+        ));
+        reg.set_available("claude", false);
+        assert_eq!(reg.resolve_backend_for_model("opus-4").await, None);
     }
 }

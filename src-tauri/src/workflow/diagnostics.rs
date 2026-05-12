@@ -307,6 +307,12 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::InvalidApprovalRules { step, .. } => {
             (Some(step.clone()), Some("rules".to_string()))
         }
+        ValidationError::InvalidPermissionMode { step, .. } => {
+            (Some(step.clone()), Some("permission".to_string()))
+        }
+        ValidationError::UnknownModel { step, .. } => {
+            (Some(step.clone()), Some("model".to_string()))
+        }
     }
 }
 
@@ -845,6 +851,8 @@ mod tests {
             parallel: None,
             aggregate: None,
             resets_cycle_for: None,
+            model: None,
+            permission: None,
         }
     }
 
@@ -1406,6 +1414,8 @@ mod tests {
                         output_contract: None,
                         pass_previous_response: None,
                         pass_output_from: Some(vec!["report".to_string()]),
+                        model: None,
+                        permission: None,
                     }]),
                     ..make_step("par", None)
                 },
@@ -1450,6 +1460,8 @@ mod tests {
                         output_contract: None,
                         pass_previous_response: None,
                         pass_output_from: None,
+                        model: None,
+                        permission: None,
                     },
                     ParallelStep {
                         name: "child2".to_string(),
@@ -1461,6 +1473,8 @@ mod tests {
                         output_contract: None,
                         pass_previous_response: None,
                         pass_output_from: Some(vec!["child1".to_string()]),
+                        model: None,
+                        permission: None,
                     },
                 ]),
                 ..make_step("par", None)

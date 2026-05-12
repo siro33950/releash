@@ -795,6 +795,8 @@ mod tests {
                     parallel: None,
                     aggregate: None,
                     resets_cycle_for: None,
+                    model: None,
+                    permission: None,
                 },
                 Step {
                     name: "implement".to_string(),
@@ -816,6 +818,8 @@ mod tests {
                     parallel: None,
                     aggregate: None,
                     resets_cycle_for: None,
+                    model: None,
+                    permission: None,
                 },
                 Step {
                     name: "review".to_string(),
@@ -837,6 +841,8 @@ mod tests {
                     parallel: None,
                     aggregate: None,
                     resets_cycle_for: None,
+                    model: None,
+                    permission: None,
                 },
             ],
         }
@@ -1047,6 +1053,8 @@ mod tests {
                     parallel: None,
                     aggregate: None,
                     resets_cycle_for: None,
+                    model: None,
+                    permission: None,
                 },
                 Step {
                     name: "parallel-review".to_string(),
@@ -1073,6 +1081,8 @@ mod tests {
                             output_contract: None,
                             pass_previous_response: None,
                             pass_output_from: None,
+                            model: None,
+                            permission: None,
                         },
                         ParallelStep {
                             name: "security-review".to_string(),
@@ -1084,6 +1094,8 @@ mod tests {
                             output_contract: None,
                             pass_previous_response: None,
                             pass_output_from: None,
+                            model: None,
+                            permission: None,
                         },
                     ]),
                     aggregate: Some(AggregateConfig {
@@ -1093,6 +1105,8 @@ mod tests {
                         r#else: "_complete".to_string(),
                     }),
                     resets_cycle_for: None,
+                    model: None,
+                    permission: None,
                 },
             ],
         };

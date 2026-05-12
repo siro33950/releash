@@ -20,16 +20,16 @@ impl ClaudeBackend {
 pub fn claude_supported_models() -> Vec<ModelInfo> {
     vec![
         ModelInfo {
-            value: "sonnet".to_string(),
-            display_name: "Claude Sonnet".to_string(),
+            value: "claude-sonnet-4-6".to_string(),
+            display_name: "claude-sonnet-4-6".to_string(),
         },
         ModelInfo {
-            value: "opus".to_string(),
-            display_name: "Claude Opus".to_string(),
+            value: "claude-opus-4-7".to_string(),
+            display_name: "claude-opus-4-7".to_string(),
         },
         ModelInfo {
-            value: "haiku".to_string(),
-            display_name: "Claude Haiku".to_string(),
+            value: "claude-haiku-4-5-20251001".to_string(),
+            display_name: "claude-haiku-4-5-20251001".to_string(),
         },
     ]
 }
@@ -88,7 +88,7 @@ mod tests {
     async fn available_models_returns_claude_defaults() {
         let backend = ClaudeBackend::new();
         let models = backend.available_models().await.unwrap();
-        assert!(models.iter().any(|m| m.value == "sonnet"));
-        assert!(models.iter().any(|m| m.value == "opus"));
+        assert!(models.iter().any(|m| m.value == "claude-sonnet-4-6"));
+        assert!(models.iter().any(|m| m.value == "claude-opus-4-7"));
     }
 }
