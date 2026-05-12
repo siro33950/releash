@@ -267,9 +267,6 @@ mod tests {
 
         let output_contracts = list_builtin_facet_keys(FacetKind::OutputContract);
         assert_eq!(output_contracts.len(), 3);
-
-        let personas = list_builtin_facet_keys(FacetKind::Persona);
-        assert!(personas.is_empty());
     }
 
     #[test]
@@ -282,6 +279,62 @@ mod tests {
     fn is_builtin_facet_works() {
         assert!(is_builtin_facet(FacetKind::Policy, "coding"));
         assert!(!is_builtin_facet(FacetKind::Policy, "custom"));
+    }
+
+    /// Gherkin: ビルトインファセット定義に persona 系の定義が存在しない
+    /// `BUILTIN_FACETS` 配列に含まれる種別が4種（policy/knowledge/instruction/output_contract）に
+    /// 限定されることを確認する。`FacetKind::Persona` enum variant は廃止済みのため、ここでは
+    /// 「4種以外の種別が含まれない」ことを網羅的に検証する。
+    #[test]
+    fn builtin_facets_contains_only_four_kinds_no_persona() {
+        let total: usize = [
+            FacetKind::Policy,
+            FacetKind::Knowledge,
+            FacetKind::Instruction,
+            FacetKind::OutputContract,
+        ]
+        .iter()
+        .map(|k| list_builtin_facet_keys(*k).len())
+        .sum();
+        assert_eq!(
+            total,
+            BUILTIN_FACETS.len(),
+            "BUILTIN_FACETS must only contain the four kinds (policy/knowledge/instruction/output_contract); \
+             any entry not covered by these kinds (e.g. a persona kind) would break this invariant"
+        );
+    }
+
+    /// Gherkin: ビルトインファセット定義に persona 系の定義が存在しない
+    /// `src-tauri/src/workflow/builtin_facets/` 配下に `personas/` ディレクトリが存在しないこと、
+    /// また `BUILTIN_FACETS` のキー一覧に persona 系のキーが混ざっていないことを確認する。
+    #[test]
+    fn builtin_facets_directory_has_no_personas_subdir() {
+        let builtin_facets_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/workflow/builtin_facets");
+        assert!(
+            builtin_facets_dir.exists(),
+            "builtin_facets dir must exist: {}",
+            builtin_facets_dir.display()
+        );
+        let entries: Vec<String> = std::fs::read_dir(&builtin_facets_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            !entries.iter().any(|name| name == "personas"),
+            "builtin_facets/ must not contain a 'personas' subdirectory, found entries: {entries:?}"
+        );
+        // 念のため、4 種のサブディレクトリ以外を許容しない（将来の persona 復活を即座に検出）
+        for name in &entries {
+            assert!(
+                matches!(
+                    name.as_str(),
+                    "policies" | "knowledge" | "instructions" | "output_contracts"
+                ),
+                "unexpected builtin_facets/ entry: {name}"
+            );
+        }
     }
 
     #[test]

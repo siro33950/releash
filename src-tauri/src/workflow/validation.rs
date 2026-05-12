@@ -948,7 +948,6 @@ mod tests {
         Step {
             name: name.to_string(),
             mode: Some(mode),
-            persona: None,
             policy: None,
             knowledge: None,
             instruction: Some("implement".to_string()),
@@ -971,7 +970,6 @@ mod tests {
         ParallelStep {
             name: name.to_string(),
             mode: StepMode::Auto,
-            persona: Some("reviewer".to_string()),
             policy: None,
             knowledge: None,
             instruction: Some("review".to_string()),
@@ -991,7 +989,6 @@ mod tests {
         Step {
             name: name.to_string(),
             mode: None,
-            persona: None,
             policy: None,
             knowledge: None,
             instruction: None,
@@ -1188,7 +1185,7 @@ mod tests {
     #[test]
     fn facet_only_step_passes() {
         let wf = make_workflow(vec![Step {
-            persona: Some("coder".to_string()),
+            policy: Some("coding".to_string()),
             instruction: Some("implement".to_string()),
             ..make_step("step1", StepMode::Auto, vec![])
         }]);
@@ -1436,7 +1433,6 @@ mod tests {
         let wf = make_workflow(vec![make_parallel_block(
             "par",
             vec![ParallelStep {
-                persona: None,
                 instruction: None,
                 ..make_parallel_step("child1")
             }],

@@ -59,7 +59,6 @@ impl Serialize for FacetError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FacetKind {
-    Persona,
     Policy,
     Knowledge,
     Instruction,
@@ -69,7 +68,6 @@ pub enum FacetKind {
 impl FacetKind {
     pub fn dir_name(&self) -> &str {
         match self {
-            Self::Persona => "personas",
             Self::Policy => "policies",
             Self::Knowledge => "knowledge",
             Self::Instruction => "instructions",
@@ -300,42 +298,43 @@ pub fn resolve_facet_path(
 }
 
 pub fn compose_facets_from_refs(
-    persona: Option<&str>,
     policy: Option<&str>,
     knowledge: Option<&str>,
     instruction: Option<&str>,
     output_contract: Option<&str>,
     base_dir: &Path,
 ) -> Result<ComposedPrompt, FacetError> {
-    let system_prompt = match persona {
-        Some(key) => Some(load_facet(FacetKind::Persona, key, base_dir)?),
-        None => None,
-    };
-
-    let mut parts: Vec<String> = Vec::new();
-
-    if let Some(key) = knowledge {
-        parts.push(load_facet(FacetKind::Knowledge, key, base_dir)?);
-    }
-    if let Some(key) = instruction {
-        parts.push(load_facet(FacetKind::Instruction, key, base_dir)?);
+    // system_prompt: policy + output_contract（ターン非依存な常設情報）
+    let mut system_parts: Vec<String> = Vec::new();
+    if let Some(key) = policy {
+        system_parts.push(load_facet(FacetKind::Policy, key, base_dir)?);
     }
     if let Some(key) = output_contract {
-        parts.push(load_facet(FacetKind::OutputContract, key, base_dir)?);
+        system_parts.push(load_facet(FacetKind::OutputContract, key, base_dir)?);
     }
-    if let Some(key) = policy {
-        parts.push(load_facet(FacetKind::Policy, key, base_dir)?);
+    let system_prompt = if system_parts.is_empty() {
+        None
+    } else {
+        Some(system_parts.join("\n\n"))
+    };
+
+    // user_message: knowledge + instruction（参照知識とそのターンのタスク手順）
+    let mut user_parts: Vec<String> = Vec::new();
+    if let Some(key) = knowledge {
+        user_parts.push(load_facet(FacetKind::Knowledge, key, base_dir)?);
+    }
+    if let Some(key) = instruction {
+        user_parts.push(load_facet(FacetKind::Instruction, key, base_dir)?);
     }
 
     Ok(ComposedPrompt {
         system_prompt,
-        user_message: parts.join("\n\n"),
+        user_message: user_parts.join("\n\n"),
     })
 }
 
 pub fn compose_facets(step: &Step, base_dir: &Path) -> Result<ComposedPrompt, FacetError> {
     compose_facets_from_refs(
-        step.persona.as_deref(),
         step.policy.as_deref(),
         step.knowledge.as_deref(),
         step.instruction.as_deref(),
@@ -351,7 +350,6 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_facet_step(
-        persona: Option<&str>,
         policy: Option<&str>,
         knowledge: Option<&str>,
         instruction: Option<&str>,
@@ -360,7 +358,6 @@ mod tests {
         Step {
             name: "test".to_string(),
             mode: Some(StepMode::Auto),
-            persona: persona.map(String::from),
             policy: policy.map(String::from),
             knowledge: knowledge.map(String::from),
             instruction: instruction.map(String::from),
@@ -380,23 +377,15 @@ mod tests {
     }
 
     fn setup_facet_files(dir: &Path) {
-        let personas = dir.join("personas");
         let policies = dir.join("policies");
         let knowledge = dir.join("knowledge");
         let instructions = dir.join("instructions");
         let output_contracts = dir.join("output_contracts");
-        for d in [
-            &personas,
-            &policies,
-            &knowledge,
-            &instructions,
-            &output_contracts,
-        ] {
+        for d in [&policies, &knowledge, &instructions, &output_contracts] {
             fs::create_dir_all(d).unwrap();
         }
-        fs::write(personas.join("coder.md"), "You are a coder.").unwrap();
-        fs::write(personas.join("reviewer.md"), "You are a reviewer.").unwrap();
         fs::write(policies.join("coding.md"), "Follow best practices.").unwrap();
+        fs::write(policies.join("review.md"), "Review carefully.").unwrap();
         fs::write(knowledge.join("architecture.md"), "The system uses Tauri.").unwrap();
         fs::write(instructions.join("implement.md"), "Implement the feature.").unwrap();
         fs::write(output_contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
@@ -429,21 +418,21 @@ mod tests {
     fn load_existing_facet() {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
-        let content = load_facet(FacetKind::Persona, "coder", tmp.path()).unwrap();
-        assert_eq!(content, "You are a coder.");
+        let content = load_facet(FacetKind::Policy, "coding", tmp.path()).unwrap();
+        assert_eq!(content, "Follow best practices.");
     }
 
     #[test]
     fn load_missing_facet_returns_not_found() {
         let tmp = TempDir::new().unwrap();
-        let result = load_facet(FacetKind::Persona, "unknown", tmp.path());
+        let result = load_facet(FacetKind::Policy, "unknown", tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
     #[test]
     fn load_facet_with_invalid_key() {
         let tmp = TempDir::new().unwrap();
-        let result = load_facet(FacetKind::Persona, "../evil", tmp.path());
+        let result = load_facet(FacetKind::Policy, "../evil", tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::InvalidKey { .. }));
     }
 
@@ -452,8 +441,8 @@ mod tests {
     #[test]
     fn save_new_facet() {
         let tmp = TempDir::new().unwrap();
-        save_facet(FacetKind::Persona, "new-one", "content", tmp.path()).unwrap();
-        let path = tmp.path().join("personas/new-one.md");
+        save_facet(FacetKind::Policy, "new-one", "content", tmp.path()).unwrap();
+        let path = tmp.path().join("policies/new-one.md");
         assert!(path.exists());
         assert_eq!(fs::read_to_string(&path).unwrap(), "content");
     }
@@ -461,16 +450,16 @@ mod tests {
     #[test]
     fn save_overwrites_existing() {
         let tmp = TempDir::new().unwrap();
-        save_facet(FacetKind::Persona, "test", "v1", tmp.path()).unwrap();
-        save_facet(FacetKind::Persona, "test", "v2", tmp.path()).unwrap();
-        let content = load_facet(FacetKind::Persona, "test", tmp.path()).unwrap();
+        save_facet(FacetKind::Knowledge, "test", "v1", tmp.path()).unwrap();
+        save_facet(FacetKind::Knowledge, "test", "v2", tmp.path()).unwrap();
+        let content = load_facet(FacetKind::Knowledge, "test", tmp.path()).unwrap();
         assert_eq!(content, "v2");
     }
 
     #[test]
     fn save_with_invalid_key() {
         let tmp = TempDir::new().unwrap();
-        let result = save_facet(FacetKind::Persona, "", "content", tmp.path());
+        let result = save_facet(FacetKind::Knowledge, "", "content", tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::InvalidKey { .. }));
     }
 
@@ -479,15 +468,15 @@ mod tests {
     #[test]
     fn delete_existing_facet() {
         let tmp = TempDir::new().unwrap();
-        save_facet(FacetKind::Persona, "deleteme", "content", tmp.path()).unwrap();
-        delete_facet(FacetKind::Persona, "deleteme", tmp.path()).unwrap();
-        assert!(!tmp.path().join("personas/deleteme.md").exists());
+        save_facet(FacetKind::Knowledge, "deleteme", "content", tmp.path()).unwrap();
+        delete_facet(FacetKind::Knowledge, "deleteme", tmp.path()).unwrap();
+        assert!(!tmp.path().join("knowledge/deleteme.md").exists());
     }
 
     #[test]
     fn delete_missing_facet_returns_not_found() {
         let tmp = TempDir::new().unwrap();
-        let result = delete_facet(FacetKind::Persona, "nope", tmp.path());
+        let result = delete_facet(FacetKind::Knowledge, "nope", tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
@@ -497,34 +486,115 @@ mod tests {
     fn list_facets_sorted() {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
-        let keys = list_facets(FacetKind::Persona, tmp.path()).unwrap();
-        assert_eq!(keys, vec!["coder", "reviewer"]);
+        let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
+        assert_eq!(keys, vec!["architecture"]);
     }
 
     #[test]
     fn list_facets_empty_dir() {
         let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join("personas")).unwrap();
-        let keys = list_facets(FacetKind::Persona, tmp.path()).unwrap();
+        fs::create_dir_all(tmp.path().join("knowledge")).unwrap();
+        let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
         assert!(keys.is_empty());
     }
 
     #[test]
     fn list_facets_nonexistent_dir() {
         let tmp = TempDir::new().unwrap();
-        let keys = list_facets(FacetKind::Persona, tmp.path()).unwrap();
+        let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
         assert!(keys.is_empty());
     }
 
     // --- compose_facets ---
+    // Gherkin: ワークフローエンジンはステップ宣言から system_prompt と user_message を合成する
 
     #[test]
-    fn compose_all_facets() {
+    fn compose_system_prompt_from_policy_and_output_contract() {
+        // Scenario: policyとoutput_contractの両方を指定したステップから system_prompt が合成される
+        let tmp = TempDir::new().unwrap();
+        setup_facet_files(tmp.path());
+
+        let step = make_facet_step(Some("coding"), None, None, Some("plan-doc"));
+        let result = compose_facets(&step, tmp.path()).unwrap();
+
+        let sys = result.system_prompt.expect("system_prompt should be set");
+        assert!(sys.contains("Follow best practices."));
+        assert!(sys.contains("Output as markdown."));
+        assert_eq!(result.user_message, "");
+    }
+
+    #[test]
+    fn compose_system_prompt_from_policy_only() {
+        // Scenario: policyのみを指定したステップでも system_prompt が合成される
+        let tmp = TempDir::new().unwrap();
+        setup_facet_files(tmp.path());
+
+        let step = make_facet_step(Some("coding"), None, None, None);
+        let result = compose_facets(&step, tmp.path()).unwrap();
+
+        assert_eq!(
+            result.system_prompt.as_deref(),
+            Some("Follow best practices.")
+        );
+        assert_eq!(result.user_message, "");
+    }
+
+    #[test]
+    fn compose_system_prompt_from_output_contract_only() {
+        // Scenario: output_contractのみを指定したステップでも system_prompt が合成される
+        let tmp = TempDir::new().unwrap();
+        setup_facet_files(tmp.path());
+
+        let step = make_facet_step(None, None, None, Some("plan-doc"));
+        let result = compose_facets(&step, tmp.path()).unwrap();
+
+        assert_eq!(result.system_prompt.as_deref(), Some("Output as markdown."));
+        assert_eq!(result.user_message, "");
+    }
+
+    #[test]
+    fn compose_no_system_prompt_when_neither_policy_nor_output_contract() {
+        // Scenario: policy も output_contract も指定がないと system_prompt は設定されない
+        let tmp = TempDir::new().unwrap();
+        setup_facet_files(tmp.path());
+
+        let step = make_facet_step(None, Some("architecture"), Some("implement"), None);
+        let result = compose_facets(&step, tmp.path()).unwrap();
+
+        assert!(result.system_prompt.is_none());
+    }
+
+    #[test]
+    fn compose_user_message_from_knowledge_and_instruction() {
+        // Scenario: knowledgeとinstructionを指定したステップから user_message が合成される
+        let tmp = TempDir::new().unwrap();
+        setup_facet_files(tmp.path());
+
+        let step = make_facet_step(None, Some("architecture"), Some("implement"), None);
+        let result = compose_facets(&step, tmp.path()).unwrap();
+
+        assert!(result.user_message.contains("The system uses Tauri."));
+        assert!(result.user_message.contains("Implement the feature."));
+    }
+
+    #[test]
+    fn compose_user_message_empty_when_neither_knowledge_nor_instruction() {
+        // Scenario: knowledge も instruction も指定がないと user_message は空文字として合成される
+        let tmp = TempDir::new().unwrap();
+        setup_facet_files(tmp.path());
+
+        let step = make_facet_step(Some("coding"), None, None, None);
+        let result = compose_facets(&step, tmp.path()).unwrap();
+
+        assert_eq!(result.user_message, "");
+    }
+
+    #[test]
+    fn compose_all_four_facets() {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
         let step = make_facet_step(
-            Some("coder"),
             Some("coding"),
             Some("architecture"),
             Some("implement"),
@@ -532,56 +602,42 @@ mod tests {
         );
         let result = compose_facets(&step, tmp.path()).unwrap();
 
-        assert_eq!(result.system_prompt.as_deref(), Some("You are a coder."));
-        assert_eq!(
-            result.user_message,
-            "The system uses Tauri.\n\nImplement the feature.\n\nOutput as markdown.\n\nFollow best practices."
-        );
-    }
-
-    #[test]
-    fn compose_partial_facets() {
-        let tmp = TempDir::new().unwrap();
-        setup_facet_files(tmp.path());
-
-        let step = make_facet_step(Some("coder"), None, None, Some("implement"), None);
-        let result = compose_facets(&step, tmp.path()).unwrap();
-
-        assert_eq!(result.system_prompt.as_deref(), Some("You are a coder."));
-        assert_eq!(result.user_message, "Implement the feature.");
-    }
-
-    #[test]
-    fn compose_persona_only() {
-        let tmp = TempDir::new().unwrap();
-        setup_facet_files(tmp.path());
-
-        let step = make_facet_step(Some("coder"), None, None, None, None);
-        let result = compose_facets(&step, tmp.path()).unwrap();
-
-        assert_eq!(result.system_prompt.as_deref(), Some("You are a coder."));
-        assert_eq!(result.user_message, "");
-    }
-
-    #[test]
-    fn compose_no_persona() {
-        let tmp = TempDir::new().unwrap();
-        setup_facet_files(tmp.path());
-
-        let step = make_facet_step(None, Some("coding"), None, Some("implement"), None);
-        let result = compose_facets(&step, tmp.path()).unwrap();
-
-        assert!(result.system_prompt.is_none());
-        assert_eq!(
-            result.user_message,
-            "Implement the feature.\n\nFollow best practices."
-        );
+        let sys = result.system_prompt.expect("system_prompt should be set");
+        assert!(sys.contains("Follow best practices."));
+        assert!(sys.contains("Output as markdown."));
+        assert!(result.user_message.contains("The system uses Tauri."));
+        assert!(result.user_message.contains("Implement the feature."));
     }
 
     #[test]
     fn compose_with_missing_facet_returns_error() {
+        // Scenario: 参照先ファセットが存在しないステップはプロンプト合成時に NotFound 相当のエラーで失敗する
         let tmp = TempDir::new().unwrap();
-        let step = make_facet_step(Some("nonexistent"), None, None, None, None);
+        let step = make_facet_step(Some("nonexistent"), None, None, None);
+        let result = compose_facets(&step, tmp.path());
+        assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
+    }
+
+    #[test]
+    fn compose_with_missing_knowledge_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let step = make_facet_step(None, Some("nonexistent"), None, None);
+        let result = compose_facets(&step, tmp.path());
+        assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
+    }
+
+    #[test]
+    fn compose_with_missing_instruction_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let step = make_facet_step(None, None, Some("nonexistent"), None);
+        let result = compose_facets(&step, tmp.path());
+        assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
+    }
+
+    #[test]
+    fn compose_with_missing_output_contract_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let step = make_facet_step(None, None, None, Some("nonexistent"));
         let result = compose_facets(&step, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
@@ -593,13 +649,13 @@ mod tests {
         use crate::workflow::engine::WorkflowEngine;
 
         let tmp = TempDir::new().unwrap();
-        let personas = tmp.path().join("personas");
+        let policies = tmp.path().join("policies");
         let instructions = tmp.path().join("instructions");
-        std::fs::create_dir_all(&personas).unwrap();
+        std::fs::create_dir_all(&policies).unwrap();
         std::fs::create_dir_all(&instructions).unwrap();
         std::fs::write(
-            personas.join("coder.md"),
-            "You are a coder for {{project_name}}.",
+            policies.join("coding.md"),
+            "Coding rules for {{project_name}}.",
         )
         .unwrap();
         std::fs::write(
@@ -608,7 +664,7 @@ mod tests {
         )
         .unwrap();
 
-        let step = make_facet_step(Some("coder"), None, None, Some("impl"), None);
+        let step = make_facet_step(Some("coding"), None, Some("impl"), None);
         let composed = compose_facets(&step, tmp.path()).unwrap();
 
         let worktree_path = "/home/user/my-project";
@@ -620,7 +676,7 @@ mod tests {
         let rendered_user =
             WorkflowEngine::render_facet_variables(&composed.user_message, worktree_path, task);
 
-        assert_eq!(rendered_system.unwrap(), "You are a coder for my-project.");
+        assert_eq!(rendered_system.unwrap(), "Coding rules for my-project.");
         assert_eq!(rendered_user, "Task: Fix the bug\nProject: my-project");
     }
 

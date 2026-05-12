@@ -53,7 +53,6 @@ export type StepMode = "auto" | "approval";
 export interface ParallelStep {
 	name: string;
 	mode: StepMode;
-	persona?: string;
 	policy?: string;
 	knowledge?: string;
 	instruction?: string;
@@ -72,7 +71,6 @@ export interface AggregateConfig {
 export interface Step {
 	name: string;
 	mode?: StepMode;
-	persona?: string;
 	policy?: string;
 	knowledge?: string;
 	instruction?: string;
@@ -290,7 +288,6 @@ export type WorkflowSummary = {
 };
 
 export type FacetKind =
-	| "persona"
 	| "policy"
 	| "knowledge"
 	| "instruction"

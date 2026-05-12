@@ -91,8 +91,7 @@ function StepCard({ step, index }: { step: Step; index: number }) {
 				<div className="px-3 pb-3 flex flex-col gap-2 text-xs">
 					<Separator />
 					{/* Facet refs */}
-					{(step.persona ||
-						step.policy ||
+					{(step.policy ||
 						step.knowledge ||
 						step.instruction ||
 						step.output_contract) && (
@@ -100,9 +99,6 @@ function StepCard({ step, index }: { step: Step; index: number }) {
 							<span className="font-medium text-muted-foreground">
 								Facet References
 							</span>
-							{step.persona && (
-								<FacetRefRow label="Persona" value={step.persona} />
-							)}
 							{step.policy && (
 								<FacetRefRow label="Policy" value={step.policy} />
 							)}
