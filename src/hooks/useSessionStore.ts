@@ -229,6 +229,35 @@ export async function sendAgentMessage(
 	};
 }
 
+export async function sendWorkflowApprovalChatMessage(
+	chatSessionId: string,
+	worktreePath: string,
+	content: string,
+	permissionMode: string,
+	images?: ImageAttachment[],
+	mentions?: MentionReference[],
+): Promise<SendMessageResponse> {
+	const raw = await invoke<RawSendMessageResponse>(
+		"send_workflow_approval_chat_message",
+		{
+			chatSessionId,
+			worktreePath,
+			content,
+			permissionMode,
+			images: images && images.length > 0 ? images : undefined,
+			mentions: mentions && mentions.length > 0 ? mentions : undefined,
+		},
+	);
+	return {
+		session: convertLegacySession(raw.session),
+		humanMessage: convertLegacyMessage(raw.humanMessage),
+		agentMessage: raw.agentMessage
+			? convertLegacyMessage(raw.agentMessage)
+			: null,
+		sessions: raw.sessions,
+	};
+}
+
 interface RawInitSessionsResponse {
 	sessions: SessionSummary[];
 	activeSession: RawGetSessionResponse | null;

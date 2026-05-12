@@ -301,6 +301,12 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::ResetsCycleForNonGuardedStep { step, .. } => {
             (Some(step.clone()), Some("resets_cycle_for".to_string()))
         }
+        ValidationError::InteractiveModeNotAllowed { step } => {
+            (Some(step.clone()), Some("mode".to_string()))
+        }
+        ValidationError::InvalidApprovalRules { step, .. } => {
+            (Some(step.clone()), Some("rules".to_string()))
+        }
     }
 }
 

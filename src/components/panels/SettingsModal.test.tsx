@@ -38,6 +38,10 @@ describe("SettingsModal", () => {
 						auto_start: false,
 						auto_start_on_lan: false,
 					});
+				case "get_workflow_config":
+					return Promise.resolve({
+						approval_auto_approve: false,
+					});
 				case "generate_hooks_config":
 					return Promise.resolve('{"hooks":{}}');
 				case "get_hooks_status":
@@ -49,6 +53,7 @@ describe("SettingsModal", () => {
 				case "preview_agent_mcp_config":
 					return Promise.resolve("");
 				case "update_remote_config":
+				case "update_workflow_config":
 				case "update_notify_config":
 					return Promise.resolve(null);
 				case "get_external_editor":
@@ -363,6 +368,78 @@ describe("SettingsModal", () => {
 		fireEvent.click(within(nav).getByText("Agent"));
 		await waitFor(() => {
 			expect(screen.getByText("Not configured")).toBeInTheDocument();
+		});
+	});
+
+	it("should load and save workflow approval auto-approve independently from agent auto-approve", async () => {
+		const user = userEvent.setup();
+		const { invoke } = await import("@tauri-apps/api/core");
+		vi.mocked(invoke).mockImplementation((cmd: string) => {
+			switch (cmd) {
+				case "get_notify_config":
+					return Promise.resolve({
+						webhook_url: "",
+						on_running: false,
+						on_done: true,
+						on_error: true,
+						on_waiting: true,
+						desktop_mode: "always",
+						inactive_timeout_minutes: 2,
+					});
+				case "get_remote_config":
+					return Promise.resolve({
+						auto_start: false,
+						auto_start_on_lan: false,
+					});
+				case "get_workflow_config":
+					return Promise.resolve({
+						approval_auto_approve: true,
+					});
+				case "generate_hooks_config":
+					return Promise.resolve('{"hooks":{}}');
+				case "get_hooks_status":
+					return Promise.resolve("not_configured");
+				case "get_mcp_config":
+					return Promise.resolve({ port: 19801, token: "test-token" });
+				case "get_configured_agents":
+					return Promise.resolve([]);
+				case "preview_agent_mcp_config":
+					return Promise.resolve("");
+				case "update_workflow_config":
+				case "update_remote_config":
+				case "update_notify_config":
+					return Promise.resolve(null);
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		render(
+			<SettingsModal
+				{...defaultProps}
+				settings={{
+					...defaultSettings,
+					agent: "codex",
+					agentAutoApprove: false,
+				}}
+			/>,
+		);
+		const nav = screen.getByRole("navigation");
+		fireEvent.click(within(nav).getByText("Agent"));
+		const workflowCheckbox = await screen.findByRole("checkbox", {
+			name: "Workflow approval auto-approve",
+		});
+		const agentCheckbox = screen.getByRole("checkbox", {
+			name: "Auto-approve",
+		});
+		expect(workflowCheckbox).toBeChecked();
+		expect(agentCheckbox).not.toBeChecked();
+
+		await user.click(workflowCheckbox);
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		expect(invoke).toHaveBeenCalledWith("update_workflow_config", {
+			workflow: { approval_auto_approve: false },
 		});
 	});
 

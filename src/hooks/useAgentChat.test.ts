@@ -79,6 +79,30 @@ vi.mock("./useSessionStore", () => ({
 		},
 		sessions: [],
 	}),
+	sendWorkflowApprovalChatMessage: vi.fn().mockResolvedValue({
+		session: {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 1000,
+			updatedAt: 1000,
+			permissionMode: "acceptEdits",
+		},
+		humanMessage: {
+			id: "msg-1",
+			role: "human",
+			parts: [{ type: "text", content: "hello" }],
+			timestamp: 1001,
+		},
+		agentMessage: {
+			id: "msg-2",
+			role: "agent",
+			parts: [],
+			timestamp: 1002,
+		},
+		sessions: [],
+	}),
 	initAgentSessions: vi.fn().mockResolvedValue({
 		sessions: [],
 		activeSession: {
@@ -103,6 +127,7 @@ describe("useAgentChat", () => {
 		mockInvoke.mockClear();
 		const sessionStore = await import("./useSessionStore");
 		vi.mocked(sessionStore.sendAgentMessage).mockClear();
+		vi.mocked(sessionStore.sendWorkflowApprovalChatMessage).mockClear();
 		vi.mocked(sessionStore.initAgentSessions).mockClear();
 		vi.mocked(sessionStore.setSessionBackend).mockClear();
 	});
@@ -259,6 +284,30 @@ describe("useAgentChat", () => {
 			undefined,
 			undefined,
 		);
+	});
+
+	it("sendMessage uses workflow approval chat command for the active approval session", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+
+		const { result } = renderHook(() => useAgentChat("/repo", "s1"));
+
+		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
+
+		await act(async () => {
+			await result.current.sendMessage("adjust policy");
+		});
+
+		expect(sessionStore.sendWorkflowApprovalChatMessage).toHaveBeenCalledWith(
+			"s1",
+			"/repo",
+			"adjust policy",
+			"acceptEdits",
+			undefined,
+			undefined,
+		);
+		expect(sessionStore.sendAgentMessage).not.toHaveBeenCalled();
 	});
 
 	it("respondPermission invokes respond_agent_permission with chatSessionId", async () => {

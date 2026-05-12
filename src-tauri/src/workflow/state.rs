@@ -28,8 +28,16 @@ pub struct WorkflowState {
     pub active_parallel_steps: Vec<ParallelStepState>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub workflow_variables: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_operations: Option<ApprovalOperations>,
     pub started_at: f64,
     pub updated_at: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalOperations {
+    pub can_reject: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

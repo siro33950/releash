@@ -86,6 +86,54 @@ const initialHooksState: HooksState = {
 	success: false,
 };
 
+interface WorkflowConfig {
+	approval_auto_approve: boolean;
+}
+
+const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
+	approval_auto_approve: false,
+};
+
+function useWorkflowSettings(open: boolean) {
+	const [config, setConfig] = useState<WorkflowConfig>(DEFAULT_WORKFLOW_CONFIG);
+	const [draft, setDraft] = useState<WorkflowConfig>(DEFAULT_WORKFLOW_CONFIG);
+	const [loading, setLoading] = useState(false);
+	const [saving, setSaving] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		if (!open) return;
+		setLoading(true);
+		setError(null);
+		invoke<WorkflowConfig>("get_workflow_config")
+			.then((loaded) => {
+				const normalized = loaded ?? DEFAULT_WORKFLOW_CONFIG;
+				setConfig(normalized);
+				setDraft(normalized);
+			})
+			.catch((e) => setError(String(e)))
+			.finally(() => setLoading(false));
+	}, [open]);
+
+	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
+
+	const save = useCallback(async () => {
+		setSaving(true);
+		setError(null);
+		try {
+			await invoke("update_workflow_config", { workflow: draft });
+			setConfig({ ...draft });
+		} catch (e) {
+			setError(String(e));
+			throw e;
+		} finally {
+			setSaving(false);
+		}
+	}, [draft]);
+
+	return { draft, setDraft, isDirty, loading, saving, error, save };
+}
+
 type HooksAction =
 	| { type: "LOAD_START" }
 	| {
@@ -617,6 +665,7 @@ function RepositoriesSection({
 function AgentSection({
 	draft,
 	updateDraft,
+	workflow,
 	hooksConfig,
 	hooksLoading,
 	hooksApplying,
@@ -629,6 +678,7 @@ function AgentSection({
 }: {
 	draft: AppSettings;
 	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
+	workflow: ReturnType<typeof useWorkflowSettings>;
 	hooksConfig: string;
 	hooksLoading: boolean;
 	hooksApplying: boolean;
@@ -692,6 +742,35 @@ function AgentSection({
 					</label>
 				</div>
 			)}
+
+			<div className="flex flex-col gap-1.5 rounded border p-3">
+				<div className="flex items-center gap-2">
+					<Checkbox
+						id="workflow-approval-auto-approve"
+						checked={workflow.draft.approval_auto_approve}
+						disabled={workflow.loading || workflow.saving}
+						onCheckedChange={(checked) =>
+							workflow.setDraft((d) => ({
+								...d,
+								approval_auto_approve: checked === true,
+							}))
+						}
+					/>
+					<label
+						htmlFor="workflow-approval-auto-approve"
+						className={`${labelClass} cursor-pointer`}
+					>
+						Workflow approval auto-approve
+					</label>
+				</div>
+				<p className="text-[10px] text-muted-foreground">
+					Automatically accepts completed workflow approval steps. This is
+					independent from agent auto-approve.
+				</p>
+				{workflow.error && (
+					<p className="text-[10px] text-destructive">{workflow.error}</p>
+				)}
+			</div>
 
 			{draft.agent !== "none" && (
 				<div className="flex flex-col gap-1.5">
@@ -1272,6 +1351,7 @@ export function SettingsModal({
 	const mcp = useMcpConfig();
 	const externalEditor = useExternalEditorConfig(open);
 	const automation = useAutomation(open);
+	const workflow = useWorkflowSettings(open);
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
@@ -1352,6 +1432,7 @@ export function SettingsModal({
 	const { isDirty: notionIsDirty, save: notionSave } = notion;
 	const { isDirty: mcpIsDirty, save: mcpSave } = mcp;
 	const { isDirty: editorIsDirty, save: editorSave } = externalEditor;
+	const { isDirty: workflowIsDirty, save: workflowSave } = workflow;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -1377,6 +1458,9 @@ export function SettingsModal({
 			}
 			if (editorIsDirty) {
 				await editorSave();
+			}
+			if (workflowIsDirty) {
+				await workflowSave();
 			}
 			if (draft.telemetryEnabled) {
 				trackEvent("settings_saved");
@@ -1404,6 +1488,8 @@ export function SettingsModal({
 		mcpSave,
 		editorIsDirty,
 		editorSave,
+		workflowIsDirty,
+		workflowSave,
 	]);
 
 	const isDirty =
@@ -1414,7 +1500,8 @@ export function SettingsModal({
 		reposIsDirty ||
 		notionIsDirty ||
 		mcpIsDirty ||
-		editorIsDirty;
+		editorIsDirty ||
+		workflowIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
@@ -1453,6 +1540,7 @@ export function SettingsModal({
 					<AgentSection
 						draft={draft}
 						updateDraft={updateDraft}
+						workflow={workflow}
 						hooksConfig={hooks.config}
 						hooksLoading={hooks.loading}
 						hooksApplying={hooks.applying}

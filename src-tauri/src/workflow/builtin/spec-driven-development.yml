@@ -3,24 +3,24 @@ description: Spec-driven development workflow (requirements → behavior → arc
 builtin: true
 
 steps:
-  # 1. 要求整理（interactive、Spec作成）
+  # 1. 要求整理（approval、Spec作成）
   - name: plan_requirements
-    mode: interactive
+    mode: approval
     instruction: plan-requirements
     policy: planning
     output_contract: spec-file-path
 
-  # 2. 振る舞い定義（interactive、Spec更新）
+  # 2. 振る舞い定義（approval、Spec更新）
   - name: plan_behavior
-    mode: interactive
+    mode: approval
     instruction: plan-behavior
     policy: planning
     output_contract: spec-file-path
     pass_previous_response: true
 
-  # 3. アーキテクチャ概要（interactive、Spec更新）
+  # 3. アーキテクチャ概要（approval、Spec更新）
   - name: plan_architecture
-    mode: interactive
+    mode: approval
     instruction: plan-architecture
     policy: planning
     output_contract: spec-file-path
@@ -64,16 +64,30 @@ steps:
     aggregate:
       all_match: LGTM
       then: plan_approval
-      else: plan_fix
+      else: plan_fix_policy
 
-  # 6. アーキテクチャ概要修正（auto、Spec更新）
+  # 6. Plan修正方針確認（approval）
+  - name: plan_fix_policy
+    mode: approval
+    instruction: plan-fix-policy
+    policy: planning
+    output_contract: approved-fix-policy
+    pass_output_from:
+      - plan_review_parallel
+      - plan_architecture
+      - plan_approval
+    rules:
+      - match: reject
+        next: plan_approval
+
+  # 7. アーキテクチャ概要修正（auto、Spec更新）
   - name: plan_fix
     mode: auto
     instruction: plan-fix
     output_contract: spec-file-path
-    pass_previous_response: true
     pass_output_from:
       - plan_review_parallel
+      - plan_fix_policy
       - plan_architecture
       - plan_approval
     rules:
@@ -83,22 +97,21 @@ steps:
       max_iterations: 2
       on_exhausted: plan_approval
 
-  # 7. アーキテクチャ概要承認（interactive対話 → review-verdictで判定）
+  # 8. アーキテクチャ概要承認（approval）
   - name: plan_approval
-    mode: interactive
+    mode: approval
     instruction: plan-approval
     policy: planning
-    output_contract: review-verdict
     pass_output_from:
       - plan_architecture
       - plan_review_parallel
     resets_cycle_for:
       - plan_fix
     rules:
-      - match: NEEDS_FIX
-        next: plan_fix
+      - match: reject
+        next: plan_fix_policy
 
-  # 8. 実装（auto）
+  # 9. 実装（auto）
   - name: implement
     mode: auto
     instruction: implement
@@ -173,23 +186,37 @@ steps:
     aggregate:
       all_match: LGTM
       then: implementation_approval
-      else: fix
+      else: implementation_fix_policy
 
-  # 12. 修正（auto）
+  # 13. 実装修正方針確認（approval）
+  - name: implementation_fix_policy
+    mode: approval
+    instruction: implementation-fix-policy
+    policy: coding
+    output_contract: approved-fix-policy
+    pass_output_from:
+      - code_review_parallel
+      - plan_architecture
+      - implementation_approval
+    rules:
+      - match: reject
+        next: implementation_approval
+
+  # 14. 修正（auto）
   - name: fix
     mode: auto
     instruction: implement-fix
     policy: coding
-    pass_previous_response: true
     pass_output_from:
       - code_review_parallel
+      - implementation_fix_policy
       - plan_architecture
       - implementation_approval
     cycle_guard:
       max_iterations: 3
       on_exhausted: implementation_approval
 
-  # 13. 修正後品質チェック（auto）
+  # 15. 修正後品質チェック（auto）
   - name: fix_quality_check
     mode: auto
     instruction: quality-check
@@ -199,12 +226,11 @@ steps:
       - match: ".*"
         next: code_review_parallel
 
-  # 14. 実装結果承認（interactive対話 → review-verdictで判定）
+  # 16. 実装結果承認（approval）
   - name: implementation_approval
-    mode: interactive
+    mode: approval
     instruction: implementation-approval
     policy: coding
-    output_contract: review-verdict
     pass_output_from:
       - plan_architecture
       - implement
@@ -212,5 +238,5 @@ steps:
     resets_cycle_for:
       - fix
     rules:
-      - match: NEEDS_FIX
-        next: fix
+      - match: reject
+        next: implementation_fix_policy

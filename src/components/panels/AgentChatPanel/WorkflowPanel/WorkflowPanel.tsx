@@ -418,20 +418,18 @@ function WorkflowActivePanel({
 		workflowState.state.type === "running" ||
 		workflowState.state.type === "waiting_approval";
 
-	const currentStep =
-		workflowState.workflowDefinition.steps[workflowState.currentStepIndex];
 	const isWaitingApproval = workflowState.state.type === "waiting_approval";
-	const isInteractiveRunning =
-		currentStep?.mode === "interactive" &&
-		workflowState.state.type === "running";
+	const canReject = workflowState.approvalOperations?.canReject === true;
 
 	const [rejectMode, setRejectMode] = useState(false);
 	const [rejectComment, setRejectComment] = useState("");
+	const [approvalError, setApprovalError] = useState<string | null>(null);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset reject form when step/execution/approval state changes
 	useEffect(() => {
 		setRejectMode(false);
 		setRejectComment("");
+		setApprovalError(null);
 	}, [
 		workflowState.executionId,
 		workflowState.currentStepName,
@@ -448,10 +446,15 @@ function WorkflowActivePanel({
 		invoke("approve_workflow_step", {
 			worktreePath,
 			decision: "approve",
-		}).catch((e) =>
-			console.warn("[WorkflowPanel] approve_workflow_step failed", e),
-		);
-	}, [worktreePath]);
+			executionId: workflowState.executionId,
+			stepName: workflowState.currentStepName,
+		})
+			.then(() => setApprovalError(null))
+			.catch((e) => {
+				console.warn("[WorkflowPanel] approve_workflow_step failed", e);
+				setApprovalError(formatWorkflowApprovalError(e));
+			});
+	}, [worktreePath, workflowState.executionId, workflowState.currentStepName]);
 
 	const handleRejectClick = useCallback(() => {
 		setRejectMode(true);
@@ -461,32 +464,41 @@ function WorkflowActivePanel({
 		invoke("approve_workflow_step", {
 			worktreePath,
 			decision: { reject: { comment: rejectComment } },
+			executionId: workflowState.executionId,
+			stepName: workflowState.currentStepName,
 		})
 			.then(() => {
 				setRejectMode(false);
 				setRejectComment("");
+				setApprovalError(null);
 			})
-			.catch((e) =>
-				console.warn("[WorkflowPanel] approve_workflow_step failed", e),
-			);
-	}, [worktreePath, rejectComment]);
+			.catch((e) => {
+				console.warn("[WorkflowPanel] approve_workflow_step failed", e);
+				setApprovalError(formatWorkflowApprovalError(e));
+			});
+	}, [
+		worktreePath,
+		rejectComment,
+		workflowState.executionId,
+		workflowState.currentStepName,
+	]);
 
 	const handleRejectCancel = useCallback(() => {
 		setRejectMode(false);
 		setRejectComment("");
 	}, []);
 
-	const handleCompleteInteractive = useCallback(() => {
-		invoke("complete_interactive_step", {
-			worktreePath,
-			abort: false,
-		}).catch((e) =>
-			console.warn("[WorkflowPanel] complete_interactive_step failed", e),
-		);
-	}, [worktreePath]);
-
 	return (
 		<div className="flex flex-col h-full overflow-hidden">
+			{approvalError && (
+				<div
+					role="alert"
+					className="flex items-start gap-2 px-3 py-2 border-b bg-red-500/10 text-red-700 dark:text-red-300 text-xs shrink-0"
+				>
+					<X className="size-3.5 mt-0.5 shrink-0" />
+					<span>{approvalError}</span>
+				</div>
+			)}
 			{/* Reject comment input */}
 			{isWaitingApproval && rejectMode && (
 				<div className="flex flex-col gap-1.5 px-3 py-2 border-b shrink-0">
@@ -532,27 +544,18 @@ function WorkflowActivePanel({
 								<Check className="size-3" />
 								Approve
 							</button>
-							<button
-								type="button"
-								onClick={handleRejectClick}
-								className="flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-yellow-500/20 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-500/30 transition-colors"
-								aria-label="Reject step"
-							>
-								<X className="size-3" />
-								Reject
-							</button>
+							{canReject && (
+								<button
+									type="button"
+									onClick={handleRejectClick}
+									className="flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-yellow-500/20 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-500/30 transition-colors"
+									aria-label="Reject step"
+								>
+									<X className="size-3" />
+									Reject
+								</button>
+							)}
 						</>
-					)}
-					{isInteractiveRunning && (
-						<button
-							type="button"
-							onClick={handleCompleteInteractive}
-							className="flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-green-500/20 text-green-700 dark:text-green-300 hover:bg-green-500/30 transition-colors"
-							aria-label="Complete step"
-						>
-							<Check className="size-3" />
-							Complete
-						</button>
 					)}
 					{isRunning && (
 						<button
@@ -578,6 +581,23 @@ function WorkflowActivePanel({
 			</div>
 		</div>
 	);
+}
+
+function formatWorkflowApprovalError(error: unknown): string {
+	const message = String(error);
+	if (message.startsWith("invalid_state:")) {
+		return "Workflow approval is no longer available for the current step.";
+	}
+	if (message.startsWith("validation_error:")) {
+		return message.replace(/^validation_error:\s*/, "");
+	}
+	if (message.startsWith("unauthorized_worktree:")) {
+		return "This approval belongs to a different worktree.";
+	}
+	if (message.startsWith("unauthorized_approval_target:")) {
+		return "This approval request no longer matches the current workflow step.";
+	}
+	return message;
 }
 
 function StatusBadge({ state }: { state: string }) {

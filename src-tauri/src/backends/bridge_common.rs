@@ -2815,14 +2815,21 @@ pub struct SendMessageResponse {
     pub sessions: Vec<SessionSummary>,
 }
 
-/// Unified command to send a message: handles session creation, message persistence,
-/// turn phase check (interrupt if streaming, start query if idle), and pending message queuing.
+struct PreparedAgentTurn {
+    session_id: String,
+    worktree_path: String,
+    permission_mode: String,
+    prompt: String,
+    agent_message_id: String,
+    images: Vec<ImageAttachment>,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub async fn send_agent_message_internal(
-    app: &tauri::AppHandle,
+async fn prepare_send_agent_message_internal(
     session_store: &Arc<SessionStore>,
     registry: &Arc<crate::backends::AgentBackendRegistry>,
     handles: &Arc<Mutex<AgentProcessMap>>,
+    data_dir: &Path,
     chat_session_id: Option<String>,
     worktree_path: String,
     content: String,
@@ -2830,8 +2837,7 @@ pub async fn send_agent_message_internal(
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::file_mention::MentionReference>>,
-) -> Result<SendMessageResponse, String> {
-    let data_dir = resolve_data_dir(app)?;
+) -> Result<(SendMessageResponse, Option<PreparedAgentTurn>), String> {
     let pm = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
     let images = images.unwrap_or_default();
     let mentions = mentions.unwrap_or_default();
@@ -2839,14 +2845,14 @@ pub async fn send_agent_message_internal(
     // 1. Create or get session
     let session = if let Some(ref sid) = chat_session_id {
         let session = session_store
-            .get_session(&data_dir, sid)?
+            .get_session(data_dir, sid)?
             .ok_or_else(|| format!("Session not found: {sid}"))?;
-        ensure_session_backend_selected(session_store, registry, &data_dir, session)?
+        ensure_session_backend_selected(session_store, registry, data_dir, session)?
     } else {
         let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
         create_session_internal(
             session_store,
-            &data_dir,
+            data_dir,
             &worktree_path,
             Some(resolved_backend_id),
         )?
@@ -2875,7 +2881,7 @@ pub async fn send_agent_message_internal(
         };
         add_message_internal(
             session_store,
-            &data_dir,
+            data_dir,
             &sid,
             MessageRole::Human,
             &content,
@@ -2896,7 +2902,7 @@ pub async fn send_agent_message_internal(
             .unwrap_or(TurnPhase::Idle)
     };
 
-    let agent_message = if current_phase == TurnPhase::Streaming
+    let (agent_message, prepared_turn) = if current_phase == TurnPhase::Streaming
         || current_phase == TurnPhase::WaitingPermission
     {
         // 4a. Queue pending message + interrupt
@@ -2921,12 +2927,12 @@ pub async fn send_agent_message_internal(
                 .await
                 .map_err(|e| format!("Failed to flush: {e}"))?;
         }
-        None
+        (None, None)
     } else {
         // 4b. Create agent message + start turn
         let agent_msg = add_message_internal(
             session_store,
-            &data_dir,
+            data_dir,
             &sid,
             MessageRole::Agent,
             "",
@@ -2935,33 +2941,82 @@ pub async fn send_agent_message_internal(
         )?;
         let resolved_prompt =
             crate::file_mention::resolve_mentions_or_fallback(&worktree_path, &content, &mentions);
-        start_agent_turn(
-            app,
-            handles,
-            session_store,
-            &sid,
-            &worktree_path,
-            &pm,
-            &resolved_prompt,
-            &agent_msg.id,
-            &images,
-        )
-        .await?;
-        Some(agent_msg)
+        let turn = PreparedAgentTurn {
+            session_id: sid.clone(),
+            worktree_path: worktree_path.clone(),
+            permission_mode: pm.clone(),
+            prompt: resolved_prompt,
+            agent_message_id: agent_msg.id.clone(),
+            images: images.clone(),
+        };
+        (Some(agent_msg), Some(turn))
     };
 
     // 5. Get updated session and list
     let updated_session = session_store
-        .get_session(&data_dir, &sid)?
+        .get_session(data_dir, &sid)?
         .ok_or_else(|| format!("Session not found: {sid}"))?;
-    let sessions = session_store.list_sessions(&data_dir, &worktree_path)?;
+    let sessions = session_store.list_sessions(data_dir, &worktree_path)?;
 
-    Ok(SendMessageResponse {
-        session: updated_session,
-        human_message,
-        agent_message,
-        sessions,
-    })
+    Ok((
+        SendMessageResponse {
+            session: updated_session,
+            human_message,
+            agent_message,
+            sessions,
+        },
+        prepared_turn,
+    ))
+}
+
+/// Unified command to send a message: handles session creation, message persistence,
+/// turn phase check (interrupt if streaming, start query if idle), and pending message queuing.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_agent_message_internal(
+    app: &tauri::AppHandle,
+    session_store: &Arc<SessionStore>,
+    registry: &Arc<crate::backends::AgentBackendRegistry>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: Option<String>,
+    worktree_path: String,
+    content: String,
+    permission_mode: Option<String>,
+    backend_id: Option<String>,
+    images: Option<Vec<ImageAttachment>>,
+    mentions: Option<Vec<crate::file_mention::MentionReference>>,
+) -> Result<SendMessageResponse, String> {
+    let data_dir = resolve_data_dir(app)?;
+    let (response, prepared_turn) = prepare_send_agent_message_internal(
+        session_store,
+        registry,
+        handles,
+        &data_dir,
+        chat_session_id,
+        worktree_path,
+        content,
+        permission_mode,
+        backend_id,
+        images,
+        mentions,
+    )
+    .await?;
+
+    if let Some(turn) = prepared_turn {
+        start_agent_turn(
+            app,
+            handles,
+            session_store,
+            &turn.session_id,
+            &turn.worktree_path,
+            &turn.permission_mode,
+            &turn.prompt,
+            &turn.agent_message_id,
+            &turn.images,
+        )
+        .await?;
+    }
+
+    Ok(response)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3361,7 +3416,15 @@ mod tests {
         AgentBackend, AgentBackendRegistry, AgentMessage, PermissionResponse, SessionConfig,
         SessionHandle,
     };
+    use crate::workflow::engine::WorkflowEngine;
+    use crate::workflow::state::WorkflowExecutionState;
     use async_trait::async_trait;
+
+    fn approved_fix_policy_output(policy: &str, review_step: &str) -> String {
+        format!(
+            r#"<workflow_output type="approved-fix-policy">{{"policy":"{policy}","review_step":"{review_step}"}}</workflow_output>"#
+        )
+    }
 
     struct MockModelBackend {
         backend_id: String,
@@ -3717,6 +3780,171 @@ mod tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn approval_chat_adjustment_send_path_keeps_session_and_updates_latest_output() {
+        let worktree = tempfile::tempdir().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let engine = Arc::new(WorkflowEngine::new());
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            data_dir.path(),
+            &worktree_path,
+            Some("mock-a".to_string()),
+        )
+        .unwrap();
+        add_message_internal(
+            &session_store,
+            data_dir.path(),
+            &session.id,
+            MessageRole::Agent,
+            &approved_fix_policy_output("Old policy.", "code_review_parallel"),
+            None,
+            None,
+        )
+        .unwrap();
+        let before = engine
+            .insert_test_approval_execution(
+                &worktree_path,
+                &session.id,
+                &session.id,
+                WorkflowExecutionState::WaitingApproval,
+            )
+            .await;
+
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: "mock-a".to_string(),
+            models: Vec::new(),
+        }));
+        let registry = Arc::new(registry);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        handles.lock().await.insert(
+            session.id.clone(),
+            AgentProcess {
+                stdin,
+                backend_id: "mock-a".to_string(),
+                state: BridgeState::Ready,
+                turn_phase: TurnPhase::Idle,
+                sdk_session_id: None,
+                child,
+                generation_id: 0,
+                #[cfg(unix)]
+                pgid: None,
+                streaming_message_id: None,
+                streaming_parts: Vec::new(),
+                last_message_id: None,
+                task_id_map: HashMap::new(),
+                pending_message: None,
+                current_permission_mode: "acceptEdits".to_string(),
+                available_models: Vec::new(),
+                selected_model: None,
+                last_result_token_usage: None,
+            },
+        );
+
+        let (response, prepared_turn) = prepare_send_agent_message_internal(
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            Some(session.id.clone()),
+            worktree_path.clone(),
+            "Narrow the policy to reviewed findings.".to_string(),
+            Some("acceptEdits".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let agent = response.agent_message.unwrap();
+        let prepared_turn = prepared_turn.unwrap();
+        assert_eq!(prepared_turn.session_id, session.id);
+        assert_eq!(
+            prepared_turn.prompt,
+            "Narrow the policy to reviewed findings."
+        );
+        {
+            let mut map = handles.lock().await;
+            let proc = map.get_mut(&session.id).unwrap();
+            proc.streaming_parts = vec![MessagePart::Text {
+                content: approved_fix_policy_output(
+                    "Latest adjusted policy.",
+                    "code_review_parallel",
+                ),
+                parent_tool_use_id: None,
+            }];
+        }
+        {
+            let mut saved = session_store
+                .get_session(data_dir.path(), &session.id)
+                .unwrap()
+                .unwrap();
+            let latest_policy =
+                approved_fix_policy_output("Latest adjusted policy.", "code_review_parallel");
+            let msg = saved
+                .messages
+                .iter_mut()
+                .find(|msg| msg.id == agent.id)
+                .unwrap();
+            msg.content = latest_policy.clone();
+            msg.parts = Some(vec![MessagePart::Text {
+                content: latest_policy,
+                parent_tool_use_id: None,
+            }]);
+            session_store.save_session(data_dir.path(), &saved).unwrap();
+        }
+
+        assert_eq!(response.human_message.role, MessageRole::Human);
+        assert_eq!(agent.role, MessageRole::Agent);
+        let after_send = engine.get_state(&worktree_path).await.unwrap();
+        assert_eq!(after_send.execution_id, before.execution_id);
+        assert_eq!(after_send.current_step_name, before.current_step_name);
+        assert_eq!(
+            after_send.current_session_id.as_deref(),
+            Some(session.id.as_str())
+        );
+        assert_eq!(after_send.state, WorkflowExecutionState::WaitingApproval);
+
+        let saved = session_store
+            .get_session(data_dir.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        let latest_agent = saved
+            .messages
+            .iter()
+            .rev()
+            .find(|msg| msg.role == MessageRole::Agent)
+            .unwrap();
+        match crate::workflow::contract::validate_contract(
+            "approved-fix-policy",
+            crate::workflow::contract::extract_workflow_output(&latest_agent.content),
+        ) {
+            crate::workflow::contract::ContractValidationResult::Valid {
+                structured_output,
+                result,
+            } => {
+                assert_eq!(result.as_deref(), Some("approved"));
+                assert_eq!(structured_output["policy"], "Latest adjusted policy.");
+            }
+            other => panic!("expected latest assistant output to be valid policy, got {other:?}"),
+        }
+
+        let removed_proc = handles.lock().await.remove(&session.id);
+        if let Some(mut proc) = removed_proc {
+            let _ = proc.child.kill().await;
+        }
     }
 
     #[test]

@@ -149,7 +149,6 @@ export function StepEditor({
 							</SelectTrigger>
 							<SelectContent>
 								<SelectItem value="auto">Auto</SelectItem>
-								<SelectItem value="interactive">Interactive</SelectItem>
 								<SelectItem value="approval">Approval</SelectItem>
 							</SelectContent>
 						</Select>

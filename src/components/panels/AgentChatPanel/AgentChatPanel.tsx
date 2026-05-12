@@ -251,6 +251,11 @@ export function AgentChatPanel({
 	registerDropZone,
 	sendMessageRef,
 }: AgentChatPanelProps) {
+	const { workflowState } = useWorkflowState(worktreePath);
+	const workflowApprovalChatSessionId =
+		workflowState?.state.type === "waiting_approval"
+			? (workflowState.currentSessionId ?? workflowState.chatSessionId)
+			: null;
 	const {
 		sessions,
 		orderedSessions,
@@ -278,9 +283,7 @@ export function AgentChatPanel({
 		backends,
 		selectedBackendId,
 		setBackend,
-	} = useAgentChat(worktreePath);
-
-	const { workflowState } = useWorkflowState(worktreePath);
+	} = useAgentChat(worktreePath, workflowApprovalChatSessionId);
 	const knownWorkflowSessionIds = useMemo(() => {
 		return new Set(sessions.map((session) => session.id));
 	}, [sessions]);

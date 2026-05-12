@@ -90,6 +90,15 @@ pub enum ValidationError {
         step: String,
         target: String,
     },
+    /// interactive mode は廃止済み
+    InteractiveModeNotAllowed {
+        step: String,
+    },
+    /// approval step の rules は最大1件の match: reject のみ許可
+    InvalidApprovalRules {
+        step: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -179,6 +188,13 @@ impl fmt::Display for ValidationError {
                 f,
                 "ステップ '{step}' のresets_cycle_forがcycle_guardを持たないステップ '{target}' を参照しています"
             ),
+            Self::InteractiveModeNotAllowed { step } => write!(
+                f,
+                "ステップ '{step}' のmode: interactiveは廃止されています。対話を伴うstepはmode: approvalを使用してください"
+            ),
+            Self::InvalidApprovalRules { step, reason } => {
+                write!(f, "approvalステップ '{step}' のrulesが不正です: {reason}")
+            }
         }
     }
 }
@@ -373,6 +389,14 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                     step: step.name.clone(),
                 });
             }
+            if step.mode == Some(StepMode::Interactive) {
+                return Err(ValidationError::InteractiveModeNotAllowed {
+                    step: step.name.clone(),
+                });
+            }
+            if step.mode == Some(StepMode::Approval) {
+                validate_approval_rules(&step.name, &step.rules)?;
+            }
 
             // aggregate が parallel なしで指定されている場合はエラー
             if step.aggregate.is_some() {
@@ -517,6 +541,26 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_approval_rules(
+    step_name: &str,
+    rules: &[super::schema::TransitionRule],
+) -> Result<(), ValidationError> {
+    let reject_count = rules.iter().filter(|r| r.r#match == "reject").count();
+    if rules.iter().any(|r| r.r#match != "reject") {
+        return Err(ValidationError::InvalidApprovalRules {
+            step: step_name.to_string(),
+            reason: "match: reject 以外のruleは定義できません".to_string(),
+        });
+    }
+    if reject_count > 1 {
+        return Err(ValidationError::InvalidApprovalRules {
+            step: step_name.to_string(),
+            reason: "match: reject ruleは最大1件です".to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -675,6 +719,16 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
                 errors.push(ValidationError::MissingMode {
                     step: step.name.clone(),
                 });
+            }
+            if step.mode == Some(StepMode::Interactive) {
+                errors.push(ValidationError::InteractiveModeNotAllowed {
+                    step: step.name.clone(),
+                });
+            }
+            if step.mode == Some(StepMode::Approval) {
+                if let Err(e) = validate_approval_rules(&step.name, &step.rules) {
+                    errors.push(e);
+                }
             }
             if step.aggregate.is_some() {
                 errors.push(ValidationError::AggregateWithoutParallel {
@@ -870,7 +924,7 @@ mod tests {
     #[test]
     fn valid_workflow_passes() {
         let wf = make_workflow(vec![
-            make_step("plan", StepMode::Interactive, vec![]),
+            make_step("plan", StepMode::Approval, vec![]),
             Step {
                 cycle_guard: Some(CycleGuard {
                     max_iterations: 3,
@@ -887,13 +941,82 @@ mod tests {
     }
 
     #[test]
+    fn interactive_mode_fails_validation() {
+        let wf = make_workflow(vec![make_step("plan", StepMode::Interactive, vec![])]);
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InteractiveModeNotAllowed { ref step } if step == "plan"
+        ));
+    }
+
+    #[test]
+    fn approval_step_allows_single_reject_rule() {
+        let wf = make_workflow(vec![
+            make_step("fix", StepMode::Auto, vec![]),
+            make_step(
+                "approval",
+                StepMode::Approval,
+                vec![TransitionRule {
+                    r#match: "reject".to_string(),
+                    next: "fix".to_string(),
+                }],
+            ),
+        ]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn approval_step_rejects_non_reject_rule() {
+        let wf = make_workflow(vec![
+            make_step("fix", StepMode::Auto, vec![]),
+            make_step(
+                "approval",
+                StepMode::Approval,
+                vec![TransitionRule {
+                    r#match: "NEEDS_FIX".to_string(),
+                    next: "fix".to_string(),
+                }],
+            ),
+        ]);
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidApprovalRules { ref step, .. } if step == "approval"
+        ));
+    }
+
+    #[test]
+    fn approval_step_rejects_multiple_reject_rules() {
+        let wf = make_workflow(vec![
+            make_step("fix", StepMode::Auto, vec![]),
+            make_step(
+                "approval",
+                StepMode::Approval,
+                vec![
+                    TransitionRule {
+                        r#match: "reject".to_string(),
+                        next: "fix".to_string(),
+                    },
+                    TransitionRule {
+                        r#match: "reject".to_string(),
+                        next: "fix".to_string(),
+                    },
+                ],
+            ),
+        ]);
+        assert!(matches!(
+            validate(&wf).unwrap_err(),
+            ValidationError::InvalidApprovalRules { ref step, .. } if step == "approval"
+        ));
+    }
+
+    #[test]
     fn invalid_transition_target_fails() {
         let wf = make_workflow(vec![Step {
             rules: vec![TransitionRule {
                 r#match: "DONE".to_string(),
                 next: "nonexistent".to_string(),
             }],
-            ..make_step("plan", StepMode::Interactive, vec![])
+            ..make_step("plan", StepMode::Auto, vec![])
         }]);
         let result = validate(&wf);
         assert!(result.is_err());
@@ -949,7 +1072,7 @@ mod tests {
     #[test]
     fn duplicate_step_names_fails() {
         let wf = make_workflow(vec![
-            make_step("plan", StepMode::Interactive, vec![]),
+            make_step("plan", StepMode::Approval, vec![]),
             make_step("plan", StepMode::Auto, vec![]),
         ]);
         let result = validate(&wf);
@@ -1460,7 +1583,7 @@ mod tests {
                 }],
                 ..make_step("fix", StepMode::Auto, vec![])
             },
-            make_step("approval", StepMode::Interactive, vec![]),
+            make_step("approval", StepMode::Approval, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1518,7 +1641,7 @@ mod tests {
             },
             Step {
                 resets_cycle_for: Some(vec!["fix".to_string()]),
-                ..make_step("approval", StepMode::Interactive, vec![])
+                ..make_step("approval", StepMode::Approval, vec![])
             },
         ]);
         assert!(validate(&wf).is_ok());
@@ -1528,7 +1651,7 @@ mod tests {
     fn resets_cycle_for_unknown_target_fails() {
         let wf = make_workflow(vec![Step {
             resets_cycle_for: Some(vec!["nonexistent".to_string()]),
-            ..make_step("approval", StepMode::Interactive, vec![])
+            ..make_step("approval", StepMode::Approval, vec![])
         }]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
@@ -1544,7 +1667,7 @@ mod tests {
             make_step("fix", StepMode::Auto, vec![]),
             Step {
                 resets_cycle_for: Some(vec!["fix".to_string()]),
-                ..make_step("approval", StepMode::Interactive, vec![])
+                ..make_step("approval", StepMode::Approval, vec![])
             },
         ]);
         let err = validate(&wf).unwrap_err();

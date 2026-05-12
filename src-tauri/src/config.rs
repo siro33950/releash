@@ -30,6 +30,8 @@ pub struct ReleashConfig {
     pub app: AppSection,
     #[serde(default)]
     pub agents: AgentsSection,
+    #[serde(default)]
+    pub workflow: WorkflowSection,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -37,6 +39,12 @@ pub struct AgentsSection {
     pub default: Option<String>,
     #[serde(default)]
     pub codex: CodexAgentSection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowSection {
+    #[serde(default)]
+    pub approval_auto_approve: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -113,6 +121,7 @@ impl Default for ReleashConfig {
             remote: RemoteSection::default(),
             app: AppSection::default(),
             agents: AgentsSection::default(),
+            workflow: WorkflowSection::default(),
         }
     }
 }
@@ -775,6 +784,36 @@ pub async fn update_remote_config(
 }
 
 #[tauri::command]
+pub fn get_workflow_config(
+    state: tauri::State<'_, Arc<AppConfig>>,
+) -> Result<WorkflowSection, String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|e| format!("ロック取得失敗: {e}"))?;
+    Ok(config.workflow.clone())
+}
+
+#[tauri::command]
+pub async fn update_workflow_config(
+    state: tauri::State<'_, Arc<AppConfig>>,
+    workflow: WorkflowSection,
+) -> Result<(), String> {
+    let app_config = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let mut config = app_config
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        config.workflow = workflow;
+        write_config(&app_config.config_path, &config)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
 pub fn get_crash_reporting_enabled(
     state: tauri::State<'_, Arc<AppConfig>>,
 ) -> Result<bool, String> {
@@ -1304,6 +1343,44 @@ token = "existing_token_value_here_with_enough_length_!!"
         let config = load_or_create_config(&path).unwrap();
         assert!(!config.remote.auto_start);
         assert!(!config.remote.auto_start_on_lan);
+    }
+
+    #[test]
+    fn workflow_section_defaults_to_manual_approval() {
+        let workflow = WorkflowSection::default();
+        assert!(!workflow.approval_auto_approve);
+    }
+
+    #[test]
+    fn workflow_section_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.workflow.approval_auto_approve = true;
+        write_config(&path, &config).unwrap();
+
+        let reloaded = fs::read_to_string(&path).unwrap();
+        let reloaded: ReleashConfig = toml::from_str(&reloaded).unwrap();
+        assert!(reloaded.workflow.approval_auto_approve);
+    }
+
+    #[test]
+    fn existing_config_without_workflow_gets_defaults() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+
+        let content = r#"
+[server]
+bind = "127.0.0.1"
+port = 9700
+token = "existing_token_value_here_with_enough_length_!!"
+"#;
+        fs::write(&path, content).unwrap();
+
+        let config = load_or_create_config(&path).unwrap();
+        assert!(!config.workflow.approval_auto_approve);
     }
 
     #[test]

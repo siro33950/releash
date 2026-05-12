@@ -6,6 +6,7 @@ use super::log::{WorkflowEventLog, WorkflowLogEvent};
 use super::schema::{FacetSummary, Summary, Workflow};
 use super::storage;
 use crate::agent_sdk::AgentProcessMap;
+use crate::backends::{AgentBackendRegistry, ImageAttachment};
 use crate::config::AppConfig;
 use crate::session::{resolve_data_dir, SessionStore, WorkflowState};
 use std::sync::Arc;
@@ -20,6 +21,10 @@ fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
         "output_contract" => Ok(FacetKind::OutputContract),
         _ => Err(format!("Unknown facet kind: {kind}")),
     }
+}
+
+fn validation_error_string(e: super::validation::ValidationError) -> String {
+    format!("validation_error: {e}")
 }
 
 #[tauri::command]
@@ -43,7 +48,7 @@ pub async fn list_workflows(
 pub async fn get_workflow(name: String) -> Result<Workflow, String> {
     let dir = storage::workflows_dir();
     tokio::task::spawn_blocking(move || {
-        super::validation::validate_name(&name).map_err(|e| e.to_string())?;
+        super::validation::validate_name(&name).map_err(validation_error_string)?;
         let file_path = dir.join(format!("{name}.yml"));
         if file_path.exists() {
             return storage::load_workflow(&file_path).map_err(|e| e.to_string());
@@ -61,14 +66,14 @@ pub async fn save_workflow(
     original_name: Option<String>,
 ) -> Result<(), String> {
     // workflow.name のバリデーション（パストラバーサル防止）
-    super::validation::validate_name(&workflow.name).map_err(|e| e.to_string())?;
+    super::validation::validate_name(&workflow.name).map_err(validation_error_string)?;
     // ビルトイン編集ガード: original_name がビルトインの場合は編集拒否
     if let Some(ref orig) = original_name {
         if builtin::is_builtin_workflow(orig) {
             return Err("ビルトインワークフローは編集できません".to_string());
         }
         // パストラバーサル防止: original_name のバリデーション
-        super::validation::validate_name(orig).map_err(|e| e.to_string())?;
+        super::validation::validate_name(orig).map_err(validation_error_string)?;
     }
     // ビルトイン名との重複チェック
     if builtin::is_builtin_workflow(&workflow.name) {
@@ -155,7 +160,7 @@ pub async fn start_workflow(
     let dir = storage::workflows_dir();
     let file_stem = workflow_name.clone();
     let workflow = tokio::task::spawn_blocking(move || {
-        super::validation::validate_name(&workflow_name).map_err(|e| e.to_string())?;
+        super::validation::validate_name(&workflow_name).map_err(validation_error_string)?;
         let file_path = dir.join(format!("{workflow_name}.yml"));
         if file_path.exists() {
             return storage::load_workflow(&file_path).map_err(|e| e.to_string());
@@ -207,6 +212,7 @@ pub async fn get_workflow_state(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn approve_workflow_step(
     app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
@@ -214,6 +220,8 @@ pub async fn approve_workflow_step(
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     worktree_path: String,
     decision: ApprovalDecision,
+    execution_id: String,
+    step_name: String,
 ) -> Result<(), String> {
     engine
         .handle_approval(
@@ -222,30 +230,47 @@ pub async fn approve_workflow_step(
             handles.inner(),
             &worktree_path,
             decision,
+            Some(&execution_id),
+            Some(&step_name),
         )
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn complete_interactive_step(
+#[allow(clippy::too_many_arguments)]
+pub async fn send_workflow_approval_chat_message(
     app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     session_store: tauri::State<'_, Arc<SessionStore>>,
+    registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    chat_session_id: String,
     worktree_path: String,
-    abort: bool,
-) -> Result<(), String> {
+    content: String,
+    permission_mode: Option<String>,
+    images: Option<Vec<ImageAttachment>>,
+    mentions: Option<Vec<crate::file_mention::MentionReference>>,
+) -> Result<crate::agent_sdk::SendMessageResponse, String> {
     engine
-        .complete_interactive(
-            &app,
-            session_store.inner(),
-            handles.inner(),
-            &worktree_path,
-            abort,
-        )
+        .validate_approval_chat_instruction(&chat_session_id, &content)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    crate::agent_sdk::send_agent_message_internal(
+        &app,
+        session_store.inner(),
+        registry.inner(),
+        handles.inner(),
+        Some(chat_session_id),
+        worktree_path,
+        content,
+        permission_mode,
+        None,
+        images,
+        mentions,
+    )
+    .await
 }
 
 fn validate_execution_id(execution_id: &str) -> Result<(), String> {
@@ -434,8 +459,8 @@ pub async fn list_facet_summaries(kind: String) -> Result<Vec<FacetSummary>, Str
 
 #[tauri::command]
 pub async fn duplicate_workflow(source_name: String, new_name: String) -> Result<(), String> {
-    super::validation::validate_name(&source_name).map_err(|e| e.to_string())?;
-    super::validation::validate_name(&new_name).map_err(|e| e.to_string())?;
+    super::validation::validate_name(&source_name).map_err(validation_error_string)?;
+    super::validation::validate_name(&new_name).map_err(validation_error_string)?;
     let dir = storage::workflows_dir();
     tokio::task::spawn_blocking(move || {
         // 重複チェック
@@ -691,6 +716,14 @@ mod tests {
     fn duplicate_workflow_rejects_invalid_name() {
         let result = super::super::validation::validate_name("bad name!");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validation_errors_return_stable_kind_prefix_for_commands() {
+        let err = super::super::validation::validate_name("bad name!")
+            .map_err(super::validation_error_string)
+            .unwrap_err();
+        assert!(err.starts_with("validation_error:"));
     }
 
     #[test]
