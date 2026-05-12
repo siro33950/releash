@@ -42,6 +42,10 @@ pub struct Step {
     pub aggregate: Option<AggregateConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_cycle_for: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
 }
 
 fn has_any_facet_ref(
@@ -103,6 +107,10 @@ pub struct ParallelStep {
     pub pass_previous_response: Option<bool>,
     #[serde(default)]
     pub pass_output_from: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
 }
 
 impl ParallelStep {
@@ -403,6 +411,8 @@ steps:
             parallel: None,
             aggregate: None,
             resets_cycle_for: None,
+            model: None,
+            permission: None,
         };
         assert!(!step.has_facet_refs());
     }
@@ -472,6 +482,8 @@ steps:
             output_contract: None,
             pass_previous_response: None,
             pass_output_from: None,
+            model: None,
+            permission: None,
         };
         assert!(ps.has_facet_refs());
 
@@ -485,6 +497,8 @@ steps:
             output_contract: None,
             pass_previous_response: None,
             pass_output_from: None,
+            model: None,
+            permission: None,
         };
         assert!(!ps_no_facet.has_facet_refs());
     }
@@ -587,5 +601,109 @@ steps:
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert!(wf.steps[0].inline_prompt.is_none());
+    }
+
+    #[test]
+    fn parse_step_with_model_and_permission() {
+        let yaml = r#"
+name: model-test
+description: model/permission test
+steps:
+  - name: plan
+    mode: auto
+    instruction: plan
+    model: opus-4
+    permission: plan
+  - name: implement
+    mode: auto
+    instruction: implement
+    model: codex-mini
+    permission: bypassPermissions
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(wf.steps[0].model.as_deref(), Some("opus-4"));
+        assert_eq!(wf.steps[0].permission.as_deref(), Some("plan"));
+        assert_eq!(wf.steps[1].model.as_deref(), Some("codex-mini"));
+        assert_eq!(wf.steps[1].permission.as_deref(), Some("bypassPermissions"));
+    }
+
+    #[test]
+    fn parse_step_without_model_permission_defaults_to_none() {
+        let yaml = r#"
+name: default-test
+description: default test
+steps:
+  - name: step1
+    mode: auto
+    instruction: implement
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert!(wf.steps[0].model.is_none());
+        assert!(wf.steps[0].permission.is_none());
+    }
+
+    #[test]
+    fn parse_parallel_step_with_model_and_permission() {
+        let yaml = r#"
+name: parallel-model-test
+description: parallel model/permission test
+steps:
+  - name: parallel-review
+    parallel:
+      - name: arch-review
+        mode: auto
+        persona: reviewer
+        instruction: architecture-review
+        model: opus-4
+        permission: plan
+      - name: security-review
+        mode: auto
+        persona: reviewer
+        instruction: security-review
+        model: codex-mini
+        permission: bypassPermissions
+    aggregate:
+      all_match: "LGTM"
+      then: parallel-review
+      else: parallel-review
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let children = wf.steps[0].parallel.as_ref().unwrap();
+        assert_eq!(children[0].model.as_deref(), Some("opus-4"));
+        assert_eq!(children[0].permission.as_deref(), Some("plan"));
+        assert_eq!(children[1].model.as_deref(), Some("codex-mini"));
+        assert_eq!(children[1].permission.as_deref(), Some("bypassPermissions"));
+    }
+
+    #[test]
+    fn parse_step_model_only() {
+        let yaml = r#"
+name: model-only-test
+description: model only test
+steps:
+  - name: step1
+    mode: auto
+    instruction: implement
+    model: haiku
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(wf.steps[0].model.as_deref(), Some("haiku"));
+        assert!(wf.steps[0].permission.is_none());
+    }
+
+    #[test]
+    fn parse_step_permission_only() {
+        let yaml = r#"
+name: permission-only-test
+description: permission only test
+steps:
+  - name: step1
+    mode: auto
+    instruction: implement
+    permission: plan
+"#;
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        assert!(wf.steps[0].model.is_none());
+        assert_eq!(wf.steps[0].permission.as_deref(), Some("plan"));
     }
 }

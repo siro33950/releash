@@ -99,6 +99,16 @@ pub enum ValidationError {
         step: String,
         reason: String,
     },
+    /// 無効な permission mode が指定されている
+    InvalidPermissionMode {
+        step: String,
+        value: String,
+    },
+    /// 存在しないモデルが指定されている
+    UnknownModel {
+        step: String,
+        value: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -194,6 +204,18 @@ impl fmt::Display for ValidationError {
             ),
             Self::InvalidApprovalRules { step, reason } => {
                 write!(f, "approvalステップ '{step}' のrulesが不正です: {reason}")
+            }
+            Self::InvalidPermissionMode { step, value } => {
+                write!(
+                    f,
+                    "ステップ '{step}' のpermissionが不正です: invalid permission mode: {value}"
+                )
+            }
+            Self::UnknownModel { step, value } => {
+                write!(
+                    f,
+                    "ステップ '{step}' のmodelが不正です: unknown model: {value}"
+                )
             }
         }
     }
@@ -299,6 +321,11 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                     });
                 }
 
+                // 子step の permission 妥当性チェック
+                if let Some(ref perm) = child.permission {
+                    validate_permission(&child.name, perm)?;
+                }
+
                 // pass_output_from の参照先チェック
                 if let Some(ref refs) = child.pass_output_from {
                     for r in refs {
@@ -396,6 +423,11 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
             }
             if step.mode == Some(StepMode::Approval) {
                 validate_approval_rules(&step.name, &step.rules)?;
+            }
+
+            // permission の妥当性チェック
+            if let Some(ref perm) = step.permission {
+                validate_permission(&step.name, perm)?;
             }
 
             // aggregate が parallel なしで指定されている場合はエラー
@@ -564,6 +596,49 @@ fn validate_approval_rules(
     Ok(())
 }
 
+const VALID_PERMISSION_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "plan"];
+
+fn validate_permission(step_name: &str, value: &str) -> Result<(), ValidationError> {
+    if !VALID_PERMISSION_MODES.contains(&value) {
+        return Err(ValidationError::InvalidPermissionMode {
+            step: step_name.to_string(),
+            value: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// ワークフロー内の全ステップの `model` フィールドを検証する。
+/// `valid_models` は全バックエンドの `available_models()` から収集した有効なモデルID集合。
+pub fn validate_models(
+    workflow: &Workflow,
+    valid_models: &HashSet<String>,
+) -> Result<(), ValidationError> {
+    for step in &workflow.steps {
+        if let Some(ref model) = step.model {
+            if !valid_models.contains(model.as_str()) {
+                return Err(ValidationError::UnknownModel {
+                    step: step.name.clone(),
+                    value: model.clone(),
+                });
+            }
+        }
+        if let Some(ref children) = step.parallel {
+            for child in children {
+                if let Some(ref model) = child.model {
+                    if !valid_models.contains(model.as_str()) {
+                        return Err(ValidationError::UnknownModel {
+                            step: child.name.clone(),
+                            value: model.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 診断用: 全てのバリデーションエラーを収集して返す。
 /// `validate` は最初のエラーで早期リターンするが、診断エンジンでは全エラーを網羅的に報告したいため、
 /// 構造的に安全な範囲でエラーを蓄積する。
@@ -641,6 +716,11 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
                         parent: step.name.clone(),
                         child: child.name.clone(),
                     });
+                }
+                if let Some(ref perm) = child.permission {
+                    if let Err(e) = validate_permission(&child.name, perm) {
+                        errors.push(e);
+                    }
                 }
                 if let Some(ref refs) = child.pass_output_from {
                     for r in refs {
@@ -727,6 +807,11 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
             }
             if step.mode == Some(StepMode::Approval) {
                 if let Err(e) = validate_approval_rules(&step.name, &step.rules) {
+                    errors.push(e);
+                }
+            }
+            if let Some(ref perm) = step.permission {
+                if let Err(e) = validate_permission(&step.name, perm) {
                     errors.push(e);
                 }
             }
@@ -877,6 +962,8 @@ mod tests {
             parallel: None,
             aggregate: None,
             resets_cycle_for: None,
+            model: None,
+            permission: None,
         }
     }
 
@@ -891,6 +978,8 @@ mod tests {
             output_contract: None,
             pass_previous_response: None,
             pass_output_from: None,
+            model: None,
+            permission: None,
         }
     }
 
@@ -916,6 +1005,8 @@ mod tests {
             parallel: Some(children),
             aggregate,
             resets_cycle_for: None,
+            model: None,
+            permission: None,
         }
     }
 
@@ -1701,5 +1792,159 @@ mod tests {
             ..make_step("step1", StepMode::Auto, vec![])
         }]);
         assert!(validate(&wf).is_ok());
+    }
+
+    // ---- permission バリデーション ----
+
+    #[test]
+    fn valid_permission_accept_edits_passes() {
+        let wf = make_workflow(vec![Step {
+            permission: Some("acceptEdits".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn valid_permission_bypass_passes() {
+        let wf = make_workflow(vec![Step {
+            permission: Some("bypassPermissions".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn valid_permission_plan_passes() {
+        let wf = make_workflow(vec![Step {
+            permission: Some("plan".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn invalid_permission_fails() {
+        let wf = make_workflow(vec![Step {
+            permission: Some("invalid-mode".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        let err = validate(&wf).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::InvalidPermissionMode { ref step, ref value }
+                if step == "step1" && value == "invalid-mode"
+        ));
+        assert!(err
+            .to_string()
+            .contains("invalid permission mode: invalid-mode"));
+    }
+
+    #[test]
+    fn invalid_permission_on_parallel_child_fails() {
+        let wf = make_workflow(vec![make_parallel_block(
+            "par",
+            vec![ParallelStep {
+                permission: Some("invalid-mode".to_string()),
+                ..make_parallel_step("child1")
+            }],
+            None,
+        )]);
+        let err = validate(&wf).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::InvalidPermissionMode { ref step, ref value }
+                if step == "child1" && value == "invalid-mode"
+        ));
+    }
+
+    #[test]
+    fn valid_permission_on_parallel_child_passes() {
+        let wf = make_workflow(vec![make_parallel_block(
+            "par",
+            vec![ParallelStep {
+                permission: Some("bypassPermissions".to_string()),
+                ..make_parallel_step("child1")
+            }],
+            None,
+        )]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn step_without_permission_passes() {
+        let wf = make_workflow(vec![Step {
+            permission: None,
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        assert!(validate(&wf).is_ok());
+    }
+
+    // ---- model バリデーション (validate_models) ----
+
+    #[test]
+    fn validate_models_valid_model_passes() {
+        let wf = make_workflow(vec![Step {
+            model: Some("haiku".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
+        assert!(validate_models(&wf, &valid).is_ok());
+    }
+
+    #[test]
+    fn validate_models_unknown_model_fails() {
+        let wf = make_workflow(vec![Step {
+            model: Some("unknown-model".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
+        let err = validate_models(&wf, &valid).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::UnknownModel { ref step, ref value }
+                if step == "step1" && value == "unknown-model"
+        ));
+        assert!(err.to_string().contains("unknown model: unknown-model"));
+    }
+
+    #[test]
+    fn validate_models_unknown_model_on_parallel_child_fails() {
+        let wf = make_workflow(vec![make_parallel_block(
+            "par",
+            vec![ParallelStep {
+                model: Some("unknown-model".to_string()),
+                ..make_parallel_step("child1")
+            }],
+            None,
+        )]);
+        let valid = HashSet::from(["haiku".to_string()]);
+        let err = validate_models(&wf, &valid).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::UnknownModel { ref step, ref value }
+                if step == "child1" && value == "unknown-model"
+        ));
+    }
+
+    #[test]
+    fn validate_models_no_model_specified_passes() {
+        let wf = make_workflow(vec![make_step("step1", StepMode::Auto, vec![])]);
+        let valid = HashSet::from(["haiku".to_string()]);
+        assert!(validate_models(&wf, &valid).is_ok());
+    }
+
+    #[test]
+    fn validate_models_valid_model_on_parallel_child_passes() {
+        let wf = make_workflow(vec![make_parallel_block(
+            "par",
+            vec![ParallelStep {
+                model: Some("haiku".to_string()),
+                ..make_parallel_step("child1")
+            }],
+            None,
+        )]);
+        let valid = HashSet::from(["haiku".to_string()]);
+        assert!(validate_models(&wf, &valid).is_ok());
     }
 }

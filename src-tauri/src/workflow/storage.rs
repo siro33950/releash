@@ -254,6 +254,8 @@ mod tests {
                 parallel: None,
                 aggregate: None,
                 resets_cycle_for: None,
+                model: None,
+                permission: None,
             }],
         }
     }
