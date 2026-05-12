@@ -432,7 +432,9 @@ describe("SettingsModal", () => {
 		const agentCheckbox = screen.getByRole("checkbox", {
 			name: "Auto-approve",
 		});
-		expect(workflowCheckbox).toBeChecked();
+		await waitFor(() => {
+			expect(workflowCheckbox).toBeChecked();
+		});
 		expect(agentCheckbox).not.toBeChecked();
 
 		await user.click(workflowCheckbox);
