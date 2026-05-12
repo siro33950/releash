@@ -14,7 +14,6 @@ import {
 	PopoverContent,
 	PopoverTrigger,
 } from "@/components/ui/popover";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
@@ -632,10 +631,10 @@ export function AgentChatPanel({
 									</span>
 								</div>
 							)}
-							<ScrollArea
-								viewportRef={scrollRef}
+							<div
+								ref={scrollRef}
 								onScroll={handleScroll}
-								className="flex-1 min-h-0 select-text"
+								className="flex-1 min-h-0 overflow-auto select-text"
 							>
 								{activeSession && (
 									<div className="py-2">
@@ -680,7 +679,7 @@ export function AgentChatPanel({
 										<div ref={scrollAnchorRef} />
 									</div>
 								)}
-							</ScrollArea>
+							</div>
 							<div className="shrink-0">
 								{activityStatus && (
 									<div className="px-4 pb-1 text-xs text-muted-foreground animate-pulse truncate">

@@ -9,7 +9,6 @@ import {
 import Markdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	computeInlineChunks,
 	computeModifiedDiffRanges,
@@ -51,13 +50,13 @@ function GutterView({
 		[diffRanges],
 	);
 	return (
-		<ScrollArea className="h-full">
+		<div className="h-full overflow-auto">
 			<div className="markdown-preview p-6">
 				<Markdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins}>
 					{modifiedContent}
 				</Markdown>
 			</div>
-		</ScrollArea>
+		</div>
 	);
 }
 
@@ -98,10 +97,7 @@ function SplitView({
 	const rehypePlugins = useMemo(() => [rehypeHighlight], []);
 
 	return (
-		<div
-			className="md-split-container scrollbar-thin"
-			data-testid="md-split-grid"
-		>
+		<div className="md-split-container" data-testid="md-split-grid">
 			{rows.map((row, rowIndex) => (
 				// biome-ignore lint/suspicious/noArrayIndexKey: rows are positional diff output, order is fixed
 				<div key={rowIndex} className="md-split-row">
@@ -149,7 +145,7 @@ function InlineView({
 	);
 	const rehypePlugins = useMemo(() => [rehypeHighlight], []);
 	return (
-		<ScrollArea className="h-full">
+		<div className="h-full overflow-auto">
 			<div className="markdown-preview p-6">
 				{chunks.map((chunk, chunkIndex) => {
 					const className =
@@ -171,7 +167,7 @@ function InlineView({
 					);
 				})}
 			</div>
-		</ScrollArea>
+		</div>
 	);
 }
 
@@ -232,7 +228,7 @@ function DiffOnlyMarkdownView({
 	const trailingGapIndex = visibleBlocks.length;
 
 	return (
-		<div className="markdown-preview h-full overflow-auto p-6 scrollbar-thin">
+		<div className="markdown-preview h-full overflow-auto p-6">
 			{visibleBlocks.map((block, i) => {
 				const prevEnd = visibleBlocks[i - 1]?.endLine ?? 0;
 				const gapLines = block.startLine - prevEnd - 1;

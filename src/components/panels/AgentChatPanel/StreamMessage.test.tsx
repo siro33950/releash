@@ -223,20 +223,21 @@ describe("StreamMessage", () => {
 		});
 	});
 
-	it("renders table inside ScrollArea", () => {
+	it("renders table inside horizontal overflow container", () => {
 		const markdown =
 			"| Col1 | Col2 | Col3 |\n|------|------|------|\n| A | B | C |";
 		render(<StreamMessage content={markdown} role={agent} />);
 		const el = screen.getByTestId("stream-message-agent");
-		const scrollArea = el.querySelector('[data-slot="scroll-area"]');
-		expect(scrollArea).not.toBeNull();
-		expect(scrollArea?.querySelector("table")).not.toBeNull();
+		const table = el.querySelector("table");
+		expect(table).not.toBeNull();
+		const wrapper = table?.parentElement;
+		expect(wrapper).not.toBeNull();
+		expect(wrapper?.className).toContain("overflow-x-auto");
 	});
 
-	it("does not render ScrollArea when message has no table", () => {
+	it("does not render overflow container when message has no table", () => {
 		render(<StreamMessage content="Plain text without table" role={agent} />);
 		const el = screen.getByTestId("stream-message-agent");
-		const scrollArea = el.querySelector('[data-slot="scroll-area"]');
-		expect(scrollArea).toBeNull();
+		expect(el.querySelector(".overflow-x-auto")).toBeNull();
 	});
 });

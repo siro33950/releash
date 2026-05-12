@@ -2,7 +2,6 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AnchorHTMLAttributes } from "react";
 import { useDeferredValue } from "react";
 import Markdown from "react-markdown";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import type { ImagePart, MentionReference, MessageRole } from "@/types/session";
 
@@ -165,16 +164,14 @@ export function StreamMessage({
 						components={{
 							a: ExternalLink,
 							table: ({ children: c, ...props }) => (
-								<ScrollArea className="max-w-full">
+								<div className="max-w-full overflow-x-auto">
 									<table {...props}>{c}</table>
-									<ScrollBar orientation="horizontal" />
-								</ScrollArea>
+								</div>
 							),
 							pre: ({ children: c, ...props }) => (
-								<ScrollArea className="max-w-full">
+								<div className="max-w-full overflow-x-auto">
 									<pre {...props}>{c}</pre>
-									<ScrollBar orientation="horizontal" />
-								</ScrollArea>
+								</div>
 							),
 						}}
 					>

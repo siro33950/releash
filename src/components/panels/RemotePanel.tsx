@@ -13,7 +13,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Message } from "@/components/ui/message";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { useRemoteServer } from "@/hooks/useRemoteServer";
 import { useRepoList } from "@/hooks/useRepoList";
 
@@ -107,7 +106,7 @@ export function RemotePanel({ terminalStartupCommand }: RemotePanelProps) {
 				</span>
 			</div>
 
-			<ScrollArea className="flex-1 min-h-0">
+			<div className="flex-1 min-h-0 overflow-auto">
 				<div className="px-3 py-3 flex flex-col gap-4">
 					{/* Server Control */}
 					<div className="flex flex-col gap-2">
@@ -305,7 +304,7 @@ export function RemotePanel({ terminalStartupCommand }: RemotePanelProps) {
 						</p>
 					)}
 				</div>
-			</ScrollArea>
+			</div>
 
 			<AlertDialog
 				open={showLanConfirm}

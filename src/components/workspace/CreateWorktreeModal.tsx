@@ -32,7 +32,6 @@ import {
 	PopoverContent,
 	PopoverTrigger,
 } from "@/components/ui/popover";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	Select,
 	SelectContent,
@@ -446,7 +445,7 @@ function BranchMode({
 				placeholder="Filter branches..."
 				autoFocus
 			/>
-			<ScrollArea className="flex-1 min-h-[120px]">
+			<div className="flex-1 min-h-[120px] overflow-auto">
 				<div className="space-y-0.5">
 					{branches.map((b) => {
 						const isSelected = selectedBranches.includes(b.name);
@@ -486,7 +485,7 @@ function BranchMode({
 						</div>
 					)}
 				</div>
-			</ScrollArea>
+			</div>
 		</div>
 	);
 }
@@ -701,7 +700,7 @@ function IssueMode({
 					)}
 				</div>
 			)}
-			<ScrollArea className="flex-1 min-h-[120px]">
+			<div className="flex-1 min-h-[120px] overflow-auto">
 				{loading ? (
 					<div className="flex items-center justify-center py-8">
 						<Loader2 className="size-4 text-muted-foreground animate-spin" />
@@ -785,7 +784,7 @@ function IssueMode({
 						)}
 					</div>
 				)}
-			</ScrollArea>
+			</div>
 		</div>
 	);
 }
@@ -915,7 +914,7 @@ function NotionMode({
 					})}
 				</div>
 			)}
-			<ScrollArea className="flex-1 min-h-[120px]">
+			<div className="flex-1 min-h-[120px] overflow-auto">
 				{loading ? (
 					<div className="flex items-center justify-center py-8">
 						<Loader2 className="size-4 text-muted-foreground animate-spin" />
@@ -990,7 +989,7 @@ function NotionMode({
 						)}
 					</div>
 				)}
-			</ScrollArea>
+			</div>
 		</div>
 	);
 }
