@@ -1234,7 +1234,7 @@ mod tests {
         );
         insert_test_session_with_key(&pm, 3, &key3, Some("/other"), None, PtyKind::Terminal);
 
-        let killed = pm.gc_by_worktree("/repo", &[key1.clone()]);
+        let killed = pm.gc_by_worktree("/repo", std::slice::from_ref(&key1));
         // key2 のみ kill される（key1 は keep、key3 は別 worktree）
         assert_eq!(killed.len(), 1);
         assert!(killed.contains(&2));

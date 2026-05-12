@@ -153,67 +153,11 @@ fn validate_contract_specific(contract_type: &str, json: Value) -> ContractValid
     }
 }
 
-const APPROVED_FIX_POLICY_MAX_BYTES: usize = 65_536;
-const APPROVED_FIX_POLICY_REVIEW_STEP_MAX_BYTES: usize = 128;
-
 fn validate_approved_fix_policy(json: Value) -> ContractValidationResult {
-    let Some(policy) = json.get("policy").and_then(|v| v.as_str()) else {
-        return ContractValidationResult::Invalid(ContractViolation {
-            reason: "missing_field".to_string(),
-            details: "Missing required field \"policy\".".to_string(),
-        });
-    };
-    if policy.trim().is_empty() {
-        return ContractValidationResult::Invalid(ContractViolation {
-            reason: "empty_policy".to_string(),
-            details: "\"policy\" must not be empty.".to_string(),
-        });
-    }
-    if policy.len() > APPROVED_FIX_POLICY_MAX_BYTES {
-        return ContractValidationResult::Invalid(ContractViolation {
-            reason: "policy_too_large".to_string(),
-            details: format!(
-                "\"policy\" must be <= {} UTF-8 bytes.",
-                APPROVED_FIX_POLICY_MAX_BYTES
-            ),
-        });
-    }
-    let Some(review_step) = json.get("review_step").and_then(|v| v.as_str()) else {
-        return ContractValidationResult::Invalid(ContractViolation {
-            reason: "missing_field".to_string(),
-            details: "Missing required field \"review_step\".".to_string(),
-        });
-    };
-    if review_step.trim().is_empty() {
-        return ContractValidationResult::Invalid(ContractViolation {
-            reason: "empty_review_step".to_string(),
-            details: "\"review_step\" must not be empty.".to_string(),
-        });
-    }
-    if review_step.len() > APPROVED_FIX_POLICY_REVIEW_STEP_MAX_BYTES {
-        return ContractValidationResult::Invalid(ContractViolation {
-            reason: "review_step_too_large".to_string(),
-            details: format!(
-                "\"review_step\" must be <= {} UTF-8 bytes.",
-                APPROVED_FIX_POLICY_REVIEW_STEP_MAX_BYTES
-            ),
-        });
-    }
-    if review_step.trim() != review_step
-        || !review_step
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-    {
-        return ContractValidationResult::Invalid(ContractViolation {
-            reason: "invalid_review_step".to_string(),
-            details: "\"review_step\" must be a workflow step id.".to_string(),
-        });
-    }
+    // approved-fix-policy はユーザーが指示書で任意のスキーマを定義する契約。
+    // フィールド検証・unknown フィールド除去・サイズ制限を行わず、入力 JSON をそのまま渡す。
     ContractValidationResult::Valid {
-        structured_output: serde_json::json!({
-            "policy": policy,
-            "review_step": review_step,
-        }),
+        structured_output: json,
         result: Some("approved".to_string()),
     }
 }
@@ -494,149 +438,92 @@ Some text after"#;
             }),
         };
         match validate_contract("approved-fix-policy", extraction) {
+            ContractValidationResult::Valid { result, .. } => {
+                assert_eq!(result, Some("approved".to_string()));
+            }
+            other => panic!("Expected Valid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_approved_fix_policy_passes_through_arbitrary_fields() {
+        // ユーザーが指示書で定義した任意フィールドが下流にそのまま渡ること
+        let input = json!({
+            "policy": "Fix only NEEDS_FIX findings.",
+            "review_step": "code_review_parallel",
+            "secret_note": "user can put anything",
+            "extra_meta": {"nested": "value"}
+        });
+        let extraction = ExtractionResult::Found {
+            type_name: "approved-fix-policy".to_string(),
+            json: input.clone(),
+        };
+        match validate_contract("approved-fix-policy", extraction) {
+            ContractValidationResult::Valid {
+                structured_output, ..
+            } => {
+                assert_eq!(structured_output, input);
+            }
+            other => panic!("Expected Valid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_approved_fix_policy_passes_through_findings_array() {
+        // findings[] が保持されること（P1-P10 で合意した新スキーマの伝播確認）
+        let input = json!({
+            "policy": "Apply fixes based on reviewed findings.",
+            "review_step": "code_review_parallel",
+            "findings": [
+                {
+                    "severity": "error",
+                    "line": "src/foo.ts:42",
+                    "message": "Null check missing",
+                    "action": "fix",
+                    "rationale": "Required for safety"
+                },
+                {
+                    "severity": "warning",
+                    "message": "Style nit",
+                    "action": "skip",
+                    "rationale": "Out of scope"
+                }
+            ]
+        });
+        let extraction = ExtractionResult::Found {
+            type_name: "approved-fix-policy".to_string(),
+            json: input.clone(),
+        };
+        match validate_contract("approved-fix-policy", extraction) {
+            ContractValidationResult::Valid {
+                structured_output, ..
+            } => {
+                assert_eq!(structured_output, input);
+                assert_eq!(structured_output["findings"].as_array().unwrap().len(), 2);
+            }
+            other => panic!("Expected Valid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_approved_fix_policy_passes_through_without_required_fields() {
+        // policy / review_step が無くても Valid（フィールド検証撤廃）
+        let input = json!({
+            "custom_only": "no required fields"
+        });
+        let extraction = ExtractionResult::Found {
+            type_name: "approved-fix-policy".to_string(),
+            json: input.clone(),
+        };
+        match validate_contract("approved-fix-policy", extraction) {
             ContractValidationResult::Valid {
                 result,
                 structured_output,
             } => {
                 assert_eq!(result, Some("approved".to_string()));
-                assert_eq!(structured_output["review_step"], "code_review_parallel");
+                assert_eq!(structured_output, input);
             }
             other => panic!("Expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_normalizes_unknown_fields() {
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: json!({
-                "policy": "Fix only NEEDS_FIX findings.",
-                "review_step": "code_review_parallel",
-                "secret_note": "must not be propagated",
-                "findings": [{"message": "raw review data"}]
-            }),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Valid {
-                structured_output, ..
-            } => {
-                assert_eq!(
-                    structured_output,
-                    json!({
-                        "policy": "Fix only NEEDS_FIX findings.",
-                        "review_step": "code_review_parallel"
-                    })
-                );
-            }
-            other => panic!("Expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_empty_policy() {
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: json!({
-                "policy": "   ",
-                "review_step": "plan_review_parallel"
-            }),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Invalid(v) => assert_eq!(v.reason, "empty_policy"),
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_missing_policy() {
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: json!({
-                "review_step": "plan_review_parallel"
-            }),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Invalid(v) => assert_eq!(v.reason, "missing_field"),
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_policy_too_large() {
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: json!({
-                "policy": "x".repeat(APPROVED_FIX_POLICY_MAX_BYTES + 1),
-                "review_step": "code_review_parallel"
-            }),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Invalid(v) => assert_eq!(v.reason, "policy_too_large"),
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_empty_review_step() {
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: json!({
-                "policy": "Fix only requested findings.",
-                "review_step": "  "
-            }),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Invalid(v) => assert_eq!(v.reason, "empty_review_step"),
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_rejects_huge_review_step() {
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: json!({
-                "policy": "Fix only requested findings.",
-                "review_step": "x".repeat(APPROVED_FIX_POLICY_REVIEW_STEP_MAX_BYTES + 1)
-            }),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Invalid(v) => assert_eq!(v.reason, "review_step_too_large"),
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_accepts_well_formed_review_step_name() {
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: json!({
-                "policy": "Fix only requested findings.",
-                "review_step": "unexpected_review"
-            }),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Valid {
-                structured_output, ..
-            } => {
-                assert_eq!(structured_output["review_step"], "unexpected_review");
-            }
-            other => panic!("Expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_rejects_malformed_review_step() {
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: json!({
-                "policy": "Fix only requested findings.",
-                "review_step": " code_review_parallel "
-            }),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Invalid(v) => assert_eq!(v.reason, "invalid_review_step"),
-            other => panic!("Expected Invalid, got {:?}", other),
         }
     }
 

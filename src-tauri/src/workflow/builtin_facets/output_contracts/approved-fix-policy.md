@@ -1,16 +1,39 @@
 ---
 type: output_contract
 key: approved-fix-policy
-description: Approved policy for a subsequent fix step
+description: Approved fix policy with structured findings (action: fix|skip per finding)
 ---
 
-Return exactly one workflow output block:
+レスポンスに `<workflow_output>` ブロックを必ず1つだけ含めること。
 
+フォーマット:
+```text
 <workflow_output type="approved-fix-policy">
 {
-  "policy": "Concrete fix policy approved by the user. Include only information needed for the fix step.",
-  "review_step": "The review or aggregate step name this policy responds to."
+  "policy": "全体方針の自由文（fix ステップが従う全体ガイダンス）",
+  "review_step": "code_review_parallel" または "plan_review_parallel",
+  "findings": [
+    {
+      "severity": "error" | "warning" | "info",
+      "line": "src/foo.ts:42",
+      "message": "指摘内容",
+      "action": "fix" | "skip",
+      "rationale": "この action を選んだ理由"
+    }
+  ]
 }
 </workflow_output>
+```
 
-`policy` must be non-empty and no larger than 65536 UTF-8 bytes. `review_step` must name the review source: `plan_review_parallel` for Plan fix policy or `code_review_parallel` for implementation fix policy.
+ルール:
+- `policy` は必須・空不可・65536 UTF-8 バイト以下。fix ステップが従う全体方針を自由文で書く
+- `review_step` は必須: Plan 修正方針なら `plan_review_parallel`、実装修正方針なら `code_review_parallel`
+- `findings` は必須（空配列可）。レビューで挙がった各指摘について判断を1件ずつ記載する
+- 各 finding:
+  - `severity` 必須: `error` / `warning` / `info`
+  - `line` Optional: `<path>:<line>` 形式。レビュー指摘の line をそのまま引き継ぐ
+  - `message` 必須: 指摘内容
+  - `action` 必須: `fix`（次の fix ステップで対応する）または `skip`（対応しない）
+  - `rationale` 必須: なぜその action を選んだか
+- Policy が独自に追加する指摘（「ついでに直す」など）も同じ findings 配列に入れて `action: fix` とする
+- 後続レビュアーは `action: skip` と判定された指摘を再掲しない

@@ -538,7 +538,9 @@ mod tests {
             "B".to_string(),
         );
 
-        store.mark_sent("wt1", &[c1.id.clone()]).unwrap();
+        store
+            .mark_sent("wt1", std::slice::from_ref(&c1.id))
+            .unwrap();
 
         let unsent = store.get_unsent("wt1");
         assert_eq!(unsent.len(), 1);

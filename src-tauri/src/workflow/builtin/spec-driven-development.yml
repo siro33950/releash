@@ -17,8 +17,8 @@ steps:
     model: claude-opus-4-7
     instruction: plan-behavior
     policy: planning
-    output_contract: spec-file-path
-    pass_previous_response: true
+    pass_output_from:
+      - plan_requirements
 
   # 3. アーキテクチャ概要（approval、Spec更新）
   - name: plan_architecture
@@ -26,8 +26,8 @@ steps:
     model: claude-opus-4-7
     instruction: plan-architecture
     policy: planning
-    output_contract: spec-file-path
-    pass_previous_response: true
+    pass_output_from:
+      - plan_requirements
 
   # 4-5. アーキテクチャ概要レビュー 4観点（parallel auto）+ 集約
   - name: plan_review_parallel
@@ -39,8 +39,8 @@ steps:
         policy: plan-review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - plan_approval
+          - plan_requirements
+          - plan_fix_policy
       - name: plan_review_clarity
         mode: auto
         model: gpt-5.5
@@ -48,8 +48,8 @@ steps:
         policy: plan-review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - plan_approval
+          - plan_requirements
+          - plan_fix_policy
       - name: plan_review_security
         mode: auto
         model: gpt-5.5
@@ -57,8 +57,8 @@ steps:
         policy: plan-review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - plan_approval
+          - plan_requirements
+          - plan_fix_policy
       - name: plan_review_consistency
         mode: auto
         model: gpt-5.5
@@ -66,8 +66,8 @@ steps:
         policy: plan-review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - plan_approval
+          - plan_requirements
+          - plan_fix_policy
     aggregate:
       all_match: LGTM
       then: plan_approval
@@ -81,8 +81,8 @@ steps:
     policy: planning
     output_contract: approved-fix-policy
     pass_output_from:
+      - plan_requirements
       - plan_review_parallel
-      - plan_architecture
       - plan_approval
     rules:
       - match: reject
@@ -93,13 +93,13 @@ steps:
     mode: auto
     model: claude-opus-4-7
     instruction: plan-fix
-    output_contract: spec-file-path
+    policy: planning
     pass_output_from:
-      - plan_review_parallel
+      - plan_requirements
       - plan_fix_policy
-      - plan_architecture
-      - plan_approval
     rules:
+      - match: NO_FIX_NEEDED
+        next: plan_approval
       - match: ".*"
         next: plan_review_parallel
     cycle_guard:
@@ -113,7 +113,7 @@ steps:
     instruction: plan-approval
     policy: planning
     pass_output_from:
-      - plan_architecture
+      - plan_requirements
       - plan_review_parallel
     resets_cycle_for:
       - plan_fix
@@ -128,15 +128,7 @@ steps:
     instruction: implement
     policy: coding
     pass_output_from:
-      - plan_architecture
-
-  # 9. 品質チェック（auto）
-  - name: quality_check
-    mode: auto
-    model: claude-opus-4-7
-    instruction: quality-check
-    policy: coding
-    pass_previous_response: true
+      - plan_requirements
 
   # 10-11. コードレビュー 6観点（parallel auto）+ 集約
   - name: code_review_parallel
@@ -148,9 +140,8 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - implement
-          - implementation_approval
+          - plan_requirements
+          - implementation_fix_policy
       - name: code_review_structure
         mode: auto
         model: gpt-5.5
@@ -158,9 +149,8 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - implement
-          - implementation_approval
+          - plan_requirements
+          - implementation_fix_policy
       - name: code_review_quality
         mode: auto
         model: gpt-5.5
@@ -168,9 +158,8 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - implement
-          - implementation_approval
+          - plan_requirements
+          - implementation_fix_policy
       - name: code_review_test
         mode: auto
         model: gpt-5.5
@@ -178,9 +167,8 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - implement
-          - implementation_approval
+          - plan_requirements
+          - implementation_fix_policy
       - name: code_review_security
         mode: auto
         model: gpt-5.5
@@ -188,9 +176,8 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - implement
-          - implementation_approval
+          - plan_requirements
+          - implementation_fix_policy
       - name: code_review_architecture
         mode: auto
         model: gpt-5.5
@@ -198,15 +185,14 @@ steps:
         policy: review
         output_contract: review-verdict
         pass_output_from:
-          - plan_architecture
-          - implement
-          - implementation_approval
+          - plan_requirements
+          - implementation_fix_policy
     aggregate:
       all_match: LGTM
       then: implementation_approval
       else: implementation_fix_policy
 
-  # 13. 実装修正方針確認（approval）
+  # 12. 実装修正方針確認（approval）
   - name: implementation_fix_policy
     mode: approval
     model: claude-opus-4-7
@@ -214,48 +200,39 @@ steps:
     policy: coding
     output_contract: approved-fix-policy
     pass_output_from:
+      - plan_requirements
       - code_review_parallel
-      - plan_architecture
       - implementation_approval
     rules:
       - match: reject
         next: implementation_approval
 
-  # 14. 修正（auto）
+  # 13. 修正（auto）
   - name: fix
     mode: auto
     model: claude-opus-4-7
     instruction: implement-fix
     policy: coding
     pass_output_from:
-      - code_review_parallel
+      - plan_requirements
       - implementation_fix_policy
-      - plan_architecture
-      - implementation_approval
+    rules:
+      - match: NO_FIX_NEEDED
+        next: implementation_approval
+      - match: ".*"
+        next: code_review_parallel
     cycle_guard:
       max_iterations: 3
       on_exhausted: implementation_approval
 
-  # 15. 修正後品質チェック（auto）
-  - name: fix_quality_check
-    mode: auto
-    model: claude-opus-4-7
-    instruction: quality-check
-    policy: coding
-    pass_previous_response: true
-    rules:
-      - match: ".*"
-        next: code_review_parallel
-
-  # 16. 実装結果承認（approval）
+  # 14. 実装結果承認（approval）
   - name: implementation_approval
     mode: approval
     model: claude-opus-4-7
     instruction: implementation-approval
     policy: coding
     pass_output_from:
-      - plan_architecture
-      - implement
+      - plan_requirements
       - code_review_parallel
     resets_cycle_for:
       - fix

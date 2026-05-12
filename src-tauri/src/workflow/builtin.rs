@@ -130,11 +130,6 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "quality-check",
-        content: include_str!("builtin_facets/instructions/quality-check.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
         key: "review-acceptance",
         content: include_str!("builtin_facets/instructions/review-acceptance.md"),
     },
@@ -182,11 +177,6 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::OutputContract,
         key: "review-verdict",
         content: include_str!("builtin_facets/output_contracts/review-verdict.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::OutputContract,
-        key: "fix-result",
-        content: include_str!("builtin_facets/output_contracts/fix-result.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::OutputContract,
@@ -273,10 +263,10 @@ mod tests {
         assert!(policies.contains(&"plan-review"));
 
         let instructions = list_builtin_facet_keys(FacetKind::Instruction);
-        assert_eq!(instructions.len(), 21);
+        assert_eq!(instructions.len(), 20);
 
         let output_contracts = list_builtin_facet_keys(FacetKind::OutputContract);
-        assert_eq!(output_contracts.len(), 4);
+        assert_eq!(output_contracts.len(), 3);
 
         let personas = list_builtin_facet_keys(FacetKind::Persona);
         assert!(personas.is_empty());
@@ -325,7 +315,7 @@ mod tests {
             .pass_output_from
             .as_ref()
             .unwrap()
-            .contains(&"plan_architecture".to_string()));
+            .contains(&"plan_requirements".to_string()));
     }
 
     #[test]
@@ -338,7 +328,7 @@ mod tests {
             .unwrap();
         assert_eq!(plan_fix.pass_previous_response, None);
         let plan_fix_inputs = plan_fix.pass_output_from.as_ref().unwrap();
-        assert!(plan_fix_inputs.contains(&"plan_review_parallel".to_string()));
+        assert!(plan_fix_inputs.contains(&"plan_requirements".to_string()));
         assert!(plan_fix_inputs.contains(&"plan_fix_policy".to_string()));
 
         let code_review = wf
@@ -360,13 +350,12 @@ mod tests {
         );
         let implementation_policy_inputs = implementation_policy.pass_output_from.as_ref().unwrap();
         assert!(implementation_policy_inputs.contains(&"code_review_parallel".to_string()));
-        assert!(implementation_policy_inputs.contains(&"plan_architecture".to_string()));
+        assert!(implementation_policy_inputs.contains(&"plan_requirements".to_string()));
 
         let fix = wf.steps.iter().find(|step| step.name == "fix").unwrap();
         assert_eq!(fix.pass_previous_response, None);
         let fix_inputs = fix.pass_output_from.as_ref().unwrap();
-        assert!(fix_inputs.contains(&"code_review_parallel".to_string()));
         assert!(fix_inputs.contains(&"implementation_fix_policy".to_string()));
-        assert!(fix_inputs.contains(&"plan_architecture".to_string()));
+        assert!(fix_inputs.contains(&"plan_requirements".to_string()));
     }
 }
