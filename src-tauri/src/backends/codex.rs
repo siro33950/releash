@@ -24,24 +24,28 @@ pub struct CodexBackend {
 pub fn codex_supported_models() -> Vec<ModelInfo> {
     vec![
         ModelInfo {
+            value: "gpt-5.5".to_string(),
+            display_name: "gpt-5.5".to_string(),
+        },
+        ModelInfo {
             value: "gpt-5.4".to_string(),
-            display_name: "GPT-5.4".to_string(),
+            display_name: "gpt-5.4".to_string(),
+        },
+        ModelInfo {
+            value: "gpt-5.4-mini".to_string(),
+            display_name: "gpt-5.4-mini".to_string(),
         },
         ModelInfo {
             value: "gpt-5.3-codex".to_string(),
-            display_name: "GPT-5.3 Codex".to_string(),
+            display_name: "gpt-5.3-codex".to_string(),
         },
         ModelInfo {
-            value: "gpt-5.2-codex".to_string(),
-            display_name: "GPT-5.2 Codex".to_string(),
+            value: "gpt-5.3-codex-spark".to_string(),
+            display_name: "gpt-5.3-codex-spark".to_string(),
         },
         ModelInfo {
-            value: "gpt-5-codex".to_string(),
-            display_name: "GPT-5 Codex".to_string(),
-        },
-        ModelInfo {
-            value: "o3".to_string(),
-            display_name: "o3".to_string(),
+            value: "gpt-5.2".to_string(),
+            display_name: "gpt-5.2".to_string(),
         },
     ]
 }
@@ -288,8 +292,8 @@ mod tests {
     async fn available_models_returns_codex_defaults() {
         let backend = CodexBackend::new();
         let models = backend.available_models().await.unwrap();
+        assert!(models.iter().any(|m| m.value == "gpt-5.5"));
         assert!(models.iter().any(|m| m.value == "gpt-5.4"));
-        assert!(models.iter().any(|m| m.value == "o3"));
     }
 
     #[tokio::test]
