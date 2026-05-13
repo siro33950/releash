@@ -61,71 +61,10 @@ export type AgentChatAction =
 	| { type: "SET_BACKENDS"; backends: BackendInfo[]; defaultId: string | null }
 	| { type: "SET_SELECTED_BACKEND"; backendId: string | null };
 
-/**
- * Merge delta parts into existing parts.
- * - text/thinking: merge into the last existing part if same type and parentToolUseId
- * - permission: update existing part by request_id if found, otherwise append
- * - other types: always append
- */
-export function mergeDeltaParts(
-	existing: MessagePart[],
-	delta: MessagePart[],
-): MessagePart[] {
-	if (delta.length === 0) return existing;
-	const result = existing.slice();
-	for (const part of delta) {
-		if (part.type === "text" || part.type === "thinking") {
-			const last = result.length > 0 ? result[result.length - 1] : undefined;
-			if (
-				last &&
-				(last.type === "text" || last.type === "thinking") &&
-				last.type === part.type &&
-				last.parentToolUseId === part.parentToolUseId
-			) {
-				result[result.length - 1] = {
-					...last,
-					content: last.content + part.content,
-				};
-			} else {
-				result.push(part);
-			}
-		} else if (part.type === "permission") {
-			const idx = result.findIndex(
-				(p) =>
-					p.type === "permission" &&
-					p.request.request_id === part.request.request_id,
-			);
-			if (idx !== -1) {
-				result[idx] = part;
-			} else {
-				result.push(part);
-			}
-		} else if (part.type === "system_notification") {
-			// Update existing notification in-place (compaction/hook completion)
-			const idx = result.findIndex((p) => {
-				if (p.type !== "system_notification") return false;
-				if (p.notificationType !== part.notificationType) return false;
-				// Hook: match by hookId
-				if (part.notificationType === "hook" && part.hookId) {
-					return p.hookId === part.hookId;
-				}
-				// Compaction: match by notificationType (only one active at a time)
-				if (part.notificationType === "compaction") {
-					return p.status === "in_progress";
-				}
-				return false;
-			});
-			if (idx !== -1) {
-				result[idx] = part;
-			} else {
-				result.push(part);
-			}
-		} else {
-			result.push(part);
-		}
-	}
-	return result;
-}
+// Rust now emits the cumulative `streaming_parts` array on every flush.
+// `SET_STREAMING_MESSAGE` replaces the message's parts wholesale so that
+// re-deliveries (e.g. when one transport channel previously failed) collapse
+// to a single state update with no double-application risk.
 
 function updateMessageInSession(
 	state: AgentChatState,
@@ -216,7 +155,7 @@ export function reducer(
 				return state;
 			return updateMessageInSession(state, action.messageId, (m) => ({
 				...m,
-				parts: mergeDeltaParts(m.parts, action.parts),
+				parts: action.parts,
 			}));
 		}
 		case "SET_AVAILABLE_MODELS":

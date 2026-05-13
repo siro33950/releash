@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -83,6 +84,26 @@ pub struct AgentProcess {
     /// Token usage from the latest `result` message (extracted from modelUsage).
     /// Consumed by turn_complete handler and passed to WorkflowEngine.
     pub last_result_token_usage: Option<(u64, u64)>,
+    /// Count of streaming delta parts queued since the last successful emit.
+    /// Acts as the dirty signal for coalescing — `> 0` means a flush is owed.
+    /// The actual payload lives in `streaming_parts` (cumulative); this field
+    /// only tracks how many entries have been added since the last flush so we
+    /// can detect the count threshold and decide when there's work to do.
+    pending_stream_part_count: usize,
+    /// Accumulated payload bytes for parts queued since the last successful
+    /// emit. Used to decide whether to flush early when the byte cap is
+    /// reached. Mirrors `pending_stream_part_count` semantically — count and
+    /// bytes are the only state we need; the delta entries themselves remain
+    /// in `streaming_parts`.
+    pending_stream_bytes: usize,
+    /// Timestamp of the most recent successful streaming emit. `None` means
+    /// the first emit for this turn — flush immediately.
+    last_stream_emit_at: Option<Instant>,
+    /// True while a per-turn auxiliary streaming-flush timer task is alive.
+    /// Set when the timer is spawned at streaming start; cleared by the timer
+    /// itself when it exits (turn ended and the buffer drained). Used to
+    /// avoid spawning a duplicate timer on overlapping turn starts.
+    streaming_timer_active: bool,
 }
 
 /// Per-session agent process map: chat_session_id -> AgentProcess
@@ -182,6 +203,20 @@ pub(crate) async fn write_bridge_command(
 const PERSIST_INTERVAL_MS: u64 = 1000;
 const BRIDGE_EOF_ERROR_MESSAGE: &str = "Bridge process exited unexpectedly.";
 
+/// Aggregation interval for `agent-streaming-updated` / `AgentStreamSync`.
+/// Roughly 30fps — balances UI smoothness against re-render cost.
+const STREAMING_EMIT_INTERVAL_MS: u64 = 33;
+
+/// Maximum number of pending delta parts before we flush early.
+/// Acts as a flush threshold in normal operation, and as a soft cap
+/// (we keep accepting parts even past this) while delivery is failing.
+const STREAMING_PENDING_PART_LIMIT: usize = 1000;
+
+/// Maximum cumulative byte size of pending delta payloads before we flush early.
+/// Same semantics as `STREAMING_PENDING_PART_LIMIT`: flush threshold in normal
+/// operation, soft cap (allowed to overflow) while delivery is failing.
+const STREAMING_PENDING_BYTE_LIMIT: usize = 256 * 1024;
+
 fn backend_runtime_config(app: &tauri::AppHandle, backend_id: &str) -> BackendRuntimeConfig {
     app.try_state::<Arc<crate::backends::AgentBackendRegistry>>()
         .and_then(|registry| registry.runtime_config(backend_id, app))
@@ -211,6 +246,20 @@ async fn available_models_for_backend(
 }
 
 impl AgentProcess {
+    /// Reset per-turn streaming state (cumulative parts, coalescing buffer,
+    /// last-emit timestamp, retained message id, task id map). Called on every
+    /// path that begins a new agent turn so the coalescer doesn't carry over
+    /// residue from the previous turn — e.g. a stale `last_stream_emit_at`
+    /// would block the first emit of the new turn from firing immediately.
+    fn reset_streaming_state_for_new_turn(&mut self) {
+        self.streaming_parts.clear();
+        self.pending_stream_part_count = 0;
+        self.pending_stream_bytes = 0;
+        self.last_stream_emit_at = None;
+        self.last_message_id = None;
+        self.task_id_map.clear();
+    }
+
     /// Write setMode + setModel commands to the Bridge stdin before a turn starts.
     async fn sync_pre_turn_settings(&mut self, permission_mode: &str) -> Result<(), String> {
         let mode_data = build_set_mode_command(permission_mode);
@@ -381,28 +430,452 @@ fn emit_session_state_changed(
     );
 }
 
+/// Emit the cumulative `streaming_parts` payload over both delivery channels.
+///
+/// Returns `(tauri_ok, ws_ok)`. `tauri_ok` reflects whether the Tauri event
+/// dispatcher accepted the payload. `ws_ok` is always `true` on the
+/// production broadcaster path: `WsBroadcaster::send_stream_sync` is a
+/// best-effort enqueue (slot writes cannot fail and downstream WS transport
+/// failure is recovered by the next flush re-sending the cumulative
+/// `streaming_parts`). Treating the WS channel as always-true here matches
+/// that contract; callers that need to simulate a WS-side failure (unit
+/// tests) drive `apply_streaming_emit_result` directly.
 fn emit_streaming_parts(
     app: &tauri::AppHandle,
     chat_session_id: &str,
     message_id: &str,
     parts: Vec<MessagePart>,
-) {
+) -> (bool, bool) {
     use tauri::{Emitter, Manager};
     let payload = serde_json::json!({
         "chat_session_id": chat_session_id,
         "message_id": message_id,
         "parts": parts,
     });
-    let _ = app.emit("agent-streaming-updated", &payload);
+    let tauri_ok = app.emit("agent-streaming-updated", &payload).is_ok();
     if let Some(broadcaster) = app.try_state::<Arc<crate::ws_bridge::WsBroadcaster>>() {
-        broadcaster.send_without_buffer(crate::protocol::WsMessage::AgentStreamSync(
-            crate::protocol::AgentStreamSync {
-                session_id: chat_session_id.to_string(),
-                message_id: message_id.to_string(),
-                parts: serde_json::from_value(payload["parts"].clone()).unwrap_or_default(),
-            },
-        ));
+        broadcaster.send_stream_sync(crate::protocol::AgentStreamSync {
+            session_id: chat_session_id.to_string(),
+            message_id: message_id.to_string(),
+            parts,
+        });
     }
+    (tauri_ok, true)
+}
+
+/// Estimate the wire byte size contributed by one delta part. Used to decide
+/// whether the pending buffer has crossed the byte cap. Exact values aren't
+/// required — only proportional growth matters.
+fn part_byte_size(part: &MessagePart) -> usize {
+    match part {
+        MessagePart::Text { content, .. }
+        | MessagePart::Thinking { content, .. }
+        | MessagePart::Error { content, .. }
+        | MessagePart::ToolResult { content, .. } => content.len(),
+        MessagePart::ToolUse {
+            tool, input, id, ..
+        } => tool.len() + id.len() + serde_json::to_string(input).map(|s| s.len()).unwrap_or(0),
+        MessagePart::Permission {
+            request,
+            status,
+            answers,
+            ..
+        } => {
+            status.len()
+                + serde_json::to_string(request).map(|s| s.len()).unwrap_or(0)
+                + answers
+                    .as_ref()
+                    .and_then(|a| serde_json::to_string(a).ok())
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+        }
+        MessagePart::TaskStatus {
+            task_tool_use_id,
+            status,
+            description,
+            summary,
+        } => {
+            task_tool_use_id.len()
+                + status.len()
+                + description.as_ref().map(|s| s.len()).unwrap_or(0)
+                + summary.as_ref().map(|s| s.len()).unwrap_or(0)
+        }
+        MessagePart::SystemNotification {
+            notification_type,
+            status,
+            label,
+            detail,
+            hook_id,
+        } => {
+            notification_type.len()
+                + status.len()
+                + label.len()
+                + detail.as_ref().map(|s| s.len()).unwrap_or(0)
+                + hook_id.as_ref().map(|s| s.len()).unwrap_or(0)
+        }
+        MessagePart::Image { data, media_type } => data.len() + media_type.len(),
+    }
+}
+
+/// Record that delta parts have been queued for the next coalescing flush.
+/// We only track the count and total byte size — the actual delta entries
+/// remain in `streaming_parts` (cumulative), so storing them twice would
+/// just inflate memory for no benefit. The count is the dirty signal; bytes
+/// drives the byte-cap flush trigger.
+fn enqueue_pending_delta(proc: &mut AgentProcess, delta: &[MessagePart]) {
+    for p in delta {
+        proc.pending_stream_bytes = proc.pending_stream_bytes.saturating_add(part_byte_size(p));
+    }
+    proc.pending_stream_part_count = proc.pending_stream_part_count.saturating_add(delta.len());
+}
+
+/// True when the pending buffer has crossed either the count or byte threshold.
+/// While delivery is succeeding this triggers an immediate flush; while
+/// delivery is failing the buffer continues to grow past these thresholds.
+fn pending_exceeds_threshold(proc: &AgentProcess) -> bool {
+    proc.pending_stream_part_count >= STREAMING_PENDING_PART_LIMIT
+        || proc.pending_stream_bytes >= STREAMING_PENDING_BYTE_LIMIT
+}
+
+/// True when enough time has elapsed since the last successful emit for the
+/// next-delta flush trigger to fire. First emit (no `last_stream_emit_at`)
+/// always returns true so the initial chunk reaches the UI without delay.
+fn streaming_interval_elapsed(proc: &AgentProcess) -> bool {
+    match proc.last_stream_emit_at {
+        None => true,
+        Some(t) => t.elapsed() >= Duration::from_millis(STREAMING_EMIT_INTERVAL_MS),
+    }
+}
+
+/// Snapshot of pending-flush bookkeeping captured before an emit attempt.
+/// Holds enough metadata to build a failure log without re-reading the
+/// process state, and is the source of `apply_streaming_emit_result`.
+#[derive(Debug, Clone)]
+struct StreamingFlushSnapshot {
+    parts: Vec<MessagePart>,
+    part_count: usize,
+    buffer_len: usize,
+    pending_bytes: usize,
+}
+
+/// Prepare a streaming flush: snapshot the consolidated cumulative parts and
+/// the buffer metadata. Returns `None` when the pending buffer is empty so
+/// callers can short-circuit the emit (idle-tick / double-flush no-op).
+fn prepare_streaming_flush(proc: &AgentProcess) -> Option<StreamingFlushSnapshot> {
+    if proc.pending_stream_part_count == 0 {
+        return None;
+    }
+    let parts = consolidate_parts(proc.streaming_parts.clone());
+    Some(StreamingFlushSnapshot {
+        part_count: parts.len(),
+        buffer_len: proc.pending_stream_part_count,
+        pending_bytes: proc.pending_stream_bytes,
+        parts,
+    })
+}
+
+/// Apply the emit result to the coalescing state. On success clears the
+/// pending buffer and bumps `last_stream_emit_at`; on failure retains both
+/// (so the next flush retries the cumulative payload) and emits a warning
+/// log containing only non-body metadata. Returns whether the emit succeeded.
+fn apply_streaming_emit_result(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    message_id: &str,
+    snapshot: &StreamingFlushSnapshot,
+    tauri_ok: bool,
+    ws_ok: bool,
+) -> bool {
+    if tauri_ok && ws_ok {
+        proc.pending_stream_part_count = 0;
+        proc.pending_stream_bytes = 0;
+        proc.last_stream_emit_at = Some(Instant::now());
+        true
+    } else {
+        // NB: deliberately exclude payload content / tool I/O / mentions —
+        // those are external user data and must not appear in logs.
+        log::warn!(
+            "agent-streaming-updated emit failure: chat_session={} message_id={} \
+             part_count={} buffer_len={} pending_bytes={} tauri_ok={} ws_ok={}",
+            chat_session_id,
+            message_id,
+            snapshot.part_count,
+            snapshot.buffer_len,
+            snapshot.pending_bytes,
+            tauri_ok,
+            ws_ok
+        );
+        false
+    }
+}
+
+/// Run the prepare → emit → apply sequence with a caller-supplied emit
+/// function. Extracting this lets unit tests drive the production flush
+/// pipeline with a recording emit closure, instead of mirroring the prepare
+/// / apply calls inline (which used to drift from the production path).
+///
+/// The closure receives the cumulative `MessagePart` slice destined for the
+/// frontend and returns `(tauri_ok, ws_ok)` matching `emit_streaming_parts`.
+fn force_flush_pending_streaming<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    message_id: &str,
+    mut emit: F,
+) where
+    F: FnMut(&[MessagePart]) -> (bool, bool),
+{
+    let Some(snapshot) = prepare_streaming_flush(proc) else {
+        return;
+    };
+    let (tauri_ok, ws_ok) = emit(&snapshot.parts);
+    apply_streaming_emit_result(
+        proc,
+        chat_session_id,
+        message_id,
+        &snapshot,
+        tauri_ok,
+        ws_ok,
+    );
+}
+
+/// Attempt to emit the cumulative `streaming_parts` payload. No-op when the
+/// pending buffer is empty (prevents idle-tick re-delivery and double-flush
+/// from forced-flush paths). On success, clears pending and updates
+/// `last_stream_emit_at`. On failure, retains both so the next flush retries.
+fn flush_streaming(
+    app: &tauri::AppHandle,
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    message_id: &str,
+) {
+    force_flush_pending_streaming(proc, chat_session_id, message_id, |parts| {
+        emit_streaming_parts(app, chat_session_id, message_id, parts.to_vec())
+    });
+}
+
+/// Force-flush pending streaming delta before a turn-phase transition
+/// (permission_request, turn_complete, tool boundary, error). Returns
+/// `true` when the process was in `Streaming` state so the caller knows to
+/// emit a `agent-session-state-changed` notification after releasing the
+/// lock. The flush runs FIRST so the frontend never observes a state
+/// transition ahead of the tail content for the current message.
+///
+/// The emit closure mirrors `emit_streaming_parts`: it receives the message
+/// id and the consolidated cumulative parts and returns `(tauri_ok, ws_ok)`.
+/// Production callers pass a closure that delegates to `emit_streaming_parts`;
+/// unit tests pass a recording closure to verify the ordering invariant.
+fn flush_streaming_before_transition<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    mut emit_stream: F,
+) -> bool
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    let was_streaming = proc.state == BridgeState::Streaming;
+    let Some(mid) = proc.streaming_message_id.clone() else {
+        return was_streaming;
+    };
+    force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| {
+        emit_stream(&mid, parts)
+    });
+    was_streaming
+}
+
+/// Effect returned by `run_permission_request_transition_locked`. The caller
+/// (production stdout reader / unit tests) inspects `did_transition` to decide
+/// whether to emit `agent-session-state-changed(WaitingPermission)` after
+/// releasing the process lock.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PermissionRequestTransition {
+    did_transition: bool,
+}
+
+/// Run the in-lock part of the `permission_request` transition: force-flush
+/// the pending streaming delta first, then — only when the process was in
+/// `Streaming` — promote `turn_phase` to `WaitingPermission`. The flush runs
+/// before the state mutation so the frontend never observes a state change
+/// ahead of the tail content. The caller is responsible for emitting the
+/// state-change notification outside the lock when `did_transition` is true.
+fn run_permission_request_transition_locked<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    emit_stream: F,
+) -> PermissionRequestTransition
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    let was_streaming = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
+    if was_streaming {
+        proc.turn_phase = TurnPhase::WaitingPermission;
+    }
+    PermissionRequestTransition {
+        did_transition: was_streaming,
+    }
+}
+
+/// Effect returned by `run_turn_complete_transition_locked`. Carries the
+/// data the caller needs to perform the post-lock follow-ups: state-change
+/// emission, message persistence, and workflow hooks. `was_streaming` gates
+/// the `agent-session-state-changed(Idle)` emission.
+#[derive(Debug, Default)]
+struct TurnCompleteTransition {
+    was_streaming: bool,
+    final_msg_id: Option<String>,
+    raw_parts: Vec<MessagePart>,
+    turn_token_usage: Option<(u64, u64)>,
+}
+
+/// Run the in-lock part of the `turn_complete` transition: force-flush
+/// pending streaming delta first, then mutate `state` / `turn_phase` and
+/// snapshot the data the caller needs after releasing the lock. Mirrors the
+/// production stdout reader so tests can drive the exact same code path
+/// (instead of mirroring prepare/apply inline).
+fn run_turn_complete_transition_locked<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    exit_code: i64,
+    emit_stream: F,
+) -> TurnCompleteTransition
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    let was_streaming = flush_streaming_before_transition(proc, chat_session_id, emit_stream);
+    proc.state = if exit_code == 0 {
+        BridgeState::Ready
+    } else {
+        BridgeState::Crashed
+    };
+    proc.turn_phase = TurnPhase::Idle;
+    let turn_token_usage = proc.last_result_token_usage.take();
+    let raw_parts = proc.streaming_parts.clone();
+    let final_msg_id = proc.streaming_message_id.take();
+    if final_msg_id.is_some() {
+        proc.last_message_id.clone_from(&final_msg_id);
+    }
+    TurnCompleteTransition {
+        was_streaming,
+        final_msg_id,
+        raw_parts,
+        turn_token_usage,
+    }
+}
+
+/// Effect returned by `apply_respond_permission_locked`. `did_transition` is
+/// `true` only when the process was actually in `WaitingPermission`; this
+/// gates both the post-lock `agent-session-state-changed(Streaming)`
+/// emission and the per-turn auxiliary timer restart.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PermissionResponseTransition {
+    did_transition: bool,
+}
+
+/// Run the in-lock part of `respond_agent_permission`: flip `turn_phase`
+/// back to `Streaming` (only when actually waiting), patch the matching
+/// `Permission` part status in the streaming buffer, enqueue the updated
+/// part as a pending delta, and force-flush so the frontend observes the
+/// permission decision before the state-change notification. The caller
+/// handles stdin write before, and timer restart / state-change emission
+/// after.
+fn apply_respond_permission_locked<F>(
+    proc: &mut AgentProcess,
+    chat_session_id: &str,
+    request_id: &str,
+    behavior: &str,
+    answers_value: Option<&serde_json::Value>,
+    mut emit_stream: F,
+) -> PermissionResponseTransition
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    let did_transition = proc.turn_phase == TurnPhase::WaitingPermission;
+    if did_transition {
+        proc.turn_phase = TurnPhase::Streaming;
+    }
+    let new_status = if behavior == "allow" {
+        "allowed"
+    } else {
+        "denied"
+    };
+    let mut found_part: Option<MessagePart> = None;
+    for part in &mut proc.streaming_parts {
+        if let MessagePart::Permission {
+            request,
+            status,
+            answers,
+            ..
+        } = part
+        {
+            if request.get("request_id").and_then(|v| v.as_str()) == Some(request_id) {
+                *status = new_status.to_string();
+                if let Some(av) = answers_value {
+                    *answers = Some(av.clone());
+                }
+                found_part = Some(part.clone());
+            }
+        }
+    }
+    let emit_msg_id = proc.streaming_message_id.clone();
+    if let (Some(mid), Some(part)) = (emit_msg_id, found_part) {
+        enqueue_pending_delta(proc, std::slice::from_ref(&part));
+        force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| {
+            emit_stream(&mid, parts)
+        });
+    }
+    PermissionResponseTransition { did_transition }
+}
+
+/// Per-delta flush decision used by the stdout reader. `post_turn` is true
+/// when the delta is arriving after `turn_complete` (background-task events
+/// piggy-backed on the closed turn) — those are always force-flushed so the
+/// post-turn UI does not stall on the throttle.
+fn should_flush_per_delta(proc: &AgentProcess, delta: &[MessagePart], post_turn: bool) -> bool {
+    let force = post_turn || delta_has_tool_event(delta) || pending_exceeds_threshold(proc);
+    force || streaming_interval_elapsed(proc)
+}
+
+/// One iteration of the auxiliary timer loop. Bound to a single process by
+/// the caller (generation_id / state checks happen above this helper). The
+/// emit closure mirrors `force_flush_pending_streaming` so tests can drive
+/// the same code path the production timer uses.
+///
+/// Returns `true` when the timer should continue running this turn, and
+/// `false` when the loop should exit (turn is over and the buffer has been
+/// fully drained).
+fn run_streaming_timer_tick<F>(proc: &mut AgentProcess, chat_session_id: &str, mut emit: F) -> bool
+where
+    F: FnMut(&str, &[MessagePart]) -> (bool, bool),
+{
+    let pending = proc.pending_stream_part_count > 0;
+    let streaming = proc.state == BridgeState::Streaming;
+    if !pending && !streaming {
+        // Turn ended and the buffer is empty — timer has nothing left to do.
+        return false;
+    }
+    if !pending || !streaming_interval_elapsed(proc) {
+        return true;
+    }
+    let Some(mid) = proc
+        .streaming_message_id
+        .clone()
+        .or_else(|| proc.last_message_id.clone())
+    else {
+        return true;
+    };
+    force_flush_pending_streaming(proc, chat_session_id, &mid, |parts| emit(&mid, parts));
+    true
+}
+
+/// Returns `true` when any delta part represents a tool invocation boundary.
+/// Used to force a flush around tool start/end so the UI never shows a stale
+/// frame across these transitions.
+fn delta_has_tool_event(delta: &[MessagePart]) -> bool {
+    delta.iter().any(|p| {
+        matches!(
+            p,
+            MessagePart::ToolUse { .. } | MessagePart::ToolResult { .. }
+        )
+    })
 }
 
 #[derive(Debug, Default)]
@@ -572,8 +1045,10 @@ fn build_set_model_command(model_id: Option<&str>) -> String {
     format!("{}\n", cmd)
 }
 
-/// Append text/thinking chunk to streaming parts as a new part.
-/// Merging consecutive same-type chunks is handled by the frontend's `mergeDeltaParts`.
+/// Append text/thinking chunk to streaming parts as an individual part.
+/// Each chunk is retained as a separate `MessagePart`; consolidation into
+/// merged same-type runs is performed by `consolidate_parts` when generating
+/// emit/persist payloads.
 fn append_to_parts(
     parts: &mut Vec<MessagePart>,
     part_type: &str,
@@ -593,9 +1068,11 @@ fn append_to_parts(
     }
 }
 
-/// Consolidate consecutive same-type text/thinking parts for persistence.
-/// During streaming, parts are kept as individual chunks for correct delta extraction.
-/// This function merges them into single parts before persisting.
+/// Normalize accumulated streaming parts by merging consecutive same-type
+/// text/thinking chunks sharing the same `parent_tool_use_id`.
+/// During streaming, `append_to_parts` keeps each chunk as an individual part;
+/// this helper produces the consolidated view used both for streaming emit
+/// payloads (via `prepare_streaming_flush`) and for persistence.
 fn consolidate_parts(parts: Vec<MessagePart>) -> Vec<MessagePart> {
     let mut result: Vec<MessagePart> = Vec::with_capacity(parts.len());
     for part in parts {
@@ -1191,6 +1668,10 @@ async fn spawn_bridge_process(
                 available_models: Vec::new(),
                 selected_model,
                 last_result_token_usage: None,
+                pending_stream_part_count: 0,
+                pending_stream_bytes: 0,
+                last_stream_emit_at: None,
+                streaming_timer_active: false,
             },
         );
     }
@@ -1336,30 +1817,28 @@ async fn spawn_bridge_process(
                         {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
-                                was_streaming = proc.state == BridgeState::Streaming;
-                                proc.state = if exit_code == 0 {
-                                    BridgeState::Ready
-                                } else {
-                                    BridgeState::Crashed
-                                };
-                                proc.turn_phase = TurnPhase::Idle;
-
-                                // Take token usage from preceding result message
-                                turn_token_usage = proc.last_result_token_usage.take();
-
-                                // Capture streaming buffer for consolidation outside lock.
-                                // Keep parts in buffer so post-turn_complete background task
-                                // events can append to them (cleared at next query start).
-                                raw_parts = proc.streaming_parts.clone();
-                                final_msg_id = proc.streaming_message_id.take();
-
-                                // Retain message ID for post-turn_complete background task events.
-                                // Only update if we have a real ID — a second turn_complete
-                                // (from background task result) would yield None and must not
-                                // overwrite the ID set by the first turn_complete.
-                                if final_msg_id.is_some() {
-                                    proc.last_message_id = final_msg_id.clone();
-                                }
+                                // Run the in-lock transition through the shared
+                                // helper so production and unit tests exercise the
+                                // exact same flush → state-mutation order. Flush
+                                // failure is best-effort — we still mutate state so
+                                // turn_complete notification fires.
+                                let effect = run_turn_complete_transition_locked(
+                                    proc,
+                                    &csid_stdout,
+                                    exit_code,
+                                    |mid, parts| {
+                                        emit_streaming_parts(
+                                            &app_stdout,
+                                            &csid_stdout,
+                                            mid,
+                                            parts.to_vec(),
+                                        )
+                                    },
+                                );
+                                was_streaming = effect.was_streaming;
+                                turn_token_usage = effect.turn_token_usage;
+                                raw_parts = effect.raw_parts;
+                                final_msg_id = effect.final_msg_id;
 
                                 // User turn succeeded: persist agent_session_id to SessionStore
                                 if was_streaming && exit_code == 0 {
@@ -1507,8 +1986,9 @@ async fn spawn_bridge_process(
                             .unwrap_or("Unknown bridge error");
                         log::error!("Bridge error [{}]: {}", csid_stdout, error_msg);
 
-                        // Accumulate error into streaming parts and extract delta
-                        let (error_delta, error_emit_msg_id) = {
+                        // Accumulate the error part, enqueue it for emission, and
+                        // force-flush so the UI surfaces the failure immediately.
+                        {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 if proc.state == BridgeState::Streaming {
@@ -1518,21 +1998,16 @@ async fn spawn_bridge_process(
                                         &mut proc.streaming_parts,
                                         &mut proc.task_id_map,
                                     );
-                                    let delta = proc.streaming_parts[prev_len..].to_vec();
+                                    let delta: Vec<MessagePart> =
+                                        proc.streaming_parts[prev_len..].to_vec();
                                     let mid = proc.streaming_message_id.clone();
-                                    (delta, mid)
-                                } else {
-                                    (Vec::new(), None)
+                                    if !delta.is_empty() {
+                                        enqueue_pending_delta(proc, &delta);
+                                    }
+                                    if let Some(ref mid) = mid {
+                                        flush_streaming(&app_stdout, proc, &csid_stdout, mid);
+                                    }
                                 }
-                            } else {
-                                (Vec::new(), None)
-                            }
-                        };
-
-                        // Emit error delta so UI can display the error message
-                        if !error_delta.is_empty() {
-                            if let Some(ref mid) = error_emit_msg_id {
-                                emit_streaming_parts(&app_stdout, &csid_stdout, mid, error_delta);
                             }
                         }
 
@@ -1593,19 +2068,20 @@ async fn spawn_bridge_process(
                         }
                     }
                     _ => {
-                        // Accumulate into streaming buffer and emit delta update
-                        let (
-                            accumulated,
-                            delta_parts,
-                            emit_msg_id,
-                            should_persist,
-                            raw_persist_parts,
-                        ) = {
+                        // Accumulate into streaming buffer, enqueue delta into the
+                        // coalescing buffer, and flush when warranted. We hold the
+                        // lock across the flush so the emit observes consistent
+                        // state with `streaming_parts`.
+                        let (accumulated, emit_msg_id, should_persist, raw_persist_parts) = {
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
-                                if proc.state == BridgeState::Streaming
-                                    && proc.streaming_message_id.is_some()
-                                {
+                                let in_streaming = proc.state == BridgeState::Streaming
+                                    && proc.streaming_message_id.is_some();
+                                let post_turn = !in_streaming && proc.last_message_id.is_some();
+
+                                if !in_streaming && !post_turn {
+                                    (false, None, false, Vec::new())
+                                } else {
                                     let prev_len = proc.streaming_parts.len();
                                     let (acc, updated_parts) = accumulate_sdk_message(
                                         &msg,
@@ -1613,73 +2089,58 @@ async fn spawn_bridge_process(
                                         &mut proc.task_id_map,
                                     );
                                     if !acc {
-                                        (false, Vec::new(), None, false, Vec::new())
+                                        (false, None, false, Vec::new())
                                     } else {
-                                        // Extract only newly added parts as delta
                                         let mut delta: Vec<MessagePart> =
                                             proc.streaming_parts[prev_len..].to_vec();
-                                        // Include in-place updated parts in the delta
                                         if let Some(up) = updated_parts {
                                             delta.extend(up);
                                         }
-                                        let mid = proc.streaming_message_id.clone();
+                                        let mid = if in_streaming {
+                                            proc.streaming_message_id.clone()
+                                        } else {
+                                            proc.last_message_id.clone()
+                                        };
 
-                                        let now = std::time::Instant::now();
+                                        enqueue_pending_delta(proc, &delta);
+
+                                        // Flush triggers: in-stream uses
+                                        // interval + threshold; post-turn events
+                                        // (background tasks) are flushed eagerly.
+                                        if should_flush_per_delta(proc, &delta, post_turn) {
+                                            if let Some(ref mid) = mid {
+                                                flush_streaming(
+                                                    &app_stdout,
+                                                    proc,
+                                                    &csid_stdout,
+                                                    mid,
+                                                );
+                                            }
+                                        }
+
+                                        let now = Instant::now();
                                         let elapsed_persist =
                                             now.duration_since(last_persist_time).as_millis()
                                                 as u64;
-                                        let should_persist = elapsed_persist >= PERSIST_INTERVAL_MS;
+                                        let should_persist =
+                                            post_turn || elapsed_persist >= PERSIST_INTERVAL_MS;
                                         let raw_persist_parts = if should_persist {
                                             proc.streaming_parts.clone()
                                         } else {
                                             Vec::new()
                                         };
-
-                                        (true, delta, mid, should_persist, raw_persist_parts)
+                                        (true, mid, should_persist, raw_persist_parts)
                                     }
-                                } else if proc.last_message_id.is_some() {
-                                    // Post-turn_complete: background task events
-                                    // (task_notification, task_progress, etc.)
-                                    // Accumulate and emit immediately (no throttle needed).
-                                    let prev_len = proc.streaming_parts.len();
-                                    let (acc, updated_parts) = accumulate_sdk_message(
-                                        &msg,
-                                        &mut proc.streaming_parts,
-                                        &mut proc.task_id_map,
-                                    );
-                                    if !acc {
-                                        (false, Vec::new(), None, false, Vec::new())
-                                    } else {
-                                        let mut delta: Vec<MessagePart> =
-                                            proc.streaming_parts[prev_len..].to_vec();
-                                        if let Some(up) = updated_parts {
-                                            delta.extend(up);
-                                        }
-                                        let mid = proc.last_message_id.clone();
-
-                                        // Always persist post-turn events immediately
-                                        let raw_persist_parts = proc.streaming_parts.clone();
-                                        (true, delta, mid, true, raw_persist_parts)
-                                    }
-                                } else {
-                                    (false, Vec::new(), None, false, Vec::new())
                                 }
                             } else {
-                                (false, Vec::new(), None, false, Vec::new())
+                                (false, None, false, Vec::new())
                             }
                         };
-
-                        // Emit agent-streaming-updated with delta parts (no throttle)
-                        if !delta_parts.is_empty() {
-                            if let Some(ref mid) = emit_msg_id {
-                                emit_streaming_parts(&app_stdout, &csid_stdout, mid, delta_parts);
-                            }
-                        }
 
                         // Periodic persist (1s interval) — consolidate outside lock
                         if should_persist {
                             if let Some(ref mid) = emit_msg_id {
-                                last_persist_time = std::time::Instant::now();
+                                last_persist_time = Instant::now();
                                 let persist_parts = consolidate_parts(raw_persist_parts);
                                 persist_streaming_parts(
                                     &session_store_clone,
@@ -1750,42 +2211,54 @@ async fn spawn_bridge_process(
                             }
                         }
 
+                        // For permission_request, force-flush pending stream content
+                        // BEFORE emitting agent-sdk-message so the UI receives the
+                        // accumulated text before SET_PENDING_PERMISSION dispatches
+                        // and the WaitingPermission state notification fires.
+                        // Order: buffer flush → state notify → followup.
+                        let permission_did_transition = if msg_type == "permission_request" {
+                            let mut map = handles_stdout.lock().await;
+                            if let Some(proc) = map.get_mut(&csid_stdout) {
+                                let effect = run_permission_request_transition_locked(
+                                    proc,
+                                    &csid_stdout,
+                                    |mid, parts| {
+                                        emit_streaming_parts(
+                                            &app_stdout,
+                                            &csid_stdout,
+                                            mid,
+                                            parts.to_vec(),
+                                        )
+                                    },
+                                );
+                                effect.did_transition
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
                         // Forward non-accumulated messages (meta events) as agent-sdk-message.
                         // permission_request needs both delta emit AND forwarding for SET_PENDING_PERMISSION.
                         if should_forward_sdk_message(accumulated, msg_type) {
                             let _ = app_stdout.emit("agent-sdk-message", &msg);
                         }
 
-                        // Transition to WaitingPermission when permission_request arrives
-                        if msg_type == "permission_request" {
-                            let did_transition = {
-                                let mut map = handles_stdout.lock().await;
-                                if let Some(proc) = map.get_mut(&csid_stdout) {
-                                    if proc.state == BridgeState::Streaming {
-                                        proc.turn_phase = TurnPhase::WaitingPermission;
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    false
-                                }
-                            };
-                            if did_transition {
-                                emit_session_state_changed(
-                                    &app_stdout,
-                                    &csid_stdout,
-                                    TurnPhase::WaitingPermission,
-                                    None,
-                                );
-                                notify_status_transition(
-                                    &app_stdout,
-                                    &session_store_clone,
-                                    &csid_stdout,
-                                    TurnPhase::WaitingPermission,
-                                    None,
-                                );
-                            }
+                        if permission_did_transition {
+                            emit_session_state_changed(
+                                &app_stdout,
+                                &csid_stdout,
+                                TurnPhase::WaitingPermission,
+                                None,
+                            );
+                            notify_status_transition(
+                                &app_stdout,
+                                &session_store_clone,
+                                &csid_stdout,
+                                TurnPhase::WaitingPermission,
+                                None,
+                            );
                         }
                     }
                 }
@@ -1801,14 +2274,23 @@ async fn spawn_bridge_process(
                 let streaming_message_id = proc.streaming_message_id.clone();
                 let generation_matches = proc.generation_id == captured_gen_id;
                 let backend_id = proc.backend_id.clone();
-                apply_bridge_eof_crash(
+                let effect = apply_bridge_eof_crash(
                     generation_matches,
                     &mut proc.state,
                     &mut proc.turn_phase,
                     streaming_message_id.as_deref(),
                     &mut proc.streaming_parts,
                     &backend_id,
-                )
+                );
+                // Enqueue the synthetic crash delta into the coalescing buffer and
+                // force-flush so the UI sees the error before the Idle transition.
+                if let (Some(mid), false) =
+                    (streaming_message_id.as_ref(), effect.error_delta.is_empty())
+                {
+                    enqueue_pending_delta(proc, &effect.error_delta);
+                    flush_streaming(&app_stdout, proc, &csid_stdout, mid);
+                }
+                effect
             } else {
                 BridgeEofCrashEffect::default()
             }
@@ -1824,14 +2306,6 @@ async fn spawn_bridge_process(
             );
         }
         if let Some(message_id) = effect.message_id.as_deref() {
-            if !effect.error_delta.is_empty() {
-                emit_streaming_parts(
-                    &app_stdout,
-                    &csid_stdout,
-                    message_id,
-                    effect.error_delta.clone(),
-                );
-            }
             if !effect.persisted_parts.is_empty() {
                 persist_streaming_parts(
                     &session_store_clone,
@@ -1874,7 +2348,100 @@ async fn spawn_bridge_process(
         }
     });
 
+    // The auxiliary streaming-flush timer is spawned per-turn from
+    // `spawn_streaming_timer`, not at process spawn — process-lifetime ticks
+    // would hold `AgentProcessMap` lock every 33ms even while idle.
+
     Ok(())
+}
+
+/// Loop control decision for the per-turn streaming timer. Extracted as a
+/// pure function so the spawn loop's exit/flag-management semantics are
+/// covered by unit tests, instead of relying on a tokio task to be observable
+/// from the test harness.
+#[derive(Debug, PartialEq, Eq)]
+enum TimerDecision {
+    /// Generation matches and process is still streaming — run the tick.
+    Continue,
+    /// Generation matches and process has crashed — exit and release the
+    /// active flag so a future turn can spawn a fresh timer.
+    BreakClearFlag,
+    /// Generation no longer matches: a newer process owns the slot, and its
+    /// own timer is responsible for the flag. Exit without touching it.
+    BreakKeepFlag,
+}
+
+/// Decide what the streaming timer should do at the top of each tick.
+fn streaming_timer_decision(proc: &AgentProcess, captured_gen_id: u64) -> TimerDecision {
+    if proc.generation_id != captured_gen_id {
+        return TimerDecision::BreakKeepFlag;
+    }
+    if proc.state == BridgeState::Crashed {
+        return TimerDecision::BreakClearFlag;
+    }
+    TimerDecision::Continue
+}
+
+/// Idempotency gate for `spawn_streaming_timer`. Marks the timer slot active
+/// and returns `true` when the caller should spawn; returns `false` when a
+/// timer is already running for this process (duplicate spawn no-op).
+fn try_mark_streaming_timer_active(proc: &mut AgentProcess) -> bool {
+    if proc.streaming_timer_active {
+        return false;
+    }
+    proc.streaming_timer_active = true;
+    true
+}
+
+/// Spawn the per-turn auxiliary streaming-flush timer. Ticks every
+/// `STREAMING_EMIT_INTERVAL_MS` and drains the pending coalescing buffer so
+/// silent gaps between deltas (e.g. SDK ingesting a tool result) still
+/// surface buffered content within one interval. Exits when the turn ends
+/// and the buffer is fully drained, on generation mismatch, or on crash.
+/// Idempotent: a second call while a timer is already alive is a no-op.
+fn spawn_streaming_timer(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    proc: &mut AgentProcess,
+) {
+    if !try_mark_streaming_timer_active(proc) {
+        return;
+    }
+    let handles_timer = Arc::clone(handles);
+    let app_timer = app.clone();
+    let csid_timer = chat_session_id.to_string();
+    let captured_gen_id_timer = proc.generation_id;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(STREAMING_EMIT_INTERVAL_MS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Skip the immediate first tick — the stdout reader's per-delta path
+        // handles the very first emit.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let mut map = handles_timer.lock().await;
+            let Some(proc) = map.get_mut(&csid_timer) else {
+                // Process removed — no flag to clear.
+                break;
+            };
+            match streaming_timer_decision(proc, captured_gen_id_timer) {
+                TimerDecision::BreakKeepFlag => break,
+                TimerDecision::BreakClearFlag => {
+                    proc.streaming_timer_active = false;
+                    break;
+                }
+                TimerDecision::Continue => {}
+            }
+            let keep_running = run_streaming_timer_tick(proc, &csid_timer, |mid, parts| {
+                emit_streaming_parts(&app_timer, &csid_timer, mid, parts.to_vec())
+            });
+            if !keep_running {
+                proc.streaming_timer_active = false;
+                break;
+            }
+        }
+    });
 }
 
 async fn get_session_internal(
@@ -2237,9 +2804,7 @@ pub(crate) async fn start_agent_turn(
             proc.state = BridgeState::Streaming;
             proc.turn_phase = TurnPhase::Streaming;
             proc.streaming_message_id = Some(streaming_message_id.to_string());
-            proc.streaming_parts.clear();
-            proc.last_message_id = None;
-            proc.task_id_map.clear();
+            proc.reset_streaming_state_for_new_turn();
             proc.stdin
                 .write_all(data.as_bytes())
                 .await
@@ -2248,6 +2813,7 @@ pub(crate) async fn start_agent_turn(
                 .flush()
                 .await
                 .map_err(|e| format!("Failed to flush message: {e}"))?;
+            spawn_streaming_timer(app, handles, chat_session_id, proc);
         } else {
             return Err(format!("No agent process for session {chat_session_id}"));
         }
@@ -2345,9 +2911,7 @@ async fn consume_pending_message(
             proc.state = BridgeState::Streaming;
             proc.turn_phase = TurnPhase::Streaming;
             proc.streaming_message_id = Some(agent_msg.id.clone());
-            proc.streaming_parts.clear();
-            proc.last_message_id = None;
-            proc.task_id_map.clear();
+            proc.reset_streaming_state_for_new_turn();
             if let Err(e) = proc.stdin.write_all(data.as_bytes()).await {
                 log::error!("consume_pending_message: failed to write message: {e}");
                 return;
@@ -2356,6 +2920,7 @@ async fn consume_pending_message(
                 log::error!("consume_pending_message: failed to flush message: {e}");
                 return;
             }
+            spawn_streaming_timer(app, handles, chat_session_id, proc);
         } else {
             log::error!("consume_pending_message: no agent process for session {chat_session_id}");
             return;
@@ -2731,8 +3296,6 @@ pub async fn respond_agent_permission(
     });
     let data = format!("{}\n", payload);
 
-    let updated_permission_part: Option<MessagePart>;
-    let emit_msg_id;
     let did_transition_to_streaming;
     {
         let mut map = handles.lock().await;
@@ -2746,49 +3309,32 @@ pub async fn respond_agent_permission(
                 .await
                 .map_err(|e| format!("Failed to flush: {e}"))?;
 
-            // Transition back to Streaming after permission response
-            did_transition_to_streaming = proc.turn_phase == TurnPhase::WaitingPermission;
+            // Apply the synchronous part of the permission response
+            // (phase flip + permission part patch + force flush) via the
+            // shared helper so production and unit tests exercise the same
+            // ordering: flush must complete before the state-change emit
+            // outside the lock.
+            let effect = apply_respond_permission_locked(
+                proc,
+                &chat_session_id,
+                &request_id,
+                &behavior,
+                answers_value.as_ref(),
+                |mid, parts| emit_streaming_parts(&app, &chat_session_id, mid, parts.to_vec()),
+            );
+            did_transition_to_streaming = effect.did_transition;
+
+            // Resuming the turn: restart the per-turn auxiliary timer if it
+            // has already exited (turn left Streaming when WaitingPermission
+            // was entered). Idempotent — no-op if a timer is still alive.
             if did_transition_to_streaming {
-                proc.turn_phase = TurnPhase::Streaming;
+                spawn_streaming_timer(&app, handles.inner(), &chat_session_id, proc);
             }
-
-            // Update Permission part status in streaming buffer
-            let new_status = if behavior == "allow" {
-                "allowed"
-            } else {
-                "denied"
-            };
-            let mut found_part = None;
-            for part in &mut proc.streaming_parts {
-                if let MessagePart::Permission {
-                    request,
-                    status,
-                    answers,
-                    ..
-                } = part
-                {
-                    if request.get("request_id").and_then(|v| v.as_str()) == Some(&request_id) {
-                        *status = new_status.to_string();
-                        if let Some(ref av) = answers_value {
-                            *answers = Some(av.clone());
-                        }
-                        found_part = Some(part.clone());
-                    }
-                }
-            }
-
-            updated_permission_part = found_part;
-            emit_msg_id = proc.streaming_message_id.clone();
         } else {
             return Err(format!(
                 "No active agent process for session {chat_session_id}"
             ));
         }
-    }
-
-    // Emit agent-streaming-updated with the updated permission part as delta
-    if let (Some(ref mid), Some(ref part)) = (&emit_msg_id, &updated_permission_part) {
-        emit_streaming_parts(&app, &chat_session_id, mid, vec![part.clone()]);
     }
 
     // Emit state change only if we actually transitioned: WaitingPermission → Streaming
@@ -3508,6 +4054,1454 @@ mod tests {
         assert!(!source.contains(&super_codex_path));
     }
 
+    #[tokio::test]
+    async fn enqueue_pending_delta_accumulates_parts_and_bytes() {
+        let mut proc = make_streaming_test_process();
+        let delta = vec![
+            MessagePart::Text {
+                content: "abcde".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Thinking {
+                content: "fg".to_string(),
+                parent_tool_use_id: None,
+            },
+        ];
+        enqueue_pending_delta(&mut proc, &delta);
+        assert_eq!(proc.pending_stream_part_count, 2);
+        assert_eq!(proc.pending_stream_bytes, "abcde".len() + "fg".len());
+    }
+
+    #[tokio::test]
+    async fn streaming_interval_elapsed_is_true_before_any_emit() {
+        let proc = make_streaming_test_process();
+        assert!(
+            streaming_interval_elapsed(&proc),
+            "first emit must not wait for an interval"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_interval_elapsed_is_false_within_interval() {
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at = Some(Instant::now());
+        assert!(
+            !streaming_interval_elapsed(&proc),
+            "successive emit within {}ms must wait",
+            STREAMING_EMIT_INTERVAL_MS
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_exceeds_threshold_triggers_on_part_count() {
+        let mut proc = make_streaming_test_process();
+        for _ in 0..STREAMING_PENDING_PART_LIMIT {
+            enqueue_pending_delta(
+                &mut proc,
+                &[MessagePart::Text {
+                    content: "x".to_string(),
+                    parent_tool_use_id: None,
+                }],
+            );
+        }
+        assert!(pending_exceeds_threshold(&proc));
+    }
+
+    #[tokio::test]
+    async fn pending_exceeds_threshold_triggers_on_byte_count() {
+        let mut proc = make_streaming_test_process();
+        proc.pending_stream_bytes = STREAMING_PENDING_BYTE_LIMIT;
+        assert!(pending_exceeds_threshold(&proc));
+    }
+
+    #[tokio::test]
+    async fn pending_exceeds_threshold_returns_false_when_below_both_caps() {
+        let mut proc = make_streaming_test_process();
+        proc.pending_stream_bytes = STREAMING_PENDING_BYTE_LIMIT - 1;
+        proc.pending_stream_part_count = 1;
+        assert!(!pending_exceeds_threshold(&proc));
+    }
+
+    #[tokio::test]
+    async fn streaming_interval_elapsed_is_true_after_interval() {
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at =
+            Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
+        assert!(streaming_interval_elapsed(&proc));
+    }
+
+    #[tokio::test]
+    async fn prepare_streaming_flush_is_none_when_buffer_is_empty() {
+        let proc = make_streaming_test_process();
+        // 空バッファでは flush 準備が None になり、emit を発火しない。
+        assert!(prepare_streaming_flush(&proc).is_none());
+    }
+
+    #[tokio::test]
+    async fn prepare_streaming_flush_consolidates_cumulative_parts() {
+        let mut proc = make_streaming_test_process();
+        proc.streaming_parts.push(MessagePart::Text {
+            content: "Hel".to_string(),
+            parent_tool_use_id: None,
+        });
+        proc.streaming_parts.push(MessagePart::Text {
+            content: "lo".to_string(),
+            parent_tool_use_id: None,
+        });
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "lo".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        assert_eq!(snapshot.parts.len(), 1);
+        match &snapshot.parts[0] {
+            MessagePart::Text { content, .. } => assert_eq!(content, "Hello"),
+            _ => panic!("expected consolidated Text part"),
+        }
+        assert_eq!(snapshot.buffer_len, 1);
+        assert_eq!(snapshot.pending_bytes, "lo".len());
+    }
+
+    #[tokio::test]
+    async fn apply_streaming_emit_result_clears_pending_on_success() {
+        let mut proc = make_streaming_test_process();
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "abc".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+        assert!(ok);
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+        assert!(proc.last_stream_emit_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn apply_streaming_emit_result_retains_pending_on_failure() {
+        let mut proc = make_streaming_test_process();
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "abc".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        // Tauri failed / WS ok
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, true);
+        assert!(!ok);
+        assert_eq!(proc.pending_stream_part_count, 1);
+        assert_eq!(proc.pending_stream_bytes, "abc".len());
+        assert!(
+            proc.last_stream_emit_at.is_none(),
+            "last_emit_at must not advance on failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_streaming_emit_result_retains_when_both_channels_fail() {
+        let mut proc = make_streaming_test_process();
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "abc".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, false);
+        assert!(!ok);
+        assert_eq!(proc.pending_stream_part_count, 1);
+        assert!(proc.last_stream_emit_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_flush_after_partial_failure_re_sends_full_cumulative_parts() {
+        // チャネルの片方だけが失敗した場合、次 flush は累積 streaming_parts 全体を
+        // 両チャネル向けに同一ペイロードで再送する（spec: 累積置換型）。
+        let mut proc = make_streaming_test_process();
+        proc.streaming_parts.push(MessagePart::Text {
+            content: "Hel".to_string(),
+            parent_tool_use_id: None,
+        });
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "Hel".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let first = prepare_streaming_flush(&proc).expect("first snapshot");
+        apply_streaming_emit_result(&mut proc, "csid", "mid", &first, true, false);
+
+        // 失敗後に次 delta が到着。
+        proc.streaming_parts.push(MessagePart::Text {
+            content: "lo".to_string(),
+            parent_tool_use_id: None,
+        });
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "lo".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let second = prepare_streaming_flush(&proc).expect("second snapshot");
+        assert_eq!(second.parts.len(), 1);
+        match &second.parts[0] {
+            MessagePart::Text { content, .. } => assert_eq!(content, "Hello"),
+            _ => panic!("expected consolidated Text"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_can_overflow_thresholds_while_delivery_fails() {
+        // 上限到達状態で配信失敗しても、追加 delta はバッファに保持される（ソフト上限）。
+        let mut proc = make_streaming_test_process();
+        // streaming_parts にも同等の cumulative を入れて prepare_streaming_flush が
+        // snapshot を返せる状態にする。
+        for _ in 0..STREAMING_PENDING_PART_LIMIT {
+            let part = MessagePart::Text {
+                content: "x".to_string(),
+                parent_tool_use_id: None,
+            };
+            proc.streaming_parts.push(part.clone());
+            enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
+        }
+        assert!(pending_exceeds_threshold(&proc));
+
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, true);
+
+        let before = proc.pending_stream_part_count;
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "extra".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        assert_eq!(proc.pending_stream_part_count, before + 1);
+    }
+
+    #[tokio::test]
+    async fn reset_streaming_state_for_new_turn_clears_all_coalescing_state() {
+        // 前ターン残骸 (pending / last_emit_at / streaming_parts / last_message_id)
+        // が新ターン開始時に確実にクリアされる。
+        let mut proc = make_streaming_test_process();
+        proc.streaming_parts.push(MessagePart::Text {
+            content: "old".to_string(),
+            parent_tool_use_id: None,
+        });
+        proc.pending_stream_part_count = 1;
+        proc.pending_stream_bytes = 32;
+        proc.last_stream_emit_at = Some(Instant::now());
+        proc.last_message_id = Some("old".to_string());
+        proc.task_id_map
+            .insert("task".to_string(), "tool".to_string());
+
+        proc.reset_streaming_state_for_new_turn();
+
+        assert!(proc.streaming_parts.is_empty());
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+        assert!(proc.last_stream_emit_at.is_none());
+        assert!(proc.last_message_id.is_none());
+        assert!(proc.task_id_map.is_empty());
+
+        // 新ターン直後は最初の emit が即時 flush される (= interval elapsed).
+        assert!(streaming_interval_elapsed(&proc));
+    }
+
+    #[tokio::test]
+    async fn second_flush_after_success_is_noop_until_new_delta() {
+        // 強制 flush が同じ契機で連続呼ばれても、二重配信は起きない。
+        let mut proc = make_streaming_test_process();
+        proc.streaming_parts.push(MessagePart::Text {
+            content: "Hello".to_string(),
+            parent_tool_use_id: None,
+        });
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "Hello".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        assert!(apply_streaming_emit_result(
+            &mut proc, "csid", "mid", &snapshot, true, true,
+        ));
+
+        assert!(prepare_streaming_flush(&proc).is_none(), "no double emit");
+    }
+
+    #[tokio::test]
+    async fn apply_streaming_emit_result_does_not_leak_payload_into_log_args() {
+        // 失敗ログには本文・tool 入出力・画像・mention などのユーザーデータを含めない。
+        // log::warn! のフォーマット引数は固定 (snapshot.part_count / buffer_len /
+        // pending_bytes / tauri_ok / ws_ok) で、本文は引数として渡されない。
+        // 実装本体の format 引数を文字列として確認することで本文混入を検出する。
+        let source = include_str!("bridge_common.rs");
+        let warn_call = source
+            .split("\"agent-streaming-updated emit failure:")
+            .nth(1)
+            .expect("warn! present");
+        // log の format 文字列終端まで切り出す。
+        let format_block = warn_call.split(';').next().expect("statement ends with ;");
+        for forbidden in [
+            "snapshot.parts",
+            "streaming_parts",
+            "pending_stream_parts",
+            "delta",
+            "content",
+        ] {
+            assert!(
+                !format_block.contains(forbidden),
+                "log args must not reference body field `{forbidden}`: {format_block}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn forced_flush_continues_after_failure_for_state_transition() {
+        // Spec: 強制配信が失敗しても後続の状態遷移は続行する。
+        // apply_streaming_emit_result は false を返すだけで panic / abort せず、
+        // 呼び出し元は戻り値を見ずに後続処理へ進められる。
+        let mut proc = make_streaming_test_process();
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "tail".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        // 失敗を返してもパニックしない（= 状態遷移を続行できる）。
+        let _ = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, false);
+        // pending は保持され、次の契機で再試行可能。
+        assert!(proc.pending_stream_part_count > 0);
+    }
+
+    #[tokio::test]
+    async fn coalescing_first_delta_flushes_immediately() {
+        // 初回 delta: last_stream_emit_at が None なので interval elapsed=true、
+        // should_flush=true、flush_streaming で pending がクリアされる。
+        let mut proc = make_streaming_test_process();
+        let delta = vec![MessagePart::Text {
+            content: "first".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(delta.clone());
+        enqueue_pending_delta(&mut proc, &delta);
+
+        assert!(should_flush_per_delta(&proc, &delta, false));
+        let snapshot = prepare_streaming_flush(&proc).expect("first emit must flush");
+        apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+
+        assert!(proc.pending_stream_part_count == 0);
+        assert!(proc.last_stream_emit_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn coalescing_within_interval_does_not_flush() {
+        // 配信直後（last_stream_emit_at=now）で続く delta が来ても、
+        // 件数・byte 上限・tool event のいずれも当たらなければ flush しない。
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at = Some(Instant::now());
+        let delta = vec![MessagePart::Text {
+            content: "tick".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(delta.clone());
+        enqueue_pending_delta(&mut proc, &delta);
+
+        assert!(!should_flush_per_delta(&proc, &delta, false));
+        // pending は保持されたまま（次の契機まで蓄積される）。
+        assert_eq!(proc.pending_stream_part_count, 1);
+    }
+
+    #[tokio::test]
+    async fn coalescing_after_interval_flushes_accumulated_buffer() {
+        // 直前配信から interval を超えて経過した状態で次 delta が来ると、
+        // 既に溜まっている pending と新規 delta をまとめて flush する。
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at =
+            Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
+        let earlier = MessagePart::Text {
+            content: "ear".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(earlier.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&earlier));
+
+        let new_delta = vec![MessagePart::Text {
+            content: "lier".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(new_delta.clone());
+        enqueue_pending_delta(&mut proc, &new_delta);
+
+        assert!(should_flush_per_delta(&proc, &new_delta, false));
+        let snapshot = prepare_streaming_flush(&proc).expect("must flush");
+        // consolidated 後は 1 個の Text に統合される。
+        assert_eq!(snapshot.parts.len(), 1);
+        match &snapshot.parts[0] {
+            MessagePart::Text { content, .. } => assert_eq!(content, "earlier"),
+            _ => panic!("expected consolidated Text"),
+        }
+        apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+        assert!(proc.pending_stream_part_count == 0);
+    }
+
+    #[tokio::test]
+    async fn coalescing_count_limit_forces_flush_within_interval() {
+        // pending parts が件数上限に達していれば、interval 未経過でも force flush。
+        // production 経路と同じ流れを踏ませる: enqueue_pending_delta で上限まで
+        // 蓄積 → 新規 delta が到着 → flush snapshot に新規 delta が含まれる →
+        // apply 成功で pending が空に戻る。
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at = Some(Instant::now());
+        for _ in 0..STREAMING_PENDING_PART_LIMIT {
+            let part = MessagePart::Text {
+                content: "x".to_string(),
+                parent_tool_use_id: None,
+            };
+            proc.streaming_parts.push(part.clone());
+            enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
+        }
+        assert!(pending_exceeds_threshold(&proc));
+
+        // 新規 delta を production と同じ手順で蓄積する。
+        let next = vec![MessagePart::Text {
+            content: "y".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(next.clone());
+        enqueue_pending_delta(&mut proc, &next);
+
+        assert!(!streaming_interval_elapsed(&proc));
+        assert!(should_flush_per_delta(&proc, &next, false));
+
+        let snapshot =
+            prepare_streaming_flush(&proc).expect("count-limit flush must produce snapshot");
+        // consolidate 後は全 Text が 1 個に統合され、末尾は新規 delta の "y"。
+        assert_eq!(snapshot.parts.len(), 1);
+        match snapshot
+            .parts
+            .last()
+            .expect("snapshot has at least one part")
+        {
+            MessagePart::Text { content, .. } => {
+                assert!(
+                    content.ends_with('y'),
+                    "consolidated tail should be the new delta"
+                );
+            }
+            _ => panic!("expected consolidated Text part"),
+        }
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+        assert!(ok);
+        assert!(proc.pending_stream_part_count == 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn coalescing_byte_limit_forces_flush_within_interval() {
+        // pending bytes が byte 上限に達していれば、interval 未経過でも force flush。
+        // ハードコード値ではなく実装定数 STREAMING_PENDING_BYTE_LIMIT から算出する。
+        // production 経路と同じ流れ: 上限相当の chunk を enqueue → 新規 delta
+        // 到着 → flush snapshot に新規 delta が含まれる → apply 成功で pending 空。
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at = Some(Instant::now());
+        let chunk = "z".repeat(STREAMING_PENDING_BYTE_LIMIT);
+        let part = MessagePart::Text {
+            content: chunk,
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(part.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
+        assert!(pending_exceeds_threshold(&proc));
+
+        let next = vec![MessagePart::Text {
+            content: "n".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(next.clone());
+        enqueue_pending_delta(&mut proc, &next);
+
+        assert!(!streaming_interval_elapsed(&proc));
+        assert!(should_flush_per_delta(&proc, &next, false));
+
+        let snapshot =
+            prepare_streaming_flush(&proc).expect("byte-limit flush must produce snapshot");
+        assert_eq!(snapshot.parts.len(), 1);
+        match snapshot
+            .parts
+            .last()
+            .expect("snapshot has at least one part")
+        {
+            MessagePart::Text { content, .. } => {
+                assert!(
+                    content.ends_with('n'),
+                    "consolidated tail should be the new delta"
+                );
+            }
+            _ => panic!("expected consolidated Text part"),
+        }
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+        assert!(ok);
+        assert!(proc.pending_stream_part_count == 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn coalescing_tool_event_forces_flush_within_interval() {
+        // tool start / end は interval 未経過でも即 flush（UI に古いフレームを残さない）。
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at = Some(Instant::now());
+
+        let delta_tool_use = vec![MessagePart::ToolUse {
+            id: "tool-1".to_string(),
+            tool: "Bash".to_string(),
+            input: serde_json::json!({}),
+            parent_tool_use_id: None,
+        }];
+        assert!(!streaming_interval_elapsed(&proc));
+        assert!(should_flush_per_delta(&proc, &delta_tool_use, false));
+
+        let delta_tool_result = vec![MessagePart::ToolResult {
+            tool_use_id: Some("tool-1".to_string()),
+            content: "ok".to_string(),
+            is_error: false,
+            parent_tool_use_id: None,
+        }];
+        assert!(should_flush_per_delta(&proc, &delta_tool_result, false));
+    }
+
+    #[tokio::test]
+    async fn tool_event_flushes_pending_text_through_production_path() {
+        // Spec (Rule: ターン完了・状態遷移時には未配信バッファを強制配信する,
+        //  Examples ツール実行の開始 / 終了):
+        //   未配信 text が pending に積まれている状態で ToolUse / ToolResult
+        //   delta が到着すると、interval 未経過でも force flush され、
+        //   pending text + tool event が同一の cumulative payload として
+        //   emit され、emit 成功で pending が clear される。
+        //
+        // 本テストは production 経路 (enqueue_pending_delta →
+        // prepare_streaming_flush → apply_streaming_emit_result) を最初から
+        // 最後まで通し、ToolUse / ToolResult 双方について同じ流れを検証する。
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at = Some(Instant::now());
+
+        // 1) interval 未経過で未配信 text を pending に蓄積する。
+        let pending_text = MessagePart::Text {
+            content: "before-tool".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(pending_text.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&pending_text));
+        assert!(!streaming_interval_elapsed(&proc));
+        assert_eq!(proc.pending_stream_part_count, 1);
+
+        // 2) ToolUse delta が到着 → production と同じ手順で enqueue。
+        let tool_use_delta = vec![MessagePart::ToolUse {
+            id: "tool-1".to_string(),
+            tool: "Bash".to_string(),
+            input: serde_json::json!({"cmd": "ls"}),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(tool_use_delta.clone());
+        enqueue_pending_delta(&mut proc, &tool_use_delta);
+
+        // tool event は interval 未経過でも force flush。
+        assert!(!streaming_interval_elapsed(&proc));
+        assert!(should_flush_per_delta(&proc, &tool_use_delta, false));
+
+        // 3) prepare → emit (success) → apply で pending が clear される。
+        let snapshot = prepare_streaming_flush(&proc).expect("tool start must produce snapshot");
+        // cumulative payload には pending text + ToolUse が同一 emit で含まれる。
+        assert_eq!(snapshot.parts.len(), 2);
+        match &snapshot.parts[0] {
+            MessagePart::Text { content, .. } => assert_eq!(content, "before-tool"),
+            other => panic!("first cumulative part must be pending Text, got {other:?}"),
+        }
+        match &snapshot.parts[1] {
+            MessagePart::ToolUse { id, tool, .. } => {
+                assert_eq!(id, "tool-1");
+                assert_eq!(tool, "Bash");
+            }
+            other => panic!("second cumulative part must be ToolUse, got {other:?}"),
+        }
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+        assert!(ok, "tool start emit must succeed → pending cleared");
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+
+        // 4) 続いて ToolResult delta が到着 → 同じく force flush。
+        //    last_stream_emit_at は直前の apply で now() に更新されている。
+        let tool_result_delta = vec![MessagePart::ToolResult {
+            tool_use_id: Some("tool-1".to_string()),
+            content: "ok".to_string(),
+            is_error: false,
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(tool_result_delta.clone());
+        enqueue_pending_delta(&mut proc, &tool_result_delta);
+
+        assert!(!streaming_interval_elapsed(&proc));
+        assert!(should_flush_per_delta(&proc, &tool_result_delta, false));
+
+        let snapshot2 = prepare_streaming_flush(&proc).expect("tool end must produce snapshot");
+        // 累積 payload は text + ToolUse + ToolResult の 3 件を含む。
+        assert_eq!(snapshot2.parts.len(), 3);
+        assert!(matches!(
+            snapshot2.parts.last(),
+            Some(MessagePart::ToolResult { content, .. }) if content == "ok"
+        ));
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot2, true, true);
+        assert!(ok, "tool end emit must succeed → pending cleared");
+        assert_eq!(proc.pending_stream_part_count, 0);
+        assert_eq!(proc.pending_stream_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn timer_flushes_when_pending_and_interval_elapsed() {
+        // 本番の補助 timer (`spawn_streaming_timer`) は `run_streaming_timer_tick`
+        // を毎 tick 呼ぶ。テストも同じ helper を直接呼び、pending と
+        // last_stream_emit_at の更新まで含めた挙動を検証する。
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at =
+            Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
+        let part = MessagePart::Text {
+            content: "silent".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(part.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
+
+        let mut emitted = Vec::new();
+        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |mid, parts| {
+            emitted.push((mid.to_string(), parts.to_vec()));
+            (true, true)
+        });
+
+        assert!(keep_running, "still streaming → timer continues");
+        assert_eq!(emitted.len(), 1, "timer must call emit exactly once");
+        assert_eq!(emitted[0].0, "m1");
+        assert_eq!(emitted[0].1.len(), 1);
+        assert_eq!(
+            proc.pending_stream_part_count, 0,
+            "pending cleared on success"
+        );
+        assert!(
+            proc.last_stream_emit_at.is_some(),
+            "last_stream_emit_at updated on success"
+        );
+    }
+
+    #[tokio::test]
+    async fn timer_skips_when_pending_but_interval_not_elapsed() {
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at = Some(Instant::now());
+        let part = MessagePart::Text {
+            content: "fresh".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(part.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
+
+        let mut emitted = false;
+        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
+            emitted = true;
+            (true, true)
+        });
+        assert!(keep_running);
+        assert!(!emitted, "interval not elapsed → timer must not flush");
+        assert_eq!(proc.pending_stream_part_count, 1);
+    }
+
+    #[tokio::test]
+    async fn timer_skips_when_pending_empty_even_if_interval_elapsed() {
+        let mut proc = make_streaming_test_process();
+        proc.last_stream_emit_at =
+            Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
+        assert!(streaming_interval_elapsed(&proc));
+        assert_eq!(proc.pending_stream_part_count, 0);
+
+        let mut emitted = false;
+        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
+            emitted = true;
+            (true, true)
+        });
+        // pending=0 & still Streaming → continue running but no flush this tick.
+        assert!(keep_running);
+        assert!(!emitted);
+    }
+
+    #[tokio::test]
+    async fn timer_exits_when_turn_ended_and_buffer_empty() {
+        // turn 終了 (state != Streaming) かつ pending が空になった時点で timer は
+        // ループを終了させるべき。これを `run_streaming_timer_tick` の戻り値で表現する。
+        let mut proc = make_streaming_test_process();
+        proc.state = BridgeState::Ready;
+        proc.last_stream_emit_at =
+            Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
+        assert_eq!(proc.pending_stream_part_count, 0);
+
+        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| (true, true));
+        assert!(
+            !keep_running,
+            "turn ended (state != Streaming) and buffer empty → timer must exit"
+        );
+    }
+
+    #[tokio::test]
+    async fn timer_drains_pending_even_after_turn_ended() {
+        // turn 終了直後でも pending が残っていれば drain してから終了する次の
+        // tick で keep_running=false を返す。
+        let mut proc = make_streaming_test_process();
+        proc.state = BridgeState::Ready;
+        proc.last_stream_emit_at =
+            Some(Instant::now() - Duration::from_millis(STREAMING_EMIT_INTERVAL_MS + 5));
+        let part = MessagePart::Text {
+            content: "tail".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(part.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&part));
+
+        let mut emitted = 0usize;
+        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| {
+            emitted += 1;
+            (true, true)
+        });
+        assert!(
+            keep_running,
+            "pending still > 0 → timer continues (will exit next tick when drained)"
+        );
+        assert_eq!(emitted, 1, "tail content flushed before exit");
+        assert_eq!(proc.pending_stream_part_count, 0);
+
+        let keep_running = run_streaming_timer_tick(&mut proc, "csid", |_mid, _parts| (true, true));
+        assert!(!keep_running, "post-drain tick → timer exits");
+    }
+
+    #[tokio::test]
+    async fn streaming_timer_decision_continue_when_generation_matches_and_streaming() {
+        let proc = make_streaming_test_process();
+        assert_eq!(
+            streaming_timer_decision(&proc, proc.generation_id),
+            TimerDecision::Continue
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_timer_decision_break_keep_flag_on_generation_mismatch() {
+        // 新しい turn (generation_id 更新) が同じ csid を再利用したケース。
+        // 既存 timer は自分の captured generation と一致しないので flag を残して
+        // 終了する (新 timer が flag を所有しているため触らない)。
+        let mut proc = make_streaming_test_process();
+        let captured = proc.generation_id;
+        proc.generation_id = captured.wrapping_add(1);
+        proc.streaming_timer_active = true;
+        assert_eq!(
+            streaming_timer_decision(&proc, captured),
+            TimerDecision::BreakKeepFlag
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_timer_decision_break_clear_flag_on_crash() {
+        // 同一 generation で Crashed に遷移したら drain 不要なので flag を解放して
+        // 終了する。
+        let mut proc = make_streaming_test_process();
+        proc.state = BridgeState::Crashed;
+        assert_eq!(
+            streaming_timer_decision(&proc, proc.generation_id),
+            TimerDecision::BreakClearFlag
+        );
+    }
+
+    #[tokio::test]
+    async fn try_mark_streaming_timer_active_marks_idle_and_returns_true() {
+        let mut proc = make_streaming_test_process();
+        assert!(!proc.streaming_timer_active);
+        assert!(try_mark_streaming_timer_active(&mut proc));
+        assert!(proc.streaming_timer_active);
+    }
+
+    #[tokio::test]
+    async fn try_mark_streaming_timer_active_returns_false_when_already_active() {
+        // Duplicate spawn no-op: 同じ turn で 2 回目の spawn_streaming_timer を
+        // 呼んでも flag は既に true なので false を返し新 task を起こさない。
+        let mut proc = make_streaming_test_process();
+        proc.streaming_timer_active = true;
+        assert!(!try_mark_streaming_timer_active(&mut proc));
+        assert!(proc.streaming_timer_active, "flag must remain set");
+    }
+
+    #[tokio::test]
+    async fn forced_flush_emits_pending_before_state_transition_inputs() {
+        // 強制 flush の呼び出し元（turn_complete / permission_request / error /
+        // tool start/end）は、まず flush_streaming で pending を排出してから
+        // state 遷移用の値（emit_session_state_changed の引数等）を組み立てる。
+        // 本テストは「flush 完了後に pending が空になっている」ことを通じて、
+        // 後続の状態通知が flush 済みデータの後で発火することを担保する。
+        let mut proc = make_streaming_test_process();
+        let delta = vec![MessagePart::Text {
+            content: "tail-before-state".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(delta.clone());
+        enqueue_pending_delta(&mut proc, &delta);
+
+        // forced flush の中身: snapshot → emit (mocked success) → apply
+        let snapshot = prepare_streaming_flush(&proc).expect("pending must yield snapshot");
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, true, true);
+        assert!(
+            ok,
+            "forced flush succeeded → pending cleared before state emit"
+        );
+        assert!(proc.pending_stream_part_count == 0);
+
+        // この時点で呼び出し元が emit_session_state_changed を発火する。pending は
+        // 既にクリアされているので、状態通知より前にストリーム emit が完了している。
+    }
+
+    #[tokio::test]
+    async fn forced_flush_is_noop_when_no_pending_avoiding_double_delivery() {
+        // 直前の強制 flush で pending を空にしている状態で再度同じ契機 (e.g. error 経路
+        // と直後の EOF 経路) が forced flush を呼んでも、prepare_streaming_flush が
+        // None を返すため二重配信は発生しない。
+        let mut proc = make_streaming_test_process();
+        proc.streaming_parts.push(MessagePart::Text {
+            content: "once".to_string(),
+            parent_tool_use_id: None,
+        });
+        enqueue_pending_delta(
+            &mut proc,
+            &[MessagePart::Text {
+                content: "once".to_string(),
+                parent_tool_use_id: None,
+            }],
+        );
+        let snapshot = prepare_streaming_flush(&proc).expect("first snapshot");
+        assert!(apply_streaming_emit_result(
+            &mut proc, "csid", "mid", &snapshot, true, true,
+        ));
+
+        // 二度目の forced flush は no-op になる。
+        assert!(prepare_streaming_flush(&proc).is_none());
+    }
+
+    #[tokio::test]
+    async fn forced_flush_failure_does_not_block_followup_processing() {
+        // Spec: 強制配信が失敗しても後続の状態遷移は続行する。失敗時 pending と
+        // last_stream_emit_at は保持され、apply は false を返すのみ（panic しない）。
+        let mut proc = make_streaming_test_process();
+        let delta = vec![MessagePart::Text {
+            content: "kept".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(delta.clone());
+        enqueue_pending_delta(&mut proc, &delta);
+        let snapshot = prepare_streaming_flush(&proc).expect("snapshot");
+        let ok = apply_streaming_emit_result(&mut proc, "csid", "mid", &snapshot, false, false);
+        assert!(!ok);
+        // 呼び出し元はここから後続 (emit_session_state_changed 等) に進める。
+        // pending と last_stream_emit_at は次の契機での再試行のため保持される。
+        assert_eq!(proc.pending_stream_part_count, 1);
+        assert!(proc.last_stream_emit_at.is_none());
+    }
+
+    /// 呼び出し元経路で発火する 2 種類の emit を順序付きで記録するテスト用イベント。
+    /// 実コードの `emit_streaming_parts` と `emit_session_state_changed` は
+    /// `tauri::AppHandle` 直叩きでユニットテストから直接観測できないため、
+    /// 呼び出し元ロジックをミラーした下記ヘルパで両 emit を同じ Vec に
+    /// 記録し、ストリーム emit が state emit より先に来ることを確認する。
+    #[derive(Debug, PartialEq)]
+    enum RecordedEmit {
+        StreamingFlush {
+            parts_count: usize,
+            tail_text: Option<String>,
+        },
+        StateChanged {
+            phase: TurnPhase,
+            exit_code: Option<i64>,
+        },
+    }
+
+    /// Build a recording emit closure that pushes a `StreamingFlush` event
+    /// for each cumulative payload it observes. Shared by the
+    /// `permission_request` / `turn_complete` order tests so they exercise
+    /// the same `flush_streaming_before_transition` helper the production
+    /// stdout reader uses, instead of mirroring the prepare/apply sequence.
+    fn recording_emit<'a>(
+        events: &'a mut Vec<RecordedEmit>,
+    ) -> impl FnMut(&str, &[MessagePart]) -> (bool, bool) + 'a {
+        |_mid, parts| {
+            events.push(RecordedEmit::StreamingFlush {
+                parts_count: parts.len(),
+                tail_text: match parts.last() {
+                    Some(MessagePart::Text { content, .. })
+                    | Some(MessagePart::Thinking { content, .. }) => Some(content.clone()),
+                    _ => None,
+                },
+            });
+            (true, true)
+        }
+    }
+
+    /// Drive the production `permission_request` lock-block via
+    /// `run_permission_request_transition_locked` — the same helper the
+    /// production stdout reader calls. This guarantees that any drift in the
+    /// flush → state-mutation order would be caught here. The post-lock state
+    /// emit (production: `emit_session_state_changed` outside the lock) is
+    /// simulated by pushing a `StateChanged` event after the helper returns.
+    fn drive_permission_request_path(
+        proc: &mut AgentProcess,
+        chat_session_id: &str,
+        events: &mut Vec<RecordedEmit>,
+    ) -> bool {
+        let effect =
+            run_permission_request_transition_locked(proc, chat_session_id, recording_emit(events));
+        if effect.did_transition {
+            events.push(RecordedEmit::StateChanged {
+                phase: TurnPhase::WaitingPermission,
+                exit_code: None,
+            });
+        }
+        effect.did_transition
+    }
+
+    /// Drive the production `turn_complete` lock-block via
+    /// `run_turn_complete_transition_locked` — the same helper the production
+    /// stdout reader calls. State emit outside the lock is mirrored as a
+    /// pushed `StateChanged` event so the ordering invariant is asserted on
+    /// the event sequence.
+    fn drive_turn_complete_path(
+        proc: &mut AgentProcess,
+        chat_session_id: &str,
+        exit_code: i64,
+        events: &mut Vec<RecordedEmit>,
+    ) {
+        let effect = run_turn_complete_transition_locked(
+            proc,
+            chat_session_id,
+            exit_code,
+            recording_emit(events),
+        );
+        if effect.was_streaming {
+            events.push(RecordedEmit::StateChanged {
+                phase: TurnPhase::Idle,
+                exit_code: Some(exit_code),
+            });
+        }
+    }
+
+    /// Drive the production `respond_agent_permission` lock-block via
+    /// `apply_respond_permission_locked`. State emit outside the lock is
+    /// mirrored as a pushed `StateChanged(Streaming)` event after the helper
+    /// returns so the order assertion mirrors production.
+    fn drive_respond_permission_path(
+        proc: &mut AgentProcess,
+        chat_session_id: &str,
+        request_id: &str,
+        behavior: &str,
+        answers_value: Option<&serde_json::Value>,
+        events: &mut Vec<RecordedEmit>,
+    ) -> bool {
+        let effect = apply_respond_permission_locked(
+            proc,
+            chat_session_id,
+            request_id,
+            behavior,
+            answers_value,
+            recording_emit(events),
+        );
+        if effect.did_transition {
+            events.push(RecordedEmit::StateChanged {
+                phase: TurnPhase::Streaming,
+                exit_code: None,
+            });
+        }
+        effect.did_transition
+    }
+
+    #[tokio::test]
+    async fn permission_request_emits_pending_before_state_change() {
+        // Spec (Rule: ターン完了・状態遷移時には未配信バッファを強制配信する):
+        //   ストリーミング → 権限待ち の遷移時、未配信 delta が state 通知より
+        //   前にフロントエンドへ配信されること。
+        let mut proc = make_streaming_test_process();
+        let delta = vec![MessagePart::Text {
+            content: "tail-before-perm".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(delta.clone());
+        enqueue_pending_delta(&mut proc, &delta);
+
+        let mut events = Vec::new();
+        let transitioned = drive_permission_request_path(&mut proc, "csid", &mut events);
+        assert!(transitioned);
+
+        assert_eq!(events.len(), 2, "both emits must fire");
+        match &events[0] {
+            RecordedEmit::StreamingFlush {
+                parts_count,
+                tail_text,
+            } => {
+                assert_eq!(*parts_count, 1);
+                assert_eq!(tail_text.as_deref(), Some("tail-before-perm"));
+            }
+            other => panic!("first emit must be StreamingFlush, got {other:?}"),
+        }
+        assert_eq!(
+            events[1],
+            RecordedEmit::StateChanged {
+                phase: TurnPhase::WaitingPermission,
+                exit_code: None,
+            }
+        );
+        assert!(proc.pending_stream_part_count == 0);
+        assert_eq!(proc.turn_phase, TurnPhase::WaitingPermission);
+    }
+
+    #[tokio::test]
+    async fn permission_request_without_pending_skips_streaming_emit() {
+        // pending が空のとき、state 通知のみが発火し、ストリーム emit は
+        // 起きない (prepare_streaming_flush が None → no-op)。
+        let mut proc = make_streaming_test_process();
+
+        let mut events = Vec::new();
+        assert!(drive_permission_request_path(
+            &mut proc,
+            "csid",
+            &mut events,
+        ));
+
+        assert_eq!(
+            events,
+            vec![RecordedEmit::StateChanged {
+                phase: TurnPhase::WaitingPermission,
+                exit_code: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_complete_emits_pending_before_state_change() {
+        // Spec: ターン完了時に未配信バッファを強制配信する。
+        // streaming emit が state emit (Idle) より前に観測される。
+        let mut proc = make_streaming_test_process();
+        let delta = vec![MessagePart::Text {
+            content: "tail-before-idle".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(delta.clone());
+        enqueue_pending_delta(&mut proc, &delta);
+
+        let mut events = Vec::new();
+        drive_turn_complete_path(&mut proc, "csid", 0, &mut events);
+
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            RecordedEmit::StreamingFlush {
+                parts_count,
+                tail_text,
+            } => {
+                assert_eq!(*parts_count, 1);
+                assert_eq!(tail_text.as_deref(), Some("tail-before-idle"));
+            }
+            other => panic!("first emit must be StreamingFlush, got {other:?}"),
+        }
+        assert_eq!(
+            events[1],
+            RecordedEmit::StateChanged {
+                phase: TurnPhase::Idle,
+                exit_code: Some(0),
+            }
+        );
+        assert!(proc.pending_stream_part_count == 0);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert_eq!(proc.state, BridgeState::Ready);
+    }
+
+    #[tokio::test]
+    async fn turn_complete_with_nonzero_exit_code_still_flushes_before_state() {
+        // 失敗終了 (exit_code != 0) でも emit 順序は同じ: streaming → state。
+        let mut proc = make_streaming_test_process();
+        let delta = vec![MessagePart::Text {
+            content: "tail-error".to_string(),
+            parent_tool_use_id: None,
+        }];
+        proc.streaming_parts.extend(delta.clone());
+        enqueue_pending_delta(&mut proc, &delta);
+
+        let mut events = Vec::new();
+        drive_turn_complete_path(&mut proc, "csid", 1, &mut events);
+
+        assert!(matches!(events[0], RecordedEmit::StreamingFlush { .. }));
+        assert_eq!(
+            events[1],
+            RecordedEmit::StateChanged {
+                phase: TurnPhase::Idle,
+                exit_code: Some(1),
+            }
+        );
+        assert_eq!(proc.state, BridgeState::Crashed);
+    }
+
+    /// Build a streaming-test process with one pending `Permission` part in
+    /// the streaming buffer matching `request_id`. Used by the
+    /// respond_permission tests to mimic the production state at the moment
+    /// `respond_agent_permission` runs.
+    fn make_process_waiting_for_permission(request_id: &str) -> AgentProcess {
+        let mut proc = make_streaming_test_process();
+        proc.turn_phase = TurnPhase::WaitingPermission;
+        proc.streaming_parts.push(MessagePart::Permission {
+            request: serde_json::json!({ "request_id": request_id }),
+            status: "pending".to_string(),
+            answers: None,
+            parent_tool_use_id: None,
+        });
+        proc
+    }
+
+    #[tokio::test]
+    async fn respond_permission_orders_flush_then_state_change() {
+        // Spec (Rule: ターン完了・状態遷移時には未配信バッファを強制配信する):
+        //   権限待ち → ストリーミング への遷移時、Permission part 更新を
+        //   含む強制 flush が state 通知より前に観測されること。
+        let mut proc = make_process_waiting_for_permission("req-1");
+        let mut events = Vec::new();
+        let transitioned =
+            drive_respond_permission_path(&mut proc, "csid", "req-1", "allow", None, &mut events);
+        assert!(transitioned);
+
+        assert_eq!(events.len(), 2, "flush emit then state emit");
+        match &events[0] {
+            RecordedEmit::StreamingFlush { parts_count, .. } => {
+                assert!(*parts_count >= 1);
+            }
+            other => panic!("first emit must be StreamingFlush, got {other:?}"),
+        }
+        assert_eq!(
+            events[1],
+            RecordedEmit::StateChanged {
+                phase: TurnPhase::Streaming,
+                exit_code: None,
+            }
+        );
+        assert_eq!(proc.turn_phase, TurnPhase::Streaming);
+        assert!(proc.pending_stream_part_count == 0);
+        // Permission part status was updated in place.
+        let updated = proc
+            .streaming_parts
+            .iter()
+            .find_map(|p| match p {
+                MessagePart::Permission { status, .. } => Some(status.clone()),
+                _ => None,
+            })
+            .expect("permission part present");
+        assert_eq!(updated, "allowed");
+    }
+
+    #[tokio::test]
+    async fn respond_permission_no_transition_when_not_waiting() {
+        // 直前に WaitingPermission でなかった場合、state は変更されず、
+        // 後続の state-changed emit も発火しないこと。
+        let mut proc = make_process_waiting_for_permission("req-1");
+        proc.turn_phase = TurnPhase::Streaming; // not WaitingPermission
+
+        let mut events = Vec::new();
+        let transitioned =
+            drive_respond_permission_path(&mut proc, "csid", "req-1", "deny", None, &mut events);
+        assert!(
+            !transitioned,
+            "no transition when proc was not in WaitingPermission"
+        );
+
+        // StateChanged は events に積まれていないこと。
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, RecordedEmit::StateChanged { .. })));
+        assert_eq!(proc.turn_phase, TurnPhase::Streaming);
+    }
+
+    /// Drive the production `bridge error` lock-block: accumulate an error
+    /// part, enqueue it as a pending delta, force-flush via the same
+    /// `force_flush_pending_streaming` helper the production reader uses,
+    /// then push a `StateChanged(Idle)` event to mirror the post-lock
+    /// `emit_session_state_changed`. Mirrors `bridge_common.rs:1982-2038`.
+    fn drive_bridge_error_path(
+        proc: &mut AgentProcess,
+        chat_session_id: &str,
+        error_part: MessagePart,
+        events: &mut Vec<RecordedEmit>,
+    ) {
+        let was_streaming = proc.state == BridgeState::Streaming;
+        let mid = proc.streaming_message_id.clone();
+        if was_streaming {
+            proc.streaming_parts.push(error_part.clone());
+            enqueue_pending_delta(proc, std::slice::from_ref(&error_part));
+            if let Some(ref mid) = mid {
+                force_flush_pending_streaming(proc, chat_session_id, mid, |parts| {
+                    events.push(RecordedEmit::StreamingFlush {
+                        parts_count: parts.len(),
+                        tail_text: match parts.last() {
+                            Some(MessagePart::Error { content, .. })
+                            | Some(MessagePart::Text { content, .. })
+                            | Some(MessagePart::Thinking { content, .. }) => Some(content.clone()),
+                            _ => None,
+                        },
+                    });
+                    (true, true)
+                });
+            }
+            // Mirror production: state transitions to Crashed → Idle after flush.
+            proc.state = BridgeState::Crashed;
+            proc.turn_phase = TurnPhase::Idle;
+            events.push(RecordedEmit::StateChanged {
+                phase: TurnPhase::Idle,
+                exit_code: Some(1),
+            });
+        }
+    }
+
+    /// Drive the production `EOF crash` lock-block: run
+    /// `apply_bridge_eof_crash`, enqueue the synthetic error delta, force-flush
+    /// via the same helper the production reader uses, then push a
+    /// `StateChanged(Idle)` event to mirror `emit_session_state_changed`.
+    /// Mirrors `bridge_common.rs:2268-2333`.
+    fn drive_bridge_eof_crash_path(
+        proc: &mut AgentProcess,
+        chat_session_id: &str,
+        events: &mut Vec<RecordedEmit>,
+    ) {
+        let streaming_message_id = proc.streaming_message_id.clone();
+        let backend_id = proc.backend_id.clone();
+        let effect = apply_bridge_eof_crash(
+            true,
+            &mut proc.state,
+            &mut proc.turn_phase,
+            streaming_message_id.as_deref(),
+            &mut proc.streaming_parts,
+            &backend_id,
+        );
+        if let (Some(mid), false) = (streaming_message_id.as_ref(), effect.error_delta.is_empty()) {
+            enqueue_pending_delta(proc, &effect.error_delta);
+            force_flush_pending_streaming(proc, chat_session_id, mid, |parts| {
+                events.push(RecordedEmit::StreamingFlush {
+                    parts_count: parts.len(),
+                    tail_text: match parts.last() {
+                        Some(MessagePart::Error { content, .. })
+                        | Some(MessagePart::Text { content, .. })
+                        | Some(MessagePart::Thinking { content, .. }) => Some(content.clone()),
+                        _ => None,
+                    },
+                });
+                (true, true)
+            });
+        }
+        if effect.was_streaming {
+            events.push(RecordedEmit::StateChanged {
+                phase: TurnPhase::Idle,
+                exit_code: Some(-1),
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_error_emits_pending_before_state_change() {
+        // Spec (Rule: ターン完了・状態遷移時には未配信バッファを強制配信する,
+        //  Examples ストリーミング → クラッシュ):
+        //   Bridge から error メッセージを受信したクラッシュ経路では、
+        //   未配信 delta + 合成 error part が同一 cumulative payload として
+        //   state 通知 (Idle) より前にフロントエンドへ配信されること。
+        let mut proc = make_streaming_test_process();
+        // 未配信 text が pending に残っている状態でクラッシュが起こる。
+        let pending_text = MessagePart::Text {
+            content: "tail-before-crash".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(pending_text.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&pending_text));
+
+        let error_part = MessagePart::Error {
+            content: "Error: bridge reported failure".to_string(),
+            parent_tool_use_id: None,
+        };
+        let mut events = Vec::new();
+        drive_bridge_error_path(&mut proc, "csid", error_part, &mut events);
+
+        assert_eq!(events.len(), 2, "flush emit then state emit");
+        match &events[0] {
+            RecordedEmit::StreamingFlush {
+                parts_count,
+                tail_text,
+            } => {
+                // cumulative: pending Text + 合成 Error
+                assert_eq!(*parts_count, 2);
+                assert_eq!(
+                    tail_text.as_deref(),
+                    Some("Error: bridge reported failure"),
+                    "tail must be the synthetic error part"
+                );
+            }
+            other => panic!("first emit must be StreamingFlush, got {other:?}"),
+        }
+        assert_eq!(
+            events[1],
+            RecordedEmit::StateChanged {
+                phase: TurnPhase::Idle,
+                exit_code: Some(1),
+            }
+        );
+        assert_eq!(proc.state, BridgeState::Crashed);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert_eq!(proc.pending_stream_part_count, 0);
+    }
+
+    #[tokio::test]
+    async fn bridge_eof_crash_emits_pending_before_state_change() {
+        // Spec (Rule: ターン完了・状態遷移時には未配信バッファを強制配信する,
+        //  Examples ストリーミング → クラッシュ):
+        //   Bridge process EOF クラッシュ経路では、未配信 delta + 合成 error
+        //   part が同一 cumulative payload として state 通知 (Idle) より前に
+        //   フロントエンドへ配信されること。
+        let mut proc = make_streaming_test_process();
+        let pending_text = MessagePart::Text {
+            content: "tail-before-eof".to_string(),
+            parent_tool_use_id: None,
+        };
+        proc.streaming_parts.push(pending_text.clone());
+        enqueue_pending_delta(&mut proc, std::slice::from_ref(&pending_text));
+
+        let mut events = Vec::new();
+        drive_bridge_eof_crash_path(&mut proc, "csid", &mut events);
+
+        assert_eq!(events.len(), 2, "flush emit then state emit");
+        match &events[0] {
+            RecordedEmit::StreamingFlush {
+                parts_count,
+                tail_text,
+            } => {
+                // cumulative: pending Text + apply_bridge_eof_crash が積んだ Error。
+                assert_eq!(*parts_count, 2);
+                assert!(
+                    tail_text
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("Bridge process exited unexpectedly"),
+                    "tail must be the synthetic EOF error part, got {tail_text:?}"
+                );
+            }
+            other => panic!("first emit must be StreamingFlush, got {other:?}"),
+        }
+        assert_eq!(
+            events[1],
+            RecordedEmit::StateChanged {
+                phase: TurnPhase::Idle,
+                exit_code: Some(-1),
+            }
+        );
+        assert_eq!(proc.state, BridgeState::Crashed);
+        assert_eq!(proc.turn_phase, TurnPhase::Idle);
+        assert_eq!(proc.pending_stream_part_count, 0);
+    }
+
+    #[tokio::test]
+    async fn respond_permission_continues_on_emit_failure() {
+        // Spec L157「強制配信が失敗しても後続の状態遷移は続行する」:
+        //  emit 失敗 (tauri_ok=false) でも did_transition は true のまま返り、
+        //  呼び出し側 (production: emit_session_state_changed) は続行できる。
+        let mut proc = make_process_waiting_for_permission("req-1");
+
+        let effect = apply_respond_permission_locked(
+            &mut proc,
+            "csid",
+            "req-1",
+            "allow",
+            None,
+            |_mid, _parts| (false, false), // emit failure on both channels
+        );
+        assert!(
+            effect.did_transition,
+            "transition must still be reported so caller emits state-change"
+        );
+        assert_eq!(proc.turn_phase, TurnPhase::Streaming);
+        // Pending is retained for next-flush retry (Spec L108-113).
+        assert!(proc.pending_stream_part_count >= 1);
+        assert!(proc.last_stream_emit_at.is_none());
+    }
+
+    #[test]
+    fn delta_has_tool_event_detects_tool_use_and_tool_result() {
+        assert!(delta_has_tool_event(&[MessagePart::ToolUse {
+            id: "1".to_string(),
+            tool: "Bash".to_string(),
+            input: serde_json::json!({}),
+            parent_tool_use_id: None,
+        }]));
+        assert!(delta_has_tool_event(&[MessagePart::ToolResult {
+            tool_use_id: Some("1".to_string()),
+            content: "ok".to_string(),
+            is_error: false,
+            parent_tool_use_id: None,
+        }]));
+        assert!(!delta_has_tool_event(&[MessagePart::Text {
+            content: "plain".to_string(),
+            parent_tool_use_id: None,
+        }]));
+        assert!(!delta_has_tool_event(&[]));
+    }
+
+    fn make_streaming_test_process() -> AgentProcess {
+        // Standalone, non-running AgentProcess used purely to exercise the
+        // coalescing helpers. Stdin/child are tied to a `cat` subprocess so
+        // the struct is well-formed. Must run inside a Tokio runtime.
+        let mut tchild = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn cat (tokio)");
+        let stdin = tchild.stdin.take().expect("stdin");
+        AgentProcess {
+            stdin,
+            backend_id: "mock".to_string(),
+            state: BridgeState::Streaming,
+            turn_phase: TurnPhase::Streaming,
+            sdk_session_id: None,
+            child: tchild,
+            generation_id: 0,
+            #[cfg(unix)]
+            pgid: None,
+            streaming_message_id: Some("m1".to_string()),
+            streaming_parts: Vec::new(),
+            last_message_id: None,
+            task_id_map: HashMap::new(),
+            pending_message: None,
+            current_permission_mode: "acceptEdits".to_string(),
+            available_models: Vec::new(),
+            selected_model: None,
+            last_result_token_usage: None,
+            pending_stream_part_count: 0,
+            pending_stream_bytes: 0,
+            last_stream_emit_at: None,
+            streaming_timer_active: false,
+        }
+    }
+
     #[test]
     fn bridge_eof_crash_adds_error_part_for_streaming_message() {
         let mut state = BridgeState::Streaming;
@@ -3849,6 +5843,10 @@ mod tests {
                 available_models: Vec::new(),
                 selected_model: None,
                 last_result_token_usage: None,
+                pending_stream_part_count: 0,
+                pending_stream_bytes: 0,
+                last_stream_emit_at: None,
+                streaming_timer_active: false,
             },
         );
 
@@ -5938,6 +7936,10 @@ mod tests {
                 available_models: Vec::new(),
                 selected_model: None,
                 last_result_token_usage: None,
+                pending_stream_part_count: 0,
+                pending_stream_bytes: 0,
+                last_stream_emit_at: None,
+                streaming_timer_active: false,
             }
         }
 

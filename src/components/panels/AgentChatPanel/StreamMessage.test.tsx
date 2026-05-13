@@ -9,6 +9,21 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 	openUrl: (...args: unknown[]) => mockOpenUrl(...args),
 }));
 
+const { markdownSpy } = vi.hoisted(() => ({ markdownSpy: vi.fn() }));
+// Wrap react-markdown so we can count how often it is invoked for each render.
+// The wrapper still delegates to the real implementation so unrelated markdown
+// assertions in this file (bold, code, links, tables …) keep working.
+vi.mock("react-markdown", async (importOriginal) => {
+	const orig = await importOriginal<typeof import("react-markdown")>();
+	const Wrapped = (
+		props: Parameters<(typeof orig)["default"]>[0],
+	): ReturnType<(typeof orig)["default"]> => {
+		markdownSpy(props);
+		return orig.default(props);
+	};
+	return { ...orig, default: Wrapped };
+});
+
 const human: MessageRole = "human";
 const agent: MessageRole = "agent";
 const system: MessageRole = "system";
@@ -16,6 +31,7 @@ const system: MessageRole = "system";
 describe("StreamMessage", () => {
 	beforeEach(() => {
 		mockOpenUrl.mockClear();
+		markdownSpy.mockClear();
 	});
 
 	it("renders human message", async () => {
@@ -239,5 +255,128 @@ describe("StreamMessage", () => {
 		render(<StreamMessage content="Plain text without table" role={agent} />);
 		const el = screen.getByTestId("stream-message-agent");
 		expect(el.querySelector(".overflow-x-auto")).toBeNull();
+	});
+
+	it("does not re-invoke react-markdown when parent re-renders with identical content/role/images/mentions", () => {
+		// React.memo on StreamMessage should short-circuit identical-prop
+		// re-renders so the markdown pipeline does not run again. We count
+		// how often the wrapped Markdown component is invoked: it must equal
+		// the mount-time count even after the parent re-renders.
+		let parentRenderCount = 0;
+		function Probe({ tick }: { tick: number }) {
+			parentRenderCount += 1;
+			void tick;
+			return <StreamMessage content="stable content" role={agent} />;
+		}
+
+		const { rerender } = render(<Probe tick={1} />);
+		const mountInvocations = markdownSpy.mock.calls.length;
+		expect(mountInvocations).toBeGreaterThan(0);
+
+		rerender(<Probe tick={2} />);
+		rerender(<Probe tick={3} />);
+
+		// Parent re-rendered, but the memoized child did not — so the markdown
+		// renderer was not invoked again.
+		expect(parentRenderCount).toBeGreaterThan(1);
+		expect(markdownSpy.mock.calls.length).toBe(mountInvocations);
+	});
+
+	it("re-renders when content changes (memo lets through real updates)", () => {
+		const { rerender } = render(<StreamMessage content="first" role={agent} />);
+		expect(screen.getByTestId("stream-message-agent").textContent).toContain(
+			"first",
+		);
+		rerender(<StreamMessage content="second" role={agent} />);
+		expect(screen.getByTestId("stream-message-agent").textContent).toContain(
+			"second",
+		);
+	});
+
+	it("memo skips re-render when images are value-equal but new references", () => {
+		// shallowEqualImages must compare by value so a parent re-render that
+		// creates a fresh array with the same image data does not bust the memo.
+		const initial = [
+			{ type: "image" as const, data: "aGVsbG8=", mediaType: "image/png" },
+		];
+		const equalButNewRef = [
+			{ type: "image" as const, data: "aGVsbG8=", mediaType: "image/png" },
+		];
+		const { rerender } = render(
+			<StreamMessage content="stable" role={agent} images={initial} />,
+		);
+		const mountInvocations = markdownSpy.mock.calls.length;
+		expect(mountInvocations).toBeGreaterThan(0);
+
+		rerender(
+			<StreamMessage content="stable" role={agent} images={equalButNewRef} />,
+		);
+		expect(markdownSpy.mock.calls.length).toBe(mountInvocations);
+	});
+
+	it("memo skips re-render when mentions are value-equal but new references", () => {
+		// shallowEqualMentions compares filePath / startLine / endLine — a fresh
+		// array with the same fields must not trigger a re-parse.
+		const initial = [{ filePath: "src/a.rs", startLine: 1, endLine: 5 }];
+		const equalButNewRef = [{ filePath: "src/a.rs", startLine: 1, endLine: 5 }];
+		const { rerender } = render(
+			<StreamMessage content="stable" role={agent} mentions={initial} />,
+		);
+		const mountInvocations = markdownSpy.mock.calls.length;
+		expect(mountInvocations).toBeGreaterThan(0);
+
+		rerender(
+			<StreamMessage content="stable" role={agent} mentions={equalButNewRef} />,
+		);
+		expect(markdownSpy.mock.calls.length).toBe(mountInvocations);
+	});
+
+	it("memo re-renders when images value changes", () => {
+		const initial = [
+			{ type: "image" as const, data: "aGVsbG8=", mediaType: "image/png" },
+		];
+		const changed = [
+			{ type: "image" as const, data: "Z29vZA==", mediaType: "image/png" },
+		];
+		const { rerender } = render(
+			<StreamMessage content="stable" role={human} images={initial} />,
+		);
+		const el = screen.getByTestId("stream-message-human");
+		expect(el.querySelector("img")?.getAttribute("src")).toBe(
+			"data:image/png;base64,aGVsbG8=",
+		);
+
+		rerender(<StreamMessage content="stable" role={human} images={changed} />);
+		expect(
+			screen
+				.getByTestId("stream-message-human")
+				.querySelector("img")
+				?.getAttribute("src"),
+		).toBe("data:image/png;base64,Z29vZA==");
+	});
+
+	it("memo re-renders when mentions value changes", () => {
+		// content は固定したまま mentions のみ切り替え、shallowEqualMentions の
+		// 差分判定が単独で再描画を引き起こすことを担保する。content も同時に
+		// 変えてしまうと content 差分だけで再描画されてしまい、mentions 比較が
+		// 壊れていても素通りしてしまうため。
+		const stableContent = "Check @src/a.rs and @src/b.rs";
+		const initial = [{ filePath: "src/a.rs" }];
+		const changed = [{ filePath: "src/b.rs" }];
+		const { rerender } = render(
+			<StreamMessage content={stableContent} role={human} mentions={initial} />,
+		);
+		expect(
+			screen.getByTestId("stream-message-human").querySelector(".font-mono")
+				?.textContent,
+		).toBe("@src/a.rs");
+
+		rerender(
+			<StreamMessage content={stableContent} role={human} mentions={changed} />,
+		);
+		expect(
+			screen.getByTestId("stream-message-human").querySelector(".font-mono")
+				?.textContent,
+		).toBe("@src/b.rs");
 	});
 });
