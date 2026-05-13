@@ -1,0 +1,96 @@
+# バックエンド アーキテクチャ概要
+
+`src-tauri/` 配下のバックエンドは、**クリーンアーキテクチャ**に基づいたレイヤー構成を採用する。本ドキュメントは全体像と規約の入口。
+
+## 目的
+
+1. **ドメインとインフラの分離** — ビジネスロジックを Tauri / git2 / file I/O から切り離す
+2. **ファイル分割の徹底** — 単一責務に従ったモジュール構造
+3. **再利用性の向上** — ドメイン層を CLI 等の別エントリポイントから利用可能にする
+4. **API層の分離** — Tauri コマンド / WebSocket ハンドラを薄い入口に閉じ込める
+
+## 参考実装
+
+`no9-monorepo/services/revenue-server` のクリーンアーキテクチャ構成を参考にする。Releash は Tauri + 多様な外部リソース（git2、ファイル、WebSocket、外部API）を扱うため、一部の解釈は本リポジトリ向けに調整している。
+
+## レイヤー構成（単一クレート）
+
+```
+src-tauri/src/
+├── main.rs
+├── lib.rs                              # DI配線（AppState組み立て + manage）
+├── domain/                             # コアビジネスロジック（外部依存なし）
+│   └── <bounded-context>/
+│       ├── entities/                   # エンティティ（1構造体1ファイル）
+│       ├── value_objects/              # 値オブジェクト
+│       ├── repository.rs               # 永続化 trait（domain側で定義）
+│       ├── gateway.rs                  # 外部リソース trait（Streamを返す）
+│       └── services.rs                 # ドメインサービス
+├── usecase/                            # アプリケーションビジネスルール
+│   ├── <domain>_usecase.rs             # Command側
+│   ├── <domain>_query_service.rs       # Query側（CQRS）
+│   └── <domain>_dto.rs
+├── adaptor/                            # インターフェースアダプタ
+│   ├── controller/
+│   │   ├── command/                    # Tauriコマンド（#[tauri::command]）
+│   │   ├── handler/                    # WebSocketハンドラ
+│   │   └── state.rs                    # AppState 構造体（DI受け皿）
+│   ├── gateway/                        # Repository/Service の具体実装
+│   │   └── <domain>/
+│   │       ├── repository_impl.rs
+│   │       ├── query_service_impl.rs
+│   │       ├── service_impl.rs
+│   │       ├── command_models.rs
+│   │       ├── query_models.rs
+│   │       └── service_models.rs
+│   ├── presenter/                      # レスポンス整形
+│   └── protocol/                       # WebSocketメッセージ等のDTO
+├── infrastructure/                     # 外部リソースクライアント
+│   ├── external/                       # GitHub, Notion, Webhook(Slack/Discord), MCP
+│   ├── middleware/
+│   ├── persistence/                    # ファイルシステム, TOML, JSON
+│   └── git/                            # git2 クライアント
+└── other/                              # 横断的関心事
+    ├── error.rs                        # AppError（thiserror + serde::Serialize）
+    └── logging/
+```
+
+### 依存方向
+
+```
+infrastructure → adaptor/gateway → domain ← usecase ← adaptor/controller
+```
+
+- ドメインは外側を一切知らない
+- usecase は domain の trait のみに依存
+- adaptor/gateway は domain の trait を実装する
+- adaptor/controller は usecase を呼ぶ
+- infrastructure は外部ライブラリの薄いラッパーに徹する
+
+## ドメイン一覧（15個）
+
+| ドメイン | 含まれる責務 |
+|---|---|
+| `code` | ファイル内容（at_ref, at_branch_base, staged）、diff、hunk、patch、staging（差分Approve）、language、file_mention、visible/hidden ranges |
+| `repository` | branch、commit、log、worktree、status、repo_paths、git_config |
+| `workflow` | ワークフロー定義、実行、facet、承認 |
+| `comment` | diff_comment_store、diff_comment_sender |
+| `agent_session` | agent_sdk、session、agent_status |
+| `pty_session` | PTY 管理全般 |
+| `app_config` | 現 config.rs を分解 |
+| `workspace_state` | ワークスペース状態保存 |
+| `hooks` | フック設定・適用 |
+| `notification` | webhook (Slack/Discord)、将来の他チャネル |
+| `remote_access` | vpn_detect、qr_code、tls |
+| `git_host` | GitHub PR/Issue |
+| `notion` | Notion API |
+| `mcp` | MCP サーバ |
+| `external_editor` | 外部エディタ起動 |
+
+## 各層の規約
+
+- [DOMAIN.md](./DOMAIN.md) — ドメイン層
+- [USECASE.md](./USECASE.md) — ユースケース層
+- [GATEWAY.md](./GATEWAY.md) — ゲートウェイ層
+- [CONTROLLER.md](./CONTROLLER.md) — コントローラ層（Tauriコマンド／WebSocketハンドラ）
+- [TEST.md](./TEST.md) — テスト方針
