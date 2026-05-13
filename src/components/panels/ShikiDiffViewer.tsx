@@ -8,7 +8,6 @@ import React, {
 	useRef,
 	useState,
 } from "react";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { type SearchMatch, useDiffSearch } from "@/hooks/useDiffSearch";
 import {
 	assignChangeGroupsToBlocks,
@@ -1783,9 +1782,9 @@ export function ShikiDiffViewer({
 					onClose={search.close}
 				/>
 			)}
-			<ScrollArea
-				viewportRef={containerRef}
-				className="h-full w-full font-mono text-sm"
+			<div
+				ref={containerRef}
+				className="h-full w-full overflow-auto font-mono text-sm"
 				style={{
 					backgroundColor: "var(--editor-background, #1a1a1a)",
 					color: "var(--editor-foreground, #e0e0e0)",
@@ -1807,8 +1806,7 @@ export function ShikiDiffViewer({
 					onDeleteComment={onDeleteComment}
 					onSendComment={onSendComment}
 				/>
-				<ScrollBar orientation="horizontal" />
-			</ScrollArea>
+			</div>
 			<ScrollbarMarkers markers={diffMarkers} />
 		</div>
 	);

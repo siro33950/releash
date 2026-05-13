@@ -2,7 +2,6 @@ import { MessageSquare, Send, Trash2 } from "lucide-react";
 import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
 	Tooltip,
 	TooltipContent,
@@ -103,7 +102,7 @@ export function DiffCommentList({
 					</TooltipContent>
 				</Tooltip>
 			</div>
-			<ScrollArea className="flex-1 min-h-0">
+			<div className="flex-1 min-h-0 overflow-auto">
 				<div className="px-2 py-1">
 					{[...groupedByFile.entries()].map(([filePath, fileComments]) => (
 						<div key={filePath} className="mb-2">
@@ -184,7 +183,7 @@ export function DiffCommentList({
 						</div>
 					))}
 				</div>
-			</ScrollArea>
+			</div>
 		</div>
 	);
 }

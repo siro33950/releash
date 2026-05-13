@@ -1,5 +1,3 @@
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
-
 interface ImageDiffViewerProps {
 	originalUrl: string | null;
 	modifiedUrl: string | null;
@@ -11,8 +9,8 @@ function ImagePane({ url, label }: { url: string | null; label: string }) {
 		<div className="flex-1 flex flex-col items-center gap-2 min-w-0 p-4">
 			<span className="text-xs font-medium text-muted-foreground">{label}</span>
 			{url ? (
-				<ScrollArea
-					className="relative flex-1 min-h-0 w-full rounded border border-border"
+				<div
+					className="relative flex-1 min-h-0 w-full overflow-auto rounded border border-border"
 					style={{
 						backgroundImage:
 							"repeating-conic-gradient(#80808020 0% 25%, transparent 0% 50%)",
@@ -26,8 +24,7 @@ function ImagePane({ url, label }: { url: string | null; label: string }) {
 							className="max-w-full max-h-[60vh] object-contain"
 						/>
 					</div>
-					<ScrollBar orientation="horizontal" />
-				</ScrollArea>
+				</div>
 			) : (
 				<div className="flex items-center justify-center flex-1 w-full rounded border border-dashed border-border text-muted-foreground text-sm">
 					No file
