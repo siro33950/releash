@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowState } from "@/types/workflow";
-import { WorkflowTrace } from "./WorkflowTrace";
+import { installScrollMetricsMock } from "./testUtils";
+import { WorkflowStatusSummary } from "./WorkflowStatusSummary";
+import { isAtBottom, WorkflowTrace } from "./WorkflowTrace";
 
 const mockInvoke = vi.fn().mockResolvedValue(undefined);
 vi.mock("@tauri-apps/api/core", () => ({
@@ -45,10 +47,11 @@ describe("WorkflowTrace", () => {
 		mockInvoke.mockResolvedValue(undefined);
 	});
 
-	it("shows current action and total token usage", () => {
+	it("renders only the scrollable trace body", () => {
 		render(<WorkflowTrace workflowState={makeWorkflowState()} />);
-		expect(screen.getByText("Running plan")).toBeInTheDocument();
-		expect(screen.getByText("300 tokens")).toBeInTheDocument();
+		expect(screen.getByTestId("workflow-trace-scroll")).toBeInTheDocument();
+		expect(screen.queryByText("Running plan")).not.toBeInTheDocument();
+		expect(screen.queryByText("300 tokens")).not.toBeInTheDocument();
 	});
 
 	it("renders the active trace item with mode and state", () => {
@@ -57,6 +60,36 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("auto")).toBeInTheDocument();
 		expect(screen.getByText("Running")).toBeInTheDocument();
 		expect(screen.queryByText("run 1")).not.toBeInTheDocument();
+	});
+
+	it("renders an empty completed workflow without breaking auto-follow", () => {
+		const scrollMock = installScrollMetricsMock(HTMLElement.prototype, {
+			scrollHeight: 320,
+			scrollTop: 0,
+			clientHeight: 100,
+		});
+		const workflowState = makeWorkflowState({
+			state: { type: "completed" },
+			currentStepName: "",
+			stepHistory: [],
+			stepStates: { plan: "pending", review: "pending", fix: "pending" },
+		});
+
+		try {
+			render(
+				<>
+					<WorkflowStatusSummary workflowState={workflowState} />
+					<WorkflowTrace workflowState={workflowState} />
+				</>,
+			);
+
+			expect(screen.getByText("Workflow completed")).toBeInTheDocument();
+			expect(screen.getByText("0 recorded steps")).toBeInTheDocument();
+			expect(screen.getByTestId("workflow-trace-scroll")).toBeInTheDocument();
+			expect(screen.getByTestId("workflow-trace-scroll").scrollTop).toBe(320);
+		} finally {
+			scrollMock.restore();
+		}
 	});
 
 	it("shows waiting approval as the required current action", () => {
@@ -74,9 +107,6 @@ describe("WorkflowTrace", () => {
 				})}
 			/>,
 		);
-		expect(
-			screen.getByText("Waiting for approval: review"),
-		).toBeInTheDocument();
 		expect(screen.getByText("review")).toBeInTheDocument();
 		expect(screen.getByText("approval")).toBeInTheDocument();
 		expect(screen.getByText("Waiting for approval")).toBeInTheDocument();
@@ -1027,9 +1057,6 @@ describe("WorkflowTrace", () => {
 				})}
 			/>,
 		);
-		expect(
-			screen.getByText("Waiting for approval: plan_fix_policy"),
-		).toBeInTheDocument();
 		expect(screen.getByText("plan_fix_policy")).toBeInTheDocument();
 		expect(screen.getByText("Waiting for approval")).toBeInTheDocument();
 	});
@@ -1086,5 +1113,242 @@ describe("WorkflowTrace", () => {
 			/>,
 		);
 		expect(screen.getByText("2/2 completed")).toBeInTheDocument();
+	});
+
+	it("detects scroll positions within the bottom threshold", () => {
+		expect(
+			isAtBottom({ scrollHeight: 1000, scrollTop: 876, clientHeight: 100 }),
+		).toBe(true);
+		expect(
+			isAtBottom({ scrollHeight: 1000, scrollTop: 850, clientHeight: 100 }),
+		).toBe(false);
+	});
+
+	it("auto-follows to the bottom on initial mount", () => {
+		const scrollMock = installScrollMetricsMock(HTMLElement.prototype, {
+			scrollHeight: 640,
+			scrollTop: 0,
+			clientHeight: 100,
+		});
+
+		try {
+			render(<WorkflowTrace workflowState={makeWorkflowState()} />);
+			expect(screen.getByTestId("workflow-trace-scroll").scrollTop).toBe(640);
+		} finally {
+			scrollMock.restore();
+		}
+	});
+
+	it("auto-follows to the bottom when workflow data updates while at the bottom", () => {
+		const { rerender } = render(
+			<WorkflowTrace workflowState={makeWorkflowState()} />,
+		);
+		const scrollElement = screen.getByTestId("workflow-trace-scroll");
+		const scrollMock = installScrollMetricsMock(scrollElement, {
+			scrollHeight: 500,
+			scrollTop: 400,
+			clientHeight: 100,
+		});
+
+		scrollMock.setMetrics({ scrollHeight: 650 });
+		rerender(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					updatedAt: 3000,
+					stepHistory: [
+						{ stepName: "plan", completedAt: 2500, result: "done" },
+					],
+				})}
+			/>,
+		);
+
+		expect(scrollMock.scrollTop).toBe(650);
+	});
+
+	it("keeps the current scroll position when auto-follow is disabled", () => {
+		const { rerender } = render(
+			<WorkflowTrace workflowState={makeWorkflowState()} />,
+		);
+		const scrollElement = screen.getByTestId("workflow-trace-scroll");
+		const scrollMock = installScrollMetricsMock(scrollElement, {
+			scrollHeight: 500,
+			scrollTop: 250,
+			clientHeight: 100,
+		});
+
+		fireEvent.scroll(scrollElement);
+		scrollMock.setMetrics({ scrollHeight: 700 });
+		rerender(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					updatedAt: 3000,
+					stepHistory: [
+						{ stepName: "plan", completedAt: 2500, result: "done" },
+					],
+				})}
+			/>,
+		);
+
+		expect(scrollMock.scrollTop).toBe(250);
+	});
+
+	it("auto-follows to the bottom when active parallel child steps update while at the bottom", () => {
+		const parallelState = makeWorkflowState({
+			currentStepName: "parallel-review",
+			currentStepIndex: 0,
+			stepStates: {
+				"parallel-review": "running",
+				report: "pending",
+			},
+			workflowDefinition: {
+				name: "test-workflow",
+				description: "test",
+				builtin: false,
+				steps: [
+					{
+						name: "parallel-review",
+						rules: [],
+						parallel: [
+							{ name: "arch-review", mode: "auto" },
+							{ name: "security-review", mode: "auto" },
+						],
+					},
+					{
+						name: "report",
+						mode: "auto",
+						instruction: "report",
+						rules: [],
+					},
+				],
+			},
+			activeParallelSteps: [
+				{ stepName: "arch-review", state: "running", runIndex: 1 },
+				{ stepName: "security-review", state: "running", runIndex: 1 },
+			],
+		});
+		const { rerender } = render(
+			<WorkflowTrace workflowState={parallelState} />,
+		);
+		const scrollElement = screen.getByTestId("workflow-trace-scroll");
+		const scrollMock = installScrollMetricsMock(scrollElement, {
+			scrollHeight: 500,
+			scrollTop: 400,
+			clientHeight: 100,
+		});
+
+		scrollMock.setMetrics({ scrollHeight: 650 });
+		rerender(
+			<WorkflowTrace
+				workflowState={{
+					...parallelState,
+					activeParallelSteps: [
+						{
+							stepName: "arch-review",
+							state: "completed",
+							runIndex: 1,
+							completedAt: 3001,
+						},
+						{ stepName: "security-review", state: "running", runIndex: 1 },
+					],
+				}}
+			/>,
+		);
+
+		expect(scrollMock.scrollTop).toBe(650);
+	});
+
+	it("keeps the current scroll position when active parallel child steps update with auto-follow disabled", () => {
+		const parallelState = makeWorkflowState({
+			currentStepName: "parallel-review",
+			currentStepIndex: 0,
+			stepStates: {
+				"parallel-review": "running",
+				report: "pending",
+			},
+			workflowDefinition: {
+				name: "test-workflow",
+				description: "test",
+				builtin: false,
+				steps: [
+					{
+						name: "parallel-review",
+						rules: [],
+						parallel: [
+							{ name: "arch-review", mode: "auto" },
+							{ name: "security-review", mode: "auto" },
+						],
+					},
+					{
+						name: "report",
+						mode: "auto",
+						instruction: "report",
+						rules: [],
+					},
+				],
+			},
+			activeParallelSteps: [
+				{ stepName: "arch-review", state: "running", runIndex: 1 },
+				{ stepName: "security-review", state: "running", runIndex: 1 },
+			],
+		});
+		const { rerender } = render(
+			<WorkflowTrace workflowState={parallelState} />,
+		);
+		const scrollElement = screen.getByTestId("workflow-trace-scroll");
+		const scrollMock = installScrollMetricsMock(scrollElement, {
+			scrollHeight: 500,
+			scrollTop: 250,
+			clientHeight: 100,
+		});
+
+		fireEvent.scroll(scrollElement);
+		scrollMock.setMetrics({ scrollHeight: 700 });
+		rerender(
+			<WorkflowTrace
+				workflowState={{
+					...parallelState,
+					activeParallelSteps: [
+						{
+							stepName: "arch-review",
+							state: "completed",
+							runIndex: 1,
+							completedAt: 3001,
+						},
+						{ stepName: "security-review", state: "running", runIndex: 1 },
+					],
+				}}
+			/>,
+		);
+
+		expect(scrollMock.scrollTop).toBe(250);
+	});
+
+	it("re-enables auto-follow after the user scrolls back to the bottom", () => {
+		const { rerender } = render(
+			<WorkflowTrace workflowState={makeWorkflowState()} />,
+		);
+		const scrollElement = screen.getByTestId("workflow-trace-scroll");
+		const scrollMock = installScrollMetricsMock(scrollElement, {
+			scrollHeight: 500,
+			scrollTop: 250,
+			clientHeight: 100,
+		});
+
+		fireEvent.scroll(scrollElement);
+		scrollMock.scrollTop = 400;
+		fireEvent.scroll(scrollElement);
+		scrollMock.setMetrics({ scrollHeight: 720 });
+		rerender(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					updatedAt: 3000,
+					stepHistory: [
+						{ stepName: "plan", completedAt: 2500, result: "done" },
+					],
+				})}
+			/>,
+		);
+
+		expect(scrollMock.scrollTop).toBe(720);
 	});
 });

@@ -11,7 +11,7 @@ import {
 	Loader2,
 	X,
 } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useStepApprovalAction } from "@/hooks/useStepApprovalAction";
 import type {
 	JsonValue,
@@ -21,6 +21,7 @@ import type {
 	WorkflowLogEvent,
 	WorkflowState,
 } from "@/types/workflow";
+import { workflowStateClasses } from "./workflowStateStyles";
 
 interface WorkflowTraceProps {
 	workflowState: WorkflowState;
@@ -34,35 +35,24 @@ interface WorkflowApprovalActionContext {
 	executionId: string;
 }
 
-const stateClasses: Record<string, string> = {
-	running: "border-blue-500/50 bg-blue-500/10 text-blue-700 dark:text-blue-300",
-	completed:
-		"border-green-500/50 bg-green-500/10 text-green-700 dark:text-green-300",
-	failed: "border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-300",
-	waiting_approval:
-		"border-yellow-500/50 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
-	aborted: "border-muted-foreground/40 bg-muted text-muted-foreground",
-	pending: "border-border bg-background text-muted-foreground",
-};
-
 export function WorkflowTrace({
 	workflowState,
 	events = [],
 	onSessionClick,
 	approvalAction,
 }: WorkflowTraceProps) {
-	const totalTokens =
-		workflowState.totalTokenUsage.inputTokens +
-		workflowState.totalTokenUsage.outputTokens;
 	const traceItems = buildTraceItems(workflowState);
+	const autoFollowVersion = buildAutoFollowVersion(workflowState, events);
+	const { scrollRef, handleScroll } = useAutoFollowScroll(autoFollowVersion);
 
 	return (
-		<div className="h-full overflow-auto">
+		<div
+			ref={scrollRef}
+			onScroll={handleScroll}
+			data-testid="workflow-trace-scroll"
+			className="h-full overflow-auto"
+		>
 			<div className="flex flex-col gap-3 p-3">
-				<CurrentAction
-					workflowState={workflowState}
-					totalTokens={totalTokens}
-				/>
 				<div className="flex flex-col">
 					{traceItems.map((item, index) => (
 						<TraceItemRow
@@ -81,48 +71,80 @@ export function WorkflowTrace({
 	);
 }
 
-function CurrentAction({
-	workflowState,
-	totalTokens,
-}: {
-	workflowState: WorkflowState;
-	totalTokens: number;
-}) {
-	const state = workflowState.state.type;
-	const currentStep = workflowState.workflowDefinition.steps.find(
-		(step) => step.name === workflowState.currentStepName,
-	);
+interface ScrollMetrics {
+	scrollHeight: number;
+	scrollTop: number;
+	clientHeight: number;
+}
 
-	let label = "Workflow completed";
-	if (state === "running") label = `Running ${workflowState.currentStepName}`;
-	if (state === "waiting_approval") {
-		label = `Waiting for approval: ${workflowState.currentStepName}`;
-	}
-	if (state === "failed") label = "Workflow failed";
-	if (state === "aborted") label = "Workflow aborted";
+const bottomThresholdPx = 24;
 
-	const details =
-		state === "failed" && "reason" in workflowState.state
-			? workflowState.state.reason
-			: currentStep
-				? `${currentStep.parallel ? "parallel" : (currentStep.mode ?? "auto")} step`
-				: `${workflowState.stepHistory.length} recorded steps`;
-
+export function isAtBottom(
+	metrics: ScrollMetrics,
+	threshold = bottomThresholdPx,
+) {
 	return (
-		<div
-			className={`overflow-hidden rounded-md border px-3 py-2 ${stateClasses[state] ?? stateClasses.pending}`}
-		>
-			<div className="flex items-center justify-between gap-3">
-				<div className="min-w-0">
-					<div className="text-sm font-medium truncate">{label}</div>
-					<div className="text-xs opacity-80 truncate">{details}</div>
-				</div>
-				<div className="text-xs whitespace-nowrap opacity-80">
-					{totalTokens} tokens
-				</div>
-			</div>
-		</div>
+		metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= threshold
 	);
+}
+
+function readScrollMetrics(element: HTMLElement): ScrollMetrics {
+	return {
+		scrollHeight: element.scrollHeight,
+		scrollTop: element.scrollTop,
+		clientHeight: element.clientHeight,
+	};
+}
+
+function buildAutoFollowVersion(
+	workflowState: WorkflowState,
+	events: WorkflowLogEvent[],
+) {
+	const activeParallelVersion =
+		workflowState.activeParallelSteps
+			?.map(
+				(step) =>
+					`${step.stepName}:${step.state}:${step.runIndex}:${step.completedAt ?? ""}`,
+			)
+			.join("|") ?? "";
+	const historyVersion = workflowState.stepHistory
+		.map((entry) => `${entry.stepName}:${entry.completedAt}`)
+		.join("|");
+	const eventVersion = events
+		.map((event) => `${event.event}:${event.timestamp}`)
+		.join("|");
+
+	return [
+		workflowState.executionId,
+		workflowState.updatedAt,
+		workflowState.state.type,
+		workflowState.currentStepName,
+		historyVersion,
+		activeParallelVersion,
+		eventVersion,
+	].join(";");
+}
+
+function useAutoFollowScroll(autoFollowVersion: string) {
+	const scrollRef = useRef<HTMLDivElement | null>(null);
+	const [isAutoFollowing, setIsAutoFollowing] = useState(true);
+
+	const handleScroll = () => {
+		const element = scrollRef.current;
+		if (!element) return;
+		setIsAutoFollowing(isAtBottom(readScrollMetrics(element)));
+	};
+
+	useLayoutEffect(() => {
+		if (!isAutoFollowing) return;
+		const element = scrollRef.current;
+		if (!element) return;
+		// Consume the content version so this effect reruns after trace updates.
+		void autoFollowVersion;
+		element.scrollTop = element.scrollHeight;
+	}, [isAutoFollowing, autoFollowVersion]);
+
+	return { scrollRef, handleScroll };
 }
 
 type TraceItem =
@@ -311,7 +333,7 @@ function TraceItemRow({
 		<div className="grid grid-cols-[24px_1fr] gap-2">
 			<div className="flex flex-col items-center">
 				<div
-					className={`mt-2 flex size-5 items-center justify-center rounded-full border ${stateClasses[item.state] ?? stateClasses.pending}`}
+					className={`mt-2 flex size-5 items-center justify-center rounded-full border ${workflowStateClasses[item.state] ?? workflowStateClasses.pending}`}
 				>
 					<StateIcon state={item.state} />
 				</div>
@@ -460,7 +482,7 @@ function ParallelBlockRow({
 		<div className="grid grid-cols-[24px_1fr] gap-2">
 			<div className="flex flex-col items-center">
 				<div
-					className={`mt-2 flex size-5 items-center justify-center rounded-full border ${stateClasses[item.state] ?? stateClasses.pending}`}
+					className={`mt-2 flex size-5 items-center justify-center rounded-full border ${workflowStateClasses[item.state] ?? workflowStateClasses.pending}`}
 				>
 					<StateIcon state={item.state} />
 				</div>
@@ -531,7 +553,7 @@ function ParallelChildRow({
 		>
 			<div className="flex items-center gap-2">
 				<div
-					className={`flex size-4 items-center justify-center rounded-full border ${stateClasses[child.state] ?? stateClasses.pending}`}
+					className={`flex size-4 items-center justify-center rounded-full border ${workflowStateClasses[child.state] ?? workflowStateClasses.pending}`}
 				>
 					<StateIcon state={child.state} />
 				</div>
