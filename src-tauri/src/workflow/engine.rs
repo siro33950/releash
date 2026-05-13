@@ -56,6 +56,239 @@ fn truncate_output(text: String) -> String {
     truncated
 }
 
+/// AgentSession 開始呼び出しを抽象化するトレイト。
+/// production では `start_agent_session_internal` を呼ぶ `RealSessionStartGate` を使い、
+/// テストでは引数を記録するテストダブルに差し替えて、合成された `system_prompt` が
+/// バックエンドへ受け渡される経路を検証する。
+#[async_trait::async_trait]
+trait SessionStartGate: Send + Sync {
+    async fn start_session(
+        &self,
+        chat_session_id: &str,
+        worktree_path: &str,
+        permission_mode: Option<String>,
+        system_prompt: Option<String>,
+    ) -> Result<(), String>;
+}
+
+/// production 用の `SessionStartGate` 実装。`start_agent_session_internal` をそのまま呼び出す。
+struct RealSessionStartGate<'a> {
+    app: &'a tauri::AppHandle,
+    handles: &'a Arc<Mutex<AgentProcessMap>>,
+    session_store: &'a Arc<SessionStore>,
+}
+
+#[async_trait::async_trait]
+impl<'a> SessionStartGate for RealSessionStartGate<'a> {
+    async fn start_session(
+        &self,
+        chat_session_id: &str,
+        worktree_path: &str,
+        permission_mode: Option<String>,
+        system_prompt: Option<String>,
+    ) -> Result<(), String> {
+        crate::agent_sdk::start_agent_session_internal(
+            self.app,
+            self.handles,
+            self.session_store,
+            chat_session_id,
+            worktree_path,
+            permission_mode,
+            system_prompt,
+        )
+        .await
+    }
+}
+
+/// `start_step_session` 内でファセット合成（純粋関数）後に実行される副作用境界を
+/// まとめて抽象化するトレイト。具体的には以下の経路を担う:
+///
+/// - 親 ChatSession の取得
+/// - ステップ用 ChatSession の生成（設定解決を含む）
+/// - AgentSession 起動 (`start_agent_session_internal` 相当)
+/// - ワークフロー状態の永続化／ブロードキャスト
+/// - ステップセッションへのターン起動 (`start_agent_turn_internal` 相当)
+///
+/// production では `AppHandle` / `SessionStore` / `AgentProcessMap` を握る
+/// `RealStepSessionDeps` を渡し、テストでは記録用のテストダブルを差し替えることで、
+/// 「`build_step_prompt` 失敗時に `create_step_session` 等が呼ばれない」という
+/// 順序保証を実 production 経路と同じ構造で検証する。
+#[async_trait::async_trait]
+trait StepSessionDeps: Send + Sync {
+    /// 親 ChatSession を取得し、ステップ用設定解決に必要なフィールドを返す。
+    async fn fetch_parent_session(
+        &self,
+        chat_session_id: &str,
+    ) -> Result<ParentSessionInfo, WorkflowEngineError>;
+
+    /// ステップ用 ChatSession を生成し、IDと permission_mode を返す。
+    async fn create_step_session(
+        &self,
+        worktree_path: &str,
+        step_model: Option<String>,
+        step_permission: Option<String>,
+        parent: ParentSessionInfo,
+    ) -> Result<StepSessionInfo, WorkflowEngineError>;
+
+    /// 合成済み `system_prompt` を AgentSession 開始経路へ受け渡す。
+    async fn dispatch_session_start(
+        &self,
+        step_session_id: &str,
+        worktree_path: &str,
+        permission_mode: Option<String>,
+        system_prompt: Option<String>,
+    ) -> Result<(), WorkflowEngineError>;
+
+    /// ワークフロー状態を ChatSession に永続化する。
+    async fn persist_workflow_state(
+        &self,
+        chat_session_id: &str,
+        snapshot: WorkflowState,
+    ) -> Result<(), WorkflowEngineError>;
+
+    /// ワークフロー状態をブロードキャストする（best-effort）。
+    fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState);
+
+    /// ステップ用 ChatSession に対しユーザーターンを起動する。
+    async fn start_agent_turn(
+        &self,
+        step_session_id: &str,
+        worktree_path: &str,
+        permission_mode: &str,
+        prompt: &str,
+    ) -> Result<(), WorkflowEngineError>;
+}
+
+/// `StepSessionDeps::fetch_parent_session` の戻り値。
+#[derive(Clone, Debug)]
+struct ParentSessionInfo {
+    backend_id: Option<String>,
+    selected_model: Option<String>,
+    permission_mode: String,
+}
+
+/// `StepSessionDeps::create_step_session` の戻り値。
+#[derive(Clone, Debug)]
+struct StepSessionInfo {
+    id: String,
+    permission_mode: String,
+}
+
+/// production 用の `StepSessionDeps` 実装。
+struct RealStepSessionDeps<'a> {
+    engine: &'a WorkflowEngine,
+    app: &'a tauri::AppHandle,
+    handles: &'a Arc<Mutex<AgentProcessMap>>,
+    session_store: &'a Arc<SessionStore>,
+}
+
+#[async_trait::async_trait]
+impl<'a> StepSessionDeps for RealStepSessionDeps<'a> {
+    async fn fetch_parent_session(
+        &self,
+        chat_session_id: &str,
+    ) -> Result<ParentSessionInfo, WorkflowEngineError> {
+        let data_dir = crate::session::resolve_data_dir(self.app)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
+        let parent = self
+            .session_store
+            .get_session(&data_dir, chat_session_id)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
+            .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.to_string()))?;
+        Ok(ParentSessionInfo {
+            backend_id: parent.backend_id,
+            selected_model: parent.selected_model,
+            permission_mode: parent.permission_mode,
+        })
+    }
+
+    async fn create_step_session(
+        &self,
+        worktree_path: &str,
+        step_model: Option<String>,
+        step_permission: Option<String>,
+        parent: ParentSessionInfo,
+    ) -> Result<StepSessionInfo, WorkflowEngineError> {
+        let data_dir = crate::session::resolve_data_dir(self.app)
+            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
+        let step_session = self
+            .engine
+            .create_step_session_with_settings(
+                self.app,
+                self.session_store,
+                &data_dir,
+                worktree_path,
+                step_model,
+                step_permission,
+                parent.backend_id,
+                parent.selected_model,
+                parent.permission_mode,
+            )
+            .await?;
+        Ok(StepSessionInfo {
+            id: step_session.id,
+            permission_mode: step_session.permission_mode,
+        })
+    }
+
+    async fn dispatch_session_start(
+        &self,
+        step_session_id: &str,
+        worktree_path: &str,
+        permission_mode: Option<String>,
+        system_prompt: Option<String>,
+    ) -> Result<(), WorkflowEngineError> {
+        let gate = RealSessionStartGate {
+            app: self.app,
+            handles: self.handles,
+            session_store: self.session_store,
+        };
+        WorkflowEngine::dispatch_session_start(
+            &gate,
+            step_session_id,
+            worktree_path,
+            permission_mode,
+            system_prompt,
+        )
+        .await
+    }
+
+    async fn persist_workflow_state(
+        &self,
+        chat_session_id: &str,
+        snapshot: WorkflowState,
+    ) -> Result<(), WorkflowEngineError> {
+        self.engine
+            .persist_state(self.app, self.session_store, chat_session_id, snapshot)
+            .await
+    }
+
+    fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState) {
+        self.engine
+            .broadcast_state(self.app, worktree_path, snapshot);
+    }
+
+    async fn start_agent_turn(
+        &self,
+        step_session_id: &str,
+        worktree_path: &str,
+        permission_mode: &str,
+        prompt: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        crate::agent_sdk::start_agent_turn_internal(
+            self.app,
+            self.handles,
+            self.session_store,
+            step_session_id,
+            worktree_path,
+            permission_mode,
+            prompt,
+        )
+        .await
+        .map_err(WorkflowEngineError::AgentSession)
+    }
+}
+
 /// ワークフローエンジンのエラー型。
 #[derive(Debug)]
 pub enum WorkflowEngineError {
@@ -2409,11 +2642,43 @@ impl WorkflowEngine {
 
     /// 現在のステップ用に新しいChatSessionを生成し、AgentSessionを開始してプロンプトを送信する。
     /// ファセット方式と旧prompt方式を自動判別する。
+    ///
+    /// production 経路。副作用境界を `RealStepSessionDeps` にラップし、コアロジック
+    /// `start_step_session_with_deps` に委譲する。
     async fn start_step_session(
         &self,
         app: &tauri::AppHandle,
         handles: &Arc<Mutex<AgentProcessMap>>,
         session_store: &Arc<SessionStore>,
+        worktree_path: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        let deps = RealStepSessionDeps {
+            engine: self,
+            app,
+            handles,
+            session_store,
+        };
+        self.start_step_session_with_deps(&deps, worktree_path)
+            .await
+    }
+
+    /// `start_step_session` のコアロジック。副作用境界は `StepSessionDeps` 経由で注入する。
+    ///
+    /// 呼び出し順序の不変条件:
+    /// 1. `build_step_prompt`（純粋関数）でプロンプト合成
+    /// 2. `deps.fetch_parent_session`
+    /// 3. `deps.create_step_session`
+    /// 4. `session_workflow_refs` への登録
+    /// 5. `deps.dispatch_session_start`（AgentSession 開始）
+    /// 6. `executions.current_session_id` 更新と永続化・ブロードキャスト
+    /// 7. `deps.start_agent_turn`（ターン起動）
+    ///
+    /// 1 で失敗した場合、2 以降は一切実行されない（合成失敗時に
+    /// ChatSession 生成や `session_workflow_refs` への孤立 entry が残らない）。
+    /// テストではこの順序保証を `StepSessionDeps` のテストダブル経由で検証する。
+    async fn start_step_session_with_deps<D: StepSessionDeps + ?Sized>(
+        &self,
+        deps: &D,
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
         let (
@@ -2439,10 +2704,11 @@ impl WorkflowEngine {
             )
         };
 
-        let data_dir = crate::session::resolve_data_dir(app)
-            .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
-
-        // ファセット方式: compose_facets → render_facet_variables → inject_step_outputs
+        // プロンプト合成（純粋関数）を最初に行う。
+        // ここで失敗（参照先ファセットが存在しない等）した場合、後続の
+        // ChatSession 生成・`session_workflow_refs` 登録・AgentSession 開始は一切
+        // 行われない。これにより、`start_step_session` がエラー経路で孤立した
+        // ChatSession や参照マップ entry を残さないことを構造的に保証する。
         let base_dir = storage::facets_base_dir();
         let (system_prompt, prompt) = Self::build_step_prompt(
             &step_clone,
@@ -2454,23 +2720,15 @@ impl WorkflowEngine {
             &workflow_variables_clone,
         )?;
 
-        let parent_session = session_store
-            .get_session(&data_dir, &chat_session_id)
-            .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
-            .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.clone()))?;
+        let parent = deps.fetch_parent_session(&chat_session_id).await?;
 
         // ステップ設定の解決 → セッション生成
-        let step_session = self
-            .create_step_session_with_settings(
-                app,
-                session_store,
-                &data_dir,
+        let step_session = deps
+            .create_step_session(
                 worktree_path,
                 step_clone.model.clone(),
                 step_clone.permission.clone(),
-                parent_session.backend_id.clone(),
-                parent_session.selected_model.clone(),
-                parent_session.permission_mode,
+                parent,
             )
             .await?;
         let permission_mode = step_session.permission_mode.clone();
@@ -2488,18 +2746,9 @@ impl WorkflowEngine {
             );
         }
 
-        // AgentSession開始（ステップ用セッションIDを使用、ファセット方式ではsystem_promptを渡す）
-        crate::agent_sdk::start_agent_session_internal(
-            app,
-            handles,
-            session_store,
-            &step_session_id,
-            worktree_path,
-            None,
-            system_prompt,
-        )
-        .await
-        .map_err(WorkflowEngineError::AgentSession)?;
+        // 合成済み system_prompt を AgentSession 起動経路へ受け渡す。
+        deps.dispatch_session_start(&step_session_id, worktree_path, None, system_prompt)
+            .await?;
 
         // ステップセッションIDをワークフロー実行に紐付け
         let snapshot = {
@@ -2513,23 +2762,14 @@ impl WorkflowEngine {
         };
 
         if let Some(snapshot) = snapshot {
-            self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
+            deps.persist_workflow_state(&chat_session_id, snapshot.clone())
                 .await?;
-            self.broadcast_state(app, worktree_path, snapshot);
+            deps.broadcast_state(worktree_path, snapshot);
         }
 
         // プロンプト送信（ステップ用セッションIDを使用）
-        crate::agent_sdk::start_agent_turn_internal(
-            app,
-            handles,
-            session_store,
-            &step_session_id,
-            worktree_path,
-            &permission_mode,
-            &prompt,
-        )
-        .await
-        .map_err(WorkflowEngineError::AgentSession)
+        deps.start_agent_turn(&step_session_id, worktree_path, &permission_mode, &prompt)
+            .await
     }
 
     /// ファセット合成パイプライン: compose → 変数展開 → step output注入
@@ -2576,6 +2816,70 @@ impl WorkflowEngine {
             workflow_variables,
         );
         Ok((system_prompt, prompt))
+    }
+
+    /// `SessionStartGate` 経由で AgentSession を開始する。
+    /// production からは `RealSessionStartGate` を、テストからは記録用テストダブルを渡す。
+    /// この関数を経由することで、合成された `system_prompt` がドロップ・空文字置換されずに
+    /// バックエンドへ受け渡されることをユニットテストで検証可能にする。
+    async fn dispatch_session_start<G: SessionStartGate + ?Sized>(
+        gate: &G,
+        chat_session_id: &str,
+        worktree_path: &str,
+        permission_mode: Option<String>,
+        system_prompt: Option<String>,
+    ) -> Result<(), WorkflowEngineError> {
+        gate.start_session(
+            chat_session_id,
+            worktree_path,
+            permission_mode,
+            system_prompt,
+        )
+        .await
+        .map_err(WorkflowEngineError::AgentSession)
+    }
+
+    /// `build_step_prompt` で合成した `system_prompt` を `dispatch_session_start` 経由で
+    /// gate に渡し、`prompt`（user_message 由来）を返すテスト用ヘルパー。
+    ///
+    /// production では `start_step_session` 内で `build_step_prompt` →
+    /// `create_step_session_with_settings` → `dispatch_session_start` を順に呼ぶ
+    /// 構造にしている（プロンプト合成失敗時に ChatSession・参照マップ登録が起きない
+    /// 順序保証のため）。テストでは記録用 gate を注入することで、合成された
+    /// `system_prompt` が None や空文字に置換されずバックエンドへ受け渡される
+    /// 経路を直接検証する。
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    async fn build_and_dispatch_step_session<G: SessionStartGate + ?Sized>(
+        gate: &G,
+        step: &crate::workflow::schema::Step,
+        facets_base_dir: &Path,
+        step_session_id: &str,
+        worktree_path: &str,
+        permission_mode: Option<String>,
+        task: Option<&str>,
+        step_outputs: &HashMap<String, StepOutput>,
+        step_history: &[StepHistoryEntry],
+        workflow_variables: &HashMap<String, String>,
+    ) -> Result<String, WorkflowEngineError> {
+        let (system_prompt, prompt) = Self::build_step_prompt(
+            step,
+            facets_base_dir,
+            worktree_path,
+            task,
+            step_outputs,
+            step_history,
+            workflow_variables,
+        )?;
+        Self::dispatch_session_start(
+            gate,
+            step_session_id,
+            worktree_path,
+            permission_mode,
+            system_prompt,
+        )
+        .await?;
+        Ok(prompt)
     }
 
     /// contract検証成功時にworkflow_variablesへの反映を行う共通ヘルパー。
@@ -3541,8 +3845,10 @@ impl WorkflowEngine {
             }
 
             // ファセットからプロンプト構築
-            let (system_prompt, user_message) = self.build_parallel_step_prompt(
+            let base_dir = storage::facets_base_dir();
+            let (system_prompt, user_message) = Self::build_parallel_step_prompt(
                 ps,
+                &base_dir,
                 worktree_path,
                 task_clone.as_deref(),
                 &step_outputs_snapshot,
@@ -3682,10 +3988,11 @@ impl WorkflowEngine {
     }
 
     /// 並列子ステップ用のプロンプトを構築する。
+    /// `build_step_prompt` と同様に純粋関数として切り出し、テスト可能にする。
     #[allow(clippy::too_many_arguments)]
     fn build_parallel_step_prompt(
-        &self,
         ps: &ParallelStep,
+        facets_base_dir: &Path,
         worktree_path: &str,
         task: Option<&str>,
         step_outputs: &HashMap<String, StepOutput>,
@@ -3693,14 +4000,12 @@ impl WorkflowEngine {
         pass_output_from: Option<&[String]>,
         workflow_variables: &HashMap<String, String>,
     ) -> Result<(Option<String>, String), WorkflowEngineError> {
-        let base_dir = storage::facets_base_dir();
         let composed = crate::workflow::facet::compose_facets_from_refs(
-            ps.persona.as_deref(),
             ps.policy.as_deref(),
             ps.knowledge.as_deref(),
             ps.instruction.as_deref(),
             ps.output_contract.as_deref(),
-            &base_dir,
+            facets_base_dir,
         )
         .map_err(|e| WorkflowEngineError::InvalidWorkflow(format!("Facet error: {e}")))?;
 
@@ -4048,7 +4353,6 @@ impl WorkflowEngine {
             steps: vec![crate::workflow::schema::Step {
                 name: "implementation_fix_policy".to_string(),
                 mode: Some(StepMode::Approval),
-                persona: None,
                 policy: None,
                 knowledge: None,
                 instruction: Some("Review fix policy".to_string()),
@@ -4124,7 +4428,6 @@ mod tests {
                 Step {
                     name: "code_review_parallel".to_string(),
                     mode: None,
-                    persona: None,
                     policy: None,
                     knowledge: None,
                     instruction: None,
@@ -4149,7 +4452,6 @@ mod tests {
                 Step {
                     name: "implementation_fix_policy".to_string(),
                     mode: Some(StepMode::Approval),
-                    persona: None,
                     policy: None,
                     knowledge: None,
                     instruction: Some("Review fix policy".to_string()),
@@ -4342,7 +4644,6 @@ mod tests {
         Step {
             name: name.to_string(),
             mode: Some(mode),
-            persona: None,
             policy: None,
             knowledge: None,
             instruction: Some(instruction.to_string()),
@@ -5660,7 +5961,6 @@ mod tests {
         exec.workflow.steps.push(Step {
             name: "fix".to_string(),
             mode: Some(StepMode::Auto),
-            persona: None,
             policy: None,
             knowledge: None,
             instruction: None,
@@ -6233,15 +6533,15 @@ mod tests {
     fn build_step_prompt_full_pipeline() {
         let tmp = tempfile::TempDir::new().unwrap();
         let base = tmp.path();
-        let personas = base.join("personas");
         let instructions = base.join("instructions");
         let policies = base.join("policies");
-        std::fs::create_dir_all(&personas).unwrap();
+        let output_contracts = base.join("output_contracts");
         std::fs::create_dir_all(&instructions).unwrap();
         std::fs::create_dir_all(&policies).unwrap();
+        std::fs::create_dir_all(&output_contracts).unwrap();
         std::fs::write(
-            personas.join("coder.md"),
-            "You are a coder for {{project_name}}.",
+            policies.join("coding.md"),
+            "Coding policy for {{project_name}}.",
         )
         .unwrap();
         std::fs::write(
@@ -6249,12 +6549,12 @@ mod tests {
             "Task: {{task}}\nImplement the feature.",
         )
         .unwrap();
-        std::fs::write(policies.join("coding.md"), "Follow best practices.").unwrap();
+        std::fs::write(output_contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
 
         let mut step = make_test_step("build", StepMode::Auto, "unused", vec![], None);
-        step.persona = Some("coder".to_string());
         step.instruction = Some("impl".to_string());
         step.policy = Some("coding".to_string());
+        step.output_contract = Some("plan-doc".to_string());
         step.pass_previous_response = Some(true);
 
         let mut outputs = HashMap::new();
@@ -6285,12 +6585,13 @@ mod tests {
         )
         .unwrap();
 
-        // persona → system_prompt with variable expansion
-        assert_eq!(sys.as_deref(), Some("You are a coder for my-app."));
-        // instruction + policy in order, with variable expansion
+        // policy + output_contract → system_prompt with variable expansion
+        let sys_str = sys.expect("system_prompt should be set");
+        assert!(sys_str.contains("Coding policy for my-app."));
+        assert!(sys_str.contains("Output as markdown."));
+        // instruction in user_message, with variable expansion
         assert!(prompt.contains("Task: Fix bug"));
         assert!(prompt.contains("Implement the feature."));
-        assert!(prompt.contains("Follow best practices."));
         // inject_step_outputs: pass_previous_response includes plan output
         assert!(prompt.contains("<step_output name=\"plan\">"));
         assert!(prompt.contains("Plan output text"));
@@ -6302,7 +6603,6 @@ mod tests {
         let step = Step {
             name: "empty".to_string(),
             mode: Some(StepMode::Auto),
-            persona: None,
             policy: None,
             knowledge: None,
             instruction: None,
@@ -6334,14 +6634,15 @@ mod tests {
     }
 
     #[test]
-    fn build_step_prompt_persona_only_system_prompt_set() {
+    fn build_step_prompt_policy_only_system_prompt_set() {
+        // Scenario: policyのみを指定したステップでも system_prompt が合成される
         let tmp = tempfile::TempDir::new().unwrap();
-        let personas = tmp.path().join("personas");
-        std::fs::create_dir_all(&personas).unwrap();
-        std::fs::write(personas.join("reviewer.md"), "You review code.").unwrap();
+        let policies = tmp.path().join("policies");
+        std::fs::create_dir_all(&policies).unwrap();
+        std::fs::write(policies.join("review.md"), "Review carefully.").unwrap();
 
         let mut step = make_test_step("review", StepMode::Auto, "unused", vec![], None);
-        step.persona = Some("reviewer".to_string());
+        step.policy = Some("review".to_string());
         step.instruction = None;
 
         let (sys, prompt) = WorkflowEngine::build_step_prompt(
@@ -6355,8 +6656,656 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(sys.as_deref(), Some("You review code."));
+        assert_eq!(sys.as_deref(), Some("Review carefully."));
         assert_eq!(prompt, "");
+    }
+
+    #[test]
+    fn build_step_prompt_passes_composed_system_prompt_through() {
+        // Scenario: 合成された system_prompt は AgentSession 開始時にバックエンドへ受け渡される
+        // build_step_prompt の戻り値の Option<String> がそのまま AgentSession に渡される経路を検証する。
+        // ドロップ・空文字置換が起きないこと。
+        let tmp = tempfile::TempDir::new().unwrap();
+        let policies = tmp.path().join("policies");
+        let output_contracts = tmp.path().join("output_contracts");
+        std::fs::create_dir_all(&policies).unwrap();
+        std::fs::create_dir_all(&output_contracts).unwrap();
+        std::fs::write(policies.join("coding.md"), "POLICY_BODY").unwrap();
+        std::fs::write(output_contracts.join("plan-doc.md"), "CONTRACT_BODY").unwrap();
+
+        let mut step = make_test_step("s", StepMode::Auto, "unused", vec![], None);
+        step.policy = Some("coding".to_string());
+        step.output_contract = Some("plan-doc".to_string());
+        step.instruction = None;
+
+        let (sys, _prompt) = WorkflowEngine::build_step_prompt(
+            &step,
+            tmp.path(),
+            "/repo",
+            None,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        // 合成された system_prompt は Some(...) として渡される（None や空文字に置換されない）
+        let sys = sys.expect("system_prompt must be passed through, not dropped");
+        assert!(!sys.is_empty(), "system_prompt must not be empty string");
+        assert!(sys.contains("POLICY_BODY"));
+        assert!(sys.contains("CONTRACT_BODY"));
+    }
+
+    // ---- dispatch_session_start (SessionStartGate 経由のテストダブル検証) ----
+
+    /// テスト用の `SessionStartGate` 実装。受け取った引数を共有 Vec に記録する。
+    struct RecordingSessionStartGate {
+        records: Arc<std::sync::Mutex<Vec<RecordedSessionStart>>>,
+    }
+
+    #[derive(Clone, Debug)]
+    struct RecordedSessionStart {
+        chat_session_id: String,
+        worktree_path: String,
+        permission_mode: Option<String>,
+        system_prompt: Option<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionStartGate for RecordingSessionStartGate {
+        async fn start_session(
+            &self,
+            chat_session_id: &str,
+            worktree_path: &str,
+            permission_mode: Option<String>,
+            system_prompt: Option<String>,
+        ) -> Result<(), String> {
+            self.records.lock().unwrap().push(RecordedSessionStart {
+                chat_session_id: chat_session_id.to_string(),
+                worktree_path: worktree_path.to_string(),
+                permission_mode,
+                system_prompt,
+            });
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
+        // Scenario: 合成された system_prompt は AgentSession 開始時にバックエンドへ受け渡される
+        // ───「バックエンド起動経路 (start_agent_session_internal 相当) はテストダブルで置換され
+        // 受け取った引数を記録する」を直接検証する。
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path();
+        let policies = base.join("policies");
+        let output_contracts = base.join("output_contracts");
+        std::fs::create_dir_all(&policies).unwrap();
+        std::fs::create_dir_all(&output_contracts).unwrap();
+        std::fs::write(policies.join("p.md"), "POLICY_BODY").unwrap();
+        std::fs::write(output_contracts.join("c.md"), "CONTRACT_BODY").unwrap();
+
+        let mut step = make_test_step("s", StepMode::Auto, "unused", vec![], None);
+        step.policy = Some("p".to_string());
+        step.output_contract = Some("c".to_string());
+        step.instruction = None;
+
+        // build_step_prompt → dispatch_session_start の経路をそのまま再現する。
+        let (system_prompt, _prompt) = WorkflowEngine::build_step_prompt(
+            &step,
+            base,
+            "/repo",
+            None,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let gate = RecordingSessionStartGate {
+            records: records.clone(),
+        };
+
+        WorkflowEngine::dispatch_session_start(
+            &gate,
+            "step-session-id",
+            "/repo",
+            None,
+            system_prompt.clone(),
+        )
+        .await
+        .unwrap();
+
+        let recorded = records.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "gate.start_session must be invoked exactly once"
+        );
+        let r = &recorded[0];
+        assert_eq!(r.chat_session_id, "step-session-id");
+        assert_eq!(r.worktree_path, "/repo");
+        assert!(r.permission_mode.is_none());
+        let sp = r
+            .system_prompt
+            .as_ref()
+            .expect("system_prompt must be passed through as Some(_)");
+        assert!(
+            !sp.is_empty(),
+            "system_prompt must not be dropped or replaced with an empty string"
+        );
+        assert!(sp.contains("POLICY_BODY"));
+        assert!(sp.contains("CONTRACT_BODY"));
+    }
+
+    #[tokio::test]
+    async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through_gate() {
+        // Scenario: 合成された system_prompt は AgentSession 開始時にバックエンドへ受け渡される
+        // start_step_session 側の経路（build_step_prompt → SessionStartGate）を切り出したヘルパーを
+        // 記録用 gate で駆動し、合成された system_prompt が None / 空文字に置換されずに
+        // gate に渡ることを直接 assert する。
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path();
+        let policies = base.join("policies");
+        let output_contracts = base.join("output_contracts");
+        std::fs::create_dir_all(&policies).unwrap();
+        std::fs::create_dir_all(&output_contracts).unwrap();
+        std::fs::write(policies.join("p.md"), "STEP_POLICY_BODY").unwrap();
+        std::fs::write(output_contracts.join("c.md"), "STEP_CONTRACT_BODY").unwrap();
+
+        let mut step = make_test_step("s", StepMode::Auto, "unused", vec![], None);
+        step.policy = Some("p".to_string());
+        step.output_contract = Some("c".to_string());
+        step.instruction = None;
+
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let gate = RecordingSessionStartGate {
+            records: records.clone(),
+        };
+
+        let prompt = WorkflowEngine::build_and_dispatch_step_session(
+            &gate,
+            &step,
+            base,
+            "step-session-id",
+            "/repo",
+            None,
+            None,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+        )
+        .await
+        .unwrap();
+
+        // user_message に knowledge / instruction はなく空のままだが、関数自体は成功する
+        let _ = prompt;
+
+        let recorded = records.lock().unwrap();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "gate.start_session must be invoked exactly once via build_and_dispatch_step_session"
+        );
+        let r = &recorded[0];
+        assert_eq!(r.chat_session_id, "step-session-id");
+        assert_eq!(r.worktree_path, "/repo");
+        assert!(r.permission_mode.is_none());
+        let sp = r.system_prompt.as_ref().expect(
+            "system_prompt must be passed through start_step_session path as Some(_), not dropped",
+        );
+        assert!(
+            !sp.is_empty(),
+            "system_prompt must not be dropped or replaced with an empty string"
+        );
+        assert!(sp.contains("STEP_POLICY_BODY"));
+        assert!(sp.contains("STEP_CONTRACT_BODY"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_session_start_passes_none_when_no_facets() {
+        // Scenario: policy も output_contract も指定がないと system_prompt は設定されない
+        // を SessionStartGate 経由でも維持することを検証する。
+        let tmp = tempfile::TempDir::new().unwrap();
+        let instructions = tmp.path().join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(instructions.join("only-instr.md"), "Body").unwrap();
+
+        let mut step = make_test_step("s", StepMode::Auto, "unused", vec![], None);
+        step.instruction = Some("only-instr".to_string());
+
+        let (system_prompt, _prompt) = WorkflowEngine::build_step_prompt(
+            &step,
+            tmp.path(),
+            "/repo",
+            None,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let gate = RecordingSessionStartGate {
+            records: records.clone(),
+        };
+
+        WorkflowEngine::dispatch_session_start(&gate, "sid", "/repo", None, system_prompt)
+            .await
+            .unwrap();
+
+        let recorded = records.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert!(
+            recorded[0].system_prompt.is_none(),
+            "system_prompt must be None when neither policy nor output_contract is specified"
+        );
+    }
+
+    // ---- start_step_session_with_deps (副作用境界の注入による順序保証検証) ----
+
+    /// テスト用の `StepSessionDeps` 実装。副作用境界の各メソッドの呼び出し回数を
+    /// 記録し、本番経路と同じ順序で副作用が発火することを assert できるようにする。
+    /// プロンプト合成失敗時に `create_step_session` が呼ばれないこと等を検証する。
+    #[derive(Default)]
+    struct RecordingStepSessionDeps {
+        fetch_parent_count: std::sync::atomic::AtomicUsize,
+        create_step_session_count: std::sync::atomic::AtomicUsize,
+        dispatch_session_start_count: std::sync::atomic::AtomicUsize,
+        persist_workflow_state_count: std::sync::atomic::AtomicUsize,
+        broadcast_state_count: std::sync::atomic::AtomicUsize,
+        start_agent_turn_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RecordingStepSessionDeps {
+        fn create_step_session_count(&self) -> usize {
+            self.create_step_session_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn fetch_parent_count(&self) -> usize {
+            self.fetch_parent_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn dispatch_session_start_count(&self) -> usize {
+            self.dispatch_session_start_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn persist_workflow_state_count(&self) -> usize {
+            self.persist_workflow_state_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn broadcast_state_count(&self) -> usize {
+            self.broadcast_state_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn start_agent_turn_count(&self) -> usize {
+            self.start_agent_turn_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StepSessionDeps for RecordingStepSessionDeps {
+        async fn fetch_parent_session(
+            &self,
+            _chat_session_id: &str,
+        ) -> Result<ParentSessionInfo, WorkflowEngineError> {
+            self.fetch_parent_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ParentSessionInfo {
+                backend_id: None,
+                selected_model: None,
+                permission_mode: "default".to_string(),
+            })
+        }
+
+        async fn create_step_session(
+            &self,
+            _worktree_path: &str,
+            _step_model: Option<String>,
+            _step_permission: Option<String>,
+            _parent: ParentSessionInfo,
+        ) -> Result<StepSessionInfo, WorkflowEngineError> {
+            self.create_step_session_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(StepSessionInfo {
+                id: "step-session-id".to_string(),
+                permission_mode: "default".to_string(),
+            })
+        }
+
+        async fn dispatch_session_start(
+            &self,
+            _step_session_id: &str,
+            _worktree_path: &str,
+            _permission_mode: Option<String>,
+            _system_prompt: Option<String>,
+        ) -> Result<(), WorkflowEngineError> {
+            self.dispatch_session_start_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn persist_workflow_state(
+            &self,
+            _chat_session_id: &str,
+            _snapshot: WorkflowState,
+        ) -> Result<(), WorkflowEngineError> {
+            self.persist_workflow_state_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn broadcast_state(&self, _worktree_path: &str, _snapshot: WorkflowState) {
+            self.broadcast_state_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        async fn start_agent_turn(
+            &self,
+            _step_session_id: &str,
+            _worktree_path: &str,
+            _permission_mode: &str,
+            _prompt: &str,
+        ) -> Result<(), WorkflowEngineError> {
+            self.start_agent_turn_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// `executions` に 1 ステップのワークフロー実行を登録する。
+    /// 指定された step を current_step_index=0 として登録する。
+    fn insert_single_step_execution(execs: &mut HashMap<String, WorkflowExecution>, step: Step) {
+        let workflow = Workflow {
+            name: "regression-workflow".to_string(),
+            description: "regression test".to_string(),
+            builtin: false,
+            steps: vec![step],
+        };
+        let exec = WorkflowExecution {
+            id: "exec-id".to_string(),
+            workflow,
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: HashMap::new(),
+            step_history: Vec::new(),
+            chat_session_id: "parent-session-id".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+        execs.insert("/repo".to_string(), exec);
+    }
+
+    #[tokio::test]
+    async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_fails() {
+        // 回帰防止: `start_step_session` 本番経路では、参照先ファセットが
+        // 存在しないステップを起動した際にプロンプト合成段階で失敗し、
+        // 後続の副作用（親セッション取得 / ChatSession 生成 / `session_workflow_refs`
+        // 登録 / AgentSession 開始 / 永続化 / ブロードキャスト / ターン起動）は
+        // 一切実行されないことを構造的に保証する。
+        //
+        // 旧実装では先に ChatSession を生成・参照マップへ登録してから
+        // プロンプト合成（ファセット未発見で失敗し得る）を行っていたため、
+        // 参照先ファセットが存在しないステップを起動すると孤立した
+        // ChatSession と参照マップ entry が残るバグがあった。
+        //
+        // 本テストは `StepSessionDeps` 経由で副作用境界をテストダブルに差し替え、
+        // ファセット参照が解決不能な execution に対し `start_step_session_with_deps`
+        // を実行することで:
+        //   (a) `Err(InvalidWorkflow(_))` が返ること
+        //   (b) `create_step_session` の呼び出し回数が 0 であること
+        //   (c) `fetch_parent_session` 等 他の副作用境界メソッドも 0 回であること
+        //   (d) `engine.session_workflow_refs` が空のままであること
+        //   (e) `executions["/repo"].current_session_id` が `None` のままであること
+        // を assert する。`start_step_session` 内の順序を逆転（先に create_step_session
+        // → 後に build_step_prompt）させると (b) が 1 となりテストが失敗する。
+        let engine = WorkflowEngine::new();
+
+        // 参照先ファセットが解決不能な step を含む execution を登録する。
+        // facets_base_dir() 配下に "nonexistent_policy_<uuid>.md" が偶然存在することは
+        // 実用上ありえないため、ファセット合成は必ず失敗する。
+        let mut step = make_test_step("missing-facet", StepMode::Auto, "unused", vec![], None);
+        step.instruction = None;
+        step.policy = Some(format!(
+            "nonexistent_policy_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+
+        {
+            let mut execs = engine.executions.lock().await;
+            insert_single_step_execution(&mut execs, step);
+        }
+
+        // 事前条件: session_workflow_refs は空
+        assert!(engine.session_workflow_refs.lock().await.is_empty());
+
+        let deps = RecordingStepSessionDeps::default();
+        let result = engine.start_step_session_with_deps(&deps, "/repo").await;
+
+        // (a) build_step_prompt 失敗で InvalidWorkflow エラーになる
+        let err =
+            result.expect_err("missing facet must cause start_step_session_with_deps to fail");
+        assert!(
+            matches!(err, WorkflowEngineError::InvalidWorkflow(_)),
+            "missing facet must produce InvalidWorkflow error, got: {err:?}"
+        );
+
+        // (b)/(c) 副作用境界はいずれも呼ばれていない
+        assert_eq!(
+            deps.create_step_session_count(),
+            0,
+            "create_step_session must NOT be invoked when prompt synthesis fails"
+        );
+        assert_eq!(
+            deps.fetch_parent_count(),
+            0,
+            "fetch_parent_session must NOT be invoked when prompt synthesis fails"
+        );
+        assert_eq!(
+            deps.dispatch_session_start_count(),
+            0,
+            "dispatch_session_start must NOT be invoked when prompt synthesis fails"
+        );
+        assert_eq!(
+            deps.persist_workflow_state_count(),
+            0,
+            "persist_workflow_state must NOT be invoked when prompt synthesis fails"
+        );
+        assert_eq!(
+            deps.broadcast_state_count(),
+            0,
+            "broadcast_state must NOT be invoked when prompt synthesis fails"
+        );
+        assert_eq!(
+            deps.start_agent_turn_count(),
+            0,
+            "start_agent_turn must NOT be invoked when prompt synthesis fails"
+        );
+
+        // (d) session_workflow_refs は空のまま
+        assert!(
+            engine.session_workflow_refs.lock().await.is_empty(),
+            "session_workflow_refs must remain empty when prompt synthesis fails"
+        );
+
+        // (e) executions["/repo"].current_session_id は None のまま
+        let execs = engine.executions.lock().await;
+        let exec = execs
+            .get("/repo")
+            .expect("execution must remain registered");
+        assert!(
+            exec.current_session_id.is_none(),
+            "current_session_id must remain None when prompt synthesis fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success() {
+        // 副作用境界が正しい順序で呼ばれる成功経路を併せて検証する。
+        // プロンプト合成が成功した場合は、fetch_parent_session →
+        // create_step_session → dispatch_session_start → persist_workflow_state →
+        // broadcast_state → start_agent_turn の全境界が各 1 回ずつ呼ばれ、
+        // engine.session_workflow_refs と executions["/repo"].current_session_id が
+        // 期待通り更新されることを assert する。
+        let engine = WorkflowEngine::new();
+
+        // inline_prompt のみのステップなら facet ファイルなしでも合成が成功する。
+        let mut step = make_test_step("ok-step", StepMode::Auto, "unused", vec![], None);
+        step.instruction = None;
+        step.inline_prompt = Some("hello".to_string());
+
+        {
+            let mut execs = engine.executions.lock().await;
+            insert_single_step_execution(&mut execs, step);
+        }
+
+        let deps = RecordingStepSessionDeps::default();
+        engine
+            .start_step_session_with_deps(&deps, "/repo")
+            .await
+            .expect("start_step_session_with_deps must succeed for inline_prompt step");
+
+        // 各副作用境界が 1 回ずつ呼ばれている
+        assert_eq!(deps.fetch_parent_count(), 1);
+        assert_eq!(deps.create_step_session_count(), 1);
+        assert_eq!(deps.dispatch_session_start_count(), 1);
+        assert_eq!(deps.persist_workflow_state_count(), 1);
+        assert_eq!(deps.broadcast_state_count(), 1);
+        assert_eq!(deps.start_agent_turn_count(), 1);
+
+        // session_workflow_refs に SequentialStep として登録されている
+        let refs = engine.session_workflow_refs.lock().await;
+        let entry = refs
+            .get("step-session-id")
+            .expect("session_workflow_refs must contain step-session-id");
+        assert_eq!(entry.worktree_path, "/repo");
+        assert!(matches!(entry.kind, SessionRefKind::SequentialStep));
+        drop(refs);
+
+        // executions の current_session_id がステップセッションIDで更新されている
+        let execs = engine.executions.lock().await;
+        let exec = execs
+            .get("/repo")
+            .expect("execution must remain registered");
+        assert_eq!(
+            exec.current_session_id.as_deref(),
+            Some("step-session-id"),
+            "current_session_id must be updated to the created step session id"
+        );
+    }
+
+    // ---- build_parallel_step_prompt (並列子ステップの合成ルール) ----
+
+    fn make_parallel_step(name: &str) -> ParallelStep {
+        ParallelStep {
+            name: name.to_string(),
+            mode: StepMode::Auto,
+            policy: None,
+            knowledge: None,
+            instruction: None,
+            output_contract: None,
+            pass_previous_response: None,
+            pass_output_from: None,
+            model: None,
+            permission: None,
+        }
+    }
+
+    #[test]
+    fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
+        // Scenario: 並列ステップの子ステップでも同じ合成ルールが適用される
+        // 並列子ステップに policy / output_contract / knowledge / instruction の 4 種すべてを指定し、
+        // policy + output_contract が system_prompt に、knowledge + instruction が user_message に
+        // 集約されることを検証する。
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path();
+        let policies = base.join("policies");
+        let knowledges = base.join("knowledge");
+        let instructions = base.join("instructions");
+        let output_contracts = base.join("output_contracts");
+        std::fs::create_dir_all(&policies).unwrap();
+        std::fs::create_dir_all(&knowledges).unwrap();
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::create_dir_all(&output_contracts).unwrap();
+        std::fs::write(policies.join("pol.md"), "PARALLEL_POLICY_BODY").unwrap();
+        std::fs::write(knowledges.join("know.md"), "PARALLEL_KNOWLEDGE_BODY").unwrap();
+        std::fs::write(instructions.join("inst.md"), "PARALLEL_INSTRUCTION_BODY").unwrap();
+        std::fs::write(output_contracts.join("oc.md"), "PARALLEL_CONTRACT_BODY").unwrap();
+
+        let mut ps = make_parallel_step("child");
+        ps.policy = Some("pol".to_string());
+        ps.knowledge = Some("know".to_string());
+        ps.instruction = Some("inst".to_string());
+        ps.output_contract = Some("oc".to_string());
+
+        let (system_prompt, user_message) = WorkflowEngine::build_parallel_step_prompt(
+            &ps,
+            base,
+            "/repo",
+            None,
+            &HashMap::new(),
+            false,
+            None,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let sp =
+            system_prompt.expect("system_prompt must be set for parallel child with policy/oc");
+        // policy と output_contract の本文が system_prompt に集約される
+        assert!(sp.contains("PARALLEL_POLICY_BODY"));
+        assert!(sp.contains("PARALLEL_CONTRACT_BODY"));
+        // user_message には knowledge / instruction しか入らない
+        assert!(!sp.contains("PARALLEL_KNOWLEDGE_BODY"));
+        assert!(!sp.contains("PARALLEL_INSTRUCTION_BODY"));
+
+        // knowledge / instruction の本文は user_message に集約される
+        assert!(user_message.contains("PARALLEL_KNOWLEDGE_BODY"));
+        assert!(user_message.contains("PARALLEL_INSTRUCTION_BODY"));
+        // policy / output_contract は user_message には入らない
+        assert!(!user_message.contains("PARALLEL_POLICY_BODY"));
+        assert!(!user_message.contains("PARALLEL_CONTRACT_BODY"));
+    }
+
+    #[test]
+    fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt() {
+        // 並列子ステップでも policy / output_contract がない場合は system_prompt が None になる。
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path();
+        let instructions = base.join("instructions");
+        std::fs::create_dir_all(&instructions).unwrap();
+        std::fs::write(instructions.join("inst.md"), "INSTR").unwrap();
+
+        let mut ps = make_parallel_step("child");
+        ps.instruction = Some("inst".to_string());
+
+        let (system_prompt, user_message) = WorkflowEngine::build_parallel_step_prompt(
+            &ps,
+            base,
+            "/repo",
+            None,
+            &HashMap::new(),
+            false,
+            None,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert!(system_prompt.is_none());
+        assert!(user_message.contains("INSTR"));
     }
 
     // ---- evaluate_aggregate ----
@@ -6604,7 +7553,6 @@ mod tests {
                 steps: vec![Step {
                     name: "review".to_string(),
                     mode: Some(StepMode::Approval),
-                    persona: None,
                     policy: None,
                     knowledge: None,
                     instruction: Some("Review the code".to_string()),
@@ -7215,7 +8163,6 @@ mod tests {
                     Step {
                         name: "review".to_string(),
                         mode: Some(StepMode::Approval),
-                        persona: None,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Review the code".to_string()),
@@ -7238,7 +8185,6 @@ mod tests {
                     Step {
                         name: "fix".to_string(),
                         mode: Some(StepMode::Auto),
-                        persona: None,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Fix the issues".to_string()),
@@ -7336,7 +8282,6 @@ mod tests {
                     Step {
                         name: "fix_policy".to_string(),
                         mode: Some(StepMode::Approval),
-                        persona: None,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Review fix policy".to_string()),
@@ -7604,7 +8549,6 @@ mod tests {
                     Step {
                         name: "implementation_fix_policy".to_string(),
                         mode: Some(StepMode::Approval),
-                        persona: None,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Review fix policy".to_string()),
@@ -7625,7 +8569,6 @@ mod tests {
                     Step {
                         name: "code_review_parallel".to_string(),
                         mode: None,
-                        persona: None,
                         policy: None,
                         knowledge: None,
                         instruction: None,
@@ -7791,7 +8734,6 @@ mod tests {
                     Step {
                         name: "code_review_parallel".to_string(),
                         mode: None,
-                        persona: None,
                         policy: None,
                         knowledge: None,
                         instruction: None,
@@ -7816,7 +8758,6 @@ mod tests {
                     Step {
                         name: "implementation_fix_policy".to_string(),
                         mode: Some(StepMode::Approval),
-                        persona: None,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Review fix policy".to_string()),

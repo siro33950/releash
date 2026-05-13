@@ -240,7 +240,6 @@ mod tests {
             steps: vec![Step {
                 name: "step1".to_string(),
                 mode: Some(StepMode::Auto),
-                persona: None,
                 policy: None,
                 knowledge: None,
                 instruction: Some("implement".to_string()),

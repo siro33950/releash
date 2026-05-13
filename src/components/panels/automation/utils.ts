@@ -2,7 +2,6 @@
 // Rust FacetKind::dir_name() (src-tauri/src/workflow/facet.rs) と同期が必要。
 // DiagnosticReport のキー形式 "{dir_name}/{key}" との変換に使用。
 export const FACET_KIND_DIR_MAP: Record<string, string> = {
-	persona: "personas",
 	policy: "policies",
 	knowledge: "knowledge",
 	instruction: "instructions",

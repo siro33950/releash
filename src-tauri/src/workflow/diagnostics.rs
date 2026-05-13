@@ -6,8 +6,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-const ALL_FACET_KINDS: [FacetKind; 5] = [
-    FacetKind::Persona,
+const ALL_FACET_KINDS: [FacetKind; 4] = [
     FacetKind::Policy,
     FacetKind::Knowledge,
     FacetKind::Instruction,
@@ -578,7 +577,6 @@ fn diagnose_workflow(
         check_step_facet_refs(
             &step.name,
             &FacetRefs {
-                persona: step.persona.as_deref(),
                 policy: step.policy.as_deref(),
                 knowledge: step.knowledge.as_deref(),
                 instruction: step.instruction.as_deref(),
@@ -619,7 +617,6 @@ fn diagnose_workflow(
                 check_step_facet_refs(
                     &child.name,
                     &FacetRefs {
-                        persona: child.persona.as_deref(),
                         policy: child.policy.as_deref(),
                         knowledge: child.knowledge.as_deref(),
                         instruction: child.instruction.as_deref(),
@@ -716,7 +713,6 @@ fn diagnose_workflow(
 }
 
 struct FacetRefs<'a> {
-    persona: Option<&'a str>,
     policy: Option<&'a str>,
     knowledge: Option<&'a str>,
     instruction: Option<&'a str>,
@@ -733,7 +729,6 @@ fn check_step_facet_refs(
     facet_usage: &mut HashMap<String, Vec<FacetUsageEntry>>,
 ) {
     let refs: Vec<(&str, FacetKind, Option<&str>)> = vec![
-        ("persona", FacetKind::Persona, facet_refs.persona),
         ("policy", FacetKind::Policy, facet_refs.policy),
         ("knowledge", FacetKind::Knowledge, facet_refs.knowledge),
         (
@@ -837,7 +832,6 @@ mod tests {
         Step {
             name: name.to_string(),
             mode: Some(StepMode::Auto),
-            persona: None,
             policy: None,
             knowledge: None,
             instruction: instruction.map(|s| s.to_string()),
@@ -1395,7 +1389,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "content");
-        setup_facet(wf_dir, "personas", "reviewer", "content");
 
         // parallel block の子step が後続の report を参照 → 後方参照は許可（エラーにならない）
         let wf = Workflow {
@@ -1407,7 +1400,6 @@ mod tests {
                     parallel: Some(vec![ParallelStep {
                         name: "child1".to_string(),
                         mode: StepMode::Auto,
-                        persona: Some("reviewer".to_string()),
                         policy: None,
                         knowledge: None,
                         instruction: Some("task".to_string()),
@@ -1441,7 +1433,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "content");
-        setup_facet(wf_dir, "personas", "reviewer", "content");
 
         // parallel block の子step が兄弟を参照 → エラーになるべき
         let wf = Workflow {
@@ -1453,7 +1444,6 @@ mod tests {
                     ParallelStep {
                         name: "child1".to_string(),
                         mode: StepMode::Auto,
-                        persona: Some("reviewer".to_string()),
                         policy: None,
                         knowledge: None,
                         instruction: Some("task".to_string()),
@@ -1466,7 +1456,6 @@ mod tests {
                     ParallelStep {
                         name: "child2".to_string(),
                         mode: StepMode::Auto,
-                        persona: Some("reviewer".to_string()),
                         policy: None,
                         knowledge: None,
                         instruction: Some("task".to_string()),

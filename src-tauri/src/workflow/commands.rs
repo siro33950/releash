@@ -9,18 +9,107 @@ use crate::agent_sdk::AgentProcessMap;
 use crate::backends::{AgentBackendRegistry, ImageAttachment};
 use crate::config::AppConfig;
 use crate::session::{resolve_data_dir, SessionStore, WorkflowState};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
     match kind {
-        "persona" => Ok(FacetKind::Persona),
         "policy" => Ok(FacetKind::Policy),
         "knowledge" => Ok(FacetKind::Knowledge),
         "instruction" => Ok(FacetKind::Instruction),
         "output_contract" => Ok(FacetKind::OutputContract),
         _ => Err(format!("Unknown facet kind: {kind}")),
     }
+}
+
+// ---- ファセットコマンドの内部実装（テスト可能な純粋関数として切り出し） ----
+//
+// Tauri コマンドはこれらの inner 関数に委譲する。インテグレーションを
+// テンポラリディレクトリ上で再現することで、4 種それぞれの正常経路到達と、
+// 廃止済み種別および未知種別での I/O 非発生を直接検証できるようにする。
+
+fn list_facets_inner(kind: &str, base_dir: &Path) -> Result<Vec<String>, String> {
+    let facet_kind = parse_facet_kind(kind)?;
+    super::facet::list_facets(facet_kind, base_dir).map_err(|e| e.to_string())
+}
+
+fn get_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<String, String> {
+    let facet_kind = parse_facet_kind(kind)?;
+    super::facet::load_facet(facet_kind, key, base_dir).map_err(|e| e.to_string())
+}
+
+fn save_facet_inner(
+    kind: &str,
+    key: &str,
+    content: &str,
+    is_new: bool,
+    base_dir: &Path,
+) -> Result<(), String> {
+    let facet_kind = parse_facet_kind(kind)?;
+    if builtin::is_builtin_facet(facet_kind, key) {
+        return Err("ビルトインファセットは編集できません".to_string());
+    }
+    validate_template_variables(content)?;
+    if is_new {
+        let existing =
+            super::facet::list_facets(facet_kind, base_dir).map_err(|e| e.to_string())?;
+        if existing.contains(&key.to_string()) {
+            return Err(format!("ファセット '{key}' は既に存在します"));
+        }
+    }
+    super::facet::save_facet(facet_kind, key, content, base_dir).map_err(|e| e.to_string())
+}
+
+fn delete_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<(), String> {
+    let facet_kind = parse_facet_kind(kind)?;
+    if builtin::is_builtin_facet(facet_kind, key) {
+        return Err("ビルトインファセットは削除できません".to_string());
+    }
+    super::facet::delete_facet(facet_kind, key, base_dir).map_err(|e| e.to_string())
+}
+
+fn list_facet_summaries_inner(kind: &str, base_dir: &Path) -> Result<Vec<FacetSummary>, String> {
+    let facet_kind = parse_facet_kind(kind)?;
+    super::facet::list_facet_summaries(facet_kind, base_dir).map_err(|e| e.to_string())
+}
+
+fn duplicate_facet_inner(
+    kind: &str,
+    source_key: &str,
+    new_key: &str,
+    base_dir: &Path,
+) -> Result<(), String> {
+    let facet_kind = parse_facet_kind(kind)?;
+    super::facet::validate_facet_key(new_key).map_err(|e| e.to_string())?;
+    let existing = super::facet::list_facets(facet_kind, base_dir).map_err(|e| e.to_string())?;
+    if existing.contains(&new_key.to_string()) {
+        return Err(format!("ファセット '{new_key}' は既に存在します"));
+    }
+    let content =
+        super::facet::load_facet(facet_kind, source_key, base_dir).map_err(|e| e.to_string())?;
+    super::facet::save_facet(facet_kind, new_key, &content, base_dir).map_err(|e| e.to_string())
+}
+
+/// `open_facet_in_editor` の中核ロジック。エディタ起動はテストで差し替え可能にするため
+/// `opener` を引数で受け取る（production では実エディタ起動を渡す）。
+fn open_facet_in_editor_inner<F>(
+    kind: &str,
+    key: &str,
+    base_dir: &Path,
+    opener: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&str) -> Result<(), String>,
+{
+    let facet_kind = parse_facet_kind(kind)?;
+    if builtin::is_builtin_facet(facet_kind, key) {
+        return Err("ビルトインファセットは外部エディタで開けません".to_string());
+    }
+    let file_path =
+        super::facet::resolve_facet_path(facet_kind, key, base_dir).map_err(|e| e.to_string())?;
+    let path_str = file_path.to_string_lossy().to_string();
+    opener(&path_str)
 }
 
 fn validation_error_string(e: super::validation::ValidationError) -> String {
@@ -377,24 +466,18 @@ pub async fn get_workflow_execution_state(
 
 #[tauri::command]
 pub async fn list_facets(kind: String) -> Result<Vec<String>, String> {
-    let facet_kind = parse_facet_kind(&kind)?;
     let base_dir = storage::facets_base_dir();
-    tokio::task::spawn_blocking(move || {
-        super::facet::list_facets(facet_kind, &base_dir).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
+    tokio::task::spawn_blocking(move || list_facets_inner(&kind, &base_dir))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]
 pub async fn get_facet(kind: String, key: String) -> Result<String, String> {
-    let facet_kind = parse_facet_kind(&kind)?;
     let base_dir = storage::facets_base_dir();
-    tokio::task::spawn_blocking(move || {
-        super::facet::load_facet(facet_kind, &key, &base_dir).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
+    tokio::task::spawn_blocking(move || get_facet_inner(&kind, &key, &base_dir))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -404,40 +487,19 @@ pub async fn save_facet(
     content: String,
     is_new: Option<bool>,
 ) -> Result<(), String> {
-    let facet_kind = parse_facet_kind(&kind)?;
-    if builtin::is_builtin_facet(facet_kind, &key) {
-        return Err("ビルトインファセットは編集できません".to_string());
-    }
-    // テンプレート変数の整合性チェック
-    validate_template_variables(&content)?;
     let base_dir = storage::facets_base_dir();
-    tokio::task::spawn_blocking(move || {
-        // 新規作成時は既存キーとの重複チェック
-        if is_new.unwrap_or(false) {
-            let existing =
-                super::facet::list_facets(facet_kind, &base_dir).map_err(|e| e.to_string())?;
-            if existing.contains(&key) {
-                return Err(format!("ファセット '{key}' は既に存在します"));
-            }
-        }
-        super::facet::save_facet(facet_kind, &key, &content, &base_dir).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
+    let is_new = is_new.unwrap_or(false);
+    tokio::task::spawn_blocking(move || save_facet_inner(&kind, &key, &content, is_new, &base_dir))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]
 pub async fn delete_facet(kind: String, key: String) -> Result<(), String> {
-    let facet_kind = parse_facet_kind(&kind)?;
-    if builtin::is_builtin_facet(facet_kind, &key) {
-        return Err("ビルトインファセットは削除できません".to_string());
-    }
     let base_dir = storage::facets_base_dir();
-    tokio::task::spawn_blocking(move || {
-        super::facet::delete_facet(facet_kind, &key, &base_dir).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
+    tokio::task::spawn_blocking(move || delete_facet_inner(&kind, &key, &base_dir))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
 }
 
 // ---- 新規コマンド ----
@@ -453,13 +515,10 @@ pub async fn diagnose_all_cmd() -> Result<diagnostics::DiagnosticReport, String>
 
 #[tauri::command]
 pub async fn list_facet_summaries(kind: String) -> Result<Vec<FacetSummary>, String> {
-    let facet_kind = parse_facet_kind(&kind)?;
     let base_dir = storage::facets_base_dir();
-    tokio::task::spawn_blocking(move || {
-        super::facet::list_facet_summaries(facet_kind, &base_dir).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
+    tokio::task::spawn_blocking(move || list_facet_summaries_inner(&kind, &base_dir))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -503,24 +562,9 @@ pub async fn duplicate_facet(
     source_key: String,
     new_key: String,
 ) -> Result<(), String> {
-    let facet_kind = parse_facet_kind(&kind)?;
-    super::facet::validate_facet_key(&new_key).map_err(|e| e.to_string())?;
-
     let base_dir = storage::facets_base_dir();
     tokio::task::spawn_blocking(move || {
-        // 重複チェック
-        let existing =
-            super::facet::list_facets(facet_kind, &base_dir).map_err(|e| e.to_string())?;
-        if existing.contains(&new_key) {
-            return Err(format!("ファセット '{new_key}' は既に存在します"));
-        }
-
-        // ソースの読み込み
-        let content = super::facet::load_facet(facet_kind, &source_key, &base_dir)
-            .map_err(|e| e.to_string())?;
-
-        super::facet::save_facet(facet_kind, &new_key, &content, &base_dir)
-            .map_err(|e| e.to_string())
+        duplicate_facet_inner(&kind, &source_key, &new_key, &base_dir)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
@@ -533,22 +577,17 @@ pub fn open_facet_in_editor(
     kind: String,
     key: String,
 ) -> Result<(), String> {
-    let facet_kind = parse_facet_kind(&kind)?;
-    if builtin::is_builtin_facet(facet_kind, &key) {
-        return Err("ビルトインファセットは外部エディタで開けません".to_string());
-    }
+    parse_facet_kind(&kind)?;
     let base_dir = storage::facets_base_dir();
-    let file_path =
-        super::facet::resolve_facet_path(facet_kind, &key, &base_dir).map_err(|e| e.to_string())?;
-
-    let path_str = file_path.to_string_lossy().to_string();
     let config = state.get_config()?;
-    crate::external_editor::open_path_with_opener(
-        &app,
-        &path_str,
-        &config.app.external_editor,
-        "ファセット",
-    )
+    open_facet_in_editor_inner(&kind, &key, &base_dir, |path_str| {
+        crate::external_editor::open_path_with_opener(
+            &app,
+            path_str,
+            &config.app.external_editor,
+            "ファセット",
+        )
+    })
 }
 
 #[tauri::command]
@@ -586,7 +625,6 @@ mod tests {
 
     #[test]
     fn parse_facet_kind_valid_kinds() {
-        assert_eq!(parse_facet_kind("persona").unwrap(), FacetKind::Persona);
         assert_eq!(parse_facet_kind("policy").unwrap(), FacetKind::Policy);
         assert_eq!(parse_facet_kind("knowledge").unwrap(), FacetKind::Knowledge);
         assert_eq!(
@@ -600,9 +638,328 @@ mod tests {
     }
 
     #[test]
+    fn parse_facet_kind_persona_is_rejected() {
+        // Gherkin: persona または未知種別を指定した Tauri コマンドは拒否される
+        let result = parse_facet_kind("persona");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Unknown facet kind"));
+    }
+
+    #[test]
     fn parse_facet_kind_unknown_returns_error() {
         assert!(parse_facet_kind("unknown").is_err());
         assert!(parse_facet_kind("").is_err());
+    }
+
+    /// Gherkin: parse_facet_kind を経由する Tauri コマンドは 4種それぞれの種別指定で
+    /// 正常経路に到達する（種別解決層）
+    #[test]
+    fn parse_facet_kind_resolves_all_four_kinds_for_command_routing() {
+        for kind in ["policy", "knowledge", "instruction", "output_contract"] {
+            assert!(
+                parse_facet_kind(kind).is_ok(),
+                "kind '{kind}' should be accepted"
+            );
+        }
+    }
+
+    // ---- ファセットコマンド × 4 種カバレッジ + persona / 未知種別拒否 ----
+    //
+    // Spec L107-127 の「列挙した各 Tauri コマンドは 4種それぞれの種別指定で正常経路に到達する」
+    // および「persona または未知種別を指定した Tauri コマンドは拒否される」を、
+    // テンポラリディレクトリ上で各コマンド × 4種の組合せで実行することで検証する。
+
+    const FOUR_KINDS: [(&str, &str); 4] = [
+        ("policy", "policies"),
+        ("knowledge", "knowledge"),
+        ("instruction", "instructions"),
+        ("output_contract", "output_contracts"),
+    ];
+
+    /// 4 種それぞれのディレクトリを作成し、各種に既存の非ビルトインキー（"sample-{kind}"）を配置する。
+    fn setup_tmp_facets_base() -> tempfile::TempDir {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for (_kind, dir_name) in FOUR_KINDS {
+            let dir = tmp.path().join(dir_name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("sample-{dir_name}.md")), "SAMPLE_BODY").unwrap();
+        }
+        tmp
+    }
+
+    fn key_for(kind: &str) -> String {
+        let (_, dir) = FOUR_KINDS.iter().find(|(k, _)| *k == kind).unwrap();
+        format!("sample-{dir}")
+    }
+
+    fn personas_dir_snapshot(base: &Path) -> Vec<std::path::PathBuf> {
+        let personas = base.join("personas");
+        if !personas.exists() {
+            return Vec::new();
+        }
+        let mut entries: Vec<_> = std::fs::read_dir(&personas)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        entries.sort();
+        entries
+    }
+
+    fn assert_no_persona_files(base: &Path) {
+        assert!(
+            personas_dir_snapshot(base).is_empty(),
+            "personas/ must not be created or written to by any facet command"
+        );
+    }
+
+    #[test]
+    fn list_facets_inner_reaches_listing_path_for_each_kind() {
+        let tmp = setup_tmp_facets_base();
+        for (kind, _) in FOUR_KINDS {
+            let listed = list_facets_inner(kind, tmp.path()).unwrap();
+            assert!(
+                listed.iter().any(|k| k == &key_for(kind)),
+                "list_facets({kind}) must include the seeded key"
+            );
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn list_facets_inner_rejects_persona_and_unknown_without_io() {
+        let tmp = setup_tmp_facets_base();
+        for bad in ["persona", "unknown"] {
+            let result = list_facets_inner(bad, tmp.path());
+            assert!(result.is_err(), "list_facets({bad}) must be rejected");
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn get_facet_inner_reaches_load_path_for_each_kind() {
+        let tmp = setup_tmp_facets_base();
+        for (kind, _) in FOUR_KINDS {
+            let body = get_facet_inner(kind, &key_for(kind), tmp.path()).unwrap();
+            assert_eq!(body, "SAMPLE_BODY", "get_facet({kind}) body mismatch");
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn get_facet_inner_rejects_persona_and_unknown_without_io() {
+        let tmp = setup_tmp_facets_base();
+        for bad in ["persona", "unknown"] {
+            let result = get_facet_inner(bad, "sample-policies", tmp.path());
+            assert!(result.is_err(), "get_facet({bad}) must be rejected");
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn save_facet_inner_writes_for_each_kind() {
+        let tmp = setup_tmp_facets_base();
+        for (kind, dir_name) in FOUR_KINDS {
+            let key = format!("created-{dir_name}");
+            save_facet_inner(kind, &key, "WRITTEN_BODY", true, tmp.path()).unwrap();
+            let path = tmp.path().join(dir_name).join(format!("{key}.md"));
+            assert!(path.exists(), "save_facet({kind}) must create {path:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "WRITTEN_BODY");
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn save_facet_inner_rejects_persona_and_unknown_without_io() {
+        let tmp = setup_tmp_facets_base();
+        let before = personas_dir_snapshot(tmp.path());
+        for bad in ["persona", "unknown"] {
+            let result = save_facet_inner(bad, "anything", "BODY", true, tmp.path());
+            assert!(result.is_err(), "save_facet({bad}) must be rejected");
+        }
+        // persona/未知種別では personas/*.md を含むファセットファイルの読み書きを一切行わない
+        assert_eq!(personas_dir_snapshot(tmp.path()), before);
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn delete_facet_inner_removes_for_each_kind() {
+        let tmp = setup_tmp_facets_base();
+        for (kind, dir_name) in FOUR_KINDS {
+            let key = key_for(kind);
+            let path = tmp.path().join(dir_name).join(format!("{key}.md"));
+            assert!(path.exists());
+            delete_facet_inner(kind, &key, tmp.path()).unwrap();
+            assert!(!path.exists(), "delete_facet({kind}) must remove {path:?}");
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn delete_facet_inner_rejects_persona_and_unknown_without_io() {
+        let tmp = setup_tmp_facets_base();
+        for bad in ["persona", "unknown"] {
+            let result = delete_facet_inner(bad, "sample-policies", tmp.path());
+            assert!(result.is_err(), "delete_facet({bad}) must be rejected");
+        }
+        // 4種のサンプルは温存されている
+        for (_, dir_name) in FOUR_KINDS {
+            assert!(tmp
+                .path()
+                .join(dir_name)
+                .join(format!("sample-{dir_name}.md"))
+                .exists());
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn list_facet_summaries_inner_lists_for_each_kind() {
+        let tmp = setup_tmp_facets_base();
+        for (kind, _) in FOUR_KINDS {
+            let summaries = list_facet_summaries_inner(kind, tmp.path()).unwrap();
+            assert!(
+                summaries.iter().any(|s| s.key == key_for(kind)),
+                "list_facet_summaries({kind}) must include the seeded key"
+            );
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn list_facet_summaries_inner_rejects_persona_and_unknown_without_io() {
+        let tmp = setup_tmp_facets_base();
+        for bad in ["persona", "unknown"] {
+            let result = list_facet_summaries_inner(bad, tmp.path());
+            assert!(
+                result.is_err(),
+                "list_facet_summaries({bad}) must be rejected"
+            );
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn duplicate_facet_inner_creates_new_file_for_each_kind() {
+        let tmp = setup_tmp_facets_base();
+        for (kind, dir_name) in FOUR_KINDS {
+            let source = key_for(kind);
+            let new_key = format!("copied-{dir_name}");
+            duplicate_facet_inner(kind, &source, &new_key, tmp.path()).unwrap();
+            let path = tmp.path().join(dir_name).join(format!("{new_key}.md"));
+            assert!(
+                path.exists(),
+                "duplicate_facet({kind}) must create {path:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "SAMPLE_BODY");
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn duplicate_facet_inner_rejects_persona_and_unknown_without_io() {
+        let tmp = setup_tmp_facets_base();
+        for bad in ["persona", "unknown"] {
+            let result = duplicate_facet_inner(bad, "src", "dst", tmp.path());
+            assert!(result.is_err(), "duplicate_facet({bad}) must be rejected");
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn open_facet_in_editor_inner_invokes_opener_for_each_kind() {
+        // open_facet_in_editor のエディタ呼び出し点はテストダブル（クロージャ）で差し替えて、
+        // 実プロセスを起動せずに 4 種すべての正常経路到達と引数（対象パス）を検証する。
+        let tmp = setup_tmp_facets_base();
+        for (kind, dir_name) in FOUR_KINDS {
+            let recorded: Arc<std::sync::Mutex<Vec<String>>> =
+                Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded_clone = recorded.clone();
+            let key = key_for(kind);
+            open_facet_in_editor_inner(kind, &key, tmp.path(), move |path_str| {
+                recorded_clone.lock().unwrap().push(path_str.to_string());
+                Ok(())
+            })
+            .unwrap();
+            let paths = recorded.lock().unwrap();
+            assert_eq!(
+                paths.len(),
+                1,
+                "opener must be invoked exactly once for {kind}"
+            );
+            let expected = tmp.path().join(dir_name).join(format!("{key}.md"));
+            assert_eq!(
+                paths[0],
+                expected.to_string_lossy().to_string(),
+                "opener must receive the resolved facet path for {kind}"
+            );
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    #[test]
+    fn open_facet_in_editor_inner_rejects_persona_and_unknown_without_invoking_opener() {
+        let tmp = setup_tmp_facets_base();
+        for bad in ["persona", "unknown"] {
+            let invoked: Arc<std::sync::Mutex<bool>> = Arc::new(std::sync::Mutex::new(false));
+            let invoked_clone = invoked.clone();
+            let result = open_facet_in_editor_inner(bad, "sample", tmp.path(), move |_| {
+                *invoked_clone.lock().unwrap() = true;
+                Ok(())
+            });
+            assert!(
+                result.is_err(),
+                "open_facet_in_editor({bad}) must be rejected"
+            );
+            assert!(
+                !*invoked.lock().unwrap(),
+                "opener must not be invoked for {bad}"
+            );
+        }
+        assert_no_persona_files(tmp.path());
+    }
+
+    /// Scenario: 既存の personas ディレクトリのファイルはディスク上に残るがアプリからは参照されない
+    /// （Spec Rule: Persona廃止後もユーザーディレクトリ上の物理ファイルは保持される）
+    ///
+    /// temp dir に personas/legacy.md を事前作成し、ファセット一覧系の経路実行後も
+    /// ファイルが残り、4種の一覧結果に legacy が含まれないことを直接 assert する。
+    #[test]
+    fn legacy_persona_file_remains_on_disk_and_is_not_listed_for_any_kind() {
+        let tmp = setup_tmp_facets_base();
+        let base = tmp.path();
+
+        // 既存ユーザーが残した persona ファイル相当を事前配置
+        let personas_dir = base.join("personas");
+        std::fs::create_dir_all(&personas_dir).unwrap();
+        let legacy_path = personas_dir.join("legacy.md");
+        std::fs::write(&legacy_path, "LEGACY_PERSONA_BODY").unwrap();
+
+        // ファセット一覧系経路を 4 種それぞれで実行
+        for (kind, _dir_name) in FOUR_KINDS {
+            let listed = list_facets_inner(kind, base).unwrap();
+            assert!(
+                !listed.iter().any(|k| k == "legacy"),
+                "list_facets({kind}) must not surface the legacy persona key"
+            );
+
+            let summaries = list_facet_summaries_inner(kind, base).unwrap();
+            assert!(
+                !summaries.iter().any(|s| s.key == "legacy"),
+                "list_facet_summaries({kind}) must not surface the legacy persona key"
+            );
+        }
+
+        // 物理ファイルはディスク上に残ったまま（自動削除されない）
+        assert!(
+            legacy_path.exists(),
+            "personas/legacy.md must remain on disk after facet listing"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&legacy_path).unwrap(),
+            "LEGACY_PERSONA_BODY",
+            "personas/legacy.md content must be preserved untouched"
+        );
     }
 
     #[test]
@@ -644,7 +1001,6 @@ mod tests {
             steps: vec![Step {
                 name: "step1".to_string(),
                 mode: Some(StepMode::Auto),
-                persona: None,
                 policy: None,
                 knowledge: None,
                 instruction: None,

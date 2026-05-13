@@ -15,8 +15,6 @@ pub struct Step {
     #[serde(default)]
     pub mode: Option<StepMode>,
     #[serde(default)]
-    pub persona: Option<String>,
-    #[serde(default)]
     pub policy: Option<String>,
     #[serde(default)]
     pub knowledge: Option<String>,
@@ -49,23 +47,17 @@ pub struct Step {
 }
 
 fn has_any_facet_ref(
-    persona: &Option<String>,
     policy: &Option<String>,
     knowledge: &Option<String>,
     instruction: &Option<String>,
     output_contract: &Option<String>,
 ) -> bool {
-    persona.is_some()
-        || policy.is_some()
-        || knowledge.is_some()
-        || instruction.is_some()
-        || output_contract.is_some()
+    policy.is_some() || knowledge.is_some() || instruction.is_some() || output_contract.is_some()
 }
 
 impl Step {
     pub fn has_facet_refs(&self) -> bool {
         has_any_facet_ref(
-            &self.persona,
             &self.policy,
             &self.knowledge,
             &self.instruction,
@@ -94,8 +86,6 @@ pub struct ParallelStep {
     pub name: String,
     pub mode: StepMode,
     #[serde(default)]
-    pub persona: Option<String>,
-    #[serde(default)]
     pub policy: Option<String>,
     #[serde(default)]
     pub knowledge: Option<String>,
@@ -116,7 +106,6 @@ pub struct ParallelStep {
 impl ParallelStep {
     pub fn has_facet_refs(&self) -> bool {
         has_any_facet_ref(
-            &self.persona,
             &self.policy,
             &self.knowledge,
             &self.instruction,
@@ -204,18 +193,15 @@ description: 計画→実装→レビュー→修正ループ
 steps:
   - name: plan
     mode: interactive
-    persona: planner
     instruction: plan
 
   - name: implement
     mode: auto
-    persona: coder
     instruction: implement
     policy: coding
 
   - name: review
     mode: auto
-    persona: reviewer
     instruction: review
     policy: review
     rules:
@@ -239,7 +225,6 @@ steps:
         let plan = &wf.steps[0];
         assert_eq!(plan.name, "plan");
         assert_eq!(plan.mode, Some(StepMode::Interactive));
-        assert_eq!(plan.persona.as_deref(), Some("planner"));
         assert_eq!(plan.instruction.as_deref(), Some("plan"));
         assert!(plan.rules.is_empty());
         assert!(plan.cycle_guard.is_none());
@@ -281,7 +266,6 @@ builtin: true
 steps:
   - name: fix
     mode: auto
-    persona: coder
     instruction: fix
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
@@ -374,14 +358,12 @@ description: facet test
 steps:
   - name: implement
     mode: auto
-    persona: coder
     policy: coding
     instruction: implement
     knowledge: architecture
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         let step = &wf.steps[0];
-        assert_eq!(step.persona.as_deref(), Some("coder"));
         assert_eq!(step.policy.as_deref(), Some("coding"));
         assert_eq!(step.instruction.as_deref(), Some("implement"));
         assert_eq!(step.knowledge.as_deref(), Some("architecture"));
@@ -394,7 +376,6 @@ steps:
         let step = Step {
             name: "collect".to_string(),
             mode: Some(StepMode::Auto),
-            persona: None,
             policy: None,
             knowledge: None,
             instruction: None,
@@ -430,11 +411,11 @@ steps:
     parallel:
       - name: arch-review
         mode: auto
-        persona: reviewer
+        policy: review
         instruction: architecture-review
       - name: security-review
         mode: auto
-        persona: reviewer
+        policy: review
         instruction: security-review
     aggregate:
       all_match: "LGTM"
@@ -456,7 +437,7 @@ steps:
         assert_eq!(children.len(), 2);
         assert_eq!(children[0].name, "arch-review");
         assert_eq!(children[0].mode, StepMode::Auto);
-        assert_eq!(children[0].persona.as_deref(), Some("reviewer"));
+        assert_eq!(children[0].policy.as_deref(), Some("review"));
         assert_eq!(
             children[0].instruction.as_deref(),
             Some("architecture-review")
@@ -475,8 +456,7 @@ steps:
         let ps = ParallelStep {
             name: "review".to_string(),
             mode: StepMode::Auto,
-            persona: Some("reviewer".to_string()),
-            policy: None,
+            policy: Some("review".to_string()),
             knowledge: None,
             instruction: Some("review".to_string()),
             output_contract: None,
@@ -490,7 +470,6 @@ steps:
         let ps_no_facet = ParallelStep {
             name: "empty".to_string(),
             mode: StepMode::Auto,
-            persona: None,
             policy: None,
             knowledge: None,
             instruction: None,
@@ -652,13 +631,13 @@ steps:
     parallel:
       - name: arch-review
         mode: auto
-        persona: reviewer
+        policy: review
         instruction: architecture-review
         model: opus-4
         permission: plan
       - name: security-review
         mode: auto
-        persona: reviewer
+        policy: review
         instruction: security-review
         model: codex-mini
         permission: bypassPermissions
