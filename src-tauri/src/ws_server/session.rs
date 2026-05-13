@@ -162,6 +162,8 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     let (tx, mut rx) = WsBroadcaster::create_channel();
     state.broadcaster.set_sender(Some(tx));
     let _sender_guard = BroadcasterGuard(state.broadcaster.clone());
+    let stream_sync_notify = state.broadcaster.stream_sync_notify();
+    let broadcaster_for_forward = state.broadcaster.clone();
 
     // --- 初期データ送信: worktreeリストのみ（PTYはworktree選択後に送信） ---
     if !state.get_repo_paths().is_empty() {
@@ -204,12 +206,41 @@ async fn handle_ws_authenticated<S: AsyncRead + AsyncWrite + Unpin + Send + 'sta
     // --- セッション単位のworktree選択状態 ---
     let selected_worktree: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-    // PTY出力をWebSocketにフォワードするタスク
+    // PTY出力 + AgentStreamSync を WebSocket にフォワードするタスク。
+    // 通常の `WsMessage` は `rx` から受け取って即送信する。一方で
+    // `AgentStreamSync` は `WsBroadcaster::latest_stream_sync` slot に
+    // 最新累積のみを保持し、`stream_sync_notify` で起床して drain する。
+    // これにより遅い WS receiver に対しても累積 snapshot がキューに積み上がらず、
+    // メモリ消費は (live message × 1 snapshot) で頭打ちになる。
     let forward_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if let Ok(json) = serialize_message(&msg) {
-                if write.send(Message::text(json)).await.is_err() {
-                    break;
+        loop {
+            tokio::select! {
+                biased;
+                _ = stream_sync_notify.notified() => {
+                    let drained = broadcaster_for_forward.drain_stream_sync();
+                    let mut send_failed = false;
+                    for sync in drained {
+                        let msg = WsMessage::AgentStreamSync(sync);
+                        if let Ok(json) = serialize_message(&msg) {
+                            if write.send(Message::text(json)).await.is_err() {
+                                send_failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if send_failed { break; }
+                }
+                maybe = rx.recv() => {
+                    match maybe {
+                        Some(msg) => {
+                            if let Ok(json) = serialize_message(&msg) {
+                                if write.send(Message::text(json)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        None => break,
+                    }
                 }
             }
         }

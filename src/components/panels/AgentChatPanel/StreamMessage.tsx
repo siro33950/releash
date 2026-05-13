@@ -1,6 +1,6 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AnchorHTMLAttributes } from "react";
-import { useDeferredValue } from "react";
+import { memo } from "react";
 import Markdown from "react-markdown";
 import { rehypePluginList, remarkPluginList } from "@/lib/markdownConfig";
 import type { ImagePart, MentionReference, MessageRole } from "@/types/session";
@@ -126,14 +126,13 @@ function HumanMessageContent({
 	);
 }
 
-export function StreamMessage({
+function StreamMessageImpl({
 	content,
 	role,
 	images,
 	mentions,
 }: StreamMessageProps) {
 	const isHuman = role === "human";
-	const deferredContent = useDeferredValue(content);
 
 	if (role === "system") {
 		return (
@@ -175,10 +174,53 @@ export function StreamMessage({
 							),
 						}}
 					>
-						{deferredContent}
+						{content}
 					</Markdown>
 				</div>
 			)}
 		</div>
 	);
 }
+
+function shallowEqualImages(a?: ImagePart[], b?: ImagePart[]): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		if (a[i].data !== b[i].data || a[i].mediaType !== b[i].mediaType)
+			return false;
+	}
+	return true;
+}
+
+function shallowEqualMentions(
+	a?: MentionReference[],
+	b?: MentionReference[],
+): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		const x = a[i];
+		const y = b[i];
+		if (
+			x.filePath !== y.filePath ||
+			x.startLine !== y.startLine ||
+			x.endLine !== y.endLine
+		)
+			return false;
+	}
+	return true;
+}
+
+// memoize on (content, role, images, mentions) — the four props that change
+// the rendered DOM. Skipping re-render when none of these differ is what
+// keeps streaming-heavy turns from re-parsing every sibling message's markdown.
+export const StreamMessage = memo(StreamMessageImpl, (prev, next) => {
+	return (
+		prev.content === next.content &&
+		prev.role === next.role &&
+		shallowEqualImages(prev.images, next.images) &&
+		shallowEqualMentions(prev.mentions, next.mentions)
+	);
+});

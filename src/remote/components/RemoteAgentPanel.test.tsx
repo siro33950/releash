@@ -114,6 +114,8 @@ describe("RemoteAgentPanel", () => {
 				backend_id: "codex",
 			},
 		});
+		// Rust emits the cumulative streaming_parts on every flush — Remote
+		// replaces the message's parts on receipt.
 		emit({
 			type: "agent_stream_sync",
 			payload: {
@@ -122,15 +124,22 @@ describe("RemoteAgentPanel", () => {
 				parts: [{ type: "text", content: "Hel" }],
 			},
 		});
+		// First sync must surface in the DOM before the second arrives — long
+		// streamed responses are observed incrementally, not only at the end.
+		expect(screen.getByText("Hel")).toBeInTheDocument();
+
 		emit({
 			type: "agent_stream_sync",
 			payload: {
 				session_id: "session-1",
 				message_id: "agent-1",
-				parts: [{ type: "text", content: "lo" }],
+				parts: [{ type: "text", content: "Hello" }],
 			},
 		});
 
+		// Cumulative replace: "Hel" is no longer rendered after the next sync.
+		expect(screen.queryByText("Hel")).not.toBeInTheDocument();
+		// "Hello" appears in both the echoed human input and the agent reply.
 		expect(screen.getAllByText("Hello")).toHaveLength(2);
 	});
 

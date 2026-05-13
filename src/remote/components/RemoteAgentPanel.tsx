@@ -31,28 +31,6 @@ interface RemoteChatMessage {
 	parts: MessagePart[];
 }
 
-function mergeParts(
-	existing: MessagePart[],
-	delta: MessagePart[],
-): MessagePart[] {
-	const merged = existing.slice();
-	for (const part of delta) {
-		const last = merged[merged.length - 1];
-		if (
-			(part.type === "text" || part.type === "thinking") &&
-			last?.type === part.type
-		) {
-			merged[merged.length - 1] = {
-				...last,
-				content: last.content + part.content,
-			} as MessagePart;
-		} else {
-			merged.push(part);
-		}
-	}
-	return merged;
-}
-
 function renderPart(part: MessagePart): string {
 	switch (part.type) {
 		case "text":
@@ -151,13 +129,16 @@ export function RemoteAgentPanel({
 						break;
 					}
 					setMessages((current) => {
+						// Rust sends the cumulative `streaming_parts` on every emit, so the
+						// receiver replaces the message state wholesale. Replays / partial
+						// failures collapse to the same final state without double-merging.
 						let found = false;
 						const next = current.map((message) => {
 							if (message.id !== msg.payload.message_id) return message;
 							found = true;
 							return {
 								...message,
-								parts: mergeParts(message.parts, msg.payload.parts),
+								parts: msg.payload.parts,
 							};
 						});
 						if (found) return next;
@@ -166,7 +147,7 @@ export function RemoteAgentPanel({
 							{
 								id: msg.payload.message_id,
 								role: "agent",
-								parts: mergeParts([], msg.payload.parts),
+								parts: msg.payload.parts,
 							},
 						];
 					});
