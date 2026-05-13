@@ -26,7 +26,6 @@ interface WorkflowTraceProps {
 	workflowState: WorkflowState;
 	events?: WorkflowLogEvent[];
 	onSessionClick?: (sessionId: string) => void;
-	onFileClick?: (path: string) => void;
 	approvalAction?: WorkflowApprovalActionContext;
 }
 
@@ -50,7 +49,6 @@ export function WorkflowTrace({
 	workflowState,
 	events = [],
 	onSessionClick,
-	onFileClick,
 	approvalAction,
 }: WorkflowTraceProps) {
 	const totalTokens =
@@ -70,11 +68,9 @@ export function WorkflowTrace({
 						<TraceItemRow
 							key={traceItemKey(item, index)}
 							item={item}
-							index={index}
 							isLast={index === traceItems.length - 1}
 							workflowState={workflowState}
 							onSessionClick={onSessionClick}
-							onFileClick={onFileClick}
 							approvalAction={approvalAction}
 						/>
 					))}
@@ -280,29 +276,23 @@ function traceItemKey(item: TraceItem, index: number) {
 
 function TraceItemRow({
 	item,
-	index,
 	isLast,
 	workflowState,
 	onSessionClick,
-	onFileClick,
 	approvalAction,
 }: {
 	item: TraceItem;
-	index: number;
 	isLast: boolean;
 	workflowState: WorkflowState;
 	onSessionClick?: (sessionId: string) => void;
-	onFileClick?: (path: string) => void;
 	approvalAction?: WorkflowApprovalActionContext;
 }) {
 	if (item.kind === "parallel") {
 		return (
 			<ParallelBlockRow
 				item={item}
-				index={index}
 				isLast={isLast}
 				onSessionClick={onSessionClick}
-				onFileClick={onFileClick}
 			/>
 		);
 	}
@@ -342,18 +332,8 @@ function TraceItemRow({
 					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
 						{stepMode}
 					</span>
-					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-						#{index + 1}
-					</span>
-					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-						run {item.occurrence}
-					</span>
 				</div>
-				<TraceItemSummary
-					item={item}
-					onSessionClick={onSessionClick}
-					onFileClick={onFileClick}
-				/>
+				<TraceItemSummary item={item} onSessionClick={onSessionClick} />
 				{approvalTarget && (
 					<StepApprovalActions
 						approvalAction={approvalTarget}
@@ -461,16 +441,12 @@ function StepApprovalActions({
 
 function ParallelBlockRow({
 	item,
-	index,
 	isLast,
 	onSessionClick,
-	onFileClick,
 }: {
 	item: Extract<TraceItem, { kind: "parallel" }>;
-	index: number;
 	isLast: boolean;
 	onSessionClick?: (sessionId: string) => void;
-	onFileClick?: (path: string) => void;
 }) {
 	const completedCount = item.childSteps.filter(
 		(cs) => cs.state === "completed",
@@ -508,18 +484,11 @@ function ParallelBlockRow({
 					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
 						parallel
 					</span>
-					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-						#{index + 1}
-					</span>
-					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-						run {item.occurrence}
-					</span>
 				</div>
 				<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
 					<span>
 						{completedCount}/{totalCount} completed
 					</span>
-					{item.entry?.result && <span>Result: {item.entry.result}</span>}
 					{tokenTotal != null && (
 						<span className="shrink-0">{tokenTotal} tokens</span>
 					)}
@@ -530,16 +499,12 @@ function ParallelBlockRow({
 							key={`${child.stepName}-${child.runIndex}`}
 							child={child}
 							onSessionClick={onSessionClick}
-							onFileClick={onFileClick}
 						/>
 					))}
 				</div>
 				{item.entry?.structuredOutput && (
 					<div className="mt-2">
-						<StructuredOutputToggle
-							output={item.entry.structuredOutput}
-							onFileClick={onFileClick}
-						/>
+						<StructuredOutputToggle output={item.entry.structuredOutput} />
 					</div>
 				)}
 			</div>
@@ -550,11 +515,9 @@ function ParallelBlockRow({
 function ParallelChildRow({
 	child,
 	onSessionClick,
-	onFileClick,
 }: {
 	child: ParallelStepState;
 	onSessionClick?: (sessionId: string) => void;
-	onFileClick?: (path: string) => void;
 }) {
 	const so = child.structuredOutput;
 	const verdict =
@@ -595,10 +558,7 @@ function ParallelChildRow({
 			</div>
 			{child.structuredOutput && (
 				<div className="ml-6">
-					<StructuredOutputToggle
-						output={child.structuredOutput}
-						onFileClick={onFileClick}
-					/>
+					<StructuredOutputToggle output={child.structuredOutput} />
 				</div>
 			)}
 		</div>
@@ -617,47 +577,52 @@ function StateIcon({ state }: { state: string }) {
 function TraceItemSummary({
 	item,
 	onSessionClick,
-	onFileClick,
 }: {
 	item: Exclude<TraceItem, { kind: "parallel" }>;
 	onSessionClick?: (sessionId: string) => void;
-	onFileClick?: (path: string) => void;
 }) {
 	if (item.kind === "completed") {
 		const tokenTotal = item.entry.tokenUsage
 			? item.entry.tokenUsage.inputTokens + item.entry.tokenUsage.outputTokens
 			: null;
-		const isCollectStep = item.step?.collect != null;
-		const reduceResult = isCollectStep ? item.entry.result : null;
+		const structuredOutput = item.entry.structuredOutput;
+		const hasSummary =
+			item.entry.result != null ||
+			tokenTotal != null ||
+			(item.sessionId != null && onSessionClick != null);
+		const hasStructuredOutput = structuredOutput != null;
+
+		if (!hasSummary && !hasStructuredOutput) {
+			return null;
+		}
 
 		return (
 			<div className="mt-1 space-y-1">
-				<div className="flex items-center gap-2 text-xs text-muted-foreground">
-					<span className="min-w-0 flex-1 truncate">
-						Result: {item.entry.result ?? "completed"}
-					</span>
-					{item.entry.result && <VerdictBadge verdict={item.entry.result} />}
-					{reduceResult && <VerdictBadge verdict={reduceResult} />}
-					{tokenTotal != null && (
-						<span className="shrink-0">{tokenTotal} tokens</span>
-					)}
-					{item.sessionId && onSessionClick && (
-						<button
-							type="button"
-							className="shrink-0 text-primary hover:underline"
-							onClick={() => {
-								if (item.sessionId) onSessionClick(item.sessionId);
-							}}
-						>
-							View
-						</button>
-					)}
-				</div>
-				{item.entry.structuredOutput && (
-					<StructuredOutputToggle
-						output={item.entry.structuredOutput}
-						onFileClick={onFileClick}
-					/>
+				{hasSummary && (
+					<div className="flex items-center gap-2 text-xs text-muted-foreground">
+						<div className="min-w-0 flex-1">
+							{item.entry.result && (
+								<VerdictBadge verdict={item.entry.result} />
+							)}
+						</div>
+						{tokenTotal != null && (
+							<span className="shrink-0">{tokenTotal} tokens</span>
+						)}
+						{item.sessionId && onSessionClick && (
+							<button
+								type="button"
+								className="shrink-0 text-primary hover:underline"
+								onClick={() => {
+									if (item.sessionId) onSessionClick(item.sessionId);
+								}}
+							>
+								View
+							</button>
+						)}
+					</div>
+				)}
+				{hasStructuredOutput && (
+					<StructuredOutputToggle output={structuredOutput} />
 				)}
 			</div>
 		);
@@ -707,34 +672,12 @@ function TraceItemSummary({
 	}
 }
 
-function StructuredOutputToggle({
-	output,
-	onFileClick,
-}: {
-	output: JsonValue;
-	onFileClick?: (path: string) => void;
-}) {
+function StructuredOutputToggle({ output }: { output: JsonValue }) {
 	const [expanded, setExpanded] = useState(false);
 	const json = JSON.stringify(output, null, 2);
-	const specFilePath =
-		output != null &&
-		typeof output === "object" &&
-		!Array.isArray(output) &&
-		typeof (output as Record<string, unknown>).spec_file_path === "string"
-			? ((output as Record<string, unknown>).spec_file_path as string)
-			: undefined;
 
 	return (
 		<div className="text-xs">
-			{specFilePath && (
-				<button
-					type="button"
-					className="text-primary hover:underline"
-					onClick={() => onFileClick?.(specFilePath)}
-				>
-					{specFilePath}
-				</button>
-			)}
 			<button
 				type="button"
 				className="flex items-center gap-1 text-muted-foreground hover:text-foreground"

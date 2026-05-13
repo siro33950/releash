@@ -16,7 +16,6 @@ interface WorkflowPanelProps {
 	worktreePath: string;
 	chatSessionId: string | null;
 	onSessionClick?: (sessionId: string) => void;
-	onFileClick?: (path: string) => void;
 }
 
 export function WorkflowPanel({
@@ -24,7 +23,6 @@ export function WorkflowPanel({
 	worktreePath,
 	chatSessionId,
 	onSessionClick,
-	onFileClick,
 }: WorkflowPanelProps) {
 	const [executionIds, setExecutionIds] = useState<string[]>([]);
 	const [openPastIds, setOpenPastIds] = useState<string[]>([]);
@@ -196,18 +194,13 @@ export function WorkflowPanel({
 						workflowState={workflowState}
 						worktreePath={worktreePath}
 						onSessionClick={onSessionClick}
-						onFileClick={onFileClick}
 					/>
 				</TabsContent>
 			)}
 
 			{visiblePastIds.map((id) => (
 				<TabsContent key={id} value={id} className="flex-1 min-h-0 mt-0">
-					<ExecutionView
-						executionId={id}
-						onSessionClick={onSessionClick}
-						onFileClick={onFileClick}
-					/>
+					<ExecutionView executionId={id} onSessionClick={onSessionClick} />
 				</TabsContent>
 			))}
 
@@ -343,11 +336,9 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 function ExecutionView({
 	executionId,
 	onSessionClick,
-	onFileClick,
 }: {
 	executionId: string;
 	onSessionClick?: (sessionId: string) => void;
-	onFileClick?: (path: string) => void;
 }) {
 	const [historyState, setHistoryState] = useState<WorkflowState | null>(null);
 	const [events, setEvents] = useState<WorkflowLogEvent[]>([]);
@@ -396,7 +387,6 @@ function ExecutionView({
 					workflowState={historyState}
 					events={events}
 					onSessionClick={onSessionClick}
-					onFileClick={onFileClick}
 				/>
 			</div>
 		</div>
@@ -407,12 +397,10 @@ function WorkflowActivePanel({
 	workflowState,
 	worktreePath,
 	onSessionClick,
-	onFileClick,
 }: {
 	workflowState: WorkflowState;
 	worktreePath: string;
 	onSessionClick?: (sessionId: string) => void;
-	onFileClick?: (path: string) => void;
 }) {
 	const isRunning =
 		workflowState.state.type === "running" ||
@@ -470,7 +458,6 @@ function WorkflowActivePanel({
 				<WorkflowTrace
 					workflowState={workflowState}
 					onSessionClick={onSessionClick}
-					onFileClick={onFileClick}
 					approvalAction={{
 						worktreePath,
 						executionId: workflowState.executionId,
