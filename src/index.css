@@ -197,9 +197,6 @@
 @layer base {
 	* {
 		@apply border-border outline-ring/50;
-
-		scrollbar-width: thin;
-		scrollbar-color: oklch(0.56 0 0 / 0.4) transparent;
 	}
 	html ::-webkit-scrollbar {
 		height: 10px;
@@ -214,9 +211,6 @@
 	}
 	html ::-webkit-scrollbar-thumb:hover {
 		background: oklch(0.49 0 0 / 0.7);
-	}
-	:root.light * {
-		scrollbar-color: oklch(0.45 0 0 / 0.55) transparent;
 	}
 	:root.light ::-webkit-scrollbar-thumb {
 		background: oklch(0.45 0 0 / 0.55);
