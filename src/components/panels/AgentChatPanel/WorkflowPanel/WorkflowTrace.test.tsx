@@ -1,7 +1,17 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import {
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowState } from "@/types/workflow";
 import { WorkflowTrace } from "./WorkflowTrace";
+
+const mockInvoke = vi.fn().mockResolvedValue(undefined);
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: (...args: unknown[]) => mockInvoke(...args),
+}));
 
 function makeWorkflowState(
 	overrides: Partial<WorkflowState> = {},
@@ -35,6 +45,11 @@ function makeWorkflowState(
 }
 
 describe("WorkflowTrace", () => {
+	beforeEach(() => {
+		mockInvoke.mockReset();
+		mockInvoke.mockResolvedValue(undefined);
+	});
+
 	it("shows current action and total token usage", () => {
 		render(<WorkflowTrace workflowState={makeWorkflowState()} />);
 		expect(screen.getByText("Running plan")).toBeInTheDocument();
@@ -69,6 +84,335 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("review")).toBeInTheDocument();
 		expect(screen.getByText("approval")).toBeInTheDocument();
 		expect(screen.getByText("Waiting for approval")).toBeInTheDocument();
+	});
+
+	it("renders approval actions inside the current waiting step row when context is provided", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+					currentStepName: "review",
+					currentStepIndex: 1,
+					approvalOperations: { canReject: true },
+					stepStates: {
+						plan: "completed",
+						review: "waiting_approval",
+						fix: "pending",
+					},
+				})}
+				approvalAction={{
+					worktreePath: "/repo",
+					executionId: "exec-001",
+				}}
+			/>,
+		);
+
+		const reviewRow = screen.getByTestId("trace-item-review-1");
+		expect(
+			within(reviewRow).getByRole("button", { name: "Approve step" }),
+		).toBeInTheDocument();
+		expect(
+			within(reviewRow).getByRole("button", { name: "Reject step" }),
+		).toBeInTheDocument();
+	});
+
+	it("does not render approval actions without approval context", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+					currentStepName: "review",
+					currentStepIndex: 1,
+					approvalOperations: { canReject: true },
+					stepStates: {
+						plan: "completed",
+						review: "waiting_approval",
+						fix: "pending",
+					},
+				})}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "Approve step" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Reject step" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("invokes approve_workflow_step from the current step row and clears row actions after transition", () => {
+		const { rerender } = render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+					currentStepName: "review",
+					currentStepIndex: 1,
+					stepStates: {
+						plan: "completed",
+						review: "waiting_approval",
+						fix: "pending",
+					},
+				})}
+				approvalAction={{
+					worktreePath: "/repo",
+					executionId: "exec-001",
+				}}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Approve step" }));
+
+		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
+			worktreePath: "/repo",
+			decision: "approve",
+			executionId: "exec-001",
+			stepName: "review",
+		});
+
+		rerender(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "running" },
+					currentStepName: "fix",
+					currentStepIndex: 2,
+					stepStates: {
+						plan: "completed",
+						review: "completed",
+						fix: "running",
+					},
+					stepHistory: [
+						{
+							stepName: "review",
+							completedAt: 1001,
+							result: "approve",
+						},
+					],
+				})}
+				approvalAction={{
+					worktreePath: "/repo",
+					executionId: "exec-001",
+				}}
+			/>,
+		);
+
+		const reviewRow = screen.getByTestId("trace-item-review-1");
+		expect(
+			within(reviewRow).queryByRole("button", { name: "Approve step" }),
+		).not.toBeInTheDocument();
+		expect(
+			within(reviewRow).queryByRole("button", { name: "Reject step" }),
+		).not.toBeInTheDocument();
+		expect(screen.getByText("Running fix")).toBeInTheDocument();
+	});
+
+	it("keeps reject input and shows row error when reject command fails", async () => {
+		mockInvoke.mockRejectedValue("validation_error: comment is too long");
+
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+					currentStepName: "review",
+					currentStepIndex: 1,
+					approvalOperations: { canReject: true },
+					stepStates: {
+						plan: "completed",
+						review: "waiting_approval",
+						fix: "pending",
+					},
+				})}
+				approvalAction={{
+					worktreePath: "/repo",
+					executionId: "exec-001",
+				}}
+			/>,
+		);
+
+		const row = screen.getByTestId("trace-item-review-1");
+		fireEvent.click(within(row).getByRole("button", { name: "Reject step" }));
+		fireEvent.change(within(row).getByLabelText("Reject comment"), {
+			target: { value: "x".repeat(8193) },
+		});
+		fireEvent.click(within(row).getByRole("button", { name: "Submit reject" }));
+
+		expect(await within(row).findByRole("alert")).toHaveTextContent(
+			"comment is too long",
+		);
+		expect(within(row).getByLabelText("Reject comment")).toHaveValue(
+			"x".repeat(8193),
+		);
+	});
+
+	it("renders approval actions only on the current occurrence row", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+					currentStepName: "review",
+					currentStepIndex: 1,
+					stepExecutionCounts: { review: 2 },
+					approvalOperations: { canReject: true },
+					stepStates: {
+						plan: "completed",
+						review: "waiting_approval",
+						fix: "pending",
+					},
+					stepHistory: [
+						{
+							stepName: "review",
+							completedAt: 1001,
+							result: "reject",
+						},
+					],
+				})}
+				approvalAction={{
+					worktreePath: "/repo",
+					executionId: "exec-001",
+				}}
+			/>,
+		);
+
+		expect(
+			within(screen.getByTestId("trace-item-review-1")).queryByRole("button", {
+				name: "Approve step",
+			}),
+		).not.toBeInTheDocument();
+		expect(
+			within(screen.getByTestId("trace-item-review-2")).getByRole("button", {
+				name: "Approve step",
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("does not render approval actions in parallel block rows", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+					currentStepName: "parallel-review",
+					currentStepIndex: 0,
+					totalSteps: 2,
+					approvalOperations: { canReject: true },
+					stepStates: {
+						"parallel-review": "waiting_approval",
+						report: "pending",
+					},
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "test",
+						builtin: false,
+						steps: [
+							{
+								name: "parallel-review",
+								rules: [],
+								parallel: [
+									{ name: "arch-review", mode: "auto" },
+									{ name: "security-review", mode: "auto" },
+								],
+							},
+							{
+								name: "report",
+								mode: "auto",
+								instruction: "report",
+								rules: [],
+							},
+						],
+					},
+					activeParallelSteps: [
+						{
+							stepName: "arch-review",
+							state: "running",
+							runIndex: 0,
+						},
+						{
+							stepName: "security-review",
+							state: "running",
+							runIndex: 0,
+						},
+					],
+				})}
+				approvalAction={{
+					worktreePath: "/repo",
+					executionId: "exec-001",
+				}}
+			/>,
+		);
+
+		const parentRow = screen.getByTestId("trace-item-parallel-review-1");
+		const childRow = screen.getByTestId("trace-child-item-arch-review-1");
+
+		expect(
+			within(parentRow).queryByRole("button", { name: "Approve step" }),
+		).not.toBeInTheDocument();
+		expect(
+			within(parentRow).queryByRole("button", { name: "Reject step" }),
+		).not.toBeInTheDocument();
+		expect(
+			within(childRow).queryByRole("button", { name: "Approve step" }),
+		).not.toBeInTheDocument();
+		expect(
+			within(childRow).queryByRole("button", { name: "Reject step" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Approve step" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Reject step" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("does not render approval actions for a current parallel definition without active child rows", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "waiting_approval" },
+					currentStepName: "parallel-review",
+					currentStepIndex: 0,
+					totalSteps: 2,
+					approvalOperations: { canReject: true },
+					stepStates: {
+						"parallel-review": "waiting_approval",
+						report: "pending",
+					},
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "test",
+						builtin: false,
+						steps: [
+							{
+								name: "parallel-review",
+								rules: [],
+								parallel: [
+									{ name: "arch-review", mode: "auto" },
+									{ name: "security-review", mode: "auto" },
+								],
+							},
+							{
+								name: "report",
+								mode: "auto",
+								instruction: "report",
+								rules: [],
+							},
+						],
+					},
+					activeParallelSteps: [],
+				})}
+				approvalAction={{
+					worktreePath: "/repo",
+					executionId: "exec-001",
+				}}
+			/>,
+		);
+
+		const parentRow = screen.getByTestId("trace-item-parallel-review-1");
+
+		expect(
+			within(parentRow).queryByRole("button", { name: "Approve step" }),
+		).not.toBeInTheDocument();
+		expect(
+			within(parentRow).queryByRole("button", { name: "Reject step" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("shows step history entries in chronological loop order", () => {

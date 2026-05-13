@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowState } from "@/types/workflow";
 
@@ -89,6 +95,11 @@ describe("WorkflowPanel", () => {
 		expect(
 			screen.getByRole("button", { name: "Stop workflow" }),
 		).toBeInTheDocument();
+		expect(
+			within(screen.getByTestId("trace-item-step-1-1")).queryByRole("button", {
+				name: "Stop workflow",
+			}),
+		).not.toBeInTheDocument();
 	});
 
 	it("shows Stop button when waiting_approval", () => {
@@ -148,6 +159,57 @@ describe("WorkflowPanel", () => {
 		});
 	});
 
+	it("shows abort command errors in the top action area", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "abort_workflow") {
+				return Promise.reject("abort failed");
+			}
+			return Promise.resolve([]);
+		});
+
+		render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState()}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent("abort failed");
+	});
+
+	it("clears abort command errors when workflow identity changes", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "abort_workflow") {
+				return Promise.reject("abort failed");
+			}
+			return Promise.resolve([]);
+		});
+
+		const { rerender } = render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState()}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent("abort failed");
+
+		rerender(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({ executionId: "exec-002" })}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		});
+	});
+
 	it("shows current execution as a tab with workflow name", () => {
 		render(
 			<WorkflowPanel
@@ -195,12 +257,18 @@ describe("WorkflowPanel", () => {
 				chatSessionId="session-1"
 			/>,
 		);
+		const currentRow = screen.getByTestId("trace-item-step-1-1");
 		expect(
-			screen.getByRole("button", { name: "Approve step" }),
+			within(currentRow).getByRole("button", { name: "Approve step" }),
 		).toBeInTheDocument();
 		expect(
-			screen.getByRole("button", { name: "Reject step" }),
+			within(currentRow).getByRole("button", { name: "Reject step" }),
 		).toBeInTheDocument();
+		expect(
+			screen
+				.getByRole("button", { name: "Stop workflow" })
+				.parentElement?.querySelector('[aria-label="Approve step"]'),
+		).not.toBeInTheDocument();
 	});
 
 	it("hides Reject button when waiting_approval cannot reject", () => {
@@ -214,11 +282,12 @@ describe("WorkflowPanel", () => {
 				chatSessionId="session-1"
 			/>,
 		);
+		const currentRow = screen.getByTestId("trace-item-step-1-1");
 		expect(
-			screen.getByRole("button", { name: "Approve step" }),
+			within(currentRow).getByRole("button", { name: "Approve step" }),
 		).toBeInTheDocument();
 		expect(
-			screen.queryByRole("button", { name: "Reject step" }),
+			within(currentRow).queryByRole("button", { name: "Reject step" }),
 		).not.toBeInTheDocument();
 	});
 
@@ -260,9 +329,12 @@ describe("WorkflowPanel", () => {
 				chatSessionId="session-1"
 			/>,
 		);
-		fireEvent.click(screen.getByRole("button", { name: "Approve step" }));
+		const currentRow = screen.getByTestId("trace-item-step-1-1");
+		fireEvent.click(
+			within(currentRow).getByRole("button", { name: "Approve step" }),
+		);
 
-		expect(await screen.findByRole("alert")).toHaveTextContent(
+		expect(await within(currentRow).findByRole("alert")).toHaveTextContent(
 			"Workflow approval is no longer available for the current step.",
 		);
 	});
@@ -285,12 +357,34 @@ describe("WorkflowPanel", () => {
 		).toBeDisabled();
 	});
 
-	it("invokes approve_workflow_step with reject comment when submitted", async () => {
-		render(
+	it("invokes approve_workflow_step with reject comment when submitted and clears row actions after transition", async () => {
+		const workflowDefinition = {
+			name: "test-workflow",
+			description: "test",
+			builtin: false,
+			steps: [
+				{
+					name: "review",
+					mode: "approval" as const,
+					instruction: "review",
+					rules: [{ match: "reject", next: "fix" }],
+				},
+				{ name: "fix", mode: "auto" as const, instruction: "fix", rules: [] },
+			],
+		} satisfies WorkflowState["workflowDefinition"];
+		const { rerender } = render(
 			<WorkflowPanel
 				workflowState={makeWorkflowState({
 					state: { type: "waiting_approval" },
+					currentStepName: "review",
+					currentStepIndex: 0,
+					totalSteps: 2,
 					approvalOperations: { canReject: true },
+					stepStates: {
+						review: "waiting_approval",
+						fix: "pending",
+					},
+					workflowDefinition,
 				})}
 				worktreePath="/repo"
 				chatSessionId="session-1"
@@ -308,11 +402,46 @@ describe("WorkflowPanel", () => {
 			worktreePath: "/repo",
 			decision: { reject: { comment: "Please fix the bug" } },
 			executionId: "exec-001",
-			stepName: "step-1",
+			stepName: "review",
 		});
 		await waitFor(() => {
 			expect(screen.queryByLabelText("Reject comment")).not.toBeInTheDocument();
 		});
+
+		rerender(
+			<WorkflowPanel
+				workflowState={makeWorkflowState({
+					state: { type: "running" },
+					currentStepName: "fix",
+					currentStepIndex: 1,
+					totalSteps: 2,
+					stepStates: {
+						review: "completed",
+						fix: "running",
+					},
+					stepHistory: [
+						{
+							stepName: "review",
+							completedAt: 1001,
+							result: "reject",
+						},
+					],
+					workflowDefinition,
+				})}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+
+		const reviewRow = screen.getByTestId("trace-item-review-1");
+		expect(within(reviewRow).getByText("Result: reject")).toBeInTheDocument();
+		expect(screen.getByText("Running fix")).toBeInTheDocument();
+		expect(
+			within(reviewRow).queryByRole("button", { name: "Approve step" }),
+		).not.toBeInTheDocument();
+		expect(
+			within(reviewRow).queryByRole("button", { name: "Reject step" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("hides reject form after successful submit", async () => {

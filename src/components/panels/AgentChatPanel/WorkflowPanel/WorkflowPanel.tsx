@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Check, History, Square, X } from "lucide-react";
+import { AlertTriangle, History, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	Popover,
@@ -418,145 +418,35 @@ function WorkflowActivePanel({
 		workflowState.state.type === "running" ||
 		workflowState.state.type === "waiting_approval";
 
-	const isWaitingApproval = workflowState.state.type === "waiting_approval";
-	const canReject = workflowState.approvalOperations?.canReject === true;
+	const [abortError, setAbortError] = useState<string | null>(null);
 
-	const [rejectMode, setRejectMode] = useState(false);
-	const [rejectComment, setRejectComment] = useState("");
-	const [approvalError, setApprovalError] = useState<string | null>(null);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: reset reject form when step/execution/approval state changes
 	useEffect(() => {
-		setRejectMode(false);
-		setRejectComment("");
-		setApprovalError(null);
-	}, [
-		workflowState.executionId,
-		workflowState.currentStepName,
-		isWaitingApproval,
-	]);
+		setAbortError(null);
+	}, [worktreePath, workflowState.executionId, workflowState.state.type]);
 
 	const handleAbort = useCallback(() => {
-		invoke("abort_workflow", { worktreePath }).catch((e) =>
-			console.warn("[WorkflowPanel] abort_workflow failed", e),
-		);
+		invoke("abort_workflow", { worktreePath })
+			.then(() => setAbortError(null))
+			.catch((e) => {
+				console.warn("[WorkflowPanel] abort_workflow failed", e);
+				setAbortError(String(e));
+			});
 	}, [worktreePath]);
-
-	const handleApprove = useCallback(() => {
-		invoke("approve_workflow_step", {
-			worktreePath,
-			decision: "approve",
-			executionId: workflowState.executionId,
-			stepName: workflowState.currentStepName,
-		})
-			.then(() => setApprovalError(null))
-			.catch((e) => {
-				console.warn("[WorkflowPanel] approve_workflow_step failed", e);
-				setApprovalError(formatWorkflowApprovalError(e));
-			});
-	}, [worktreePath, workflowState.executionId, workflowState.currentStepName]);
-
-	const handleRejectClick = useCallback(() => {
-		setRejectMode(true);
-	}, []);
-
-	const handleRejectSubmit = useCallback(() => {
-		invoke("approve_workflow_step", {
-			worktreePath,
-			decision: { reject: { comment: rejectComment } },
-			executionId: workflowState.executionId,
-			stepName: workflowState.currentStepName,
-		})
-			.then(() => {
-				setRejectMode(false);
-				setRejectComment("");
-				setApprovalError(null);
-			})
-			.catch((e) => {
-				console.warn("[WorkflowPanel] approve_workflow_step failed", e);
-				setApprovalError(formatWorkflowApprovalError(e));
-			});
-	}, [
-		worktreePath,
-		rejectComment,
-		workflowState.executionId,
-		workflowState.currentStepName,
-	]);
-
-	const handleRejectCancel = useCallback(() => {
-		setRejectMode(false);
-		setRejectComment("");
-	}, []);
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden">
-			{approvalError && (
+			{abortError && (
 				<div
 					role="alert"
 					className="flex items-start gap-2 px-3 py-2 border-b bg-red-500/10 text-red-700 dark:text-red-300 text-xs shrink-0"
 				>
-					<X className="size-3.5 mt-0.5 shrink-0" />
-					<span>{approvalError}</span>
-				</div>
-			)}
-			{/* Reject comment input */}
-			{isWaitingApproval && rejectMode && (
-				<div className="flex flex-col gap-1.5 px-3 py-2 border-b shrink-0">
-					<textarea
-						className="w-full px-2 py-1 text-xs rounded border bg-background resize-none"
-						rows={3}
-						placeholder="Reject comment..."
-						value={rejectComment}
-						onChange={(e) => setRejectComment(e.target.value)}
-						aria-label="Reject comment"
-					/>
-					<div className="flex items-center gap-2 justify-end">
-						<button
-							type="button"
-							onClick={handleRejectCancel}
-							className="px-2 py-0.5 text-xs rounded bg-muted hover:bg-muted/80 transition-colors"
-						>
-							Cancel
-						</button>
-						<button
-							type="button"
-							onClick={handleRejectSubmit}
-							disabled={rejectComment.trim().length === 0}
-							className="px-2 py-0.5 text-xs rounded bg-yellow-500/20 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-500/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-							aria-label="Submit reject"
-						>
-							Reject
-						</button>
-					</div>
+					<AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
+					<span>{abortError}</span>
 				</div>
 			)}
 			{/* Action bar */}
 			<div className="flex items-center justify-end px-3 py-1.5 border-b shrink-0">
 				<div className="flex items-center gap-2">
-					{isWaitingApproval && !rejectMode && (
-						<>
-							<button
-								type="button"
-								onClick={handleApprove}
-								className="flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-green-500/20 text-green-700 dark:text-green-300 hover:bg-green-500/30 transition-colors"
-								aria-label="Approve step"
-							>
-								<Check className="size-3" />
-								Approve
-							</button>
-							{canReject && (
-								<button
-									type="button"
-									onClick={handleRejectClick}
-									className="flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-yellow-500/20 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-500/30 transition-colors"
-									aria-label="Reject step"
-								>
-									<X className="size-3" />
-									Reject
-								</button>
-							)}
-						</>
-					)}
 					{isRunning && (
 						<button
 							type="button"
@@ -577,27 +467,14 @@ function WorkflowActivePanel({
 					workflowState={workflowState}
 					onSessionClick={onSessionClick}
 					onFileClick={onFileClick}
+					approvalAction={{
+						worktreePath,
+						executionId: workflowState.executionId,
+					}}
 				/>
 			</div>
 		</div>
 	);
-}
-
-function formatWorkflowApprovalError(error: unknown): string {
-	const message = String(error);
-	if (message.startsWith("invalid_state:")) {
-		return "Workflow approval is no longer available for the current step.";
-	}
-	if (message.startsWith("validation_error:")) {
-		return message.replace(/^validation_error:\s*/, "");
-	}
-	if (message.startsWith("unauthorized_worktree:")) {
-		return "This approval belongs to a different worktree.";
-	}
-	if (message.startsWith("unauthorized_approval_target:")) {
-		return "This approval request no longer matches the current workflow step.";
-	}
-	return message;
 }
 
 function StatusBadge({ state }: { state: string }) {
