@@ -434,7 +434,7 @@ describe("WorkflowPanel", () => {
 		);
 
 		const reviewRow = screen.getByTestId("trace-item-review-1");
-		expect(within(reviewRow).getByText("Result: reject")).toBeInTheDocument();
+		expect(within(reviewRow).getByText("reject")).toBeInTheDocument();
 		expect(screen.getByText("Running fix")).toBeInTheDocument();
 		expect(
 			within(reviewRow).queryByRole("button", { name: "Approve step" }),

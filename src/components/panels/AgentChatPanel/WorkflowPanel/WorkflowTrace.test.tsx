@@ -56,6 +56,7 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("plan")).toBeInTheDocument();
 		expect(screen.getByText("auto")).toBeInTheDocument();
 		expect(screen.getByText("Running")).toBeInTheDocument();
+		expect(screen.queryByText("run 1")).not.toBeInTheDocument();
 	});
 
 	it("shows waiting approval as the required current action", () => {
@@ -459,14 +460,45 @@ describe("WorkflowTrace", () => {
 			.getAllByText(/^(review|fix)$/)
 			.map((node) => node.textContent);
 		expect(stepNames).toEqual(["review", "fix", "review", "fix", "review"]);
-		expect(screen.getAllByText("Result: NEEDS_FIX")).toHaveLength(2);
-		expect(screen.getAllByText("Result: FIX_DONE")).toHaveLength(2);
-		expect(screen.getByText("Result: LGTM")).toBeInTheDocument();
-		expect(screen.getAllByText("run 1")).toHaveLength(2);
-		expect(screen.getAllByText("run 2")).toHaveLength(2);
-		expect(screen.getByText("run 3")).toBeInTheDocument();
+		expect(screen.getAllByText("NEEDS_FIX")).toHaveLength(2);
+		expect(screen.getAllByText("FIX_DONE")).toHaveLength(2);
+		expect(screen.getByText("LGTM")).toBeInTheDocument();
+		expect(screen.queryByText("Result: NEEDS_FIX")).not.toBeInTheDocument();
+		expect(screen.queryByText("Result: FIX_DONE")).not.toBeInTheDocument();
+		expect(screen.queryByText("Result: LGTM")).not.toBeInTheDocument();
+		expect(screen.queryByText("run 1")).not.toBeInTheDocument();
+		expect(screen.queryByText("run 2")).not.toBeInTheDocument();
+		expect(screen.queryByText("run 3")).not.toBeInTheDocument();
+		expect(screen.queryByText("#1")).not.toBeInTheDocument();
+		expect(screen.queryByText("#2")).not.toBeInTheDocument();
 		expect(screen.getByText("80 tokens")).toBeInTheDocument();
 		expect(screen.getByText("100 tokens")).toBeInTheDocument();
+	});
+
+	it("does not render order badge for a single-step workflow", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "test",
+						builtin: false,
+						steps: [
+							{
+								name: "plan",
+								mode: "auto",
+								instruction: "plan",
+								rules: [],
+							},
+						],
+					},
+					totalSteps: 1,
+					stepStates: { plan: "running" },
+				})}
+			/>,
+		);
+		expect(screen.getByText("plan")).toBeInTheDocument();
+		expect(screen.queryByText("#1")).not.toBeInTheDocument();
 	});
 
 	it("calls onSessionClick when a history entry View button is clicked", () => {
@@ -538,6 +570,7 @@ describe("WorkflowTrace", () => {
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState({
+					state: { type: "completed" },
 					stepStates: {
 						plan: "completed",
 						review: "pending",
@@ -555,6 +588,30 @@ describe("WorkflowTrace", () => {
 			/>,
 		);
 		expect(screen.getByText("Structured Output")).toBeInTheDocument();
+	});
+
+	it("does not render default Result text for completed step without result", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "completed" },
+					stepStates: {
+						plan: "completed",
+						review: "pending",
+						fix: "pending",
+					},
+					stepHistory: [
+						{
+							stepName: "plan",
+							completedAt: 1001,
+							result: null,
+						},
+					],
+				})}
+			/>,
+		);
+		expect(screen.getByText("plan")).toBeInTheDocument();
+		expect(screen.queryByText("Result: completed")).not.toBeInTheDocument();
 	});
 
 	it("expands structuredOutput on toggle click", () => {
@@ -581,8 +638,7 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText(/"verdict": "LGTM"/)).toBeInTheDocument();
 	});
 
-	it("renders spec_file_path as clickable link and calls onFileClick", () => {
-		const onFileClick = vi.fn();
+	it("shows spec_file_path only inside expanded Structured Output JSON", () => {
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState({
@@ -602,13 +658,19 @@ describe("WorkflowTrace", () => {
 						},
 					],
 				})}
-				onFileClick={onFileClick}
 			/>,
 		);
-		const link = screen.getByText("docs/spec/issues-909.md");
-		expect(link).toBeInTheDocument();
-		fireEvent.click(link);
-		expect(onFileClick).toHaveBeenCalledWith("docs/spec/issues-909.md");
+		expect(
+			screen.queryByRole("button", { name: "docs/spec/issues-909.md" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("docs/spec/issues-909.md"),
+		).not.toBeInTheDocument();
+		fireEvent.click(screen.getByText("Structured Output"));
+		expect(screen.getByText(/docs\/spec\/issues-909\.md/)).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "docs/spec/issues-909.md" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("shows VerdictBadge for collect step reduce result", () => {
@@ -659,8 +721,8 @@ describe("WorkflowTrace", () => {
 				})}
 			/>,
 		);
-		const badges = screen.getAllByText("NEEDS_FIX");
-		expect(badges.length).toBeGreaterThanOrEqual(1);
+		expect(screen.getAllByText("NEEDS_FIX")).toHaveLength(1);
+		expect(screen.queryByText("Result: NEEDS_FIX")).not.toBeInTheDocument();
 	});
 
 	it("renders parallel block with child steps", () => {
@@ -717,6 +779,8 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("arch-review")).toBeInTheDocument();
 		expect(screen.getByText("security-review")).toBeInTheDocument();
 		expect(screen.getByText("1/2 completed")).toBeInTheDocument();
+		expect(screen.queryByText("#1")).not.toBeInTheDocument();
+		expect(screen.queryByText("run 1")).not.toBeInTheDocument();
 	});
 
 	it("renders completed parallel block from stepHistory with child steps and output", () => {
@@ -808,7 +872,8 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("arch-review")).toBeInTheDocument();
 		expect(screen.getByText("security-review")).toBeInTheDocument();
 		expect(screen.getByText("2/2 completed")).toBeInTheDocument();
-		expect(screen.getByText("Result: then")).toBeInTheDocument();
+		expect(screen.queryByText("Result: then")).not.toBeInTheDocument();
+		expect(screen.queryByText("then")).not.toBeInTheDocument();
 		expect(screen.getByText("150 tokens")).toBeInTheDocument();
 		expect(
 			screen.getAllByText("Structured Output").length,
@@ -884,7 +949,8 @@ describe("WorkflowTrace", () => {
 				})}
 			/>,
 		);
-		expect(screen.getByText("Result: reject")).toBeInTheDocument();
+		expect(screen.getByText("reject")).toBeInTheDocument();
+		expect(screen.queryByText("Result: reject")).not.toBeInTheDocument();
 		fireEvent.click(screen.getByText("Structured Output"));
 		expect(
 			screen.getByText(/"Please fix the naming convention"/),
