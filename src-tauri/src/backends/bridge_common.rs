@@ -1891,8 +1891,7 @@ async fn spawn_bridge_process(
                         let final_msg_id;
                         let turn_token_usage;
                         {
-                            let _runtime_guard =
-                                acquire_session_runtime_lock(&csid_stdout).await;
+                            let _runtime_guard = acquire_session_runtime_lock(&csid_stdout).await;
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 // Run the in-lock transition through the shared
@@ -5963,8 +5962,8 @@ mod tests {
 
         let before = crate::workflow_state_events::build_workflow_state_projection(
             workflow_state_for_runtime_test(&step_session.id),
-            &handles,
-            &open_tabs,
+            Some(&handles),
+            Some(&open_tabs),
         )
         .await;
 
@@ -5988,8 +5987,8 @@ mod tests {
         assert!(handles.lock().await.contains_key(&step_session.id));
         let after = crate::workflow_state_events::build_workflow_state_projection(
             workflow_state_for_runtime_test(&step_session.id),
-            &handles,
-            &open_tabs,
+            Some(&handles),
+            Some(&open_tabs),
         )
         .await;
         assert_eq!(

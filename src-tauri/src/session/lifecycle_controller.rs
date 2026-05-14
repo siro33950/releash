@@ -2,11 +2,6 @@ use std::sync::Arc;
 
 use super::{now_timestamp, ChatSession, RestoreSessionResponse, SessionState, SessionStore};
 
-#[derive(Debug, Clone)]
-pub struct RestoreSessionOutcome {
-    pub response: RestoreSessionResponse,
-}
-
 pub struct SessionLifecycleController<'a> {
     pub session_store: &'a Arc<SessionStore>,
     pub data_dir: &'a std::path::Path,
@@ -21,14 +16,12 @@ impl<'a> SessionLifecycleController<'a> {
     pub fn restore_session_state(
         &self,
         mut session: ChatSession,
-    ) -> Result<RestoreSessionOutcome, String> {
+    ) -> Result<RestoreSessionResponse, String> {
         session.state = SessionState::Idle;
         session.updated_at = now_timestamp();
         self.session_store.save_session(self.data_dir, &session)?;
-        Ok(RestoreSessionOutcome {
-            response: RestoreSessionResponse {
-                restored_workflow_step: false,
-            },
+        Ok(RestoreSessionResponse {
+            restored_workflow_step: false,
         })
     }
 }

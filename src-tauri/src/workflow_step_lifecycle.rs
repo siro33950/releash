@@ -50,7 +50,7 @@ pub(crate) struct WorkflowStepLifecycle<'a> {
 }
 
 impl<'a> WorkflowStepLifecycle<'a> {
-    pub async fn resolve_step_session(
+    fn resolve_step_session(
         &self,
         session_id: &str,
     ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
@@ -62,8 +62,7 @@ impl<'a> WorkflowStepLifecycle<'a> {
         session_id: &str,
     ) -> Result<ResolvedWorkflowStepSession, WorkflowStepLifecycleError> {
         let target = self
-            .resolve_step_session(session_id)
-            .await?
+            .resolve_step_session(session_id)?
             .ok_or_else(|| WorkflowStepLifecycleError::SessionNotFound(session_id.to_string()))?;
         self.sessions.open_step_tab(&target.session_id)?;
         Ok(target)
@@ -73,7 +72,7 @@ impl<'a> WorkflowStepLifecycle<'a> {
         &self,
         session_id: &str,
     ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
-        let Some(target) = self.resolve_step_session(session_id).await? else {
+        let Some(target) = self.resolve_step_session(session_id)? else {
             return Ok(None);
         };
         self.sessions.open_step_tab(&target.session_id)?;
@@ -84,7 +83,7 @@ impl<'a> WorkflowStepLifecycle<'a> {
         &self,
         session_id: &str,
     ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
-        let Some(target) = self.resolve_step_session(session_id).await? else {
+        let Some(target) = self.resolve_step_session(session_id)? else {
             return Ok(None);
         };
         let runtime_result = self

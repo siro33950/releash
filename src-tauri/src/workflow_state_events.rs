@@ -40,20 +40,6 @@ async fn collect_runtime_session_sets(
 
 pub(crate) async fn build_workflow_state_projection(
     state: crate::workflow::state::WorkflowState,
-    handles: &Arc<Mutex<AgentProcessMap>>,
-    open_tabs: &OpenTabRegistry,
-) -> WorkflowStateProjection {
-    let (active_sessions, open_sessions) =
-        collect_runtime_session_sets(&state, Some(handles), Some(open_tabs)).await;
-    crate::workflow_state_presenter::build_workflow_state_projection_from_sets(
-        state,
-        &active_sessions,
-        &open_sessions,
-    )
-}
-
-async fn build_workflow_state_projection_with_fallbacks(
-    state: crate::workflow::state::WorkflowState,
     handles: Option<&Arc<Mutex<AgentProcessMap>>>,
     open_tabs: Option<&OpenTabRegistry>,
 ) -> WorkflowStateProjection {
@@ -94,7 +80,7 @@ pub(crate) async fn build_workflow_state_view(
     open_tabs: &OpenTabRegistry,
 ) -> crate::protocol::WorkflowStateView {
     workflow_state_view_from_projection(
-        build_workflow_state_projection(state, handles, open_tabs).await,
+        build_workflow_state_projection(state, Some(handles), Some(open_tabs)).await,
     )
 }
 
@@ -148,7 +134,7 @@ pub(crate) async fn emit_workflow_state_snapshot(
     };
     let handles = app.try_state::<Arc<Mutex<AgentProcessMap>>>();
     let open_tabs = app.try_state::<Arc<OpenTabRegistry>>();
-    let projection = build_workflow_state_projection_with_fallbacks(
+    let projection = build_workflow_state_projection(
         workflow_state.clone(),
         handles.as_deref(),
         open_tabs.as_deref().map(Arc::as_ref),

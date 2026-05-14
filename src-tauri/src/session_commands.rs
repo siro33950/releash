@@ -92,12 +92,11 @@ pub async fn restore_session(
         .get_session(&data_dir, &session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
     resolve_session_backend(&mut session, registry.inner())?;
-    let outcome = crate::session::lifecycle_controller::SessionLifecycleController {
+    crate::session::lifecycle_controller::SessionLifecycleController {
         session_store: state.inner(),
         data_dir: &data_dir,
     }
-    .restore_session_state(session)?;
-    Ok(outcome.response)
+    .restore_session_state(session)
 }
 
 #[cfg(test)]
