@@ -1,6 +1,7 @@
 import {
 	AlertTriangle,
 	Ban,
+	Check,
 	CheckCircle2,
 	ChevronDown,
 	ChevronRight,
@@ -8,8 +9,10 @@ import {
 	Clock,
 	GitBranch,
 	Loader2,
+	X,
 } from "lucide-react";
 import { useState } from "react";
+import { useStepApprovalAction } from "@/hooks/useStepApprovalAction";
 import type {
 	JsonValue,
 	ParallelStepState,
@@ -24,6 +27,12 @@ interface WorkflowTraceProps {
 	events?: WorkflowLogEvent[];
 	onSessionClick?: (sessionId: string) => void;
 	onFileClick?: (path: string) => void;
+	approvalAction?: WorkflowApprovalActionContext;
+}
+
+interface WorkflowApprovalActionContext {
+	worktreePath: string;
+	executionId: string;
 }
 
 const stateClasses: Record<string, string> = {
@@ -42,6 +51,7 @@ export function WorkflowTrace({
 	events = [],
 	onSessionClick,
 	onFileClick,
+	approvalAction,
 }: WorkflowTraceProps) {
 	const totalTokens =
 		workflowState.totalTokenUsage.inputTokens +
@@ -62,8 +72,10 @@ export function WorkflowTrace({
 							item={item}
 							index={index}
 							isLast={index === traceItems.length - 1}
+							workflowState={workflowState}
 							onSessionClick={onSessionClick}
 							onFileClick={onFileClick}
+							approvalAction={approvalAction}
 						/>
 					))}
 				</div>
@@ -270,14 +282,18 @@ function TraceItemRow({
 	item,
 	index,
 	isLast,
+	workflowState,
 	onSessionClick,
 	onFileClick,
+	approvalAction,
 }: {
 	item: TraceItem;
 	index: number;
 	isLast: boolean;
+	workflowState: WorkflowState;
 	onSessionClick?: (sessionId: string) => void;
 	onFileClick?: (path: string) => void;
+	approvalAction?: WorkflowApprovalActionContext;
 }) {
 	if (item.kind === "parallel") {
 		return (
@@ -292,6 +308,14 @@ function TraceItemRow({
 	}
 
 	const stepMode = item.step?.mode ?? "unknown";
+	const approvalTarget =
+		workflowState.state.type === "waiting_approval" &&
+		item.kind === "current" &&
+		!item.step?.parallel &&
+		item.stepName === workflowState.currentStepName
+			? approvalAction
+			: undefined;
+	const canReject = workflowState.approvalOperations?.canReject === true;
 
 	return (
 		<div className="grid grid-cols-[24px_1fr] gap-2">
@@ -304,6 +328,7 @@ function TraceItemRow({
 				{!isLast && <div className="w-px flex-1 min-h-4 bg-border" />}
 			</div>
 			<div
+				data-testid={`trace-item-${item.stepName}-${item.occurrence}`}
 				className={`mb-2 overflow-hidden rounded-md border px-3 py-2 ${
 					item.kind === "current"
 						? "border-primary/60 bg-primary/5"
@@ -329,7 +354,107 @@ function TraceItemRow({
 					onSessionClick={onSessionClick}
 					onFileClick={onFileClick}
 				/>
+				{approvalTarget && (
+					<StepApprovalActions
+						approvalAction={approvalTarget}
+						stepName={item.stepName}
+						canReject={canReject}
+					/>
+				)}
 			</div>
+		</div>
+	);
+}
+
+function StepApprovalActions({
+	approvalAction,
+	stepName,
+	canReject,
+}: {
+	approvalAction: WorkflowApprovalActionContext;
+	stepName: string;
+	canReject: boolean;
+}) {
+	const {
+		rejectMode,
+		rejectComment,
+		setRejectComment,
+		canSubmitReject,
+		approvalError,
+		approve,
+		openReject,
+		cancelReject,
+		submitReject,
+	} = useStepApprovalAction({
+		worktreePath: approvalAction.worktreePath,
+		executionId: approvalAction.executionId,
+		stepName,
+	});
+
+	return (
+		<div className="mt-2 flex min-w-0 flex-col gap-1.5 border-t pt-2">
+			{approvalError && (
+				<div
+					role="alert"
+					className="flex items-start gap-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-700 dark:text-red-300"
+				>
+					<AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+					<span className="min-w-0 break-words">{approvalError}</span>
+				</div>
+			)}
+			{rejectMode ? (
+				<div className="flex min-w-0 flex-col gap-1.5">
+					<textarea
+						className="w-full min-w-0 rounded border bg-background px-2 py-1 text-xs resize-none"
+						rows={3}
+						placeholder="Reject comment..."
+						value={rejectComment}
+						onChange={(e) => setRejectComment(e.target.value)}
+						aria-label="Reject comment"
+					/>
+					<div className="flex items-center justify-end gap-2">
+						<button
+							type="button"
+							onClick={cancelReject}
+							className="rounded bg-muted px-2 py-0.5 text-xs transition-colors hover:bg-muted/80"
+						>
+							Cancel
+						</button>
+						<button
+							type="button"
+							onClick={submitReject}
+							disabled={!canSubmitReject}
+							className="rounded bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-700 transition-colors hover:bg-yellow-500/30 disabled:cursor-not-allowed disabled:opacity-50 dark:text-yellow-300"
+							aria-label="Submit reject"
+						>
+							Reject
+						</button>
+					</div>
+				</div>
+			) : (
+				<div className="flex flex-wrap items-center justify-end gap-2">
+					<button
+						type="button"
+						onClick={approve}
+						className="flex items-center gap-1 rounded bg-green-500/20 px-2 py-0.5 text-xs text-green-700 transition-colors hover:bg-green-500/30 dark:text-green-300"
+						aria-label="Approve step"
+					>
+						<Check className="size-3" />
+						Approve
+					</button>
+					{canReject && (
+						<button
+							type="button"
+							onClick={openReject}
+							className="flex items-center gap-1 rounded bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-700 transition-colors hover:bg-yellow-500/30 dark:text-yellow-300"
+							aria-label="Reject step"
+						>
+							<X className="size-3" />
+							Reject
+						</button>
+					)}
+				</div>
+			)}
 		</div>
 	);
 }
@@ -366,6 +491,7 @@ function ParallelBlockRow({
 				{!isLast && <div className="w-px flex-1 min-h-4 bg-border" />}
 			</div>
 			<div
+				data-testid={`trace-item-${item.stepName}-${item.occurrence}`}
 				className={`mb-2 overflow-hidden rounded-md border px-3 py-2 ${
 					item.state === "running"
 						? "border-primary/60 bg-primary/5"
@@ -436,7 +562,10 @@ function ParallelChildRow({
 			? ((so as Record<string, unknown>).verdict as string | undefined)
 			: undefined;
 	return (
-		<div className="flex min-w-0 flex-col gap-1 rounded px-2 py-1 text-xs">
+		<div
+			data-testid={`trace-child-item-${child.stepName}-${child.runIndex + 1}`}
+			className="flex min-w-0 flex-col gap-1 rounded px-2 py-1 text-xs"
+		>
 			<div className="flex items-center gap-2">
 				<div
 					className={`flex size-4 items-center justify-center rounded-full border ${stateClasses[child.state] ?? stateClasses.pending}`}
