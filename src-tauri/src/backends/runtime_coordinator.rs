@@ -34,9 +34,18 @@ impl Drop for SessionRuntimeLockGuard {
     fn drop(&mut self) {
         self.guard.take();
         let chat_session_id = self.chat_session_id.clone();
-        tokio::spawn(async move {
-            prune_session_runtime_lock(&chat_session_id).await;
-        });
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    prune_session_runtime_lock(&chat_session_id).await;
+                });
+            }
+            Err(_) => {
+                log::warn!(
+                    "skip prune_session_runtime_lock: no tokio runtime (session={chat_session_id})"
+                );
+            }
+        }
     }
 }
 
@@ -136,13 +145,26 @@ pub(crate) struct SpawnSessionGuard {
 impl Drop for SpawnSessionGuard {
     fn drop(&mut self) {
         let chat_session_id = self.chat_session_id.clone();
-        tokio::spawn(async move {
-            RUNTIME_COORDINATOR
-                .spawn_locks
-                .lock()
-                .await
-                .remove(&chat_session_id);
-        });
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    RUNTIME_COORDINATOR
+                        .spawn_locks
+                        .lock()
+                        .await
+                        .remove(&chat_session_id);
+                });
+            }
+            Err(_) => {
+                if let Ok(mut spawning) = RUNTIME_COORDINATOR.spawn_locks.try_lock() {
+                    spawning.remove(&chat_session_id);
+                } else {
+                    log::warn!(
+                        "skip spawn lock cleanup: no tokio runtime (session={chat_session_id})"
+                    );
+                }
+            }
+        }
     }
 }
 

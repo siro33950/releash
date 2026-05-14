@@ -165,7 +165,8 @@ pub(crate) async fn is_agent_step_runtime_busy(
     }
     let map = handles.lock().await;
     map.get(chat_session_id).is_some_and(|proc| {
-        proc.state == BridgeState::Streaming
+        proc.state == BridgeState::Initializing
+            || proc.state == BridgeState::Streaming
             || proc.turn_phase == TurnPhase::WaitingPermission
             || proc.pending_message.is_some()
     })
@@ -3636,57 +3637,60 @@ async fn prepare_send_agent_message_internal(
             .unwrap_or(TurnPhase::Idle)
     };
 
-    let (agent_message, prepared_turn) =
-        if current_phase == TurnPhase::Streaming || current_phase == TurnPhase::WaitingPermission {
-            // 4a. Queue pending message + interrupt
-            {
-                let mut map = handles.lock().await;
-                let proc = map
-                    .get_mut(&sid)
-                    .ok_or_else(|| format!("No active agent process for session {sid}"))?;
-                proc.pending_message = Some(PendingMessage {
-                    content: content.clone(),
-                    permission_mode: pm.clone(),
-                    images: images.clone(),
-                    worktree_path: session_worktree_path.clone(),
-                    mentions: mentions.clone(),
-                });
-                proc.stdin
-                    .write_all(b"{\"type\":\"interrupt\"}\n")
-                    .await
-                    .map_err(|e| format!("Failed to write interrupt: {e}"))?;
-                proc.stdin
-                    .flush()
-                    .await
-                    .map_err(|e| format!("Failed to flush: {e}"))?;
-            }
-            (None, None)
-        } else {
-            // 4b. Create agent message + start turn
-            let agent_msg = add_message_internal(
-                session_store,
-                data_dir,
-                &sid,
-                MessageRole::Agent,
-                "",
-                None,
-                None,
-            )?;
-            let resolved_prompt = crate::file_mention::resolve_mentions_or_fallback(
-                &session_worktree_path,
-                &content,
-                &mentions,
-            );
-            let turn = PreparedAgentTurn {
-                session_id: sid.clone(),
-                worktree_path: session_worktree_path.clone(),
+    let turn_busy = current_phase == TurnPhase::Streaming
+        || current_phase == TurnPhase::WaitingPermission
+        || is_pending_turn_starting(&sid).await;
+
+    let (agent_message, prepared_turn) = if turn_busy {
+        // 4a. Queue pending message + interrupt
+        {
+            let mut map = handles.lock().await;
+            let proc = map
+                .get_mut(&sid)
+                .ok_or_else(|| format!("No active agent process for session {sid}"))?;
+            proc.pending_message = Some(PendingMessage {
+                content: content.clone(),
                 permission_mode: pm.clone(),
-                prompt: resolved_prompt,
-                agent_message_id: agent_msg.id.clone(),
                 images: images.clone(),
-            };
-            (Some(agent_msg), Some(turn))
+                worktree_path: session_worktree_path.clone(),
+                mentions: mentions.clone(),
+            });
+            proc.stdin
+                .write_all(b"{\"type\":\"interrupt\"}\n")
+                .await
+                .map_err(|e| format!("Failed to write interrupt: {e}"))?;
+            proc.stdin
+                .flush()
+                .await
+                .map_err(|e| format!("Failed to flush: {e}"))?;
+        }
+        (None, None)
+    } else {
+        // 4b. Create agent message + start turn
+        let agent_msg = add_message_internal(
+            session_store,
+            data_dir,
+            &sid,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )?;
+        let resolved_prompt = crate::file_mention::resolve_mentions_or_fallback(
+            &session_worktree_path,
+            &content,
+            &mentions,
+        );
+        let turn = PreparedAgentTurn {
+            session_id: sid.clone(),
+            worktree_path: session_worktree_path.clone(),
+            permission_mode: pm.clone(),
+            prompt: resolved_prompt,
+            agent_message_id: agent_msg.id.clone(),
+            images: images.clone(),
         };
+        (Some(agent_msg), Some(turn))
+    };
 
     // 5. Get updated session and list
     let updated_session = session_store
