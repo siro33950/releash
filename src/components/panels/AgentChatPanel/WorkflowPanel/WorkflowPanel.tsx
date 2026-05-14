@@ -200,7 +200,11 @@ export function WorkflowPanel({
 			)}
 
 			{visiblePastIds.map((id) => (
-				<TabsContent key={id} value={id} className="flex-1 min-h-0 mt-0">
+				<TabsContent
+					key={`${worktreePath}:${id}`}
+					value={id}
+					className="flex-1 min-h-0 mt-0"
+				>
 					<ExecutionView
 						executionId={id}
 						worktreePath={worktreePath}
@@ -370,7 +374,7 @@ function ExecutionView({
 			.then(([state, logEvents]) => {
 				if (cancelled) return;
 				if (!state) {
-					setLoadError("過去実行データを取得できませんでした。");
+					setLoadError("Failed to load execution history.");
 					return;
 				}
 				setHistoryState(state);
@@ -379,7 +383,7 @@ function ExecutionView({
 			.catch((e) => {
 				console.warn("[ExecutionView] get workflow execution data failed", e);
 				if (!cancelled) {
-					setLoadError("過去実行データを取得できませんでした。");
+					setLoadError("Failed to load execution history.");
 				}
 			})
 			.finally(() => {
