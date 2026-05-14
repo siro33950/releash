@@ -346,7 +346,7 @@ impl AgentStatusCenter {
     pub fn emit_workflow_state_changed(
         &self,
         worktree_path: &str,
-        workflow_state: &crate::session::WorkflowState,
+        workflow_state: &crate::protocol::WorkflowStateView,
     ) {
         use tauri::Emitter;
 
@@ -355,7 +355,7 @@ impl AgentStatusCenter {
         #[serde(rename_all = "camelCase")]
         struct Payload<'a> {
             worktree_path: &'a str,
-            workflow_state: &'a crate::session::WorkflowState,
+            workflow_state: &'a crate::protocol::WorkflowStateView,
         }
         let payload = Payload {
             worktree_path,

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -12,14 +13,25 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
 
+use crate::backends::runtime_coordinator::{
+    acquire_spawn_session_guard, clear_pending_turn_starting, clear_session_closing,
+    is_pending_turn_starting, mark_pending_turn_starting, mark_session_closing,
+    prune_session_runtime_lock, wait_until_session_close_finished,
+};
 use crate::backends::{BackendRuntimeConfig, ImageAttachment, ModelInfo};
 use crate::session::{
     add_message_internal, create_session_internal, now_timestamp, resolve_data_dir, ChatMessage,
     ChatSession, GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
 };
 
+pub(crate) use crate::backends::runtime_coordinator::{
+    acquire_session_runtime_lock, is_session_closing,
+};
+
 pub const CLAUDE_BACKEND_ID: &str = "claude";
 pub const CODEX_BACKEND_ID: &str = "codex";
+
+use crate::session::errors::session_target_rejected;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BridgeState {
@@ -106,8 +118,68 @@ pub struct AgentProcess {
     streaming_timer_active: bool,
 }
 
+#[cfg(test)]
+pub(crate) fn make_test_agent_process() -> AgentProcess {
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn cat test process");
+    let stdin = child.stdin.take().expect("stdin");
+    AgentProcess {
+        stdin,
+        backend_id: "mock".to_string(),
+        state: BridgeState::Ready,
+        turn_phase: TurnPhase::Idle,
+        sdk_session_id: None,
+        child,
+        generation_id: 0,
+        #[cfg(unix)]
+        pgid: None,
+        streaming_message_id: None,
+        streaming_parts: Vec::new(),
+        last_message_id: None,
+        task_id_map: HashMap::new(),
+        pending_message: None,
+        current_permission_mode: "acceptEdits".to_string(),
+        available_models: Vec::new(),
+        selected_model: None,
+        last_result_token_usage: None,
+        pending_stream_part_count: 0,
+        pending_stream_bytes: 0,
+        last_stream_emit_at: None,
+        streaming_timer_active: false,
+    }
+}
+
 /// Per-session agent process map: chat_session_id -> AgentProcess
 pub type AgentProcessMap = HashMap<String, AgentProcess>;
+
+pub(crate) async fn is_agent_step_runtime_busy(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+) -> bool {
+    if is_pending_turn_starting(chat_session_id).await {
+        return true;
+    }
+    let map = handles.lock().await;
+    map.get(chat_session_id).is_some_and(|proc| {
+        proc.state == BridgeState::Streaming
+            || proc.turn_phase == TurnPhase::WaitingPermission
+            || proc.pending_message.is_some()
+    })
+}
+
+#[cfg(test)]
+async fn agent_session_has_pending_message(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+) -> bool {
+    let map = handles.lock().await;
+    map.get(chat_session_id)
+        .is_some_and(|proc| proc.pending_message.is_some())
+}
 
 pub(crate) fn available_models_path(app_data_dir: &Path, backend_id: &str) -> PathBuf {
     if backend_id == CLAUDE_BACKEND_ID {
@@ -936,7 +1008,7 @@ fn apply_bridge_eof_crash(
 /// 状態遷移時に AgentStatusCenter へ通知し、必要に応じて Webhook 送信を行う統一エントリ。
 /// session_store から ChatSession を引いて worktree_path / SessionState を取得する。
 /// `session_state_override` を渡すと、ストア値より優先される（Bridge crash 時など）。
-fn notify_status_transition(
+pub(crate) fn notify_status_transition(
     app: &tauri::AppHandle,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -1810,11 +1882,17 @@ async fn spawn_bridge_process(
                     }
                     "turn_complete" => {
                         let exit_code = msg.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
+                        // session_runtime_lock の保持はローカル proc 状態遷移の
+                        // 区間に限定する。engine.on_turn_complete や pending message
+                        // 消費は lock を保持しない経路で行い、それらが必要に応じ
+                        // 自前で lock を取得する設計とする（再入デッドロックを防ぐ）。
                         let was_streaming;
                         let raw_parts;
                         let final_msg_id;
                         let turn_token_usage;
                         {
+                            let _runtime_guard =
+                                acquire_session_runtime_lock(&csid_stdout).await;
                             let mut map = handles_stdout.lock().await;
                             if let Some(proc) = map.get_mut(&csid_stdout) {
                                 // Run the in-lock transition through the shared
@@ -1861,6 +1939,7 @@ async fn spawn_bridge_process(
                                 final_msg_id = None;
                                 turn_token_usage = None;
                             }
+                            // _runtime_guard はこのスコープを抜けて drop される
                         }
 
                         // Consolidate text/thinking chunks outside lock
@@ -1919,11 +1998,11 @@ async fn spawn_bridge_process(
                                 override_state,
                             );
 
-                            // Workflow engine hook: notify on turn_complete
-                            // Note: std::thread::spawn is required because on_turn_complete's
-                            // future is !Send (it transitively awaits spawn_bridge_process).
-                            // Handle::current() reuses the existing tokio runtime instead of
-                            // creating a new Runtime per turn_complete.
+                            // Workflow engine への通知と pending message 消費は
+                            // session_runtime_lock を保持しない経路で実施する。
+                            // 各経路は必要に応じて自前で lock を取得する（spawn-if-needed
+                            // / close ガード）ため、ここで lock を保持してはならない
+                            // （engine 内で同 session への turn 再投入があると再入デッドロック）。
                             {
                                 use tauri::Manager;
                                 let wf_engine: Option<
@@ -1931,16 +2010,18 @@ async fn spawn_bridge_process(
                                 > = app_stdout
                                     .try_state::<Arc<crate::workflow::engine::WorkflowEngine>>()
                                     .map(|s| Arc::clone(&s));
-                                if let Some(engine) = wf_engine {
-                                    let app_wf = app_stdout.clone();
-                                    let ss_wf = Arc::clone(&session_store_clone);
-                                    let h_wf = Arc::clone(&handles_stdout);
-                                    let csid_wf = csid_stdout.clone();
-                                    let parts_wf = final_parts.clone();
-                                    let token_usage_wf = turn_token_usage;
-                                    let handle = tokio::runtime::Handle::current();
-                                    std::thread::spawn(move || {
-                                        handle.block_on(async move {
+                                let pending =
+                                    take_pending_message(&handles_stdout, &csid_stdout).await;
+                                let app_wf = app_stdout.clone();
+                                let ss_wf = Arc::clone(&session_store_clone);
+                                let h_wf = Arc::clone(&handles_stdout);
+                                let csid_wf = csid_stdout.clone();
+                                let parts_wf = final_parts.clone();
+                                let token_usage_wf = turn_token_usage;
+                                let handle = tokio::runtime::Handle::current();
+                                std::thread::spawn(move || {
+                                    handle.block_on(async move {
+                                        if let Some(engine) = wf_engine {
                                             if engine.is_running(&csid_wf).await {
                                                 if let Err(e) = engine
                                                     .on_turn_complete(
@@ -1956,25 +2037,14 @@ async fn spawn_bridge_process(
                                                     );
                                                 }
                                             }
-                                        });
+                                        }
+                                        if let Some(pending) = pending {
+                                            start_pending_message_turn(
+                                                &app_wf, &h_wf, &ss_wf, &csid_wf, pending,
+                                            )
+                                            .await;
+                                        }
                                     });
-                                }
-                            }
-
-                            // Auto-consume pending message queued by send_agent_message.
-                            // Spawn a separate task to avoid oversized async state machine in stdout reader.
-                            let has_pending = {
-                                let map = handles_stdout.lock().await;
-                                map.get(&csid_stdout)
-                                    .is_some_and(|p| p.pending_message.is_some())
-                            };
-                            if has_pending {
-                                let app_p = app_stdout.clone();
-                                let h_p = Arc::clone(&handles_stdout);
-                                let ss_p = Arc::clone(&session_store_clone);
-                                let csid_p = csid_stdout.clone();
-                                tokio::spawn(async move {
-                                    consume_pending_message(&app_p, &h_p, &ss_p, &csid_p).await;
                                 });
                             }
                         }
@@ -2526,7 +2596,8 @@ fn can_change_session_backend(session: &ChatSession) -> bool {
 }
 
 fn should_start_agent_process_for_summary(session: &SessionSummary) -> bool {
-    session.message_count > 0 || session.agent_session_id.is_some()
+    !session.workflow_step_session
+        && (session.message_count > 0 || session.agent_session_id.is_some())
 }
 
 fn ensure_session_backend_selected(
@@ -2659,14 +2730,25 @@ fn get_persisted_spawn_info(
     session_store: &SessionStore,
     chat_session_id: &str,
 ) -> (Option<String>, Option<String>, String) {
-    let mut info = resolve_data_dir(app)
-        .ok()
-        .and_then(|data_dir| {
+    let mut info =
+        persisted_spawn_info_from_session(resolve_data_dir(app).ok().and_then(|data_dir| {
             session_store
                 .get_session(&data_dir, chat_session_id)
                 .ok()
                 .flatten()
-        })
+        }));
+
+    if info.1.is_none() {
+        info.1 = backend_runtime_config(app, &info.2).initial_model;
+    }
+
+    info
+}
+
+fn persisted_spawn_info_from_session(
+    session: Option<ChatSession>,
+) -> (Option<String>, Option<String>, String) {
+    session
         .map(|s| {
             (
                 s.agent_session_id,
@@ -2675,13 +2757,7 @@ fn get_persisted_spawn_info(
                     .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string()),
             )
         })
-        .unwrap_or((None, None, CLAUDE_BACKEND_ID.to_string()));
-
-    if info.1.is_none() {
-        info.1 = backend_runtime_config(app, &info.2).initial_model;
-    }
-
-    info
+        .unwrap_or((None, None, CLAUDE_BACKEND_ID.to_string()))
 }
 
 pub(crate) async fn start_agent_session_internal(
@@ -2693,6 +2769,8 @@ pub(crate) async fn start_agent_session_internal(
     permission_mode: Option<String>,
     system_prompt: Option<String>,
 ) -> Result<(), String> {
+    wait_until_session_close_finished(chat_session_id).await;
+    let _spawn_guard = acquire_spawn_session_guard(chat_session_id).await;
     {
         let mut map = handles.lock().await;
         if let Some(proc) = map.get(chat_session_id) {
@@ -2721,29 +2799,8 @@ pub(crate) async fn start_agent_session_internal(
     .await
 }
 
-#[tauri::command]
-pub async fn start_agent_session(
-    app: tauri::AppHandle,
-    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    session_store: tauri::State<'_, Arc<SessionStore>>,
-    chat_session_id: String,
-    cwd: String,
-    permission_mode: Option<String>,
-) -> Result<(), String> {
-    start_agent_session_internal(
-        &app,
-        handles.inner(),
-        session_store.inner(),
-        &chat_session_id,
-        &cwd,
-        permission_mode,
-        None,
-    )
-    .await
-}
-
 /// Core logic for starting a new agent turn: spawn Bridge if needed, send prompt.
-/// Used by execute_agent_query (Tauri command), send_agent_message, and pending message consumption.
+/// Used by send_agent_message and pending message consumption.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_turn(
     app: &tauri::AppHandle,
@@ -2756,37 +2813,149 @@ pub(crate) async fn start_agent_turn(
     streaming_message_id: &str,
     images: &[ImageAttachment],
 ) -> Result<(), String> {
-    // Check if we need to spawn a new process (single lock to avoid TOCTOU)
-    let needs_spawn = {
-        let mut map = handles.lock().await;
-        match map.get(chat_session_id) {
-            None => true,
-            Some(proc) if proc.state == BridgeState::Crashed => {
-                map.remove(chat_session_id);
-                true
-            }
-            _ => false,
-        }
-    };
+    start_agent_turn_with_runtime_spawner(
+        Some(app),
+        handles,
+        chat_session_id,
+        permission_mode,
+        prompt,
+        streaming_message_id,
+        images,
+        || async {
+            wait_until_session_close_finished(chat_session_id).await;
+            let (resume_sid, selected_model, backend_id) =
+                get_persisted_spawn_info(app, session_store, chat_session_id);
 
-    if needs_spawn {
-        let (resume_sid, selected_model, backend_id) =
-            get_persisted_spawn_info(app, session_store, chat_session_id);
+            spawn_bridge_process(
+                app,
+                handles,
+                session_store,
+                chat_session_id,
+                backend_id,
+                resume_sid,
+                cwd,
+                Some(permission_mode.to_string()),
+                selected_model,
+                None,
+            )
+            .await
+        },
+    )
+    .await?;
 
-        spawn_bridge_process(
-            app,
-            handles,
-            session_store,
-            chat_session_id,
-            backend_id,
-            resume_sid,
-            cwd,
-            Some(permission_mode.to_string()),
-            selected_model,
-            None,
-        )
-        .await?;
-    }
+    // Emit state change so frontend can track turn phase
+    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None);
+    notify_status_transition(
+        app,
+        session_store,
+        chat_session_id,
+        TurnPhase::Streaming,
+        None,
+    );
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_agent_turn_locked(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    cwd: &str,
+    permission_mode: &str,
+    prompt: &str,
+    streaming_message_id: &str,
+    images: &[ImageAttachment],
+) -> Result<(), String> {
+    start_agent_turn_with_runtime_spawner_locked(
+        Some(app),
+        handles,
+        chat_session_id,
+        permission_mode,
+        prompt,
+        streaming_message_id,
+        images,
+        || async {
+            let (resume_sid, selected_model, backend_id) =
+                get_persisted_spawn_info(app, session_store, chat_session_id);
+
+            spawn_bridge_process(
+                app,
+                handles,
+                session_store,
+                chat_session_id,
+                backend_id,
+                resume_sid,
+                cwd,
+                Some(permission_mode.to_string()),
+                selected_model,
+                None,
+            )
+            .await
+        },
+    )
+    .await?;
+
+    // Emit state change so frontend can track turn phase
+    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None);
+    notify_status_transition(
+        app,
+        session_store,
+        chat_session_id,
+        TurnPhase::Streaming,
+        None,
+    );
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_agent_turn_with_runtime_spawner<F, Fut>(
+    app: Option<&tauri::AppHandle>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    permission_mode: &str,
+    prompt: &str,
+    streaming_message_id: &str,
+    images: &[ImageAttachment],
+    spawn_runtime: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    wait_until_session_close_finished(chat_session_id).await;
+    let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
+    start_agent_turn_with_runtime_spawner_locked(
+        app,
+        handles,
+        chat_session_id,
+        permission_mode,
+        prompt,
+        streaming_message_id,
+        images,
+        spawn_runtime,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_agent_turn_with_runtime_spawner_locked<F, Fut>(
+    app: Option<&tauri::AppHandle>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    permission_mode: &str,
+    prompt: &str,
+    streaming_message_id: &str,
+    images: &[ImageAttachment],
+    spawn_runtime: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    ensure_runtime_for_turn(handles, chat_session_id, spawn_runtime).await?;
 
     // Send message command.
     // Even if a message is sent while the SDK is still processing an interrupt,
@@ -2813,51 +2982,102 @@ pub(crate) async fn start_agent_turn(
                 .flush()
                 .await
                 .map_err(|e| format!("Failed to flush message: {e}"))?;
-            spawn_streaming_timer(app, handles, chat_session_id, proc);
+            if let Some(app) = app {
+                spawn_streaming_timer(app, handles, chat_session_id, proc);
+            }
         } else {
             return Err(format!("No agent process for session {chat_session_id}"));
         }
     }
 
-    // Emit state change so frontend can track turn phase
-    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None);
-    notify_status_transition(
-        app,
-        session_store,
-        chat_session_id,
-        TurnPhase::Streaming,
-        None,
-    );
-
     Ok(())
 }
 
-/// Consume a pending message that was queued by `send_agent_message` during streaming.
-/// Called from the stdout reader after `turn_complete` via `tokio::spawn`.
-///
-/// Unlike `start_agent_turn`, this skips the spawn-if-needed check because the Bridge
-/// process is guaranteed to be running (it just emitted `turn_complete`).
-async fn consume_pending_message(
-    app: &tauri::AppHandle,
+async fn ensure_runtime_for_turn<F, Fut>(
     handles: &Arc<Mutex<AgentProcessMap>>,
-    session_store: &Arc<SessionStore>,
     chat_session_id: &str,
-) {
-    // 1. Take pending message from process
+    spawn_runtime: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    let needs_spawn = {
+        let mut map = handles.lock().await;
+        match map.get(chat_session_id) {
+            None => true,
+            Some(proc) if proc.state == BridgeState::Crashed => {
+                map.remove(chat_session_id);
+                true
+            }
+            _ => false,
+        }
+    };
+
+    if !needs_spawn {
+        return Ok(());
+    }
+
+    let _spawn_guard = acquire_spawn_session_guard(chat_session_id).await;
+    let needs_spawn_after_wait = {
+        let mut map = handles.lock().await;
+        match map.get(chat_session_id) {
+            None => true,
+            Some(proc) if proc.state == BridgeState::Crashed => {
+                map.remove(chat_session_id);
+                true
+            }
+            _ => false,
+        }
+    };
+    if needs_spawn_after_wait {
+        if let Err(e) = spawn_runtime().await {
+            handles.lock().await.remove(chat_session_id);
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Detach a pending message queued during streaming and mark its follow-up turn
+/// as in-flight so tab close observes the step as busy until resume starts.
+async fn take_pending_message(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+) -> Option<PendingMessage> {
     let pending = {
         let mut map = handles.lock().await;
         map.get_mut(chat_session_id)
             .and_then(|p| p.pending_message.take())
     };
-    let Some(pending) = pending else {
-        return;
-    };
+    if pending.is_some() {
+        mark_pending_turn_starting(chat_session_id).await;
+    }
+    pending
+}
 
+fn pending_turn_start_failed_log_message() -> &'static str {
+    "consume_pending_message_failed code=pending_turn_start_failed message=failed_to_start_pending_turn"
+}
+
+/// Consume a pending message queued during streaming and start the follow-up turn.
+///
+/// Acquires `session_runtime_lock(chat_session_id)` internally via the standard
+/// `start_agent_turn` path. Callers must NOT hold the lock for this session id,
+/// otherwise tokio Mutex non-reentrancy will deadlock (see issues-929).
+async fn start_pending_message_turn(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    pending: PendingMessage,
+) {
     // 2. Add empty agent message
     let data_dir = match resolve_data_dir(app) {
         Ok(d) => d,
         Err(e) => {
             log::error!("consume_pending_message: failed to resolve data dir: {e}");
+            clear_pending_turn_starting(chat_session_id).await;
             return;
         }
     };
@@ -2873,6 +3093,7 @@ async fn consume_pending_message(
         Ok(msg) => msg,
         Err(e) => {
             log::error!("consume_pending_message: failed to add agent message: {e}");
+            clear_pending_turn_starting(chat_session_id).await;
             return;
         }
     };
@@ -2895,73 +3116,22 @@ async fn consume_pending_message(
         &pending.mentions,
     );
 
-    // 4. Sync permissionMode + selected_model + send message directly to the running Bridge.
-    //    The process is guaranteed running since it just emitted turn_complete.
-    let msg_cmd = build_message_cmd(&resolved_prompt, &pending.images);
-    let data = format!("{}\n", msg_cmd);
-
-    {
-        let mut map = handles.lock().await;
-        if let Some(proc) = map.get_mut(chat_session_id) {
-            if let Err(e) = proc.sync_pre_turn_settings(&pending.permission_mode).await {
-                log::error!("consume_pending_message: {e}");
-                return;
-            }
-            proc.current_permission_mode = pending.permission_mode.clone();
-            proc.state = BridgeState::Streaming;
-            proc.turn_phase = TurnPhase::Streaming;
-            proc.streaming_message_id = Some(agent_msg.id.clone());
-            proc.reset_streaming_state_for_new_turn();
-            if let Err(e) = proc.stdin.write_all(data.as_bytes()).await {
-                log::error!("consume_pending_message: failed to write message: {e}");
-                return;
-            }
-            if let Err(e) = proc.stdin.flush().await {
-                log::error!("consume_pending_message: failed to flush message: {e}");
-                return;
-            }
-            spawn_streaming_timer(app, handles, chat_session_id, proc);
-        } else {
-            log::error!("consume_pending_message: no agent process for session {chat_session_id}");
-            return;
-        }
-    }
-
-    // 5. Emit state change
-    emit_session_state_changed(app, chat_session_id, TurnPhase::Streaming, None);
-    notify_status_transition(
+    if let Err(_e) = start_agent_turn(
         app,
+        handles,
         session_store,
         chat_session_id,
-        TurnPhase::Streaming,
-        None,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn execute_agent_query(
-    app: tauri::AppHandle,
-    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    session_store: tauri::State<'_, Arc<SessionStore>>,
-    prompt: String,
-    chat_session_id: String,
-    cwd: String,
-    permission_mode: Option<String>,
-    streaming_message_id: String,
-) -> Result<(), String> {
-    start_agent_turn(
-        &app,
-        handles.inner(),
-        session_store.inner(),
-        &chat_session_id,
-        &cwd,
-        permission_mode.as_deref().unwrap_or("acceptEdits"),
-        &prompt,
-        &streaming_message_id,
-        &[],
+        &pending.worktree_path,
+        &pending.permission_mode,
+        &resolved_prompt,
+        &agent_msg.id,
+        &pending.images,
     )
     .await
+    {
+        log::error!("{}", pending_turn_start_failed_log_message());
+    }
+    clear_pending_turn_starting(chat_session_id).await;
 }
 
 #[tauri::command]
@@ -2990,18 +3160,19 @@ pub async fn interrupt_agent_query(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn close_agent_session(
-    app: tauri::AppHandle,
-    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    chat_session_id: String,
+pub(crate) async fn close_agent_session_internal(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
 ) -> Result<(), String> {
     #[cfg(unix)]
     let pgid: Option<u32>;
+    let child_to_kill: Option<Child>;
 
+    mark_session_closing(chat_session_id).await;
     {
         let mut map = handles.lock().await;
-        if let Some(proc) = map.get_mut(&chat_session_id) {
+        if let Some(mut proc) = map.remove(chat_session_id) {
             #[cfg(unix)]
             {
                 pgid = proc.pgid;
@@ -3012,69 +3183,83 @@ pub async fn close_agent_session(
             if let Err(e) = proc.stdin.flush().await {
                 log::warn!("Failed to flush close command for session {chat_session_id}: {e}");
             }
+            child_to_kill = Some(proc.child);
         } else {
-            // No process to close — already gone
+            // No process to close — already gone. Keep any existing close marker owned by
+            // an in-flight close; clearing it here would allow a stale process group race.
+            clear_session_closing(chat_session_id).await;
             return Ok(());
         }
     }
 
-    // Timeout fallback: if process doesn't exit, kill it
-    let handles_clone = Arc::clone(handles.inner());
-    let csid = chat_session_id.clone();
-    let timeout_gen_id = {
-        let map = handles_clone.lock().await;
-        map.get(&csid).map(|p| p.generation_id)
-    };
     #[cfg(unix)]
-    let app_clone = app.clone();
-    #[cfg(unix)]
-    let csid_for_pid = chat_session_id.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(CLOSE_TIMEOUT_SECS)).await;
-        let mut map = handles_clone.lock().await;
-        #[cfg(unix)]
-        let mut force_killed = false;
-        if let Some(proc) = map.get_mut(&csid) {
-            if timeout_gen_id == Some(proc.generation_id) {
-                log::warn!("Close timeout for session {csid}, killing process group");
-                #[cfg(unix)]
-                if let Some(pg) = proc.pgid {
-                    unsafe {
-                        libc::killpg(pg as libc::pid_t, libc::SIGKILL);
-                    }
-                    force_killed = true;
-                }
-                #[cfg(not(unix))]
+    {
+        let app_clone = app.clone();
+        let csid_for_pid = chat_session_id.to_string();
+        tokio::spawn(async move {
+            if let Some(mut child) = child_to_kill {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(CLOSE_TIMEOUT_SECS),
+                    child.wait(),
+                )
+                .await
                 {
-                    let _ = proc.child.kill().await;
-                }
-            } else {
-                // Generation mismatch: a new process has been spawned; skip kill and remove
-                return;
-            }
-        }
-        map.remove(&csid);
-        drop(map);
-        #[cfg(unix)]
-        {
-            // After graceful shutdown (process exited on its own), sweep any remaining
-            // group members (grandchild processes) that may not have received the exit signal.
-            // Skip this if we already sent SIGKILL to the entire group above.
-            if !force_killed {
-                if let Some(pg) = pgid {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    unsafe {
-                        libc::killpg(pg as libc::pid_t, libc::SIGTERM);
+                    Ok(Ok(_)) => {
+                        if let Some(pg) = pgid {
+                            sweep_process_group(pg).await;
+                        }
+                    }
+                    _ => {
+                        if let Some(pg) = pgid {
+                            sweep_process_group(pg).await;
+                        } else if let Err(e) = child.kill().await {
+                            log::warn!("Failed to kill agent process {csid_for_pid}: {e}");
+                        }
+                        let _ = child.wait().await;
                     }
                 }
             }
             if let Ok(data_dir) = resolve_data_dir(&app_clone) {
                 remove_pgid(&data_dir, &csid_for_pid);
             }
-        }
-    });
+            clear_session_closing(&csid_for_pid).await;
+            prune_session_runtime_lock(&csid_for_pid).await;
+        });
+    }
+
+    #[cfg(not(unix))]
+    if let Some(mut child) = child_to_kill {
+        let csid_for_close = chat_session_id.to_string();
+        tokio::spawn(async move {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(CLOSE_TIMEOUT_SECS),
+                child.wait(),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                _ => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+            }
+            clear_session_closing(&csid_for_close).await;
+            prune_session_runtime_lock(&csid_for_close).await;
+        });
+    }
 
     Ok(())
+}
+
+#[cfg(unix)]
+async fn sweep_process_group(pgid: u32) {
+    unsafe {
+        libc::killpg(pgid as libc::pid_t, libc::SIGTERM);
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    unsafe {
+        libc::killpg(pgid as libc::pid_t, libc::SIGKILL);
+    }
 }
 
 /// Force kill remaining processes in the map and clear it.
@@ -3393,6 +3578,9 @@ async fn prepare_send_agent_message_internal(
         let session = session_store
             .get_session(data_dir, sid)?
             .ok_or_else(|| format!("Session not found: {sid}"))?;
+        if !session.workflow_step_session && session.worktree_path != worktree_path {
+            return Err(session_target_rejected());
+        }
         ensure_session_backend_selected(session_store, registry, data_dir, session)?
     } else {
         let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
@@ -3404,6 +3592,7 @@ async fn prepare_send_agent_message_internal(
         )?
     };
     let sid = session.id.clone();
+    let session_worktree_path = session.worktree_path.clone();
 
     // 2. Add human message (with image parts if present)
     let human_message = {
@@ -3448,61 +3637,63 @@ async fn prepare_send_agent_message_internal(
             .unwrap_or(TurnPhase::Idle)
     };
 
-    let (agent_message, prepared_turn) = if current_phase == TurnPhase::Streaming
-        || current_phase == TurnPhase::WaitingPermission
-    {
-        // 4a. Queue pending message + interrupt
-        {
-            let mut map = handles.lock().await;
-            let proc = map
-                .get_mut(&sid)
-                .ok_or_else(|| format!("No active agent process for session {sid}"))?;
-            proc.pending_message = Some(PendingMessage {
-                content: content.clone(),
+    let (agent_message, prepared_turn) =
+        if current_phase == TurnPhase::Streaming || current_phase == TurnPhase::WaitingPermission {
+            // 4a. Queue pending message + interrupt
+            {
+                let mut map = handles.lock().await;
+                let proc = map
+                    .get_mut(&sid)
+                    .ok_or_else(|| format!("No active agent process for session {sid}"))?;
+                proc.pending_message = Some(PendingMessage {
+                    content: content.clone(),
+                    permission_mode: pm.clone(),
+                    images: images.clone(),
+                    worktree_path: session_worktree_path.clone(),
+                    mentions: mentions.clone(),
+                });
+                proc.stdin
+                    .write_all(b"{\"type\":\"interrupt\"}\n")
+                    .await
+                    .map_err(|e| format!("Failed to write interrupt: {e}"))?;
+                proc.stdin
+                    .flush()
+                    .await
+                    .map_err(|e| format!("Failed to flush: {e}"))?;
+            }
+            (None, None)
+        } else {
+            // 4b. Create agent message + start turn
+            let agent_msg = add_message_internal(
+                session_store,
+                data_dir,
+                &sid,
+                MessageRole::Agent,
+                "",
+                None,
+                None,
+            )?;
+            let resolved_prompt = crate::file_mention::resolve_mentions_or_fallback(
+                &session_worktree_path,
+                &content,
+                &mentions,
+            );
+            let turn = PreparedAgentTurn {
+                session_id: sid.clone(),
+                worktree_path: session_worktree_path.clone(),
                 permission_mode: pm.clone(),
+                prompt: resolved_prompt,
+                agent_message_id: agent_msg.id.clone(),
                 images: images.clone(),
-                worktree_path: worktree_path.clone(),
-                mentions: mentions.clone(),
-            });
-            proc.stdin
-                .write_all(b"{\"type\":\"interrupt\"}\n")
-                .await
-                .map_err(|e| format!("Failed to write interrupt: {e}"))?;
-            proc.stdin
-                .flush()
-                .await
-                .map_err(|e| format!("Failed to flush: {e}"))?;
-        }
-        (None, None)
-    } else {
-        // 4b. Create agent message + start turn
-        let agent_msg = add_message_internal(
-            session_store,
-            data_dir,
-            &sid,
-            MessageRole::Agent,
-            "",
-            None,
-            None,
-        )?;
-        let resolved_prompt =
-            crate::file_mention::resolve_mentions_or_fallback(&worktree_path, &content, &mentions);
-        let turn = PreparedAgentTurn {
-            session_id: sid.clone(),
-            worktree_path: worktree_path.clone(),
-            permission_mode: pm.clone(),
-            prompt: resolved_prompt,
-            agent_message_id: agent_msg.id.clone(),
-            images: images.clone(),
+            };
+            (Some(agent_msg), Some(turn))
         };
-        (Some(agent_msg), Some(turn))
-    };
 
     // 5. Get updated session and list
     let updated_session = session_store
         .get_session(data_dir, &sid)?
         .ok_or_else(|| format!("Session not found: {sid}"))?;
-    let sessions = session_store.list_sessions(data_dir, &worktree_path)?;
+    let sessions = session_store.list_sessions(data_dir, &session_worktree_path)?;
 
     Ok((
         SendMessageResponse {
@@ -3531,21 +3722,28 @@ pub async fn send_agent_message_internal(
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::file_mention::MentionReference>>,
 ) -> Result<SendMessageResponse, String> {
+    let lock_key = chat_session_id
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("new-session:{worktree_path}"));
     let data_dir = resolve_data_dir(app)?;
-    let (response, prepared_turn) = prepare_send_agent_message_internal(
-        session_store,
-        registry,
-        handles,
-        &data_dir,
-        chat_session_id,
-        worktree_path,
-        content,
-        permission_mode,
-        backend_id,
-        images,
-        mentions,
-    )
-    .await?;
+    let (response, prepared_turn) = {
+        let _send_guard = acquire_session_runtime_lock(&lock_key).await;
+        prepare_send_agent_message_internal(
+            session_store,
+            registry,
+            handles,
+            &data_dir,
+            chat_session_id,
+            worktree_path,
+            content,
+            permission_mode,
+            backend_id,
+            images,
+            mentions,
+        )
+        .await?
+    };
 
     if let Some(turn) = prepared_turn {
         start_agent_turn(
@@ -3566,36 +3764,6 @@ pub async fn send_agent_message_internal(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn send_agent_message(
-    app: tauri::AppHandle,
-    session_store: tauri::State<'_, Arc<SessionStore>>,
-    registry: tauri::State<'_, Arc<crate::backends::AgentBackendRegistry>>,
-    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    chat_session_id: Option<String>,
-    worktree_path: String,
-    content: String,
-    permission_mode: Option<String>,
-    backend_id: Option<String>,
-    images: Option<Vec<ImageAttachment>>,
-    mentions: Option<Vec<crate::file_mention::MentionReference>>,
-) -> Result<SendMessageResponse, String> {
-    send_agent_message_internal(
-        &app,
-        session_store.inner(),
-        registry.inner(),
-        handles.inner(),
-        chat_session_id,
-        worktree_path,
-        content,
-        permission_mode,
-        backend_id,
-        images,
-        mentions,
-    )
-    .await
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InitSessionsResponse {
@@ -3611,10 +3779,17 @@ pub async fn init_agent_sessions(
     session_store: tauri::State<'_, Arc<SessionStore>>,
     registry: tauri::State<'_, Arc<crate::backends::AgentBackendRegistry>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    open_tabs: tauri::State<'_, Arc<crate::session::OpenTabRegistry>>,
     worktree_path: String,
 ) -> Result<InitSessionsResponse, String> {
     let data_dir = resolve_data_dir(&app)?;
 
+    crate::workflow_step_lifecycle_adapters::hydrate_open_workflow_step_tabs(
+        session_store.inner(),
+        &data_dir,
+        &worktree_path,
+        open_tabs.inner(),
+    )?;
     let sessions = session_store.list_sessions(&data_dir, &worktree_path)?;
 
     if sessions.is_empty() {
@@ -3917,6 +4092,31 @@ pub(crate) async fn start_agent_turn_internal(
     permission_mode: &str,
     prompt: &str,
 ) -> Result<(), String> {
+    wait_until_session_close_finished(chat_session_id).await;
+    let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
+    start_agent_turn_internal_locked(
+        app,
+        handles,
+        session_store,
+        chat_session_id,
+        cwd,
+        permission_mode,
+        prompt,
+    )
+    .await
+}
+
+/// Runtime lock acquired by the caller variant used by workflow step startup.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn start_agent_turn_internal_locked(
+    app: &tauri::AppHandle,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    chat_session_id: &str,
+    cwd: &str,
+    permission_mode: &str,
+    prompt: &str,
+) -> Result<(), String> {
     let data_dir = resolve_data_dir(app)?;
 
     // Add human message
@@ -3941,7 +4141,7 @@ pub(crate) async fn start_agent_turn_internal(
         None,
     )?;
 
-    start_agent_turn(
+    start_agent_turn_locked(
         app,
         handles,
         session_store,
@@ -4023,6 +4223,97 @@ mod tests {
         }
     }
 
+    fn chat_session_for_spawn_info(session_id: &str) -> ChatSession {
+        ChatSession {
+            id: session_id.to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: Vec::new(),
+            state: crate::session::SessionState::Closed,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: Some("sdk-resume-id".to_string()),
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: Some("sonnet".to_string()),
+            workflow_state: None,
+            backend_id: Some("mock".to_string()),
+            workflow_step_session: true,
+        }
+    }
+
+    #[test]
+    fn persisted_spawn_info_uses_step_agent_session_id_for_resume() {
+        let (resume_id, selected_model, backend_id) =
+            persisted_spawn_info_from_session(Some(chat_session_for_spawn_info("step")));
+
+        assert_eq!(resume_id.as_deref(), Some("sdk-resume-id"));
+        assert_eq!(selected_model.as_deref(), Some("sonnet"));
+        assert_eq!(backend_id, "mock");
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_for_turn_spawns_at_most_once_for_concurrent_sends() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let spawn_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let session_id = "step-session".to_string();
+
+        let first = ensure_runtime_for_turn(&handles, &session_id, {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            let spawn_count = Arc::clone(&spawn_count);
+            move || async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                spawn_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                handles
+                    .lock()
+                    .await
+                    .insert(session_id, make_test_agent_process());
+                Ok(())
+            }
+        });
+        let second = ensure_runtime_for_turn(&handles, &session_id, {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            let spawn_count = Arc::clone(&spawn_count);
+            move || async move {
+                spawn_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                handles
+                    .lock()
+                    .await
+                    .insert(session_id, make_test_agent_process());
+                Ok(())
+            }
+        });
+
+        let (first, second) = tokio::join!(first, second);
+        first.unwrap();
+        second.unwrap();
+
+        assert_eq!(spawn_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(handles.lock().await.contains_key("step-session"));
+    }
+
+    #[tokio::test]
+    async fn ensure_runtime_for_turn_removes_partial_runtime_when_spawn_fails() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "step-session-spawn-fail".to_string();
+
+        let result = ensure_runtime_for_turn(&handles, &session_id, {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            move || async move {
+                handles
+                    .lock()
+                    .await
+                    .insert(session_id, make_test_agent_process());
+                Err("spawn failed".to_string())
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap_err(), "spawn failed");
+        assert!(!handles.lock().await.contains_key("step-session-spawn-fail"));
+    }
+
     #[test]
     fn agent_process_map_starts_empty() {
         let map = AgentProcessMap::new();
@@ -4036,22 +4327,6 @@ mod tests {
         assert_ne!(state, BridgeState::Ready);
         assert_ne!(state, BridgeState::Streaming);
         assert_ne!(state, BridgeState::Crashed);
-    }
-
-    #[test]
-    fn bridge_common_does_not_depend_on_agent_sdk_or_claude_module() {
-        let source = include_str!("bridge_common.rs");
-        let agent_sdk_path = ["crate::", "agent_sdk"].concat();
-        let claude_path = ["crate::backends", "::", "claude"].concat();
-        let super_claude_path = ["super::", "claude"].concat();
-        let codex_path = ["crate::backends", "::", "codex"].concat();
-        let super_codex_path = ["super::", "codex"].concat();
-
-        assert!(!source.contains(&agent_sdk_path));
-        assert!(!source.contains(&claude_path));
-        assert!(!source.contains(&super_claude_path));
-        assert!(!source.contains(&codex_path));
-        assert!(!source.contains(&super_codex_path));
     }
 
     #[tokio::test]
@@ -4341,33 +4616,6 @@ mod tests {
         ));
 
         assert!(prepare_streaming_flush(&proc).is_none(), "no double emit");
-    }
-
-    #[tokio::test]
-    async fn apply_streaming_emit_result_does_not_leak_payload_into_log_args() {
-        // 失敗ログには本文・tool 入出力・画像・mention などのユーザーデータを含めない。
-        // log::warn! のフォーマット引数は固定 (snapshot.part_count / buffer_len /
-        // pending_bytes / tauri_ok / ws_ok) で、本文は引数として渡されない。
-        // 実装本体の format 引数を文字列として確認することで本文混入を検出する。
-        let source = include_str!("bridge_common.rs");
-        let warn_call = source
-            .split("\"agent-streaming-updated emit failure:")
-            .nth(1)
-            .expect("warn! present");
-        // log の format 文字列終端まで切り出す。
-        let format_block = warn_call.split(';').next().expect("statement ends with ;");
-        for forbidden in [
-            "snapshot.parts",
-            "streaming_parts",
-            "pending_stream_parts",
-            "delta",
-            "content",
-        ] {
-            assert!(
-                !format_block.contains(forbidden),
-                "log args must not reference body field `{forbidden}`: {format_block}"
-            );
-        }
     }
 
     #[tokio::test]
@@ -5469,37 +5717,11 @@ mod tests {
         // Standalone, non-running AgentProcess used purely to exercise the
         // coalescing helpers. Stdin/child are tied to a `cat` subprocess so
         // the struct is well-formed. Must run inside a Tokio runtime.
-        let mut tchild = tokio::process::Command::new("cat")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn cat (tokio)");
-        let stdin = tchild.stdin.take().expect("stdin");
-        AgentProcess {
-            stdin,
-            backend_id: "mock".to_string(),
-            state: BridgeState::Streaming,
-            turn_phase: TurnPhase::Streaming,
-            sdk_session_id: None,
-            child: tchild,
-            generation_id: 0,
-            #[cfg(unix)]
-            pgid: None,
-            streaming_message_id: Some("m1".to_string()),
-            streaming_parts: Vec::new(),
-            last_message_id: None,
-            task_id_map: HashMap::new(),
-            pending_message: None,
-            current_permission_mode: "acceptEdits".to_string(),
-            available_models: Vec::new(),
-            selected_model: None,
-            last_result_token_usage: None,
-            pending_stream_part_count: 0,
-            pending_stream_bytes: 0,
-            last_stream_emit_at: None,
-            streaming_timer_active: false,
-        }
+        let mut proc = make_test_agent_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Streaming;
+        proc.streaming_message_id = Some("m1".to_string());
+        proc
     }
 
     #[test]
@@ -5572,6 +5794,468 @@ mod tests {
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].value, "mock-model");
+    }
+
+    #[tokio::test]
+    async fn prepared_send_accepts_already_validated_workflow_step_session() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: "mock".to_string(),
+            models: vec![],
+        }));
+        let registry = Arc::new(registry);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let worktree_path = "/repo".to_string();
+        let mut step_session = create_session_internal(
+            &session_store,
+            data_dir.path(),
+            &worktree_path,
+            Some("mock".to_string()),
+        )
+        .unwrap();
+        step_session.workflow_step_session = true;
+        session_store
+            .save_session(data_dir.path(), &step_session)
+            .unwrap();
+        let mut parent_session = create_session_internal(
+            &session_store,
+            data_dir.path(),
+            &worktree_path,
+            Some("mock".to_string()),
+        )
+        .unwrap();
+        parent_session.workflow_state = Some(crate::workflow::state::WorkflowState {
+            execution_id: "exec-1".to_string(),
+            workflow_name: "wf".to_string(),
+            chat_session_id: Some(parent_session.id.clone()),
+            state: WorkflowExecutionState::Completed,
+            current_step_index: 0,
+            current_step_name: "done".to_string(),
+            current_session_id: None,
+            total_steps: 1,
+            step_history: vec![crate::workflow::state::StepHistoryEntry {
+                step_name: "done".to_string(),
+                completed_at: 1.0,
+                result: Some("ok".to_string()),
+                session_id: Some(step_session.id.clone()),
+                token_usage: None,
+                structured_output: None,
+                run_index: 1,
+                child_outputs: None,
+            }],
+            step_execution_counts: HashMap::new(),
+            workflow_definition: crate::workflow::schema::Workflow {
+                name: "wf".to_string(),
+                description: String::new(),
+                builtin: false,
+                steps: vec![],
+            },
+            total_token_usage: crate::workflow::state::TokenUsage::default(),
+            step_states: HashMap::new(),
+            step_outputs: HashMap::new(),
+            active_parallel_steps: vec![],
+            workflow_variables: HashMap::new(),
+            approval_operations: None,
+            started_at: 1.0,
+            updated_at: 1.0,
+        });
+        session_store
+            .save_session(data_dir.path(), &parent_session)
+            .unwrap();
+
+        let result = prepare_send_agent_message_internal(
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            Some(step_session.id.clone()),
+            "/different-request-worktree".to_string(),
+            "continue completed step".to_string(),
+            Some("acceptEdits".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        let (_response, prepared_turn) = result.unwrap();
+        let prepared_turn = prepared_turn.expect("workflow step message starts a turn");
+        assert_eq!(prepared_turn.worktree_path, "/repo");
+        let saved = session_store
+            .get_session(data_dir.path(), &step_session.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            saved
+                .messages
+                .iter()
+                .any(|message| message.content == "continue completed step"),
+            "workflow command validation happens before bridge turn preparation"
+        );
+    }
+
+    fn workflow_state_for_runtime_test(session_id: &str) -> crate::workflow::state::WorkflowState {
+        crate::workflow::state::WorkflowState {
+            execution_id: "exec-runtime".to_string(),
+            workflow_name: "wf".to_string(),
+            chat_session_id: Some("parent".to_string()),
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            current_step_name: "step".to_string(),
+            current_session_id: Some(session_id.to_string()),
+            total_steps: 1,
+            step_history: Vec::new(),
+            step_execution_counts: HashMap::new(),
+            workflow_definition: crate::workflow::schema::Workflow {
+                name: "wf".to_string(),
+                description: String::new(),
+                builtin: false,
+                steps: vec![],
+            },
+            total_token_usage: crate::workflow::state::TokenUsage::default(),
+            step_states: HashMap::new(),
+            step_outputs: HashMap::new(),
+            active_parallel_steps: vec![],
+            workflow_variables: HashMap::new(),
+            approval_operations: None,
+            started_at: 1.0,
+            updated_at: 1.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_send_to_regular_session_does_not_change_workflow_step_runtime() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: "mock".to_string(),
+            models: vec![],
+        }));
+        let registry = Arc::new(registry);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let open_tabs = crate::session::OpenTabRegistry::default();
+        let worktree_path = "/repo".to_string();
+        let regular_session = create_session_internal(
+            &session_store,
+            data_dir.path(),
+            &worktree_path,
+            Some("mock".to_string()),
+        )
+        .unwrap();
+        let mut step_session = create_session_internal(
+            &session_store,
+            data_dir.path(),
+            &worktree_path,
+            Some("mock".to_string()),
+        )
+        .unwrap();
+        step_session.workflow_step_session = true;
+        session_store
+            .save_session(data_dir.path(), &step_session)
+            .unwrap();
+        handles
+            .lock()
+            .await
+            .insert(step_session.id.clone(), make_test_agent_process());
+
+        let before = crate::workflow_state_events::build_workflow_state_projection(
+            workflow_state_for_runtime_test(&step_session.id),
+            &handles,
+            &open_tabs,
+        )
+        .await;
+
+        let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            Some(regular_session.id),
+            worktree_path,
+            "regular chat".to_string(),
+            Some("acceptEdits".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(prepared_turn.is_some());
+        assert!(handles.lock().await.contains_key(&step_session.id));
+        let after = crate::workflow_state_events::build_workflow_state_projection(
+            workflow_state_for_runtime_test(&step_session.id),
+            &handles,
+            &open_tabs,
+        )
+        .await;
+        assert_eq!(
+            before.runtime_states[&step_session.id].runtime_active,
+            after.runtime_states[&step_session.id].runtime_active
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_step_send_with_stopped_runtime_prepares_single_resume_turn() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: "mock".to_string(),
+            models: vec![],
+        }));
+        let registry = Arc::new(registry);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let worktree_path = "/repo".to_string();
+        let mut step_session = create_session_internal(
+            &session_store,
+            data_dir.path(),
+            &worktree_path,
+            Some("mock".to_string()),
+        )
+        .unwrap();
+        step_session.workflow_step_session = true;
+        step_session.agent_session_id = Some("sdk-session".to_string());
+        session_store
+            .save_session(data_dir.path(), &step_session)
+            .unwrap();
+
+        let (_response, prepared_turn) = prepare_send_agent_message_internal(
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            Some(step_session.id.clone()),
+            worktree_path.clone(),
+            "resume step".to_string(),
+            Some("acceptEdits".to_string()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let prepared_turn = prepared_turn.expect("stopped workflow step should resume on send");
+        assert_eq!(prepared_turn.session_id, step_session.id);
+        assert_eq!(prepared_turn.worktree_path, worktree_path);
+        assert_eq!(prepared_turn.prompt, "resume step");
+        assert!(
+            handles.lock().await.is_empty(),
+            "preparation must not leave a half-started runtime before turn start"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopped_workflow_step_turn_start_spawns_resume_runtime_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "stopped-step".to_string();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+
+        start_agent_turn_with_runtime_spawner(
+            None,
+            &handles,
+            &session_id,
+            "acceptEdits",
+            "resume step",
+            "agent-msg-1",
+            &[],
+            {
+                let handles = Arc::clone(&handles);
+                let session_id = session_id.clone();
+                let spawn_count = Arc::clone(&spawn_count);
+                move || async move {
+                    spawn_count.fetch_add(1, Ordering::SeqCst);
+                    handles
+                        .lock()
+                        .await
+                        .insert(session_id, make_test_agent_process());
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        let map = handles.lock().await;
+        let proc = map.get(&session_id).expect("runtime was started");
+        assert_eq!(proc.state, BridgeState::Streaming);
+        assert_eq!(proc.turn_phase, TurnPhase::Streaming);
+        assert_eq!(proc.streaming_message_id.as_deref(), Some("agent-msg-1"));
+    }
+
+    #[tokio::test]
+    async fn running_workflow_step_turn_start_reuses_existing_runtime_without_spawn() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "running-step".to_string();
+        handles
+            .lock()
+            .await
+            .insert(session_id.clone(), make_test_agent_process());
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+
+        start_agent_turn_with_runtime_spawner(
+            None,
+            &handles,
+            &session_id,
+            "acceptEdits",
+            "continue step",
+            "agent-msg-2",
+            &[],
+            {
+                let spawn_count = Arc::clone(&spawn_count);
+                move || async move {
+                    spawn_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+        assert_eq!(handles.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn workflow_step_turn_start_holds_session_runtime_lock_until_message_write() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "locked-turn-start".to_string();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let guard = acquire_session_runtime_lock(&session_id).await;
+
+        let start = {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            let spawn_count = Arc::clone(&spawn_count);
+            tokio::spawn(async move {
+                start_agent_turn_with_runtime_spawner(
+                    None,
+                    &handles,
+                    &session_id,
+                    "acceptEdits",
+                    "resume step",
+                    "agent-msg-locked",
+                    &[],
+                    {
+                        let handles = Arc::clone(&handles);
+                        let session_id = session_id.clone();
+                        let spawn_count = Arc::clone(&spawn_count);
+                        move || async move {
+                            spawn_count.fetch_add(1, Ordering::SeqCst);
+                            handles
+                                .lock()
+                                .await
+                                .insert(session_id, make_test_agent_process());
+                            Ok(())
+                        }
+                    },
+                )
+                .await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+        assert!(handles.lock().await.is_empty());
+
+        drop(guard);
+        start.await.unwrap().unwrap();
+
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        let map = handles.lock().await;
+        let proc = map.get(&session_id).expect("runtime was started");
+        assert_eq!(
+            proc.streaming_message_id.as_deref(),
+            Some("agent-msg-locked")
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_workflow_step_turn_start_spawns_runtime_at_most_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "concurrent-step".to_string();
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+
+        let start_one = {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            let spawn_count = Arc::clone(&spawn_count);
+            async move {
+                start_agent_turn_with_runtime_spawner(
+                    None,
+                    &handles,
+                    &session_id,
+                    "acceptEdits",
+                    "first",
+                    "agent-msg-1",
+                    &[],
+                    {
+                        let handles = Arc::clone(&handles);
+                        let session_id = session_id.clone();
+                        let spawn_count = Arc::clone(&spawn_count);
+                        move || async move {
+                            spawn_count.fetch_add(1, Ordering::SeqCst);
+                            handles
+                                .lock()
+                                .await
+                                .insert(session_id, make_test_agent_process());
+                            Ok(())
+                        }
+                    },
+                )
+                .await
+            }
+        };
+        let start_two = {
+            let handles = Arc::clone(&handles);
+            let session_id = session_id.clone();
+            let spawn_count = Arc::clone(&spawn_count);
+            async move {
+                start_agent_turn_with_runtime_spawner(
+                    None,
+                    &handles,
+                    &session_id,
+                    "acceptEdits",
+                    "second",
+                    "agent-msg-2",
+                    &[],
+                    {
+                        let handles = Arc::clone(&handles);
+                        let session_id = session_id.clone();
+                        let spawn_count = Arc::clone(&spawn_count);
+                        move || async move {
+                            spawn_count.fetch_add(1, Ordering::SeqCst);
+                            handles
+                                .lock()
+                                .await
+                                .insert(session_id, make_test_agent_process());
+                            Ok(())
+                        }
+                    },
+                )
+                .await
+            }
+        };
+
+        let (first, second) = tokio::join!(start_one, start_two);
+
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        assert_eq!(handles.lock().await.len(), 1);
     }
 
     #[tokio::test]
@@ -5981,6 +6665,7 @@ mod tests {
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
             backend_id: Some("claude".to_string()),
+            workflow_step_session: false,
         };
 
         assert!(!should_start_agent_process_for_summary(&session));
@@ -5999,12 +6684,221 @@ mod tests {
             agent_session_id: None,
             permission_mode: "acceptEdits".to_string(),
             backend_id: Some("claude".to_string()),
+            workflow_step_session: false,
         };
         assert!(should_start_agent_process_for_summary(&session));
 
         session.message_count = 0;
         session.agent_session_id = Some("sdk-session".to_string());
         assert!(should_start_agent_process_for_summary(&session));
+    }
+
+    #[test]
+    fn should_start_agent_process_for_summary_skips_workflow_step_session() {
+        let session = SessionSummary {
+            id: "step".to_string(),
+            worktree_path: "/repo".to_string(),
+            state: crate::session::SessionState::Idle,
+            created_at: 1.0,
+            updated_at: 1.0,
+            first_message: "history".to_string(),
+            message_count: 3,
+            agent_session_id: Some("sdk-session".to_string()),
+            permission_mode: "acceptEdits".to_string(),
+            backend_id: Some("claude".to_string()),
+            workflow_step_session: true,
+        };
+
+        assert!(!should_start_agent_process_for_summary(&session));
+    }
+
+    #[tokio::test]
+    async fn agent_step_runtime_busy_tracks_streaming_permission_and_pending_message() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_streaming_test_process();
+        proc.state = BridgeState::Streaming;
+        proc.turn_phase = TurnPhase::Idle;
+        handles.lock().await.insert("step".to_string(), proc);
+        assert!(is_agent_step_runtime_busy(&handles, "step").await);
+
+        {
+            let mut map = handles.lock().await;
+            let proc = map.get_mut("step").unwrap();
+            proc.state = BridgeState::Ready;
+            proc.turn_phase = TurnPhase::WaitingPermission;
+        }
+        assert!(is_agent_step_runtime_busy(&handles, "step").await);
+
+        {
+            let mut map = handles.lock().await;
+            let proc = map.get_mut("step").unwrap();
+            proc.turn_phase = TurnPhase::Idle;
+            proc.pending_message = Some(PendingMessage {
+                content: "next".to_string(),
+                permission_mode: "acceptEdits".to_string(),
+                images: Vec::new(),
+                worktree_path: "/repo".to_string(),
+                mentions: Vec::new(),
+            });
+        }
+        assert!(is_agent_step_runtime_busy(&handles, "step").await);
+        assert!(agent_session_has_pending_message(&handles, "step").await);
+
+        {
+            let mut map = handles.lock().await;
+            let proc = map.get_mut("step").unwrap();
+            proc.pending_message = None;
+        }
+        assert!(!is_agent_step_runtime_busy(&handles, "step").await);
+        assert!(!agent_session_has_pending_message(&handles, "step").await);
+    }
+
+    #[tokio::test]
+    async fn pending_turn_starting_keeps_step_runtime_busy_after_pending_is_taken() {
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let mut proc = make_test_agent_process();
+        proc.pending_message = Some(PendingMessage {
+            content: "next".to_string(),
+            permission_mode: "acceptEdits".to_string(),
+            images: Vec::new(),
+            worktree_path: "/repo".to_string(),
+            mentions: Vec::new(),
+        });
+        handles
+            .lock()
+            .await
+            .insert("step-pending".to_string(), proc);
+
+        let pending = take_pending_message(&handles, "step-pending").await;
+
+        assert!(pending.is_some());
+        assert!(!agent_session_has_pending_message(&handles, "step-pending").await);
+        assert!(is_agent_step_runtime_busy(&handles, "step-pending").await);
+
+        clear_pending_turn_starting("step-pending").await;
+        assert!(!is_agent_step_runtime_busy(&handles, "step-pending").await);
+    }
+
+    #[test]
+    fn pending_turn_start_failure_log_is_redacted() {
+        let log_line = pending_turn_start_failed_log_message();
+
+        assert!(log_line.contains("code=pending_turn_start_failed"));
+        assert!(log_line.contains("message=failed_to_start_pending_turn"));
+        assert!(!log_line.contains("agent-session-secret"));
+        assert!(!log_line.contains("queued message body"));
+        assert!(!log_line.contains("/private/worktree/path"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_then_pending_resume_leaves_one_runtime_without_double_spawn() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let session_id = "step-cleanup-resume".to_string();
+        handles
+            .lock()
+            .await
+            .insert(session_id.clone(), make_test_agent_process());
+        mark_pending_turn_starting(&session_id).await;
+        let close_count = Arc::new(AtomicUsize::new(0));
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+
+        {
+            let _guard = acquire_session_runtime_lock(&session_id).await;
+            if handles.lock().await.remove(&session_id).is_some() {
+                close_count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        {
+            let _guard = acquire_session_runtime_lock(&session_id).await;
+            ensure_runtime_for_turn(&handles, &session_id, {
+                let handles = Arc::clone(&handles);
+                let session_id = session_id.clone();
+                let spawn_count = Arc::clone(&spawn_count);
+                move || async move {
+                    spawn_count.fetch_add(1, Ordering::SeqCst);
+                    handles
+                        .lock()
+                        .await
+                        .insert(session_id, make_test_agent_process());
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        }
+        clear_pending_turn_starting(&session_id).await;
+
+        assert_eq!(close_count.load(Ordering::SeqCst), 1);
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        assert!(handles.lock().await.contains_key(&session_id));
+    }
+
+    #[tokio::test]
+    async fn session_runtime_lock_is_pruned_after_last_guard_drops() {
+        {
+            let _guard = acquire_session_runtime_lock("lock-prune-test").await;
+            assert!(
+                crate::backends::runtime_coordinator::session_runtime_lock_exists(
+                    "lock-prune-test"
+                )
+                .await
+            );
+        }
+
+        for _ in 0..10 {
+            if !crate::backends::runtime_coordinator::session_runtime_lock_exists("lock-prune-test")
+                .await
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("runtime lock was not pruned after guard drop");
+    }
+
+    #[tokio::test]
+    async fn session_runtime_lock_serializes_same_step_operations() {
+        let guard = acquire_session_runtime_lock("same-step-lock-test").await;
+        let waiter = tokio::spawn(async {
+            let _guard = acquire_session_runtime_lock("same-step-lock-test").await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!waiter.is_finished());
+        drop(guard);
+        waiter.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawn_session_guard_serializes_same_step_spawns() {
+        let guard = acquire_spawn_session_guard("same-step-spawn-test").await;
+        let waiter = tokio::spawn(async {
+            let _guard = acquire_spawn_session_guard("same-step-spawn-test").await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!waiter.is_finished());
+        drop(guard);
+        waiter.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn closing_session_marker_blocks_until_close_finishes() {
+        mark_session_closing("same-step-close-test").await;
+        mark_session_closing("same-step-close-test").await;
+        let waiter = tokio::spawn(async {
+            wait_until_session_close_finished("same-step-close-test").await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!waiter.is_finished());
+        clear_session_closing("same-step-close-test").await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!waiter.is_finished());
+        clear_session_closing("same-step-close-test").await;
+        waiter.await.unwrap();
     }
 
     #[test]

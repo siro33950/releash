@@ -443,30 +443,52 @@ pub(super) async fn handle_agent_message_request(
         .inner()
         .clone();
     let registry = state.get_backend_registry().clone();
-
-    match crate::agent_sdk::send_agent_message_internal(
-        app,
-        &session_store,
-        &registry,
-        &handles,
-        req.session_id.clone(),
-        worktree_path,
-        req.content.clone(),
-        req.permission_mode.clone(),
-        req.backend_id.clone(),
-        None,
-        None,
+    let engine = app
+        .state::<Arc<crate::workflow::engine::WorkflowEngine>>()
+        .inner()
+        .clone();
+    let open_tabs = app
+        .state::<Arc<crate::session::OpenTabRegistry>>()
+        .inner()
+        .clone();
+    let response = crate::agent_message_dispatcher::dispatch_agent_message(
+        crate::agent_message_dispatcher::AgentMessageDispatchContext {
+            app,
+            session_store: &session_store,
+            registry: &registry,
+            handles: &handles,
+        },
+        crate::agent_message_dispatcher::AgentMessageDispatchRequest {
+            chat_session_id: req.session_id.clone(),
+            worktree_path,
+            content: req.content.clone(),
+            permission_mode: req.permission_mode.clone(),
+            backend_id: req.backend_id.clone(),
+            images: None,
+            mentions: None,
+        },
     )
-    .await
-    {
-        Ok(response) => Some(WsMessage::AgentMessageResponse(AgentMessageResponse {
-            success: true,
-            session_id: Some(response.session.id),
-            human_message_id: Some(response.human_message.id),
-            agent_message_id: response.agent_message.map(|m| m.id),
-            backend_id: response.session.backend_id,
-            error: None,
-        })),
+    .await;
+
+    match response {
+        Ok(response) => {
+            crate::workflow_state_events::emit_after_workflow_step_message(
+                app,
+                &engine,
+                &response.session,
+                &handles,
+                &open_tabs,
+            )
+            .await;
+            Some(WsMessage::AgentMessageResponse(AgentMessageResponse {
+                success: true,
+                session_id: Some(response.session.id),
+                human_message_id: Some(response.human_message.id),
+                agent_message_id: response.agent_message.map(|m| m.id),
+                backend_id: response.session.backend_id,
+                error: None,
+            }))
+        }
         Err(e) => Some(agent_message_error(req, e)),
     }
 }
@@ -625,6 +647,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: Some("claude".to_string()),
+            workflow_step_session: false,
         }
     }
 

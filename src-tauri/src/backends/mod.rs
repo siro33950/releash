@@ -1,6 +1,7 @@
 pub mod bridge_common;
 pub mod claude;
 pub mod codex;
+pub mod runtime_coordinator;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

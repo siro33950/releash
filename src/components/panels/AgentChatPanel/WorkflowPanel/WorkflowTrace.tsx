@@ -7,6 +7,8 @@ import {
 	ChevronRight,
 	Circle,
 	Clock,
+	Eye,
+	EyeOff,
 	GitBranch,
 	Loader2,
 	X,
@@ -26,7 +28,10 @@ import { workflowStateClasses } from "./workflowStateStyles";
 interface WorkflowTraceProps {
 	workflowState: WorkflowState;
 	events?: WorkflowLogEvent[];
+	/** tab が閉じている step session を開く / 既に開いていればフォーカスする */
 	onSessionClick?: (sessionId: string) => void;
+	/** tab が開いている step session を閉じる */
+	onCloseSession?: (sessionId: string) => void;
 	approvalAction?: WorkflowApprovalActionContext;
 }
 
@@ -39,6 +44,7 @@ export function WorkflowTrace({
 	workflowState,
 	events = [],
 	onSessionClick,
+	onCloseSession,
 	approvalAction,
 }: WorkflowTraceProps) {
 	const traceItems = buildTraceItems(workflowState);
@@ -61,6 +67,7 @@ export function WorkflowTrace({
 							isLast={index === traceItems.length - 1}
 							workflowState={workflowState}
 							onSessionClick={onSessionClick}
+							onCloseSession={onCloseSession}
 							approvalAction={approvalAction}
 						/>
 					))}
@@ -155,6 +162,8 @@ type TraceItem =
 			occurrence: number;
 			entry: StepHistoryEntry;
 			sessionId?: string;
+			runtimeActive: boolean;
+			tabOpen: boolean;
 			state: "completed";
 	  }
 	| {
@@ -163,6 +172,8 @@ type TraceItem =
 			stepName: string;
 			occurrence: number;
 			sessionId?: string;
+			runtimeActive?: boolean;
+			tabOpen?: boolean;
 			state: "running" | "waiting_approval" | "failed";
 	  }
 	| {
@@ -170,10 +181,25 @@ type TraceItem =
 			step: Step | undefined;
 			stepName: string;
 			occurrence: number;
-			childSteps: ParallelStepState[];
+			childSteps: TraceParallelStepState[];
 			state: "running" | "completed" | "failed";
 			entry?: StepHistoryEntry;
 	  };
+
+type TraceParallelStepState = ParallelStepState & {
+	runtimeActive: boolean;
+	tabOpen: boolean;
+};
+
+function runtimeFor(workflowState: WorkflowState, sessionId?: string) {
+	if (!sessionId) return { runtimeActive: false, tabOpen: false };
+	return (
+		workflowState.runtimeStates?.[sessionId] ?? {
+			runtimeActive: false,
+			tabOpen: false,
+		}
+	);
+}
 
 function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 	const stepsByName = new Map(
@@ -186,36 +212,44 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 		const step = stepsByName.get(entry.stepName);
 
 		if (step?.parallel && step.parallel.length > 0) {
-			const childSteps: ParallelStepState[] = step.parallel.map((child) => {
-				// 履歴エントリにchild snapshotがあればそれを使用（run固有の情報）
-				const childSnapshot = entry.childOutputs?.find(
-					(co) => co.stepName === child.name,
-				);
-				if (childSnapshot) {
+			const childSteps: TraceParallelStepState[] = step.parallel.map(
+				(child) => {
+					// 履歴エントリにchild snapshotがあればそれを使用（run固有の情報）
+					const childSnapshot = entry.childOutputs?.find(
+						(co) => co.stepName === child.name,
+					);
+					if (childSnapshot) {
+						const runtime = runtimeFor(workflowState, childSnapshot.sessionId);
+						return {
+							stepName: child.name,
+							state: "completed" as const,
+							sessionId: childSnapshot.sessionId,
+							result: childSnapshot.result,
+							runIndex: childSnapshot.runIndex,
+							completedAt: childSnapshot.completedAt,
+							structuredOutput: childSnapshot.structuredOutput,
+							outputContract: childSnapshot.outputContract,
+							runtimeActive: runtime.runtimeActive,
+							tabOpen: runtime.tabOpen,
+						};
+					}
+					// フォールバック: グローバルstepOutputsを参照
+					const childOutput = workflowState.stepOutputs[child.name];
+					const runtime = runtimeFor(workflowState, childOutput?.sessionId);
 					return {
 						stepName: child.name,
-						state: "completed" as const,
-						sessionId: childSnapshot.sessionId,
-						result: childSnapshot.result,
-						runIndex: childSnapshot.runIndex,
-						completedAt: childSnapshot.completedAt,
-						structuredOutput: childSnapshot.structuredOutput,
-						outputContract: childSnapshot.outputContract,
+						state: childOutput ? "completed" : "pending",
+						sessionId: childOutput?.sessionId,
+						result: childOutput?.result,
+						runIndex: childOutput?.runIndex ?? 1,
+						completedAt: childOutput?.completedAt,
+						structuredOutput: childOutput?.structuredOutput,
+						outputContract: childOutput?.outputContract,
+						runtimeActive: runtime.runtimeActive,
+						tabOpen: runtime.tabOpen,
 					};
-				}
-				// フォールバック: グローバルstepOutputsを参照
-				const childOutput = workflowState.stepOutputs[child.name];
-				return {
-					stepName: child.name,
-					state: childOutput ? "completed" : "pending",
-					sessionId: childOutput?.sessionId,
-					result: childOutput?.result,
-					runIndex: childOutput?.runIndex ?? 1,
-					completedAt: childOutput?.completedAt,
-					structuredOutput: childOutput?.structuredOutput,
-					outputContract: childOutput?.outputContract,
-				};
-			});
+				},
+			);
 			return {
 				kind: "parallel" as const,
 				step,
@@ -227,13 +261,16 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 			};
 		}
 
+		const runtime = runtimeFor(workflowState, entry.sessionId);
 		return {
 			kind: "completed",
 			step,
 			stepName: entry.stepName,
 			occurrence,
 			entry,
-			sessionId: entry.sessionId ?? workflowState.chatSessionId,
+			sessionId: entry.sessionId,
+			runtimeActive: runtime.runtimeActive,
+			tabOpen: runtime.tabOpen,
 			state: "completed",
 		};
 	});
@@ -258,6 +295,16 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 		const currentStep = stepsByName.get(workflowState.currentStepName);
 		const activeParallel = workflowState.activeParallelSteps;
 		if (currentStep?.parallel && activeParallel && activeParallel.length > 0) {
+			const childSteps: TraceParallelStepState[] = activeParallel.map(
+				(step) => {
+					const runtime = runtimeFor(workflowState, step.sessionId);
+					return {
+						...step,
+						runtimeActive: runtime.runtimeActive,
+						tabOpen: runtime.tabOpen,
+					};
+				},
+			);
 			const hasFailed = activeParallel.some((ps) => ps.state === "failed");
 			const allFinished = activeParallel.every(
 				(ps) => ps.state === "completed" || ps.state === "failed",
@@ -267,17 +314,19 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 				step: currentStep,
 				stepName: workflowState.currentStepName,
 				occurrence: Math.max(startedCount, completedCount + 1),
-				childSteps: activeParallel,
+				childSteps,
 				state: hasFailed ? "failed" : allFinished ? "completed" : "running",
 			});
 		} else {
+			const runtime = runtimeFor(workflowState, workflowState.currentSessionId);
 			items.push({
 				kind: "current",
 				step: currentStep,
 				stepName: workflowState.currentStepName,
 				occurrence: Math.max(startedCount, completedCount + 1),
-				sessionId:
-					workflowState.currentSessionId ?? workflowState.chatSessionId,
+				sessionId: workflowState.currentSessionId,
+				runtimeActive: runtime.runtimeActive,
+				tabOpen: runtime.tabOpen,
 				state,
 			});
 		}
@@ -301,12 +350,14 @@ function TraceItemRow({
 	isLast,
 	workflowState,
 	onSessionClick,
+	onCloseSession,
 	approvalAction,
 }: {
 	item: TraceItem;
 	isLast: boolean;
 	workflowState: WorkflowState;
 	onSessionClick?: (sessionId: string) => void;
+	onCloseSession?: (sessionId: string) => void;
 	approvalAction?: WorkflowApprovalActionContext;
 }) {
 	if (item.kind === "parallel") {
@@ -315,6 +366,7 @@ function TraceItemRow({
 				item={item}
 				isLast={isLast}
 				onSessionClick={onSessionClick}
+				onCloseSession={onCloseSession}
 			/>
 		);
 	}
@@ -355,7 +407,11 @@ function TraceItemRow({
 						{stepMode}
 					</span>
 				</div>
-				<TraceItemSummary item={item} onSessionClick={onSessionClick} />
+				<TraceItemSummary
+					item={item}
+					onSessionClick={onSessionClick}
+					onCloseSession={onCloseSession}
+				/>
 				{approvalTarget && (
 					<StepApprovalActions
 						approvalAction={approvalTarget}
@@ -465,10 +521,12 @@ function ParallelBlockRow({
 	item,
 	isLast,
 	onSessionClick,
+	onCloseSession,
 }: {
 	item: Extract<TraceItem, { kind: "parallel" }>;
 	isLast: boolean;
 	onSessionClick?: (sessionId: string) => void;
+	onCloseSession?: (sessionId: string) => void;
 }) {
 	const completedCount = item.childSteps.filter(
 		(cs) => cs.state === "completed",
@@ -521,6 +579,7 @@ function ParallelBlockRow({
 							key={`${child.stepName}-${child.runIndex}`}
 							child={child}
 							onSessionClick={onSessionClick}
+							onCloseSession={onCloseSession}
 						/>
 					))}
 				</div>
@@ -537,9 +596,11 @@ function ParallelBlockRow({
 function ParallelChildRow({
 	child,
 	onSessionClick,
+	onCloseSession,
 }: {
-	child: ParallelStepState;
+	child: TraceParallelStepState;
 	onSessionClick?: (sessionId: string) => void;
+	onCloseSession?: (sessionId: string) => void;
 }) {
 	const so = child.structuredOutput;
 	const verdict =
@@ -566,16 +627,13 @@ function ParallelChildRow({
 						{child.result}
 					</span>
 				)}
-				{child.sessionId && onSessionClick && (
-					<button
-						type="button"
-						className="shrink-0 text-primary hover:underline"
-						onClick={() => {
-							if (child.sessionId) onSessionClick(child.sessionId);
-						}}
-					>
-						View
-					</button>
+				{child.sessionId && (
+					<SessionToggleButton
+						sessionId={child.sessionId}
+						tabOpen={child.tabOpen}
+						onOpen={onSessionClick}
+						onClose={onCloseSession}
+					/>
 				)}
 			</div>
 			{child.structuredOutput && (
@@ -584,6 +642,43 @@ function ParallelChildRow({
 				</div>
 			)}
 		</div>
+	);
+}
+
+/**
+ * step session の tab open/close をトグルする小さなアイコンボタン。
+ * - tab_open=true  → `Eye`、クリックで close（タブを閉じる）
+ * - tab_open=false → `EyeOff`、クリックで open（タブを開いて履歴/現在の会話を表示）
+ *
+ * step 実行中（runtime busy）でも閉じる操作は可能。バックエンドが
+ * `is_agent_step_runtime_busy` を見て runtime は残し tab だけ閉じる扱いになる。
+ */
+function SessionToggleButton({
+	sessionId,
+	tabOpen,
+	onOpen,
+	onClose,
+}: {
+	sessionId: string;
+	tabOpen?: boolean;
+	onOpen?: (sessionId: string) => void;
+	onClose?: (sessionId: string) => void;
+}) {
+	const isOpen = tabOpen === true;
+	const handler = isOpen ? onClose : onOpen;
+	if (!handler) return null;
+	const Icon = isOpen ? Eye : EyeOff;
+	const label = isOpen ? "Close tab" : "Open tab";
+	return (
+		<button
+			type="button"
+			aria-label={label}
+			title={label}
+			className="shrink-0 text-muted-foreground hover:text-foreground"
+			onClick={() => handler(sessionId)}
+		>
+			<Icon className="size-3.5" />
+		</button>
 	);
 }
 
@@ -599,19 +694,22 @@ function StateIcon({ state }: { state: string }) {
 function TraceItemSummary({
 	item,
 	onSessionClick,
+	onCloseSession,
 }: {
 	item: Exclude<TraceItem, { kind: "parallel" }>;
 	onSessionClick?: (sessionId: string) => void;
+	onCloseSession?: (sessionId: string) => void;
 }) {
 	if (item.kind === "completed") {
 		const tokenTotal = item.entry.tokenUsage
 			? item.entry.tokenUsage.inputTokens + item.entry.tokenUsage.outputTokens
 			: null;
 		const structuredOutput = item.entry.structuredOutput;
+		const hasSessionToggle =
+			item.sessionId != null &&
+			(onSessionClick != null || onCloseSession != null);
 		const hasSummary =
-			item.entry.result != null ||
-			tokenTotal != null ||
-			(item.sessionId != null && onSessionClick != null);
+			item.entry.result != null || tokenTotal != null || hasSessionToggle;
 		const hasStructuredOutput = structuredOutput != null;
 
 		if (!hasSummary && !hasStructuredOutput) {
@@ -630,16 +728,13 @@ function TraceItemSummary({
 						{tokenTotal != null && (
 							<span className="shrink-0">{tokenTotal} tokens</span>
 						)}
-						{item.sessionId && onSessionClick && (
-							<button
-								type="button"
-								className="shrink-0 text-primary hover:underline"
-								onClick={() => {
-									if (item.sessionId) onSessionClick(item.sessionId);
-								}}
-							>
-								View
-							</button>
+						{item.sessionId && (
+							<SessionToggleButton
+								sessionId={item.sessionId}
+								tabOpen={item.tabOpen}
+								onOpen={onSessionClick}
+								onClose={onCloseSession}
+							/>
 						)}
 					</div>
 				)}
@@ -650,7 +745,7 @@ function TraceItemSummary({
 		);
 	}
 
-	if (item.sessionId && onSessionClick) {
+	if (item.sessionId) {
 		return (
 			<div className="mt-1 flex items-center gap-2 text-xs">
 				<span
@@ -668,29 +763,36 @@ function TraceItemSummary({
 							? "Failed"
 							: "Running"}
 				</span>
-				<button
-					type="button"
-					className="shrink-0 text-primary hover:underline"
-					onClick={() => {
-						if (item.sessionId) onSessionClick(item.sessionId);
-					}}
-				>
-					View
-				</button>
+				<SessionToggleButton
+					sessionId={item.sessionId}
+					tabOpen={item.tabOpen}
+					onOpen={onSessionClick}
+					onClose={onCloseSession}
+				/>
 			</div>
 		);
 	}
 
 	if (item.state === "running") {
-		return <div className="mt-1 text-xs text-blue-600">Running</div>;
+		return (
+			<div className="mt-1 flex items-center gap-2 text-xs text-blue-600">
+				<span className="min-w-0 flex-1">Running</span>
+			</div>
+		);
 	}
 	if (item.state === "waiting_approval") {
 		return (
-			<div className="mt-1 text-xs text-yellow-600">Waiting for approval</div>
+			<div className="mt-1 flex items-center gap-2 text-xs text-yellow-600">
+				<span className="min-w-0 flex-1">Waiting for approval</span>
+			</div>
 		);
 	}
 	if (item.state === "failed") {
-		return <div className="mt-1 text-xs text-red-600">Failed</div>;
+		return (
+			<div className="mt-1 flex items-center gap-2 text-xs text-red-600">
+				<span className="min-w-0 flex-1">Failed</span>
+			</div>
+		);
 	}
 }
 

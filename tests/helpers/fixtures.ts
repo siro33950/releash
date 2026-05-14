@@ -252,7 +252,6 @@ const baseIpcHandler: Record<string, unknown> = {
 	update_session_state: null,
 	update_message_parts: null,
 	update_session_agent_info: null,
-	execute_agent_query: null,
 	interrupt_agent_query: null,
 	respond_agent_permission: null,
 	scan_slash_commands: [],

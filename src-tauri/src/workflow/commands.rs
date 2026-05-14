@@ -5,12 +5,19 @@ use super::facet::FacetKind;
 use super::log::{WorkflowEventLog, WorkflowLogEvent};
 use super::schema::{FacetSummary, Summary, Workflow};
 use super::storage;
+use crate::agent_message_dispatcher::{
+    dispatch_agent_message, AgentMessageDispatchContext, AgentMessageDispatchRequest,
+};
 use crate::agent_sdk::AgentProcessMap;
 use crate::backends::{AgentBackendRegistry, ImageAttachment};
 use crate::config::AppConfig;
-use crate::session::{resolve_data_dir, SessionStore, WorkflowState};
+use crate::protocol::WorkflowStateView;
+use crate::session::OpenTabRegistry;
+use crate::session::{resolve_data_dir, SessionStore};
+use crate::workflow::session_errors::redacted_workflow_tab_error;
 use std::path::Path;
 use std::sync::Arc;
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
@@ -287,7 +294,7 @@ pub async fn abort_workflow(
         .await
         .map_err(|e| {
             let msg = e.to_string();
-            log::error!("abort_workflow failed for worktree {worktree_path}: {msg}");
+            log::error!("abort_workflow failed: code=ABORT_WORKFLOW_FAILED");
             msg
         })
 }
@@ -295,9 +302,21 @@ pub async fn abort_workflow(
 #[tauri::command]
 pub async fn get_workflow_state(
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    open_tabs: tauri::State<'_, Arc<OpenTabRegistry>>,
     worktree_path: String,
-) -> Result<Option<WorkflowState>, String> {
-    Ok(engine.get_state(&worktree_path).await)
+) -> Result<Option<WorkflowStateView>, String> {
+    match engine.get_state(&worktree_path).await {
+        Some(state) => Ok(Some(
+            crate::workflow_state_events::build_workflow_state_view(
+                state,
+                handles.inner(),
+                open_tabs.inner(),
+            )
+            .await,
+        )),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
@@ -346,25 +365,63 @@ pub async fn send_workflow_approval_chat_message(
         .await
         .map_err(|e| e.to_string())?;
 
-    let resolved_worktree_path = engine
-        .resolve_worktree_path(&chat_session_id)
-        .await
-        .unwrap_or(worktree_path);
-
-    crate::agent_sdk::send_agent_message_internal(
-        &app,
-        session_store.inner(),
-        registry.inner(),
-        handles.inner(),
-        Some(chat_session_id),
-        resolved_worktree_path,
-        content,
-        permission_mode,
-        None,
-        images,
-        mentions,
+    let response = dispatch_agent_message(
+        AgentMessageDispatchContext {
+            app: &app,
+            session_store: session_store.inner(),
+            registry: registry.inner(),
+            handles: handles.inner(),
+        },
+        AgentMessageDispatchRequest {
+            chat_session_id: Some(chat_session_id),
+            worktree_path,
+            content,
+            permission_mode,
+            backend_id: None,
+            images,
+            mentions,
+        },
     )
-    .await
+    .await?;
+    crate::workflow_state_events::emit_after_workflow_step_message(
+        &app,
+        engine.inner(),
+        &response.session,
+        handles.inner(),
+        app.state::<Arc<OpenTabRegistry>>().inner(),
+    )
+    .await;
+    Ok(response)
+}
+
+#[tauri::command]
+pub async fn open_workflow_step_tab(
+    app: tauri::AppHandle,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    open_tabs: tauri::State<'_, Arc<OpenTabRegistry>>,
+    chat_session_id: String,
+) -> Result<(), String> {
+    let lifecycle = crate::workflow_step_lifecycle_adapters::TauriWorkflowStepLifecycle::new(
+        &app,
+        session_store.inner().as_ref(),
+        handles.inner(),
+        open_tabs.inner().as_ref(),
+    );
+    let target = lifecycle
+        .open_tab(&chat_session_id)
+        .await
+        .map_err(|_| redacted_workflow_tab_error("workflow_step_session_rejected"))?;
+    crate::workflow_state_events::emit_workflow_step_target_state(
+        &app,
+        engine.inner(),
+        &target,
+        handles.inner(),
+        open_tabs.inner(),
+    )
+    .await;
+    Ok(())
 }
 
 fn validate_execution_id(execution_id: &str) -> Result<(), String> {
@@ -407,12 +464,14 @@ pub async fn get_workflow_execution_log(
 #[tauri::command]
 pub async fn get_workflow_execution_state(
     app: tauri::AppHandle,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    open_tabs: tauri::State<'_, Arc<OpenTabRegistry>>,
     execution_id: String,
-) -> Result<Option<WorkflowState>, String> {
+) -> Result<Option<WorkflowStateView>, String> {
     validate_execution_id(&execution_id)?;
     let data_dir = resolve_data_dir(&app)?;
     let workflows_dir = storage::workflows_dir();
-    tokio::task::spawn_blocking(move || {
+    let state = tokio::task::spawn_blocking(move || {
         let event_log = WorkflowEventLog::new(&data_dir);
         let events = event_log.read_log(&execution_id)?;
         // ログからワークフロー定義を取得（スナップショット優先、なければYAMLファイルにフォールバック）
@@ -459,7 +518,18 @@ pub async fn get_workflow_execution_state(
         WorkflowEventLog::reconstruct_state_from_events(&execution_id, &events, &workflow)
     })
     .await
-    .map_err(|e| format!("task join error: {e}"))?
+    .map_err(|e| format!("task join error: {e}"))??;
+    match state {
+        Some(state) => Ok(Some(
+            crate::workflow_state_events::build_workflow_state_view(
+                state,
+                handles.inner(),
+                open_tabs.inner(),
+            )
+            .await,
+        )),
+        None => Ok(None),
+    }
 }
 
 // ---- ファセットCRUDコマンド ----
@@ -635,6 +705,18 @@ mod tests {
             parse_facet_kind("output_contract").unwrap(),
             FacetKind::OutputContract
         );
+    }
+
+    #[test]
+    fn workflow_tab_error_is_redacted() {
+        let err = redacted_workflow_tab_error("workflow_step_session_rejected");
+        assert_eq!(
+            err,
+            "workflow_step_session_rejected: workflow step tab operation failed"
+        );
+        assert!(!err.contains("/repo"));
+        assert!(!err.contains("agent-session"));
+        assert!(!err.contains("message body"));
     }
 
     #[test]

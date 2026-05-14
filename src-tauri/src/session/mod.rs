@@ -1,3 +1,6 @@
+pub(crate) mod errors;
+pub(crate) mod lifecycle_controller;
+mod open_tabs;
 mod store;
 
 use serde::{Deserialize, Serialize};
@@ -5,6 +8,7 @@ use std::sync::Arc;
 use tauri::{Manager, State};
 
 pub use crate::workflow::state::WorkflowState;
+pub use open_tabs::OpenTabRegistry;
 pub use store::SessionStore;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -178,6 +182,8 @@ pub struct ChatSession {
     pub workflow_state: Option<WorkflowState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workflow_step_session: bool,
 }
 
 fn default_permission_mode() -> String {
@@ -208,6 +214,8 @@ pub struct SessionSummary {
     pub permission_mode: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub workflow_step_session: bool,
 }
 
 impl ChatSession {
@@ -245,6 +253,7 @@ impl ChatSession {
             agent_session_id: self.agent_session_id.clone(),
             permission_mode: self.permission_mode.clone(),
             backend_id: self.backend_id.clone(),
+            workflow_step_session: self.workflow_step_session,
         }
     }
 }
@@ -342,7 +351,7 @@ pub fn parts_to_legacy(
 }
 
 #[tauri::command]
-pub fn list_sessions(
+pub async fn list_sessions(
     state: State<'_, Arc<SessionStore>>,
     app: tauri::AppHandle,
     worktree_path: String,
@@ -371,6 +380,7 @@ pub fn create_session_internal(
         selected_model: None,
         workflow_state: None,
         backend_id,
+        workflow_step_session: false,
     };
     session_store.save_session(data_dir, &session)?;
     Ok(session)
@@ -439,28 +449,24 @@ pub fn update_session_state(
     new_state: SessionState,
 ) -> Result<(), String> {
     let data_dir = resolve_data_dir(&app)?;
-    let mut session = state
-        .get_session(&data_dir, &session_id)?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    session.state = new_state;
-    session.updated_at = now_timestamp();
-    state.save_session(&data_dir, &session)?;
-    Ok(())
+    update_session_state_in_data_dir(&state, &data_dir, &session_id, new_state)
 }
 
-#[tauri::command]
-pub fn close_session(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
+pub(crate) fn update_session_state_in_data_dir(
+    state: &SessionStore,
+    data_dir: &std::path::Path,
+    session_id: &str,
+    new_state: SessionState,
 ) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
     let mut session = state
-        .get_session(&data_dir, &session_id)?
+        .get_session(data_dir, session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    session.state = SessionState::Closed;
+    if session.workflow_step_session && session.state == SessionState::Closed {
+        return Ok(());
+    }
+    session.state = new_state;
     session.updated_at = now_timestamp();
-    state.save_session(&data_dir, &session)?;
+    state.save_session(data_dir, &session)?;
     Ok(())
 }
 
@@ -486,26 +492,14 @@ pub fn resolve_session_backend(
     Ok(())
 }
 
-#[tauri::command]
-pub fn restore_session(
-    state: State<'_, Arc<SessionStore>>,
-    registry: State<'_, Arc<crate::backends::AgentBackendRegistry>>,
-    app: tauri::AppHandle,
-    session_id: String,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    let mut session = state
-        .get_session(&data_dir, &session_id)?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    resolve_session_backend(&mut session, &registry)?;
-    session.state = SessionState::Idle;
-    session.updated_at = now_timestamp();
-    state.save_session(&data_dir, &session)?;
-    Ok(())
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSessionResponse {
+    pub restored_workflow_step: bool,
 }
 
 #[tauri::command]
-pub fn list_closed_sessions(
+pub async fn list_closed_sessions(
     state: State<'_, Arc<SessionStore>>,
     app: tauri::AppHandle,
     worktree_path: String,
@@ -560,6 +554,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
         let summary = session.to_summary();
         assert_eq!(summary.id, "s1");
@@ -592,6 +587,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message.len(), 100 + "…".len());
@@ -623,6 +619,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
         let summary = session.to_summary();
         // 100 chars of "あ" (300 bytes) + "…" (3 bytes)
@@ -645,10 +642,53 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
         let summary = session.to_summary();
         assert_eq!(summary.first_message, "");
         assert_eq!(summary.message_count, 0);
+    }
+
+    #[test]
+    fn generic_state_update_ignores_closed_workflow_step_session_but_updates_regular_session() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = SessionStore::default();
+
+        let workflow_step_id = uuid::Uuid::new_v4().to_string();
+        let regular_id = uuid::Uuid::new_v4().to_string();
+        let mut workflow_step = ChatSession {
+            id: workflow_step_id.clone(),
+            worktree_path: "/repo".to_string(),
+            messages: Vec::new(),
+            state: SessionState::Closed,
+            created_at: 1000.0,
+            updated_at: 1000.0,
+            agent_session_id: Some("agent-session".to_string()),
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: None,
+            workflow_step_session: true,
+        };
+        let mut regular = workflow_step.clone();
+        regular.id = regular_id.clone();
+        regular.workflow_step_session = false;
+
+        store.save_session(tmp.path(), &workflow_step).unwrap();
+        store.save_session(tmp.path(), &regular).unwrap();
+
+        update_session_state_in_data_dir(&store, tmp.path(), &workflow_step.id, SessionState::Idle)
+            .unwrap();
+        update_session_state_in_data_dir(&store, tmp.path(), &regular.id, SessionState::Idle)
+            .unwrap();
+
+        workflow_step = store
+            .get_session(tmp.path(), &workflow_step_id)
+            .unwrap()
+            .unwrap();
+        let regular = store.get_session(tmp.path(), &regular_id).unwrap().unwrap();
+        assert_eq!(workflow_step.state, SessionState::Closed);
+        assert_eq!(regular.state, SessionState::Idle);
     }
 
     #[test]
@@ -766,6 +806,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
         let json = serde_json::to_string(&session).unwrap();
         let back: ChatSession = serde_json::from_str(&json).unwrap();
@@ -796,6 +837,7 @@ mod tests {
             selected_model: Some("claude-opus-4-6".to_string()),
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("selectedModel"));
@@ -1428,6 +1470,7 @@ mod tests {
                 updated_at: 1000.5,
             }),
             backend_id: None,
+            workflow_step_session: false,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("workflowState"));
@@ -1479,6 +1522,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: Some("claude".to_string()),
+            workflow_step_session: false,
         };
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("\"backendId\":\"claude\""));
@@ -1509,6 +1553,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: Some("claude".to_string()),
+            workflow_step_session: false,
         };
         let summary = session.to_summary();
         assert_eq!(summary.backend_id, Some("claude".to_string()));
@@ -1580,6 +1625,7 @@ mod tests {
                 selected_model: None,
                 workflow_state: None,
                 backend_id: backend_id.map(|s| s.to_string()),
+                workflow_step_session: false,
             }
         }
 

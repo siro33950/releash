@@ -25,6 +25,7 @@ interface LegacyChatSession {
 	agentSessionId?: string | null;
 	permissionMode?: PermissionMode;
 	backendId?: string | null;
+	workflowStepSession?: boolean;
 }
 
 export function legacyToParts(msg: LegacyChatMessage): MessagePart[] {
@@ -115,6 +116,7 @@ interface RawGetSessionResponse {
 	backendId?: string | null;
 	selectedModel?: string | null;
 	availableModels?: ModelInfo[];
+	workflowStepSession?: boolean;
 	turnPhase: TurnPhase;
 }
 
@@ -132,6 +134,7 @@ function convertRawGetSessionResponse(
 			agentSessionId: raw.agentSessionId,
 			permissionMode: raw.permissionMode,
 			backendId: raw.backendId,
+			workflowStepSession: raw.workflowStepSession,
 		}),
 		turnPhase: raw.turnPhase,
 		selectedModel: raw.selectedModel ?? null,
@@ -164,8 +167,20 @@ export async function closeSession(sessionId: string): Promise<void> {
 	return invoke("close_session", { sessionId });
 }
 
-export async function restoreSession(sessionId: string): Promise<void> {
-	return invoke("restore_session", { sessionId });
+export interface RestoreSessionResponse {
+	restoredWorkflowStep: boolean;
+}
+
+export async function restoreSession(
+	sessionId: string,
+): Promise<RestoreSessionResponse> {
+	return invoke<RestoreSessionResponse>("restore_session", { sessionId });
+}
+
+export async function openWorkflowStepTab(
+	chatSessionId: string,
+): Promise<void> {
+	return invoke("open_workflow_step_tab", { chatSessionId });
 }
 
 export async function listClosedSessions(

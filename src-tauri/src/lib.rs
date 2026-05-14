@@ -1,3 +1,5 @@
+mod agent_commands;
+mod agent_message_dispatcher;
 mod agent_sdk;
 mod agent_status;
 mod backends;
@@ -19,6 +21,7 @@ mod qr_code;
 mod repo_registry;
 mod sentry_integration;
 mod session;
+mod session_commands;
 mod shell_integration;
 mod tls;
 mod tray;
@@ -26,6 +29,10 @@ mod vpn_detect;
 mod watcher;
 mod webhook;
 mod workflow;
+mod workflow_state_events;
+mod workflow_state_presenter;
+mod workflow_step_lifecycle;
+mod workflow_step_lifecycle_adapters;
 mod workspace_state_store;
 mod ws_bridge;
 mod ws_server;
@@ -73,6 +80,7 @@ pub fn run() {
         .manage(Arc::new(tokio::sync::Mutex::new(
             agent_sdk::AgentProcessMap::new(),
         )))
+        .manage(Arc::new(session::OpenTabRegistry::default()))
         .manage(ws_server::WsServerHandle::default())
         .manage(Arc::new(git_host::PrCache::new()))
         .manage(Arc::new(git_host::IssueCache::new()))
@@ -378,15 +386,14 @@ pub fn run() {
             // Agent Backend Registry
             backends::list_agent_backends,
             // Agent SDK
-            agent_sdk::start_agent_session,
-            agent_sdk::execute_agent_query,
+            agent_commands::start_agent_session,
             agent_sdk::interrupt_agent_query,
-            agent_sdk::close_agent_session,
+            agent_commands::close_agent_session,
             agent_sdk::set_agent_permission_mode,
             agent_sdk::set_agent_model,
             agent_sdk::set_session_backend,
             agent_sdk::respond_agent_permission,
-            agent_sdk::send_agent_message,
+            agent_commands::send_agent_message,
             agent_sdk::init_agent_sessions,
             agent_sdk::scan_slash_commands,
             agent_sdk::prepare_image_attachment,
@@ -395,8 +402,8 @@ pub fn run() {
             session::list_sessions,
             agent_sdk::get_session,
             session::create_session,
-            session::close_session,
-            session::restore_session,
+            session_commands::close_session,
+            session_commands::restore_session,
             session::list_closed_sessions,
             session::add_message,
             session::update_session_state,
@@ -412,6 +419,7 @@ pub fn run() {
             workflow::commands::get_workflow_state,
             workflow::commands::approve_workflow_step,
             workflow::commands::send_workflow_approval_chat_message,
+            workflow::commands::open_workflow_step_tab,
             workflow::commands::list_workflow_executions,
             workflow::commands::get_workflow_execution_log,
             workflow::commands::get_workflow_execution_state,

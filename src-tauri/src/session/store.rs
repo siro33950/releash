@@ -47,10 +47,13 @@ impl SessionStore {
     ) -> Result<Vec<SessionSummary>, String> {
         self.ensure_loaded(app_data_dir)?;
         let cache = self.cache.read();
-        let mut summaries: Vec<SessionSummary> = cache
+        let worktree_sessions: Vec<&ChatSession> = cache
             .values()
             .filter(|s| s.worktree_path == worktree_path && predicate(s))
-            .map(|s| s.to_summary())
+            .collect();
+        let mut summaries: Vec<SessionSummary> = worktree_sessions
+            .into_iter()
+            .map(ChatSession::to_summary)
             .collect();
         summaries.sort_by(|a, b| {
             b.updated_at
@@ -90,6 +93,20 @@ impl SessionStore {
         Ok(cache.get(session_id).cloned())
     }
 
+    pub fn list_worktree_sessions(
+        &self,
+        app_data_dir: &Path,
+        worktree_path: &str,
+    ) -> Result<Vec<ChatSession>, String> {
+        self.ensure_loaded(app_data_dir)?;
+        let cache = self.cache.read();
+        Ok(cache
+            .values()
+            .filter(|session| session.worktree_path == worktree_path)
+            .cloned()
+            .collect())
+    }
+
     pub fn save_session(&self, app_data_dir: &Path, session: &ChatSession) -> Result<(), String> {
         let _lock = self.file_lock.lock();
         let dir = sessions_dir(app_data_dir);
@@ -107,6 +124,20 @@ impl SessionStore {
             .write()
             .insert(session.id.clone(), session.clone());
         Ok(())
+    }
+
+    pub fn set_session_state(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        state: SessionState,
+    ) -> Result<(), String> {
+        let mut session = self
+            .get_session(app_data_dir, session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        session.state = state;
+        session.updated_at = crate::session::now_timestamp();
+        self.save_session(app_data_dir, &session)
     }
 
     pub fn update_permission_mode(
@@ -200,6 +231,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         }
     }
 

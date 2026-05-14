@@ -127,6 +127,7 @@ export interface ChatSession {
 	agentSessionId?: string | null;
 	permissionMode: PermissionMode;
 	backendId?: string | null;
+	workflowStepSession?: boolean;
 }
 
 export function getTextContent(parts: MessagePart[]): string {
@@ -147,6 +148,7 @@ export interface SessionSummary {
 	agentSessionId?: string | null;
 	permissionMode: PermissionMode;
 	backendId?: string | null;
+	workflowStepSession?: boolean;
 }
 
 export interface BackendInfo {

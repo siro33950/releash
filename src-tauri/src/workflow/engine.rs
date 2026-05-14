@@ -8,7 +8,7 @@ use tauri::Manager;
 use tokio::sync::Mutex;
 
 use crate::agent_sdk::AgentProcessMap;
-use crate::agent_status::{current_timestamp, AgentStatusCenter};
+use crate::agent_status::current_timestamp;
 use crate::session::{ChatSession, SessionStore};
 use crate::workflow::contract::{
     build_repair_prompt, extract_workflow_output, validate_contract, ContractValidationResult,
@@ -139,6 +139,8 @@ trait StepSessionDeps: Send + Sync {
         system_prompt: Option<String>,
     ) -> Result<(), WorkflowEngineError>;
 
+    async fn mark_step_tab_open(&self, step_session_id: &str);
+
     /// ワークフロー状態を ChatSession に永続化する。
     async fn persist_workflow_state(
         &self,
@@ -147,10 +149,10 @@ trait StepSessionDeps: Send + Sync {
     ) -> Result<(), WorkflowEngineError>;
 
     /// ワークフロー状態をブロードキャストする（best-effort）。
-    fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState);
+    async fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState);
 
-    /// ステップ用 ChatSession に対しユーザーターンを起動する。
-    async fn start_agent_turn(
+    /// Runtime lock acquired by the caller variant.
+    async fn start_agent_turn_locked(
         &self,
         step_session_id: &str,
         worktree_path: &str,
@@ -263,19 +265,27 @@ impl<'a> StepSessionDeps for RealStepSessionDeps<'a> {
             .await
     }
 
-    fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState) {
-        self.engine
-            .broadcast_state(self.app, worktree_path, snapshot);
+    async fn mark_step_tab_open(&self, step_session_id: &str) {
+        crate::workflow_step_lifecycle_adapters::mark_started_step_tab_open(
+            self.app,
+            step_session_id,
+        );
     }
 
-    async fn start_agent_turn(
+    async fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState) {
+        self.engine
+            .broadcast_state(self.app, worktree_path, snapshot)
+            .await;
+    }
+
+    async fn start_agent_turn_locked(
         &self,
         step_session_id: &str,
         worktree_path: &str,
         permission_mode: &str,
         prompt: &str,
     ) -> Result<(), WorkflowEngineError> {
-        crate::agent_sdk::start_agent_turn_internal(
+        crate::agent_sdk::start_agent_turn_internal_locked(
             self.app,
             self.handles,
             self.session_store,
@@ -340,6 +350,22 @@ impl fmt::Display for WorkflowEngineError {
 impl From<WorkflowEngineError> for String {
     fn from(e: WorkflowEngineError) -> Self {
         e.to_string()
+    }
+}
+
+impl From<crate::workflow_step_lifecycle::WorkflowStepLifecycleError> for WorkflowEngineError {
+    fn from(e: crate::workflow_step_lifecycle::WorkflowStepLifecycleError) -> Self {
+        match e {
+            crate::workflow_step_lifecycle::WorkflowStepLifecycleError::SessionNotFound(id) => {
+                Self::SessionNotFound(id)
+            }
+            crate::workflow_step_lifecycle::WorkflowStepLifecycleError::SessionStore(message) => {
+                Self::SessionStore(message)
+            }
+            crate::workflow_step_lifecycle::WorkflowStepLifecycleError::AgentSession(message) => {
+                Self::AgentSession(message)
+            }
+        }
     }
 }
 
@@ -408,14 +434,16 @@ struct SessionWorkflowRef {
 }
 
 /// セッションの種別。
+///
+/// 逐次 step と並列ブロックの子 step を区別せず単一の `Step` で表す。
+/// 並列子か否かは `WorkflowExecution.parallel_run.children` に当該 session_id が
+/// 含まれるかで判定する（Spec issues-929: 「逐次 step と並列子 step は単一経路で扱う」）。
 #[derive(Clone, PartialEq)]
 enum SessionRefKind {
     /// 親セッション（ワークフロー開始元のChatSession）
     Parent,
-    /// 逐次実行中のステップセッション
-    SequentialStep,
-    /// 並列実行中の子ステップセッション
-    ParallelChild { parent_step_name: String },
+    /// step セッション（逐次・並列子のどちらも含む）
+    Step,
 }
 
 impl WorkflowExecution {
@@ -894,6 +922,7 @@ impl WorkflowEngine {
         .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))?;
         step_session.selected_model = settings.selected_model;
         step_session.permission_mode = settings.permission_mode;
+        step_session.workflow_step_session = true;
         session_store
             .save_session(data_dir, &step_session)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("save step session: {e}")))?;
@@ -984,7 +1013,8 @@ impl WorkflowEngine {
             self.cleanup_session_workflow_refs(&worktree_path).await;
             return Err(e);
         }
-        self.broadcast_state(app, &worktree_path, snapshot.clone());
+        self.broadcast_state(app, &worktree_path, snapshot.clone())
+            .await;
 
         // NDJSONログ: workflow_started + step_started
         self.write_log(
@@ -1012,6 +1042,7 @@ impl WorkflowEngine {
                     .set_execution_state(
                         app,
                         session_store,
+                        handles,
                         &worktree_path,
                         WorkflowExecutionState::Failed {
                             reason: format!("Failed to start parallel children: {e}"),
@@ -1052,6 +1083,7 @@ impl WorkflowEngine {
                     .set_execution_state(
                         app,
                         session_store,
+                        handles,
                         &worktree_path,
                         WorkflowExecutionState::Failed {
                             reason: format!("Failed to start step session: {e}"),
@@ -1085,25 +1117,41 @@ impl WorkflowEngine {
         };
         let worktree_path = session_ref.worktree_path.clone();
 
-        // セッション種別に応じたディスパッチ
+        // session 種別に応じたディスパッチ。
+        // 逐次 step / 並列子 step の区別は SessionRefKind ではなく
+        // WorkflowExecution.parallel_run に当該 session_id が含まれるかで判定する
+        // （Spec issues-929: 「逐次 step と並列子 step は単一経路で扱う」）。
         match &session_ref.kind {
-            SessionRefKind::ParallelChild { parent_step_name } => {
-                return self
-                    .handle_parallel_child_complete(
-                        app,
-                        session_store,
-                        handles,
-                        &worktree_path,
-                        session_id,
-                        parent_step_name,
-                        exit_code,
-                        final_parts,
-                        token_usage,
-                    )
-                    .await;
-            }
             SessionRefKind::Parent => return Ok(()),
-            SessionRefKind::SequentialStep => {}
+            SessionRefKind::Step => {}
+        }
+
+        let parallel_parent: Option<String> = {
+            let execs = self.executions.lock().await;
+            execs.get(&worktree_path).and_then(|exec| {
+                exec.parallel_run.as_ref().and_then(|pr| {
+                    pr.children
+                        .iter()
+                        .find(|c| c.session_id == session_id)
+                        .map(|_| pr.parent_step_name.clone())
+                })
+            })
+        };
+
+        if let Some(parent_step_name) = parallel_parent {
+            return self
+                .handle_parallel_child_complete(
+                    app,
+                    session_store,
+                    handles,
+                    &worktree_path,
+                    session_id,
+                    &parent_step_name,
+                    exit_code,
+                    final_parts,
+                    token_usage,
+                )
+                .await;
         }
 
         // 判定 + 状態変更を原子的に実行（AutoEvaluate以外）
@@ -1440,6 +1488,7 @@ impl WorkflowEngine {
         self.set_execution_state(
             app,
             session_store,
+            handles,
             worktree_path,
             WorkflowExecutionState::Aborted,
         )
@@ -1591,14 +1640,30 @@ impl WorkflowEngine {
                             for sid in &running_ids {
                                 self.interrupt_agent(handles, sid).await;
                             }
-                            self.persist_state(
-                                app,
-                                session_store,
-                                &chat_session_id,
-                                snapshot.clone(),
-                            )
-                            .await?;
-                            self.broadcast_state(app, worktree_path, snapshot.clone());
+                            let mut cleanup_ids = running_ids;
+                            cleanup_ids.push(session_id.to_string());
+                            cleanup_ids.sort();
+                            cleanup_ids.dedup();
+                            let persist_result = self
+                                .persist_state(
+                                    app,
+                                    session_store,
+                                    &chat_session_id,
+                                    snapshot.clone(),
+                                )
+                                .await;
+                            for sid in cleanup_ids {
+                                self.release_completed_step_session(
+                                    app,
+                                    session_store,
+                                    handles,
+                                    &sid,
+                                )
+                                .await;
+                            }
+                            persist_result?;
+                            self.broadcast_state(app, worktree_path, snapshot.clone())
+                                .await;
                             self.write_terminal_log(app, &snapshot);
                             self.cleanup_session_workflow_refs(worktree_path).await;
                             return Ok(());
@@ -1682,10 +1747,20 @@ impl WorkflowEngine {
                 for sid in &running_ids {
                     self.interrupt_agent(handles, sid).await;
                 }
-
-                self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
-                    .await?;
-                self.broadcast_state(app, worktree_path, snapshot.clone());
+                let mut cleanup_ids = running_ids;
+                cleanup_ids.push(session_id.to_string());
+                cleanup_ids.sort();
+                cleanup_ids.dedup();
+                let persist_result = self
+                    .persist_state(app, session_store, &chat_session_id, snapshot.clone())
+                    .await;
+                for sid in cleanup_ids {
+                    self.release_completed_step_session(app, session_store, handles, &sid)
+                        .await;
+                }
+                persist_result?;
+                self.broadcast_state(app, worktree_path, snapshot.clone())
+                    .await;
                 self.write_terminal_log(app, &snapshot);
                 self.cleanup_session_workflow_refs(worktree_path).await;
                 return Ok(());
@@ -1917,9 +1992,16 @@ impl WorkflowEngine {
             } else {
                 // まだ完了していない → Persistのみ
                 if let StepOutcome::Persist(snapshot) = outcome {
-                    self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
-                        .await?;
-                    self.broadcast_state(app, worktree_path, snapshot);
+                    self.persist_release_and_broadcast(
+                        app,
+                        session_store,
+                        handles,
+                        worktree_path,
+                        &chat_session_id,
+                        snapshot,
+                        &[session_id.to_string()],
+                    )
+                    .await?;
                 }
             }
         }
@@ -2204,9 +2286,18 @@ impl WorkflowEngine {
                         exec.updated_at = current_timestamp();
                         (chat_session_id, exec.to_workflow_state())
                     };
-                    self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
+                    let completed_step_session_ids = Self::completed_step_session_ids(&snapshot);
+                    let snapshot = self
+                        .persist_release_and_broadcast(
+                            app,
+                            session_store,
+                            handles,
+                            worktree_path,
+                            &chat_session_id,
+                            snapshot,
+                            &completed_step_session_ids,
+                        )
                         .await?;
-                    self.broadcast_state(app, worktree_path, snapshot.clone());
                     self.write_terminal_log(app, &snapshot);
                     self.cleanup_session_workflow_refs(worktree_path).await;
                     Ok(ContractCheckResult::Failed)
@@ -2243,6 +2334,13 @@ impl WorkflowEngine {
                 timestamp: current_timestamp(),
             },
         );
+
+        // ユーザーが当該 session を閉じている最中なら retry を skip する。
+        // turn_complete cleanup と tab close が並走したとき、close 後に
+        // bridge が無いままここに来ても spawn し直してしまうのを防ぐ。
+        if crate::agent_sdk::is_session_closing(session_id).await {
+            return Ok(());
+        }
 
         let contract_definition = {
             let base_dir = storage::facets_base_dir();
@@ -2290,6 +2388,26 @@ impl WorkflowEngine {
         execs.get(worktree_path).map(|e| e.to_workflow_state())
     }
 
+    async fn emit_workflow_runtime_projection(
+        &self,
+        app: &tauri::AppHandle,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        open_tabs: &crate::session::OpenTabRegistry,
+        worktree_path: &str,
+    ) {
+        let Some(state) = self.get_state(worktree_path).await else {
+            return;
+        };
+        crate::workflow_state_events::emit_workflow_state(
+            app,
+            worktree_path,
+            state,
+            handles,
+            open_tabs,
+        )
+        .await;
+    }
+
     /// session_idがワークフロー実行中かどうか。
     pub async fn is_running(&self, session_id: &str) -> bool {
         let Some(worktree_path) = self.resolve_worktree_path(session_id).await else {
@@ -2307,7 +2425,7 @@ impl WorkflowEngine {
         let Some(session_ref) = self.resolve_session_ref(session_id).await else {
             return Ok(());
         };
-        if session_ref.kind != SessionRefKind::SequentialStep {
+        if session_ref.kind != SessionRefKind::Step {
             return Ok(());
         }
 
@@ -2445,6 +2563,7 @@ impl WorkflowEngine {
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
         new_state: WorkflowExecutionState,
     ) -> Result<(), WorkflowEngineError> {
@@ -2461,21 +2580,37 @@ impl WorkflowEngine {
             exec.updated_at = current_timestamp();
             (exec.chat_session_id.clone(), exec.to_workflow_state())
         };
-        self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
-            .await?;
-        self.broadcast_state(app, worktree_path, snapshot.clone());
         if matches!(
             snapshot.state,
             WorkflowExecutionState::Completed
                 | WorkflowExecutionState::Failed { .. }
                 | WorkflowExecutionState::Aborted
         ) {
+            let terminal_session_ids = Self::terminal_step_session_ids(&snapshot);
+            let persist_result = self
+                .persist_state(app, session_store, &chat_session_id, snapshot.clone())
+                .await;
+            run_cleanup_before_persist_result(persist_result, || async {
+                self.release_completed_step_sessions(
+                    app,
+                    session_store,
+                    handles,
+                    &terminal_session_ids,
+                )
+                .await;
+            })
+            .await?;
             if matches!(snapshot.state, WorkflowExecutionState::Completed) {
                 self.write_last_step_completed_log(app, &snapshot);
             }
             self.write_terminal_log(app, &snapshot);
             self.cleanup_session_workflow_refs(worktree_path).await;
+        } else {
+            self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
+                .await?;
         }
+        self.broadcast_state(app, worktree_path, snapshot.clone())
+            .await;
         Ok(())
     }
 
@@ -2510,7 +2645,7 @@ impl WorkflowEngine {
             )
         };
 
-        let (structured_output, contract_result) = match self
+        let contract_check = self
             .validate_and_handle_contract(
                 app,
                 session_store,
@@ -2521,8 +2656,8 @@ impl WorkflowEngine {
                 &current_session_id,
                 step_name,
             )
-            .await?
-        {
+            .await?;
+        let (structured_output, contract_result) = match contract_check {
             ContractCheckResult::NoContract => (None, None),
             ContractCheckResult::Valid {
                 structured_output,
@@ -2741,14 +2876,17 @@ impl WorkflowEngine {
                 step_session_id.clone(),
                 SessionWorkflowRef {
                     worktree_path: worktree_path.to_string(),
-                    kind: SessionRefKind::SequentialStep,
+                    kind: SessionRefKind::Step,
                 },
             );
         }
 
+        let _runtime_guard = crate::agent_sdk::acquire_session_runtime_lock(&step_session_id).await;
+
         // 合成済み system_prompt を AgentSession 起動経路へ受け渡す。
         deps.dispatch_session_start(&step_session_id, worktree_path, None, system_prompt)
             .await?;
+        deps.mark_step_tab_open(&step_session_id).await;
 
         // ステップセッションIDをワークフロー実行に紐付け
         let snapshot = {
@@ -2764,11 +2902,11 @@ impl WorkflowEngine {
         if let Some(snapshot) = snapshot {
             deps.persist_workflow_state(&chat_session_id, snapshot.clone())
                 .await?;
-            deps.broadcast_state(worktree_path, snapshot);
+            deps.broadcast_state(worktree_path, snapshot).await;
         }
 
         // プロンプト送信（ステップ用セッションIDを使用）
-        deps.start_agent_turn(&step_session_id, worktree_path, &permission_mode, &prompt)
+        deps.start_agent_turn_locked(&step_session_id, worktree_path, &permission_mode, &prompt)
             .await
     }
 
@@ -3364,6 +3502,119 @@ impl WorkflowEngine {
         }
     }
 
+    async fn release_completed_step_session(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        chat_session_id: &str,
+    ) {
+        let open_tabs_state = app.try_state::<Arc<crate::session::OpenTabRegistry>>();
+        let open_tabs = open_tabs_state.as_ref().map(|state| state.inner().as_ref());
+        crate::workflow_step_lifecycle_adapters::release_step_runtime_on_done(
+            app,
+            session_store,
+            handles,
+            open_tabs,
+            chat_session_id,
+        )
+        .await;
+    }
+
+    fn completed_step_session_ids(snapshot: &WorkflowState) -> Vec<String> {
+        let mut ids = Vec::new();
+        let Some(entry) = snapshot.step_history.last() else {
+            return ids;
+        };
+        if let Some(session_id) = entry.session_id.as_ref() {
+            ids.push(session_id.clone());
+        }
+        if let Some(children) = entry.child_outputs.as_ref() {
+            ids.extend(children.iter().filter_map(|child| child.session_id.clone()));
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    fn completed_step_session_ids_for_outcome(outcome: &StepOutcome) -> Vec<String> {
+        match outcome {
+            StepOutcome::Persist(snapshot)
+                if matches!(snapshot.state, WorkflowExecutionState::Aborted) =>
+            {
+                snapshot.current_session_id.iter().cloned().collect()
+            }
+            StepOutcome::Persist(snapshot)
+                if matches!(
+                    snapshot.state,
+                    WorkflowExecutionState::Completed | WorkflowExecutionState::Failed { .. }
+                ) =>
+            {
+                Self::completed_step_session_ids(snapshot)
+            }
+            StepOutcome::Persist(_) => Vec::new(),
+            StepOutcome::TransitionAndStart(snapshot)
+            | StepOutcome::ReduceAndTransition(snapshot)
+            | StepOutcome::StartParallel(snapshot) => Self::completed_step_session_ids(snapshot),
+        }
+    }
+
+    fn terminal_step_session_ids(snapshot: &WorkflowState) -> Vec<String> {
+        let mut ids = Vec::new();
+        ids.extend(snapshot.current_session_id.iter().cloned());
+        ids.extend(
+            snapshot
+                .active_parallel_steps
+                .iter()
+                .filter_map(|step| step.session_id.clone()),
+        );
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    async fn release_completed_step_sessions(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        session_ids: &[String],
+    ) {
+        for session_id in session_ids {
+            self.release_completed_step_session(app, session_store, handles, session_id)
+                .await;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_release_and_broadcast(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        chat_session_id: &str,
+        snapshot: WorkflowState,
+        completed_step_session_ids: &[String],
+    ) -> Result<WorkflowState, WorkflowEngineError> {
+        let persist_result = self
+            .persist_state(app, session_store, chat_session_id, snapshot.clone())
+            .await;
+        run_cleanup_before_persist_result(persist_result, || async {
+            self.release_completed_step_sessions(
+                app,
+                session_store,
+                handles,
+                completed_step_session_ids,
+            )
+            .await;
+        })
+        .await?;
+        self.broadcast_state(app, worktree_path, snapshot.clone())
+            .await;
+        Ok(snapshot)
+    }
+
     /// ロック内で次ステップへの advance を適用する（純粋な状態変更）。
     /// `&self` を使わないため関連関数として定義。
     fn apply_advance(exec: &mut WorkflowExecution) -> StepOutcome {
@@ -3504,11 +3755,21 @@ impl WorkflowEngine {
         chat_session_id: &str,
         outcome: StepOutcome,
     ) -> Result<(), WorkflowEngineError> {
+        let completed_step_session_ids = Self::completed_step_session_ids_for_outcome(&outcome);
+
         match outcome {
             StepOutcome::Persist(snapshot) => {
-                self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+                let snapshot = self
+                    .persist_release_and_broadcast(
+                        app,
+                        session_store,
+                        handles,
+                        worktree_path,
+                        chat_session_id,
+                        snapshot,
+                        &completed_step_session_ids,
+                    )
                     .await?;
-                self.broadcast_state(app, worktree_path, snapshot.clone());
                 if let Some((execution_id, step_name)) =
                     Self::auto_approve_target_for_persisted_snapshot(
                         &snapshot,
@@ -3543,9 +3804,17 @@ impl WorkflowEngine {
                 Ok(())
             }
             StepOutcome::TransitionAndStart(snapshot) => {
-                self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+                let snapshot = self
+                    .persist_release_and_broadcast(
+                        app,
+                        session_store,
+                        handles,
+                        worktree_path,
+                        chat_session_id,
+                        snapshot,
+                        &completed_step_session_ids,
+                    )
                     .await?;
-                self.broadcast_state(app, worktree_path, snapshot.clone());
 
                 // 直前のステップ完了ログ + 新ステップ開始ログ
                 self.write_last_step_completed_log(app, &snapshot);
@@ -3585,6 +3854,7 @@ impl WorkflowEngine {
                         .set_execution_state(
                             app,
                             session_store,
+                            handles,
                             worktree_path,
                             WorkflowExecutionState::Failed {
                                 reason: format!("Failed to start step session: {e}"),
@@ -3596,9 +3866,17 @@ impl WorkflowEngine {
                 Ok(())
             }
             StepOutcome::ReduceAndTransition(snapshot) => {
-                self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+                let snapshot = self
+                    .persist_release_and_broadcast(
+                        app,
+                        session_store,
+                        handles,
+                        worktree_path,
+                        chat_session_id,
+                        snapshot,
+                        &completed_step_session_ids,
+                    )
                     .await?;
-                self.broadcast_state(app, worktree_path, snapshot.clone());
 
                 // 直前ステップの完了ログ
                 self.write_last_step_completed_log(app, &snapshot);
@@ -3637,10 +3915,9 @@ impl WorkflowEngine {
                     let wf_name = exec.workflow.name.clone();
 
                     log::info!(
-                        "OutputCollected: step='{}', strategy={:?}, result={:?}, from={:?}",
+                        "OutputCollected: step='{}', strategy={:?}, from={:?}",
                         step_name,
                         collect_config_clone.reduce,
-                        reduce_result.result,
                         collect_config_clone.from,
                     );
 
@@ -3698,9 +3975,17 @@ impl WorkflowEngine {
                 .await
             }
             StepOutcome::StartParallel(snapshot) => {
-                self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+                let snapshot = self
+                    .persist_release_and_broadcast(
+                        app,
+                        session_store,
+                        handles,
+                        worktree_path,
+                        chat_session_id,
+                        snapshot,
+                        &completed_step_session_ids,
+                    )
                     .await?;
-                self.broadcast_state(app, worktree_path, snapshot.clone());
 
                 // 直前ステップの完了ログ
                 self.write_last_step_completed_log(app, &snapshot);
@@ -3714,6 +3999,7 @@ impl WorkflowEngine {
                         .set_execution_state(
                             app,
                             session_store,
+                            handles,
                             worktree_path,
                             WorkflowExecutionState::Failed {
                                 reason: format!("Failed to start parallel children: {e}"),
@@ -3830,16 +4116,15 @@ impl WorkflowEngine {
             let child_permission_mode = step_session.permission_mode.clone();
             let step_session_id = step_session.id.clone();
 
-            // session_workflow_refs に ParallelChild として登録
+            // session_workflow_refs に Step として登録（並列子か否かは
+            // exec.parallel_run.children から動的に判定する）
             {
                 let mut map = self.session_workflow_refs.lock().await;
                 map.insert(
                     step_session_id.clone(),
                     SessionWorkflowRef {
                         worktree_path: worktree_path.to_string(),
-                        kind: SessionRefKind::ParallelChild {
-                            parent_step_name: parent_step_name.clone(),
-                        },
+                        kind: SessionRefKind::Step,
                     },
                 );
             }
@@ -3915,14 +4200,17 @@ impl WorkflowEngine {
         // ロック解放後にI/O操作を実行
         self.persist_state(app, session_store, &chat_session_id, snapshot.clone())
             .await?;
-        self.broadcast_state(app, worktree_path, snapshot);
+        self.broadcast_state(app, worktree_path, snapshot).await;
 
         // Phase 3a: 全子セッション作成（AgentSessionプロセス起動）
         // Note: AppHandleが!Sendのためtokio::spawnによる真の並列化は不可能。
         // セッション作成とターン開始を分離し、全セッション準備完了後に
         // 全ターンを開始することで「ほぼ同時起動」を実現する。
         let mut created_session_ids: Vec<String> = Vec::new();
+        let mut runtime_guards = Vec::new();
         for cs in &child_setups {
+            let runtime_guard =
+                crate::agent_sdk::acquire_session_runtime_lock(&cs.session_id).await;
             if let Err(e) = crate::agent_sdk::start_agent_session_internal(
                 app,
                 handles,
@@ -3943,12 +4231,19 @@ impl WorkflowEngine {
                     cs.step_name
                 )));
             }
+            runtime_guards.push(runtime_guard);
+            if let Some(open_tabs) = app.try_state::<Arc<crate::session::OpenTabRegistry>>() {
+                open_tabs.add(&cs.session_id);
+                self.emit_workflow_runtime_projection(app, handles, &open_tabs, worktree_path)
+                    .await;
+            }
             created_session_ids.push(cs.session_id.clone());
         }
 
         // Phase 3b: 全子ターン開始（ここが実際のAgent作業トリガー）
         for (i, cs) in child_setups.iter().enumerate() {
-            if let Err(e) = crate::agent_sdk::start_agent_turn_internal(
+            let runtime_guard = runtime_guards.remove(0);
+            if let Err(e) = crate::agent_sdk::start_agent_turn_internal_locked(
                 app,
                 handles,
                 session_store,
@@ -3968,6 +4263,7 @@ impl WorkflowEngine {
                     cs.step_name
                 )));
             }
+            drop(runtime_guard);
 
             // ParallelStepStarted ログ
             self.write_log(
@@ -4076,29 +4372,18 @@ impl WorkflowEngine {
     /// ワークフロー状態をブロードキャストする。
     /// スナップショットは呼び出し元がロック内で確定したものを受け取る。
     /// worktree_pathベースでイベントを発行するため、同一worktreeの全セッションが受信可能。
-    fn broadcast_state(
+    async fn broadcast_state(
         &self,
         app: &tauri::AppHandle,
         worktree_path: &str,
         workflow_state: WorkflowState,
     ) {
-        let center: Option<tauri::State<'_, Arc<AgentStatusCenter>>> =
-            app.try_state::<Arc<AgentStatusCenter>>();
-        if let Some(center) = center {
-            // worktree_pathでイベントを emit
-            center.emit_workflow_state_changed(worktree_path, &workflow_state);
-
-            // 同一worktreeの全セッションのworkflowフィールドを更新
-            for status in center.list_sessions() {
-                if status.worktree_path == worktree_path {
-                    let mut updated = status;
-                    updated.workflow_step = Some(workflow_state.current_step_name.clone());
-                    updated.workflow_execution_state =
-                        Some(workflow_state.state.as_str().to_string());
-                    center.update_session(updated);
-                }
-            }
-        }
+        crate::workflow_state_events::emit_workflow_state_snapshot(
+            app,
+            worktree_path,
+            workflow_state,
+        )
+        .await;
     }
 
     /// 終了状態（Completed/Failed/Aborted）のログを書き込む。
@@ -4397,17 +4682,320 @@ impl WorkflowEngine {
             current_session_id.to_string(),
             SessionWorkflowRef {
                 worktree_path: worktree_path.to_string(),
-                kind: SessionRefKind::SequentialStep,
+                kind: SessionRefKind::Step,
             },
         );
         snapshot
     }
 }
 
+async fn run_cleanup_before_persist_result<F, Fut>(
+    persist_result: Result<(), WorkflowEngineError>,
+    cleanup: F,
+) -> Result<(), WorkflowEngineError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    cleanup().await;
+    persist_result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session::MessagePart;
+
+    const TEST_PARENT_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
+    const TEST_STEP_SESSION_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const TEST_REGULAR_SESSION_ID: &str = "33333333-3333-4333-8333-333333333333";
+
+    fn chat_session_for_test(
+        id: &str,
+        worktree_path: &str,
+        workflow_state: Option<WorkflowState>,
+        workflow_step_session: bool,
+    ) -> crate::session::ChatSession {
+        crate::session::ChatSession {
+            id: id.to_string(),
+            worktree_path: worktree_path.to_string(),
+            messages: vec![],
+            state: crate::session::SessionState::Idle,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: Some("sdk-session".to_string()),
+            permission_mode: "acceptEdits".to_string(),
+            selected_model: None,
+            workflow_state,
+            backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
+            workflow_step_session,
+        }
+    }
+
+    fn chat_session_with_message_for_test(
+        id: &str,
+        worktree_path: &str,
+    ) -> crate::session::ChatSession {
+        let mut session = chat_session_for_test(id, worktree_path, None, true);
+        session.messages.push(crate::session::ChatMessage {
+            id: "msg-1".to_string(),
+            role: crate::session::MessageRole::Agent,
+            content: "history".to_string(),
+            thinking: None,
+            activities: None,
+            parts: None,
+            timestamp: 1.0,
+            mentions: None,
+        });
+        session
+    }
+
+    #[test]
+    fn workflow_step_summary_uses_persisted_session_flag() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = crate::session::SessionStore::default();
+
+        store
+            .save_session(
+                tmp.path(),
+                &chat_session_for_test(TEST_PARENT_SESSION_ID, "/repo", None, false),
+            )
+            .unwrap();
+        store
+            .save_session(
+                tmp.path(),
+                &chat_session_for_test(TEST_STEP_SESSION_ID, "/repo", None, true),
+            )
+            .unwrap();
+        store
+            .save_session(
+                tmp.path(),
+                &chat_session_for_test(TEST_REGULAR_SESSION_ID, "/repo", None, false),
+            )
+            .unwrap();
+
+        let summaries = store.list_sessions(tmp.path(), "/repo").unwrap();
+        let step_summary = summaries
+            .iter()
+            .find(|session| session.id == TEST_STEP_SESSION_ID)
+            .unwrap();
+        assert!(step_summary.workflow_step_session);
+    }
+
+    #[tokio::test]
+    async fn persist_failure_still_runs_completed_step_cleanup() {
+        let cleanup_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = run_cleanup_before_persist_result(
+            Err(WorkflowEngineError::SessionNotFound(
+                TEST_PARENT_SESSION_ID.to_string(),
+            )),
+            {
+                let cleanup_count = Arc::clone(&cleanup_count);
+                move || async move {
+                    cleanup_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(WorkflowEngineError::SessionNotFound(id)) if id == TEST_PARENT_SESSION_ID
+        ));
+        assert_eq!(cleanup_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn step_session_tab_cleanup_closes_session_and_preserves_history() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = crate::session::SessionStore::default();
+        let open_tabs = Arc::new(crate::session::OpenTabRegistry::default());
+        let session_id = uuid::Uuid::new_v4().to_string();
+
+        store
+            .save_session(
+                tmp.path(),
+                &chat_session_with_message_for_test(&session_id, "/repo"),
+            )
+            .unwrap();
+        open_tabs.add(&session_id);
+
+        crate::workflow_step_lifecycle_adapters::close_step_session_tab_state(
+            &store,
+            tmp.path(),
+            Some(open_tabs.as_ref()),
+            &session_id,
+        );
+
+        assert!(!open_tabs.contains(&session_id));
+        let session = store
+            .get_session(tmp.path(), &session_id)
+            .unwrap()
+            .expect("session remains");
+        assert_eq!(session.state, crate::session::SessionState::Closed);
+        assert_eq!(session.agent_session_id.as_deref(), Some("sdk-session"));
+        assert_eq!(session.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn persist_outcome_without_new_history_does_not_cleanup_last_step_session() {
+        let engine = WorkflowEngine::new();
+        let mut snapshot = engine
+            .insert_test_approval_execution(
+                "/repo",
+                TEST_PARENT_SESSION_ID,
+                TEST_STEP_SESSION_ID,
+                WorkflowExecutionState::WaitingApproval,
+            )
+            .await;
+        snapshot.step_history.push(StepHistoryEntry {
+            step_name: "previous".to_string(),
+            completed_at: 1.0,
+            result: Some("ok".to_string()),
+            session_id: Some(TEST_STEP_SESSION_ID.to_string()),
+            token_usage: None,
+            structured_output: None,
+            run_index: 1,
+            child_outputs: None,
+        });
+
+        let persist = StepOutcome::Persist(snapshot.clone());
+        assert!(WorkflowEngine::completed_step_session_ids_for_outcome(&persist).is_empty());
+
+        snapshot.state = WorkflowExecutionState::Completed;
+        let terminal = StepOutcome::Persist(snapshot);
+        assert_eq!(
+            WorkflowEngine::completed_step_session_ids_for_outcome(&terminal),
+            vec![TEST_STEP_SESSION_ID.to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn aborted_approval_outcome_cleans_current_session_not_last_history_entry() {
+        let engine = WorkflowEngine::new();
+        let mut snapshot = engine
+            .insert_test_approval_execution(
+                "/repo",
+                TEST_PARENT_SESSION_ID,
+                TEST_STEP_SESSION_ID,
+                WorkflowExecutionState::WaitingApproval,
+            )
+            .await;
+        snapshot.current_session_id = Some("approval-session".to_string());
+        snapshot.step_history.push(StepHistoryEntry {
+            step_name: "previous".to_string(),
+            completed_at: 1.0,
+            result: Some("ok".to_string()),
+            session_id: Some("previous-session".to_string()),
+            token_usage: None,
+            structured_output: None,
+            run_index: 1,
+            child_outputs: None,
+        });
+        snapshot.state = WorkflowExecutionState::Aborted;
+
+        let outcome = StepOutcome::Persist(snapshot);
+        assert_eq!(
+            WorkflowEngine::completed_step_session_ids_for_outcome(&outcome),
+            vec!["approval-session".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
+        let engine = WorkflowEngine::new();
+        let mut exec = engine
+            .insert_test_approval_execution(
+                "/repo",
+                TEST_PARENT_SESSION_ID,
+                TEST_STEP_SESSION_ID,
+                WorkflowExecutionState::Running,
+            )
+            .await;
+        exec.current_session_id = Some("current-step-session".to_string());
+        exec.active_parallel_steps = vec![
+            ParallelStepState {
+                step_name: "review-a".to_string(),
+                state: "running".to_string(),
+                session_id: Some("parallel-a-session".to_string()),
+                result: None,
+                run_index: 1,
+                completed_at: None,
+                structured_output: None,
+                output_contract: None,
+            },
+            ParallelStepState {
+                step_name: "review-b".to_string(),
+                state: "running".to_string(),
+                session_id: Some("parallel-b-session".to_string()),
+                result: None,
+                run_index: 1,
+                completed_at: None,
+                structured_output: None,
+                output_contract: None,
+            },
+        ];
+
+        assert_eq!(
+            WorkflowEngine::terminal_step_session_ids(&exec),
+            vec![
+                "current-step-session".to_string(),
+                "parallel-a-session".to_string(),
+                "parallel-b-session".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_child_outputs() {
+        let engine = WorkflowEngine::new();
+        let mut snapshot = engine
+            .insert_test_approval_execution(
+                "/repo",
+                TEST_PARENT_SESSION_ID,
+                TEST_STEP_SESSION_ID,
+                WorkflowExecutionState::Completed,
+            )
+            .await;
+        snapshot.step_history.push(StepHistoryEntry {
+            step_name: "parallel-review".to_string(),
+            completed_at: 1.0,
+            result: Some("done".to_string()),
+            session_id: Some("parent-entry-session".to_string()),
+            token_usage: None,
+            structured_output: None,
+            run_index: 1,
+            child_outputs: Some(vec![
+                crate::workflow::state::ChildOutputSnapshot {
+                    step_name: "review-a".to_string(),
+                    session_id: Some("child-a-session".to_string()),
+                    result: Some("LGTM".to_string()),
+                    run_index: 1,
+                    completed_at: 1.0,
+                    structured_output: None,
+                    output_contract: None,
+                },
+                crate::workflow::state::ChildOutputSnapshot {
+                    step_name: "review-b".to_string(),
+                    session_id: Some("child-b-session".to_string()),
+                    result: Some("LGTM".to_string()),
+                    run_index: 1,
+                    completed_at: 1.0,
+                    structured_output: None,
+                    output_contract: None,
+                },
+            ]),
+        });
+
+        assert_eq!(
+            WorkflowEngine::completed_step_session_ids_for_outcome(&StepOutcome::Persist(snapshot)),
+            vec![
+                "child-a-session".to_string(),
+                "child-b-session".to_string(),
+                "parent-entry-session".to_string(),
+            ]
+        );
+    }
     use crate::workflow::schema::{
         AggregateConfig, CollectConfig, CycleGuard, ReduceStrategy, Step, StepMode, TransitionRule,
         Workflow,
@@ -6912,9 +7500,12 @@ mod tests {
         fetch_parent_count: std::sync::atomic::AtomicUsize,
         create_step_session_count: std::sync::atomic::AtomicUsize,
         dispatch_session_start_count: std::sync::atomic::AtomicUsize,
+        mark_step_tab_open_count: std::sync::atomic::AtomicUsize,
         persist_workflow_state_count: std::sync::atomic::AtomicUsize,
         broadcast_state_count: std::sync::atomic::AtomicUsize,
         start_agent_turn_count: std::sync::atomic::AtomicUsize,
+        assert_runtime_lock_during_start: std::sync::atomic::AtomicBool,
+        runtime_lock_was_held_during_start: std::sync::atomic::AtomicBool,
     }
 
     impl RecordingStepSessionDeps {
@@ -6933,6 +7524,11 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst)
         }
 
+        fn mark_step_tab_open_count(&self) -> usize {
+            self.mark_step_tab_open_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
         fn persist_workflow_state_count(&self) -> usize {
             self.persist_workflow_state_count
                 .load(std::sync::atomic::Ordering::SeqCst)
@@ -6945,6 +7541,16 @@ mod tests {
 
         fn start_agent_turn_count(&self) -> usize {
             self.start_agent_turn_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn assert_runtime_lock_during_start(&self) {
+            self.assert_runtime_lock_during_start
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn runtime_lock_was_held_during_start(&self) -> bool {
+            self.runtime_lock_was_held_during_start
                 .load(std::sync::atomic::Ordering::SeqCst)
         }
     }
@@ -6991,6 +7597,11 @@ mod tests {
             Ok(())
         }
 
+        async fn mark_step_tab_open(&self, _step_session_id: &str) {
+            self.mark_step_tab_open_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
         async fn persist_workflow_state(
             &self,
             _chat_session_id: &str,
@@ -7001,20 +7612,32 @@ mod tests {
             Ok(())
         }
 
-        fn broadcast_state(&self, _worktree_path: &str, _snapshot: WorkflowState) {
+        async fn broadcast_state(&self, _worktree_path: &str, _snapshot: WorkflowState) {
             self.broadcast_state_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
 
-        async fn start_agent_turn(
+        async fn start_agent_turn_locked(
             &self,
-            _step_session_id: &str,
+            step_session_id: &str,
             _worktree_path: &str,
             _permission_mode: &str,
             _prompt: &str,
         ) -> Result<(), WorkflowEngineError> {
             self.start_agent_turn_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .assert_runtime_lock_during_start
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                let lock_attempt = tokio::time::timeout(
+                    std::time::Duration::from_millis(20),
+                    crate::agent_sdk::acquire_session_runtime_lock(step_session_id),
+                )
+                .await;
+                self.runtime_lock_was_held_during_start
+                    .store(lock_attempt.is_err(), std::sync::atomic::Ordering::SeqCst);
+            }
             Ok(())
         }
     }
@@ -7120,6 +7743,11 @@ mod tests {
             "dispatch_session_start must NOT be invoked when prompt synthesis fails"
         );
         assert_eq!(
+            deps.mark_step_tab_open_count(),
+            0,
+            "mark_step_tab_open must NOT be invoked when prompt synthesis fails"
+        );
+        assert_eq!(
             deps.persist_workflow_state_count(),
             0,
             "persist_workflow_state must NOT be invoked when prompt synthesis fails"
@@ -7173,6 +7801,7 @@ mod tests {
         }
 
         let deps = RecordingStepSessionDeps::default();
+        deps.assert_runtime_lock_during_start();
         engine
             .start_step_session_with_deps(&deps, "/repo")
             .await
@@ -7182,9 +7811,14 @@ mod tests {
         assert_eq!(deps.fetch_parent_count(), 1);
         assert_eq!(deps.create_step_session_count(), 1);
         assert_eq!(deps.dispatch_session_start_count(), 1);
+        assert_eq!(deps.mark_step_tab_open_count(), 1);
         assert_eq!(deps.persist_workflow_state_count(), 1);
         assert_eq!(deps.broadcast_state_count(), 1);
         assert_eq!(deps.start_agent_turn_count(), 1);
+        assert!(
+            deps.runtime_lock_was_held_during_start(),
+            "step session runtime lock must cover the path until start_agent_turn marks it streaming"
+        );
 
         // session_workflow_refs に SequentialStep として登録されている
         let refs = engine.session_workflow_refs.lock().await;
@@ -7192,7 +7826,7 @@ mod tests {
             .get("step-session-id")
             .expect("session_workflow_refs must contain step-session-id");
         assert_eq!(entry.worktree_path, "/repo");
-        assert!(matches!(entry.kind, SessionRefKind::SequentialStep));
+        assert!(matches!(entry.kind, SessionRefKind::Step));
         drop(refs);
 
         // executions の current_session_id がステップセッションIDで更新されている
@@ -7853,6 +8487,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
         let current_session = crate::session::ChatSession {
             id: "current-policy-session".to_string(),
@@ -7866,6 +8501,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
 
         assert!(WorkflowEngine::extract_last_assistant_text_from_session(&other_session).is_some());
@@ -7899,7 +8535,7 @@ mod tests {
                 "step-session".to_string(),
                 SessionWorkflowRef {
                     worktree_path: "/repo".to_string(),
-                    kind: SessionRefKind::SequentialStep,
+                    kind: SessionRefKind::Step,
                 },
             );
         }
@@ -7936,7 +8572,7 @@ mod tests {
                 "step-session".to_string(),
                 SessionWorkflowRef {
                     worktree_path: "/repo".to_string(),
-                    kind: SessionRefKind::SequentialStep,
+                    kind: SessionRefKind::Step,
                 },
             );
         }
@@ -7996,7 +8632,7 @@ mod tests {
                 "stale-policy-session".to_string(),
                 SessionWorkflowRef {
                     worktree_path: "/repo".to_string(),
-                    kind: SessionRefKind::SequentialStep,
+                    kind: SessionRefKind::Step,
                 },
             );
         }
@@ -8056,7 +8692,7 @@ mod tests {
                 "stale-rejected-policy-session".to_string(),
                 SessionWorkflowRef {
                     worktree_path: "/repo".to_string(),
-                    kind: SessionRefKind::SequentialStep,
+                    kind: SessionRefKind::Step,
                 },
             );
         }
@@ -8121,6 +8757,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
 
         let output = WorkflowEngine::extract_last_assistant_text_from_session(&session).unwrap();
@@ -8652,6 +9289,7 @@ mod tests {
             selected_model: None,
             workflow_state: None,
             backend_id: None,
+            workflow_step_session: false,
         };
         let latest = WorkflowEngine::extract_last_assistant_text_from_session(&session).unwrap();
         let contract_result = WorkflowEngine::validate_approval_contract_extraction(
@@ -8802,7 +9440,7 @@ mod tests {
             policy_session_id,
             SessionWorkflowRef {
                 worktree_path: worktree_path.to_string(),
-                kind: SessionRefKind::SequentialStep,
+                kind: SessionRefKind::Step,
             },
         );
 
@@ -8857,7 +9495,7 @@ mod tests {
             policy_session_id,
             SessionWorkflowRef {
                 worktree_path: worktree_path.to_string(),
-                kind: SessionRefKind::SequentialStep,
+                kind: SessionRefKind::Step,
             },
         );
 
@@ -8916,7 +9554,7 @@ mod tests {
             policy_session_id,
             SessionWorkflowRef {
                 worktree_path: worktree_path.to_string(),
-                kind: SessionRefKind::SequentialStep,
+                kind: SessionRefKind::Step,
             },
         );
 

@@ -26,6 +26,7 @@ import {
 	listAgentBackends,
 	listClosedSessions,
 	listSessions,
+	openWorkflowStepTab,
 	restoreSession as restoreSessionApi,
 	sendAgentMessage,
 	sendWorkflowApprovalChatMessage,
@@ -34,6 +35,7 @@ import {
 import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
 
 export type ActivityStatus = { label: string } | null;
+type RefreshSessionsOptions = { reconcileActiveSession?: boolean };
 
 export interface UseAgentChatResult {
 	sessions: SessionSummary[];
@@ -52,7 +54,10 @@ export interface UseAgentChatResult {
 	) => Promise<void>;
 	interrupt: () => void;
 	selectSession: (sessionId: string) => Promise<void>;
-	refreshSessions: () => Promise<SessionSummary[] | undefined>;
+	openWorkflowStepSession: (sessionId: string) => Promise<void>;
+	refreshSessions: (
+		options?: RefreshSessionsOptions,
+	) => Promise<SessionSummary[] | undefined>;
 	refreshClosedSessions: () => Promise<void>;
 	closeSession: (sessionId: string) => Promise<void>;
 	restoreSession: (sessionId: string) => Promise<void>;
@@ -205,36 +210,97 @@ export function useAgentChat(
 	const selectedBackendIdRef = useRef(state.selectedBackendId);
 	selectedBackendIdRef.current = state.selectedBackendId;
 
-	const refreshSessions = useCallback(async (): Promise<SessionSummary[]> => {
+	const refreshSessions = useCallback(
+		async (options: RefreshSessionsOptions = {}): Promise<SessionSummary[]> => {
+			try {
+				const previousSessions = sessionsRef.current;
+				const previousActiveSessionId = activeSessionRef.current?.id ?? null;
+				const sessions = await listSessions(worktreePathRef.current);
+				dispatch({ type: "SET_SESSIONS", sessions });
+				if (
+					options.reconcileActiveSession === true &&
+					previousActiveSessionId &&
+					!sessions.some((session) => session.id === previousActiveSessionId)
+				) {
+					const previousIndex = previousSessions.findIndex(
+						(session) => session.id === previousActiveSessionId,
+					);
+					const nextSession =
+						sessions.length > 0
+							? sessions[
+									Math.min(Math.max(previousIndex, 0), sessions.length - 1)
+								]
+							: null;
+					if (nextSession) {
+						const response = await getSession(nextSession.id);
+						if (activeSessionRef.current?.id === previousActiveSessionId) {
+							dispatch({
+								type: "SET_ACTIVE_SESSION",
+								session: response?.session ?? null,
+							});
+							if (response) {
+								dispatchSessionMeta(dispatch, nextSession.id, response);
+							}
+						}
+					} else if (activeSessionRef.current?.id === previousActiveSessionId) {
+						dispatch({ type: "SET_ACTIVE_SESSION", session: null });
+					}
+				}
+				return sessions;
+			} catch (e) {
+				dispatch({
+					type: "SET_ERROR",
+					error: `セッション一覧の取得に失敗: ${e}`,
+				});
+				return [];
+			}
+		},
+		[],
+	);
+
+	const refreshClosedSessions = useCallback(async () => {
 		try {
-			const sessions = await listSessions(worktreePathRef.current);
-			dispatch({ type: "SET_SESSIONS", sessions });
-			return sessions;
+			const sessions = await listClosedSessions(worktreePathRef.current);
+			dispatch({ type: "SET_CLOSED_SESSIONS", sessions });
 		} catch (e) {
 			dispatch({
 				type: "SET_ERROR",
-				error: `セッション一覧の取得に失敗: ${e}`,
+				error: `クローズ済みセッション一覧の取得に失敗: ${e}`,
 			});
-			return [];
 		}
 	}, []);
 
-	const selectSession = useCallback(async (sessionId: string) => {
-		try {
-			const response = await getSession(sessionId);
-			if (response) {
-				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
-				dispatchSessionMeta(dispatch, sessionId, response);
-			} else {
-				dispatch({ type: "SET_ACTIVE_SESSION", session: null });
+	const selectSession = useCallback(
+		async (sessionId: string, isWorkflowStep?: boolean) => {
+			try {
+				if (isWorkflowStep) {
+					await openWorkflowStepTab(sessionId);
+					await refreshSessions();
+					await refreshClosedSessions();
+				}
+				const response = await getSession(sessionId);
+				if (response) {
+					dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
+					dispatchSessionMeta(dispatch, sessionId, response);
+				} else {
+					dispatch({ type: "SET_ACTIVE_SESSION", session: null });
+				}
+			} catch (e) {
+				dispatch({
+					type: "SET_ERROR",
+					error: `セッションの読み込みに失敗: ${e}`,
+				});
 			}
-		} catch (e) {
-			dispatch({
-				type: "SET_ERROR",
-				error: `セッションの読み込みに失敗: ${e}`,
-			});
-		}
-	}, []);
+		},
+		[refreshSessions, refreshClosedSessions],
+	);
+
+	const openWorkflowStepSession = useCallback(
+		async (sessionId: string) => {
+			await selectSession(sessionId, true);
+		},
+		[selectSession],
+	);
 
 	const interrupt = useCallback(() => {
 		const sessionId = activeSessionRef.current?.id;
@@ -301,31 +367,11 @@ export function useAgentChat(
 		[],
 	);
 
-	const refreshClosedSessions = useCallback(async () => {
-		try {
-			const sessions = await listClosedSessions(worktreePathRef.current);
-			dispatch({ type: "SET_CLOSED_SESSIONS", sessions });
-		} catch (e) {
-			dispatch({
-				type: "SET_ERROR",
-				error: `クローズ済みセッション一覧の取得に失敗: ${e}`,
-			});
-		}
-	}, []);
-
 	const closeSessionFn = useCallback(
 		async (sessionId: string) => {
 			try {
 				const sessions = sessionsRef.current;
 				const idx = sessions.findIndex((s) => s.id === sessionId);
-
-				// Close agent process gracefully
-				invoke("close_agent_session", {
-					chatSessionId: sessionId,
-				}).catch((e) => {
-					console.error("Failed to close agent session:", e);
-				});
-
 				await closeSessionApi(sessionId);
 
 				dispatch({ type: "CLEANUP_SESSION", sessionId });
@@ -369,7 +415,9 @@ export function useAgentChat(
 	const restoreSessionFn = useCallback(
 		async (sessionId: string) => {
 			try {
-				await restoreSessionApi(sessionId);
+				let restoredWorkflowStep = false;
+				const restoreResult = await restoreSessionApi(sessionId);
+				restoredWorkflowStep = restoreResult.restoredWorkflowStep === true;
 				const response = await getSession(sessionId);
 				dispatch({
 					type: "SET_ACTIVE_SESSION",
@@ -378,8 +426,9 @@ export function useAgentChat(
 				if (response) {
 					dispatchSessionMeta(dispatch, sessionId, response);
 					if (
-						response.session.messages.length > 0 ||
-						response.session.agentSessionId
+						!restoredWorkflowStep &&
+						(response.session.messages.length > 0 ||
+							response.session.agentSessionId)
 					) {
 						startAgentProcess(
 							sessionId,
@@ -624,6 +673,7 @@ export function useAgentChat(
 		sendMessage,
 		interrupt,
 		selectSession,
+		openWorkflowStepSession,
 		refreshSessions,
 		refreshClosedSessions,
 		closeSession: closeSessionFn,
