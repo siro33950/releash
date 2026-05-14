@@ -1,9 +1,4 @@
-import {
-	fireEvent,
-	render,
-	screen,
-	within,
-} from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowState } from "@/types/workflow";
 import { WorkflowTrace } from "./WorkflowTrace";

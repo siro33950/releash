@@ -420,9 +420,13 @@ function WorkflowActivePanel({
 
 	const [abortError, setAbortError] = useState<string | null>(null);
 
-	useEffect(() => {
+	const abortIdentityKey = `${worktreePath}|${workflowState.executionId}|${workflowState.state.type}`;
+	const [prevAbortIdentityKey, setPrevAbortIdentityKey] =
+		useState(abortIdentityKey);
+	if (prevAbortIdentityKey !== abortIdentityKey) {
+		setPrevAbortIdentityKey(abortIdentityKey);
 		setAbortError(null);
-	}, [worktreePath, workflowState.executionId, workflowState.state.type]);
+	}
 
 	const handleAbort = useCallback(() => {
 		invoke("abort_workflow", { worktreePath })

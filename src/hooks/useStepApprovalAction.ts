@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 export interface StepApprovalActionContext {
 	worktreePath: string;
@@ -16,11 +16,14 @@ export function useStepApprovalAction({
 	const [rejectComment, setRejectComment] = useState("");
 	const [approvalError, setApprovalError] = useState<string | null>(null);
 
-	useEffect(() => {
+	const identityKey = `${worktreePath}|${executionId}|${stepName}`;
+	const [prevIdentityKey, setPrevIdentityKey] = useState(identityKey);
+	if (prevIdentityKey !== identityKey) {
+		setPrevIdentityKey(identityKey);
 		setRejectMode(false);
 		setRejectComment("");
 		setApprovalError(null);
-	}, [worktreePath, executionId, stepName]);
+	}
 
 	const approve = useCallback(() => {
 		return invoke("approve_workflow_step", {
