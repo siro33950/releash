@@ -2,14 +2,20 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use super::{ChatSession, SessionState, SessionSummary};
+
+/// `SessionState` の遷移を観測する購読者向けコールバック。
+/// 引数は `(session_id, worktree_path, new_state)`。
+pub type SessionStateChangeListener =
+    Arc<dyn Fn(&str, &str, &SessionState) + Send + Sync + 'static>;
 
 pub struct SessionStore {
     cache: RwLock<HashMap<String, ChatSession>>,
     file_lock: parking_lot::Mutex<()>,
     loaded: AtomicBool,
+    state_change_listeners: RwLock<Vec<SessionStateChangeListener>>,
 }
 
 impl Default for SessionStore {
@@ -18,6 +24,7 @@ impl Default for SessionStore {
             cache: RwLock::new(HashMap::new()),
             file_lock: parking_lot::Mutex::new(()),
             loaded: AtomicBool::new(false),
+            state_change_listeners: RwLock::new(Vec::new()),
         }
     }
 }
@@ -108,6 +115,22 @@ impl SessionStore {
     }
 
     pub fn save_session(&self, app_data_dir: &Path, session: &ChatSession) -> Result<(), String> {
+        // file_lock を保持したまま listener を同期実行すると、listener から
+        // save_session / set_session_state などへ再入したときに parking_lot::Mutex の
+        // 自己デッドロックが発生する。lock スコープは永続化と cache 更新までに限定し、
+        // 通知に必要なデータを返してからスコープを抜けて listener を呼ぶ。
+        let state_changed = self.persist_and_update_cache(app_data_dir, session)?;
+        if state_changed {
+            self.notify_state_change(&session.id, &session.worktree_path, &session.state);
+        }
+        Ok(())
+    }
+
+    fn persist_and_update_cache(
+        &self,
+        app_data_dir: &Path,
+        session: &ChatSession,
+    ) -> Result<bool, String> {
         let _lock = self.file_lock.lock();
         let dir = sessions_dir(app_data_dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
@@ -120,10 +143,25 @@ impl SessionStore {
             .map_err(|e| format!("Failed to write session temp file: {e}"))?;
         std::fs::rename(&tmp_file, &file)
             .map_err(|e| format!("Failed to rename session temp file: {e}"))?;
-        self.cache
+        let prev = self
+            .cache
             .write()
             .insert(session.id.clone(), session.clone());
-        Ok(())
+        Ok(prev.as_ref().map(|p| &p.state) != Some(&session.state))
+    }
+
+    /// `SessionState` の遷移を購読するリスナーを登録する。
+    /// 登録順に保存後に発火される。AgentStatusCenter のような中央管理が
+    /// SessionStore からの状態変更を一方向に受け取るための入口。
+    pub fn register_state_change_listener(&self, listener: SessionStateChangeListener) {
+        self.state_change_listeners.write().push(listener);
+    }
+
+    fn notify_state_change(&self, session_id: &str, worktree_path: &str, new_state: &SessionState) {
+        let listeners = self.state_change_listeners.read().clone();
+        for listener in listeners {
+            listener(session_id, worktree_path, new_state);
+        }
     }
 
     pub fn set_session_state(
@@ -435,6 +473,68 @@ mod tests {
         let result = store.update_permission_mode(tmp.path(), UUID1, "plan");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Session not found"));
+    }
+
+    #[test]
+    fn state_change_listener_fires_on_close_and_restore() {
+        use parking_lot::Mutex as PlMutex;
+
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let session = make_session(UUID1, "/repo");
+        store.save_session(tmp.path(), &session).unwrap();
+
+        let events: Arc<PlMutex<Vec<(String, String, SessionState)>>> =
+            Arc::new(PlMutex::new(Vec::new()));
+        let events_for_listener = events.clone();
+        store.register_state_change_listener(Arc::new(
+            move |session_id, worktree_path, new_state| {
+                events_for_listener.lock().push((
+                    session_id.to_string(),
+                    worktree_path.to_string(),
+                    new_state.clone(),
+                ));
+            },
+        ));
+
+        // タブを閉じる: Active → Closed
+        store
+            .set_session_state(tmp.path(), UUID1, SessionState::Closed)
+            .unwrap();
+        // 復帰: Closed → Idle
+        store
+            .set_session_state(tmp.path(), UUID1, SessionState::Idle)
+            .unwrap();
+
+        let captured = events.lock().clone();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].0, UUID1);
+        assert_eq!(captured[0].1, "/repo");
+        assert_eq!(captured[0].2, SessionState::Closed);
+        assert_eq!(captured[1].2, SessionState::Idle);
+    }
+
+    #[test]
+    fn state_change_listener_does_not_fire_when_state_unchanged() {
+        use parking_lot::Mutex as PlMutex;
+
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let session = make_session(UUID1, "/repo");
+        store.save_session(tmp.path(), &session).unwrap();
+
+        let count = Arc::new(PlMutex::new(0usize));
+        let count_for_listener = count.clone();
+        store.register_state_change_listener(Arc::new(move |_, _, _| {
+            *count_for_listener.lock() += 1;
+        }));
+
+        // 状態は変えずに permission_mode を更新する
+        store
+            .update_permission_mode(tmp.path(), UUID1, "plan")
+            .unwrap();
+
+        assert_eq!(*count.lock(), 0);
     }
 
     #[test]
