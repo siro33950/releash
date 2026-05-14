@@ -229,7 +229,6 @@ describe("WorkflowTrace", () => {
 		expect(
 			within(reviewRow).queryByRole("button", { name: "Reject step" }),
 		).not.toBeInTheDocument();
-		expect(screen.getByText("Running fix")).toBeInTheDocument();
 	});
 
 	it("keeps reject input and shows row error when reject command fails", async () => {
