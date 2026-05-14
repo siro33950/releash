@@ -530,7 +530,8 @@ describe("WorkflowTrace", () => {
 		expect(screen.queryByText("#1")).not.toBeInTheDocument();
 	});
 
-	it("calls onSessionClick when a history entry View button is clicked", () => {
+	it("calls onSessionClick when a history entry's closed tab toggle is clicked", () => {
+		// tab_open=false（既定）→ EyeOff（Open tab）が描画され、クリックでonSessionClickが発火
 		const onSessionClick = vi.fn();
 		render(
 			<WorkflowTrace
@@ -548,11 +549,61 @@ describe("WorkflowTrace", () => {
 				onSessionClick={onSessionClick}
 			/>,
 		);
-		fireEvent.click(screen.getByText("View"));
+		fireEvent.click(screen.getByRole("button", { name: "Open tab" }));
 		expect(onSessionClick).toHaveBeenCalledWith("session-1");
 	});
 
-	it("shows View for the current step when a current session exists", () => {
+	it("calls onCloseSession when an open-tab toggle is clicked", () => {
+		const onCloseSession = vi.fn();
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					stepStates: { plan: "completed", review: "pending", fix: "pending" },
+					runtimeStates: {
+						"session-1": { runtimeActive: false, tabOpen: true },
+					},
+					stepHistory: [
+						{
+							stepName: "plan",
+							completedAt: 1001,
+							result: "done",
+							sessionId: "session-1",
+						},
+					],
+				})}
+				onCloseSession={onCloseSession}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Close tab" }));
+		expect(onCloseSession).toHaveBeenCalledWith("session-1");
+	});
+
+	it("does not show toggle for a history entry without a step session id", () => {
+		const onSessionClick = vi.fn();
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					chatSessionId: "parent-session",
+					currentStepName: "",
+					state: { type: "completed" },
+					stepStates: { plan: "completed", review: "pending", fix: "pending" },
+					stepHistory: [
+						{
+							stepName: "plan",
+							completedAt: 1001,
+							result: "done",
+						},
+					],
+				})}
+				onSessionClick={onSessionClick}
+			/>,
+		);
+		expect(
+			screen.queryByRole("button", { name: /Open tab|Close tab/ }),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows toggle for the current step when a current session exists", () => {
 		const onSessionClick = vi.fn();
 		render(
 			<WorkflowTrace
@@ -562,7 +613,7 @@ describe("WorkflowTrace", () => {
 				onSessionClick={onSessionClick}
 			/>,
 		);
-		fireEvent.click(screen.getByText("View"));
+		fireEvent.click(screen.getByRole("button", { name: "Open tab" }));
 		expect(onSessionClick).toHaveBeenCalledWith("session-current");
 	});
 
@@ -1349,5 +1400,114 @@ describe("WorkflowTrace", () => {
 		);
 
 		expect(scrollMock.scrollTop).toBe(720);
+	});
+
+	it("renders tab toggle for current and completed step sessions", () => {
+		// tab_open=true → "Close tab" 表示、tab_open=false → "Open tab" 表示
+		// runtime_active 自体は UI 上に出さない（タブ自体の存在＋既存 AgentStateIcon で表現）
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					currentSessionId: "current-session",
+					runtimeStates: {
+						"current-session": { runtimeActive: true, tabOpen: true },
+						"review-session": { runtimeActive: false, tabOpen: true },
+						"fix-session": { runtimeActive: false, tabOpen: false },
+					},
+					stepStates: {
+						plan: "running",
+						review: "completed",
+						fix: "completed",
+					},
+					stepHistory: [
+						{
+							stepName: "review",
+							completedAt: 1001,
+							result: "ok",
+							sessionId: "review-session",
+						},
+						{
+							stepName: "fix",
+							completedAt: 1002,
+							result: "ok",
+							sessionId: "fix-session",
+						},
+					],
+				})}
+				onSessionClick={vi.fn()}
+				onCloseSession={vi.fn()}
+			/>,
+		);
+
+		// current-session (tab_open=true) と review-session (tab_open=true) で Close tab
+		expect(
+			screen.getAllByRole("button", { name: "Close tab" }).length,
+		).toBeGreaterThanOrEqual(2);
+		// fix-session (tab_open=false) は Open tab
+		expect(
+			screen.getAllByRole("button", { name: "Open tab" }).length,
+		).toBeGreaterThanOrEqual(1);
+	});
+
+	it("renders tab toggle for completed parallel children", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "completed" },
+					currentStepName: "parallel-review",
+					currentStepIndex: 0,
+					stepStates: { "parallel-review": "completed" },
+					runtimeStates: {
+						"arch-session": { runtimeActive: true, tabOpen: true },
+						"security-session": { runtimeActive: false, tabOpen: true },
+					},
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "test",
+						builtin: false,
+						steps: [
+							{
+								name: "parallel-review",
+								rules: [],
+								parallel: [
+									{ name: "arch-review", mode: "auto" },
+									{ name: "security-review", mode: "auto" },
+								],
+							},
+						],
+					},
+					stepHistory: [
+						{
+							stepName: "parallel-review",
+							completedAt: 1001,
+							result: "ok",
+							childOutputs: [
+								{
+									stepName: "arch-review",
+									sessionId: "arch-session",
+									result: "ok",
+									runIndex: 1,
+									completedAt: 1001,
+								},
+								{
+									stepName: "security-review",
+									sessionId: "security-session",
+									result: "ok",
+									runIndex: 1,
+									completedAt: 1002,
+								},
+							],
+						},
+					],
+				})}
+				onSessionClick={vi.fn()}
+				onCloseSession={vi.fn()}
+			/>,
+		);
+
+		// arch-session (tab_open=true) と security-session (tab_open=true) の2子で Close tab
+		expect(
+			screen.getAllByRole("button", { name: "Close tab" }).length,
+		).toBeGreaterThanOrEqual(2);
 	});
 });

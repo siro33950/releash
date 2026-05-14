@@ -17,6 +17,7 @@ interface WorkflowPanelProps {
 	worktreePath: string;
 	chatSessionId: string | null;
 	onSessionClick?: (sessionId: string) => void;
+	onCloseSession?: (sessionId: string) => void;
 }
 
 export function WorkflowPanel({
@@ -24,6 +25,7 @@ export function WorkflowPanel({
 	worktreePath,
 	chatSessionId,
 	onSessionClick,
+	onCloseSession,
 }: WorkflowPanelProps) {
 	const [executionIds, setExecutionIds] = useState<string[]>([]);
 	const [openPastIds, setOpenPastIds] = useState<string[]>([]);
@@ -195,6 +197,7 @@ export function WorkflowPanel({
 						workflowState={workflowState}
 						worktreePath={worktreePath}
 						onSessionClick={onSessionClick}
+						onCloseSession={onCloseSession}
 					/>
 				</TabsContent>
 			)}
@@ -209,6 +212,7 @@ export function WorkflowPanel({
 						executionId={id}
 						worktreePath={worktreePath}
 						onSessionClick={onSessionClick}
+						onCloseSession={onCloseSession}
 					/>
 				</TabsContent>
 			))}
@@ -346,10 +350,12 @@ function ExecutionView({
 	executionId,
 	worktreePath,
 	onSessionClick,
+	onCloseSession,
 }: {
 	executionId: string;
 	worktreePath: string;
 	onSessionClick?: (sessionId: string) => void;
+	onCloseSession?: (sessionId: string) => void;
 }) {
 	const [historyState, setHistoryState] = useState<WorkflowState | null>(null);
 	const [events, setEvents] = useState<WorkflowLogEvent[]>([]);
@@ -441,6 +447,7 @@ function ExecutionView({
 					workflowState={historyState}
 					events={events}
 					onSessionClick={onSessionClick}
+					onCloseSession={onCloseSession}
 				/>
 			</div>
 		</div>
@@ -451,10 +458,12 @@ function WorkflowActivePanel({
 	workflowState,
 	worktreePath,
 	onSessionClick,
+	onCloseSession,
 }: {
 	workflowState: WorkflowState;
 	worktreePath: string;
 	onSessionClick?: (sessionId: string) => void;
+	onCloseSession?: (sessionId: string) => void;
 }) {
 	const isRunning =
 		workflowState.state.type === "running" ||
@@ -516,6 +525,7 @@ function WorkflowActivePanel({
 					key={`current:${worktreePath}:${workflowState.executionId}`}
 					workflowState={workflowState}
 					onSessionClick={onSessionClick}
+					onCloseSession={onCloseSession}
 					approvalAction={{
 						worktreePath,
 						executionId: workflowState.executionId,

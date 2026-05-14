@@ -268,6 +268,7 @@ export function AgentChatPanel({
 		sendMessage,
 		interrupt,
 		selectSession,
+		openWorkflowStepSession,
 		closeSession,
 		restoreSession,
 		createNewSession,
@@ -286,6 +287,7 @@ export function AgentChatPanel({
 	const knownWorkflowSessionIds = useMemo(() => {
 		return new Set(sessions.map((session) => session.id));
 	}, [sessions]);
+	const workflowStateUpdatedAt = workflowState?.updatedAt;
 
 	useEffect(() => {
 		const workflowSessionIds = [
@@ -306,6 +308,12 @@ export function AgentChatPanel({
 		knownWorkflowSessionIds,
 		refreshSessions,
 	]);
+
+	useEffect(() => {
+		if (workflowStateUpdatedAt == null) return;
+		refreshSessions({ reconcileActiveSession: true });
+		refreshClosedSessions();
+	}, [workflowStateUpdatedAt, refreshSessions, refreshClosedSessions]);
 
 	// Expose sendMessage to parent via ref (without images parameter)
 	useEffect(() => {
@@ -720,7 +728,8 @@ export function AgentChatPanel({
 						workflowState={workflowState ?? null}
 						worktreePath={worktreePath}
 						chatSessionId={activeSession?.id ?? null}
-						onSessionClick={selectSession}
+						onSessionClick={openWorkflowStepSession}
+						onCloseSession={closeSession}
 					/>
 				</Panel>
 			</Group>

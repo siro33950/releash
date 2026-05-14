@@ -126,6 +126,11 @@ export interface ParallelStepState {
 	outputContract?: string;
 }
 
+export interface WorkflowStepRuntimeState {
+	runtimeActive: boolean;
+	tabOpen: boolean;
+}
+
 export interface WorkflowState {
 	executionId: string;
 	workflowName: string;
@@ -142,6 +147,7 @@ export interface WorkflowState {
 	workflowDefinition: Workflow;
 	totalTokenUsage: TokenUsage;
 	stepStates: Record<string, string>;
+	runtimeStates?: Record<string, WorkflowStepRuntimeState>;
 	activeParallelSteps?: ParallelStepState[];
 	startedAt: number;
 	updatedAt: number;
