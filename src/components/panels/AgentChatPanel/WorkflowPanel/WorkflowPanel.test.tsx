@@ -7,6 +7,7 @@ import {
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowState } from "@/types/workflow";
+import { installScrollMetricsMock } from "./testUtils";
 
 vi.mock("react-resizable-panels", () => ({
 	Group: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -82,6 +83,110 @@ describe("WorkflowPanel", () => {
 			/>,
 		);
 		expect(screen.getByText("300 tokens")).toBeInTheDocument();
+	});
+
+	it("keeps the workflow status outside the trace scroll region", () => {
+		render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState()}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		const status = screen.getByTestId("workflow-status-summary");
+		const trace = screen.getByTestId("workflow-trace-scroll");
+		expect(status).toBeInTheDocument();
+		expect(trace).not.toContainElement(status);
+	});
+
+	it("resets auto-follow and scrolls to the bottom after switching to a past execution tab", async () => {
+		const scrollMock = installScrollMetricsMock(HTMLElement.prototype, {
+			scrollHeight: 500,
+			scrollTop: 500,
+			clientHeight: 100,
+		});
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "list_workflow_executions") {
+				return Promise.resolve(["exec-current", "exec-old"]);
+			}
+			if (cmd === "get_workflow_execution_state") {
+				return Promise.resolve(
+					makeWorkflowState({
+						executionId: "exec-old",
+						workflowName: "old-workflow",
+						state: { type: "completed" },
+						currentStepName: "step-2",
+						stepHistory: [
+							{ stepName: "step-1", completedAt: 1500, result: "done" },
+						],
+					}),
+				);
+			}
+			if (cmd === "get_workflow_execution_log") {
+				return Promise.resolve([]);
+			}
+			return Promise.resolve(undefined);
+		});
+
+		try {
+			render(
+				<WorkflowPanel
+					workflowState={makeWorkflowState({ executionId: "exec-current" })}
+					worktreePath="/repo"
+					chatSessionId="session-1"
+				/>,
+			);
+			const currentTrace = screen.getByTestId("workflow-trace-scroll");
+			scrollMock.setMetrics({ scrollTop: 250 });
+			fireEvent.scroll(currentTrace);
+
+			scrollMock.setMetrics({ scrollHeight: 900 });
+			fireEvent.click(
+				screen.getByRole("button", { name: "Execution history" }),
+			);
+			fireEvent.click(await screen.findByText("exec-old"));
+
+			await waitFor(() => {
+				expect(screen.getByText("old-workflow")).toBeInTheDocument();
+				expect(scrollMock.scrollTop).toBe(900);
+			});
+		} finally {
+			scrollMock.restore();
+		}
+	});
+
+	it("resets auto-follow and scrolls to the bottom after worktreePath changes", () => {
+		const scrollMock = installScrollMetricsMock(HTMLElement.prototype, {
+			scrollHeight: 500,
+			scrollTop: 500,
+			clientHeight: 100,
+		});
+
+		try {
+			const { rerender } = render(
+				<WorkflowPanel
+					workflowState={makeWorkflowState()}
+					worktreePath="/repo-a"
+					chatSessionId="session-1"
+				/>,
+			);
+			const trace = screen.getByTestId("workflow-trace-scroll");
+			scrollMock.setMetrics({ scrollTop: 250 });
+			fireEvent.scroll(trace);
+
+			scrollMock.setMetrics({ scrollHeight: 900 });
+			rerender(
+				<WorkflowPanel
+					workflowState={makeWorkflowState()}
+					worktreePath="/repo-b"
+					chatSessionId="session-1"
+				/>,
+			);
+
+			expect(scrollMock.scrollTop).toBe(900);
+		} finally {
+			scrollMock.restore();
+		}
 	});
 
 	it("shows Stop button when running", () => {
@@ -653,5 +758,144 @@ describe("WorkflowPanel", () => {
 		expect(
 			screen.queryByRole("button", { name: "Reject step" }),
 		).not.toBeInTheDocument();
+	});
+
+	it("keeps past execution workflow status outside the trace scroll region", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "list_workflow_executions") {
+				return Promise.resolve(["exec-old"]);
+			}
+			if (cmd === "get_workflow_execution_state") {
+				return Promise.resolve(
+					makeWorkflowState({
+						executionId: "exec-old",
+						state: { type: "completed" },
+						currentStepName: "step-2",
+						stepHistory: [
+							{ stepName: "step-1", completedAt: 1500, result: "done" },
+						],
+					}),
+				);
+			}
+			if (cmd === "get_workflow_execution_log") {
+				return Promise.resolve([]);
+			}
+			return Promise.resolve(undefined);
+		});
+
+		render(
+			<WorkflowPanel
+				workflowState={null}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Execution history" }));
+		fireEvent.click(await screen.findByText("exec-old"));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("workflow-status-summary")).toBeInTheDocument();
+		});
+		const status = screen.getByTestId("workflow-status-summary");
+		const trace = screen.getByTestId("workflow-trace-scroll");
+		expect(trace).not.toContainElement(status);
+	});
+
+	it("shows an alert instead of Loading when past execution data fails to load", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "list_workflow_executions") {
+				return Promise.resolve(["exec-old"]);
+			}
+			if (cmd === "get_workflow_execution_state") {
+				return Promise.reject(new Error("state failed"));
+			}
+			if (cmd === "get_workflow_execution_log") {
+				return Promise.resolve([]);
+			}
+			return Promise.resolve(undefined);
+		});
+
+		render(
+			<WorkflowPanel
+				workflowState={null}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Execution history" }));
+		fireEvent.click(await screen.findByText("exec-old"));
+
+		expect(await screen.findByRole("alert")).toHaveAttribute(
+			"data-testid",
+			"workflow-history-error",
+		);
+		expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+	});
+
+	it("shows an alert instead of Loading when past execution state is missing", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "list_workflow_executions") {
+				return Promise.resolve(["exec-old"]);
+			}
+			if (cmd === "get_workflow_execution_state") {
+				return Promise.resolve(null);
+			}
+			if (cmd === "get_workflow_execution_log") {
+				return Promise.resolve([]);
+			}
+			return Promise.resolve(undefined);
+		});
+
+		render(
+			<WorkflowPanel
+				workflowState={null}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Execution history" }));
+		fireEvent.click(await screen.findByText("exec-old"));
+
+		expect(await screen.findByRole("alert")).toHaveAttribute(
+			"data-testid",
+			"workflow-history-error",
+		);
+		expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+	});
+
+	it("shows an alert instead of Loading when past execution log fails to load", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "list_workflow_executions") {
+				return Promise.resolve(["exec-old"]);
+			}
+			if (cmd === "get_workflow_execution_state") {
+				return Promise.resolve(
+					makeWorkflowState({
+						executionId: "exec-old",
+						state: { type: "completed" },
+					}),
+				);
+			}
+			if (cmd === "get_workflow_execution_log") {
+				return Promise.reject(new Error("log failed"));
+			}
+			return Promise.resolve(undefined);
+		});
+
+		render(
+			<WorkflowPanel
+				workflowState={null}
+				worktreePath="/repo"
+				chatSessionId="session-1"
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Execution history" }));
+		fireEvent.click(await screen.findByText("exec-old"));
+
+		expect(await screen.findByRole("alert")).toHaveAttribute(
+			"data-testid",
+			"workflow-history-error",
+		);
+		expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
 	});
 });

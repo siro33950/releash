@@ -9,6 +9,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import type { WorkflowLogEvent, WorkflowState } from "@/types/workflow";
+import { WorkflowStatusSummary } from "./WorkflowStatusSummary";
 import { WorkflowTrace } from "./WorkflowTrace";
 
 interface WorkflowPanelProps {
@@ -199,8 +200,16 @@ export function WorkflowPanel({
 			)}
 
 			{visiblePastIds.map((id) => (
-				<TabsContent key={id} value={id} className="flex-1 min-h-0 mt-0">
-					<ExecutionView executionId={id} onSessionClick={onSessionClick} />
+				<TabsContent
+					key={`${worktreePath}:${id}`}
+					value={id}
+					className="flex-1 min-h-0 mt-0"
+				>
+					<ExecutionView
+						executionId={id}
+						worktreePath={worktreePath}
+						onSessionClick={onSessionClick}
+					/>
 				</TabsContent>
 			))}
 
@@ -335,33 +344,76 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 
 function ExecutionView({
 	executionId,
+	worktreePath,
 	onSessionClick,
 }: {
 	executionId: string;
+	worktreePath: string;
 	onSessionClick?: (sessionId: string) => void;
 }) {
 	const [historyState, setHistoryState] = useState<WorkflowState | null>(null);
 	const [events, setEvents] = useState<WorkflowLogEvent[]>([]);
+	const [isLoading, setIsLoading] = useState(true);
+	const [loadError, setLoadError] = useState<string | null>(null);
 
 	useEffect(() => {
-		invoke<WorkflowState | null>("get_workflow_execution_state", {
-			executionId,
-		})
-			.then((state) => setHistoryState(state ?? null))
-			.catch((e) =>
-				console.warn("[ExecutionView] get_workflow_execution_state failed", e),
-			);
+		let cancelled = false;
+		setHistoryState(null);
+		setEvents([]);
+		setLoadError(null);
+		setIsLoading(true);
 
-		invoke<WorkflowLogEvent[]>("get_workflow_execution_log", {
-			executionId,
-		})
-			.then(setEvents)
-			.catch((e) =>
-				console.warn("[ExecutionView] get_workflow_execution_log failed", e),
-			);
+		Promise.all([
+			invoke<WorkflowState | null>("get_workflow_execution_state", {
+				executionId,
+			}),
+			invoke<WorkflowLogEvent[]>("get_workflow_execution_log", {
+				executionId,
+			}),
+		])
+			.then(([state, logEvents]) => {
+				if (cancelled) return;
+				if (!state) {
+					setLoadError("Failed to load execution history.");
+					return;
+				}
+				setHistoryState(state);
+				setEvents(logEvents);
+			})
+			.catch((e) => {
+				console.warn("[ExecutionView] get workflow execution data failed", e);
+				if (!cancelled) {
+					setLoadError("Failed to load execution history.");
+				}
+			})
+			.finally(() => {
+				if (!cancelled) {
+					setIsLoading(false);
+				}
+			});
+
+		return () => {
+			cancelled = true;
+		};
 	}, [executionId]);
 
-	if (!historyState) {
+	if (loadError) {
+		return (
+			<div className="flex h-full flex-col overflow-hidden">
+				<div className="min-h-0 flex-1 overflow-auto p-3">
+					<div
+						role="alert"
+						data-testid="workflow-history-error"
+						className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
+					>
+						{loadError}
+					</div>
+				</div>
+			</div>
+		);
+	}
+
+	if (isLoading || !historyState) {
 		return (
 			<div className="flex items-center justify-center h-full text-sm text-muted-foreground">
 				Loading...
@@ -372,18 +424,20 @@ function ExecutionView({
 	return (
 		<div className="flex flex-col h-full overflow-hidden">
 			{/* Header */}
-			<div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
-				<div className="flex items-center gap-2">
+			<div className="flex shrink-0 flex-col gap-2 border-b px-3 py-2">
+				<div className="flex min-w-0 items-center gap-2">
 					<span className="text-sm font-medium">
 						{historyState.workflowName}
 					</span>
 					<StatusBadge state={historyState.state.type} />
 				</div>
+				<WorkflowStatusSummary workflowState={historyState} />
 			</div>
 
 			{/* Trace */}
-			<div className="flex-1 overflow-auto min-h-0">
+			<div className="flex-1 min-h-0">
 				<WorkflowTrace
+					key={`history:${worktreePath}:${executionId}`}
 					workflowState={historyState}
 					events={events}
 					onSessionClick={onSessionClick}
@@ -427,6 +481,9 @@ function WorkflowActivePanel({
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden">
+			<div className="shrink-0 border-b p-3">
+				<WorkflowStatusSummary workflowState={workflowState} />
+			</div>
 			{abortError && (
 				<div
 					role="alert"
@@ -454,8 +511,9 @@ function WorkflowActivePanel({
 			</div>
 
 			{/* Trace */}
-			<div className="flex-1 overflow-auto min-h-0">
+			<div className="flex-1 min-h-0">
 				<WorkflowTrace
+					key={`current:${worktreePath}:${workflowState.executionId}`}
 					workflowState={workflowState}
 					onSessionClick={onSessionClick}
 					approvalAction={{
