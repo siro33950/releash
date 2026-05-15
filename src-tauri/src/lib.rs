@@ -148,6 +148,18 @@ pub fn run() {
                 app.handle().clone(),
                 broadcaster,
             ));
+            // SessionStore の状態変更通知を購読して、保持している SessionStatus を
+            // 最新化＋再集約する。Closed への遷移は aggregate でフィルタされ、
+            // Closed → Idle の復帰では再び集約対象に戻る。
+            {
+                let center_for_listener = agent_status_center.clone();
+                let session_store_state = app.state::<Arc<session::SessionStore>>().inner().clone();
+                session_store_state.register_state_change_listener(Arc::new(
+                    move |session_id, _worktree_path, new_state| {
+                        center_for_listener.on_session_state_changed(session_id, new_state.clone());
+                    },
+                ));
+            }
             app.manage(agent_status_center);
             app.manage(Arc::new(workflow::engine::WorkflowEngine::new()));
 
