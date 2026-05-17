@@ -83,6 +83,8 @@ workflow engine は状態遷移の唯一の権威であり続ける。Agent や 
 
 既存 YAML と既存 Tauri command を維持しながら、内部の未来形モデルを明確にする。
 
+未来形モデル各々のフィールド詳細・既存モジュールの future core / compatibility adapter 分類・境界条件は、本文書から派生する north star ドキュメントとして [`workflow-engine-model-boundary.md`](./workflow-engine-model-boundary.md) にまとめている。詳細を参照する場合はそちらを正本とすること。
+
 ### Workflow Definition
 
 ユーザーが書く workflow template。既存の `Workflow` と `steps:` YAML は有効なままにする。
@@ -293,6 +295,8 @@ main agent は state transition を所有しない。approve、reject、abort、
 
 - モデルが文書化されている。
 - どの module が compatibility adapter で、どの module が future core か説明できる。
+
+成果物: [`workflow-engine-model-boundary.md`](./workflow-engine-model-boundary.md)（未来形モデル仕様と既存モジュール分類の正本）。
 
 ### [02] Normalized Workflow
 
