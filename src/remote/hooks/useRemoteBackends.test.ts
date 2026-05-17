@@ -9,6 +9,7 @@ const makeBackend = (
 	id: "backend-1",
 	name: "Claude",
 	available: true,
+	available_models: [],
 	...overrides,
 });
 
@@ -211,6 +212,50 @@ describe("useRemoteBackends", () => {
 			payload: {},
 		});
 		expect(result.current.loading).toBe(true);
+	});
+
+	it("backend_models_updated を受信したら対象 backend の候補だけ更新される", () => {
+		let handler: ((msg: WsMessage) => void) | null = null;
+		const subscribe = vi.fn((cb: (msg: WsMessage) => void) => {
+			handler = cb;
+			return vi.fn();
+		});
+		const send = vi.fn();
+		const backends = [
+			makeBackend({
+				id: "claude",
+				available_models: [{ value: "old-claude" }],
+			}),
+			makeBackend({
+				id: "codex",
+				available_models: [{ value: "old-codex" }],
+			}),
+		];
+
+		const { result } = renderHook(() =>
+			useRemoteBackends({ subscribe, send, connected: true }),
+		);
+
+		act(() => {
+			handler?.({
+				type: "backend_list_response",
+				payload: { backends, default_id: "claude" },
+			});
+		});
+		act(() => {
+			handler?.({
+				type: "backend_models_updated",
+				payload: {
+					backend_id: "codex",
+					available_models: [{ value: "gpt-5.5" }],
+				},
+			});
+		});
+
+		expect(result.current.backends).toEqual([
+			backends[0],
+			{ ...backends[1], available_models: [{ value: "gpt-5.5" }] },
+		]);
 	});
 
 	it("アンマウント時に unsubscribe が呼ばれる", () => {

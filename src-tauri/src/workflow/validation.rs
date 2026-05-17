@@ -109,6 +109,20 @@ pub enum ValidationError {
         step: String,
         value: String,
     },
+    /// モデルIDが形式として無効（空文字・空白のみ・制御文字・上限長超過など）。
+    /// `reason` には `ModelId` の戻り値（理由文言）を保持し、
+    /// 呼び出し側・ログで未登録（UnknownModel）と区別できるようにする。
+    InvalidModelFormat {
+        step: String,
+        value: String,
+        reason: String,
+    },
+    /// モデルIDの形式は有効だが、バックエンド所属を一意に解決できない。
+    ModelResolutionFailed {
+        step: String,
+        value: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -215,6 +229,26 @@ impl fmt::Display for ValidationError {
                 write!(
                     f,
                     "ステップ '{step}' のmodelが不正です: unknown model: {value}"
+                )
+            }
+            Self::InvalidModelFormat {
+                step,
+                value,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "ステップ '{step}' のmodel '{value}' は形式として無効です: {reason}"
+                )
+            }
+            Self::ModelResolutionFailed {
+                step,
+                value,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "ステップ '{step}' のmodel '{value}' の所属バックエンドを解決できません: {reason}"
                 )
             }
         }
@@ -609,34 +643,64 @@ fn validate_permission(step_name: &str, value: &str) -> Result<(), ValidationErr
 }
 
 /// ワークフロー内の全ステップの `model` フィールドを検証する。
-/// `valid_models` は全バックエンドの `available_models()` から収集した有効なモデルID集合。
-pub fn validate_models(
-    workflow: &Workflow,
-    valid_models: &HashSet<String>,
-) -> Result<(), ValidationError> {
+///
+/// 検証は経路によらず同一の基準で行う:
+/// 1. 形式検証（`crate::domain::agent_session::ModelId`）— 空文字・空白のみ・制御文字・
+///    上限長超過は登録判定に進まず形式不正として拒否する
+/// 2. 登録判定（呼び出し側の resolver）— 未登録なら `UnknownModel`
+/// 3. 所属解決（呼び出し側の resolver）— 複数 backend に登録された曖昧な model は拒否する
+pub fn validate_models<F>(workflow: &Workflow, mut resolve_model: F) -> Result<(), ValidationError>
+where
+    F: FnMut(&str) -> Result<Option<String>, String>,
+{
     for step in &workflow.steps {
         if let Some(ref model) = step.model {
-            if !valid_models.contains(model.as_str()) {
-                return Err(ValidationError::UnknownModel {
-                    step: step.name.clone(),
-                    value: model.clone(),
-                });
-            }
+            validate_model_format(&step.name, model)?;
+            validate_model_registered(&step.name, model, &mut resolve_model)?;
         }
         if let Some(ref children) = step.parallel {
             for child in children {
                 if let Some(ref model) = child.model {
-                    if !valid_models.contains(model.as_str()) {
-                        return Err(ValidationError::UnknownModel {
-                            step: child.name.clone(),
-                            value: model.clone(),
-                        });
-                    }
+                    validate_model_format(&child.name, model)?;
+                    validate_model_registered(&child.name, model, &mut resolve_model)?;
                 }
             }
         }
     }
     Ok(())
+}
+
+fn validate_model_format(step_name: &str, model: &str) -> Result<(), ValidationError> {
+    crate::domain::agent_session::ModelId::parse(model).map_err(|reason| {
+        ValidationError::InvalidModelFormat {
+            step: step_name.to_string(),
+            value: model.to_string(),
+            reason,
+        }
+    })?;
+    Ok(())
+}
+
+fn validate_model_registered<F>(
+    step_name: &str,
+    model: &str,
+    resolve_model: &mut F,
+) -> Result<(), ValidationError>
+where
+    F: FnMut(&str) -> Result<Option<String>, String>,
+{
+    match resolve_model(model) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(ValidationError::UnknownModel {
+            step: step_name.to_string(),
+            value: model.to_string(),
+        }),
+        Err(reason) => Err(ValidationError::ModelResolutionFailed {
+            step: step_name.to_string(),
+            value: model.to_string(),
+            reason,
+        }),
+    }
 }
 
 /// 診断用: 全てのバリデーションエラーを収集して返す。
@@ -942,6 +1006,10 @@ mod tests {
             builtin: false,
             steps,
         }
+    }
+
+    fn resolve_from_set(valid: &HashSet<String>, model: &str) -> Result<Option<String>, String> {
+        Ok(valid.contains(model).then(|| "backend".to_string()))
     }
 
     fn make_step(name: &str, mode: StepMode, rules: Vec<TransitionRule>) -> Step {
@@ -1885,7 +1953,7 @@ mod tests {
             ..make_step("step1", StepMode::Auto, vec![])
         }]);
         let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
-        assert!(validate_models(&wf, &valid).is_ok());
+        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_ok());
     }
 
     #[test]
@@ -1895,7 +1963,7 @@ mod tests {
             ..make_step("step1", StepMode::Auto, vec![])
         }]);
         let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
-        let err = validate_models(&wf, &valid).unwrap_err();
+        let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
         assert!(matches!(
             err,
             ValidationError::UnknownModel { ref step, ref value }
@@ -1915,7 +1983,7 @@ mod tests {
             None,
         )]);
         let valid = HashSet::from(["haiku".to_string()]);
-        let err = validate_models(&wf, &valid).unwrap_err();
+        let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
         assert!(matches!(
             err,
             ValidationError::UnknownModel { ref step, ref value }
@@ -1924,10 +1992,29 @@ mod tests {
     }
 
     #[test]
+    fn validate_models_rejects_ambiguous_model_from_resolver() {
+        let wf = make_workflow(vec![Step {
+            model: Some("shared".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        let err = validate_models(&wf, |model| {
+            Err(format!(
+                "モデル '{model}' が複数のバックエンドに登録されています"
+            ))
+        })
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::ModelResolutionFailed { ref step, ref value, ref reason }
+                if step == "step1" && value == "shared" && reason.contains("複数")
+        ));
+    }
+
+    #[test]
     fn validate_models_no_model_specified_passes() {
         let wf = make_workflow(vec![make_step("step1", StepMode::Auto, vec![])]);
         let valid = HashSet::from(["haiku".to_string()]);
-        assert!(validate_models(&wf, &valid).is_ok());
+        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_ok());
     }
 
     #[test]
@@ -1941,6 +2028,44 @@ mod tests {
             None,
         )]);
         let valid = HashSet::from(["haiku".to_string()]);
-        assert!(validate_models(&wf, &valid).is_ok());
+        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_ok());
+    }
+
+    #[test]
+    fn validate_models_rejects_empty_model_before_registry_check() {
+        // 形式不正（空文字）は registry に含まれるかにかかわらず拒否される。
+        // 未登録（UnknownModel）と区別するため InvalidModelFormat として報告される。
+        let wf = make_workflow(vec![Step {
+            model: Some(String::new()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        // valid_models に空文字を含めても形式検証で先に弾く
+        let valid = HashSet::from([String::new(), "haiku".to_string()]);
+        let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::InvalidModelFormat { ref step, ref value, .. }
+                if step == "step1" && value.is_empty()
+        ));
+    }
+
+    #[test]
+    fn validate_models_rejects_whitespace_only_model() {
+        let wf = make_workflow(vec![Step {
+            model: Some("   ".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        let valid = HashSet::from(["   ".to_string()]);
+        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_err());
+    }
+
+    #[test]
+    fn validate_models_rejects_control_character_model() {
+        let wf = make_workflow(vec![Step {
+            model: Some("a\u{0001}b".to_string()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        let valid = HashSet::from(["a\u{0001}b".to_string()]);
+        assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_err());
     }
 }

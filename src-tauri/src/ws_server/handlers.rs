@@ -527,7 +527,7 @@ pub(super) async fn handle_agent_model_set_request(
 ) -> Option<WsMessage> {
     use tauri::Manager;
 
-    let result = if let Some(app) = &state.app_handle {
+    if let Some(app) = &state.app_handle {
         let session_store = app
             .state::<Arc<crate::session::SessionStore>>()
             .inner()
@@ -536,25 +536,58 @@ pub(super) async fn handle_agent_model_set_request(
             .state::<Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
             .inner()
             .clone();
-        crate::agent_sdk::set_agent_model_internal(
-            app,
+        let data_dir = match crate::session::resolve_data_dir(app) {
+            Ok(data_dir) => data_dir,
+            Err(e) => {
+                return Some(agent_model_set_response(req, Err(e)));
+            }
+        };
+        return handle_agent_model_set_request_with_data_dir(
+            req,
+            Some(app),
             &handles,
             &session_store,
             Some(state.get_backend_registry()),
-            &req.session_id,
-            req.model_id.clone(),
+            &data_dir,
         )
-        .await
-    } else {
-        Err("App handle not available".to_string())
-    };
+        .await;
+    }
 
-    Some(WsMessage::AgentModelSetResponse(AgentModelSetResponse {
+    Some(agent_model_set_response(
+        req,
+        Err("App handle not available".to_string()),
+    ))
+}
+
+fn agent_model_set_response(req: &AgentModelSetRequest, result: Result<(), String>) -> WsMessage {
+    WsMessage::AgentModelSetResponse(AgentModelSetResponse {
         success: result.is_ok(),
         session_id: req.session_id.clone(),
         model_id: req.model_id.clone(),
         error: result.err(),
-    }))
+    })
+}
+
+async fn handle_agent_model_set_request_with_data_dir(
+    req: &AgentModelSetRequest,
+    app: Option<&tauri::AppHandle>,
+    handles: &Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>,
+    session_store: &Arc<crate::session::SessionStore>,
+    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    data_dir: &std::path::Path,
+) -> Option<WsMessage> {
+    let result = crate::agent_sdk::set_agent_model_internal_with_data_dir(
+        app,
+        handles,
+        session_store,
+        registry,
+        data_dir,
+        &req.session_id,
+        req.model_id.clone(),
+    )
+    .await;
+
+    Some(agent_model_set_response(req, result))
 }
 
 pub(super) async fn handle_pty_kill_request(
@@ -649,6 +682,252 @@ mod tests {
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
         }
+    }
+
+    struct MockBackend {
+        backend_id: String,
+        backend_name: String,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::backends::AgentBackend for MockBackend {
+        fn id(&self) -> &str {
+            &self.backend_id
+        }
+
+        fn name(&self) -> &str {
+            &self.backend_name
+        }
+
+        async fn start_session(
+            &self,
+            _config: crate::backends::SessionConfig,
+        ) -> Result<crate::backends::SessionHandle, String> {
+            Ok(crate::backends::SessionHandle {
+                chat_session_id: "test".to_string(),
+                backend_id: self.backend_id.clone(),
+            })
+        }
+
+        async fn send_message(
+            &self,
+            _session: &crate::backends::SessionHandle,
+            _message: crate::backends::AgentMessage,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn interrupt(&self, _session: &crate::backends::SessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn respond_permission(
+            &self,
+            _session: &crate::backends::SessionHandle,
+            _response: crate::backends::PermissionResponse,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn close_session(
+            &self,
+            _session: &crate::backends::SessionHandle,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn make_model_registry(
+        claude_models: &[&str],
+        codex_models: &[&str],
+    ) -> Arc<crate::backends::AgentBackendRegistry> {
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
+        cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let mut registry = crate::backends::AgentBackendRegistry::new();
+        registry.register(Arc::new(MockBackend {
+            backend_id: "claude".to_string(),
+            backend_name: "Claude".to_string(),
+        }));
+        registry.register(Arc::new(MockBackend {
+            backend_id: "codex".to_string(),
+            backend_name: "Codex".to_string(),
+        }));
+        registry.set_config(config);
+        Arc::new(registry)
+    }
+
+    async fn call_agent_model_set_for_test(
+        session_store: &Arc<crate::session::SessionStore>,
+        registry: &Arc<crate::backends::AgentBackendRegistry>,
+        data_dir: &std::path::Path,
+        session_id: &str,
+        model_id: Option<String>,
+    ) -> AgentModelSetResponse {
+        let req = AgentModelSetRequest {
+            session_id: session_id.to_string(),
+            model_id,
+        };
+        let handles = Arc::new(Mutex::new(crate::agent_sdk::AgentProcessMap::new()));
+        match handle_agent_model_set_request_with_data_dir(
+            &req,
+            None,
+            &handles,
+            session_store,
+            Some(registry),
+            data_dir,
+        )
+        .await
+        {
+            Some(WsMessage::AgentModelSetResponse(resp)) => resp,
+            other => panic!("expected AgentModelSetResponse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_agent_model_set_request_accepts_registered_model_as_ws_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::session::SessionStore::default());
+        let session = crate::session::create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        let registry = make_model_registry(&["claude-4"], &["gpt-5"]);
+
+        let resp = call_agent_model_set_for_test(
+            &session_store,
+            &registry,
+            temp.path(),
+            &session.id,
+            Some("claude-4".to_string()),
+        )
+        .await;
+
+        assert!(resp.success);
+        assert_eq!(resp.session_id, session.id);
+        assert_eq!(resp.model_id.as_deref(), Some("claude-4"));
+        assert_eq!(resp.error, None);
+    }
+
+    #[tokio::test]
+    async fn handle_agent_model_set_request_rejects_unregistered_model_as_ws_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::session::SessionStore::default());
+        let session = crate::session::create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        let registry = make_model_registry(&["claude-4"], &[]);
+
+        let resp = call_agent_model_set_for_test(
+            &session_store,
+            &registry,
+            temp.path(),
+            &session.id,
+            Some("unknown".to_string()),
+        )
+        .await;
+
+        assert!(!resp.success);
+        assert_eq!(resp.session_id, session.id);
+        assert_eq!(resp.model_id.as_deref(), Some("unknown"));
+        assert!(resp.error.unwrap().contains("登録されていません"));
+    }
+
+    #[tokio::test]
+    async fn handle_agent_model_set_request_rejects_other_backend_model_as_ws_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::session::SessionStore::default());
+        let session = crate::session::create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        let registry = make_model_registry(&["claude-4"], &["gpt-5"]);
+
+        let resp = call_agent_model_set_for_test(
+            &session_store,
+            &registry,
+            temp.path(),
+            &session.id,
+            Some("gpt-5".to_string()),
+        )
+        .await;
+
+        assert!(!resp.success);
+        assert_eq!(resp.model_id.as_deref(), Some("gpt-5"));
+        assert!(resp.error.unwrap().contains("別バックエンド"));
+    }
+
+    #[tokio::test]
+    async fn handle_agent_model_set_request_rejects_invalid_model_as_ws_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::session::SessionStore::default());
+        let session = crate::session::create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        let registry = make_model_registry(&["claude-4"], &[]);
+
+        let resp = call_agent_model_set_for_test(
+            &session_store,
+            &registry,
+            temp.path(),
+            &session.id,
+            Some("bad\u{0001}model".to_string()),
+        )
+        .await;
+
+        assert!(!resp.success);
+        assert_eq!(resp.model_id.as_deref(), Some("bad\u{0001}model"));
+        assert!(resp.error.unwrap().contains("制御文字"));
+    }
+
+    #[tokio::test]
+    async fn handle_agent_model_set_request_accepts_null_model_as_clear_ws_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::session::SessionStore::default());
+        let mut session = crate::session::create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        session.selected_model = Some("claude-4".to_string());
+        session_store.save_session(temp.path(), &session).unwrap();
+        let registry = make_model_registry(&["claude-4"], &[]);
+
+        let resp = call_agent_model_set_for_test(
+            &session_store,
+            &registry,
+            temp.path(),
+            &session.id,
+            None,
+        )
+        .await;
+
+        assert!(resp.success);
+        assert_eq!(resp.model_id, None);
+        assert_eq!(resp.error, None);
+        let after = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.selected_model, None);
     }
 
     // --- A. ユーティリティ ---

@@ -1,5 +1,6 @@
 mod auth;
 pub(crate) mod commands;
+pub(crate) mod gateway;
 mod handlers;
 mod http;
 mod rate_limit;
@@ -121,12 +122,21 @@ impl WsServerState {
         let app = self.app_handle.as_ref().ok_or("App handle not available")?;
         let session_store = app.state::<Arc<crate::session::SessionStore>>();
         let data_dir = crate::session::resolve_data_dir(app)?;
-        crate::session::create_session_internal(
-            &session_store,
-            &data_dir,
-            worktree_path,
-            backend_id,
-        )
+        match backend_id {
+            Some(bid) => crate::session::create_session_with_initial_model(
+                &session_store,
+                &self.backend_registry,
+                &data_dir,
+                worktree_path,
+                bid,
+            ),
+            None => crate::session::create_session_internal(
+                &session_store,
+                &data_dir,
+                worktree_path,
+                None,
+            ),
+        }
     }
 
     pub(crate) fn get_repo_paths(&self) -> Vec<String> {

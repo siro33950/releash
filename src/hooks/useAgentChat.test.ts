@@ -623,7 +623,7 @@ describe("useAgentChat", () => {
 			session: mockSession,
 			turnPhase: "idle",
 			selectedModel: "claude-4",
-			availableModels: [{ value: "claude-4", displayName: "Claude 4" }],
+			availableModels: [{ value: "claude-4" }],
 		} as never);
 
 		await act(async () => {
@@ -631,9 +631,7 @@ describe("useAgentChat", () => {
 		});
 
 		expect(result.current.selectedModel).toBe("claude-4");
-		expect(result.current.availableModels).toEqual([
-			{ value: "claude-4", displayName: "Claude 4" },
-		]);
+		expect(result.current.availableModels).toEqual([{ value: "claude-4" }]);
 	});
 
 	it("selectSession restores streaming state from backend response", async () => {
@@ -1002,7 +1000,7 @@ describe("useAgentChat", () => {
 			permissionMode: "acceptEdits",
 			backendId: "codex",
 		};
-		const models = [{ value: "sonnet", displayName: "Claude Sonnet" }];
+		const models = [{ value: "sonnet" }];
 		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
 			newSession as never,
 		);
@@ -1054,7 +1052,7 @@ describe("useAgentChat", () => {
 			session: newSession,
 			turnPhase: "idle",
 			selectedModel: null,
-			availableModels: [{ value: "sonnet", displayName: "Claude Sonnet" }],
+			availableModels: [{ value: "sonnet" }],
 		} as never);
 
 		await act(async () => {
@@ -1110,7 +1108,7 @@ describe("useAgentChat", () => {
 			session: newSession,
 			turnPhase: "idle",
 			selectedModel: null,
-			availableModels: [{ value: "sonnet", displayName: "Claude Sonnet" }],
+			availableModels: [{ value: "sonnet" }],
 		} as never);
 
 		await act(async () => {
@@ -1266,7 +1264,7 @@ describe("useAgentChat", () => {
 			},
 			turnPhase: "idle",
 			selectedModel: null,
-			availableModels: [{ value: "codex-mini", displayName: "Codex Mini" }],
+			availableModels: [{ value: "codex-mini" }],
 		} as never);
 
 		await act(async () => {
@@ -1279,9 +1277,7 @@ describe("useAgentChat", () => {
 			"codex",
 		);
 		expect(result.current.selectedBackendId).toBe("codex");
-		expect(result.current.availableModels).toEqual([
-			{ value: "codex-mini", displayName: "Codex Mini" },
-		]);
+		expect(result.current.availableModels).toEqual([{ value: "codex-mini" }]);
 
 		const newSession = {
 			id: "new-claude",
@@ -1848,7 +1844,7 @@ describe("useAgentChat", () => {
 				},
 				turnPhase: "idle",
 				selectedModel: "claude-4",
-				availableModels: [{ value: "claude-4", displayName: "Claude 4" }],
+				availableModels: [{ value: "claude-4" }],
 			},
 		} as never);
 
@@ -1859,9 +1855,7 @@ describe("useAgentChat", () => {
 		});
 
 		expect(result.current.selectedModel).toBe("claude-4");
-		expect(result.current.availableModels).toEqual([
-			{ value: "claude-4", displayName: "Claude 4" },
-		]);
+		expect(result.current.availableModels).toEqual([{ value: "claude-4" }]);
 	});
 });
 

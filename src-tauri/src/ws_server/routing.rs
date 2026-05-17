@@ -218,13 +218,15 @@ mod tests {
     }
 
     fn test_state_with_registry() -> WsServerState {
-        let config = crate::config::ReleashConfig::default();
+        let mut config = crate::config::ReleashConfig::default();
+        config.agents.claude.models = vec!["opus-4".to_string(), "haiku".to_string()];
         let app_config = Arc::new(crate::config::AppConfig::new(
             config,
             std::path::PathBuf::from("/tmp/test-releash.toml"),
         ));
         let mut registry = crate::backends::AgentBackendRegistry::new();
         registry.register(Arc::new(crate::backends::claude::ClaudeBackend::new()));
+        registry.set_config(app_config.clone());
         WsServerState::new(
             None,
             Arc::new(WsBroadcaster::default()),
@@ -250,6 +252,12 @@ mod tests {
                 assert_eq!(r.backends[0].id, "claude");
                 assert_eq!(r.backends[0].name, "Claude");
                 assert!(r.backends[0].available);
+                let values: Vec<&str> = r.backends[0]
+                    .available_models
+                    .iter()
+                    .map(|m| m.value.as_str())
+                    .collect();
+                assert_eq!(values, vec!["opus-4", "haiku"]);
             }
             _ => panic!("expected BackendListResponse"),
         }

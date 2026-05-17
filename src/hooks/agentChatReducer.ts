@@ -21,6 +21,7 @@ export interface AgentChatState {
 	permissionMode: PermissionMode;
 	pendingPermissions: Record<string, PermissionRequest>;
 	availableModels: ModelInfo[];
+	availableModelsByBackend: Record<string, ModelInfo[]>;
 	sessionModels: Record<string, string | null>;
 	backends: BackendInfo[];
 	selectedBackendId: string | null;
@@ -51,7 +52,12 @@ export type AgentChatAction =
 			messageId: string;
 			parts: MessagePart[];
 	  }
-	| { type: "SET_AVAILABLE_MODELS"; models: ModelInfo[] }
+	| {
+			type: "SET_AVAILABLE_MODELS";
+			models: ModelInfo[];
+			backendId?: string | null;
+	  }
+	| { type: "SET_BACKEND_MODELS"; backendId: string; models: ModelInfo[] }
 	| {
 			type: "SET_SESSION_MODEL";
 			sessionId: string;
@@ -83,6 +89,42 @@ function updateMessageInSession(
 	const messages = msgs.slice();
 	messages[idx] = updater(msgs[idx]);
 	return { ...state, activeSession: { ...state.activeSession, messages } };
+}
+
+function displayBackendId(state: AgentChatState): string | null {
+	return state.activeSession?.backendId ?? state.selectedBackendId;
+}
+
+function modelsForDisplayBackend(
+	state: Pick<
+		AgentChatState,
+		| "activeSession"
+		| "selectedBackendId"
+		| "availableModelsByBackend"
+		| "availableModels"
+	>,
+): ModelInfo[] {
+	const backendId = state.activeSession?.backendId ?? state.selectedBackendId;
+	if (!backendId) return [];
+	return backendId in state.availableModelsByBackend
+		? state.availableModelsByBackend[backendId]
+		: state.availableModels;
+}
+
+function withBackendModels(
+	state: AgentChatState,
+	backendId: string,
+	models: ModelInfo[],
+): AgentChatState {
+	const availableModelsByBackend = {
+		...state.availableModelsByBackend,
+		[backendId]: models,
+	};
+	const nextState = { ...state, availableModelsByBackend };
+	return {
+		...nextState,
+		availableModels: modelsForDisplayBackend(nextState),
+	};
 }
 
 export function reducer(
@@ -158,11 +200,13 @@ export function reducer(
 				parts: action.parts,
 			}));
 		}
-		case "SET_AVAILABLE_MODELS":
-			return {
-				...state,
-				availableModels: action.models,
-			};
+		case "SET_AVAILABLE_MODELS": {
+			const backendId = action.backendId ?? displayBackendId(state);
+			if (!backendId) return { ...state, availableModels: action.models };
+			return withBackendModels(state, backendId, action.models);
+		}
+		case "SET_BACKEND_MODELS":
+			return withBackendModels(state, action.backendId, action.models);
 		case "SET_SESSION_MODEL":
 			return {
 				...state,
@@ -185,18 +229,47 @@ export function reducer(
 			};
 		}
 		case "SET_BACKENDS": {
+			const availableModelsByBackend = action.backends.reduce<
+				Record<string, ModelInfo[]>
+			>(
+				(acc, backend) => {
+					acc[backend.id] = backend.availableModels;
+					return acc;
+				},
+				{ ...state.availableModelsByBackend },
+			);
 			const selectedBackendId =
 				state.selectedBackendId ??
 				action.defaultId ??
 				(action.backends.length > 0 ? action.backends[0].id : null);
-			return {
+			const nextDisplayBackendId =
+				state.activeSession?.backendId ??
+				(state.activeSession ? null : selectedBackendId);
+			const nextState = {
 				...state,
 				backends: action.backends,
 				selectedBackendId,
+				availableModelsByBackend,
+			};
+			return {
+				...nextState,
+				availableModels: nextDisplayBackendId
+					? (availableModelsByBackend[nextDisplayBackendId] ?? [])
+					: state.activeSession
+						? state.availableModels
+						: [],
 			};
 		}
-		case "SET_SELECTED_BACKEND":
-			return { ...state, selectedBackendId: action.backendId };
+		case "SET_SELECTED_BACKEND": {
+			const nextState = {
+				...state,
+				selectedBackendId: action.backendId,
+			};
+			return {
+				...nextState,
+				availableModels: modelsForDisplayBackend(nextState),
+			};
+		}
 	}
 }
 
@@ -210,6 +283,7 @@ export const INITIAL_STATE: AgentChatState = {
 	permissionMode: "acceptEdits",
 	pendingPermissions: {},
 	availableModels: [],
+	availableModelsByBackend: {},
 	sessionModels: {},
 	backends: [],
 	selectedBackendId: null,

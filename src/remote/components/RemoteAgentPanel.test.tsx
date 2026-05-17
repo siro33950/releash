@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,8 +17,8 @@ function renderPanel(
 	const props: ComponentProps<typeof RemoteAgentPanel> = {
 		selectedWorktree: "/repo/worktree",
 		backends: [
-			{ id: "claude", name: "Claude", available: true },
-			{ id: "codex", name: "Codex", available: true },
+			{ id: "claude", name: "Claude", available: true, available_models: [] },
+			{ id: "codex", name: "Codex", available: true, available_models: [] },
 		],
 		selectedBackendId: "codex",
 		backendLoading: false,
@@ -288,7 +288,17 @@ describe("RemoteAgentPanel", () => {
 
 	it("sends interrupt and model set commands for the active session", async () => {
 		const user = userEvent.setup();
-		const { send, emit } = renderPanel();
+		const { send, emit } = renderPanel({
+			backends: [
+				{ id: "claude", name: "Claude", available: true, available_models: [] },
+				{
+					id: "codex",
+					name: "Codex",
+					available: true,
+					available_models: [{ value: "gpt-5.4" }],
+				},
+			],
+		});
 		emit({
 			type: "agent_session_start_response",
 			payload: {
@@ -308,7 +318,7 @@ describe("RemoteAgentPanel", () => {
 		});
 
 		await user.click(screen.getByLabelText("Interrupt agent"));
-		await user.type(screen.getByPlaceholderText("Model"), "gpt-5.4");
+		await user.selectOptions(screen.getByLabelText("Model"), "gpt-5.4");
 		await user.click(screen.getByText("Set"));
 
 		expect(send).toHaveBeenCalledWith({
@@ -319,6 +329,125 @@ describe("RemoteAgentPanel", () => {
 			type: "agent_model_set_request",
 			payload: { session_id: "session-1", model_id: "gpt-5.4" },
 		});
+	});
+
+	it("presents registered model candidates and sends the selected value", async () => {
+		const user = userEvent.setup();
+		const { send, emit } = renderPanel({
+			backends: [
+				{ id: "claude", name: "Claude", available: true, available_models: [] },
+				{
+					id: "codex",
+					name: "Codex",
+					available: true,
+					available_models: [{ value: "gpt-5.4" }],
+				},
+			],
+		});
+		emit({
+			type: "agent_session_start_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				backend_id: "codex",
+			},
+		});
+
+		expect(screen.getByRole("option", { name: "gpt-5.4" })).toBeInTheDocument();
+		expect(screen.queryByRole("option", { name: "Unset" })).toBeNull();
+		await user.selectOptions(screen.getByLabelText("Model"), "gpt-5.4");
+		await user.click(screen.getByText("Set"));
+
+		expect(send).toHaveBeenCalledWith({
+			type: "agent_model_set_request",
+			payload: { session_id: "session-1", model_id: "gpt-5.4" },
+		});
+	});
+
+	it("keeps the model selector visible with zero candidates when backend has no models", () => {
+		const { emit } = renderPanel({
+			backends: [
+				{ id: "claude", name: "Claude", available: true, available_models: [] },
+				{ id: "codex", name: "Codex", available: true, available_models: [] },
+			],
+		});
+		emit({
+			type: "agent_session_start_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				backend_id: "codex",
+			},
+		});
+
+		const modelSelect = screen.getByLabelText("Model");
+		const options = within(modelSelect).queryAllByRole("option");
+		expect(options).toHaveLength(0);
+		expect(screen.queryByRole("option", { name: "Unset" })).toBeNull();
+		expect(screen.queryByRole("option", { name: "gpt-5.4" })).toBeNull();
+	});
+
+	it("sends null model_id only through the clear model action", async () => {
+		const user = userEvent.setup();
+		const { send, emit } = renderPanel();
+		emit({
+			type: "agent_session_start_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				backend_id: "codex",
+			},
+		});
+
+		await user.click(screen.getByLabelText("Clear model"));
+
+		expect(send).toHaveBeenCalledWith({
+			type: "agent_model_set_request",
+			payload: { session_id: "session-1", model_id: null },
+		});
+	});
+
+	it("renders dangerous model identifiers as plain text on remote UI", async () => {
+		// spec: メイン画面・リモート画面のいずれでも、表示時に副作用を起こしうる文字を
+		// 含むモデル識別子は文字列としてのみ表示され、画面上で実行・解釈されない。
+		const user = userEvent.setup();
+		const dangerous = "<script>window.__pwned_remote=true</script>";
+		const { send, emit } = renderPanel({
+			backends: [
+				{ id: "claude", name: "Claude", available: true, available_models: [] },
+				{
+					id: "codex",
+					name: "Codex",
+					available: true,
+					available_models: [{ value: dangerous }],
+				},
+			],
+		});
+		emit({
+			type: "agent_session_start_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				backend_id: "codex",
+			},
+		});
+
+		expect(screen.getByRole("option", { name: dangerous })).toBeInTheDocument();
+		await user.selectOptions(screen.getByLabelText("Model"), dangerous);
+		await user.click(screen.getByText("Set"));
+
+		// 登録済み候補として提示された識別子はそのまま payload に乗る。
+		expect(send).toHaveBeenCalledWith({
+			type: "agent_model_set_request",
+			payload: { session_id: "session-1", model_id: dangerous },
+		});
+
+		// option のテキストとして表示されるため、script 実行や onerror 属性の挿入は発生しない。
+		expect(document.querySelectorAll("script").length).toBe(0);
+		expect(document.querySelectorAll("[onerror]").length).toBe(0);
+		expect(
+			(window as unknown as { __pwned_remote?: boolean }).__pwned_remote,
+		).toBeUndefined();
 	});
 
 	it("shows errors from failed agent responses", () => {

@@ -312,6 +312,12 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::UnknownModel { step, .. } => {
             (Some(step.clone()), Some("model".to_string()))
         }
+        ValidationError::InvalidModelFormat { step, .. } => {
+            (Some(step.clone()), Some("model".to_string()))
+        }
+        ValidationError::ModelResolutionFailed { step, .. } => {
+            (Some(step.clone()), Some("model".to_string()))
+        }
     }
 }
 

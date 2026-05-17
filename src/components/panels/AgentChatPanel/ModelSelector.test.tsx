@@ -3,13 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ModelSelector } from "./ModelSelector";
 
-const models = [
-	{ value: "claude-4", displayName: "Claude 4" },
-	{ value: "claude-3.5", displayName: "Claude 3.5 Sonnet" },
-];
+const models = [{ value: "claude-4" }, { value: "claude-3.5" }];
 
 describe("ModelSelector", () => {
-	it("shows 'Auto' when no model is selected", () => {
+	it("shows fallback label when no model is selected", () => {
 		render(
 			<ModelSelector
 				models={models}
@@ -19,11 +16,11 @@ describe("ModelSelector", () => {
 			/>,
 		);
 		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
-			"Auto",
+			"未指定",
 		);
 	});
 
-	it("shows selected model name when a model is selected", () => {
+	it("shows selected model value when a model is selected", () => {
 		render(
 			<ModelSelector
 				models={models}
@@ -33,7 +30,7 @@ describe("ModelSelector", () => {
 			/>,
 		);
 		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
-			"Claude 4",
+			"claude-4",
 		);
 	});
 
@@ -50,7 +47,7 @@ describe("ModelSelector", () => {
 		);
 
 		await user.click(screen.getByTestId("model-selector-trigger"));
-		await user.click(screen.getByText("Claude 4"));
+		await user.click(screen.getByText("claude-4"));
 		expect(onModelChange).toHaveBeenCalledWith("claude-4");
 	});
 
@@ -66,7 +63,7 @@ describe("ModelSelector", () => {
 		expect(screen.getByTestId("model-selector-trigger")).toBeEnabled();
 	});
 
-	it("calls onModelChange with null when Auto is selected", async () => {
+	it("does not include an Auto fallback option in the dropdown", async () => {
 		const user = userEvent.setup();
 		const onModelChange = vi.fn();
 		render(
@@ -79,11 +76,43 @@ describe("ModelSelector", () => {
 		);
 
 		await user.click(screen.getByTestId("model-selector-trigger"));
-		await user.click(screen.getByText("Auto"));
+		// 候補に "Auto" は含まれない（暗黙のフォールバック候補を提示しない）
+		expect(screen.queryByText("Auto")).toBeNull();
+	});
+
+	it("calls onModelChange with null when the unset option is selected", async () => {
+		const user = userEvent.setup();
+		const onModelChange = vi.fn();
+		render(
+			<ModelSelector
+				models={models}
+				currentModelId="claude-4"
+				onModelChange={onModelChange}
+				disabled={false}
+			/>,
+		);
+
+		await user.click(screen.getByTestId("model-selector-trigger"));
+		await user.click(screen.getByTestId("model-selector-clear"));
 		expect(onModelChange).toHaveBeenCalledWith(null);
 	});
 
-	it("disables trigger when disabled is true", () => {
+	it("does not show the unset option when no model is currently selected", async () => {
+		const user = userEvent.setup();
+		render(
+			<ModelSelector
+				models={models}
+				currentModelId={null}
+				onModelChange={vi.fn()}
+				disabled={false}
+			/>,
+		);
+
+		await user.click(screen.getByTestId("model-selector-trigger"));
+		expect(screen.queryByTestId("model-selector-clear")).toBeNull();
+	});
+
+	it("disables trigger when disabled prop is true", () => {
 		render(
 			<ModelSelector
 				models={models}
@@ -95,7 +124,7 @@ describe("ModelSelector", () => {
 		expect(screen.getByTestId("model-selector-trigger")).toBeDisabled();
 	});
 
-	it("disables trigger when models list is empty", () => {
+	it("keeps trigger enabled when models list is empty", () => {
 		render(
 			<ModelSelector
 				models={[]}
@@ -104,6 +133,67 @@ describe("ModelSelector", () => {
 				disabled={false}
 			/>,
 		);
-		expect(screen.getByTestId("model-selector-trigger")).toBeDisabled();
+		// 空一覧でも選択UI 自体は開ける（仕様: モデル一覧が空でも選択UIは提示）
+		expect(screen.getByTestId("model-selector-trigger")).toBeEnabled();
+	});
+
+	it("shows zero candidates when models list is empty", async () => {
+		const user = userEvent.setup();
+		render(
+			<ModelSelector
+				models={[]}
+				currentModelId={null}
+				onModelChange={vi.fn()}
+				disabled={false}
+			/>,
+		);
+
+		await user.click(screen.getByTestId("model-selector-trigger"));
+		// 候補は 0 件として提示され、暗黙のフォールバック候補や代替文言は含まれない。
+		expect(screen.queryAllByRole("menuitemradio")).toHaveLength(0);
+		expect(screen.queryByText("Auto")).toBeNull();
+		expect(screen.queryByText("候補なし")).toBeNull();
+	});
+
+	it("renders dangerous model identifiers as plain text", async () => {
+		// spec: 表示時に副作用を起こしうる文字を含むモデル識別子は文字列として
+		// のみ表示され、画面上で実行・解釈されない。
+		const user = userEvent.setup();
+		const dangerous = "<script>window.__pwned=true</script>";
+		const onerrorImg = '" onerror="alert(1)';
+		const danger = [{ value: dangerous }, { value: onerrorImg }];
+
+		render(
+			<ModelSelector
+				models={danger}
+				currentModelId={dangerous}
+				onModelChange={vi.fn()}
+				disabled={false}
+			/>,
+		);
+
+		const trigger = screen.getByTestId("model-selector-trigger");
+		expect(trigger).toHaveTextContent(dangerous);
+
+		await user.click(trigger);
+
+		// candidate も textContent として表示され、script タグ / onerror 属性が
+		// DOM 上に副作用を持つ要素として現れない。
+		const items = screen.getAllByRole("menuitemradio");
+		const itemTexts = items.map((el) => el.textContent ?? "");
+		expect(itemTexts).toContain(dangerous);
+		expect(itemTexts).toContain(onerrorImg);
+
+		// script タグや onerror 属性付き img が DOM に挿入されていない（React の
+		// 既定のテキストエスケープにより文字列として描画される）。
+		// onerror is technically a valid attribute name on many HTML elements,
+		// so we only assert that no element actually carries it as an attribute
+		// or that no <script> tag appears in the rendered tree.
+		expect(document.querySelectorAll("script").length).toBe(0);
+		expect(document.querySelectorAll("[onerror]").length).toBe(0);
+		// And the dangerous payload did not run.
+		expect(
+			(window as unknown as { __pwned?: boolean }).__pwned,
+		).toBeUndefined();
 	});
 });

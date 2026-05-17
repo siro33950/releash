@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
-	SUPPORTED_CODEX_MODELS,
 	codexEventToBridgeMessages,
 	createThreadOptions,
 } from "./codex-sdk-bridge-utils.mjs";
@@ -113,7 +112,8 @@ export class CodexBridgeRuntime {
 		this.currentThreadId = this.initialResumeThreadId;
 		this.currentThread = this.createThread();
 
-		this.emit({ type: "supported_models", models: SUPPORTED_CODEX_MODELS });
+		// Codex のモデル一覧は起動時 CLI 同期（`codex debug models`）で config.toml に
+		// 反映するため、bridge からは supported_models を emit しない（ハードコード一覧の撤去）。
 		this.emit({
 			type: "session_ready",
 			session_id: this.currentThreadId,

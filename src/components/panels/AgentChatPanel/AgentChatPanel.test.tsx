@@ -308,8 +308,8 @@ describe("AgentChatPanel session tabs", () => {
 				backendId: "claude",
 			},
 			backends: [
-				{ id: "claude", name: "Claude", available: true },
-				{ id: "codex", name: "Codex", available: true },
+				{ id: "claude", name: "Claude", available: true, availableModels: [] },
+				{ id: "codex", name: "Codex", available: true, availableModels: [] },
 			],
 			selectedBackendId: "claude",
 		});
@@ -343,8 +343,8 @@ describe("AgentChatPanel session tabs", () => {
 				backendId: "claude",
 			},
 			backends: [
-				{ id: "claude", name: "Claude", available: true },
-				{ id: "codex", name: "Codex", available: true },
+				{ id: "claude", name: "Claude", available: true, availableModels: [] },
+				{ id: "codex", name: "Codex", available: true, availableModels: [] },
 			],
 			selectedBackendId: "claude",
 		});

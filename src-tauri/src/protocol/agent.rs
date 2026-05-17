@@ -34,6 +34,26 @@ pub struct BackendInfoMsg {
     pub id: String,
     pub name: String,
     pub available: bool,
+    pub available_models: Vec<ModelInfoMsg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInfoMsg {
+    pub value: String,
+}
+
+impl From<crate::backends::ModelInfo> for ModelInfoMsg {
+    fn from(info: crate::backends::ModelInfo) -> Self {
+        Self { value: info.value }
+    }
+}
+
+impl From<&crate::backends::ModelInfo> for ModelInfoMsg {
+    fn from(info: &crate::backends::ModelInfo) -> Self {
+        Self {
+            value: info.value.clone(),
+        }
+    }
 }
 
 impl From<crate::backends::BackendInfo> for BackendInfoMsg {
@@ -42,8 +62,19 @@ impl From<crate::backends::BackendInfo> for BackendInfoMsg {
             id: info.id,
             name: info.name,
             available: info.available,
+            available_models: info
+                .available_models
+                .into_iter()
+                .map(ModelInfoMsg::from)
+                .collect(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackendModelsUpdated {
+    pub backend_id: String,
+    pub available_models: Vec<ModelInfoMsg>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

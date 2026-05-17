@@ -1,8 +1,10 @@
 import { renderHook } from "@testing-library/react";
 import { describe, expect, it, type Mock, vi } from "vitest";
+import type { AgentSdkListenerRefs } from "./useAgentSdkListeners";
 
 type ListenCallback = (event: { payload: unknown }) => void;
 type UnlistenFn = Mock;
+type TestRefs = Omit<AgentSdkListenerRefs, "dispatch"> & { dispatch: Mock };
 
 let listenResolvers: Array<{
 	resolve: (fn: UnlistenFn) => void;
@@ -39,7 +41,7 @@ vi.mock("./useSessionStore", async (importOriginal) => {
 
 const { useAgentSdkListeners } = await import("./useAgentSdkListeners");
 
-function makeRefs() {
+function makeRefs(): TestRefs {
 	return {
 		dispatch: vi.fn(),
 		activeSessionRef: { current: null },
@@ -99,7 +101,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		}
 	});
 
-	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed, agent-permission-mode-changed, agent-models-updated", () => {
+	it("registers listeners for agent-sdk-message, agent-session-state-changed, agent-streaming-updated, agent-pending-message-consumed, agent-permission-mode-changed, agent-models-updated, agent-backend-models-updated", () => {
 		listenResolvers = [];
 		const refs = makeRefs();
 
@@ -112,6 +114,7 @@ describe("useAgentSdkListeners cancelled flag", () => {
 		expect(eventNames).toContain("agent-pending-message-consumed");
 		expect(eventNames).toContain("agent-permission-mode-changed");
 		expect(eventNames).toContain("agent-models-updated");
+		expect(eventNames).toContain("agent-backend-models-updated");
 		expect(eventNames).not.toContain("agent-streaming-started");
 		expect(eventNames).not.toContain("agent-query-completed");
 	});
@@ -820,10 +823,11 @@ describe("agent-pending-message-consumed event", () => {
 });
 
 describe("agent-models-updated event", () => {
-	it("dispatches SET_AVAILABLE_MODELS and SET_SESSION_MODEL when agent-models-updated is received", () => {
+	it("dispatches SET_AVAILABLE_MODELS and SET_SESSION_MODEL when agent-models-updated is received for the active session", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-1" } as never;
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -831,10 +835,7 @@ describe("agent-models-updated event", () => {
 		const cb = listenCallbacks.get("agent-models-updated");
 		expect(cb).toBeDefined();
 
-		const models = [
-			{ value: "claude-4", displayName: "Claude 4" },
-			{ value: "claude-3.5-sonnet", displayName: "Claude 3.5 Sonnet" },
-		];
+		const models = [{ value: "claude-4" }, { value: "claude-3.5-sonnet" }];
 
 		cb?.({
 			payload: {
@@ -848,6 +849,36 @@ describe("agent-models-updated event", () => {
 			type: "SET_AVAILABLE_MODELS",
 			models,
 		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_SESSION_MODEL",
+			sessionId: "session-1",
+			modelId: "claude-4",
+		});
+	});
+
+	it("does not dispatch SET_AVAILABLE_MODELS for another session", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.activeSessionRef.current = { id: "session-2" } as never;
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-models-updated");
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				available_models: [{ value: "claude-4" }],
+				selected_model: "claude-4",
+			},
+		});
+
+		const availCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) =>
+				(call[0] as { type: string }).type === "SET_AVAILABLE_MODELS",
+		);
+		expect(availCalls).toHaveLength(0);
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_SESSION_MODEL",
 			sessionId: "session-1",
@@ -876,6 +907,94 @@ describe("agent-models-updated event", () => {
 			type: "SET_SESSION_MODEL",
 			sessionId: "session-1",
 			modelId: null,
+		});
+	});
+});
+
+describe("agent-backend-models-updated event", () => {
+	it("dispatches SET_BACKEND_MODELS for backend-wide model updates", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-backend-models-updated");
+		expect(cb).toBeDefined();
+
+		const models = [{ value: "gpt-5.5" }, { value: "o3" }];
+
+		cb?.({
+			payload: {
+				backend_id: "codex",
+				available_models: models,
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_BACKEND_MODELS",
+			backendId: "codex",
+			models,
+		});
+		// session 単位の payload と異なり、SET_SESSION_MODEL は dispatch しない。
+		const sessionModelCalls = refs.dispatch.mock.calls.filter(
+			(call: unknown[]) =>
+				(call[0] as { type: string }).type === "SET_SESSION_MODEL",
+		);
+		expect(sessionModelCalls).toHaveLength(0);
+	});
+
+	it("keeps backend-wide updates even when another active session backend is selected", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.activeSessionRef.current = {
+			id: "session-1",
+			backendId: "claude",
+		} as never;
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-backend-models-updated");
+		expect(cb).toBeDefined();
+
+		cb?.({
+			payload: {
+				backend_id: "codex",
+				available_models: [{ value: "gpt-5.5" }],
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_BACKEND_MODELS",
+			backendId: "codex",
+			models: [{ value: "gpt-5.5" }],
+		});
+	});
+
+	it("keeps backend-wide updates when no active session is set", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.activeSessionRef.current = null;
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-backend-models-updated");
+		cb?.({
+			payload: {
+				backend_id: "codex",
+				available_models: [{ value: "gpt-5.5" }],
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_BACKEND_MODELS",
+			backendId: "codex",
+			models: [{ value: "gpt-5.5" }],
 		});
 	});
 });

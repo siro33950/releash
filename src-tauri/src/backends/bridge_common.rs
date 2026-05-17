@@ -13,15 +13,20 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
 
+use crate::backends::model_catalog_sync::{
+    build_agent_models_updated_payload, handle_supported_models_message,
+};
 use crate::backends::runtime_coordinator::{
     acquire_spawn_session_guard, clear_pending_turn_starting, clear_session_closing,
     is_pending_turn_starting, mark_pending_turn_starting, mark_session_closing,
     prune_session_runtime_lock, wait_until_session_close_finished,
 };
 use crate::backends::{BackendRuntimeConfig, ImageAttachment, ModelInfo};
+#[cfg(test)]
+use crate::session::create_session_internal;
 use crate::session::{
-    add_message_internal, create_session_internal, now_timestamp, resolve_data_dir, ChatMessage,
-    ChatSession, GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
+    add_message_internal, now_timestamp, resolve_data_dir, ChatMessage, ChatSession,
+    GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
 };
 
 pub(crate) use crate::backends::runtime_coordinator::{
@@ -182,37 +187,6 @@ async fn agent_session_has_pending_message(
         .is_some_and(|proc| proc.pending_message.is_some())
 }
 
-pub(crate) fn available_models_path(app_data_dir: &Path, backend_id: &str) -> PathBuf {
-    if backend_id == CLAUDE_BACKEND_ID {
-        app_data_dir.join("available_models.json")
-    } else {
-        app_data_dir.join(format!("available_models_{backend_id}.json"))
-    }
-}
-
-pub(crate) fn save_available_models(
-    app_data_dir: &Path,
-    backend_id: &str,
-    models: &[ModelInfo],
-) -> Result<(), String> {
-    std::fs::create_dir_all(app_data_dir).map_err(|e| format!("Failed to create data dir: {e}"))?;
-    let file = available_models_path(app_data_dir, backend_id);
-    let json =
-        serde_json::to_string(models).map_err(|e| format!("Failed to serialize models: {e}"))?;
-    let tmp = file.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| format!("Failed to write models temp file: {e}"))?;
-    std::fs::rename(&tmp, &file).map_err(|e| format!("Failed to rename models temp file: {e}"))?;
-    Ok(())
-}
-
-pub(crate) fn load_available_models(app_data_dir: &Path, backend_id: &str) -> Vec<ModelInfo> {
-    let file = available_models_path(app_data_dir, backend_id);
-    match std::fs::read_to_string(&file) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => Vec::new(),
-    }
-}
-
 pub(crate) fn bridge_script_names(backend_id: &str) -> (&'static str, &'static str) {
     match backend_id {
         CODEX_BACKEND_ID => (
@@ -296,25 +270,21 @@ fn backend_runtime_config(app: &tauri::AppHandle, backend_id: &str) -> BackendRu
         .unwrap_or_default()
 }
 
-fn load_available_models_for_backend(app_data_dir: &Path, backend_id: &str) -> Vec<ModelInfo> {
-    load_available_models(app_data_dir, backend_id)
-}
-
-async fn available_models_for_backend(
-    app_data_dir: &Path,
+/// 指定 backend の登録モデル一覧を config.toml から取得する。
+///
+/// - registry 未指定（テスト等）: `Ok(Vec::new())`
+/// - registry の lookup が失敗（config 未紐付け／schema 未対応／lock 失敗）: `Err`
+///
+/// 「登録済みモデルが 0 件」と infrastructure 故障を呼び出し側で区別できるよう
+/// 必ず Err を伝播する。表示専用経路は warn + 既存値維持で空上書きを防ぐこと、
+/// 永続化に絡む経路は Err をそのまま呼び出し元に伝えること。
+fn available_models_for_backend(
     backend_id: &str,
     registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
-) -> Vec<ModelInfo> {
-    let cached = load_available_models_for_backend(app_data_dir, backend_id);
-    if !cached.is_empty() {
-        return cached;
-    }
+) -> Result<Vec<ModelInfo>, String> {
     match registry {
-        Some(registry) => registry
-            .available_models(backend_id)
-            .await
-            .unwrap_or_default(),
-        None => Vec::new(),
+        Some(registry) => registry.available_models(backend_id),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -1787,53 +1757,16 @@ async fn spawn_bridge_process(
                         let _ = app_stdout.emit("agent-sdk-message", &msg);
                     }
                     "supported_models" => {
-                        // Parse models from Bridge and store in AgentProcess
-                        let models: Vec<ModelInfo> = msg
-                            .get("models")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|m| {
-                                        let value =
-                                            m.get("value").and_then(|v| v.as_str())?.to_string();
-                                        let display_name = m
-                                            .get("displayName")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or(&value)
-                                            .to_string();
-                                        Some(ModelInfo {
-                                            value,
-                                            display_name,
-                                        })
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-
-                        let (selected_model, backend_id) = {
-                            let mut map = handles_stdout.lock().await;
-                            if let Some(proc) = map.get_mut(&csid_stdout) {
-                                proc.available_models = models.clone();
-                                (proc.selected_model.clone(), proc.backend_id.clone())
-                            } else {
-                                (None, CLAUDE_BACKEND_ID.to_string())
-                            }
-                        };
-
-                        // Persist models per backend
-                        if let Ok(data_dir) = resolve_data_dir(&app_stdout) {
-                            let _ = save_available_models(&data_dir, &backend_id, &models);
-                        }
-
-                        // Emit models to frontend
-                        let _ = app_stdout.emit(
-                            "agent-models-updated",
-                            serde_json::json!({
-                                "chat_session_id": csid_stdout,
-                                "available_models": models,
-                                "selected_model": selected_model,
-                            }),
-                        );
+                        let registry_state =
+                            app_stdout.try_state::<Arc<crate::backends::AgentBackendRegistry>>();
+                        handle_supported_models_message(
+                            Some(&app_stdout),
+                            &handles_stdout,
+                            registry_state.as_deref().map(|arc| arc.as_ref()),
+                            &csid_stdout,
+                            &msg,
+                        )
+                        .await;
                     }
                     "session_cleared" => {
                         {
@@ -2537,29 +2470,23 @@ async fn get_session_internal_with_data_dir(
     match session {
         None => Ok(None),
         Some(mut session) => {
-            let (turn_phase, raw_parts, streaming_mid, proc_models) = {
+            let (turn_phase, raw_parts, streaming_mid) = {
                 let map = handles.lock().await;
                 if let Some(proc) = map.get(session_id) {
                     // Override persisted mode with runtime mode (includes transient "plan")
                     session.permission_mode = proc.current_permission_mode.clone();
                     let phase = proc.turn_phase;
-                    let models = if !proc.available_models.is_empty() {
-                        proc.available_models.clone()
-                    } else {
-                        Vec::new()
-                    };
                     if proc.state == BridgeState::Streaming {
                         (
                             phase,
                             proc.streaming_parts.clone(),
                             proc.streaming_message_id.clone(),
-                            models,
                         )
                     } else {
-                        (phase, Vec::new(), None, models)
+                        (phase, Vec::new(), None)
                     }
                 } else {
-                    (TurnPhase::Idle, Vec::new(), None, Vec::new())
+                    (TurnPhase::Idle, Vec::new(), None)
                 }
             };
 
@@ -2574,13 +2501,19 @@ async fn get_session_internal_with_data_dir(
                 }
             }
 
-            // Use process models (latest from SDK) if available, otherwise fall back to global cache
-            let available_models = if !proc_models.is_empty() {
-                proc_models
-            } else {
-                let backend_id = session.backend_id.as_deref().unwrap_or(CLAUDE_BACKEND_ID);
-                available_models_for_backend(data_dir, backend_id, registry).await
-            };
+            // 永続的なモデル一覧の owner は config.toml 単一。プロセス内キャッシュは
+            // 参照しない（プロセス側の `proc.available_models` は emit 整合用にのみ
+            // 維持される）。
+            // get_session は表示専用経路のため、infrastructure 故障で取得に失敗した場合は
+            // warn を残して空一覧を返し、上位の UI 描画を妨げない。
+            let backend_id = session.backend_id.as_deref().unwrap_or(CLAUDE_BACKEND_ID);
+            let available_models =
+                available_models_for_backend(backend_id, registry).unwrap_or_else(|e| {
+                    log::warn!(
+                        "get_session: backend '{backend_id}' のモデル一覧取得に失敗（空一覧で応答）: {e}"
+                    );
+                    Vec::new()
+                });
 
             Ok(Some(GetSessionResponse {
                 session,
@@ -2668,8 +2601,8 @@ async fn set_session_backend_internal(
         ));
     }
 
+    session.selected_model = registry.initial_model_for(&resolved_backend_id);
     session.backend_id = Some(resolved_backend_id);
-    session.selected_model = None;
     session.updated_at = now_timestamp();
     session_store.save_session(data_dir, &session)?;
     remove_stale_unstarted_agent_process(handles, data_dir, chat_session_id).await;
@@ -2725,24 +2658,33 @@ pub async fn get_session(
 }
 
 /// Retrieve persisted session fields needed for spawning a Bridge process.
+///
+/// `selected_model` は永続化されている値をそのまま採用する。
+/// 初期モデルはセッション作成時 (`create_session_with_initial_model`) に解決して
+/// 永続化されているため、spawn 経路では「`selected_model == None` は常に
+/// 明示的に未指定」を意味する。暗黙の既定モデルへのフォールバックはしない。
 fn get_persisted_spawn_info(
     app: &tauri::AppHandle,
     session_store: &SessionStore,
     chat_session_id: &str,
 ) -> (Option<String>, Option<String>, String) {
-    let mut info =
-        persisted_spawn_info_from_session(resolve_data_dir(app).ok().and_then(|data_dir| {
-            session_store
-                .get_session(&data_dir, chat_session_id)
-                .ok()
-                .flatten()
-        }));
+    let persisted = resolve_data_dir(app).ok().and_then(|data_dir| {
+        session_store
+            .get_session(&data_dir, chat_session_id)
+            .ok()
+            .flatten()
+    });
+    resolve_spawn_info(persisted)
+}
 
-    if info.1.is_none() {
-        info.1 = backend_runtime_config(app, &info.2).initial_model;
-    }
-
-    info
+/// 永続化セッションから spawn 情報を組み立てる純粋関数。
+///
+/// `selected_model == None` は「明示的に未指定」を意味し、初期モデルへのフォールバックは
+/// この関数では行わない（fallback はセッション作成時にのみ適用される）。
+pub(crate) fn resolve_spawn_info(
+    persisted: Option<ChatSession>,
+) -> (Option<String>, Option<String>, String) {
+    persisted_spawn_info_from_session(persisted)
 }
 
 fn persisted_spawn_info_from_session(
@@ -3377,7 +3319,7 @@ pub(crate) async fn set_active_process_model(
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
     model_id: Option<String>,
-) -> Result<Option<Vec<ModelInfo>>, String> {
+) -> Result<(), String> {
     let data = build_set_model_command(model_id.as_deref());
     let mut map = handles.lock().await;
     if let Some(proc) = map.get_mut(chat_session_id) {
@@ -3390,10 +3332,8 @@ pub(crate) async fn set_active_process_model(
             .await
             .map_err(|e| format!("Failed to flush setModel: {e}"))?;
         proc.selected_model = model_id;
-        Ok(Some(proc.available_models.clone()))
-    } else {
-        Ok(None)
     }
+    Ok(())
 }
 
 pub(crate) async fn set_agent_model_internal(
@@ -3404,41 +3344,122 @@ pub(crate) async fn set_agent_model_internal(
     chat_session_id: &str,
     model_id: Option<String>,
 ) -> Result<(), String> {
+    let data_dir = resolve_data_dir(app)?;
+    set_agent_model_internal_with_data_dir(
+        Some(app),
+        handles,
+        session_store,
+        registry,
+        &data_dir,
+        chat_session_id,
+        model_id,
+    )
+    .await
+}
+
+/// `set_agent_model_internal` のテスト用バリエーション。
+/// `tauri::AppHandle` の代わりに `data_dir` を直接受け取り、emit は AppHandle が
+/// 渡された場合のみ行う。検証ロジックの単体テストに用いる。
+pub(crate) async fn set_agent_model_internal_with_data_dir(
+    app: Option<&tauri::AppHandle>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    registry: Option<&Arc<crate::backends::AgentBackendRegistry>>,
+    data_dir: &Path,
+    chat_session_id: &str,
+    model_id: Option<String>,
+) -> Result<(), String> {
+    let mut session = session_store
+        .get_session(data_dir, chat_session_id)?
+        .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
+    let backend_id = session
+        .backend_id
+        .clone()
+        .unwrap_or_else(|| CLAUDE_BACKEND_ID.to_string());
+
+    // 非 null のみ検証。`model_id=None` は選択解除として受け入れ、暗黙のフォールバックは行わない。
+    if let Some(model) = model_id.as_deref() {
+        crate::domain::agent_session::ModelId::parse(model)?;
+        if let Some(reg) = registry {
+            let session_models: Vec<String> = reg.config_models_for(&backend_id).map_err(|e| {
+                log::warn!(
+                    "set_agent_model: backend '{backend_id}' の登録済みモデル一覧取得に失敗: {e}"
+                );
+                format!("バックエンド '{backend_id}' の登録済みモデル一覧を取得できません: {e}")
+            })?;
+            if !session_models.iter().any(|v| v == model) {
+                // 「未登録」を伝える前に、別バックエンドに登録されていないかを問い合わせる。
+                // - Ok(Some(other)) かつ other != current backend: backend mismatch として返す
+                // - Ok(Some(same)) / Ok(None): 当該 backend への未登録として返す
+                // - Err: infrastructure 故障。warn を残して当該 backend への未登録として返す
+                //   （別バックエンドに登録されているかは判定できないため、ヒントは付けない）
+                match reg.resolve_backend_for_model(model) {
+                    Ok(Some(bid)) if bid != backend_id => {
+                        return Err(format!(
+                            "モデル '{model}' はバックエンド '{backend_id}' に登録されていません (別バックエンド '{bid}' に登録)"
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::warn!(
+                            "set_agent_model: モデル '{model}' の所属バックエンド解決に失敗（未登録として扱う）: {e}"
+                        );
+                    }
+                }
+                return Err(format!(
+                    "モデル '{model}' はバックエンド '{backend_id}' に登録されていません"
+                ));
+            }
+        }
+    }
+
     // 1. Send setModel command to Bridge + update process state when the process is active.
-    let available_models =
-        set_active_process_model(handles, chat_session_id, model_id.clone()).await?;
+    //    proc.available_models は config 単一 owner に追従させるため、active process が
+    //    存在する場合も config 由来の最新値で同期する。
+    //    infrastructure 故障時は Err を伝播し、proc キャッシュを空一覧で上書きしない。
+    let models_from_config = available_models_for_backend(&backend_id, registry).map_err(|e| {
+        log::warn!(
+            "set_agent_model: backend '{backend_id}' のモデル一覧取得に失敗したため proc キャッシュ同期を中止: {e}"
+        );
+        format!("バックエンド '{backend_id}' のモデル一覧を取得できません: {e}")
+    })?;
+    sync_active_process_available_models(handles, chat_session_id, &models_from_config).await;
+    set_active_process_model(handles, chat_session_id, model_id.clone()).await?;
 
     // 2. Persist to ChatSession
-    let data_dir = resolve_data_dir(app)?;
-    let mut session = session_store
-        .get_session(&data_dir, chat_session_id)?
-        .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
     session.selected_model = model_id.clone();
     session.updated_at = now_timestamp();
-    session_store.save_session(&data_dir, &session)?;
+    session_store.save_session(data_dir, &session)?;
 
-    // 3. Always emit event to keep frontend in sync (use global cache when process not running)
-    {
+    // 3. Always emit event to keep frontend in sync.
+    //    供給元は常に config.toml（registry 経由）に統一する。
+    if let Some(app) = app {
         use tauri::Emitter;
-        let backend_id = session.backend_id.as_deref().unwrap_or(CLAUDE_BACKEND_ID);
-        let models = available_models
-            .unwrap_or_else(|| load_available_models_for_backend(&data_dir, backend_id));
-        let models = if models.is_empty() {
-            available_models_for_backend(&data_dir, backend_id, registry).await
-        } else {
-            models
-        };
         let _ = app.emit(
             "agent-models-updated",
-            serde_json::json!({
-                "chat_session_id": chat_session_id,
-                "available_models": models,
-                "selected_model": model_id,
-            }),
+            build_agent_models_updated_payload(
+                chat_session_id,
+                &models_from_config,
+                model_id.as_deref(),
+            ),
         );
     }
 
     Ok(())
+}
+
+/// active process の `available_models` キャッシュを config 由来の最新値で同期する。
+/// 永続的なモデル一覧の owner は config.toml 単一であり、process 側のキャッシュは
+/// emit 整合用にのみ維持する。
+async fn sync_active_process_available_models(
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    chat_session_id: &str,
+    models: &[ModelInfo],
+) {
+    let mut map = handles.lock().await;
+    if let Some(proc) = map.get_mut(chat_session_id) {
+        proc.available_models = models.to_vec();
+    }
 }
 
 #[tauri::command]
@@ -3584,11 +3605,12 @@ async fn prepare_send_agent_message_internal(
         ensure_session_backend_selected(session_store, registry, data_dir, session)?
     } else {
         let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
-        create_session_internal(
+        crate::session::create_session_with_initial_model(
             session_store,
+            registry,
             data_dir,
             &worktree_path,
-            Some(resolved_backend_id),
+            resolved_backend_id,
         )?
     };
     let sid = session.id.clone();
@@ -4161,6 +4183,7 @@ pub(crate) async fn start_agent_turn_internal_locked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backends::model_catalog_sync::*;
     use crate::backends::{
         AgentBackend, AgentBackendRegistry, AgentMessage, PermissionResponse, SessionConfig,
         SessionHandle,
@@ -4177,7 +4200,7 @@ mod tests {
 
     struct MockModelBackend {
         backend_id: String,
-        models: Vec<ModelInfo>,
+        models: Vec<String>,
     }
 
     #[async_trait]
@@ -4217,7 +4240,7 @@ mod tests {
             Ok(())
         }
 
-        async fn available_models(&self) -> Result<Vec<ModelInfo>, String> {
+        async fn fetch_models_from_cli(&self) -> Result<Vec<String>, String> {
             Ok(self.models.clone())
         }
 
@@ -5780,23 +5803,45 @@ mod tests {
         assert!(effect.sdk_error_message.is_some());
     }
 
-    #[tokio::test]
-    async fn available_models_for_backend_uses_registry_when_cache_is_empty() {
-        let temp = tempfile::tempdir().unwrap();
+    #[test]
+    fn available_models_for_backend_reads_from_config_via_registry() {
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.agents.claude.models = vec!["mock-model".to_string()];
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
-            backend_id: "mock".to_string(),
-            models: vec![ModelInfo {
-                value: "mock-model".to_string(),
-                display_name: "Mock Model".to_string(),
-            }],
+            backend_id: CLAUDE_BACKEND_ID.to_string(),
+            models: vec![],
         }));
+        registry.set_config(config);
         let registry = Arc::new(registry);
 
-        let models = available_models_for_backend(temp.path(), "mock", Some(&registry)).await;
+        let models = available_models_for_backend(CLAUDE_BACKEND_ID, Some(&registry)).unwrap();
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].value, "mock-model");
+    }
+
+    #[test]
+    fn available_models_for_backend_propagates_registry_error() {
+        // registry に config が未紐付けの状態では Err が返り、空配列で潰れない。
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: CLAUDE_BACKEND_ID.to_string(),
+            models: vec![],
+        }));
+        let registry = Arc::new(registry);
+        let err = available_models_for_backend(CLAUDE_BACKEND_ID, Some(&registry));
+        assert!(err.is_err(), "config 未紐付けは Err として伝播する");
+    }
+
+    #[test]
+    fn available_models_for_backend_returns_empty_without_registry() {
+        // registry が無い経路（テスト等）は Ok(empty) として扱う。
+        let models = available_models_for_backend(CLAUDE_BACKEND_ID, None).unwrap();
+        assert!(models.is_empty());
     }
 
     #[tokio::test]
@@ -6269,18 +6314,21 @@ mod tests {
             &session_store,
             temp.path(),
             "/repo",
-            Some("mock".to_string()),
+            Some(CLAUDE_BACKEND_ID.to_string()),
         )
         .unwrap();
 
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.agents.claude.models = vec!["mock-model".to_string()];
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
-            backend_id: "mock".to_string(),
-            models: vec![ModelInfo {
-                value: "mock-model".to_string(),
-                display_name: "Mock Model".to_string(),
-            }],
+            backend_id: CLAUDE_BACKEND_ID.to_string(),
+            models: vec![],
         }));
+        registry.set_config(config);
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
@@ -6307,26 +6355,29 @@ mod tests {
             &session_store,
             temp.path(),
             "/repo",
-            Some("mock-a".to_string()),
+            Some(CLAUDE_BACKEND_ID.to_string()),
         )
         .unwrap();
         session.selected_model = Some("old-model".to_string());
         session_store.save_session(temp.path(), &session).unwrap();
+
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.agents.claude.models = vec!["a-model".to_string()];
+        cfg.agents.codex.model = Some("b-model".to_string());
+        cfg.agents.codex.models = vec!["b-model".to_string()];
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+
         let mut registry = AgentBackendRegistry::new();
         registry.register(Arc::new(MockModelBackend {
-            backend_id: "mock-a".to_string(),
-            models: vec![ModelInfo {
-                value: "a-model".to_string(),
-                display_name: "A Model".to_string(),
-            }],
+            backend_id: CLAUDE_BACKEND_ID.to_string(),
+            models: vec![],
         }));
         registry.register(Arc::new(MockModelBackend {
-            backend_id: "mock-b".to_string(),
-            models: vec![ModelInfo {
-                value: "b-model".to_string(),
-                display_name: "B Model".to_string(),
-            }],
+            backend_id: CODEX_BACKEND_ID.to_string(),
+            models: vec![],
         }));
+        registry.set_config(config);
         let registry = Arc::new(registry);
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
 
@@ -6336,13 +6387,16 @@ mod tests {
             &handles,
             temp.path(),
             &session.id,
-            "mock-b".to_string(),
+            CODEX_BACKEND_ID.to_string(),
         )
         .await
         .unwrap();
 
-        assert_eq!(response.session.backend_id, Some("mock-b".to_string()));
-        assert_eq!(response.session.selected_model, None);
+        assert_eq!(
+            response.session.backend_id,
+            Some(CODEX_BACKEND_ID.to_string())
+        );
+        assert_eq!(response.session.selected_model, Some("b-model".to_string()));
         assert_eq!(response.available_models.len(), 1);
         assert_eq!(response.available_models[0].value, "b-model");
     }
@@ -8864,25 +8918,21 @@ mod tests {
                 let mut proc = make_dummy_agent_process(child, stdin, pgid);
                 proc.available_models = vec![ModelInfo {
                     value: "gpt-5.4".to_string(),
-                    display_name: "GPT-5.4".to_string(),
                 }];
                 proc.selected_model = Some("old-model".to_string());
                 map.insert("session-1".to_string(), proc);
             }
 
-            let models =
-                set_active_process_model(&handles, "session-1", Some("gpt-5.4".to_string()))
-                    .await
-                    .unwrap()
-                    .unwrap();
+            set_active_process_model(&handles, "session-1", Some("gpt-5.4".to_string()))
+                .await
+                .unwrap();
 
-            assert_eq!(models[0].value, "gpt-5.4");
             {
                 let map = handles.lock().await;
-                assert_eq!(
-                    map.get("session-1").unwrap().selected_model,
-                    Some("gpt-5.4".to_string())
-                );
+                let proc = map.get("session-1").unwrap();
+                assert_eq!(proc.selected_model, Some("gpt-5.4".to_string()));
+                // available_models は process キャッシュとして変更されないこと（owner は config）。
+                assert_eq!(proc.available_models[0].value, "gpt-5.4");
             }
 
             let mut map = handles.lock().await;
@@ -8893,11 +8943,10 @@ mod tests {
         async fn set_active_process_model_inactive_session_is_ok() {
             let handles = Arc::new(Mutex::new(HashMap::new()));
 
-            let models = set_active_process_model(&handles, "missing", Some("gpt-5.4".to_string()))
+            // 該当 session が無くてもエラーにせず Ok(()) を返す（active 不在は no-op）。
+            set_active_process_model(&handles, "missing", Some("gpt-5.4".to_string()))
                 .await
                 .unwrap();
-
-            assert!(models.is_none());
         }
 
         #[tokio::test]
@@ -8908,21 +8957,25 @@ mod tests {
                 &session_store,
                 temp.path(),
                 "/repo",
-                Some("mock-a".to_string()),
+                Some(CLAUDE_BACKEND_ID.to_string()),
             )
             .unwrap();
+
+            let mut cfg = crate::config::ReleashConfig::default();
+            cfg.agents.codex.models = vec!["b-model".to_string()];
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+
             let mut registry = AgentBackendRegistry::new();
             registry.register(Arc::new(MockModelBackend {
-                backend_id: "mock-a".to_string(),
+                backend_id: CLAUDE_BACKEND_ID.to_string(),
                 models: Vec::new(),
             }));
             registry.register(Arc::new(MockModelBackend {
-                backend_id: "mock-b".to_string(),
-                models: vec![ModelInfo {
-                    value: "b-model".to_string(),
-                    display_name: "B Model".to_string(),
-                }],
+                backend_id: CODEX_BACKEND_ID.to_string(),
+                models: Vec::new(),
             }));
+            registry.set_config(config);
             let registry = Arc::new(registry);
 
             let mut cmd = tokio::process::Command::new("sleep");
@@ -8958,12 +9011,15 @@ mod tests {
                 &handles,
                 temp.path(),
                 &session.id,
-                "mock-b".to_string(),
+                CODEX_BACKEND_ID.to_string(),
             )
             .await
             .unwrap();
 
-            assert_eq!(response.session.backend_id, Some("mock-b".to_string()));
+            assert_eq!(
+                response.session.backend_id,
+                Some(CODEX_BACKEND_ID.to_string())
+            );
             assert_eq!(response.available_models[0].value, "b-model");
             assert!(handles.lock().await.get(&session.id).is_none());
             assert!(!pids_dir(temp.path())
@@ -9032,5 +9088,785 @@ mod tests {
             assert!(map.is_empty());
             assert!(returned_ids.is_empty());
         }
+    }
+
+    // --- extract_model_ids_from_supported_models: all-or-nothing 検証 ---
+
+    #[test]
+    fn extract_model_ids_accepts_value_field() {
+        let v = serde_json::json!({
+            "models": [{"value": "a"}, {"value": "b"}]
+        });
+        let result = extract_model_ids_from_supported_models(&v).unwrap();
+        assert_eq!(result, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn extract_model_ids_accepts_id_field_fallback() {
+        let v = serde_json::json!({
+            "models": [{"id": "a"}, {"value": "b"}]
+        });
+        let result = extract_model_ids_from_supported_models(&v).unwrap();
+        assert_eq!(result, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn extract_model_ids_rejects_missing_models_array() {
+        let v = serde_json::json!({"foo": "bar"});
+        assert!(extract_model_ids_from_supported_models(&v).is_err());
+    }
+
+    #[test]
+    fn extract_model_ids_rejects_entry_without_value_or_id() {
+        // all-or-nothing: 不正要素を 1 件でも含めば Err。silent drop しない。
+        let v = serde_json::json!({
+            "models": [{"value": "a"}, {"name": "missing"}]
+        });
+        assert!(extract_model_ids_from_supported_models(&v).is_err());
+    }
+
+    #[test]
+    fn extract_model_ids_rejects_non_string_value() {
+        let v = serde_json::json!({
+            "models": [{"value": 123}]
+        });
+        assert!(extract_model_ids_from_supported_models(&v).is_err());
+    }
+
+    #[test]
+    fn supported_models_log_messages_are_traceable() {
+        assert_eq!(
+            supported_models_empty_payload_log(CODEX_BACKEND_ID),
+            "supported_models 受信内容のモデル配列が空のため 'codex' のモデル一覧は更新しません"
+        );
+        assert_eq!(
+            supported_models_write_failed_log(CODEX_BACKEND_ID, "write failed"),
+            "supported_models から 'codex' のモデル一覧を反映できませんでした: write failed"
+        );
+        assert_eq!(
+            supported_models_invalid_payload_log(CODEX_BACKEND_ID, "bad payload"),
+            "supported_models 受信内容が不正のため 'codex' のモデル一覧は更新しません: bad payload"
+        );
+        assert_eq!(
+            supported_models_fallback_read_failed_log(CODEX_BACKEND_ID, "read failed"),
+            "supported_models フォールバック読み出し失敗 (backend='codex'): read failed - proc キャッシュと emit は維持"
+        );
+        assert_eq!(
+            startup_model_refresh_failed_log(CODEX_BACKEND_ID, "cli timed out"),
+            "backend 'codex' model refresh failed: cli timed out"
+        );
+    }
+
+    // --- set_agent_model_internal: 仕様の中核 Rule の回帰防止テスト ---
+
+    fn make_test_registry_with_models(
+        claude_models: &[&str],
+        codex_models: &[&str],
+    ) -> Arc<AgentBackendRegistry> {
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
+        cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: CLAUDE_BACKEND_ID.to_string(),
+            models: vec![],
+        }));
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: CODEX_BACKEND_ID.to_string(),
+            models: vec![],
+        }));
+        registry.set_config(config);
+        Arc::new(registry)
+    }
+
+    #[tokio::test]
+    async fn set_agent_model_accepts_registered_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let registry = make_test_registry_with_models(&["claude-4"], &["gpt-5"]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some("claude-4".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let updated = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.selected_model, Some("claude-4".to_string()));
+    }
+
+    #[tokio::test]
+    async fn set_agent_model_preserves_surrounding_whitespace() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let model = "  claude-4  ";
+        let registry = make_test_registry_with_models(&[model], &[]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some(model.to_string()),
+        )
+        .await
+        .unwrap();
+
+        let updated = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.selected_model, Some(model.to_string()));
+    }
+
+    #[tokio::test]
+    async fn set_agent_model_rejects_unregistered_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.selected_model = Some("existing".to_string());
+        session_store.save_session(temp.path(), &session).unwrap();
+
+        let registry = make_test_registry_with_models(&["claude-4"], &[]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let err = set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some("unknown".to_string()),
+        )
+        .await;
+        assert!(err.is_err());
+
+        // 拒否時は selected_model を維持
+        let after = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.selected_model, Some("existing".to_string()));
+    }
+
+    #[tokio::test]
+    async fn set_agent_model_rejects_other_backend_model_as_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let registry = make_test_registry_with_models(&["claude-4"], &["gpt-5"]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let err = set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some("gpt-5".to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("別バックエンド"));
+
+        // selected_model は変更されない
+        let after = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.selected_model, None);
+    }
+
+    #[tokio::test]
+    async fn set_agent_model_accepts_none_as_selection_clear() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        session.selected_model = Some("claude-4".to_string());
+        session_store.save_session(temp.path(), &session).unwrap();
+
+        let registry = make_test_registry_with_models(&["claude-4"], &[]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let after = session_store
+            .get_session(temp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        // 選択解除（未指定状態）として保存される
+        assert_eq!(after.selected_model, None);
+    }
+
+    // --- supported_models 受信経路の統合テスト ---
+
+    fn make_registry_with_config(
+        claude_models: &[&str],
+        codex_models: &[&str],
+    ) -> (Arc<AgentBackendRegistry>, Arc<crate::config::AppConfig>) {
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
+        cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: CLAUDE_BACKEND_ID.to_string(),
+            models: vec![],
+        }));
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: CODEX_BACKEND_ID.to_string(),
+            models: vec![],
+        }));
+        registry.set_config(config.clone());
+        (Arc::new(registry), config)
+    }
+
+    #[test]
+    fn apply_supported_models_writes_config_and_returns_config_derived() {
+        let (registry, config) = make_registry_with_config(&[], &["stale"]);
+        let msg = serde_json::json!({
+            "type": "supported_models",
+            "models": [{"value": "gpt-5.5"}, {"value": "o3"}]
+        });
+
+        let models = apply_supported_models_to_config(Some(&*registry), CODEX_BACKEND_ID, &msg)
+            .expect("models should be returned on success");
+
+        // 戻り値が config 由来（書き込み後）の最新一覧であること
+        let values: Vec<String> = models.iter().map(|m| m.value.clone()).collect();
+        assert_eq!(values, vec!["gpt-5.5".to_string(), "o3".to_string()]);
+        // config が書き換わっていること
+        let cfg = config.get_config().unwrap();
+        assert_eq!(
+            cfg.agents.codex.models,
+            vec!["gpt-5.5".to_string(), "o3".to_string()]
+        );
+    }
+
+    #[test]
+    fn apply_supported_models_keeps_config_on_invalid_payload() {
+        let (registry, config) = make_registry_with_config(&[], &["existing"]);
+        // models 配列無し → all-or-nothing で拒否
+        let msg = serde_json::json!({"type": "supported_models"});
+
+        let models = apply_supported_models_to_config(Some(&*registry), CODEX_BACKEND_ID, &msg)
+            .expect("config 読み出しに成功するため Some が返る");
+
+        // 拒否時は現在 config に登録されている値が返る（暗黙のフォールバックは無し）
+        let values: Vec<String> = models.iter().map(|m| m.value.clone()).collect();
+        assert_eq!(values, vec!["existing".to_string()]);
+        // config は変更されない
+        let cfg = config.get_config().unwrap();
+        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
+    }
+
+    #[test]
+    fn apply_supported_models_keeps_config_when_entry_invalid() {
+        let (registry, config) = make_registry_with_config(&[], &["existing"]);
+        // 制御文字含み → 形式検証で拒否
+        let msg = serde_json::json!({
+            "models": [{"value": "valid"}, {"value": "bad\u{0001}id"}]
+        });
+
+        let models = apply_supported_models_to_config(Some(&*registry), CODEX_BACKEND_ID, &msg)
+            .expect("config 読み出しに成功するため Some が返る");
+
+        let values: Vec<String> = models.iter().map(|m| m.value.clone()).collect();
+        assert_eq!(values, vec!["existing".to_string()]);
+        let cfg = config.get_config().unwrap();
+        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
+    }
+
+    #[test]
+    fn apply_supported_models_returns_none_when_registry_unavailable() {
+        let msg = serde_json::json!({"models": [{"value": "a"}]});
+        let models = apply_supported_models_to_config(None, CODEX_BACKEND_ID, &msg);
+        // registry 未紐付け時は更新指示なし (None) — 呼び出し側は cache/emit を上書きしない
+        assert!(models.is_none());
+    }
+
+    #[test]
+    fn build_agent_models_updated_payload_emits_event_contract_fields() {
+        let models = vec![
+            ModelInfo {
+                value: "a".to_string(),
+            },
+            ModelInfo {
+                value: "b".to_string(),
+            },
+        ];
+        let payload = build_agent_models_updated_payload("sess-1", &models, Some("a"));
+
+        assert_eq!(payload["chat_session_id"], "sess-1");
+        let candidates = payload["available_models"]
+            .as_array()
+            .expect("available_models is array");
+        let values: Vec<String> = candidates
+            .iter()
+            .map(|v| v["value"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(values, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(payload["selected_model"], "a");
+    }
+
+    #[test]
+    fn build_agent_models_updated_payload_serializes_unset_as_null() {
+        let payload = build_agent_models_updated_payload("sess-2", &[], None);
+        assert!(payload["selected_model"].is_null());
+        assert_eq!(payload["available_models"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn build_agent_backend_models_updated_payload_includes_backend_id_and_models() {
+        // spec: backend 全体向け通知は backend_id を含み、session 単位 payload とは
+        // 分離された event 名 (`agent-backend-models-updated`) で配信される。
+        let models = vec![
+            ModelInfo {
+                value: "gpt-5.5".to_string(),
+            },
+            ModelInfo {
+                value: "o3".to_string(),
+            },
+        ];
+        let payload = build_agent_backend_models_updated_payload(CODEX_BACKEND_ID, &models);
+
+        assert_eq!(payload["backend_id"], CODEX_BACKEND_ID);
+        // chat_session_id / selected_model フィールドは含めない（session 単位の責務）。
+        assert!(payload.get("chat_session_id").is_none());
+        assert!(payload.get("selected_model").is_none());
+        let values: Vec<String> = payload["available_models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["value"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(values, vec!["gpt-5.5".to_string(), "o3".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn sync_active_processes_for_backend_noops_when_no_active_session() {
+        // spec: active session が 0 件のとき、対象バックエンドに紐づく更新先が無いため
+        // cache 同期は no-op になり、呼び出し側は backend-wide 通知のみを emit する。
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        sync_active_processes_for_backend(
+            &handles,
+            CODEX_BACKEND_ID,
+            &[ModelInfo {
+                value: "gpt-5.5".to_string(),
+            }],
+        )
+        .await;
+        assert!(handles.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_active_processes_for_backend_updates_only_matched_backend() {
+        // spec: 起動時 CLI 同期で取得した一覧は、対象バックエンドの active session
+        // にのみ反映され、他バックエンドの session は影響を受けない。
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        {
+            let mut map = handles.lock().await;
+            let mut codex_proc = make_test_agent_process();
+            codex_proc.backend_id = CODEX_BACKEND_ID.to_string();
+            codex_proc.available_models = vec![ModelInfo {
+                value: "stale".to_string(),
+            }];
+            codex_proc.selected_model = Some("user-pick".to_string());
+            map.insert("codex-sess".to_string(), codex_proc);
+
+            let mut claude_proc = make_test_agent_process();
+            claude_proc.backend_id = CLAUDE_BACKEND_ID.to_string();
+            claude_proc.available_models = vec![ModelInfo {
+                value: "claude-original".to_string(),
+            }];
+            map.insert("claude-sess".to_string(), claude_proc);
+        }
+
+        let new_models = vec![
+            ModelInfo {
+                value: "gpt-5.5".to_string(),
+            },
+            ModelInfo {
+                value: "o3".to_string(),
+            },
+        ];
+        sync_active_processes_for_backend(&handles, CODEX_BACKEND_ID, &new_models).await;
+
+        let map = handles.lock().await;
+        let codex = map.get("codex-sess").unwrap();
+        assert_eq!(codex.selected_model, Some("user-pick".to_string()));
+        let codex_values: Vec<String> = codex
+            .available_models
+            .iter()
+            .map(|m| m.value.clone())
+            .collect();
+        assert_eq!(codex_values, vec!["gpt-5.5".to_string(), "o3".to_string()]);
+
+        // claude 側は影響を受けない
+        let claude = map.get("claude-sess").unwrap();
+        let claude_values: Vec<String> = claude
+            .available_models
+            .iter()
+            .map(|m| m.value.clone())
+            .collect();
+        assert_eq!(claude_values, vec!["claude-original".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn handle_supported_models_message_updates_proc_cache_from_config() {
+        // 受信→config 書き換え→proc.available_models 更新までを実関数経路で検証。
+        // spec Rule: 既に動いているバックエンドからの一覧通知も同じ規準で取り込まれ、
+        // ユーザーが見ているモデル選択候補も最新化された内容に追従する。
+        let (registry, config) = make_registry_with_config(&[], &["stale"]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        {
+            let mut map = handles.lock().await;
+            let mut proc = make_test_agent_process();
+            proc.backend_id = CODEX_BACKEND_ID.to_string();
+            proc.available_models = vec![ModelInfo {
+                value: "stale".to_string(),
+            }];
+            map.insert("sess-1".to_string(), proc);
+        }
+
+        let msg = serde_json::json!({
+            "type": "supported_models",
+            "models": [{"value": "gpt-5.5"}, {"value": "o3"}]
+        });
+
+        handle_supported_models_message(None, &handles, Some(&*registry), "sess-1", &msg).await;
+
+        // config に書き込まれている
+        let cfg = config.get_config().unwrap();
+        assert_eq!(
+            cfg.agents.codex.models,
+            vec!["gpt-5.5".to_string(), "o3".to_string()]
+        );
+        // proc.available_models が config 由来の最新値に同期されている
+        let map = handles.lock().await;
+        let proc = map.get("sess-1").unwrap();
+        let values: Vec<String> = proc
+            .available_models
+            .iter()
+            .map(|m| m.value.clone())
+            .collect();
+        assert_eq!(values, vec!["gpt-5.5".to_string(), "o3".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn handle_supported_models_message_keeps_proc_cache_aligned_with_config_on_invalid() {
+        // 不正 payload の場合、config は変更されず proc.available_models は
+        // 現在 config に登録されている値に揃う（暗黙のフォールバックは無し）。
+        let (registry, config) = make_registry_with_config(&[], &["existing"]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        {
+            let mut map = handles.lock().await;
+            let mut proc = make_test_agent_process();
+            proc.backend_id = CODEX_BACKEND_ID.to_string();
+            proc.available_models = vec![ModelInfo {
+                value: "stale".to_string(),
+            }];
+            map.insert("sess-1".to_string(), proc);
+        }
+
+        // models 配列無し → all-or-nothing で拒否
+        let msg = serde_json::json!({"type": "supported_models"});
+        handle_supported_models_message(None, &handles, Some(&*registry), "sess-1", &msg).await;
+
+        let cfg = config.get_config().unwrap();
+        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
+        let map = handles.lock().await;
+        let proc = map.get("sess-1").unwrap();
+        let values: Vec<String> = proc
+            .available_models
+            .iter()
+            .map(|m| m.value.clone())
+            .collect();
+        assert_eq!(values, vec!["existing".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn handle_supported_models_message_rejects_empty_models_array() {
+        // spec Rule: 起動時 CLI 同期と同じ受け入れ規準。`models: []` は空一覧として
+        // 受け入れず、当該 backend の config は既存値のまま維持される。proc.available_models
+        // も config 由来の既存値に揃う。
+        let (registry, config) = make_registry_with_config(&[], &["existing"]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        {
+            let mut map = handles.lock().await;
+            let mut proc = make_test_agent_process();
+            proc.backend_id = CODEX_BACKEND_ID.to_string();
+            proc.available_models = vec![ModelInfo {
+                value: "stale".to_string(),
+            }];
+            map.insert("sess-1".to_string(), proc);
+        }
+
+        let msg = serde_json::json!({"type": "supported_models", "models": []});
+        handle_supported_models_message(None, &handles, Some(&*registry), "sess-1", &msg).await;
+
+        let cfg = config.get_config().unwrap();
+        assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
+        let map = handles.lock().await;
+        let proc = map.get("sess-1").unwrap();
+        let values: Vec<String> = proc
+            .available_models
+            .iter()
+            .map(|m| m.value.clone())
+            .collect();
+        // 空配列を proc キャッシュに上書きせず、config 由来の既存値に揃う。
+        assert_eq!(values, vec!["existing".to_string()]);
+    }
+
+    // --- get_persisted_spawn_info: 新規未起動セッションと選択解除後の区別 ---
+
+    fn make_chat_session_for_spawn(
+        agent_session_id: Option<String>,
+        selected_model: Option<String>,
+        backend_id: &str,
+    ) -> ChatSession {
+        ChatSession {
+            id: "s1".to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: Vec::new(),
+            state: crate::session::SessionState::Active,
+            created_at: 0.0,
+            updated_at: 0.0,
+            agent_session_id,
+            permission_mode: "acceptEdits".to_string(),
+            selected_model,
+            workflow_state: None,
+            backend_id: Some(backend_id.to_string()),
+            workflow_step_session: false,
+        }
+    }
+
+    #[test]
+    fn resolve_spawn_info_returns_none_for_unstarted_session_without_persisted_model() {
+        // spec: selected_model=None は常に「明示的に未指定」を意味する。
+        // 未起動セッションで selected_model 未指定でも spawn 経路で暗黙の
+        // 既定モデルへフォールバックさせない（初期モデルはセッション作成時にのみ反映される）。
+        let session = make_chat_session_for_spawn(None, None, CODEX_BACKEND_ID);
+        let info = resolve_spawn_info(Some(session));
+        assert_eq!(info.0, None); // resume_sid
+        assert_eq!(info.1, None); // selected_model — fallback しない
+        assert_eq!(info.2, CODEX_BACKEND_ID.to_string());
+    }
+
+    #[test]
+    fn resolve_spawn_info_does_not_reinject_default_after_explicit_clear() {
+        // 既に一度起動済み（agent_session_id Some）で selected_model を None に戻した場合、
+        // 次回 spawn でも None のまま。
+        let session =
+            make_chat_session_for_spawn(Some("sdk-id".to_string()), None, CODEX_BACKEND_ID);
+        let info = resolve_spawn_info(Some(session));
+        assert!(info.1.is_none());
+    }
+
+    #[test]
+    fn resolve_spawn_info_preserves_existing_selected_model() {
+        // 永続化済みの selected_model はそのまま採用する。
+        let session =
+            make_chat_session_for_spawn(None, Some("user-picked".to_string()), CODEX_BACKEND_ID);
+        let info = resolve_spawn_info(Some(session));
+        assert_eq!(info.1, Some("user-picked".to_string()));
+    }
+
+    #[test]
+    fn resolve_spawn_info_uses_default_backend_when_session_missing() {
+        // 永続化セッションが存在しない場合は新規セッション扱い。
+        // backend_id は claude（既定）にフォールバックする。selected_model は None。
+        let info = resolve_spawn_info(None);
+        assert!(info.1.is_none());
+        assert_eq!(info.2, CLAUDE_BACKEND_ID.to_string());
+    }
+
+    // --- get_session: active process が居ても config 由来を返す ---
+
+    #[tokio::test]
+    async fn get_session_returns_config_derived_available_models_even_with_active_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CODEX_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let (registry, _config) = make_registry_with_config(&[], &["from-config"]);
+
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        // active process の stale キャッシュ
+        {
+            let mut map = handles.lock().await;
+            let mut proc = make_test_agent_process();
+            proc.backend_id = CODEX_BACKEND_ID.to_string();
+            proc.available_models = vec![ModelInfo {
+                value: "stale-from-process".to_string(),
+            }];
+            map.insert(session.id.clone(), proc);
+        }
+
+        let response = get_session_internal_with_data_dir(
+            &session_store,
+            &handles,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+        )
+        .await
+        .unwrap()
+        .expect("session should exist");
+
+        let values: Vec<String> = response
+            .available_models
+            .into_iter()
+            .map(|m| m.value)
+            .collect();
+        assert_eq!(values, vec!["from-config".to_string()]);
+
+        let mut map = handles.lock().await;
+        force_kill_all_sessions(&mut map).await;
+    }
+
+    #[tokio::test]
+    async fn set_agent_model_syncs_active_process_available_models_from_config() {
+        // active process が居る状態で set_agent_model を呼ぶと、proc.available_models が
+        // config 由来の最新値で同期される（spec: モデル選択候補は config 単一 owner、
+        // process キャッシュは emit 整合用にのみ維持）。
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let registry = make_test_registry_with_models(&["claude-4", "haiku"], &[]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        {
+            let mut map = handles.lock().await;
+            let mut proc = make_test_agent_process();
+            proc.backend_id = CLAUDE_BACKEND_ID.to_string();
+            // process cache が stale な状態
+            proc.available_models = vec![ModelInfo {
+                value: "stale".to_string(),
+            }];
+            map.insert(session.id.clone(), proc);
+        }
+
+        set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some("claude-4".to_string()),
+        )
+        .await
+        .unwrap();
+
+        // proc.available_models が registry/config 由来の最新値に同期される
+        let map = handles.lock().await;
+        let proc = map.get(&session.id).unwrap();
+        let values: Vec<String> = proc
+            .available_models
+            .iter()
+            .map(|m| m.value.clone())
+            .collect();
+        assert_eq!(values, vec!["claude-4".to_string(), "haiku".to_string()]);
+        // selected_model も反映される
+        assert_eq!(proc.selected_model, Some("claude-4".to_string()));
+    }
+
+    #[tokio::test]
+    async fn set_agent_model_rejects_invalid_format_before_registry_check() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session = create_session_internal(
+            &session_store,
+            temp.path(),
+            "/repo",
+            Some(CLAUDE_BACKEND_ID.to_string()),
+        )
+        .unwrap();
+        let registry = make_test_registry_with_models(&["claude-4"], &[]);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        // 空文字（形式不正）は登録判定に進む前に拒否
+        let err = set_agent_model_internal_with_data_dir(
+            None,
+            &handles,
+            &session_store,
+            Some(&registry),
+            temp.path(),
+            &session.id,
+            Some("".to_string()),
+        )
+        .await;
+        assert!(err.is_err());
     }
 }

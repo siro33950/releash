@@ -38,6 +38,7 @@ describe("agentChatReducer", () => {
 			permissionMode: "acceptEdits" as const,
 			pendingPermissions: {},
 			availableModels: [],
+			availableModelsByBackend: {},
 			sessionModels: {},
 			backends: [],
 			selectedBackendId: null,
@@ -499,15 +500,56 @@ describe("agentChatReducer", () => {
 
 	describe("SET_AVAILABLE_MODELS", () => {
 		it("stores available models globally", () => {
-			const models = [
-				{ value: "claude-4", displayName: "Claude 4" },
-				{ value: "claude-3.5", displayName: "Claude 3.5" },
-			];
+			const models = [{ value: "claude-4" }, { value: "claude-3.5" }];
 			const next = reducer(INITIAL_STATE, {
 				type: "SET_AVAILABLE_MODELS",
 				models,
 			});
 			expect(next.availableModels).toBe(models);
+		});
+
+		it("stores available models by backend when backendId is provided", () => {
+			const models = [{ value: "claude-4" }];
+			const next = reducer(INITIAL_STATE, {
+				type: "SET_AVAILABLE_MODELS",
+				models,
+				backendId: "claude",
+			});
+			expect(next.availableModelsByBackend.claude).toBe(models);
+		});
+	});
+
+	describe("SET_BACKEND_MODELS", () => {
+		it("stores backend models and updates visible models for current backend", () => {
+			const models = [{ value: "gpt-5.5" }];
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				selectedBackendId: "codex",
+			};
+			const next = reducer(state, {
+				type: "SET_BACKEND_MODELS",
+				backendId: "codex",
+				models,
+			});
+			expect(next.availableModels).toBe(models);
+			expect(next.availableModelsByBackend.codex).toBe(models);
+		});
+
+		it("stores backend models without changing visible models for another backend", () => {
+			const visible = [{ value: "claude-4" }];
+			const codexModels = [{ value: "gpt-5.5" }];
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				selectedBackendId: "claude",
+				availableModels: visible,
+			};
+			const next = reducer(state, {
+				type: "SET_BACKEND_MODELS",
+				backendId: "codex",
+				models: codexModels,
+			});
+			expect(next.availableModels).toBe(visible);
+			expect(next.availableModelsByBackend.codex).toBe(codexModels);
 		});
 	});
 
@@ -594,11 +636,13 @@ describe("agentChatReducer", () => {
 			id: "b1",
 			name: "Backend 1",
 			available: true,
+			availableModels: [{ value: "b1-model" }],
 		};
 		const backend2: BackendInfo = {
 			id: "b2",
 			name: "Backend 2",
 			available: true,
+			availableModels: [{ value: "b2-model" }],
 		};
 
 		it("sets selectedBackendId to defaultId when selectedBackendId is null", () => {
@@ -613,6 +657,11 @@ describe("agentChatReducer", () => {
 			});
 			expect(next.backends).toEqual([backend1, backend2]);
 			expect(next.selectedBackendId).toBe("b2");
+			expect(next.availableModels).toEqual([{ value: "b2-model" }]);
+			expect(next.availableModelsByBackend).toEqual({
+				b1: [{ value: "b1-model" }],
+				b2: [{ value: "b2-model" }],
+			});
 		});
 
 		it("selects the first backend when selectedBackendId is null and defaultId is null", () => {
@@ -660,11 +709,16 @@ describe("agentChatReducer", () => {
 
 	describe("SET_SELECTED_BACKEND", () => {
 		it("updates selectedBackendId with backendId", () => {
-			const next = reducer(INITIAL_STATE, {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				availableModelsByBackend: { b1: [{ value: "model-1" }] },
+			};
+			const next = reducer(state, {
 				type: "SET_SELECTED_BACKEND",
 				backendId: "b1",
 			});
 			expect(next.selectedBackendId).toBe("b1");
+			expect(next.availableModels).toEqual([{ value: "model-1" }]);
 		});
 
 		it("clears selectedBackendId with null", () => {

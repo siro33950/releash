@@ -819,7 +819,9 @@ struct ResolvedStepSettings {
 ///
 /// - permission: ステップ指定があれば採用、なければ親セッションの値を継承
 /// - backend_id: model指定があれば resolved_backend_id を採用、なければ親セッションの値を継承
-/// - selected_model: ステップ指定があれば採用、なければ親セッションの値を継承
+/// - selected_model: ステップ指定があれば採用、なければ未指定（None）として扱う。
+///   Spec: workflow 経路の `model_id=None` は当該 step session の選択モデルを
+///   未指定状態のままとし、親の選択モデルへの暗黙フォールバックを行わない。
 ///
 /// `resolved_backend_id` は、ステップにmodel指定がある場合に
 /// `resolve_backend_for_step_model` で事前に解決されたbackend_id。
@@ -829,7 +831,7 @@ fn resolve_step_settings(
     step_permission: Option<String>,
     resolved_backend_id: Option<String>,
     parent_backend_id: Option<String>,
-    parent_selected_model: Option<String>,
+    _parent_selected_model: Option<String>,
     parent_permission_mode: String,
 ) -> ResolvedStepSettings {
     let permission_mode = step_permission.unwrap_or(parent_permission_mode);
@@ -838,7 +840,7 @@ fn resolve_step_settings(
     } else {
         parent_backend_id
     };
-    let selected_model = step_model.or(parent_selected_model);
+    let selected_model = step_model;
     ResolvedStepSettings {
         backend_id,
         selected_model,
@@ -863,6 +865,8 @@ impl WorkflowEngine {
     }
 
     /// ステップの model 値から対応するバックエンドIDを解決する。
+    /// 形式検証（`ModelId`）と登録判定（`resolve_backend_for_model`）を
+    /// 一括で行い、`set_agent_model_internal` と同一の受け入れ基準を適用する。
     async fn resolve_backend_for_step_model(
         &self,
         app: &tauri::AppHandle,
@@ -875,15 +879,31 @@ impl WorkflowEngine {
                     "cannot resolve model '{model}': backend registry is unavailable"
                 ))
             })?;
-        let backend_id = registry
-            .resolve_backend_for_model(model)
-            .await
-            .ok_or_else(|| {
-                WorkflowEngineError::InvalidWorkflow(format!("unknown model: {model}"))
-            })?;
-        Ok(Some(backend_id))
+        resolve_step_model_with_registry(&registry, model).map(Some)
     }
+}
 
+/// 形式検証＋登録判定をレジストリ単体で行う、ワークフロー経路用の解決関数。
+/// `resolve_backend_for_step_model` の実体ロジックで、テストではこちらを直接呼ぶ。
+pub(crate) fn resolve_step_model_with_registry(
+    registry: &crate::backends::AgentBackendRegistry,
+    model: &str,
+) -> Result<String, WorkflowEngineError> {
+    crate::domain::agent_session::ModelId::parse(model).map_err(|e| {
+        WorkflowEngineError::InvalidWorkflow(format!("invalid model '{model}': {e}"))
+    })?;
+    let backend_id = registry
+        .resolve_backend_for_model(model)
+        .map_err(|e| {
+            WorkflowEngineError::InvalidWorkflow(format!(
+                "model '{model}' could not be resolved: {e}"
+            ))
+        })?
+        .ok_or_else(|| WorkflowEngineError::InvalidWorkflow(format!("unknown model: {model}")))?;
+    Ok(backend_id)
+}
+
+impl WorkflowEngine {
     /// ステップ設定の解決 → セッション生成 → 解決済み設定の反映 → 保存を一括で行う。
     ///
     /// `start_step_session` と `start_parallel_children` の共通パターンを抽出したヘルパー。
@@ -953,11 +973,12 @@ impl WorkflowEngine {
             .ok_or_else(|| WorkflowEngineError::SessionNotFound(chat_session_id.to_string()))?;
         let worktree_path = session.worktree_path.clone();
 
-        // ステップ設定のmodel検証: 全バックエンドの available_models から有効モデルを収集
+        // ステップ設定のmodel検証: 各 model から所属 backend を一意に解決する。
         if let Some(registry) = app.try_state::<Arc<crate::backends::AgentBackendRegistry>>() {
-            let valid_models = registry.collect_all_model_values().await;
-            crate::workflow::validation::validate_models(&workflow, &valid_models)
-                .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+            crate::workflow::validation::validate_models(&workflow, |model| {
+                registry.resolve_backend_for_model(model)
+            })
+            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
         }
 
         let now = current_timestamp();
@@ -4704,11 +4725,124 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backends::{
+        AgentBackend, AgentBackendRegistry, AgentMessage as BackendAgentMessage,
+        PermissionResponse, SessionConfig as BackendSessionConfig,
+        SessionHandle as BackendSessionHandle,
+    };
     use crate::session::MessagePart;
+    use async_trait::async_trait;
 
     const TEST_PARENT_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
     const TEST_STEP_SESSION_ID: &str = "22222222-2222-4222-8222-222222222222";
     const TEST_REGULAR_SESSION_ID: &str = "33333333-3333-4333-8333-333333333333";
+
+    struct WorkflowMockBackend {
+        backend_id: String,
+    }
+
+    #[async_trait]
+    impl AgentBackend for WorkflowMockBackend {
+        fn id(&self) -> &str {
+            &self.backend_id
+        }
+        fn name(&self) -> &str {
+            "Mock"
+        }
+        async fn start_session(
+            &self,
+            cfg: BackendSessionConfig,
+        ) -> Result<BackendSessionHandle, String> {
+            Ok(BackendSessionHandle {
+                chat_session_id: cfg.chat_session_id,
+                backend_id: self.backend_id.clone(),
+            })
+        }
+        async fn send_message(
+            &self,
+            _s: &BackendSessionHandle,
+            _m: BackendAgentMessage,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn interrupt(&self, _s: &BackendSessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+        async fn respond_permission(
+            &self,
+            _s: &BackendSessionHandle,
+            _r: PermissionResponse,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn close_session(&self, _s: &BackendSessionHandle) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn make_workflow_test_registry(
+        claude_models: &[&str],
+        codex_models: &[&str],
+    ) -> AgentBackendRegistry {
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.agents.claude.models = claude_models.iter().map(|s| s.to_string()).collect();
+        cfg.agents.codex.models = codex_models.iter().map(|s| s.to_string()).collect();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let app_cfg = Arc::new(crate::config::AppConfig::new(cfg, tmp.path().to_path_buf()));
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(WorkflowMockBackend {
+            backend_id: "claude".to_string(),
+        }));
+        registry.register(Arc::new(WorkflowMockBackend {
+            backend_id: "codex".to_string(),
+        }));
+        registry.set_config(app_cfg);
+        registry
+    }
+
+    #[test]
+    fn workflow_resolve_unique_model_returns_owning_backend() {
+        let registry = make_workflow_test_registry(&["claude-4"], &["gpt-5"]);
+        let result = resolve_step_model_with_registry(&registry, "claude-4").unwrap();
+        assert_eq!(result, "claude");
+    }
+
+    #[test]
+    fn workflow_resolve_rejects_ambiguous_model_in_multiple_backends() {
+        let registry = make_workflow_test_registry(&["shared"], &["shared"]);
+        let err = resolve_step_model_with_registry(&registry, "shared").unwrap_err();
+        match err {
+            WorkflowEngineError::InvalidWorkflow(msg) => {
+                assert!(msg.contains("could not be resolved"));
+            }
+            other => panic!("expected InvalidWorkflow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn workflow_resolve_rejects_unknown_model() {
+        let registry = make_workflow_test_registry(&["claude-4"], &[]);
+        let err = resolve_step_model_with_registry(&registry, "unknown").unwrap_err();
+        match err {
+            WorkflowEngineError::InvalidWorkflow(msg) => {
+                assert!(msg.contains("unknown model"));
+            }
+            other => panic!("expected InvalidWorkflow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn workflow_resolve_rejects_invalid_format() {
+        let registry = make_workflow_test_registry(&["claude-4"], &[]);
+        // 形式不正（空文字）は登録判定に進む前に拒否される
+        let err = resolve_step_model_with_registry(&registry, "").unwrap_err();
+        match err {
+            WorkflowEngineError::InvalidWorkflow(msg) => {
+                assert!(msg.contains("invalid model"));
+            }
+            other => panic!("expected InvalidWorkflow, got {:?}", other),
+        }
+    }
 
     fn chat_session_for_test(
         id: &str,
@@ -10262,7 +10396,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_step_settings_permission_only() {
+    fn resolve_step_settings_permission_only_clears_model_to_unset() {
+        // Spec: workflow 経路では step model 未指定なら親の選択モデルへフォールバックしない。
+        // permission のみ指定でも selected_model は None になる。
         let result = resolve_step_settings(
             None,
             Some("plan".to_string()),
@@ -10275,14 +10411,16 @@ mod tests {
             result,
             ResolvedStepSettings {
                 backend_id: Some("claude".to_string()),
-                selected_model: Some("opus-4".to_string()),
+                selected_model: None,
                 permission_mode: "plan".to_string(),
             }
         );
     }
 
     #[test]
-    fn resolve_step_settings_nothing_specified() {
+    fn resolve_step_settings_nothing_specified_clears_model_to_unset() {
+        // Spec: model 未指定（None）は未指定状態のまま。親の selected_model へ
+        // 暗黙フォールバックしない。
         let result = resolve_step_settings(
             None,
             None,
@@ -10295,7 +10433,7 @@ mod tests {
             result,
             ResolvedStepSettings {
                 backend_id: Some("claude".to_string()),
-                selected_model: Some("opus-4".to_string()),
+                selected_model: None,
                 permission_mode: "acceptEdits".to_string(),
             }
         );
