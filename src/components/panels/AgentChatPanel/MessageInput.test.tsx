@@ -163,8 +163,13 @@ describe("MessageInput", () => {
 				{...defaultProps}
 				currentBackendId="codex"
 				backends={[
-					{ id: "claude", name: "Claude", available: true },
-					{ id: "codex", name: "Codex", available: true },
+					{
+						id: "claude",
+						name: "Claude",
+						available: true,
+						availableModels: [],
+					},
+					{ id: "codex", name: "Codex", available: true, availableModels: [] },
 				]}
 			/>,
 		);
@@ -177,15 +182,12 @@ describe("MessageInput", () => {
 		render(<MessageInput {...defaultProps} />);
 		expect(screen.getByTestId("model-selector-trigger")).toBeDefined();
 		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
-			"Auto",
+			"Unset",
 		);
 	});
 
-	it("renders ModelSelector with selected model name", () => {
-		const models = [
-			{ value: "claude-opus", displayName: "Claude Opus" },
-			{ value: "claude-sonnet", displayName: "Claude Sonnet" },
-		];
+	it("renders ModelSelector with selected model value", () => {
+		const models = [{ value: "claude-opus" }, { value: "claude-sonnet" }];
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -194,7 +196,7 @@ describe("MessageInput", () => {
 			/>,
 		);
 		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
-			"Claude Opus",
+			"claude-opus",
 		);
 	});
 
@@ -203,8 +205,13 @@ describe("MessageInput", () => {
 			<MessageInput
 				{...defaultProps}
 				backends={[
-					{ id: "claude", name: "Claude", available: true },
-					{ id: "codex", name: "Codex", available: true },
+					{
+						id: "claude",
+						name: "Claude",
+						available: true,
+						availableModels: [],
+					},
+					{ id: "codex", name: "Codex", available: true, availableModels: [] },
 				]}
 				currentBackendId="claude"
 				backendDisabled={false}
@@ -221,8 +228,13 @@ describe("MessageInput", () => {
 			<MessageInput
 				{...defaultProps}
 				backends={[
-					{ id: "claude", name: "Claude", available: true },
-					{ id: "codex", name: "Codex", available: true },
+					{
+						id: "claude",
+						name: "Claude",
+						available: true,
+						availableModels: [],
+					},
+					{ id: "codex", name: "Codex", available: true, availableModels: [] },
 				]}
 				currentBackendId="claude"
 				backendDisabled={true}

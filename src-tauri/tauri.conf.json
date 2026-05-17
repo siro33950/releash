@@ -46,6 +46,7 @@
     "resources": [
       "generated/remote/",
       "generated/bridges/claude-sdk-bridge.bundled.mjs",
+      "generated/bridges/claude-sdk-bridge-list-models.bundled.mjs",
       "generated/bridges/codex-sdk-bridge.bundled.mjs"
     ],
     "icon": [

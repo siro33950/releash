@@ -3,12 +3,16 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::notion::types::NotionRepoConfig;
 
 const TOKEN_LENGTH: usize = 48;
+static CONFIG_WRITE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn default_true() -> bool {
     true
@@ -38,6 +42,8 @@ pub struct ReleashConfig {
 pub struct AgentsSection {
     pub default: Option<String>,
     #[serde(default)]
+    pub claude: ClaudeAgentSection,
+    #[serde(default)]
     pub codex: CodexAgentSection,
 }
 
@@ -48,9 +54,18 @@ pub struct WorkflowSection {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClaudeAgentSection {
+    pub model: Option<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CodexAgentSection {
     pub model: Option<String>,
     pub cli_path: Option<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -264,6 +279,63 @@ impl AppConfig {
         write_config(&self.config_path, &config)?;
         Ok(result)
     }
+
+    /// 指定バックエンドの `agents.<backend>.models` を返す。
+    /// スキーマ未対応のバックエンドは `Err`。
+    pub fn models_for_backend(&self, backend_id: &str) -> Result<Vec<String>, String> {
+        let config = self
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        match backend_id {
+            "claude" => Ok(config.agents.claude.models.clone()),
+            "codex" => Ok(config.agents.codex.models.clone()),
+            _ => Err(format!(
+                "config schema にバックエンド '{backend_id}' のモデル一覧が存在しません"
+            )),
+        }
+    }
+
+    /// 指定バックエンドの `agents.<backend>.model`（生の設定値）を返す。
+    /// 登録判定は行わない。lib.rs から起動時整合性チェックの「設定値が
+    /// 登録一覧に含まれているか」を判定するために、schema 構造を漏らさず
+    /// 生値だけを問い合わせる経路として使う。
+    /// スキーマ未対応のバックエンドは `None`。
+    pub fn configured_initial_model_for_backend(&self, backend_id: &str) -> Option<String> {
+        let config = self.config.lock().ok()?;
+        match backend_id {
+            "claude" => config.agents.claude.model.clone(),
+            "codex" => config.agents.codex.model.clone(),
+            _ => None,
+        }
+    }
+
+    /// 指定バックエンドの `agents.<backend>.models` を transactional に書き換える。
+    /// in-memory のクローンを更新 → ディスクへ書き込み成功 → in-memory に反映、の順で
+    /// 失敗時はメモリ状態を一切変更しない。スキーマ未対応のバックエンドは `Err`。
+    pub fn set_models_for_backend(
+        &self,
+        backend_id: &str,
+        models: Vec<String>,
+    ) -> Result<(), String> {
+        let mut guard = self
+            .config
+            .lock()
+            .map_err(|e| format!("ロック取得失敗: {e}"))?;
+        let mut next = guard.clone();
+        match backend_id {
+            "claude" => next.agents.claude.models = models,
+            "codex" => next.agents.codex.models = models,
+            _ => {
+                return Err(format!(
+                    "config schema にバックエンド '{backend_id}' のモデル一覧が存在しません"
+                ));
+            }
+        }
+        write_config(&self.config_path, &next)?;
+        *guard = next;
+        Ok(())
+    }
 }
 
 pub fn generate_token() -> String {
@@ -308,9 +380,15 @@ pub fn write_config(path: &Path, config: &ReleashConfig) -> Result<(), String> {
     let content =
         toml::to_string_pretty(config).map_err(|e| format!("設定のシリアライズ失敗: {e}"))?;
 
-    let tmp_path = path.with_extension("toml.tmp");
-    fs::write(&tmp_path, &content).map_err(|e| format!("一時ファイル書き込み失敗: {e}"))?;
-    fs::rename(&tmp_path, path).map_err(|e| format!("ファイルのリネーム失敗: {e}"))?;
+    let tmp_path = next_config_tmp_path(path);
+    if let Err(e) = write_config_tmp_file(&tmp_path, &content) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    if let Err(e) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("ファイルのリネーム失敗: {e}"));
+    }
 
     #[cfg(unix)]
     {
@@ -319,6 +397,35 @@ pub fn write_config(path: &Path, config: &ReleashConfig) -> Result<(), String> {
             .map_err(|e| format!("パーミッション設定失敗: {e}"))?;
     }
 
+    Ok(())
+}
+
+fn next_config_tmp_path(path: &Path) -> PathBuf {
+    let counter = CONFIG_WRITE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("releash.toml");
+    let tmp_name = format!("{file_name}.{}.{}.tmp", std::process::id(), counter);
+    path.parent()
+        .map(|parent| parent.join(&tmp_name))
+        .unwrap_or_else(|| PathBuf::from(tmp_name))
+}
+
+fn write_config_tmp_file(tmp_path: &Path, content: &str) -> Result<(), String> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options
+        .open(tmp_path)
+        .map_err(|e| format!("一時ファイル作成失敗: {e}"))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("一時ファイル書き込み失敗: {e}"))?;
     Ok(())
 }
 
@@ -1045,6 +1152,26 @@ token = ""
 
         assert!(path.exists());
         assert!(!path.with_extension("toml.tmp").exists());
+        let tmp_files = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(tmp_files, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_tmp_file_is_created_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let tmp_path = dir.path().join("releash.toml.tmp");
+
+        write_config_tmp_file(&tmp_path, "secret").unwrap();
+
+        let mode = fs::metadata(&tmp_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     fn releash_hook_entry(matcher: &str, port: u16) -> serde_json::Value {
@@ -1640,5 +1767,181 @@ token = "existing_token_value_here_with_enough_length_!!"
         let config = load_or_create_config(&path).unwrap();
         assert!(config.agents.default.is_none());
         assert!(config.agents.codex.model.is_none());
+    }
+
+    #[test]
+    fn models_for_backend_returns_persisted_values() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        let mut config = ReleashConfig::default();
+        config.agents.claude.models = vec!["a".to_string(), "b".to_string()];
+        config.agents.codex.models = vec!["c".to_string()];
+        let app_config = AppConfig::new(config, path);
+
+        assert_eq!(
+            app_config.models_for_backend("claude").unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(
+            app_config.models_for_backend("codex").unwrap(),
+            vec!["c".to_string()]
+        );
+    }
+
+    #[test]
+    fn models_for_backend_errors_for_unknown_backend() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        let app_config = AppConfig::new(ReleashConfig::default(), path);
+        assert!(app_config.models_for_backend("unknown").is_err());
+    }
+
+    #[test]
+    fn set_models_for_backend_persists_and_keeps_other_intact() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.agents.claude.models = vec!["old".to_string()];
+        config.agents.codex.models = vec!["x".to_string()];
+        let app_config = AppConfig::new(config, path.clone());
+
+        app_config
+            .set_models_for_backend("claude", vec!["new1".to_string(), "new2".to_string()])
+            .unwrap();
+
+        // メモリ上の状態が更新されている
+        let cfg = app_config.get_config().unwrap();
+        assert_eq!(
+            cfg.agents.claude.models,
+            vec!["new1".to_string(), "new2".to_string()]
+        );
+        assert_eq!(cfg.agents.codex.models, vec!["x".to_string()]);
+
+        // ディスクにも反映されている
+        let reloaded: ReleashConfig = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            reloaded.agents.claude.models,
+            vec!["new1".to_string(), "new2".to_string()]
+        );
+        assert_eq!(reloaded.agents.codex.models, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn set_models_for_backend_errors_for_unknown_backend_without_changing_state() {
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        let mut config = ReleashConfig::default();
+        config.agents.claude.models = vec!["existing".to_string()];
+        let app_config = AppConfig::new(config, path);
+
+        let err = app_config.set_models_for_backend("nope", vec!["a".to_string()]);
+        assert!(err.is_err());
+        // メモリ状態は変更されない
+        let cfg = app_config.get_config().unwrap();
+        assert_eq!(cfg.agents.claude.models, vec!["existing".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn set_models_for_backend_concurrent_updates_keep_last_writer_value_intact() {
+        use std::sync::Arc;
+        use tokio::sync::Barrier;
+
+        // 同一バックエンドへのほぼ同時更新が走った場合、最後にコミットされた
+        // 有効値が config に残り、他バックエンドの models は影響を受けない。
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.agents.claude.models = vec!["initial".to_string()];
+        config.agents.codex.models = vec!["codex-keep-a".to_string(), "codex-keep-b".to_string()];
+        let app_config = Arc::new(AppConfig::new(config, path));
+
+        let writers = 8usize;
+        let barrier = Arc::new(Barrier::new(writers));
+        let mut handles = Vec::with_capacity(writers);
+
+        for i in 0..writers {
+            let cfg = app_config.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                cfg.set_models_for_backend("claude", vec![format!("writer-{i}")])
+            }));
+        }
+        for h in handles {
+            h.await.unwrap().unwrap();
+        }
+
+        // 最後に勝った writer の値が反映されており、書き込みのいずれかが in-memory に
+        // 残っている（"initial" や混在値ではない）。
+        let final_models = app_config.get_config().unwrap().agents.claude.models;
+        assert_eq!(final_models.len(), 1);
+        let v = &final_models[0];
+        assert!(
+            v.starts_with("writer-"),
+            "expected one of writer-* but got {v}"
+        );
+
+        // 他バックエンドの models は変更されない。
+        let codex_models = app_config.get_config().unwrap().agents.codex.models;
+        assert_eq!(
+            codex_models,
+            vec!["codex-keep-a".to_string(), "codex-keep-b".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn set_models_for_backend_sequential_writers_keep_last_committed_value() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex as TokioMutex;
+
+        // 同一バックエンドへの更新を順序付きで複数回行ったとき、最後にコミットされた
+        // writer の値が in-memory / on-disk のいずれにも反映されることを担保する。
+        let dir = TempDir::new().unwrap();
+        let path = config_path(&dir);
+        let mut config = ReleashConfig::default();
+        config.server.token = generate_token();
+        config.agents.claude.models = vec!["initial".to_string()];
+        let app_config = Arc::new(AppConfig::new(config, path.clone()));
+
+        // 共有 Mutex で writer 間の順序を直列化し、書き込み順を確定させる。
+        let order = Arc::new(TokioMutex::new(()));
+        let writers = ["first", "second", "third", "final"];
+        for name in &writers {
+            let cfg = app_config.clone();
+            let order = order.clone();
+            let value = (*name).to_string();
+            let guard = order.lock().await;
+            cfg.set_models_for_backend("claude", vec![value]).unwrap();
+            drop(guard);
+        }
+
+        // 最後の writer の値が in-memory に残る。
+        let in_memory = app_config.get_config().unwrap().agents.claude.models;
+        assert_eq!(in_memory, vec!["final".to_string()]);
+
+        // on-disk にも反映されている。
+        let reloaded: ReleashConfig = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.agents.claude.models, vec!["final".to_string()]);
+    }
+
+    #[test]
+    fn set_models_for_backend_keeps_state_if_write_fails() {
+        // 書き込み失敗時に in-memory が変更されないことを確認するため、
+        // tempdir 内で親パスをファイル化し、環境に依存せず ENOTDIR を発生させる。
+        let dir = TempDir::new().unwrap();
+        let file_parent = dir.path().join("not-a-directory");
+        fs::write(&file_parent, "not a directory").unwrap();
+        let mut config = ReleashConfig::default();
+        config.agents.claude.models = vec!["original".to_string()];
+        let bad_path = file_parent.join("releash.toml");
+        let app_config = AppConfig::new(config, bad_path);
+
+        let err = app_config.set_models_for_backend("claude", vec!["new".to_string()]);
+        assert!(err.is_err());
+        // 書き込み失敗時は in-memory も変更されない
+        let cfg = app_config.get_config().unwrap();
+        assert_eq!(cfg.agents.claude.models, vec!["original".to_string()]);
     }
 }

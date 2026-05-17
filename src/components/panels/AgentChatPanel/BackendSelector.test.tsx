@@ -7,6 +7,7 @@ const makeBackend = (
 	overrides: Partial<BackendInfo> & { id: string; name: string },
 ): BackendInfo => ({
 	available: true,
+	availableModels: [],
 	...overrides,
 });
 

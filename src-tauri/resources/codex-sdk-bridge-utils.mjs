@@ -1,11 +1,3 @@
-export const SUPPORTED_CODEX_MODELS = [
-	{ value: "gpt-5.4", displayName: "GPT-5.4" },
-	{ value: "gpt-5.3-codex", displayName: "GPT-5.3 Codex" },
-	{ value: "gpt-5.2-codex", displayName: "GPT-5.2 Codex" },
-	{ value: "gpt-5-codex", displayName: "GPT-5 Codex" },
-	{ value: "o3", displayName: "o3" },
-];
-
 export function approvalPolicyFromPermissionMode(permissionMode) {
 	switch (permissionMode) {
 		case "plan":

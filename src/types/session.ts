@@ -8,7 +8,6 @@ export type PermissionMode =
 
 export interface ModelInfo {
 	value: string;
-	displayName: string;
 }
 
 export interface PermissionRequest {
@@ -155,6 +154,7 @@ export interface BackendInfo {
 	id: string;
 	name: string;
 	available: boolean;
+	availableModels: ModelInfo[];
 }
 
 /**

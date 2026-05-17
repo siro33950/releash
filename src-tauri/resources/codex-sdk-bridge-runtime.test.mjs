@@ -105,7 +105,7 @@ async function waitFor(predicate) {
 }
 
 describe("CodexBridgeRuntime", () => {
-	it("initializes a new thread and emits supported models", () => {
+	it("initializes a new thread and does not emit a hardcoded supported_models list", () => {
 		const codex = new FakeCodex();
 		const { runtime, emitted } = makeRuntime(codex);
 
@@ -123,8 +123,12 @@ describe("CodexBridgeRuntime", () => {
 			approvalPolicy: "never",
 			sandboxMode: "workspace-write",
 		});
-		expect(emitted[0]).toMatchObject({ type: "supported_models" });
-		expect(emitted[1]).toMatchObject({
+		// Codex のモデル一覧は起動時 CLI 同期で config.toml に反映するため、
+		// bridge からは supported_models を emit しない。
+		expect(
+			emitted.some((m) => m.type === "supported_models"),
+		).toBe(false);
+		expect(emitted[0]).toMatchObject({
 			type: "session_ready",
 			session_id: null,
 			initialized: true,
@@ -155,8 +159,10 @@ describe("CodexBridgeRuntime", () => {
 
 		expect(calls).toEqual(["/usr/local/bin/codex"]);
 		expect(codex.started).toHaveLength(1);
-		expect(emitted[0]).toMatchObject({ type: "supported_models" });
-		expect(emitted[1]).toMatchObject({
+		expect(
+			emitted.some((m) => m.type === "supported_models"),
+		).toBe(false);
+		expect(emitted[0]).toMatchObject({
 			type: "session_ready",
 			session_id: null,
 			initialized: true,

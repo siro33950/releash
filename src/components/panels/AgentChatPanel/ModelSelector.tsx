@@ -16,8 +16,6 @@ interface ModelSelectorProps {
 	disabled: boolean;
 }
 
-const AUTO_VALUE = "__auto__";
-
 export function ModelSelector({
 	models,
 	currentModelId,
@@ -25,7 +23,9 @@ export function ModelSelector({
 	disabled,
 }: ModelSelectorProps) {
 	const currentLabel =
-		models.find((m) => m.value === currentModelId)?.displayName ?? "Auto";
+		models.find((m) => m.value === currentModelId)?.value ??
+		currentModelId ??
+		"Unset";
 
 	return (
 		<DropdownMenu>
@@ -33,7 +33,7 @@ export function ModelSelector({
 				<Button
 					variant="ghost"
 					size="xs"
-					disabled={disabled || models.length === 0}
+					disabled={disabled}
 					data-testid="model-selector-trigger"
 					className="gap-1"
 				>
@@ -43,13 +43,21 @@ export function ModelSelector({
 			</DropdownMenuTrigger>
 			<DropdownMenuContent side="top" align="start">
 				<DropdownMenuRadioGroup
-					value={currentModelId ?? AUTO_VALUE}
-					onValueChange={(v) => onModelChange(v === AUTO_VALUE ? null : v)}
+					value={currentModelId ?? ""}
+					onValueChange={(v) => onModelChange(v === "" ? null : v)}
 				>
-					<DropdownMenuRadioItem value={AUTO_VALUE}>Auto</DropdownMenuRadioItem>
+					{currentModelId !== null && (
+						<DropdownMenuRadioItem
+							key="__unset__"
+							value=""
+							data-testid="model-selector-clear"
+						>
+							Unset
+						</DropdownMenuRadioItem>
+					)}
 					{models.map((m) => (
 						<DropdownMenuRadioItem key={m.value} value={m.value}>
-							{m.displayName}
+							{m.value}
 						</DropdownMenuRadioItem>
 					))}
 				</DropdownMenuRadioGroup>

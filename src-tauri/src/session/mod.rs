@@ -367,8 +367,14 @@ pub fn create_session_internal(
     worktree_path: &str,
     backend_id: Option<String>,
 ) -> Result<ChatSession, String> {
+    let session = build_new_session(worktree_path, backend_id);
+    session_store.save_session(data_dir, &session)?;
+    Ok(session)
+}
+
+fn build_new_session(worktree_path: &str, backend_id: Option<String>) -> ChatSession {
     let now = now_timestamp();
-    let session = ChatSession {
+    ChatSession {
         id: uuid::Uuid::new_v4().to_string(),
         worktree_path: worktree_path.to_string(),
         messages: Vec::new(),
@@ -381,7 +387,27 @@ pub fn create_session_internal(
         workflow_state: None,
         backend_id,
         workflow_step_session: false,
-    };
+    }
+}
+
+/// 新規セッションを作成し、当該 backend の登録済み初期モデルがあれば
+/// `selected_model` に永続化する。
+///
+/// 「selected_model=None」を「明示的に未指定」の意味に固定するため、初期モデルは
+/// セッション作成時にのみ書き込む。以後の spawn 経路では `selected_model` が None
+/// なら暗黙の既定モデルへフォールバックさせない。
+pub fn create_session_with_initial_model(
+    session_store: &SessionStore,
+    registry: &crate::backends::AgentBackendRegistry,
+    data_dir: &std::path::Path,
+    worktree_path: &str,
+    backend_id: String,
+) -> Result<ChatSession, String> {
+    let mut session = build_new_session(worktree_path, Some(backend_id.clone()));
+    if let Some(initial_model) = registry.initial_model_for(&backend_id) {
+        session.selected_model = Some(initial_model);
+        session.updated_at = now_timestamp();
+    }
     session_store.save_session(data_dir, &session)?;
     Ok(session)
 }
@@ -426,7 +452,13 @@ pub fn create_session(
 ) -> Result<ChatSession, String> {
     let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
     let data_dir = resolve_data_dir(&app)?;
-    create_session_internal(&state, &data_dir, &worktree_path, Some(resolved_backend_id))
+    create_session_with_initial_model(
+        &state,
+        registry.inner(),
+        &data_dir,
+        &worktree_path,
+        resolved_backend_id,
+    )
 }
 
 #[tauri::command]
@@ -1502,6 +1534,82 @@ mod tests {
     }
 
     #[test]
+    fn create_session_with_initial_model_persists_when_registered() {
+        // spec: 既定モデルが現行の一覧に含まれる場合は初期モデルとして使われる。
+        // セッション作成時に解決して `selected_model` に永続化する。
+        let store = SessionStore::default();
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.agents.claude.models = vec!["opus-4".to_string(), "haiku".to_string()];
+        cfg.agents.claude.model = Some("opus-4".to_string());
+        let cfg_tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = std::sync::Arc::new(crate::config::AppConfig::new(
+            cfg,
+            cfg_tmp.path().to_path_buf(),
+        ));
+
+        let mut registry = crate::backends::AgentBackendRegistry::new();
+        registry.register(std::sync::Arc::new(
+            crate::backends::claude::ClaudeBackend::new(),
+        ));
+        registry.register(std::sync::Arc::new(
+            crate::backends::codex::CodexBackend::new(),
+        ));
+        registry.set_config(config);
+
+        let session = create_session_with_initial_model(
+            &store,
+            &registry,
+            dir.path(),
+            "/repo",
+            "claude".to_string(),
+        )
+        .unwrap();
+        assert_eq!(session.selected_model, Some("opus-4".to_string()));
+
+        // 永続化されている (on-disk から再ロードしても保持される)
+        let reloaded = store.get_session(dir.path(), &session.id).unwrap().unwrap();
+        assert_eq!(reloaded.selected_model, Some("opus-4".to_string()));
+    }
+
+    #[test]
+    fn create_session_with_initial_model_keeps_none_when_unregistered() {
+        // spec: 既定モデルが現行の一覧に含まれない場合は未指定として扱う。
+        // 暗黙のフォールバックは行わない。
+        let store = SessionStore::default();
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut cfg = crate::config::ReleashConfig::default();
+        cfg.agents.claude.models = vec!["haiku".to_string()];
+        cfg.agents.claude.model = Some("opus-4".to_string());
+        let cfg_tmp = tempfile::NamedTempFile::new().unwrap();
+        let config = std::sync::Arc::new(crate::config::AppConfig::new(
+            cfg,
+            cfg_tmp.path().to_path_buf(),
+        ));
+
+        let mut registry = crate::backends::AgentBackendRegistry::new();
+        registry.register(std::sync::Arc::new(
+            crate::backends::claude::ClaudeBackend::new(),
+        ));
+        registry.register(std::sync::Arc::new(
+            crate::backends::codex::CodexBackend::new(),
+        ));
+        registry.set_config(config);
+
+        let session = create_session_with_initial_model(
+            &store,
+            &registry,
+            dir.path(),
+            "/repo",
+            "claude".to_string(),
+        )
+        .unwrap();
+        assert_eq!(session.selected_model, None);
+    }
+
+    #[test]
     fn chat_session_without_backend_id_deserializes() {
         let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0}"#;
         let session: ChatSession = serde_json::from_str(json).unwrap();
@@ -1564,8 +1672,8 @@ mod tests {
     mod resolve_session_backend_tests {
         use super::*;
         use crate::backends::{
-            AgentBackend, AgentBackendRegistry, AgentMessage, ModelInfo, PermissionResponse,
-            SessionConfig, SessionHandle,
+            AgentBackend, AgentBackendRegistry, AgentMessage, PermissionResponse, SessionConfig,
+            SessionHandle,
         };
         use async_trait::async_trait;
 
@@ -1604,7 +1712,7 @@ mod tests {
             ) -> Result<(), String> {
                 Ok(())
             }
-            async fn available_models(&self) -> Result<Vec<ModelInfo>, String> {
+            async fn fetch_models_from_cli(&self) -> Result<Vec<String>, String> {
                 Ok(vec![])
             }
             async fn close_session(&self, _session: &SessionHandle) -> Result<(), String> {

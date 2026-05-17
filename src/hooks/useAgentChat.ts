@@ -95,7 +95,7 @@ function dispatchSessionMeta(
 	dispatch: React.Dispatch<AgentChatAction>,
 	sessionId: string,
 	response: {
-		session: { permissionMode?: PermissionMode };
+		session: { permissionMode?: PermissionMode; backendId?: string | null };
 		turnPhase: TurnPhase;
 		selectedModel: string | null;
 		availableModels: ModelInfo[];
@@ -120,6 +120,7 @@ function dispatchSessionMeta(
 	dispatch({
 		type: "SET_AVAILABLE_MODELS",
 		models: response.availableModels,
+		backendId: response.session.backendId,
 	});
 }
 

@@ -65,6 +65,11 @@ interface ModelsUpdated {
 	selected_model: string | null;
 }
 
+interface BackendModelsUpdated {
+	backend_id: string;
+	available_models: ModelInfo[];
+}
+
 export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	activeSessionRef: MutableRefObject<ChatSession | null>;
@@ -375,7 +380,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		};
 	}, [dispatch, activeSessionRef]);
 
-	// Listen to agent-models-updated from Rust backend
+	// Listen to agent-models-updated (session 単位の更新) from Rust backend
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
 		let cancelled = false;
@@ -383,14 +388,48 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		listen<ModelsUpdated>("agent-models-updated", (event) => {
 			const { chat_session_id, available_models, selected_model } =
 				event.payload;
-			dispatch({
-				type: "SET_AVAILABLE_MODELS",
-				models: available_models,
-			});
+			const activeSession = activeSessionRef.current;
+			if (activeSession?.id === chat_session_id) {
+				dispatch({
+					type: "SET_AVAILABLE_MODELS",
+					models: available_models,
+					...(activeSession.backendId
+						? { backendId: activeSession.backendId }
+						: {}),
+				});
+			}
 			dispatch({
 				type: "SET_SESSION_MODEL",
 				sessionId: chat_session_id,
 				modelId: selected_model,
+			});
+		}).then((fn) => {
+			if (cancelled) {
+				fn();
+			} else {
+				unlisten = fn;
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, [dispatch, activeSessionRef]);
+
+	// Listen to agent-backend-models-updated (backend 全体向け候補更新通知)
+	// 全 backend の候補を保持し、表示対象 backend_id と一致する場合のみ現在候補にも反映する。
+	// session 単位の payload とは event 名を分離しており、選択モデルへの dispatch は行わない。
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+
+		listen<BackendModelsUpdated>("agent-backend-models-updated", (event) => {
+			const { backend_id, available_models } = event.payload;
+			dispatch({
+				type: "SET_BACKEND_MODELS",
+				backendId: backend_id,
+				models: available_models,
 			});
 		}).then((fn) => {
 			if (cancelled) {

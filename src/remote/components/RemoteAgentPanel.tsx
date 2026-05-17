@@ -6,6 +6,7 @@ import {
 	RefreshCw,
 	Send,
 	Square,
+	X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { BackendInfoMsg, WsMessage } from "@/types/protocol";
@@ -167,6 +168,9 @@ export function RemoteAgentPanel({
 				case "agent_model_set_response":
 					if (!msg.payload.success) {
 						setError(msg.payload.error ?? "Agent command failed.");
+					} else if (msg.type === "agent_model_set_response") {
+						setModelId(msg.payload.model_id ?? "");
+						setError(null);
 					}
 					break;
 			}
@@ -178,6 +182,7 @@ export function RemoteAgentPanel({
 		availableBackends.find((backend) => backend.id === lockedBackendId) ??
 		availableBackends[0] ??
 		null;
+	const selectedBackendModels = selectedBackend?.available_models ?? [];
 
 	const startSession = () => {
 		if (status !== "connected" || !selectedBackend) return;
@@ -225,11 +230,23 @@ export function RemoteAgentPanel({
 
 	const applyModel = () => {
 		if (!startedSession) return;
+		if (modelId.length === 0) return;
 		send({
 			type: "agent_model_set_request",
 			payload: {
 				session_id: startedSession.sessionId,
-				model_id: modelId.trim() || null,
+				model_id: modelId,
+			},
+		});
+	};
+
+	const clearModel = () => {
+		if (!startedSession) return;
+		send({
+			type: "agent_model_set_request",
+			payload: {
+				session_id: startedSession.sessionId,
+				model_id: null,
 			},
 		});
 	};
@@ -306,18 +323,33 @@ export function RemoteAgentPanel({
 
 				{startedSession && (
 					<div className="flex gap-2">
-						<input
+						<select
 							value={modelId}
 							onChange={(event) => setModelId(event.target.value)}
-							placeholder="Model"
 							className="min-w-0 flex-1 h-9 rounded border border-border bg-background px-2 text-sm"
-						/>
+							aria-label="Model"
+						>
+							{selectedBackendModels.map((model) => (
+								<option key={model.value} value={model.value}>
+									{model.value}
+								</option>
+							))}
+						</select>
 						<button
 							type="button"
 							onClick={applyModel}
+							disabled={modelId.length === 0}
 							className="px-3 h-9 rounded border border-border text-sm"
 						>
 							Set
+						</button>
+						<button
+							type="button"
+							onClick={clearModel}
+							className="inline-flex items-center justify-center h-9 w-9 rounded border border-border"
+							aria-label="Clear model"
+						>
+							<X className="size-4" />
 						</button>
 					</div>
 				)}
