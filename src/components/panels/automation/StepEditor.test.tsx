@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { Step } from "@/types/workflow";
+import type { NodeDefinition } from "@/types/workflow";
 import { StepEditor } from "./StepEditor";
 
 // Radix UI uses pointer events; jsdom doesn't implement them
@@ -12,19 +12,21 @@ beforeAll(() => {
 	HTMLElement.prototype.scrollIntoView = vi.fn() as never;
 });
 
-function makeStep(overrides: Partial<Step> = {}): Step {
+function makeNodeDefinition(
+	overrides: Partial<NodeDefinition> = {},
+): NodeDefinition {
 	return {
 		name: "implement",
-		mode: "auto",
+		type: "agent",
 		rules: [],
 		permission: "edit",
 		...overrides,
 	};
 }
 
-function renderEditor(stepOverride: Partial<Step> = {}) {
+function renderEditor(stepOverride: Partial<NodeDefinition> = {}) {
 	const onUpdate = vi.fn();
-	const step = makeStep(stepOverride);
+	const step = makeNodeDefinition(stepOverride);
 	render(
 		<StepEditor
 			step={step}
@@ -84,8 +86,29 @@ describe("StepEditor permission select", () => {
 		await user.click(await screen.findByRole("option", { name: "Read Only" }));
 
 		expect(onUpdate).toHaveBeenCalled();
-		const updater = onUpdate.mock.calls[0][0] as (s: Step) => Step;
-		const updated = updater(makeStep({ permission: "edit" }));
+		const updater = onUpdate.mock.calls[0][0] as (
+			s: NodeDefinition,
+		) => NodeDefinition;
+		const updated = updater(makeNodeDefinition({ permission: "edit" }));
 		expect(updated.permission).toBe("readonly");
+	});
+});
+
+describe("StepEditor type select", () => {
+	// [02] Bash 種別は実行系未対応で backend が拒否するため、UI からも選べないこと
+	// を担保する（spec 107 行『bash 実行ロジックは追加しない』との UI 側の整合）。
+	it("offers only Agent and Approval; Bash is not selectable", async () => {
+		const user = userEvent.setup();
+		renderEditor();
+
+		await user.click(screen.getByText("implement"));
+		await user.click(screen.getByTestId("step-0-type"));
+
+		const listbox = await screen.findByRole("listbox");
+		const options = within(listbox).getAllByRole("option");
+		expect(options.map((o) => o.textContent)).toEqual(["Agent", "Approval"]);
+
+		expect(within(listbox).queryByText("Bash")).toBeNull();
+		expect(within(listbox).queryByRole("option", { name: "Bash" })).toBeNull();
 	});
 });

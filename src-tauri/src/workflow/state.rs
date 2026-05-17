@@ -76,7 +76,9 @@ impl TokenUsage {
     }
 }
 
-/// 各ステップの表示用状態を計算する。
+/// 各 node の表示用状態を計算する。
+///
+/// 命名は本マイルストーンでは `step_*` を維持する（vocabulary を `node_*` に寄せるのは [04] の責務）。
 pub fn compute_step_states(
     workflow: &Workflow,
     current_step_index: usize,
@@ -84,15 +86,15 @@ pub fn compute_step_states(
     step_history: &[StepHistoryEntry],
 ) -> HashMap<String, String> {
     workflow
-        .steps
+        .nodes
         .iter()
         .enumerate()
-        .map(|(i, step)| {
-            let in_history = step_history.iter().any(|h| h.step_name == step.name);
+        .map(|(i, node)| {
+            let in_history = step_history.iter().any(|h| h.step_name == node.name);
             let s = if i == current_step_index {
-                // ワークフローがfailedでも、このステップ自体が完了済みならcompletedとする。
+                // ワークフローがfailedでも、この node 自体が完了済みならcompletedとする。
                 // cycle_guard超過やcontract violation等のワークフローレベル失敗で、
-                // 完了済みステップがfailed表示になるのを防ぐ。
+                // 完了済み node がfailed表示になるのを防ぐ。
                 if matches!(state, WorkflowExecutionState::Failed { .. }) && in_history {
                     "completed"
                 } else {
@@ -103,7 +105,7 @@ pub fn compute_step_states(
             } else {
                 "pending"
             };
-            (step.name.clone(), s.to_string())
+            (node.name.clone(), s.to_string())
         })
         .collect()
 }

@@ -20,15 +20,16 @@ function makeWorkflowState(
 			name: "test-workflow",
 			description: "test",
 			builtin: false,
-			steps: [
-				{ name: "plan", mode: "auto", instruction: "plan", rules: [] },
-				{ name: "review", mode: "approval", instruction: "review", rules: [] },
+			nodes: [
+				{ name: "plan", type: "agent", instruction: "plan", rules: [] },
+				{ name: "review", type: "approval", instruction: "review", rules: [] },
 				{
 					name: "parallel-review",
 					rules: [],
-					parallel: [
-						{ name: "arch-review", mode: "auto" },
-						{ name: "security-review", mode: "auto" },
+					type: "parallel",
+					parallel_children: [
+						{ name: "arch-review", type: "agent" },
+						{ name: "security-review", type: "agent" },
 					],
 				},
 			],
@@ -54,7 +55,7 @@ describe("WorkflowStatusSummary", () => {
 				currentStepName: "plan",
 			}),
 			label: "Running plan",
-			details: "auto step",
+			details: "agent step",
 		},
 		{
 			name: "waiting for approval",

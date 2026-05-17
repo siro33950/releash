@@ -50,11 +50,24 @@ export interface CycleGuard {
 	max_iterations: number;
 }
 
-export type StepMode = "auto" | "approval";
+// [02] Normalized Workflow: 旧 StepMode は廃止され、NodeType に統合された。
+export type NodeType = "agent" | "bash" | "approval" | "parallel";
 
-export interface ParallelStep {
+export interface AggregateConfig {
+	all_match?: string;
+	any_match?: string;
+	then: string;
+	else: string;
+}
+
+/// 並列 node 配下の子 node の API 表現。
+///
+/// [02] schema 境界: Rust 側 `ChildNodeDefinition` と語彙を一致させるため、子 node には
+/// top-level 専用フィールド（`rules` / `cycle_guard` / `resets_cycle_for` / `collect` /
+/// `parallel_children` / `aggregate` / `command`）を持たせない。
+export interface ChildNodeDefinition {
 	name: string;
-	mode: StepMode;
+	type: NodeType;
 	policy?: string;
 	knowledge?: string;
 	instruction?: string;
@@ -65,28 +78,31 @@ export interface ParallelStep {
 	permission?: PermissionMode;
 }
 
-export interface AggregateConfig {
-	all_match?: string;
-	any_match?: string;
-	then: string;
-	else: string;
-}
-
-export interface Step {
+/// node 種別ごとの設定は、boundary doc では agent_config / approval_config /
+/// command_config / parallel_children として概念分類されるが、frontend では
+/// 表示・編集の都合上フラットなフィールドで保持する。Rust schema 側もフラット。
+export interface NodeDefinition {
 	name: string;
-	mode?: StepMode;
+	type: NodeType;
+	// agent / approval 種別で使用される prompt 関連 facet 参照
 	policy?: string;
 	knowledge?: string;
 	instruction?: string;
 	output_contract?: string;
-	rules: TransitionRule[];
-	cycle_guard?: CycleGuard;
 	pass_previous_response?: boolean;
 	pass_output_from?: string[];
 	inline_prompt?: string;
 	collect?: CollectConfig;
-	parallel?: ParallelStep[];
+	// bash 種別で使用される command
+	command?: string;
+	// parallel 種別で使用される子 node 群と集約条件
+	parallel_children?: ChildNodeDefinition[];
 	aggregate?: AggregateConfig;
+	// 共通: rules は省略時 undefined（Rust 側で serde default 経路を持つが、frontend
+	// fixture では空配列を毎回書かなくて済むよう optional とする）
+	rules?: TransitionRule[];
+	cycle_guard?: CycleGuard;
+	resets_cycle_for?: string[];
 	model?: string;
 	permission?: PermissionMode;
 }
@@ -107,7 +123,7 @@ export interface Workflow {
 	name: string;
 	description: string;
 	builtin: boolean;
-	steps: Step[];
+	nodes: NodeDefinition[];
 }
 
 export interface StepOutput {

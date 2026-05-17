@@ -81,28 +81,25 @@ workflow engine は状態遷移の唯一の権威であり続ける。Agent や 
 
 ## 中核モデル
 
-既存 YAML と既存 Tauri command を維持しながら、内部の未来形モデルを明確にする。
+milestone [02] で旧 YAML / 旧 `WorkflowState` JSON / 旧 NDJSON 互換を廃棄し、`Workflow`（template 定義）と `NodeDefinition` を新 schema として直接 YAML deserialize 先に据える。旧 `Step` / `ParallelStep` / `AggregateConfig` / `StepMode` 型は削除済みで、`workflow/normalized.rs`（旧→新の変換層）は新設しない。
 
 未来形モデル各々のフィールド詳細・既存モジュールの future core / compatibility adapter 分類・境界条件は、本文書から派生する north star ドキュメントとして [`workflow-engine-model-boundary.md`](./workflow-engine-model-boundary.md) にまとめている。詳細を参照する場合はそちらを正本とすること。
 
 ### Workflow Definition
 
-ユーザーが書く workflow template。既存の `Workflow` と `steps:` YAML は有効なままにする。
+ユーザーが書く workflow template。新 schema の `Workflow`（`name` / `description` / `builtin` / `nodes`）が YAML deserialize の直接先となる。旧 `steps:` 記法・旧 `mode` 記法は受理されない。
 
 ### Node Definition
 
-内部実行用に正規化された実行単位。
+実行単位。`NodeDefinition` は `node_type` を直接持ち、YAML 上は `type: agent | bash | approval | parallel` で表現される。並列 node の子 node は `ChildNodeDefinition`（top-level 専用フィールド `transition_rules` / `cycle_guard` / `parallel_children` / `aggregate` / `command` / `collect` / `resets_cycle_for` を持たない子専用型）として再帰構造から切り離される。
 
-既存の `Step` は、実行前に `NodeDefinition` へ正規化する。これにより後方互換を engine の中核状態遷移から切り離す。
-
-変換例:
+YAML 上の表現例:
 
 ```text
-mode: auto          -> type: agent
-mode: approval      -> type: approval
-parallel: [...]     -> type: parallel
-aggregate: ...      -> parallel node の aggregate behavior
-type: bash          -> command node
+type: agent       -> エージェント駆動の作業単位
+type: approval    -> 利用者の承認を必要とする待機単位
+type: bash        -> シェル実行に相当する作業単位（command 必須）
+type: parallel    -> 子 node 群を並列に走らせ、aggregate で収束する単位
 ```
 
 ### Workflow Run
@@ -194,25 +191,25 @@ RunAborted
 
 ## 互換性境界
 
-新設計を旧概念に合わせて曲げない。旧概念を新モデルへ adapter する。
+新設計を旧概念に合わせて曲げない。**[02] Normalized Workflow 以降は、互換性境界の責務を縮退させ、旧 schema / 旧 state / 旧 NDJSON 互換は維持しない**。旧概念から新モデルへの adapter 層は、user-authored YAML（新 schema として記述される）の入力経路と built-in YAML 提供経路のみに限定する。
 
 ```text
-Old Tauri command / old UI / old YAML
+User-authored YAML (新 schema) / built-in YAML / external command
         |
         v
-compat adapter
+compat adapter（user input の YAML 入口に縮退）
         |
         v
 Run / Node / Command / Event model
 ```
 
-ルール:
+ルール（[02] 以降）:
 
-- 既存 YAML は有効なままにする。
-- 既存 Tauri command は動かし続ける。
-- 既存 `WorkflowState` JSON は deserialize できるようにする。
+- 旧 `Workflow` / `Step` / `ParallelStep` / `AggregateConfig` / `StepMode` は codebase から削除する。
+- 既存 `WorkflowState` JSON / NDJSON event log の在庫はリリース時に破棄される前提を許容する（互換は維持しない）。
+- 既存 Tauri command の入口・出口形は本マイルストーン範囲では維持し、後続で `WorkflowCommand` typed 入口に寄せる。
 - engine 全体に old/new 分岐を散らさない。
-- 旧 `Step` から新 `NodeDefinition` への変換は専用の normalization module に閉じ込める。
+- 旧→新の変換層（`workflow/normalized.rs`）は**新設しない**。`schema.rs` が新 `Workflow` / `NodeDefinition` を YAML deserialize 先として直接保持し、engine もそれを直接消費する。
 - `worktree_path` 主語の API は、active `run_id` を解決する互換 wrapper として残す。
 - 新 API と CLI は `run_id` を主語にする。
 
@@ -300,21 +297,35 @@ main agent は state transition を所有しない。approve、reject、abort、
 
 ### [02] Normalized Workflow
 
-目的: 既存 `Step` YAML と将来の `NodeDefinition` 実行を分離する。
+目的: 旧 `Step` schema を**削除**し、新 `NodeDefinition` を YAML deserialize 先として直接持つ構造に統一する。
 
-作業:
+方針:
 
-- `workflow/normalized.rs` を追加する。
-- 既存 `Workflow` / `Step` / `ParallelStep` を normalized node に変換する。
-- `type` 未指定は `agent` として扱う。
-- `mode: approval` は `approval` に map する。
-- `parallel` block は `parallel` node に map する。
-- 既存 validation behavior は維持する。
+- 旧 `Workflow` / `Step` / `ParallelStep` / `AggregateConfig` / `StepMode` を削除する（codebase から完全に消す）。
+- 新 `Workflow`（template 定義）/ `NodeDefinition` および関連型を `schema.rs` に直接導入する。`workflow/normalized.rs` は新設しない。
+- YAML schema を `node_type` ベース（`type: agent | bash | approval | parallel`）で書き直す。`mode` は廃止する。
+- 旧 `Step` の各 mode/parallel 表現は、新 schema 上では node_type で直接表現する:
+
+```text
+旧 mode: auto / mode 未指定  → 新 type: agent
+旧 mode: approval            → 新 type: approval
+旧 mode: interactive         → 新 type: agent（対話前提の agent として扱う）
+旧 parallel: [...]           → 新 type: parallel + parallel_children
+旧 aggregate: ...            → 新 parallel node の aggregate 振る舞い
+```
+
+- `built-in/spec-driven-development.yml` を新 schema で書き直す（既存挙動と等価）。
+- `state.rs::WorkflowState.workflow_definition` と `log.rs::WorkflowLogEvent::WorkflowStarted.workflow_definition` の型を新 `Workflow` に置換する（在庫 JSON / NDJSON は破棄前提）。
+- `engine.rs` / `contract.rs` は旧 schema 型を一切 import しない状態にする。
+- `validation.rs` / `diagnostics.rs` / `storage.rs` / `facet.rs` / `builtin.rs` / `runtime_view.rs` の compat adapter 群と、`commands.rs` / `agent_commands.rs` / `session_commands.rs` / `session/mod.rs` / `workflow_state_presenter.rs` の caller 群を新型に追従させる。
 
 完了条件:
 
-- `spec-driven-development.yml` が挙動変更なしで normalize できる。
-- mode/type/parallel 変換の unit test がある。
+- 旧 schema 型（`Workflow` / `Step` / `ParallelStep` / `AggregateConfig` / `StepMode`）が codebase に存在しない（`grep` で 0 件）。
+- `workflow/normalized.rs` は新設されていない。
+- `spec-driven-development.yml` が新 schema で書き直され、既存挙動と等価に実行できる。
+- node_type（agent / approval / parallel / bash）別の load unit test が `schema.rs` 内に存在する。
+- `cargo fmt --check` / `cargo clippy -- -D warnings` / `cargo test` および `pnpm lint` / `pnpm test` / `pnpm build` が成功する。
 
 ### [03] Run Store / Run ID
 
@@ -436,8 +447,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 
 作業:
 
-- workflow schema か normalized layer に `type` support を追加する。
-- `type: bash` を実装する。
+- 新 schema は [02] で既に `type: agent | bash | approval | parallel` を持つ。本マイルストーンでは `type: bash` の**実行系統**を engine に実装する（[02] では型・load・schema までの対応で、engine からは bash 開始を明示拒否している）。
 - 以下を capture する:
   - command
   - exit code
@@ -511,11 +521,12 @@ main agent は state transition を所有しない。approve、reject、abort、
 
 ## 互換性テスト
 
+milestone [02] 以降では、旧 `WorkflowState` JSON / 旧 NDJSON は load 経路から除外され（`workflow_definition` を required 化、deserialize 不能なログは listing/reconstruction の対象外）、新 schema として書き直された built-in YAML の挙動等価のみを担保する。
+
 各マイルストーンで以下を守る。
 
-- 既存 `spec-driven-development.yml` の挙動
-- 既存 `WorkflowState` JSON の deserialization
-- 既存 Tauri command
+- 新 `spec-driven-development.yml`（新 schema 表現）の挙動等価（step 数・遷移・並列・aggregate・cycle guard・facet 解決結果）
+- 既存 Tauri command の入口・出口（典型 happy path）
 - approval/reject branching
 - parallel aggregate behavior
 - cycle guard behavior
@@ -536,11 +547,12 @@ main agent は state transition を所有しない。approve、reject、abort、
 追加候補 module:
 
 ```text
-src-tauri/src/workflow/normalized.rs
-src-tauri/src/workflow/run.rs
-src-tauri/src/workflow/command.rs
-src-tauri/src/workflow/event.rs
+src-tauri/src/workflow/run.rs       # [03] WorkflowRun store / run_id 主語管理
+src-tauri/src/workflow/command.rs   # [04] WorkflowCommand typed 入口
+src-tauri/src/workflow/event.rs     # [04] WorkflowEvent 出口（NDJSON vocabulary 寄せ）
 ```
+
+`workflow/normalized.rs` は [02] で削除前提に方針変更されたため新設しない。
 
 既存 module は可能な限り現在の責務を保つ。
 

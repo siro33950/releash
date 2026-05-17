@@ -3,7 +3,7 @@ import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import type { Step, StepMode, Workflow } from "@/types/workflow";
+import type { NodeDefinition, NodeType, Workflow } from "@/types/workflow";
 import { type FacetSlot, StepEditor } from "./StepEditor";
 
 export function WorkflowEditor({
@@ -26,18 +26,18 @@ export function WorkflowEditor({
 	const originalName = workflow.name;
 
 	const updateStep = useCallback(
-		(index: number, updater: (s: Step) => Step) => {
+		(index: number, updater: (s: NodeDefinition) => NodeDefinition) => {
 			setDraft((prev) => ({
 				...prev,
-				steps: prev.steps.map((s, i) => (i === index ? updater({ ...s }) : s)),
+				nodes: prev.nodes.map((s, i) => (i === index ? updater({ ...s }) : s)),
 			}));
 		},
 		[],
 	);
 
 	const addStep = useCallback(() => {
-		const existingNames = new Set(draft.steps.map((s) => s.name));
-		let suffix = draft.steps.length + 1;
+		const existingNames = new Set(draft.nodes.map((s) => s.name));
+		let suffix = draft.nodes.length + 1;
 		let name = `step-${suffix}`;
 		while (existingNames.has(name)) {
 			suffix++;
@@ -45,32 +45,32 @@ export function WorkflowEditor({
 		}
 		setDraft((prev) => ({
 			...prev,
-			steps: [
-				...prev.steps,
+			nodes: [
+				...prev.nodes,
 				{
 					name,
-					mode: "auto" as StepMode,
+					type: "agent" as NodeType,
 					rules: [],
 					permission: "edit",
 				},
 			],
 		}));
-	}, [draft.steps]);
+	}, [draft.nodes]);
 
 	const removeStep = useCallback((index: number) => {
 		setDraft((prev) => ({
 			...prev,
-			steps: prev.steps.filter((_, i) => i !== index),
+			nodes: prev.nodes.filter((_, i) => i !== index),
 		}));
 	}, []);
 
 	const moveStep = useCallback((index: number, direction: "up" | "down") => {
 		setDraft((prev) => {
-			const steps = [...prev.steps];
+			const nodes = [...prev.nodes];
 			const target = direction === "up" ? index - 1 : index + 1;
-			if (target < 0 || target >= steps.length) return prev;
-			[steps[index], steps[target]] = [steps[target], steps[index]];
-			return { ...prev, steps };
+			if (target < 0 || target >= nodes.length) return prev;
+			[nodes[index], nodes[target]] = [nodes[target], nodes[index]];
+			return { ...prev, nodes };
 		});
 	}, []);
 
@@ -145,7 +145,7 @@ export function WorkflowEditor({
 
 			<div className="flex items-center justify-between">
 				<span className="text-xs font-medium text-muted-foreground">
-					Steps ({draft.steps.length})
+					Steps ({draft.nodes.length})
 				</span>
 				<Button
 					variant="ghost"
@@ -159,15 +159,15 @@ export function WorkflowEditor({
 			</div>
 
 			<div className="flex flex-col gap-2">
-				{draft.steps.map((step, idx) => (
+				{draft.nodes.map((step, idx) => (
 					<StepEditor
-						// biome-ignore lint/suspicious/noArrayIndexKey: steps have no stable unique id; name can be duplicated by user edit
+						// biome-ignore lint/suspicious/noArrayIndexKey: nodes have no stable unique id; name can be duplicated by user edit
 						key={idx}
 						step={step}
 						index={idx}
-						totalSteps={draft.steps.length}
+						totalSteps={draft.nodes.length}
 						allFacetKeys={allFacetKeys}
-						allStepNames={draft.steps.map((s) => s.name)}
+						allStepNames={draft.nodes.map((s) => s.name)}
 						onUpdate={(updater) => updateStep(idx, updater)}
 						onRemove={() => removeStep(idx)}
 						onMove={(dir) => moveStep(idx, dir)}

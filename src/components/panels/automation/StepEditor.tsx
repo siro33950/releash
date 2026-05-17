@@ -17,7 +17,11 @@ import {
 	PERMISSION_MODES,
 	type PermissionMode,
 } from "@/types/session";
-import type { ReduceStrategy, Step, StepMode } from "@/types/workflow";
+import type {
+	NodeDefinition,
+	NodeType,
+	ReduceStrategy,
+} from "@/types/workflow";
 
 const FACET_SLOTS = [
 	"policy",
@@ -38,18 +42,18 @@ export function StepEditor({
 	onRemove,
 	onMove,
 }: {
-	step: Step;
+	step: NodeDefinition;
 	index: number;
 	totalSteps: number;
 	allFacetKeys: Record<FacetSlot, string[]>;
 	allStepNames: string[];
-	onUpdate: (updater: (s: Step) => Step) => void;
+	onUpdate: (updater: (s: NodeDefinition) => NodeDefinition) => void;
 	onRemove: () => void;
 	onMove: (direction: "up" | "down") => void;
 }) {
 	const [expanded, setExpanded] = useState(false);
 
-	if (step.parallel) {
+	if (step.parallel_children) {
 		return (
 			<div className="rounded-md border border-border p-3">
 				<div className="flex items-center justify-between">
@@ -79,9 +83,9 @@ export function StepEditor({
 				>
 					<span className="text-xs text-muted-foreground">{index + 1}.</span>
 					<span className="text-sm font-medium">{step.name}</span>
-					{step.mode && (
+					{step.type && (
 						<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-							{step.mode}
+							{step.type}
 						</span>
 					)}
 				</button>
@@ -140,20 +144,24 @@ export function StepEditor({
 						/>
 					</div>
 
-					{/* Mode */}
+					{/* Node Type */}
 					<div className="flex flex-col gap-1">
-						<span className="font-medium text-muted-foreground">Mode</span>
+						<span className="font-medium text-muted-foreground">Type</span>
 						<Select
-							value={step.mode ?? "auto"}
+							value={step.type ?? "agent"}
 							onValueChange={(v) =>
-								onUpdate((s) => ({ ...s, mode: v as StepMode }))
+								onUpdate((s) => ({ ...s, type: v as NodeType }))
 							}
 						>
-							<SelectTrigger className="h-7 text-xs">
+							<SelectTrigger
+								className="h-7 text-xs"
+								data-testid={`step-${index}-type`}
+							>
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
-								<SelectItem value="auto">Auto</SelectItem>
+								{/* [02] Bash 種別は実行系未対応のため UI から非表示（[13] で再導入）。 */}
+								<SelectItem value="agent">Agent</SelectItem>
 								<SelectItem value="approval">Approval</SelectItem>
 							</SelectContent>
 						</Select>
@@ -252,7 +260,7 @@ export function StepEditor({
 								onClick={() =>
 									onUpdate((s) => ({
 										...s,
-										rules: [...s.rules, { match: "", next: "" }],
+										rules: [...(s.rules ?? []), { match: "", next: "" }],
 									}))
 								}
 								aria-label="Add transition rule"
@@ -260,7 +268,7 @@ export function StepEditor({
 								<Plus className="size-3" />
 							</Button>
 						</div>
-						{step.rules.map((rule, ri) => (
+						{(step.rules ?? []).map((rule, ri) => (
 							// biome-ignore lint/suspicious/noArrayIndexKey: rules have no stable unique id
 							<div key={ri} className="flex items-center gap-1.5">
 								<Input
@@ -268,7 +276,7 @@ export function StepEditor({
 									onChange={(e) =>
 										onUpdate((s) => ({
 											...s,
-											rules: s.rules.map((r, j) =>
+											rules: (s.rules ?? []).map((r, j) =>
 												j === ri ? { ...r, match: e.target.value } : r,
 											),
 										}))
@@ -282,7 +290,7 @@ export function StepEditor({
 									onValueChange={(v) =>
 										onUpdate((s) => ({
 											...s,
-											rules: s.rules.map((r, j) =>
+											rules: (s.rules ?? []).map((r, j) =>
 												j === ri
 													? { ...r, next: v === "__empty__" ? "" : v }
 													: r,
@@ -311,7 +319,7 @@ export function StepEditor({
 									onClick={() =>
 										onUpdate((s) => ({
 											...s,
-											rules: s.rules.filter((_, j) => j !== ri),
+											rules: (s.rules ?? []).filter((_, j) => j !== ri),
 										}))
 									}
 									aria-label="Remove transition rule"

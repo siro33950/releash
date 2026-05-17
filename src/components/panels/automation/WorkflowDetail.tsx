@@ -2,7 +2,11 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import type { DiagnosticReport, Step, Workflow } from "@/types/workflow";
+import type {
+	DiagnosticReport,
+	NodeDefinition,
+	Workflow,
+} from "@/types/workflow";
 import { DiagnosticItemRow } from "./DiagnosticBadge";
 
 export function WorkflowDetail({
@@ -46,9 +50,9 @@ export function WorkflowDetail({
 
 			<div className="flex flex-col gap-2">
 				<span className="text-xs font-medium text-muted-foreground">
-					Steps ({workflow.steps.length})
+					Steps ({workflow.nodes.length})
 				</span>
-				{workflow.steps.map((step, idx) => (
+				{workflow.nodes.map((step, idx) => (
 					<StepCard key={step.name} step={step} index={idx} />
 				))}
 			</div>
@@ -56,7 +60,7 @@ export function WorkflowDetail({
 	);
 }
 
-function StepCard({ step, index }: { step: Step; index: number }) {
+function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 	const [expanded, setExpanded] = useState(false);
 
 	return (
@@ -69,12 +73,10 @@ function StepCard({ step, index }: { step: Step; index: number }) {
 				<div className="flex items-center gap-2">
 					<span className="text-xs text-muted-foreground">{index + 1}.</span>
 					<span className="text-sm font-medium">{step.name}</span>
-					{step.mode && (
-						<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-							{step.mode}
-						</span>
-					)}
-					{step.parallel && (
+					<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+						{step.type}
+					</span>
+					{step.parallel_children && (
 						<span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-500">
 							parallel
 						</span>
@@ -130,7 +132,7 @@ function StepCard({ step, index }: { step: Step; index: number }) {
 					)}
 
 					{/* Rules */}
-					{step.rules.length > 0 && (
+					{step.rules && step.rules.length > 0 && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
 								Transition Rules
@@ -178,14 +180,14 @@ function StepCard({ step, index }: { step: Step; index: number }) {
 					)}
 
 					{/* Parallel children */}
-					{step.parallel && (
+					{step.parallel_children && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
 								Parallel Steps
 							</span>
-							{step.parallel.map((ps) => (
+							{step.parallel_children.map((ps) => (
 								<div key={ps.name} className="ml-2 text-muted-foreground">
-									• {ps.name} ({ps.mode})
+									• {ps.name} ({ps.type})
 									{ps.instruction && ` — instruction: ${ps.instruction}`}
 								</div>
 							))}

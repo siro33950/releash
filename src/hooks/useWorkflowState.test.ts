@@ -28,7 +28,7 @@ const makeState = (overrides: Partial<WorkflowState> = {}): WorkflowState => ({
 		name: "test-wf",
 		description: "",
 		builtin: false,
-		steps: [],
+		nodes: [],
 	},
 	totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
 	stepStates: {},

@@ -23,16 +23,16 @@ describe("WorkflowEditor permission handling", () => {
 		const workflow = {
 			name: "wf",
 			description: "",
-			steps: [
-				{ name: "plan", mode: "auto", rules: [] },
+			nodes: [
+				{ name: "plan", type: "agent", rules: [] },
 				{
 					name: "fanout",
-					mode: "auto",
+					type: "agent",
 					rules: [],
 					permission: "readonly",
-					parallel: [
-						{ name: "child-a", mode: "auto" },
-						{ name: "child-b", mode: "auto", permission: "readonly" },
+					parallel_children: [
+						{ name: "child-a", type: "agent" },
+						{ name: "child-b", type: "agent", permission: "readonly" },
 					],
 				},
 			],
@@ -56,11 +56,11 @@ describe("WorkflowEditor permission handling", () => {
 		expect(onSave).toHaveBeenCalledTimes(1);
 		const savedWorkflow = onSave.mock.calls[0][0] as Workflow;
 
-		expect(savedWorkflow.steps[0].permission).toBeUndefined();
+		expect(savedWorkflow.nodes[0].permission).toBeUndefined();
 
-		const parallelStep = savedWorkflow.steps[1];
+		const parallelStep = savedWorkflow.nodes[1];
 		expect(parallelStep.permission).toBe("readonly");
-		expect(parallelStep.parallel?.[0].permission).toBeUndefined();
-		expect(parallelStep.parallel?.[1].permission).toBe("readonly");
+		expect(parallelStep.parallel_children?.[0].permission).toBeUndefined();
+		expect(parallelStep.parallel_children?.[1].permission).toBe("readonly");
 	});
 });

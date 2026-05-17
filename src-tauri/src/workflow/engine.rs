@@ -14,16 +14,16 @@ use crate::workflow::contract::{
     build_repair_prompt, extract_workflow_output, validate_contract, ContractValidationResult,
     ExtractionResult,
 };
+use crate::workflow::facet;
 use crate::workflow::log::{WorkflowEventLog, WorkflowLogEvent};
 use crate::workflow::schema::{
-    AggregateConfig, CollectConfig, ParallelStep, ReduceStrategy, StepMode, TransitionRule,
+    CollectConfig, NodeDefinition, NodeType, ParallelAggregate, ReduceStrategy, TransitionRule,
     Workflow,
 };
 use crate::workflow::state::{
     ApprovalOperations, ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage,
     WorkflowExecutionState, WorkflowState,
 };
-use crate::workflow::storage;
 
 #[allow(dead_code)]
 const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
@@ -400,7 +400,7 @@ struct WorkflowExecution {
 /// 並列実行中の内部状態。
 struct ParallelRunState {
     parent_step_name: String,
-    aggregate: Option<AggregateConfig>,
+    aggregate: Option<ParallelAggregate>,
     children: Vec<ParallelChildRun>,
 }
 
@@ -470,10 +470,21 @@ impl WorkflowExecution {
         workflow: &Workflow,
         existing: Option<&WorkflowExecution>,
     ) -> Result<(), WorkflowEngineError> {
-        if workflow.steps.is_empty() {
+        if workflow.nodes.is_empty() {
             return Err(WorkflowEngineError::InvalidWorkflow(
                 "Workflow has no steps".to_string(),
             ));
+        }
+        // [02] schema 境界: bash node の実行系は [13] で具体化される。
+        // それまでは workflow.nodes に bash が含まれる場合、開始前に明示拒否し、
+        // 利用者が誤った状態に進まないようにする。
+        for node in &workflow.nodes {
+            if node.node_type == NodeType::Bash {
+                return Err(WorkflowEngineError::InvalidWorkflow(format!(
+                    "Bash node '{}' is not executable in this milestone (planned for [13])",
+                    node.name
+                )));
+            }
         }
         if let Some(existing) = existing {
             if existing.is_active() {
@@ -513,13 +524,20 @@ enum CycleGuardResult {
 enum TurnCompleteAction {
     /// AgentSessionがエラー終了 → Failed
     SessionError { step_name: String, exit_code: i64 },
-    /// autoモード → タグ検出して遷移
+    /// agent ノード → タグ検出して遷移
     AutoEvaluate {
         rules: Vec<TransitionRule>,
         step_name: String,
     },
-    /// approvalモード → WaitingApproval
+    /// approval ノード → WaitingApproval
     WaitApproval,
+    /// 設計上 turn_complete に流入してはならない node 種別を検出した
+    /// （`validate_start` などの上流ガードで弾くべきケース）。`Failed` に遷移させ、
+    /// `SessionError { exit_code: 0 }` の「正常終了」セマンティクスと混同しないようにする。
+    UnexpectedNodeType {
+        step_name: String,
+        node_type: NodeType,
+    },
     /// ワークフローが実行中でない → 何もしない
     NotRunning,
 }
@@ -547,9 +565,9 @@ impl WorkflowExecution {
             chat_session_id: Some(self.chat_session_id.clone()),
             state: self.state.clone(),
             current_step_index: self.current_step_index,
-            current_step_name: self.workflow.steps[self.current_step_index].name.clone(),
+            current_step_name: self.workflow.nodes[self.current_step_index].name.clone(),
             current_session_id: self.current_session_id.clone(),
-            total_steps: self.workflow.steps.len(),
+            total_steps: self.workflow.nodes.len(),
             step_history: self.step_history.clone(),
             step_execution_counts: self.step_execution_counts.clone(),
             workflow_definition: self.workflow.clone(),
@@ -568,9 +586,9 @@ impl WorkflowExecution {
         if self.state != WorkflowExecutionState::WaitingApproval {
             return None;
         }
-        let step = &self.workflow.steps[self.current_step_index];
+        let step = &self.workflow.nodes[self.current_step_index];
         Some(ApprovalOperations {
-            can_reject: step.rules.iter().any(|r| r.r#match == "reject"),
+            can_reject: step.transition_rules.iter().any(|r| r.r#match == "reject"),
         })
     }
 
@@ -606,7 +624,7 @@ impl WorkflowExecution {
         structured_output: Option<serde_json::Value>,
         output_contract: Option<String>,
     ) -> StepHistoryEntry {
-        let step_name = self.workflow.steps[self.current_step_index].name.clone();
+        let step_name = self.workflow.nodes[self.current_step_index].name.clone();
         let run_index = self
             .step_execution_counts
             .get(&step_name)
@@ -658,9 +676,9 @@ impl WorkflowExecution {
     /// `<workflow_output>` を引用してきたケースで Contract 違反が
     /// 「正常完了（Done）」扱いされる不具合の原因となる。
     fn clear_step_outputs_for_new_execution(&mut self, step_index: usize) {
-        let step = &self.workflow.steps[step_index];
+        let step = &self.workflow.nodes[step_index];
         self.step_outputs.remove(&step.name);
-        if let Some(children) = step.parallel.as_ref() {
+        if let Some(children) = step.parallel_children.as_ref() {
             for child in children {
                 self.step_outputs.remove(&child.name);
             }
@@ -670,10 +688,10 @@ impl WorkflowExecution {
     /// 次のステップ遷移先を判定する（純粋関数）。
     fn decide_next_step(&self) -> NextStepDecision {
         let current_index = self.current_step_index;
-        if current_index + 1 >= self.workflow.steps.len() {
+        if current_index + 1 >= self.workflow.nodes.len() {
             NextStepDecision::Completed
         } else {
-            NextStepDecision::TransitionTo(self.workflow.steps[current_index + 1].name.clone())
+            NextStepDecision::TransitionTo(self.workflow.nodes[current_index + 1].name.clone())
         }
     }
 
@@ -684,7 +702,7 @@ impl WorkflowExecution {
     ) -> Result<CycleGuardResult, WorkflowEngineError> {
         let idx = self
             .workflow
-            .steps
+            .nodes
             .iter()
             .position(|s| s.name == target_step_name)
             .ok_or_else(|| {
@@ -694,7 +712,7 @@ impl WorkflowExecution {
                 ))
             })?;
 
-        let step = &self.workflow.steps[idx];
+        let step = &self.workflow.nodes[idx];
         if let Some(guard) = &step.cycle_guard {
             let count = self
                 .step_execution_counts
@@ -721,7 +739,7 @@ impl WorkflowExecution {
             return TurnCompleteAction::NotRunning;
         }
 
-        let step = &self.workflow.steps[self.current_step_index];
+        let step = &self.workflow.nodes[self.current_step_index];
 
         if exit_code != 0 {
             return TurnCompleteAction::SessionError {
@@ -730,15 +748,15 @@ impl WorkflowExecution {
             };
         }
 
-        match step.mode_unwrap() {
-            StepMode::Auto => TurnCompleteAction::AutoEvaluate {
-                rules: step.rules.clone(),
+        match step.node_type {
+            NodeType::Agent => TurnCompleteAction::AutoEvaluate {
+                rules: step.transition_rules.clone(),
                 step_name: step.name.clone(),
             },
-            StepMode::Approval => TurnCompleteAction::WaitApproval,
-            StepMode::Interactive => TurnCompleteAction::SessionError {
+            NodeType::Approval => TurnCompleteAction::WaitApproval,
+            NodeType::Bash | NodeType::Parallel => TurnCompleteAction::UnexpectedNodeType {
                 step_name: step.name.clone(),
-                exit_code: 0,
+                node_type: step.node_type,
             },
         }
     }
@@ -753,11 +771,11 @@ impl WorkflowExecution {
                 "Workflow is not waiting for approval".to_string(),
             ));
         }
-        let step = &self.workflow.steps[self.current_step_index];
+        let step = &self.workflow.nodes[self.current_step_index];
         match decision {
             ApprovalDecision::Approve => Ok(ApprovalAction::Advance),
             ApprovalDecision::Reject { .. } => {
-                match step.rules.iter().find(|r| r.r#match == "reject") {
+                match step.transition_rules.iter().find(|r| r.r#match == "reject") {
                     Some(r) => Ok(ApprovalAction::TransitionTo(r.next.clone())),
                     None => Err(WorkflowEngineError::InvalidState(format!(
                         "Step '{}' does not allow reject",
@@ -1030,7 +1048,7 @@ impl WorkflowEngine {
         };
 
         // validate_start → insert → スナップショット確定を同一ロックで原子的に実行
-        let step_name = workflow.steps[0].name.clone();
+        let step_name = workflow.nodes[0].name.clone();
         let snapshot = {
             let mut execs = self.executions.lock().await;
             WorkflowExecution::validate_start(&workflow, execs.get(&worktree_path))?;
@@ -1073,12 +1091,12 @@ impl WorkflowEngine {
                 workflow_name: snapshot.workflow_name.clone(),
                 workflow_file_stem: file_stem.to_string(),
                 worktree_path: worktree_path.clone(),
-                workflow_definition: Some(workflow.clone()),
+                workflow_definition: workflow.clone(),
                 timestamp: now,
             },
         );
         // 最初のステップが並列ブロックかどうかで分岐
-        let first_step_is_parallel = workflow.steps[0].is_parallel_block();
+        let first_step_is_parallel = workflow.nodes[0].is_parallel();
 
         if first_step_is_parallel {
             // 並列ブロック → start_parallel_children を呼ぶ
@@ -1258,6 +1276,23 @@ impl WorkflowEngine {
                     exec.updated_at = current_timestamp();
                     Ok(StepOutcome::Persist(exec.to_workflow_state()))
                 }
+                TurnCompleteAction::UnexpectedNodeType {
+                    step_name,
+                    node_type,
+                } => {
+                    if exec.is_terminal() {
+                        return Ok(());
+                    }
+                    let reason = format!(
+                        "Workflow engine reached turn_complete for unexpected node type {:?} at step '{}' (this should have been rejected upstream)",
+                        node_type, step_name
+                    );
+                    let entry = exec.make_step_history_entry(Some(reason.clone()), None, None);
+                    exec.step_history.push(entry);
+                    exec.state = WorkflowExecutionState::Failed { reason };
+                    exec.updated_at = current_timestamp();
+                    Ok(StepOutcome::Persist(exec.to_workflow_state()))
+                }
                 TurnCompleteAction::AutoEvaluate { rules, step_name } => Err((rules, step_name)),
             };
             (chat_session_id, result)
@@ -1387,7 +1422,7 @@ impl WorkflowEngine {
             )?;
             (
                 exec.current_session_id.clone(),
-                exec.workflow.steps[exec.current_step_index]
+                exec.workflow.nodes[exec.current_step_index]
                     .output_contract
                     .clone(),
                 exec.workflow.clone(),
@@ -1574,8 +1609,8 @@ impl WorkflowEngine {
             let exec = execs
                 .get(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            let step = &exec.workflow.steps[exec.current_step_index];
-            step.parallel.as_ref().and_then(|children| {
+            let step = &exec.workflow.nodes[exec.current_step_index];
+            step.parallel_children.as_ref().and_then(|children| {
                 let pr = exec.parallel_run.as_ref()?;
                 let child_run = pr.children.iter().find(|c| c.session_id == session_id)?;
                 children
@@ -2063,7 +2098,7 @@ impl WorkflowEngine {
     /// StepOutput.resultのみで判定する。
     fn evaluate_aggregate(
         &self,
-        agg: &AggregateConfig,
+        agg: &ParallelAggregate,
         step_outputs: &HashMap<String, StepOutput>,
         child_step_names: &[String],
     ) -> bool {
@@ -2146,7 +2181,7 @@ impl WorkflowEngine {
         current_step_index: usize,
     ) -> Result<ContractCheckResult, WorkflowEngineError> {
         let step_name = workflow
-            .steps
+            .nodes
             .get(current_step_index)
             .map(|s| s.name.as_str())
             .unwrap_or("<unknown>");
@@ -2184,7 +2219,7 @@ impl WorkflowEngine {
         if contract != "approved-fix-policy" {
             return Ok(());
         }
-        let step = workflow.steps.get(current_step_index).ok_or_else(|| {
+        let step = workflow.nodes.get(current_step_index).ok_or_else(|| {
             WorkflowEngineError::InvalidWorkflow(format!(
                 "Current step index {} is out of range",
                 current_step_index
@@ -2219,11 +2254,11 @@ impl WorkflowEngine {
     }
 
     fn workflow_step_is_review_source(workflow: &Workflow, step_name: &str) -> bool {
-        workflow.steps.iter().any(|step| {
+        workflow.nodes.iter().any(|step| {
             (step.name == step_name
                 && (step.aggregate.is_some()
                     || step.output_contract.as_deref() == Some("review-verdict")))
-                || step.parallel.as_ref().is_some_and(|children| {
+                || step.parallel_children.as_ref().is_some_and(|children| {
                     children.iter().any(|child| {
                         child.name == step_name
                             && child.output_contract.as_deref() == Some("review-verdict")
@@ -2392,7 +2427,7 @@ impl WorkflowEngine {
         }
 
         let contract_definition = {
-            let base_dir = storage::facets_base_dir();
+            let base_dir = facet::facets_base_dir();
             crate::workflow::facet::load_facet(
                 crate::workflow::facet::FacetKind::OutputContract,
                 contract,
@@ -2482,8 +2517,8 @@ impl WorkflowEngine {
         let Some(exec) = execs.get(&session_ref.worktree_path) else {
             return Ok(());
         };
-        let step = &exec.workflow.steps[exec.current_step_index];
-        let is_current_approval_session = *step.mode_unwrap() == StepMode::Approval
+        let step = &exec.workflow.nodes[exec.current_step_index];
+        let is_current_approval_session = step.node_type == NodeType::Approval
             && exec.current_session_id.as_deref() == Some(session_id);
         if !is_current_approval_session {
             if Self::is_approval_step_session(exec, session_id) {
@@ -2509,14 +2544,14 @@ impl WorkflowEngine {
     fn is_approval_step_session(exec: &WorkflowExecution, session_id: &str) -> bool {
         let step_is_approval = |step_name: &str| {
             exec.workflow
-                .steps
+                .nodes
                 .iter()
                 .find(|step| step.name == step_name)
-                .is_some_and(|step| *step.mode_unwrap() == StepMode::Approval)
+                .is_some_and(|step| step.node_type == NodeType::Approval)
         };
 
         if exec.current_session_id.as_deref() == Some(session_id)
-            && step_is_approval(&exec.workflow.steps[exec.current_step_index].name)
+            && step_is_approval(&exec.workflow.nodes[exec.current_step_index].name)
         {
             return true;
         }
@@ -2561,7 +2596,7 @@ impl WorkflowEngine {
                 "execution_id does not match".to_string(),
             ));
         }
-        let current_step = &exec.workflow.steps[exec.current_step_index].name;
+        let current_step = &exec.workflow.nodes[exec.current_step_index].name;
         if expected_step_name != current_step {
             return Err(WorkflowEngineError::UnauthorizedApprovalTarget(
                 "step does not match".to_string(),
@@ -2687,7 +2722,7 @@ impl WorkflowEngine {
             let exec = execs
                 .get(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            let step = &exec.workflow.steps[exec.current_step_index];
+            let step = &exec.workflow.nodes[exec.current_step_index];
             (
                 step.output_contract.clone(),
                 exec.current_session_id.clone(),
@@ -2877,7 +2912,7 @@ impl WorkflowEngine {
             let exec = execs
                 .get(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-            let step = &exec.workflow.steps[exec.current_step_index];
+            let step = &exec.workflow.nodes[exec.current_step_index];
             (
                 exec.chat_session_id.clone(),
                 step.clone(),
@@ -2893,10 +2928,8 @@ impl WorkflowEngine {
         // ChatSession 生成・`session_workflow_refs` 登録・AgentSession 開始は一切
         // 行われない。これにより、`start_step_session` がエラー経路で孤立した
         // ChatSession や参照マップ entry を残さないことを構造的に保証する。
-        let base_dir = storage::facets_base_dir();
         let (system_prompt, prompt) = Self::build_step_prompt(
             &step_clone,
-            &base_dir,
             worktree_path,
             task_clone.as_deref(),
             &step_outputs_clone,
@@ -2962,8 +2995,7 @@ impl WorkflowEngine {
     /// ファセット合成パイプライン: compose → 変数展開 → step output注入
     /// start_step_session の中核ロジックを純粋関数として切り出し、テスト可能にする。
     pub(crate) fn build_step_prompt(
-        step: &crate::workflow::schema::Step,
-        facets_base_dir: &Path,
+        step: &NodeDefinition,
         worktree_path: &str,
         task: Option<&str>,
         step_outputs: &HashMap<String, StepOutput>,
@@ -2988,8 +3020,16 @@ impl WorkflowEngine {
                 step.name
             )));
         }
-        let composed = crate::workflow::facet::compose_facets(step, facets_base_dir)
-            .map_err(|e| WorkflowEngineError::InvalidWorkflow(format!("facet composition: {e}")))?;
+        // [02] schema 境界: engine は load 経路で解決済み facet のみを参照する。
+        // facet ref が設定されているのに resolved_facets が空 = load pipeline が走っていない
+        // 不整合状態のため、副作用に進ませず InvalidWorkflow で拒否する。
+        if step.resolved_facets.is_empty() {
+            return Err(WorkflowEngineError::InvalidWorkflow(format!(
+                "Step '{}' has unresolved facet refs (workflow must go through load pipeline)",
+                step.name
+            )));
+        }
+        let composed = crate::workflow::facet::compose_facets(step);
         let system_prompt = composed
             .system_prompt
             .map(|s| Self::render_facet_variables(&s, worktree_path, task));
@@ -3039,8 +3079,7 @@ impl WorkflowEngine {
     #[allow(clippy::too_many_arguments)]
     async fn build_and_dispatch_step_session<G: SessionStartGate + ?Sized>(
         gate: &G,
-        step: &crate::workflow::schema::Step,
-        facets_base_dir: &Path,
+        step: &NodeDefinition,
         step_session_id: &str,
         worktree_path: &str,
         permission_mode: Option<String>,
@@ -3051,7 +3090,6 @@ impl WorkflowEngine {
     ) -> Result<String, WorkflowEngineError> {
         let (system_prompt, prompt) = Self::build_step_prompt(
             step,
-            facets_base_dir,
             worktree_path,
             task,
             step_outputs,
@@ -3308,7 +3346,7 @@ impl WorkflowEngine {
     /// ステップの出力をプロンプトにコンテキストブロックとして注入する。
     fn inject_step_outputs(
         prompt: &str,
-        step: &crate::workflow::schema::Step,
+        step: &NodeDefinition,
         step_outputs: &HashMap<String, StepOutput>,
         step_history: &[StepHistoryEntry],
         workflow_variables: &HashMap<String, String>,
@@ -3677,7 +3715,7 @@ impl WorkflowEngine {
             NextStepDecision::TransitionTo(name) => {
                 let idx = exec
                     .workflow
-                    .steps
+                    .nodes
                     .iter()
                     .position(|s| s.name == name)
                     .expect("decide_next_step returned unknown step");
@@ -3688,15 +3726,15 @@ impl WorkflowEngine {
                 exec.updated_at = current_timestamp();
 
                 // resets_cycle_for: 遷移先ステップの設定に従い指定ステップのカウントをリセット
-                let resets = exec.workflow.steps[idx].resets_cycle_for.clone();
+                let resets = exec.workflow.nodes[idx].resets_cycle_for.clone();
                 if let Some(targets) = resets {
                     for target in &targets {
                         exec.step_execution_counts.remove(target);
                     }
                 }
 
-                let step = &exec.workflow.steps[idx];
-                if step.is_parallel_block() {
+                let step = &exec.workflow.nodes[idx];
+                if step.is_parallel() {
                     StepOutcome::StartParallel(exec.to_workflow_state())
                 } else if step.collect.is_some() {
                     StepOutcome::ReduceAndTransition(exec.to_workflow_state())
@@ -3725,7 +3763,7 @@ impl WorkflowEngine {
         target_step_name: &str,
         depth: usize,
     ) -> Result<StepOutcome, WorkflowEngineError> {
-        let max_depth = exec.workflow.steps.len();
+        let max_depth = exec.workflow.nodes.len();
         if depth >= max_depth {
             exec.state = WorkflowExecutionState::Failed {
                 reason: format!("on_exhausted chain depth exceeded (max={})", max_depth),
@@ -3736,7 +3774,7 @@ impl WorkflowEngine {
 
         let idx = exec
             .workflow
-            .steps
+            .nodes
             .iter()
             .position(|s| s.name == target_step_name)
             .ok_or_else(|| {
@@ -3777,15 +3815,15 @@ impl WorkflowEngine {
                 exec.updated_at = current_timestamp();
 
                 // resets_cycle_for: 遷移先ステップの設定に従い指定ステップのカウントをリセット
-                let resets = exec.workflow.steps[idx].resets_cycle_for.clone();
+                let resets = exec.workflow.nodes[idx].resets_cycle_for.clone();
                 if let Some(targets) = resets {
                     for target in &targets {
                         exec.step_execution_counts.remove(target);
                     }
                 }
 
-                let step = &exec.workflow.steps[idx];
-                if step.is_parallel_block() {
+                let step = &exec.workflow.nodes[idx];
+                if step.is_parallel() {
                     Ok(StepOutcome::StartParallel(exec.to_workflow_state()))
                 } else if step.collect.is_some() {
                     Ok(StepOutcome::ReduceAndTransition(exec.to_workflow_state()))
@@ -3938,13 +3976,13 @@ impl WorkflowEngine {
                     let exec = execs.get(worktree_path).ok_or_else(|| {
                         WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
                     })?;
-                    let step = &exec.workflow.steps[exec.current_step_index];
+                    let step = &exec.workflow.nodes[exec.current_step_index];
                     let collect = step
                         .collect
                         .clone()
                         .expect("ReduceAndTransition requires collect config");
                     let result = Self::apply_reduce(&collect, &exec.step_outputs);
-                    (collect, result, step.rules.clone())
+                    (collect, result, step.transition_rules.clone())
                 };
 
                 // collect step自体のStepHistoryEntryを記録 + 遷移判定
@@ -3961,7 +3999,7 @@ impl WorkflowEngine {
                     );
                     exec.step_history.push(entry);
 
-                    let step_name = exec.workflow.steps[exec.current_step_index].name.clone();
+                    let step_name = exec.workflow.nodes[exec.current_step_index].name.clone();
                     let exec_id = exec.id.clone();
                     let wf_name = exec.workflow.name.clone();
 
@@ -4088,9 +4126,9 @@ impl WorkflowEngine {
                 .get_mut(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
 
-            let step = &exec.workflow.steps[exec.current_step_index];
+            let step = &exec.workflow.nodes[exec.current_step_index];
             let parallel = step
-                .parallel
+                .parallel_children
                 .clone()
                 .expect("StartParallel requires parallel field");
             let agg = step.aggregate.clone();
@@ -4181,10 +4219,8 @@ impl WorkflowEngine {
             }
 
             // ファセットからプロンプト構築
-            let base_dir = storage::facets_base_dir();
             let (system_prompt, user_message) = Self::build_parallel_step_prompt(
                 ps,
-                &base_dir,
                 worktree_path,
                 task_clone.as_deref(),
                 &step_outputs_snapshot,
@@ -4338,8 +4374,7 @@ impl WorkflowEngine {
     /// `build_step_prompt` と同様に純粋関数として切り出し、テスト可能にする。
     #[allow(clippy::too_many_arguments)]
     fn build_parallel_step_prompt(
-        ps: &ParallelStep,
-        facets_base_dir: &Path,
+        ps: &crate::workflow::schema::ChildNodeDefinition,
         worktree_path: &str,
         task: Option<&str>,
         step_outputs: &HashMap<String, StepOutput>,
@@ -4347,14 +4382,13 @@ impl WorkflowEngine {
         pass_output_from: Option<&[String]>,
         workflow_variables: &HashMap<String, String>,
     ) -> Result<(Option<String>, String), WorkflowEngineError> {
-        let composed = crate::workflow::facet::compose_facets_from_refs(
-            ps.policy.as_deref(),
-            ps.knowledge.as_deref(),
-            ps.instruction.as_deref(),
-            ps.output_contract.as_deref(),
-            facets_base_dir,
-        )
-        .map_err(|e| WorkflowEngineError::InvalidWorkflow(format!("Facet error: {e}")))?;
+        if ps.has_facet_refs() && ps.resolved_facets.is_empty() {
+            return Err(WorkflowEngineError::InvalidWorkflow(format!(
+                "Parallel child '{}' has unresolved facet refs (workflow must go through load pipeline)",
+                ps.name
+            )));
+        }
+        let composed = crate::workflow::facet::compose_child_facets(ps);
 
         let system_prompt = composed
             .system_prompt
@@ -4579,7 +4613,7 @@ impl WorkflowEngine {
                 .get(worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             (
-                exec.workflow.steps[exec.current_step_index]
+                exec.workflow.nodes[exec.current_step_index]
                     .output_contract
                     .clone(),
                 exec.workflow.clone(),
@@ -4686,24 +4720,25 @@ impl WorkflowEngine {
             name: "test-approval-workflow".to_string(),
             description: "test".to_string(),
             builtin: false,
-            steps: vec![crate::workflow::schema::Step {
+            nodes: vec![NodeDefinition {
                 name: "implementation_fix_policy".to_string(),
-                mode: Some(StepMode::Approval),
+                node_type: NodeType::Approval,
                 policy: None,
                 knowledge: None,
                 instruction: Some("Review fix policy".to_string()),
                 output_contract: Some("approved-fix-policy".to_string()),
-                rules: vec![],
+                transition_rules: vec![],
                 cycle_guard: None,
                 pass_previous_response: None,
                 pass_output_from: None,
                 inline_prompt: None,
                 collect: None,
-                parallel: None,
+                parallel_children: None,
                 aggregate: None,
                 resets_cycle_for: None,
                 model: None,
                 permission: None,
+                ..Default::default()
             }],
         };
         let exec = WorkflowExecution {
@@ -5161,8 +5196,7 @@ mod tests {
         );
     }
     use crate::workflow::schema::{
-        AggregateConfig, CollectConfig, CycleGuard, ReduceStrategy, Step, StepMode, TransitionRule,
-        Workflow,
+        CollectConfig, CycleGuard, ParallelAggregate, ReduceStrategy, TransitionRule, Workflow,
     };
 
     fn approved_fix_policy_output(policy: &str, review_step: &str) -> String {
@@ -5176,22 +5210,22 @@ mod tests {
             name: "approved-fix-policy-test".to_string(),
             description: "test".to_string(),
             builtin: false,
-            steps: vec![
-                Step {
+            nodes: vec![
+                NodeDefinition {
                     name: "code_review_parallel".to_string(),
-                    mode: None,
+                    node_type: NodeType::Parallel,
                     policy: None,
                     knowledge: None,
                     instruction: None,
                     output_contract: None,
-                    rules: vec![],
+                    transition_rules: vec![],
                     cycle_guard: None,
                     pass_previous_response: None,
                     pass_output_from: None,
                     inline_prompt: None,
                     collect: None,
-                    parallel: Some(vec![]),
-                    aggregate: Some(AggregateConfig {
+                    parallel_children: Some(vec![]),
+                    aggregate: Some(ParallelAggregate {
                         all_match: Some("LGTM".to_string()),
                         any_match: None,
                         then: "done".to_string(),
@@ -5200,25 +5234,27 @@ mod tests {
                     resets_cycle_for: None,
                     model: None,
                     permission: None,
+                    ..Default::default()
                 },
-                Step {
+                NodeDefinition {
                     name: "implementation_fix_policy".to_string(),
-                    mode: Some(StepMode::Approval),
+                    node_type: NodeType::Approval,
                     policy: None,
                     knowledge: None,
                     instruction: Some("Review fix policy".to_string()),
                     output_contract: Some("approved-fix-policy".to_string()),
-                    rules: vec![],
+                    transition_rules: vec![],
                     cycle_guard: None,
                     pass_previous_response: None,
                     pass_output_from: Some(vec!["code_review_parallel".to_string()]),
                     inline_prompt: None,
                     collect: None,
-                    parallel: None,
+                    parallel_children: None,
                     aggregate: None,
                     resets_cycle_for: None,
                     model: None,
                     permission: None,
+                    ..Default::default()
                 },
             ],
         }
@@ -5236,10 +5272,12 @@ mod tests {
         current_session_id: &str,
         step_name: &str,
     ) -> WorkflowExecution {
-        let workflow = crate::workflow::builtin::get_builtin_workflow("spec-driven-development")
-            .expect("builtin workflow exists");
+        let workflow =
+            crate::workflow::builtin::load_builtin_workflow_resolved("spec-driven-development")
+                .expect("builtin workflow must load")
+                .expect("builtin workflow exists");
         let current_step_index = workflow
-            .steps
+            .nodes
             .iter()
             .position(|step| step.name == step_name)
             .unwrap_or_else(|| panic!("{step_name} step exists"));
@@ -5388,30 +5426,38 @@ mod tests {
 
     fn make_test_step(
         name: &str,
-        mode: StepMode,
+        node_type: NodeType,
         instruction: &str,
         rules: Vec<TransitionRule>,
         cycle_guard: Option<CycleGuard>,
-    ) -> Step {
-        Step {
+    ) -> NodeDefinition {
+        NodeDefinition {
             name: name.to_string(),
-            mode: Some(mode),
-            policy: None,
-            knowledge: None,
+            node_type,
             instruction: Some(instruction.to_string()),
-            output_contract: None,
-            rules,
+            transition_rules: rules,
             cycle_guard,
-            pass_previous_response: None,
-            pass_output_from: None,
-            inline_prompt: None,
-            collect: None,
-            parallel: None,
-            aggregate: None,
-            resets_cycle_for: None,
-            model: None,
-            permission: None,
+            ..NodeDefinition::default()
         }
+    }
+
+    /// テストヘルパー: node の facet 参照を `base_dir` から解決し
+    /// `resolved_facets` に格納する。`crate::workflow::facet::resolve_node_facets`
+    /// （`#[cfg(test)] pub(crate)`）への薄い委譲で、欠損 facet 時の `unwrap` 等の
+    /// パニックは facet helper 側で発生する。
+    fn resolve_node_facets_for_test(node: &mut NodeDefinition, base_dir: &Path) {
+        crate::workflow::facet::resolve_node_facets(node, base_dir)
+            .expect("facet refs must resolve in tests; missing facet indicates a fixture bug");
+    }
+
+    /// テストヘルパー: 並列子 node の facet 参照を解決する。
+    /// `crate::workflow::facet::resolve_child_facets` への委譲。
+    fn resolve_child_facets_for_test(
+        child: &mut crate::workflow::schema::ChildNodeDefinition,
+        base_dir: &Path,
+    ) {
+        crate::workflow::facet::resolve_child_facets(child, base_dir)
+            .expect("facet refs must resolve in tests; missing facet indicates a fixture bug");
     }
 
     fn make_test_workflow() -> Workflow {
@@ -5419,18 +5465,18 @@ mod tests {
             name: "test-workflow".to_string(),
             description: "Test workflow".to_string(),
             builtin: false,
-            steps: vec![
-                make_test_step("plan", StepMode::Interactive, "Plan the work", vec![], None),
+            nodes: vec![
+                make_test_step("plan", NodeType::Agent, "Plan the work", vec![], None),
                 make_test_step(
                     "implement",
-                    StepMode::Auto,
+                    NodeType::Agent,
                     "Implement the plan",
                     vec![],
                     None,
                 ),
                 make_test_step(
                     "review",
-                    StepMode::Auto,
+                    NodeType::Agent,
                     "Review the implementation",
                     vec![
                         TransitionRule {
@@ -5449,7 +5495,7 @@ mod tests {
                 ),
                 make_test_step(
                     "report",
-                    StepMode::Approval,
+                    NodeType::Approval,
                     "Generate report",
                     vec![TransitionRule {
                         r#match: "reject".to_string(),
@@ -5833,7 +5879,7 @@ mod tests {
     #[test]
     fn cycle_guard_no_guard_defined() {
         let workflow = make_test_workflow();
-        let step = &workflow.steps[0]; // plan (no cycle_guard)
+        let step = &workflow.nodes[0]; // plan (no cycle_guard)
         assert!(step.cycle_guard.is_none());
     }
 
@@ -5983,16 +6029,44 @@ mod tests {
         );
     }
 
+    // [02]: Interactive 概念が廃止されたため、Interactive 用 SessionError 経路を
+    // 検査する旧テスト `turn_complete_action_interactive_fails_for_validation_only_legacy_definition`
+    // は削除した。bash / parallel 種別が turn_complete に流入した場合は専用バリアント
+    // `UnexpectedNodeType` を返し、`SessionError { exit_code: 0 }`（正常終了セマンティクス）
+    // との混同を避ける。下記 2 テストでバリアント別に確認する。
+
     #[test]
-    fn turn_complete_action_interactive_fails_for_validation_only_legacy_definition() {
-        let exec = make_exec(0); // plan (interactive)
-        assert_eq!(
-            exec.decide_turn_complete_action(0),
-            TurnCompleteAction::SessionError {
-                step_name: "plan".to_string(),
-                exit_code: 0,
+    fn turn_complete_action_unexpected_node_type_for_bash() {
+        let mut exec = make_exec(0);
+        exec.workflow.nodes[0].node_type = NodeType::Bash;
+        let action = exec.decide_turn_complete_action(0);
+        match action {
+            TurnCompleteAction::UnexpectedNodeType {
+                step_name,
+                node_type,
+            } => {
+                assert_eq!(step_name, "plan");
+                assert_eq!(node_type, NodeType::Bash);
             }
-        );
+            other => panic!("Expected UnexpectedNodeType for Bash, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn turn_complete_action_unexpected_node_type_for_parallel() {
+        let mut exec = make_exec(0);
+        exec.workflow.nodes[0].node_type = NodeType::Parallel;
+        let action = exec.decide_turn_complete_action(0);
+        match action {
+            TurnCompleteAction::UnexpectedNodeType {
+                step_name,
+                node_type,
+            } => {
+                assert_eq!(step_name, "plan");
+                assert_eq!(node_type, NodeType::Parallel);
+            }
+            other => panic!("Expected UnexpectedNodeType for Parallel, got {:?}", other),
+        }
     }
 
     #[test]
@@ -6094,7 +6168,7 @@ mod tests {
             name: "empty".to_string(),
             description: String::new(),
             builtin: false,
-            steps: vec![],
+            nodes: vec![],
         };
         let result = WorkflowExecution::validate_start(&workflow, None);
         assert!(result.is_err());
@@ -6124,6 +6198,26 @@ mod tests {
         let workflow = make_test_workflow();
         let result = WorkflowExecution::validate_start(&workflow, None);
         assert!(result.is_ok());
+    }
+
+    /// [02] schema 境界: bash 種別 node を含む workflow は実行系未対応のため
+    /// 開始前に明示的に拒否される（実行系は [13] で具体化）。
+    #[test]
+    fn validate_start_rejects_bash_node() {
+        let workflow = Workflow {
+            name: "bash-wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "build".to_string(),
+                node_type: NodeType::Bash,
+                command: Some("echo hello".to_string()),
+                ..NodeDefinition::default()
+            }],
+        };
+        let result = WorkflowExecution::validate_start(&workflow, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Bash node"));
     }
 
     // ---- is_terminal ----
@@ -6272,7 +6366,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_pass_previous_response() {
-        let mut step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        let mut step = make_test_step("step_b", NodeType::Agent, "Do B", vec![], None);
         step.pass_previous_response = Some(true);
 
         let mut outputs = HashMap::new();
@@ -6299,7 +6393,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_no_pass_previous_response() {
-        let step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        let step = make_test_step("step_b", NodeType::Agent, "Do B", vec![], None);
         let outputs = HashMap::new();
         let history = vec![];
         let wv = HashMap::new();
@@ -6309,7 +6403,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_pass_output_from_single() {
-        let mut step = make_test_step("step_c", StepMode::Auto, "Do C", vec![], None);
+        let mut step = make_test_step("step_c", NodeType::Agent, "Do C", vec![], None);
         step.pass_output_from = Some(vec!["step_a".to_string()]);
 
         let mut outputs = HashMap::new();
@@ -6325,7 +6419,7 @@ mod tests {
 
     #[test]
     fn reject_comment_accessible_via_pass_output_from() {
-        let mut step = make_test_step("fix", StepMode::Auto, "Fix issues", vec![], None);
+        let mut step = make_test_step("fix", NodeType::Agent, "Fix issues", vec![], None);
         step.pass_output_from = Some(vec!["review".to_string()]);
 
         let mut outputs = HashMap::new();
@@ -6346,7 +6440,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_pass_output_from_multiple() {
-        let mut step = make_test_step("step_c", StepMode::Auto, "Do C", vec![], None);
+        let mut step = make_test_step("step_c", NodeType::Agent, "Do C", vec![], None);
         step.pass_output_from = Some(vec!["step_a".to_string(), "step_b".to_string()]);
 
         let mut outputs = HashMap::new();
@@ -6368,7 +6462,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_pass_previous_response_no_output_injects_nothing() {
-        let mut step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        let mut step = make_test_step("step_b", NodeType::Agent, "Do B", vec![], None);
         step.pass_previous_response = Some(true);
 
         let outputs = HashMap::new(); // step_a has no StepOutput
@@ -6390,7 +6484,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_missing_step_shows_not_completed() {
-        let mut step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        let mut step = make_test_step("step_b", NodeType::Agent, "Do B", vec![], None);
         step.pass_output_from = Some(vec!["step_a".to_string()]);
 
         let outputs = HashMap::new(); // step_a not present
@@ -6402,7 +6496,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_workflow_variables_injected() {
-        let step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        let step = make_test_step("step_b", NodeType::Agent, "Do B", vec![], None);
         let mut wv = HashMap::new();
         wv.insert(
             "spec_file_path".to_string(),
@@ -6416,7 +6510,7 @@ mod tests {
 
     #[test]
     fn inject_step_outputs_empty_workflow_variables_not_injected() {
-        let step = make_test_step("step_b", StepMode::Auto, "Do B", vec![], None);
+        let step = make_test_step("step_b", NodeType::Agent, "Do B", vec![], None);
         let wv = HashMap::new();
         let result = WorkflowEngine::inject_step_outputs("Do B", &step, &HashMap::new(), &[], &wv);
         assert!(!result.contains("<workflow_variables>"));
@@ -6425,7 +6519,7 @@ mod tests {
     #[test]
     fn inject_step_outputs_parallel_parent_aggregated_children() {
         // 並列ブロック親名で集約された子出力がpass_output_fromで参照できること
-        let mut step = make_test_step("plan_fix", StepMode::Auto, "Fix plan", vec![], None);
+        let mut step = make_test_step("plan_fix", NodeType::Agent, "Fix plan", vec![], None);
         step.pass_output_from = Some(vec![
             "plan_review_parallel".to_string(),
             "plan_draft".to_string(),
@@ -6472,7 +6566,7 @@ mod tests {
     #[test]
     fn inject_step_outputs_parallel_parent_via_pass_previous_response() {
         // pass_previous_response: trueで並列ブロック親の集約出力が参照できること
-        let mut step = make_test_step("plan_fix", StepMode::Auto, "Fix plan", vec![], None);
+        let mut step = make_test_step("plan_fix", NodeType::Agent, "Fix plan", vec![], None);
         step.pass_previous_response = Some(true);
 
         let mut outputs = HashMap::new();
@@ -6661,7 +6755,7 @@ mod tests {
 
     #[test]
     fn approved_policy_injected_output_uses_sanitized_contract_payload_without_global_variables() {
-        let mut step = make_test_step("fix", StepMode::Auto, "Fix", vec![], None);
+        let mut step = make_test_step("fix", NodeType::Agent, "Fix", vec![], None);
         step.pass_output_from = Some(vec!["implementation_fix_policy".to_string()]);
 
         let sanitized = serde_json::json!({
@@ -6709,25 +6803,26 @@ mod tests {
         assert!(!raw.contains("MY_TOKEN_VALUE_123456"));
 
         let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
-        exec.workflow.steps[0].output_contract = Some("approved-fix-policy".to_string());
-        exec.workflow.steps.push(Step {
+        exec.workflow.nodes[0].output_contract = Some("approved-fix-policy".to_string());
+        exec.workflow.nodes.push(NodeDefinition {
             name: "fix".to_string(),
-            mode: Some(StepMode::Auto),
+            node_type: NodeType::Agent,
             policy: None,
             knowledge: None,
             instruction: None,
             output_contract: None,
-            rules: vec![],
+            transition_rules: vec![],
             cycle_guard: None,
             pass_previous_response: Some(true),
             pass_output_from: None,
             inline_prompt: Some("Fix".to_string()),
             collect: None,
-            parallel: None,
+            parallel_children: None,
             aggregate: None,
             resets_cycle_for: None,
             model: None,
             permission: None,
+            ..Default::default()
         });
         let outcome = WorkflowEngine::apply_approval_application(
             &mut exec,
@@ -6757,7 +6852,7 @@ mod tests {
 
         let injected = WorkflowEngine::inject_step_outputs(
             "Fix",
-            &exec.workflow.steps[exec.current_step_index],
+            &exec.workflow.nodes[exec.current_step_index],
             &exec.step_outputs,
             &exec.step_history,
             &exec.workflow_variables,
@@ -6802,7 +6897,7 @@ mod tests {
             workflow_name: exec.workflow.name.clone(),
             workflow_file_stem: "spec-driven-development".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: Some(exec.workflow.clone()),
+            workflow_definition: exec.workflow.clone(),
             timestamp: 1000.0,
         })
         .unwrap();
@@ -7303,11 +7398,12 @@ mod tests {
         .unwrap();
         std::fs::write(output_contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
 
-        let mut step = make_test_step("build", StepMode::Auto, "unused", vec![], None);
+        let mut step = make_test_step("build", NodeType::Agent, "unused", vec![], None);
         step.instruction = Some("impl".to_string());
         step.policy = Some("coding".to_string());
         step.output_contract = Some("plan-doc".to_string());
         step.pass_previous_response = Some(true);
+        resolve_node_facets_for_test(&mut step, base);
 
         let mut outputs = HashMap::new();
         outputs.insert(
@@ -7328,7 +7424,6 @@ mod tests {
 
         let (sys, prompt) = WorkflowEngine::build_step_prompt(
             &step,
-            base,
             "/home/user/my-app",
             Some("Fix bug"),
             &outputs,
@@ -7351,29 +7446,28 @@ mod tests {
 
     #[test]
     fn build_step_prompt_no_facet_refs_returns_error() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let step = Step {
+        let step = NodeDefinition {
             name: "empty".to_string(),
-            mode: Some(StepMode::Auto),
+            node_type: NodeType::Agent,
             policy: None,
             knowledge: None,
             instruction: None,
             output_contract: None,
-            rules: vec![],
+            transition_rules: vec![],
             cycle_guard: None,
             pass_previous_response: None,
             pass_output_from: None,
             inline_prompt: None,
             collect: None,
-            parallel: None,
+            parallel_children: None,
             aggregate: None,
             resets_cycle_for: None,
             model: None,
             permission: None,
+            ..Default::default()
         };
         let result = WorkflowEngine::build_step_prompt(
             &step,
-            tmp.path(),
             "/repo",
             None,
             &HashMap::new(),
@@ -7393,13 +7487,13 @@ mod tests {
         std::fs::create_dir_all(&policies).unwrap();
         std::fs::write(policies.join("review.md"), "Review carefully.").unwrap();
 
-        let mut step = make_test_step("review", StepMode::Auto, "unused", vec![], None);
+        let mut step = make_test_step("review", NodeType::Agent, "unused", vec![], None);
         step.policy = Some("review".to_string());
         step.instruction = None;
+        resolve_node_facets_for_test(&mut step, tmp.path());
 
         let (sys, prompt) = WorkflowEngine::build_step_prompt(
             &step,
-            tmp.path(),
             "/repo",
             None,
             &HashMap::new(),
@@ -7425,14 +7519,14 @@ mod tests {
         std::fs::write(policies.join("coding.md"), "POLICY_BODY").unwrap();
         std::fs::write(output_contracts.join("plan-doc.md"), "CONTRACT_BODY").unwrap();
 
-        let mut step = make_test_step("s", StepMode::Auto, "unused", vec![], None);
+        let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
         step.policy = Some("coding".to_string());
         step.output_contract = Some("plan-doc".to_string());
         step.instruction = None;
+        resolve_node_facets_for_test(&mut step, tmp.path());
 
         let (sys, _prompt) = WorkflowEngine::build_step_prompt(
             &step,
-            tmp.path(),
             "/repo",
             None,
             &HashMap::new(),
@@ -7496,15 +7590,15 @@ mod tests {
         std::fs::write(policies.join("p.md"), "POLICY_BODY").unwrap();
         std::fs::write(output_contracts.join("c.md"), "CONTRACT_BODY").unwrap();
 
-        let mut step = make_test_step("s", StepMode::Auto, "unused", vec![], None);
+        let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
         step.policy = Some("p".to_string());
         step.output_contract = Some("c".to_string());
         step.instruction = None;
+        resolve_node_facets_for_test(&mut step, base);
 
         // build_step_prompt → dispatch_session_start の経路をそのまま再現する。
         let (system_prompt, _prompt) = WorkflowEngine::build_step_prompt(
             &step,
-            base,
             "/repo",
             None,
             &HashMap::new(),
@@ -7565,10 +7659,11 @@ mod tests {
         std::fs::write(policies.join("p.md"), "STEP_POLICY_BODY").unwrap();
         std::fs::write(output_contracts.join("c.md"), "STEP_CONTRACT_BODY").unwrap();
 
-        let mut step = make_test_step("s", StepMode::Auto, "unused", vec![], None);
+        let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
         step.policy = Some("p".to_string());
         step.output_contract = Some("c".to_string());
         step.instruction = None;
+        resolve_node_facets_for_test(&mut step, base);
 
         let records = Arc::new(std::sync::Mutex::new(Vec::new()));
         let gate = RecordingSessionStartGate {
@@ -7578,7 +7673,6 @@ mod tests {
         let prompt = WorkflowEngine::build_and_dispatch_step_session(
             &gate,
             &step,
-            base,
             "step-session-id",
             "/repo",
             None,
@@ -7623,12 +7717,12 @@ mod tests {
         std::fs::create_dir_all(&instructions).unwrap();
         std::fs::write(instructions.join("only-instr.md"), "Body").unwrap();
 
-        let mut step = make_test_step("s", StepMode::Auto, "unused", vec![], None);
+        let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
         step.instruction = Some("only-instr".to_string());
+        resolve_node_facets_for_test(&mut step, tmp.path());
 
         let (system_prompt, _prompt) = WorkflowEngine::build_step_prompt(
             &step,
-            tmp.path(),
             "/repo",
             None,
             &HashMap::new(),
@@ -7808,12 +7902,15 @@ mod tests {
 
     /// `executions` に 1 ステップのワークフロー実行を登録する。
     /// 指定された step を current_step_index=0 として登録する。
-    fn insert_single_step_execution(execs: &mut HashMap<String, WorkflowExecution>, step: Step) {
+    fn insert_single_step_execution(
+        execs: &mut HashMap<String, WorkflowExecution>,
+        step: NodeDefinition,
+    ) {
         let workflow = Workflow {
             name: "regression-workflow".to_string(),
             description: "regression test".to_string(),
             builtin: false,
-            steps: vec![step],
+            nodes: vec![step],
         };
         let exec = WorkflowExecution {
             id: "exec-id".to_string(),
@@ -7864,7 +7961,7 @@ mod tests {
         // 参照先ファセットが解決不能な step を含む execution を登録する。
         // facets_base_dir() 配下に "nonexistent_policy_<uuid>.md" が偶然存在することは
         // 実用上ありえないため、ファセット合成は必ず失敗する。
-        let mut step = make_test_step("missing-facet", StepMode::Auto, "unused", vec![], None);
+        let mut step = make_test_step("missing-facet", NodeType::Agent, "unused", vec![], None);
         step.instruction = None;
         step.policy = Some(format!(
             "nonexistent_policy_{}",
@@ -7955,7 +8052,7 @@ mod tests {
         let engine = WorkflowEngine::new();
 
         // inline_prompt のみのステップなら facet ファイルなしでも合成が成功する。
-        let mut step = make_test_step("ok-step", StepMode::Auto, "unused", vec![], None);
+        let mut step = make_test_step("ok-step", NodeType::Agent, "unused", vec![], None);
         step.instruction = None;
         step.inline_prompt = Some("hello".to_string());
 
@@ -8007,18 +8104,10 @@ mod tests {
 
     // ---- build_parallel_step_prompt (並列子ステップの合成ルール) ----
 
-    fn make_parallel_step(name: &str) -> ParallelStep {
-        ParallelStep {
+    fn make_parallel_step(name: &str) -> crate::workflow::schema::ChildNodeDefinition {
+        crate::workflow::schema::ChildNodeDefinition {
             name: name.to_string(),
-            mode: StepMode::Auto,
-            policy: None,
-            knowledge: None,
-            instruction: None,
-            output_contract: None,
-            pass_previous_response: None,
-            pass_output_from: None,
-            model: None,
-            permission: None,
+            ..crate::workflow::schema::ChildNodeDefinition::default()
         }
     }
 
@@ -8048,10 +8137,10 @@ mod tests {
         ps.knowledge = Some("know".to_string());
         ps.instruction = Some("inst".to_string());
         ps.output_contract = Some("oc".to_string());
+        resolve_child_facets_for_test(&mut ps, base);
 
         let (system_prompt, user_message) = WorkflowEngine::build_parallel_step_prompt(
             &ps,
-            base,
             "/repo",
             None,
             &HashMap::new(),
@@ -8089,10 +8178,10 @@ mod tests {
 
         let mut ps = make_parallel_step("child");
         ps.instruction = Some("inst".to_string());
+        resolve_child_facets_for_test(&mut ps, base);
 
         let (system_prompt, user_message) = WorkflowEngine::build_parallel_step_prompt(
             &ps,
-            base,
             "/repo",
             None,
             &HashMap::new(),
@@ -8111,7 +8200,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_all_match_all_children_match() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
             then: "report".to_string(),
@@ -8138,7 +8227,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_all_match_one_child_mismatch() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
             then: "report".to_string(),
@@ -8160,7 +8249,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_any_match_one_child_matches() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: None,
             any_match: Some("NEEDS_FIX".to_string()),
             then: "implement".to_string(),
@@ -8182,7 +8271,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_any_match_no_child_matches() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: None,
             any_match: Some("NEEDS_FIX".to_string()),
             then: "implement".to_string(),
@@ -8204,7 +8293,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_no_condition_returns_true() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: None,
             any_match: None,
             then: "next".to_string(),
@@ -8218,7 +8307,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_result_none_does_not_match() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
             then: "report".to_string(),
@@ -8241,7 +8330,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_filters_only_child_steps() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
             then: "report".to_string(),
@@ -8264,7 +8353,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_all_match_missing_child_output_returns_false() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
             then: "report".to_string(),
@@ -8285,7 +8374,7 @@ mod tests {
     fn evaluate_aggregate_invalid_regex_falls_back_to_contains() {
         let engine = WorkflowEngine::new();
         // 不正なregexパターン（validationで弾かれるべきだが、エンジン側もgraceful）
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: Some("[invalid(regex".to_string()),
             any_match: None,
             then: "report".to_string(),
@@ -8304,7 +8393,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_invalid_regex_contains_no_match() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: Some("[invalid(regex".to_string()),
             any_match: None,
             then: "report".to_string(),
@@ -8323,7 +8412,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_empty_children_all_match_returns_true() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
             then: "report".to_string(),
@@ -8348,24 +8437,12 @@ mod tests {
                 name: "test".to_string(),
                 description: "test".to_string(),
                 builtin: false,
-                steps: vec![Step {
+                nodes: vec![NodeDefinition {
                     name: "review".to_string(),
-                    mode: Some(StepMode::Approval),
-                    policy: None,
-                    knowledge: None,
+                    node_type: NodeType::Approval,
                     instruction: Some("Review the code".to_string()),
-                    output_contract: None,
-                    rules,
-                    cycle_guard: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
+                    transition_rules: rules,
+                    ..NodeDefinition::default()
                 }],
             },
             state,
@@ -8754,8 +8831,8 @@ mod tests {
     async fn validate_approval_chat_instruction_rejects_stale_approved_policy_session() {
         let engine = WorkflowEngine::new();
         let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
-        exec.workflow.steps[0].name = "implementation_fix_policy".to_string();
-        exec.workflow.steps[0].output_contract = Some("approved-fix-policy".to_string());
+        exec.workflow.nodes[0].name = "implementation_fix_policy".to_string();
+        exec.workflow.nodes[0].output_contract = Some("approved-fix-policy".to_string());
         exec.current_session_id = Some("fix-session".to_string());
         exec.step_history.push(StepHistoryEntry {
             step_name: "implementation_fix_policy".to_string(),
@@ -8814,8 +8891,8 @@ mod tests {
     async fn validate_approval_chat_instruction_rejects_stale_rejected_policy_session() {
         let engine = WorkflowEngine::new();
         let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
-        exec.workflow.steps[0].name = "implementation_fix_policy".to_string();
-        exec.workflow.steps[0].output_contract = Some("approved-fix-policy".to_string());
+        exec.workflow.nodes[0].name = "implementation_fix_policy".to_string();
+        exec.workflow.nodes[0].output_contract = Some("approved-fix-policy".to_string());
         exec.current_session_id = Some("implementation-approval-session".to_string());
         exec.step_history.push(StepHistoryEntry {
             step_name: "implementation_fix_policy".to_string(),
@@ -8960,15 +9037,15 @@ mod tests {
                 name: "review-fix".to_string(),
                 description: "test".to_string(),
                 builtin: false,
-                steps: vec![
-                    Step {
+                nodes: vec![
+                    NodeDefinition {
                         name: "review".to_string(),
-                        mode: Some(StepMode::Approval),
+                        node_type: NodeType::Approval,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Review the code".to_string()),
                         output_contract: None,
-                        rules: vec![TransitionRule {
+                        transition_rules: vec![TransitionRule {
                             r#match: "reject".to_string(),
                             next: "fix".to_string(),
                         }],
@@ -8977,30 +9054,32 @@ mod tests {
                         pass_output_from: None,
                         inline_prompt: None,
                         collect: None,
-                        parallel: None,
+                        parallel_children: None,
                         aggregate: None,
                         resets_cycle_for: None,
                         model: None,
                         permission: None,
+                        ..Default::default()
                     },
-                    Step {
+                    NodeDefinition {
                         name: "fix".to_string(),
-                        mode: Some(StepMode::Auto),
+                        node_type: NodeType::Agent,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Fix the issues".to_string()),
                         output_contract: None,
-                        rules: vec![],
+                        transition_rules: vec![],
                         cycle_guard: None,
                         pass_previous_response: Some(true),
                         pass_output_from: None,
                         inline_prompt: None,
                         collect: None,
-                        parallel: None,
+                        parallel_children: None,
                         aggregate: None,
                         resets_cycle_for: None,
                         model: None,
                         permission: None,
+                        ..Default::default()
                     },
                 ],
             },
@@ -9058,11 +9137,11 @@ mod tests {
 
         // 検証: 遷移先 "fix" ステップに移動している
         assert_eq!(exec.current_step_index, 1);
-        assert_eq!(exec.workflow.steps[exec.current_step_index].name, "fix");
+        assert_eq!(exec.workflow.nodes[exec.current_step_index].name, "fix");
 
         let injected = WorkflowEngine::inject_step_outputs(
             "Draft next policy",
-            &exec.workflow.steps[exec.current_step_index],
+            &exec.workflow.nodes[exec.current_step_index],
             &exec.step_outputs,
             &exec.step_history,
             &HashMap::new(),
@@ -9079,27 +9158,28 @@ mod tests {
                 name: "auto-approve".to_string(),
                 description: "test".to_string(),
                 builtin: false,
-                steps: vec![
-                    Step {
+                nodes: vec![
+                    NodeDefinition {
                         name: "fix_policy".to_string(),
-                        mode: Some(StepMode::Approval),
+                        node_type: NodeType::Approval,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Review fix policy".to_string()),
                         output_contract: Some("approved-fix-policy".to_string()),
-                        rules: vec![],
+                        transition_rules: vec![],
                         cycle_guard: None,
                         pass_previous_response: None,
                         pass_output_from: None,
                         inline_prompt: None,
                         collect: None,
-                        parallel: None,
+                        parallel_children: None,
                         aggregate: None,
                         resets_cycle_for: None,
                         model: None,
                         permission: None,
+                        ..Default::default()
                     },
-                    make_test_step("fix", StepMode::Auto, "Fix", vec![], None),
+                    make_test_step("fix", NodeType::Agent, "Fix", vec![], None),
                 ],
             },
             state: WorkflowExecutionState::WaitingApproval,
@@ -9197,7 +9277,7 @@ mod tests {
 
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "plan_fix"
         );
         assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
@@ -9274,7 +9354,7 @@ mod tests {
 
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "plan_approval"
         );
         assert_eq!(exec.step_execution_counts.get("plan_fix"), None);
@@ -9320,7 +9400,7 @@ mod tests {
 
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "implementation_approval"
         );
         assert_eq!(exec.step_execution_counts.get("fix"), None);
@@ -9346,42 +9426,43 @@ mod tests {
                 name: "auto-approve-path".to_string(),
                 description: "test".to_string(),
                 builtin: false,
-                steps: vec![
-                    Step {
+                nodes: vec![
+                    NodeDefinition {
                         name: "implementation_fix_policy".to_string(),
-                        mode: Some(StepMode::Approval),
+                        node_type: NodeType::Approval,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Review fix policy".to_string()),
                         output_contract: Some("approved-fix-policy".to_string()),
-                        rules: vec![],
+                        transition_rules: vec![],
                         cycle_guard: None,
                         pass_previous_response: None,
                         pass_output_from: Some(vec!["code_review_parallel".to_string()]),
                         inline_prompt: None,
                         collect: None,
-                        parallel: None,
+                        parallel_children: None,
                         aggregate: None,
                         resets_cycle_for: None,
                         model: None,
                         permission: None,
+                        ..Default::default()
                     },
-                    make_test_step("fix", StepMode::Auto, "Fix", vec![], None),
-                    Step {
+                    make_test_step("fix", NodeType::Agent, "Fix", vec![], None),
+                    NodeDefinition {
                         name: "code_review_parallel".to_string(),
-                        mode: None,
+                        node_type: NodeType::Parallel,
                         policy: None,
                         knowledge: None,
                         instruction: None,
                         output_contract: None,
-                        rules: vec![],
+                        transition_rules: vec![],
                         cycle_guard: None,
                         pass_previous_response: None,
                         pass_output_from: None,
                         inline_prompt: None,
                         collect: None,
-                        parallel: Some(vec![]),
-                        aggregate: Some(AggregateConfig {
+                        parallel_children: Some(vec![]),
+                        aggregate: Some(ParallelAggregate {
                             all_match: Some("LGTM".to_string()),
                             any_match: None,
                             then: "fix".to_string(),
@@ -9390,6 +9471,7 @@ mod tests {
                         resets_cycle_for: None,
                         model: None,
                         permission: None,
+                        ..Default::default()
                     },
                 ],
             },
@@ -9521,7 +9603,7 @@ mod tests {
         let worktree_path = "/repo";
         let policy_session_id = uuid::Uuid::new_v4().to_string();
 
-        let mut fix_step = make_test_step("fix", StepMode::Auto, "Fix", vec![], None);
+        let mut fix_step = make_test_step("fix", NodeType::Agent, "Fix", vec![], None);
         fix_step.collect = Some(CollectConfig {
             from: vec!["implementation_fix_policy".to_string()],
             reduce: ReduceStrategy::Last,
@@ -9532,22 +9614,22 @@ mod tests {
                 name: "auto-approve-execute-outcome".to_string(),
                 description: "test".to_string(),
                 builtin: false,
-                steps: vec![
-                    Step {
+                nodes: vec![
+                    NodeDefinition {
                         name: "code_review_parallel".to_string(),
-                        mode: None,
+                        node_type: NodeType::Parallel,
                         policy: None,
                         knowledge: None,
                         instruction: None,
                         output_contract: None,
-                        rules: vec![],
+                        transition_rules: vec![],
                         cycle_guard: None,
                         pass_previous_response: None,
                         pass_output_from: None,
                         inline_prompt: None,
                         collect: None,
-                        parallel: Some(vec![]),
-                        aggregate: Some(AggregateConfig {
+                        parallel_children: Some(vec![]),
+                        aggregate: Some(ParallelAggregate {
                             all_match: Some("LGTM".to_string()),
                             any_match: None,
                             then: "done".to_string(),
@@ -9556,25 +9638,27 @@ mod tests {
                         resets_cycle_for: None,
                         model: None,
                         permission: None,
+                        ..Default::default()
                     },
-                    Step {
+                    NodeDefinition {
                         name: "implementation_fix_policy".to_string(),
-                        mode: Some(StepMode::Approval),
+                        node_type: NodeType::Approval,
                         policy: None,
                         knowledge: None,
                         instruction: Some("Review fix policy".to_string()),
                         output_contract: Some("approved-fix-policy".to_string()),
-                        rules: vec![],
+                        transition_rules: vec![],
                         cycle_guard: None,
                         pass_previous_response: None,
                         pass_output_from: Some(vec!["code_review_parallel".to_string()]),
                         inline_prompt: None,
                         collect: None,
-                        parallel: None,
+                        parallel_children: None,
                         aggregate: None,
                         resets_cycle_for: None,
                         model: None,
                         permission: None,
+                        ..Default::default()
                     },
                     fix_step,
                 ],
@@ -9680,7 +9764,7 @@ mod tests {
         let exec = execs.get(worktree_path).unwrap();
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "plan_fix"
         );
         assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
@@ -9808,7 +9892,7 @@ mod tests {
         let execs = engine.executions.lock().await;
         let exec = execs.get(worktree_path).unwrap();
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "plan_fix"
         );
         assert_eq!(exec.step_execution_counts.get("plan_fix"), Some(&1));
@@ -9925,7 +10009,7 @@ mod tests {
     #[test]
     fn evaluate_aggregate_child_without_output_contract_has_no_step_output() {
         let engine = WorkflowEngine::new();
-        let agg = AggregateConfig {
+        let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
             then: "report".to_string(),
@@ -10027,10 +10111,10 @@ mod tests {
             name: "on-exhausted-test".to_string(),
             description: "Test on_exhausted".to_string(),
             builtin: false,
-            steps: vec![
+            nodes: vec![
                 make_test_step(
                     "fix",
-                    StepMode::Auto,
+                    NodeType::Agent,
                     "Fix issues",
                     vec![TransitionRule {
                         r#match: ".*".to_string(),
@@ -10043,7 +10127,7 @@ mod tests {
                 ),
                 make_test_step(
                     "review",
-                    StepMode::Auto,
+                    NodeType::Agent,
                     "Review",
                     vec![TransitionRule {
                         r#match: "NEEDS_FIX".to_string(),
@@ -10051,11 +10135,11 @@ mod tests {
                     }],
                     None,
                 ),
-                Step {
+                NodeDefinition {
                     resets_cycle_for: Some(vec!["fix".to_string()]),
                     ..make_test_step(
                         "approval",
-                        StepMode::Interactive,
+                        NodeType::Agent,
                         "Approve",
                         vec![TransitionRule {
                             r#match: "NEEDS_FIX".to_string(),
@@ -10097,7 +10181,7 @@ mod tests {
         let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "approval"
         );
     }
@@ -10106,7 +10190,7 @@ mod tests {
     fn on_exhausted_none_fails_workflow() {
         let mut wf = make_on_exhausted_workflow();
         // on_exhausted を None に変更
-        wf.steps[0].cycle_guard = Some(CycleGuard {
+        wf.nodes[0].cycle_guard = Some(CycleGuard {
             max_iterations: 2,
             on_exhausted: None,
         });
@@ -10205,7 +10289,7 @@ mod tests {
         let outcome = WorkflowEngine::apply_transition(&mut exec, "approval").unwrap();
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "approval"
         );
         // fix のカウントがリセットされている
@@ -10244,7 +10328,7 @@ mod tests {
         // fix に再遷移可能（リセット後なのでガードに引っかからない）
         let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-        assert_eq!(exec.workflow.steps[exec.current_step_index].name, "fix");
+        assert_eq!(exec.workflow.nodes[exec.current_step_index].name, "fix");
         assert_eq!(exec.step_execution_counts.get("fix"), Some(&1));
 
         // 2回目も可能
@@ -10256,7 +10340,7 @@ mod tests {
         let outcome = WorkflowEngine::apply_transition(&mut exec, "fix").unwrap();
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "approval"
         );
     }
@@ -10270,10 +10354,10 @@ mod tests {
             name: "chain-test".to_string(),
             description: "test".to_string(),
             builtin: false,
-            steps: vec![
+            nodes: vec![
                 make_test_step(
                     "step_a",
-                    StepMode::Auto,
+                    NodeType::Agent,
                     "A",
                     vec![],
                     Some(CycleGuard {
@@ -10283,7 +10367,7 @@ mod tests {
                 ),
                 make_test_step(
                     "step_b",
-                    StepMode::Auto,
+                    NodeType::Agent,
                     "B",
                     vec![],
                     Some(CycleGuard {
@@ -10291,7 +10375,7 @@ mod tests {
                         on_exhausted: Some("step_c".to_string()),
                     }),
                 ),
-                make_test_step("step_c", StepMode::Interactive, "C", vec![], None),
+                make_test_step("step_c", NodeType::Agent, "C", vec![], None),
             ],
         };
         let mut exec = WorkflowExecution {
@@ -10321,7 +10405,7 @@ mod tests {
         // step_a → exhausted → step_b → exhausted → step_c
         let outcome = WorkflowEngine::apply_transition(&mut exec, "step_a").unwrap();
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-        assert_eq!(exec.workflow.steps[exec.current_step_index].name, "step_c");
+        assert_eq!(exec.workflow.nodes[exec.current_step_index].name, "step_c");
     }
 
     #[test]
@@ -10331,10 +10415,10 @@ mod tests {
             name: "chain-fail-test".to_string(),
             description: "test".to_string(),
             builtin: false,
-            steps: vec![
+            nodes: vec![
                 make_test_step(
                     "step_a",
-                    StepMode::Auto,
+                    NodeType::Agent,
                     "A",
                     vec![],
                     Some(CycleGuard {
@@ -10344,7 +10428,7 @@ mod tests {
                 ),
                 make_test_step(
                     "step_b",
-                    StepMode::Auto,
+                    NodeType::Agent,
                     "B",
                     vec![],
                     Some(CycleGuard {
@@ -10414,7 +10498,7 @@ mod tests {
         let outcome = WorkflowEngine::apply_advance(&mut exec);
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "implement"
         );
         assert!(!exec.step_outputs.contains_key("implement"));
@@ -10433,7 +10517,7 @@ mod tests {
         let outcome = WorkflowEngine::apply_transition(&mut exec, "implement").unwrap();
         assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
         assert_eq!(
-            exec.workflow.steps[exec.current_step_index].name,
+            exec.workflow.nodes[exec.current_step_index].name,
             "implement"
         );
         assert!(!exec.step_outputs.contains_key("implement"));
@@ -10442,34 +10526,21 @@ mod tests {
     #[test]
     fn apply_transition_to_parallel_block_clears_block_and_children() {
         // 並列ブロックへの遷移では、ブロック自身と全子 step の前回出力が破棄される。
-        let parallel_block = Step {
+        let parallel_block = NodeDefinition {
             name: "code_review_parallel".to_string(),
-            mode: None,
-            policy: None,
-            knowledge: None,
-            instruction: None,
-            output_contract: None,
-            rules: vec![],
-            cycle_guard: None,
-            pass_previous_response: None,
-            pass_output_from: None,
-            inline_prompt: None,
-            collect: None,
-            parallel: Some(vec![
+            node_type: NodeType::Parallel,
+            parallel_children: Some(vec![
                 make_parallel_step("review_security"),
                 make_parallel_step("review_style"),
             ]),
-            aggregate: None,
-            resets_cycle_for: None,
-            model: None,
-            permission: None,
+            ..NodeDefinition::default()
         };
         let wf = Workflow {
             name: "loop-parallel".to_string(),
             description: "test".to_string(),
             builtin: false,
-            steps: vec![
-                make_test_step("fix", StepMode::Auto, "Fix", vec![], None),
+            nodes: vec![
+                make_test_step("fix", NodeType::Agent, "Fix", vec![], None),
                 parallel_block,
             ],
         };

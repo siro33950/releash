@@ -18,11 +18,12 @@ pub enum WorkflowLogEvent {
     WorkflowStarted {
         execution_id: String,
         workflow_name: String,
-        #[serde(default)]
         workflow_file_stem: String,
         worktree_path: String,
-        #[serde(default)]
-        workflow_definition: Option<Workflow>,
+        /// [02] schema 境界: 旧 NDJSON ログ（workflow_definition を持たない、または旧 schema を持つ）は
+        /// この required フィールドの deserialize に失敗するため、新バージョンの listing /
+        /// reconstruction の参照対象とならない。
+        workflow_definition: Workflow,
         timestamp: f64,
     },
     StepStarted {
@@ -241,7 +242,7 @@ impl WorkflowEventLog {
         let mut total_token_usage = TokenUsage::default();
         let mut exec_state = WorkflowExecutionState::Running;
         let mut current_step_name = workflow
-            .steps
+            .nodes
             .first()
             .map(|s| s.name.clone())
             .unwrap_or_default();
@@ -268,7 +269,7 @@ impl WorkflowEventLog {
                 } => {
                     current_step_name = step_name.clone();
                     current_step_index = workflow
-                        .steps
+                        .nodes
                         .iter()
                         .position(|s| s.name == *step_name)
                         .unwrap_or(0);
@@ -363,7 +364,7 @@ impl WorkflowEventLog {
                 } => {
                     current_step_name = parent_step_name.clone();
                     current_step_index = workflow
-                        .steps
+                        .nodes
                         .iter()
                         .position(|s| s.name == *parent_step_name)
                         .unwrap_or(current_step_index);
@@ -480,7 +481,7 @@ impl WorkflowEventLog {
             current_step_index,
             current_step_name,
             current_session_id: None,
-            total_steps: workflow.steps.len(),
+            total_steps: workflow.nodes.len(),
             step_history,
             step_execution_counts,
             workflow_definition: workflow.clone(),
@@ -542,6 +543,99 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// テスト用の最小 Workflow。
+    /// log event の `workflow_definition` フィールド（必須）を埋めるために使う。
+    fn minimal_workflow_for_log(name: &str) -> Workflow {
+        use crate::workflow::schema::{NodeDefinition, NodeType};
+        Workflow {
+            name: name.to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "step1".to_string(),
+                node_type: NodeType::Agent,
+                instruction: Some("do".to_string()),
+                ..NodeDefinition::default()
+            }],
+        }
+    }
+
+    /// [02] schema 境界: 旧 NDJSON（`workflow_definition` フィールドを持たない）は
+    /// 新 `WorkflowLogEvent` deserialize で必ず失敗する。
+    #[test]
+    fn old_ndjson_without_workflow_definition_fails_to_deserialize() {
+        let legacy_line = r#"{"event":"workflow_started","execution_id":"old-1","workflow_name":"legacy","workflow_file_stem":"legacy","worktree_path":"/repo","timestamp":1000.0}"#;
+        let result: Result<WorkflowLogEvent, _> = serde_json::from_str(legacy_line);
+        assert!(
+            result.is_err(),
+            "旧 NDJSON の WorkflowStarted は新 schema で必ず deserialize 失敗する"
+        );
+    }
+
+    /// [02] schema 境界: 旧 NDJSON で `workflow_definition.steps` を含む WorkflowStarted は
+    /// 新 schema（`workflow_definition.nodes` + `deny_unknown_fields`）として deserialize できない。
+    #[test]
+    fn old_ndjson_with_legacy_steps_shape_fails_to_deserialize() {
+        let legacy_line = r#"{"event":"workflow_started","execution_id":"old-1","workflow_name":"legacy","workflow_file_stem":"legacy","worktree_path":"/repo","workflow_definition":{"name":"legacy","description":"","builtin":false,"steps":[{"name":"x","mode":"auto","instruction":"x"}]},"timestamp":1000.0}"#;
+        let result: Result<WorkflowLogEvent, _> = serde_json::from_str(legacy_line);
+        assert!(
+            result.is_err(),
+            "旧 workflow_definition.steps を含む NDJSON は新 schema で deserialize 失敗する"
+        );
+    }
+
+    /// 旧 `workflow_definition.steps` を含む NDJSON は listing / reconstruction の対象外となる。
+    #[test]
+    fn list_execution_ids_excludes_legacy_steps_ndjson() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        fs::create_dir_all(&log.log_dir).unwrap();
+        let legacy_path = log.log_path("legacy-steps");
+        fs::write(
+            &legacy_path,
+            r#"{"event":"workflow_started","execution_id":"legacy-steps","workflow_name":"old","workflow_file_stem":"old","worktree_path":"/repo","workflow_definition":{"name":"old","description":"","builtin":false,"steps":[{"name":"x","mode":"auto","instruction":"x"}]},"timestamp":1000.0}"#,
+        )
+        .unwrap();
+        // read_log は parse 失敗を返す（旧 shape は復元対象外）
+        assert!(log.read_log("legacy-steps").is_err());
+        // listing も除外（listing は parse 失敗 line をスキップする）
+        let ids = log.list_execution_ids_for_worktree("/repo").unwrap();
+        assert!(!ids.iter().any(|i| i == "legacy-steps"));
+    }
+
+    /// 旧 NDJSON が listing から除外されること（read_log 失敗 ⇒ list_execution_ids_for_worktree でも対象外）。
+    #[test]
+    fn list_execution_ids_for_worktree_excludes_legacy_ndjson() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        // worktree 一致する旧 NDJSON を直接書き込む（workflow_definition フィールドを欠く）
+        fs::create_dir_all(&log.log_dir).unwrap();
+        let legacy_path = log.log_path("legacy");
+        fs::write(
+            &legacy_path,
+            r#"{"event":"workflow_started","execution_id":"legacy","workflow_name":"old","workflow_file_stem":"old","worktree_path":"/repo","timestamp":1000.0}"#,
+        )
+        .unwrap();
+
+        // 新 NDJSON も同じ worktree で書き込む
+        log.append(&WorkflowLogEvent::WorkflowStarted {
+            execution_id: "new-1".to_string(),
+            workflow_name: "new".to_string(),
+            workflow_file_stem: "new".to_string(),
+            worktree_path: "/repo".to_string(),
+            workflow_definition: minimal_workflow_for_log("new"),
+            timestamp: 1001.0,
+        })
+        .unwrap();
+
+        let ids = log.list_execution_ids_for_worktree("/repo").unwrap();
+        assert!(
+            !ids.iter().any(|i| i == "legacy"),
+            "旧 NDJSON は listing 対象から除外される"
+        );
+        assert!(ids.iter().any(|i| i == "new-1"));
+    }
+
     #[test]
     fn append_and_read_log() {
         let tmp = TempDir::new().unwrap();
@@ -552,7 +646,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: None,
+            workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1000.0,
         };
         let event2 = WorkflowLogEvent::StepStarted {
@@ -611,7 +705,7 @@ mod tests {
             workflow_name: "wf-a".to_string(),
             workflow_file_stem: "wf-a".to_string(),
             worktree_path: "/repo-1".to_string(),
-            workflow_definition: None,
+            workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1000.0,
         })
         .unwrap();
@@ -620,7 +714,7 @@ mod tests {
             workflow_name: "wf-b".to_string(),
             workflow_file_stem: "wf-b".to_string(),
             worktree_path: "/repo-2".to_string(),
-            workflow_definition: None,
+            workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1001.0,
         })
         .unwrap();
@@ -629,7 +723,7 @@ mod tests {
             workflow_name: "wf-c".to_string(),
             workflow_file_stem: "wf-c".to_string(),
             worktree_path: "/repo-1".to_string(),
-            workflow_definition: None,
+            workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1002.0,
         })
         .unwrap();
@@ -653,7 +747,7 @@ mod tests {
                 workflow_name: "wf".to_string(),
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: "/repo".to_string(),
-                workflow_definition: None,
+                workflow_definition: minimal_workflow_for_log("test"),
                 timestamp: 1.0,
             },
             WorkflowLogEvent::StepStarted {
@@ -771,77 +865,48 @@ mod tests {
         }
     }
 
+    fn make_agent_node(name: &str, instruction: &str) -> crate::workflow::schema::NodeDefinition {
+        use crate::workflow::schema::{NodeDefinition, NodeType};
+        NodeDefinition {
+            name: name.to_string(),
+            node_type: NodeType::Agent,
+            instruction: Some(instruction.to_string()),
+            ..NodeDefinition::default()
+        }
+    }
+
+    fn make_approval_node(
+        name: &str,
+        instruction: &str,
+    ) -> crate::workflow::schema::NodeDefinition {
+        use crate::workflow::schema::{NodeDefinition, NodeType};
+        NodeDefinition {
+            name: name.to_string(),
+            node_type: NodeType::Approval,
+            instruction: Some(instruction.to_string()),
+            ..NodeDefinition::default()
+        }
+    }
+
     fn make_test_workflow() -> Workflow {
-        use crate::workflow::schema::{CycleGuard, Step, TransitionRule};
+        use crate::workflow::schema::{CycleGuard, TransitionRule};
+        let mut plan = make_agent_node("plan", "plan");
+        let mut implement = make_agent_node("implement", "implement");
+        implement.transition_rules = vec![TransitionRule {
+            r#match: "review".to_string(),
+            next: "review".to_string(),
+        }];
+        let mut review = make_approval_node("review", "review");
+        review.cycle_guard = Some(CycleGuard {
+            max_iterations: 3,
+            on_exhausted: None,
+        });
+        let _ = &mut plan;
         Workflow {
             name: "test-wf".to_string(),
             description: "".to_string(),
             builtin: false,
-            steps: vec![
-                Step {
-                    name: "plan".to_string(),
-                    mode: Some(crate::workflow::schema::StepMode::Auto),
-                    rules: vec![],
-                    cycle_guard: None,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("plan".to_string()),
-                    output_contract: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                },
-                Step {
-                    name: "implement".to_string(),
-                    mode: Some(crate::workflow::schema::StepMode::Auto),
-                    rules: vec![TransitionRule {
-                        r#match: "review".to_string(),
-                        next: "review".to_string(),
-                    }],
-                    cycle_guard: None,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("implement".to_string()),
-                    output_contract: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                },
-                Step {
-                    name: "review".to_string(),
-                    mode: Some(crate::workflow::schema::StepMode::Approval),
-                    rules: vec![],
-                    cycle_guard: Some(CycleGuard {
-                        max_iterations: 3,
-                        on_exhausted: None,
-                    }),
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("review".to_string()),
-                    output_contract: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                },
-            ],
+            nodes: vec![plan, implement, review],
         }
     }
 
@@ -865,7 +930,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: None,
+            workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1000.0,
         })
         .unwrap();
@@ -980,7 +1045,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: None,
+            workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 2000.0,
         })
         .unwrap();
@@ -1023,85 +1088,38 @@ mod tests {
     /// ParallelCompleted + StepCompleted で親ステップが重複しないことを検証する。
     #[test]
     fn reconstruct_state_parallel_block_no_duplicate_history() {
-        use crate::workflow::schema::{AggregateConfig, ParallelStep, Step, StepMode};
+        use crate::workflow::schema::{NodeDefinition, NodeType, ParallelAggregate};
 
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
 
+        use crate::workflow::schema::ChildNodeDefinition;
+        let make_child = |name: &str, instruction: &str| ChildNodeDefinition {
+            name: name.to_string(),
+            node_type: NodeType::Agent,
+            instruction: Some(instruction.to_string()),
+            ..ChildNodeDefinition::default()
+        };
+        let parallel_review = NodeDefinition {
+            name: "parallel-review".to_string(),
+            node_type: NodeType::Parallel,
+            parallel_children: Some(vec![
+                make_child("arch-review", "arch"),
+                make_child("security-review", "security"),
+            ]),
+            aggregate: Some(ParallelAggregate {
+                all_match: Some("LGTM".to_string()),
+                any_match: None,
+                then: "_complete".to_string(),
+                r#else: "_complete".to_string(),
+            }),
+            ..NodeDefinition::default()
+        };
         let wf = Workflow {
             name: "parallel-wf".to_string(),
             description: "".to_string(),
             builtin: false,
-            steps: vec![
-                Step {
-                    name: "plan".to_string(),
-                    mode: Some(StepMode::Auto),
-                    rules: vec![],
-                    cycle_guard: None,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("plan".to_string()),
-                    output_contract: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                },
-                Step {
-                    name: "parallel-review".to_string(),
-                    mode: Some(StepMode::Auto),
-                    rules: vec![],
-                    cycle_guard: None,
-                    policy: None,
-                    knowledge: None,
-                    instruction: None,
-                    output_contract: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: Some(vec![
-                        ParallelStep {
-                            name: "arch-review".to_string(),
-                            mode: StepMode::Auto,
-                            policy: None,
-                            knowledge: None,
-                            instruction: Some("arch".to_string()),
-                            output_contract: None,
-                            pass_previous_response: None,
-                            pass_output_from: None,
-                            model: None,
-                            permission: None,
-                        },
-                        ParallelStep {
-                            name: "security-review".to_string(),
-                            mode: StepMode::Auto,
-                            policy: None,
-                            knowledge: None,
-                            instruction: Some("security".to_string()),
-                            output_contract: None,
-                            pass_previous_response: None,
-                            pass_output_from: None,
-                            model: None,
-                            permission: None,
-                        },
-                    ]),
-                    aggregate: Some(AggregateConfig {
-                        all_match: Some("LGTM".to_string()),
-                        any_match: None,
-                        then: "_complete".to_string(),
-                        r#else: "_complete".to_string(),
-                    }),
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                },
-            ],
+            nodes: vec![make_agent_node("plan", "plan"), parallel_review],
         };
 
         // NDJSON: plan完了 → 並列開始 → 子2つ完了 → ParallelCompleted → StepCompleted(親)
@@ -1111,7 +1129,7 @@ mod tests {
                 workflow_name: "parallel-wf".to_string(),
                 workflow_file_stem: "parallel-wf".to_string(),
                 worktree_path: "/repo".to_string(),
-                workflow_definition: None,
+                workflow_definition: minimal_workflow_for_log("test"),
                 timestamp: 1000.0,
             },
             WorkflowLogEvent::StepStarted {
@@ -1265,7 +1283,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: None,
+            workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1000.0,
         })
         .unwrap();

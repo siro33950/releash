@@ -1,7 +1,7 @@
 use super::builtin;
 use super::diagnostics;
 use super::engine::{ApprovalDecision, WorkflowEngine};
-use super::facet::FacetKind;
+use super::facet::{self, FacetKind};
 use super::log::{WorkflowEventLog, WorkflowLogEvent};
 use super::schema::{FacetSummary, Summary, Workflow};
 use super::storage;
@@ -151,13 +151,15 @@ pub async fn list_workflows(
 #[tauri::command]
 pub async fn get_workflow(name: String) -> Result<Workflow, String> {
     let dir = storage::workflows_dir();
+    let facets_base = facet::facets_base_dir();
     tokio::task::spawn_blocking(move || {
         super::validation::validate_name(&name).map_err(validation_error_string)?;
         let file_path = dir.join(format!("{name}.yml"));
         if file_path.exists() {
-            return storage::load_workflow(&file_path).map_err(|e| e.to_string());
+            return storage::load_workflow(&file_path, &facets_base).map_err(|e| e.to_string());
         }
-        builtin::get_builtin_workflow(&name)
+        builtin::load_builtin_workflow_resolved(&name)
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("ワークフロー '{name}' が見つかりません"))
     })
     .await
@@ -262,14 +264,16 @@ pub async fn start_workflow(
     task: Option<String>,
 ) -> Result<(), String> {
     let dir = storage::workflows_dir();
+    let facets_base = facet::facets_base_dir();
     let file_stem = workflow_name.clone();
     let workflow = tokio::task::spawn_blocking(move || {
         super::validation::validate_name(&workflow_name).map_err(validation_error_string)?;
         let file_path = dir.join(format!("{workflow_name}.yml"));
         if file_path.exists() {
-            return storage::load_workflow(&file_path).map_err(|e| e.to_string());
+            return storage::load_workflow(&file_path, &facets_base).map_err(|e| e.to_string());
         }
-        builtin::get_builtin_workflow(&workflow_name)
+        builtin::load_builtin_workflow_resolved(&workflow_name)
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("ワークフロー '{workflow_name}' が見つかりません"))
     })
     .await
@@ -480,11 +484,12 @@ pub async fn get_workflow_execution_state(
 ) -> Result<Option<WorkflowStateView>, String> {
     validate_execution_id(&execution_id)?;
     let data_dir = resolve_data_dir(&app)?;
-    let workflows_dir = storage::workflows_dir();
     let state = tokio::task::spawn_blocking(move || {
         let event_log = WorkflowEventLog::new(&data_dir);
         let events = event_log.read_log(&execution_id)?;
-        // ログからワークフロー定義を取得（スナップショット優先、なければYAMLファイルにフォールバック）
+        // ログのスナップショット（WorkflowStarted.workflow_definition）からのみ復元する。
+        // 旧 NDJSON（workflow_definition フィールドを欠く / 旧 shape）は新 schema で
+        // deserialize できず、本ルートには到達しない（[02] で互換破棄）。
         let started = events.iter().find_map(|e| match e {
             super::log::WorkflowLogEvent::WorkflowStarted {
                 workflow_definition,
@@ -501,30 +506,10 @@ pub async fn get_workflow_execution_state(
             }
             _ => None,
         });
-        let Some((snapshot_def, file_stem)) = started else {
+        let Some((snapshot_def, _file_stem)) = started else {
             return Ok(None);
         };
-        let workflow = if let Some(def) = snapshot_def {
-            def
-        } else {
-            let file_path = workflows_dir.join(format!("{file_stem}.yml"));
-            if file_path.exists() {
-                match storage::load_workflow(&file_path) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to load workflow definition '{}': {e}",
-                            file_path.display()
-                        );
-                        return Ok(None);
-                    }
-                }
-            } else if let Some(w) = builtin::get_builtin_workflow(&file_stem) {
-                w
-            } else {
-                return Ok(None);
-            }
-        };
+        let workflow = snapshot_def;
         WorkflowEventLog::reconstruct_state_from_events(&execution_id, &events, &workflow)
     })
     .await
@@ -546,7 +531,7 @@ pub async fn get_workflow_execution_state(
 
 #[tauri::command]
 pub async fn list_facets(kind: String) -> Result<Vec<String>, String> {
-    let base_dir = storage::facets_base_dir();
+    let base_dir = facet::facets_base_dir();
     tokio::task::spawn_blocking(move || list_facets_inner(&kind, &base_dir))
         .await
         .map_err(|e| format!("task join error: {e}"))?
@@ -554,7 +539,7 @@ pub async fn list_facets(kind: String) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub async fn get_facet(kind: String, key: String) -> Result<String, String> {
-    let base_dir = storage::facets_base_dir();
+    let base_dir = facet::facets_base_dir();
     tokio::task::spawn_blocking(move || get_facet_inner(&kind, &key, &base_dir))
         .await
         .map_err(|e| format!("task join error: {e}"))?
@@ -567,7 +552,7 @@ pub async fn save_facet(
     content: String,
     is_new: Option<bool>,
 ) -> Result<(), String> {
-    let base_dir = storage::facets_base_dir();
+    let base_dir = facet::facets_base_dir();
     let is_new = is_new.unwrap_or(false);
     tokio::task::spawn_blocking(move || save_facet_inner(&kind, &key, &content, is_new, &base_dir))
         .await
@@ -576,7 +561,7 @@ pub async fn save_facet(
 
 #[tauri::command]
 pub async fn delete_facet(kind: String, key: String) -> Result<(), String> {
-    let base_dir = storage::facets_base_dir();
+    let base_dir = facet::facets_base_dir();
     tokio::task::spawn_blocking(move || delete_facet_inner(&kind, &key, &base_dir))
         .await
         .map_err(|e| format!("task join error: {e}"))?
@@ -587,7 +572,7 @@ pub async fn delete_facet(kind: String, key: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn diagnose_all_cmd() -> Result<diagnostics::DiagnosticReport, String> {
     let wf_dir = storage::workflows_dir();
-    let facets_dir = storage::facets_base_dir();
+    let facets_dir = facet::facets_base_dir();
     tokio::task::spawn_blocking(move || Ok(diagnostics::diagnose_all(&wf_dir, &facets_dir)))
         .await
         .map_err(|e| format!("task join error: {e}"))?
@@ -595,7 +580,7 @@ pub async fn diagnose_all_cmd() -> Result<diagnostics::DiagnosticReport, String>
 
 #[tauri::command]
 pub async fn list_facet_summaries(kind: String) -> Result<Vec<FacetSummary>, String> {
-    let base_dir = storage::facets_base_dir();
+    let base_dir = facet::facets_base_dir();
     tokio::task::spawn_blocking(move || list_facet_summaries_inner(&kind, &base_dir))
         .await
         .map_err(|e| format!("task join error: {e}"))?
@@ -606,6 +591,7 @@ pub async fn duplicate_workflow(source_name: String, new_name: String) -> Result
     super::validation::validate_name(&source_name).map_err(validation_error_string)?;
     super::validation::validate_name(&new_name).map_err(validation_error_string)?;
     let dir = storage::workflows_dir();
+    let facets_base = facet::facets_base_dir();
     tokio::task::spawn_blocking(move || {
         // 重複チェック
         if dir.join(format!("{new_name}.yml")).exists() {
@@ -621,9 +607,10 @@ pub async fn duplicate_workflow(source_name: String, new_name: String) -> Result
         let mut wf = {
             let file_path = dir.join(format!("{source_name}.yml"));
             if file_path.exists() {
-                storage::load_workflow(&file_path).map_err(|e| e.to_string())?
+                storage::load_workflow(&file_path, &facets_base).map_err(|e| e.to_string())?
             } else {
-                builtin::get_builtin_workflow(&source_name)
+                builtin::load_builtin_workflow_resolved(&source_name)
+                    .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("ソースワークフロー '{source_name}' が見つかりません"))?
             }
         };
@@ -642,7 +629,7 @@ pub async fn duplicate_facet(
     source_key: String,
     new_key: String,
 ) -> Result<(), String> {
-    let base_dir = storage::facets_base_dir();
+    let base_dir = facet::facets_base_dir();
     tokio::task::spawn_blocking(move || {
         duplicate_facet_inner(&kind, &source_key, &new_key, &base_dir)
     })
@@ -658,7 +645,7 @@ pub fn open_facet_in_editor(
     key: String,
 ) -> Result<(), String> {
     parse_facet_kind(&kind)?;
-    let base_dir = storage::facets_base_dir();
+    let base_dir = facet::facets_base_dir();
     let config = state.get_config()?;
     open_facet_in_editor_inner(&kind, &key, &base_dir, |path_str| {
         crate::external_editor::open_path_with_opener(
@@ -1112,7 +1099,7 @@ mod tests {
     // These test the core duplicate logic using storage/facet/builtin functions directly,
     // mirroring what the Tauri commands do inside spawn_blocking.
 
-    use crate::workflow::schema::{Step, StepMode, Workflow};
+    use crate::workflow::schema::{NodeDefinition, NodeType, Workflow};
     use tempfile::TempDir;
 
     fn make_test_workflow(name: &str) -> Workflow {
@@ -1120,24 +1107,12 @@ mod tests {
             name: name.to_string(),
             description: "test workflow".to_string(),
             builtin: false,
-            steps: vec![Step {
+            nodes: vec![NodeDefinition {
                 name: "step1".to_string(),
-                mode: Some(StepMode::Auto),
-                policy: None,
-                knowledge: None,
-                instruction: None,
-                output_contract: None,
-                rules: vec![],
-                cycle_guard: None,
-                pass_previous_response: None,
-                pass_output_from: None,
+                node_type: NodeType::Agent,
                 inline_prompt: Some("Do something".to_string()),
-                collect: None,
-                parallel: None,
-                aggregate: None,
-                resets_cycle_for: None,
-                model: None,
                 permission: Some("edit".to_string()),
+                ..NodeDefinition::default()
             }],
         }
     }
@@ -1155,13 +1130,13 @@ mod tests {
         assert!(!dir.join(format!("{new_name}.yml")).exists());
         assert!(!builtin::is_builtin_workflow(new_name));
 
-        let mut copied = storage::load_workflow(&dir.join("source-wf.yml")).unwrap();
+        let mut copied = storage::load_workflow(&dir.join("source-wf.yml"), dir).unwrap();
         copied.name = new_name.to_string();
         copied.builtin = false;
         storage::save_workflow(dir, &copied).unwrap();
 
         assert!(dir.join(format!("{new_name}.yml")).exists());
-        let loaded = storage::load_workflow(&dir.join(format!("{new_name}.yml"))).unwrap();
+        let loaded = storage::load_workflow(&dir.join(format!("{new_name}.yml")), dir).unwrap();
         assert_eq!(loaded.name, new_name);
         assert!(!loaded.builtin);
     }
@@ -1218,9 +1193,9 @@ mod tests {
             .map(|s| s.name.clone())
             .collect();
         if let Some(name) = builtin_names.first() {
-            let wf = builtin::get_builtin_workflow(name);
-            assert!(wf.is_some());
-            let wf = wf.unwrap();
+            let wf = builtin::load_builtin_workflow_resolved(name)
+                .expect("builtin load must succeed")
+                .expect("builtin must exist for known name");
             assert!(wf.builtin);
         }
     }
@@ -1468,7 +1443,7 @@ mod tests {
             "Expected same-name update to succeed, got: {result:?}"
         );
 
-        let loaded = storage::load_workflow(&dir.join("my-wf.yml")).unwrap();
+        let loaded = storage::load_workflow(&dir.join("my-wf.yml"), dir).unwrap();
         assert_eq!(loaded.description, "updated desc");
     }
 

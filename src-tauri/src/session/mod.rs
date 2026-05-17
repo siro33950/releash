@@ -654,7 +654,7 @@ pub fn update_session_agent_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::schema::{Step, StepMode, Workflow};
+    use crate::workflow::schema::{NodeDefinition, NodeType, Workflow};
     use crate::workflow::state::{StepHistoryEntry, TokenUsage, WorkflowExecutionState};
 
     #[test]
@@ -1415,87 +1415,33 @@ mod tests {
 
     // ---- WorkflowState serde ----
 
+    fn make_session_test_node(
+        name: &str,
+        node_type: NodeType,
+        instruction: &str,
+    ) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            node_type,
+            instruction: Some(instruction.to_string()),
+            ..NodeDefinition::default()
+        }
+    }
+
     fn make_test_workflow_for_session() -> Workflow {
         Workflow {
             name: "review-cycle".to_string(),
             description: "Test".to_string(),
             builtin: false,
-            steps: vec![
-                Step {
-                    name: "plan".to_string(),
-                    mode: Some(StepMode::Interactive),
-                    rules: vec![],
-                    cycle_guard: None,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("plan".to_string()),
-                    output_contract: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                },
-                Step {
-                    name: "implement".to_string(),
-                    mode: Some(StepMode::Auto),
-                    rules: vec![],
-                    cycle_guard: None,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("implement".to_string()),
-                    output_contract: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                },
-                Step {
-                    name: "review".to_string(),
-                    mode: Some(StepMode::Auto),
-                    rules: vec![],
-                    cycle_guard: None,
-                    policy: None,
-                    knowledge: None,
-                    instruction: Some("review".to_string()),
-                    output_contract: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
-                },
-                Step {
+            nodes: vec![
+                make_session_test_node("plan", NodeType::Agent, "plan"),
+                make_session_test_node("implement", NodeType::Agent, "implement"),
+                make_session_test_node("review", NodeType::Agent, "review"),
+                NodeDefinition {
                     name: "report".to_string(),
-                    mode: Some(StepMode::Approval),
-                    rules: vec![],
-                    cycle_guard: None,
-                    policy: None,
-                    knowledge: None,
+                    node_type: NodeType::Approval,
                     instruction: Some("report".to_string()),
-                    output_contract: None,
-                    pass_previous_response: None,
-                    pass_output_from: None,
-                    inline_prompt: None,
-                    collect: None,
-                    parallel: None,
-                    aggregate: None,
-                    resets_cycle_for: None,
-                    model: None,
-                    permission: None,
+                    ..NodeDefinition::default()
                 },
             ],
         }
@@ -1650,6 +1596,78 @@ mod tests {
         assert_eq!(ws.execution_id, "exec-1");
         assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
         assert_eq!(ws.step_history.len(), 1);
+    }
+
+    /// [02] schema 境界: 旧表現（`workflowDefinition.steps`）を含む WorkflowState JSON は
+    /// 新 `Workflow` schema（`nodes` 必須 + `deny_unknown_fields`）として deserialize に失敗する。
+    /// これにより旧表現の進行中状態は新バージョンに引き継がれない。
+    #[test]
+    fn legacy_workflow_state_with_steps_fails_to_deserialize() {
+        let json = r#"{
+            "executionId": "exec-1",
+            "workflowName": "legacy",
+            "state": { "type": "running" },
+            "currentStepIndex": 0,
+            "currentStepName": "x",
+            "totalSteps": 1,
+            "stepHistory": [],
+            "stepExecutionCounts": {},
+            "workflowDefinition": {
+                "name": "legacy",
+                "description": "",
+                "builtin": false,
+                "steps": [{"name":"x","mode":"auto","instruction":"x"}]
+            },
+            "totalTokenUsage": { "inputTokens": 0, "outputTokens": 0 },
+            "stepStates": {},
+            "startedAt": 1.0,
+            "updatedAt": 1.0
+        }"#;
+        let result: Result<WorkflowState, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "旧 workflowDefinition.steps を含む WorkflowState は新 schema で deserialize 失敗する"
+        );
+    }
+
+    /// 旧表現を埋め込んだ `ChatSession.workflowState` JSON も同様に拒否される。
+    #[test]
+    fn legacy_chat_session_with_old_workflow_state_fails_to_deserialize() {
+        let json = r#"{
+            "id": "s1",
+            "worktreePath": "/repo",
+            "messages": [],
+            "state": "active",
+            "createdAt": 1.0,
+            "updatedAt": 1.0,
+            "permissionMode": "edit",
+            "workflowStepSession": false,
+            "workflowState": {
+                "executionId": "exec-1",
+                "workflowName": "legacy",
+                "state": { "type": "running" },
+                "currentStepIndex": 0,
+                "currentStepName": "x",
+                "totalSteps": 1,
+                "stepHistory": [],
+                "stepExecutionCounts": {},
+                "workflowDefinition": {
+                    "name": "legacy",
+                    "description": "",
+                    "builtin": false,
+                    "steps": [{"name":"x","mode":"auto","instruction":"x"}]
+                },
+                "totalTokenUsage": { "inputTokens": 0, "outputTokens": 0 },
+                "stepStates": {},
+                "startedAt": 1.0,
+                "updatedAt": 1.0
+            }
+        }"#;
+        let result: Result<ChatSession, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "旧 workflowDefinition.steps を含む ChatSession.workflowState は新 schema で deserialize 失敗する"
+        );
     }
 
     #[test]

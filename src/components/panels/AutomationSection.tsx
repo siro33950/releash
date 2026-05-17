@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { FacetSubTab, useAutomation } from "@/hooks/useAutomation";
-import type { FacetKind, StepMode, Workflow } from "@/types/workflow";
+import type { FacetKind, NodeType, Workflow } from "@/types/workflow";
 import { FacetDetail } from "./automation/FacetDetail";
 import { FacetEditor } from "./automation/FacetEditor";
 import { FacetList } from "./automation/FacetList";
@@ -150,10 +150,10 @@ export function AutomationSection({
 				name,
 				description: "",
 				builtin: false,
-				steps: [
+				nodes: [
 					{
 						name: "step-1",
-						mode: "auto" as StepMode,
+						type: "agent" as NodeType,
 						inline_prompt: "TODO: describe what this step should do",
 						rules: [],
 					},
