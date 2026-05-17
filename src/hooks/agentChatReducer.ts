@@ -280,7 +280,7 @@ export const INITIAL_STATE: AgentChatState = {
 	activeSession: null,
 	turnPhases: {},
 	error: null,
-	permissionMode: "acceptEdits",
+	permissionMode: "edit",
 	pendingPermissions: {},
 	availableModels: [],
 	availableModelsByBackend: {},

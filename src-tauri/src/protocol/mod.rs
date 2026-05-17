@@ -106,6 +106,10 @@ pub enum WsMessage {
     AgentModelSetRequest(AgentModelSetRequest),
     #[serde(rename = "agent_model_set_response")]
     AgentModelSetResponse(AgentModelSetResponse),
+    #[serde(rename = "agent_permission_mode_set_request")]
+    AgentPermissionModeSetRequest(AgentPermissionModeSetRequest),
+    #[serde(rename = "agent_permission_mode_set_response")]
+    AgentPermissionModeSetResponse(AgentPermissionModeSetResponse),
     #[serde(rename = "agent_stream_sync")]
     AgentStreamSync(AgentStreamSync),
 
@@ -387,6 +391,7 @@ mod tests {
             WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
                 worktree_path: "/repo".to_string(),
                 backend_id: Some("claude".to_string()),
+                permission_mode: Some("edit".to_string()),
             }),
             WsMessage::AgentSessionStartResponse(AgentSessionStartResponse {
                 success: true,
@@ -398,7 +403,7 @@ mod tests {
                 session_id: Some("sess-1".to_string()),
                 worktree_path: "/repo".to_string(),
                 content: "hello".to_string(),
-                permission_mode: Some("acceptEdits".to_string()),
+                permission_mode: Some("edit".to_string()),
                 backend_id: Some("claude".to_string()),
             }),
             WsMessage::AgentMessageResponse(AgentMessageResponse {

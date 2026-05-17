@@ -10,7 +10,12 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { BackendInfoMsg, WsMessage } from "@/types/protocol";
-import type { MessagePart } from "@/types/session";
+import {
+	type MessagePart,
+	PERMISSION_MODE_LABELS,
+	PERMISSION_MODES,
+	type PermissionMode,
+} from "@/types/session";
 import type { Subscribe } from "../hooks/useMessageBus";
 import type { ConnectionStatus } from "../hooks/useWebSocket";
 
@@ -76,6 +81,7 @@ export function RemoteAgentPanel({
 	const [messages, setMessages] = useState<RemoteChatMessage[]>([]);
 	const [draft, setDraft] = useState("");
 	const [modelId, setModelId] = useState("");
+	const [permissionMode, setPermissionMode] = useState<PermissionMode>("edit");
 	const [error, setError] = useState<string | null>(null);
 
 	const availableBackends = useMemo(
@@ -173,6 +179,15 @@ export function RemoteAgentPanel({
 						setError(null);
 					}
 					break;
+				case "agent_permission_mode_set_response":
+					if (!msg.payload.success) {
+						setError(
+							msg.payload.error ?? "Permission mode could not be changed.",
+						);
+					} else {
+						setError(null);
+					}
+					break;
 			}
 		});
 	}, [subscribe, startedSession?.sessionId]);
@@ -193,6 +208,7 @@ export function RemoteAgentPanel({
 			payload: {
 				worktree_path: selectedWorktree,
 				backend_id: selectedBackend.id,
+				permission_mode: permissionMode,
 			},
 		});
 	};
@@ -214,7 +230,7 @@ export function RemoteAgentPanel({
 				session_id: startedSession?.sessionId ?? null,
 				worktree_path: selectedWorktree,
 				content,
-				permission_mode: "acceptEdits",
+				permission_mode: permissionMode,
 				backend_id: startedSession ? null : selectedBackend?.id,
 			},
 		});
@@ -247,6 +263,19 @@ export function RemoteAgentPanel({
 			payload: {
 				session_id: startedSession.sessionId,
 				model_id: null,
+			},
+		});
+	};
+
+	const changePermissionMode = (mode: PermissionMode) => {
+		setPermissionMode(mode);
+		if (!startedSession) return;
+		setError(null);
+		send({
+			type: "agent_permission_mode_set_request",
+			payload: {
+				session_id: startedSession.sessionId,
+				permission_mode: mode,
 			},
 		});
 	};
@@ -289,6 +318,24 @@ export function RemoteAgentPanel({
 						{availableBackends.map((backend) => (
 							<option key={backend.id} value={backend.id}>
 								{backend.name}
+							</option>
+						))}
+					</select>
+				</label>
+
+				<label className="block space-y-1">
+					<span className="text-xs text-muted-foreground">Permission</span>
+					<select
+						className="w-full h-9 rounded border border-border bg-background px-2 text-sm"
+						value={permissionMode}
+						onChange={(event) =>
+							changePermissionMode(event.target.value as PermissionMode)
+						}
+						data-testid="remote-permission-mode-select"
+					>
+						{PERMISSION_MODES.map((mode) => (
+							<option key={mode} value={mode}>
+								{PERMISSION_MODE_LABELS[mode]}
 							</option>
 						))}
 					</select>

@@ -309,6 +309,9 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::InvalidPermissionMode { step, .. } => {
             (Some(step.clone()), Some("permission".to_string()))
         }
+        ValidationError::MissingPermissionMode { step } => {
+            (Some(step.clone()), Some("permission".to_string()))
+        }
         ValidationError::UnknownModel { step, .. } => {
             (Some(step.clone()), Some("model".to_string()))
         }

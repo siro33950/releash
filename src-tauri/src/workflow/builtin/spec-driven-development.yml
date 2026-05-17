@@ -7,6 +7,7 @@ steps:
   - name: plan_requirements
     mode: approval
     model: claude-opus-4-7
+    permission: edit
     instruction: plan-requirements
     policy: planning
     output_contract: spec-file-path
@@ -15,6 +16,7 @@ steps:
   - name: plan_behavior
     mode: approval
     model: claude-opus-4-7
+    permission: edit
     instruction: plan-behavior
     policy: planning
     pass_output_from:
@@ -24,6 +26,7 @@ steps:
   - name: plan_architecture
     mode: approval
     model: claude-opus-4-7
+    permission: edit
     instruction: plan-architecture
     policy: planning
     pass_output_from:
@@ -35,6 +38,7 @@ steps:
       - name: plan_review_completeness
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: plan-review-completeness
         policy: plan-review
         output_contract: review-verdict
@@ -44,6 +48,7 @@ steps:
       - name: plan_review_clarity
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: plan-review-clarity
         policy: plan-review
         output_contract: review-verdict
@@ -53,6 +58,7 @@ steps:
       - name: plan_review_security
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: plan-review-security
         policy: plan-review
         output_contract: review-verdict
@@ -62,6 +68,7 @@ steps:
       - name: plan_review_consistency
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: plan-review-consistency
         policy: plan-review
         output_contract: review-verdict
@@ -77,6 +84,7 @@ steps:
   - name: plan_fix_policy
     mode: approval
     model: claude-opus-4-7
+    permission: readonly
     instruction: plan-fix-policy
     policy: planning
     output_contract: approved-fix-policy
@@ -92,6 +100,7 @@ steps:
   - name: plan_fix
     mode: auto
     model: claude-opus-4-7
+    permission: edit
     instruction: plan-fix
     policy: planning
     pass_output_from:
@@ -110,6 +119,7 @@ steps:
   - name: plan_approval
     mode: approval
     model: claude-opus-4-7
+    permission: readonly
     instruction: plan-approval
     policy: planning
     pass_output_from:
@@ -125,6 +135,7 @@ steps:
   - name: implement
     mode: auto
     model: claude-opus-4-7
+    permission: edit
     instruction: implement
     policy: coding
     pass_output_from:
@@ -136,6 +147,7 @@ steps:
       - name: code_review_acceptance
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: review-acceptance
         policy: review
         output_contract: review-verdict
@@ -145,6 +157,7 @@ steps:
       - name: code_review_structure
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: review-structure
         policy: review
         output_contract: review-verdict
@@ -154,6 +167,7 @@ steps:
       - name: code_review_quality
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: review-quality
         policy: review
         output_contract: review-verdict
@@ -163,6 +177,7 @@ steps:
       - name: code_review_test
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: review-test
         policy: review
         output_contract: review-verdict
@@ -172,6 +187,7 @@ steps:
       - name: code_review_security
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: review-security
         policy: review
         output_contract: review-verdict
@@ -181,6 +197,7 @@ steps:
       - name: code_review_architecture
         mode: auto
         model: gpt-5.5
+        permission: readonly
         instruction: review-architecture
         policy: review
         output_contract: review-verdict
@@ -196,6 +213,7 @@ steps:
   - name: implementation_fix_policy
     mode: approval
     model: claude-opus-4-7
+    permission: readonly
     instruction: implementation-fix-policy
     policy: coding
     output_contract: approved-fix-policy
@@ -211,6 +229,7 @@ steps:
   - name: fix
     mode: auto
     model: claude-opus-4-7
+    permission: edit
     instruction: implement-fix
     policy: coding
     pass_output_from:
@@ -229,6 +248,7 @@ steps:
   - name: implementation_approval
     mode: approval
     model: claude-opus-4-7
+    permission: readonly
     instruction: implementation-approval
     policy: coding
     pass_output_from:

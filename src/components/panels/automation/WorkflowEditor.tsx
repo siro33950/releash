@@ -20,10 +20,7 @@ export function WorkflowEditor({
 	) => Promise<{ ok: boolean; error?: string }>;
 	onCancel: () => void;
 }) {
-	const [draft, setDraft] = useState<Workflow>({
-		...workflow,
-		steps: workflow.steps.map((s) => ({ ...s })),
-	});
+	const [draft, setDraft] = useState<Workflow>(() => workflow);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const originalName = workflow.name;
@@ -54,6 +51,7 @@ export function WorkflowEditor({
 					name,
 					mode: "auto" as StepMode,
 					rules: [],
+					permission: "edit",
 				},
 			],
 		}));

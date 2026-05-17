@@ -7,14 +7,17 @@ import {
 	DropdownMenuRadioItem,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { PermissionMode } from "@/types/session";
+import {
+	PERMISSION_MODE_LABELS,
+	PERMISSION_MODES,
+	type PermissionMode,
+} from "@/types/session";
 
-export const MODES: { value: PermissionMode; label: string }[] = [
-	{ value: "acceptEdits", label: "Code" },
-	{ value: "default", label: "Ask" },
-	{ value: "plan", label: "Plan" },
-	{ value: "bypassPermissions", label: "Bypass" },
-];
+export const MODES: { value: PermissionMode; label: string }[] =
+	PERMISSION_MODES.map((value) => ({
+		value,
+		label: PERMISSION_MODE_LABELS[value],
+	}));
 
 interface ModeSelectorProps {
 	mode: PermissionMode;
@@ -27,7 +30,7 @@ export function ModeSelector({
 	onModeChange,
 	disabled,
 }: ModeSelectorProps) {
-	const currentLabel = MODES.find((m) => m.value === mode)?.label ?? "Code";
+	const currentLabel = MODES.find((m) => m.value === mode)?.label ?? "Edit";
 
 	return (
 		<DropdownMenu>

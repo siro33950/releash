@@ -20,6 +20,16 @@ fn reject_explicit_start_for_workflow_step_session(
     Ok(())
 }
 
+/// Tauri invoke 境界で permission_mode を検証し、検証済み抽象モードを返す。
+/// 欠落（None）は空文字相当として扱い、対象外値とともに [`crate::permission::InvalidPermissionMode`]
+/// で拒否する。command 経路と単体テスト経路の両方で同じ拒否ロジックを共有する（Spec issues-947）。
+fn validate_invoke_permission_mode(
+    permission_mode: Option<String>,
+) -> Result<crate::permission::PermissionMode, String> {
+    let permission_value = permission_mode.unwrap_or_default();
+    crate::permission::PermissionMode::parse(&permission_value).map_err(|e| e.to_string())
+}
+
 fn should_skip_close_agent_session(session: Option<&crate::session::ChatSession>) -> bool {
     session.is_some_and(|session| session.workflow_step_session)
 }
@@ -33,19 +43,34 @@ pub async fn start_agent_session(
     cwd: String,
     permission_mode: Option<String>,
 ) -> Result<(), String> {
+    // 外部境界（Tauri invoke）では permission_mode 欠落・対象外値を InvalidPermissionMode で拒否する。
+    // None は空文字相当として扱い、内部経路の保存値フォールバックには進めない。
+    let validated_permission_mode = validate_invoke_permission_mode(permission_mode)?;
+    let validated_permission_mode_str = validated_permission_mode.as_str().to_string();
+
     let data_dir = resolve_data_dir(&app)?;
     let session = session_store
         .get_session(&data_dir, &chat_session_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
     reject_explicit_start_for_workflow_step_session(&session, &cwd)?;
+
+    // 検証済み permission_mode をセッション保存層に反映（外部 UI 操作の結果をセッションに記録）。
+    if session.permission_mode != validated_permission_mode_str {
+        session_store.update_permission_mode(
+            &data_dir,
+            &chat_session_id,
+            &validated_permission_mode_str,
+        )?;
+    }
+
     crate::agent_sdk::start_agent_session_internal(
         &app,
         handles.inner(),
         session_store.inner(),
         &chat_session_id,
         &cwd,
-        permission_mode,
+        Some(validated_permission_mode_str),
         None,
     )
     .await
@@ -54,17 +79,18 @@ pub async fn start_agent_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionStore;
 
     fn session_for_start_guard(workflow_step_session: bool) -> crate::session::ChatSession {
         crate::session::ChatSession {
-            id: "session-1".to_string(),
+            id: uuid::Uuid::new_v4().to_string(),
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
             state: crate::session::SessionState::Idle,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
@@ -88,6 +114,76 @@ mod tests {
         let session = session_for_start_guard(false);
 
         assert!(reject_explicit_start_for_workflow_step_session(&session, "/repo").is_ok());
+    }
+
+    // Spec issues-947: Tauri invoke 境界で permission_mode の欠落・対象外値を拒否する。
+    // start_agent_session 内部の `validate_invoke_permission_mode` を command 相当の経路として
+    // 直接呼び、欠落/旧語彙/未知語彙/空文字いずれも `?` で早期 return することを確認する
+    // （= `update_permission_mode` も `start_agent_session_internal` も呼ばれない）。
+    #[test]
+    fn start_agent_session_validate_rejects_missing_or_invalid_permission_mode() {
+        let invalid_inputs: Vec<Option<String>> = vec![
+            None,
+            Some(String::new()),
+            Some("acceptEdits".to_string()),
+            Some("bypassPermissions".to_string()),
+            Some("plan".to_string()),
+            Some("default".to_string()),
+            Some("unknown".to_string()),
+        ];
+        for permission in invalid_inputs {
+            let label = permission.clone();
+            let err = validate_invoke_permission_mode(permission).unwrap_err();
+            assert!(
+                err.contains("readonly, edit, full"),
+                "{:?} must include allowed list, got: {err}",
+                label
+            );
+        }
+    }
+
+    #[test]
+    fn start_agent_session_validate_accepts_abstract_modes() {
+        for mode in ["readonly", "edit", "full"] {
+            let validated = validate_invoke_permission_mode(Some(mode.to_string())).unwrap();
+            assert_eq!(validated.as_str(), mode);
+        }
+    }
+
+    // Tauri invoke 境界が拒否したとき、保存値も runtime ハンドルも変更されないことを
+    // 上位の command 経路を模した手順で確認する。
+    #[tokio::test]
+    async fn start_agent_session_invalid_permission_mode_does_not_mutate_persisted_state() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SessionStore::default());
+        let session = crate::session::ChatSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: Vec::new(),
+            state: crate::session::SessionState::Idle,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: None,
+            permission_mode: "edit".to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
+            workflow_step_session: false,
+        };
+        store.save_session(data_dir.path(), &session).unwrap();
+        let handles = Arc::new(Mutex::new(crate::agent_sdk::AgentProcessMap::new()));
+
+        for invalid in [None, Some(String::new()), Some("acceptEdits".to_string())] {
+            let result = validate_invoke_permission_mode(invalid.clone());
+            assert!(result.is_err(), "{invalid:?} must be rejected");
+            // command 本体は ? で早期 return するため、保存値・runtime ハンドルとも不変。
+            let saved = store
+                .get_session(data_dir.path(), &session.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(saved.permission_mode, "edit");
+            assert!(handles.lock().await.is_empty());
+        }
     }
 
     #[tokio::test]
@@ -138,6 +234,7 @@ pub async fn send_agent_message(
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::file_mention::MentionReference>>,
 ) -> Result<crate::agent_sdk::SendMessageResponse, String> {
+    let permission_mode = validate_invoke_permission_mode(permission_mode)?;
     let response = dispatch_agent_message(
         AgentMessageDispatchContext {
             app: &app,

@@ -6,8 +6,8 @@ use tokio::sync::Mutex;
 use crate::agent_sdk::AgentProcessMap;
 use crate::backends::AgentBackendRegistry;
 use crate::session::{
-    resolve_data_dir, resolve_session_backend, OpenTabRegistry, RestoreSessionResponse,
-    SessionStore,
+    resolve_data_dir, resolve_session_backend, validate_session_permission_mode, OpenTabRegistry,
+    RestoreSessionResponse, SessionStore,
 };
 use crate::workflow::engine::WorkflowEngine;
 
@@ -91,6 +91,7 @@ pub async fn restore_session(
     let mut session = state
         .get_session(&data_dir, &session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
+    validate_session_permission_mode(&session)?;
     resolve_session_backend(&mut session, registry.inner())?;
     crate::session::lifecycle_controller::SessionLifecycleController {
         session_store: state.inner(),
@@ -144,7 +145,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),

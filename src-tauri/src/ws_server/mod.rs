@@ -78,6 +78,11 @@ pub(crate) struct WsServerState {
     tls_enabled: bool,
     pr_cache: Arc<PrCache>,
     backend_registry: Arc<crate::backends::AgentBackendRegistry>,
+    /// テスト経路から SessionStore / data_dir を直接注入するためのバックドア。
+    /// AppHandle を必要としない統合テスト（Spec issues-947 の AgentSessionStartRequest 正常系等）で
+    /// `create_session_with_permission` を AppHandle 無しで走らせる。
+    #[cfg(test)]
+    test_session_deps: Option<(Arc<crate::session::SessionStore>, PathBuf)>,
 }
 
 impl WsServerState {
@@ -106,18 +111,45 @@ impl WsServerState {
             tls_enabled,
             pr_cache,
             backend_registry,
+            #[cfg(test)]
+            test_session_deps: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_session_deps(
+        &mut self,
+        session_store: Arc<crate::session::SessionStore>,
+        data_dir: PathBuf,
+    ) {
+        self.test_session_deps = Some((session_store, data_dir));
     }
 
     pub(crate) fn get_backend_registry(&self) -> &Arc<crate::backends::AgentBackendRegistry> {
         &self.backend_registry
     }
 
-    pub(crate) fn create_session(
+    /// WS handler の session start 経路向け。検証済み抽象 PermissionMode を初回保存で確定する。
+    /// edit デフォルトで save → update_permission_mode の二段階保存を回避し、途中失敗時に
+    /// 中間状態（edit のセッションだけ残る）が発生しないようにする（Spec issues-947）。
+    pub(crate) fn create_session_with_permission(
         &self,
         worktree_path: &str,
         backend_id: Option<String>,
+        permission_mode: crate::permission::PermissionMode,
     ) -> Result<crate::session::ChatSession, String> {
+        #[cfg(test)]
+        {
+            if let Some((session_store, data_dir)) = &self.test_session_deps {
+                return crate::session::create_session_internal_with_permission(
+                    session_store,
+                    data_dir,
+                    worktree_path,
+                    backend_id,
+                    permission_mode,
+                );
+            }
+        }
         use tauri::Manager;
         let app = self.app_handle.as_ref().ok_or("App handle not available")?;
         let session_store = app.state::<Arc<crate::session::SessionStore>>();
@@ -129,12 +161,14 @@ impl WsServerState {
                 &data_dir,
                 worktree_path,
                 bid,
+                permission_mode,
             ),
-            None => crate::session::create_session_internal(
+            None => crate::session::create_session_internal_with_permission(
                 &session_store,
                 &data_dir,
                 worktree_path,
                 None,
+                permission_mode,
             ),
         }
     }

@@ -37,7 +37,11 @@ export class CodexBridgeRuntime {
 		this.currentThread = null;
 		this.currentThreadId = null;
 		this.currentModelId = null;
-		this.currentPermissionMode = "acceptEdits";
+		// 具体的 Codex フラグは Rust 変換層が抽象モードを変換した結果として init / setMode で渡す。
+		// JS bridge 側にデフォルト値を持たないことで、Rust 側を抽象→具体変換の唯一の正典にし、
+		// 欠落フラグを既存値にフォールバックして観測しないようにする（Spec issues-947）。
+		this.currentApprovalPolicy = null;
+		this.currentSandboxMode = null;
 		this.currentCwd = cwd;
 		this.currentAbortController = null;
 		this.messageResolve = null;
@@ -78,7 +82,14 @@ export class CodexBridgeRuntime {
 				this.currentAbortController?.abort();
 				break;
 			case "setMode":
-				this.currentPermissionMode = cmd.permissionMode || "acceptEdits";
+				if (!cmd.approvalPolicy || !cmd.sandboxMode) {
+					this.writeError(
+						"codex bridge: setMode requires both approvalPolicy and sandboxMode (Rust must convert the abstract permission mode before sending)\n",
+					);
+					break;
+				}
+				this.currentApprovalPolicy = cmd.approvalPolicy;
+				this.currentSandboxMode = cmd.sandboxMode;
 				this.recreateThreadForNextTurn();
 				break;
 			case "setModel":
@@ -106,7 +117,15 @@ export class CodexBridgeRuntime {
 			throw new Error("Codex SDK is not initialized");
 		}
 		this.currentCwd = cmd.cwd || this.defaultCwd;
-		this.currentPermissionMode = cmd.permissionMode || "acceptEdits";
+		// Spec issues-947: init は Rust 変換層が組み立てた具体フラグを必須で受け取る。
+		// JS bridge 側に既存値フォールバックを置かないことで、抽象→具体変換責務の所在を Rust に固定する。
+		if (!cmd.approvalPolicy || !cmd.sandboxMode) {
+			throw new Error(
+				"codex bridge: init requires both approvalPolicy and sandboxMode (Rust must convert the abstract permission mode before spawning the bridge)",
+			);
+		}
+		this.currentApprovalPolicy = cmd.approvalPolicy;
+		this.currentSandboxMode = cmd.sandboxMode;
 		this.currentModelId = cmd.model || null;
 		this.initialResumeThreadId = cmd.sessionId || null;
 		this.currentThreadId = this.initialResumeThreadId;
@@ -143,7 +162,8 @@ export class CodexBridgeRuntime {
 		return createThreadOptions({
 			cwd: this.currentCwd,
 			modelId: this.currentModelId,
-			permissionMode: this.currentPermissionMode,
+			approvalPolicy: this.currentApprovalPolicy,
+			sandboxMode: this.currentSandboxMode,
 		});
 	}
 

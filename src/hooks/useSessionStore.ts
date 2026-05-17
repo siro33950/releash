@@ -23,7 +23,7 @@ interface LegacyChatSession {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
-	permissionMode?: PermissionMode;
+	permissionMode: PermissionMode;
 	backendId?: string | null;
 	workflowStepSession?: boolean;
 }
@@ -85,7 +85,7 @@ function convertLegacySession(session: LegacyChatSession): ChatSession {
 	return {
 		...session,
 		messages: session.messages.map(convertLegacyMessage),
-		permissionMode: session.permissionMode ?? "acceptEdits",
+		permissionMode: session.permissionMode,
 		backendId: session.backendId ?? null,
 	};
 }
@@ -112,7 +112,7 @@ interface RawGetSessionResponse {
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
-	permissionMode?: PermissionMode;
+	permissionMode: PermissionMode;
 	backendId?: string | null;
 	selectedModel?: string | null;
 	availableModels?: ModelInfo[];
@@ -154,10 +154,12 @@ export async function getSession(
 
 export async function createSession(
 	worktreePath: string,
+	permissionMode: PermissionMode,
 	backendId?: string | null,
 ): Promise<ChatSession> {
 	const raw = await invoke<LegacyChatSession>("create_session", {
 		worktreePath,
+		permissionMode,
 		backendId: backendId ?? null,
 	});
 	return convertLegacySession(raw);
@@ -220,7 +222,7 @@ export async function sendAgentMessage(
 	chatSessionId: string | null,
 	worktreePath: string,
 	content: string,
-	permissionMode: string,
+	permissionMode: PermissionMode,
 	backendId?: string | null,
 	images?: ImageAttachment[],
 	mentions?: MentionReference[],
@@ -248,7 +250,7 @@ export async function sendWorkflowApprovalChatMessage(
 	chatSessionId: string,
 	worktreePath: string,
 	content: string,
-	permissionMode: string,
+	permissionMode: PermissionMode,
 	images?: ImageAttachment[],
 	mentions?: MentionReference[],
 ): Promise<SendMessageResponse> {

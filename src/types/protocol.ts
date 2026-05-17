@@ -1,5 +1,5 @@
 import type { WorkflowStatePayload } from "@/types/workflow";
-import type { MessagePart, ModelInfo } from "./session";
+import type { MessagePart, ModelInfo, PermissionMode } from "./session";
 
 // --- 認証 ---
 
@@ -163,6 +163,7 @@ export interface BackendModelsUpdated {
 export interface AgentSessionStartRequest {
 	worktree_path: string;
 	backend_id?: string | null;
+	permission_mode?: PermissionMode | null;
 }
 
 export interface AgentSessionStartResponse {
@@ -176,7 +177,7 @@ export interface AgentMessageRequest {
 	session_id?: string | null;
 	worktree_path: string;
 	content: string;
-	permission_mode?: string | null;
+	permission_mode?: PermissionMode | null;
 	backend_id?: string | null;
 }
 
@@ -208,6 +209,18 @@ export interface AgentModelSetResponse {
 	success: boolean;
 	session_id: string;
 	model_id?: string | null;
+	error?: string | null;
+}
+
+export interface AgentPermissionModeSetRequest {
+	session_id: string;
+	permission_mode: PermissionMode;
+}
+
+export interface AgentPermissionModeSetResponse {
+	success: boolean;
+	session_id: string;
+	permission_mode: PermissionMode;
 	error?: string | null;
 }
 
@@ -267,6 +280,14 @@ export type WsMessage =
 	| { type: "agent_interrupt_response"; payload: AgentInterruptResponse }
 	| { type: "agent_model_set_request"; payload: AgentModelSetRequest }
 	| { type: "agent_model_set_response"; payload: AgentModelSetResponse }
+	| {
+			type: "agent_permission_mode_set_request";
+			payload: AgentPermissionModeSetRequest;
+	  }
+	| {
+			type: "agent_permission_mode_set_response";
+			payload: AgentPermissionModeSetResponse;
+	  }
 	| { type: "agent_stream_sync"; payload: AgentStreamSync }
 	| { type: "workflow_state_sync"; payload: WorkflowStatePayload }
 	| { type: "error"; payload: ErrorMsg };

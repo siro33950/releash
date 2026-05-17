@@ -318,13 +318,13 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 		cb?.({
 			payload: {
 				chat_session_id: "session-1",
-				permission_mode: "plan",
+				permission_mode: "readonly",
 			},
 		});
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_PERMISSION_MODE",
-			mode: "plan",
+			mode: "readonly",
 		});
 	});
 
@@ -343,7 +343,7 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 		cb?.({
 			payload: {
 				chat_session_id: "session-1",
-				permission_mode: "plan",
+				permission_mode: "readonly",
 			},
 		});
 
@@ -467,7 +467,7 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 				subtype: "init",
 				chat_session_id: "session-1",
 				session_id: "sdk-session-abc",
-				permissionMode: "plan",
+				permissionMode: "readonly",
 			},
 		});
 

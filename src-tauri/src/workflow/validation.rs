@@ -1,4 +1,5 @@
 use super::schema::{StepMode, Workflow};
+use crate::permission::PermissionMode;
 use regex::RegexBuilder;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -103,6 +104,10 @@ pub enum ValidationError {
     InvalidPermissionMode {
         step: String,
         value: String,
+    },
+    /// step に permission が指定されていない（必須）
+    MissingPermissionMode {
+        step: String,
     },
     /// 存在しないモデルが指定されている
     UnknownModel {
@@ -220,9 +225,22 @@ impl fmt::Display for ValidationError {
                 write!(f, "approvalステップ '{step}' のrulesが不正です: {reason}")
             }
             Self::InvalidPermissionMode { step, value } => {
+                let display_value = if value.is_empty() {
+                    "(empty)"
+                } else {
+                    value.as_str()
+                };
                 write!(
                     f,
-                    "ステップ '{step}' のpermissionが不正です: invalid permission mode: {value}"
+                    "ステップ '{step}' のpermissionが不正です: invalid permission mode: {display_value} (allowed: {})",
+                    PermissionMode::allowed_list()
+                )
+            }
+            Self::MissingPermissionMode { step } => {
+                write!(
+                    f,
+                    "ステップ '{step}' にはpermissionが必要です (allowed: {})",
+                    PermissionMode::allowed_list()
                 )
             }
             Self::UnknownModel { step, value } => {
@@ -355,10 +373,8 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                     });
                 }
 
-                // 子step の permission 妥当性チェック
-                if let Some(ref perm) = child.permission {
-                    validate_permission(&child.name, perm)?;
-                }
+                // 子step の permission 妥当性チェック（必須）
+                validate_required_permission(&child.name, child.permission.as_deref())?;
 
                 // pass_output_from の参照先チェック
                 if let Some(ref refs) = child.pass_output_from {
@@ -459,10 +475,8 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
                 validate_approval_rules(&step.name, &step.rules)?;
             }
 
-            // permission の妥当性チェック
-            if let Some(ref perm) = step.permission {
-                validate_permission(&step.name, perm)?;
-            }
+            // permission の妥当性チェック（必須）
+            validate_required_permission(&step.name, step.permission.as_deref())?;
 
             // aggregate が parallel なしで指定されている場合はエラー
             if step.aggregate.is_some() {
@@ -630,16 +644,26 @@ fn validate_approval_rules(
     Ok(())
 }
 
-const VALID_PERMISSION_MODES: &[&str] = &["acceptEdits", "bypassPermissions", "plan"];
-
-fn validate_permission(step_name: &str, value: &str) -> Result<(), ValidationError> {
-    if !VALID_PERMISSION_MODES.contains(&value) {
-        return Err(ValidationError::InvalidPermissionMode {
+/// ステップに permission が必須として指定されていることを検証する。
+/// `None` または対象外の値（旧語彙・未知語彙・空文字）はバリデーションエラー。
+fn validate_required_permission(
+    step_name: &str,
+    value: Option<&str>,
+) -> Result<(), ValidationError> {
+    match value {
+        None => Err(ValidationError::MissingPermissionMode {
             step: step_name.to_string(),
-            value: value.to_string(),
-        });
+        }),
+        Some(v) => {
+            if PermissionMode::parse(v).is_err() {
+                return Err(ValidationError::InvalidPermissionMode {
+                    step: step_name.to_string(),
+                    value: v.to_string(),
+                });
+            }
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 /// ワークフロー内の全ステップの `model` フィールドを検証する。
@@ -781,10 +805,10 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
                         child: child.name.clone(),
                     });
                 }
-                if let Some(ref perm) = child.permission {
-                    if let Err(e) = validate_permission(&child.name, perm) {
-                        errors.push(e);
-                    }
+                if let Err(e) =
+                    validate_required_permission(&child.name, child.permission.as_deref())
+                {
+                    errors.push(e);
                 }
                 if let Some(ref refs) = child.pass_output_from {
                     for r in refs {
@@ -874,10 +898,8 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
                     errors.push(e);
                 }
             }
-            if let Some(ref perm) = step.permission {
-                if let Err(e) = validate_permission(&step.name, perm) {
-                    errors.push(e);
-                }
+            if let Err(e) = validate_required_permission(&step.name, step.permission.as_deref()) {
+                errors.push(e);
             }
             if step.aggregate.is_some() {
                 errors.push(ValidationError::AggregateWithoutParallel {
@@ -1030,7 +1052,7 @@ mod tests {
             aggregate: None,
             resets_cycle_for: None,
             model: None,
-            permission: None,
+            permission: Some("edit".to_string()),
         }
     }
 
@@ -1045,7 +1067,7 @@ mod tests {
             pass_previous_response: None,
             pass_output_from: None,
             model: None,
-            permission: None,
+            permission: Some("edit".to_string()),
         }
     }
 
@@ -1071,7 +1093,7 @@ mod tests {
             aggregate,
             resets_cycle_for: None,
             model: None,
-            permission: None,
+            permission: Some("edit".to_string()),
         }
     }
 
@@ -1861,30 +1883,50 @@ mod tests {
     // ---- permission バリデーション ----
 
     #[test]
-    fn valid_permission_accept_edits_passes() {
+    fn valid_permission_readonly_passes() {
         let wf = make_workflow(vec![Step {
-            permission: Some("acceptEdits".to_string()),
+            permission: Some("readonly".to_string()),
             ..make_step("step1", StepMode::Auto, vec![])
         }]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
-    fn valid_permission_bypass_passes() {
+    fn valid_permission_edit_passes() {
         let wf = make_workflow(vec![Step {
-            permission: Some("bypassPermissions".to_string()),
+            permission: Some("edit".to_string()),
             ..make_step("step1", StepMode::Auto, vec![])
         }]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
-    fn valid_permission_plan_passes() {
+    fn valid_permission_full_passes() {
         let wf = make_workflow(vec![Step {
-            permission: Some("plan".to_string()),
+            permission: Some("full".to_string()),
             ..make_step("step1", StepMode::Auto, vec![])
         }]);
         assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn legacy_permission_accept_edits_rejected() {
+        for legacy in ["acceptEdits", "bypassPermissions", "plan", "default"] {
+            let wf = make_workflow(vec![Step {
+                permission: Some(legacy.to_string()),
+                ..make_step("step1", StepMode::Auto, vec![])
+            }]);
+            let err = validate(&wf).unwrap_err();
+            assert!(matches!(
+                err,
+                ValidationError::InvalidPermissionMode { ref step, ref value }
+                    if step == "step1" && value == legacy
+            ));
+            assert!(
+                err.to_string().contains("readonly, edit, full"),
+                "error must include allowed list, got: {err}"
+            );
+        }
     }
 
     #[test]
@@ -1899,9 +1941,22 @@ mod tests {
             ValidationError::InvalidPermissionMode { ref step, ref value }
                 if step == "step1" && value == "invalid-mode"
         ));
-        assert!(err
-            .to_string()
-            .contains("invalid permission mode: invalid-mode"));
+        assert!(err.to_string().contains("readonly, edit, full"));
+    }
+
+    #[test]
+    fn empty_permission_fails() {
+        let wf = make_workflow(vec![Step {
+            permission: Some(String::new()),
+            ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        let err = validate(&wf).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::InvalidPermissionMode { ref step, ref value }
+                if step == "step1" && value.is_empty()
+        ));
+        assert!(err.to_string().contains("readonly, edit, full"));
     }
 
     #[test]
@@ -1909,7 +1964,7 @@ mod tests {
         let wf = make_workflow(vec![make_parallel_block(
             "par",
             vec![ParallelStep {
-                permission: Some("invalid-mode".to_string()),
+                permission: Some("acceptEdits".to_string()),
                 ..make_parallel_step("child1")
             }],
             None,
@@ -1918,7 +1973,7 @@ mod tests {
         assert!(matches!(
             err,
             ValidationError::InvalidPermissionMode { ref step, ref value }
-                if step == "child1" && value == "invalid-mode"
+                if step == "child1" && value == "acceptEdits"
         ));
     }
 
@@ -1927,7 +1982,7 @@ mod tests {
         let wf = make_workflow(vec![make_parallel_block(
             "par",
             vec![ParallelStep {
-                permission: Some("bypassPermissions".to_string()),
+                permission: Some("full".to_string()),
                 ..make_parallel_step("child1")
             }],
             None,
@@ -1936,10 +1991,48 @@ mod tests {
     }
 
     #[test]
-    fn step_without_permission_passes() {
+    fn step_without_permission_fails() {
         let wf = make_workflow(vec![Step {
             permission: None,
             ..make_step("step1", StepMode::Auto, vec![])
+        }]);
+        let err = validate(&wf).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::MissingPermissionMode { ref step } if step == "step1"
+        ));
+        assert!(err.to_string().contains("readonly, edit, full"));
+    }
+
+    #[test]
+    fn parallel_child_without_permission_fails() {
+        let wf = make_workflow(vec![make_parallel_block(
+            "par",
+            vec![ParallelStep {
+                permission: None,
+                ..make_parallel_step("child1")
+            }],
+            None,
+        )]);
+        let err = validate(&wf).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::MissingPermissionMode { ref step } if step == "child1"
+        ));
+    }
+
+    #[test]
+    fn parallel_block_without_permission_passes_when_children_have_permission() {
+        let wf = make_workflow(vec![Step {
+            permission: None,
+            ..make_parallel_block(
+                "par",
+                vec![ParallelStep {
+                    permission: Some("edit".to_string()),
+                    ..make_parallel_step("child1")
+                }],
+                None,
+            )
         }]);
         assert!(validate(&wf).is_ok());
     }

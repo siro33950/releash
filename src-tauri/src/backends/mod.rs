@@ -2,6 +2,7 @@ pub mod bridge_common;
 pub mod claude;
 pub mod codex;
 pub(crate) mod model_catalog_sync;
+mod permission_flags;
 pub(crate) mod process_io;
 pub mod runtime_coordinator;
 

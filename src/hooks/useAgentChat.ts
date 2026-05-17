@@ -80,7 +80,7 @@ export interface UseAgentChatResult {
 function startAgentProcess(
 	chatSessionId: string,
 	cwd: string,
-	permissionMode: string,
+	permissionMode: PermissionMode,
 ): void {
 	invoke("start_agent_session", {
 		chatSessionId,
@@ -454,7 +454,11 @@ export function useAgentChat(
 		try {
 			const backendId =
 				activeSessionRef.current?.backendId ?? selectedBackendIdRef.current;
-			const session = await createSession(worktreePathRef.current, backendId);
+			const session = await createSession(
+				worktreePathRef.current,
+				permissionModeRef.current,
+				backendId,
+			);
 			const response = await getSession(session.id);
 			const activeSession = response?.session ?? session;
 			dispatch({ type: "SET_ACTIVE_SESSION", session: activeSession });
@@ -625,7 +629,7 @@ export function useAgentChat(
 		if (prevWorktreePathRef.current !== worktreePath) {
 			prevWorktreePathRef.current = worktreePath;
 			dispatch({ type: "SET_ACTIVE_SESSION", session: null });
-			dispatch({ type: "SET_PERMISSION_MODE", mode: "acceptEdits" });
+			dispatch({ type: "SET_PERMISSION_MODE", mode: "edit" });
 			initSessions();
 			refreshClosedSessions();
 		}

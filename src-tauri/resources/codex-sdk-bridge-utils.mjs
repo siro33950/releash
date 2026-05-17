@@ -1,38 +1,20 @@
-export function approvalPolicyFromPermissionMode(permissionMode) {
-	switch (permissionMode) {
-		case "plan":
-		case "bypassPermissions":
-		case "acceptEdits":
-			return "never";
-		case "default":
-			return "on-request";
-		default:
-			return "never";
-	}
-}
-
-export function sandboxModeFromPermissionMode(permissionMode) {
-	switch (permissionMode) {
-		case "plan":
-			return "read-only";
-		case "bypassPermissions":
-			return "danger-full-access";
-		default:
-			return "workspace-write";
-	}
-}
-
+/**
+ * 抽象パーミッションモード→Codex固有フラグの変換は Rust 側のバックエンド変換層が責務を負う。
+ * このブリッジは Rust が組み立てた approvalPolicy / sandboxMode を受け取り、そのまま
+ * @openai/codex-sdk に渡すパススルー層として動作する（rust-first-logic 原則）。
+ */
 export function createThreadOptions({
 	cwd,
 	modelId,
-	permissionMode,
+	approvalPolicy,
+	sandboxMode,
 	skipGitRepoCheck = false,
 }) {
 	return {
 		workingDirectory: cwd,
 		skipGitRepoCheck,
-		approvalPolicy: approvalPolicyFromPermissionMode(permissionMode),
-		sandboxMode: sandboxModeFromPermissionMode(permissionMode),
+		approvalPolicy,
+		sandboxMode,
 		...(modelId ? { model: modelId } : {}),
 	};
 }

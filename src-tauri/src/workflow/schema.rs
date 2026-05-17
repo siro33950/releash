@@ -592,18 +592,18 @@ steps:
     mode: auto
     instruction: plan
     model: opus-4
-    permission: plan
+    permission: readonly
   - name: implement
     mode: auto
     instruction: implement
     model: codex-mini
-    permission: bypassPermissions
+    permission: full
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(wf.steps[0].model.as_deref(), Some("opus-4"));
-        assert_eq!(wf.steps[0].permission.as_deref(), Some("plan"));
+        assert_eq!(wf.steps[0].permission.as_deref(), Some("readonly"));
         assert_eq!(wf.steps[1].model.as_deref(), Some("codex-mini"));
-        assert_eq!(wf.steps[1].permission.as_deref(), Some("bypassPermissions"));
+        assert_eq!(wf.steps[1].permission.as_deref(), Some("full"));
     }
 
     #[test]
@@ -634,13 +634,13 @@ steps:
         policy: review
         instruction: architecture-review
         model: opus-4
-        permission: plan
+        permission: readonly
       - name: security-review
         mode: auto
         policy: review
         instruction: security-review
         model: codex-mini
-        permission: bypassPermissions
+        permission: full
     aggregate:
       all_match: "LGTM"
       then: parallel-review
@@ -649,9 +649,9 @@ steps:
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         let children = wf.steps[0].parallel.as_ref().unwrap();
         assert_eq!(children[0].model.as_deref(), Some("opus-4"));
-        assert_eq!(children[0].permission.as_deref(), Some("plan"));
+        assert_eq!(children[0].permission.as_deref(), Some("readonly"));
         assert_eq!(children[1].model.as_deref(), Some("codex-mini"));
-        assert_eq!(children[1].permission.as_deref(), Some("bypassPermissions"));
+        assert_eq!(children[1].permission.as_deref(), Some("full"));
     }
 
     #[test]
@@ -679,10 +679,10 @@ steps:
   - name: step1
     mode: auto
     instruction: implement
-    permission: plan
+    permission: readonly
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         assert!(wf.steps[0].model.is_none());
-        assert_eq!(wf.steps[0].permission.as_deref(), Some("plan"));
+        assert_eq!(wf.steps[0].permission.as_deref(), Some("readonly"));
     }
 }

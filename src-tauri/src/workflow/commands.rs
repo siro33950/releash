@@ -11,6 +11,7 @@ use crate::agent_message_dispatcher::{
 use crate::agent_sdk::AgentProcessMap;
 use crate::backends::{AgentBackendRegistry, ImageAttachment};
 use crate::config::AppConfig;
+use crate::permission::PermissionMode;
 use crate::protocol::WorkflowStateView;
 use crate::session::OpenTabRegistry;
 use crate::session::{resolve_data_dir, SessionStore};
@@ -28,6 +29,13 @@ fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
         "output_contract" => Ok(FacetKind::OutputContract),
         _ => Err(format!("Unknown facet kind: {kind}")),
     }
+}
+
+fn parse_workflow_approval_permission_mode(
+    permission_mode: Option<String>,
+) -> Result<PermissionMode, String> {
+    let permission_value = permission_mode.unwrap_or_default();
+    PermissionMode::parse(&permission_value).map_err(|e| e.to_string())
 }
 
 // ---- ファセットコマンドの内部実装（テスト可能な純粋関数として切り出し） ----
@@ -360,6 +368,8 @@ pub async fn send_workflow_approval_chat_message(
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::file_mention::MentionReference>>,
 ) -> Result<crate::agent_sdk::SendMessageResponse, String> {
+    let permission_mode = parse_workflow_approval_permission_mode(permission_mode)?;
+
     engine
         .validate_approval_chat_instruction(&chat_session_id, &content)
         .await
@@ -717,6 +727,36 @@ mod tests {
         assert!(!err.contains("/repo"));
         assert!(!err.contains("agent-session"));
         assert!(!err.contains("message body"));
+    }
+
+    #[test]
+    fn workflow_approval_chat_permission_mode_rejects_invalid_values_before_dispatch() {
+        for invalid in [
+            None,
+            Some(""),
+            Some("acceptEdits"),
+            Some("default"),
+            Some("unknown"),
+        ] {
+            let err = parse_workflow_approval_permission_mode(invalid.map(str::to_string))
+                .expect_err("invalid permission_mode must be rejected");
+            assert!(
+                err.contains("readonly, edit, full"),
+                "error must include allowed list, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_approval_chat_permission_mode_accepts_abstract_values() {
+        for (value, expected) in [
+            ("readonly", PermissionMode::Readonly),
+            ("edit", PermissionMode::Edit),
+            ("full", PermissionMode::Full),
+        ] {
+            let parsed = parse_workflow_approval_permission_mode(Some(value.to_string())).unwrap();
+            assert_eq!(parsed, expected);
+        }
     }
 
     #[test]
@@ -1097,7 +1137,7 @@ mod tests {
                 aggregate: None,
                 resets_cycle_for: None,
                 model: None,
-                permission: None,
+                permission: Some("edit".to_string()),
             }],
         }
     }

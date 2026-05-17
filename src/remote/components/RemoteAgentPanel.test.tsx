@@ -58,6 +58,27 @@ describe("RemoteAgentPanel", () => {
 			payload: {
 				worktree_path: "/repo/worktree",
 				backend_id: "codex",
+				permission_mode: "edit",
+			},
+		});
+	});
+
+	it("includes the selected abstract permission_mode in agent_session_start_request", async () => {
+		const user = userEvent.setup();
+		const { send } = renderPanel();
+
+		const select = screen.getByTestId(
+			"remote-permission-mode-select",
+		) as HTMLSelectElement;
+		await user.selectOptions(select, "readonly");
+		await user.click(screen.getByText("Start Session"));
+
+		expect(send).toHaveBeenLastCalledWith({
+			type: "agent_session_start_request",
+			payload: {
+				worktree_path: "/repo/worktree",
+				backend_id: "codex",
+				permission_mode: "readonly",
 			},
 		});
 	});
@@ -100,7 +121,7 @@ describe("RemoteAgentPanel", () => {
 				session_id: "session-1",
 				worktree_path: "/repo/worktree",
 				content: "Hello",
-				permission_mode: "acceptEdits",
+				permission_mode: "edit",
 				backend_id: null,
 			},
 		});
@@ -331,6 +352,23 @@ describe("RemoteAgentPanel", () => {
 		});
 	});
 
+	it("offers only the three abstract permission options without legacy vocabulary", () => {
+		renderPanel();
+		const select = screen.getByTestId(
+			"remote-permission-mode-select",
+		) as HTMLSelectElement;
+		const labels = Array.from(select.options).map((o) => o.textContent);
+		expect(labels).toEqual(["Read Only", "Edit", "Full"]);
+		for (const legacy of [
+			"acceptEdits",
+			"bypassPermissions",
+			"plan",
+			"default",
+		]) {
+			expect(labels).not.toContain(legacy);
+		}
+	});
+
 	it("presents registered model candidates and sends the selected value", async () => {
 		const user = userEvent.setup();
 		const { send, emit } = renderPanel({
@@ -404,6 +442,60 @@ describe("RemoteAgentPanel", () => {
 		expect(send).toHaveBeenCalledWith({
 			type: "agent_model_set_request",
 			payload: { session_id: "session-1", model_id: null },
+		});
+	});
+
+	it("sends permission mode updates for an active remote session", async () => {
+		const user = userEvent.setup();
+		const { send, emit } = renderPanel();
+		emit({
+			type: "agent_session_start_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				backend_id: "codex",
+			},
+		});
+
+		await user.selectOptions(
+			screen.getByTestId("remote-permission-mode-select"),
+			"full",
+		);
+
+		expect(send).toHaveBeenLastCalledWith({
+			type: "agent_permission_mode_set_request",
+			payload: { session_id: "session-1", permission_mode: "full" },
+		});
+	});
+
+	it("includes the selected abstract permission_mode in agent_message_request", async () => {
+		const user = userEvent.setup();
+		const { send, emit } = renderPanel();
+		emit({
+			type: "agent_session_start_response",
+			payload: {
+				success: true,
+				session_id: "session-1",
+				backend_id: "codex",
+			},
+		});
+
+		const select = screen.getByTestId(
+			"remote-permission-mode-select",
+		) as HTMLSelectElement;
+		await user.selectOptions(select, "readonly");
+		await user.type(screen.getByPlaceholderText("Message"), "Hi");
+		await user.click(screen.getByLabelText("Send message"));
+
+		expect(send).toHaveBeenLastCalledWith({
+			type: "agent_message_request",
+			payload: {
+				session_id: "session-1",
+				worktree_path: "/repo/worktree",
+				content: "Hi",
+				permission_mode: "readonly",
+				backend_id: null,
+			},
 		});
 	});
 

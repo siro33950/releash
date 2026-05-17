@@ -933,19 +933,21 @@ impl WorkflowEngine {
             parent_permission_mode,
         );
 
-        let mut step_session = crate::session::create_session_internal(
+        // Spec issues-947: 検証済み permission_mode と step session 属性を初回保存で確定する。
+        // edit デフォルトで save → 上書きで再 save する二段階を排除し、途中失敗時に
+        // 抽象モード不一致のセッションが残らないようにする。
+        let permission_mode = crate::permission::PermissionMode::parse(&settings.permission_mode)
+            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+        let step_session = crate::session::create_session_internal_with_attributes(
             session_store,
             data_dir,
             worktree_path,
             settings.backend_id,
+            permission_mode,
+            settings.selected_model,
+            true,
         )
         .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))?;
-        step_session.selected_model = settings.selected_model;
-        step_session.permission_mode = settings.permission_mode;
-        step_session.workflow_step_session = true;
-        session_store
-            .save_session(data_dir, &step_session)
-            .map_err(|e| WorkflowEngineError::SessionStore(format!("save step session: {e}")))?;
 
         Ok(step_session)
     }
@@ -4864,7 +4866,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state,
             backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
@@ -7706,7 +7708,7 @@ mod tests {
             Ok(ParentSessionInfo {
                 backend_id: None,
                 selected_model: None,
-                permission_mode: "default".to_string(),
+                permission_mode: "readonly".to_string(),
             })
         }
 
@@ -7721,7 +7723,7 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(StepSessionInfo {
                 id: "step-session-id".to_string(),
-                permission_mode: "default".to_string(),
+                permission_mode: "readonly".to_string(),
             })
         }
 
@@ -8623,7 +8625,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -8637,7 +8639,7 @@ mod tests {
             created_at: 2.0,
             updated_at: 2.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -8893,7 +8895,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 3.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -9425,7 +9427,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 2.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -9851,11 +9853,11 @@ mod tests {
     fn workflow_approval_auto_approve_disabled_ignores_agent_auto_approve_permission_mode() {
         let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
         exec.current_session_id = Some("policy-session".to_string());
-        let agent_auto_approve_permission_mode = "bypassPermissions";
+        let agent_auto_approve_permission_mode = "full";
         let workflow_approval_auto_approve_enabled = false;
         let snapshot = exec.to_workflow_state();
 
-        assert_eq!(agent_auto_approve_permission_mode, "bypassPermissions");
+        assert_eq!(agent_auto_approve_permission_mode, "full");
         assert!(!WorkflowEngine::should_auto_approve_workflow_approval(
             &snapshot,
             workflow_approval_auto_approve_enabled
@@ -10365,18 +10367,18 @@ mod tests {
     fn resolve_step_settings_model_and_permission_specified() {
         let result = resolve_step_settings(
             Some("codex-mini".to_string()),
-            Some("bypassPermissions".to_string()),
+            Some("full".to_string()),
             Some("codex".to_string()),
             Some("claude".to_string()),
             Some("opus-4".to_string()),
-            "acceptEdits".to_string(),
+            "edit".to_string(),
         );
         assert_eq!(
             result,
             ResolvedStepSettings {
                 backend_id: Some("codex".to_string()),
                 selected_model: Some("codex-mini".to_string()),
-                permission_mode: "bypassPermissions".to_string(),
+                permission_mode: "full".to_string(),
             }
         );
     }
@@ -10389,14 +10391,14 @@ mod tests {
             Some("claude".to_string()),
             Some("claude".to_string()),
             Some("opus-4".to_string()),
-            "acceptEdits".to_string(),
+            "edit".to_string(),
         );
         assert_eq!(
             result,
             ResolvedStepSettings {
                 backend_id: Some("claude".to_string()),
                 selected_model: Some("haiku".to_string()),
-                permission_mode: "acceptEdits".to_string(),
+                permission_mode: "edit".to_string(),
             }
         );
     }
@@ -10407,18 +10409,18 @@ mod tests {
         // permission のみ指定でも selected_model は None になる。
         let result = resolve_step_settings(
             None,
-            Some("plan".to_string()),
+            Some("readonly".to_string()),
             None,
             Some("claude".to_string()),
             Some("opus-4".to_string()),
-            "acceptEdits".to_string(),
+            "edit".to_string(),
         );
         assert_eq!(
             result,
             ResolvedStepSettings {
                 backend_id: Some("claude".to_string()),
                 selected_model: None,
-                permission_mode: "plan".to_string(),
+                permission_mode: "readonly".to_string(),
             }
         );
     }
@@ -10433,53 +10435,53 @@ mod tests {
             None,
             Some("claude".to_string()),
             Some("opus-4".to_string()),
-            "acceptEdits".to_string(),
+            "edit".to_string(),
         );
         assert_eq!(
             result,
             ResolvedStepSettings {
                 backend_id: Some("claude".to_string()),
                 selected_model: None,
-                permission_mode: "acceptEdits".to_string(),
+                permission_mode: "edit".to_string(),
             }
         );
     }
 
     #[test]
     fn resolve_step_settings_parallel_children_different_configs() {
-        // ステップA: model=opus-4, permission=plan
+        // ステップA: model=opus-4, permission=readonly
         let result_a = resolve_step_settings(
             Some("opus-4".to_string()),
-            Some("plan".to_string()),
+            Some("readonly".to_string()),
             Some("claude".to_string()),
             Some("claude".to_string()),
             Some("opus-4".to_string()),
-            "acceptEdits".to_string(),
+            "edit".to_string(),
         );
         assert_eq!(
             result_a,
             ResolvedStepSettings {
                 backend_id: Some("claude".to_string()),
                 selected_model: Some("opus-4".to_string()),
-                permission_mode: "plan".to_string(),
+                permission_mode: "readonly".to_string(),
             }
         );
 
-        // ステップB: model=codex-mini, permission=bypassPermissions
+        // ステップB: model=codex-mini, permission=full
         let result_b = resolve_step_settings(
             Some("codex-mini".to_string()),
-            Some("bypassPermissions".to_string()),
+            Some("full".to_string()),
             Some("codex".to_string()),
             Some("claude".to_string()),
             Some("opus-4".to_string()),
-            "acceptEdits".to_string(),
+            "edit".to_string(),
         );
         assert_eq!(
             result_b,
             ResolvedStepSettings {
                 backend_id: Some("codex".to_string()),
                 selected_model: Some("codex-mini".to_string()),
-                permission_mode: "bypassPermissions".to_string(),
+                permission_mode: "full".to_string(),
             }
         );
 
@@ -10487,5 +10489,91 @@ mod tests {
         assert_ne!(result_a.backend_id, result_b.backend_id);
         assert_ne!(result_a.selected_model, result_b.selected_model);
         assert_ne!(result_a.permission_mode, result_b.permission_mode);
+    }
+
+    // ---- ワークフロー step session の attributes 永続化 ----
+
+    // Spec issues-947: ワークフロー step session 作成は
+    // `create_session_internal_with_attributes` 経由で permission_mode / selected_model /
+    // workflow_step_session=true を初回保存で確定する。create_step_session_with_settings の
+    // 後段（resolve_step_settings の結果を attributes に流して save する経路）が
+    // 二段階保存に逆戻りしないことをガードする。
+    #[test]
+    fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = crate::session::SessionStore::default();
+
+        let settings = resolve_step_settings(
+            Some("opus-4".to_string()),
+            Some("edit".to_string()),
+            Some("claude".to_string()),
+            Some("codex".to_string()),
+            Some("haiku".to_string()),
+            "readonly".to_string(),
+        );
+        let permission_mode =
+            crate::permission::PermissionMode::parse(&settings.permission_mode).unwrap();
+        let session = crate::session::create_session_internal_with_attributes(
+            &store,
+            tmp.path(),
+            "/repo",
+            settings.backend_id.clone(),
+            permission_mode,
+            settings.selected_model.clone(),
+            true,
+        )
+        .unwrap();
+
+        // 初回保存で permission_mode / workflow_step_session / selected_model / backend_id が確定。
+        assert_eq!(session.permission_mode, "edit");
+        assert!(session.workflow_step_session);
+        assert_eq!(session.selected_model.as_deref(), Some("opus-4"));
+        assert_eq!(session.backend_id.as_deref(), Some("claude"));
+
+        // 別インスタンスから読み直しても同じ値で復元される（永続化が確定値で書かれている）。
+        let store2 = crate::session::SessionStore::default();
+        let loaded = store2
+            .get_session(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.permission_mode, "edit");
+        assert!(loaded.workflow_step_session);
+        assert_eq!(loaded.selected_model.as_deref(), Some("opus-4"));
+        assert_eq!(loaded.backend_id.as_deref(), Some("claude"));
+    }
+
+    // 親セッションから permission_mode/backend_id を継承する経路でも初回保存で確定することを確認する。
+    // selected_model は Spec issues-946 により暗黙フォールバック禁止のため、step 未指定なら None。
+    #[test]
+    fn step_session_inherits_parent_permission_and_backend_on_initial_save() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = crate::session::SessionStore::default();
+
+        let settings = resolve_step_settings(
+            None,
+            None,
+            None,
+            Some("claude".to_string()),
+            Some("haiku".to_string()),
+            "full".to_string(),
+        );
+        let permission_mode =
+            crate::permission::PermissionMode::parse(&settings.permission_mode).unwrap();
+        let session = crate::session::create_session_internal_with_attributes(
+            &store,
+            tmp.path(),
+            "/repo",
+            settings.backend_id,
+            permission_mode,
+            settings.selected_model,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(session.permission_mode, "full");
+        assert!(session.workflow_step_session);
+        // 親 selected_model="haiku" は継承しない（Spec issues-946: 暗黙フォールバック禁止）
+        assert_eq!(session.selected_model, None);
+        assert_eq!(session.backend_id.as_deref(), Some("claude"));
     }
 }

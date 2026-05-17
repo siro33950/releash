@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::backends::{AgentBackendRegistry, ImageAttachment};
+use crate::permission::PermissionMode;
 use crate::session::errors::session_target_rejected;
 use crate::session::{resolve_data_dir, SessionStore};
 
@@ -10,7 +11,7 @@ pub struct AgentMessageDispatchRequest {
     pub chat_session_id: Option<String>,
     pub worktree_path: String,
     pub content: String,
-    pub permission_mode: Option<String>,
+    pub permission_mode: PermissionMode,
     pub backend_id: Option<String>,
     pub images: Option<Vec<ImageAttachment>>,
     pub mentions: Option<Vec<crate::file_mention::MentionReference>>,
