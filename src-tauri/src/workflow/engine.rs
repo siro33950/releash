@@ -647,6 +647,26 @@ impl WorkflowExecution {
         entry
     }
 
+    /// 指定インデックスの step が新しい実行を開始する瞬間に、当該 step の
+    /// 前回出力を `step_outputs` から破棄する。並列ブロックの場合は
+    /// 親ブロック名と全子 step 名を一括で削除する。
+    ///
+    /// 同一 step がループで再実行される際、前回値が残ったままになると
+    /// `evaluate_aggregate` / `pass_output_from` / `apply_reduce` /
+    /// `inject_step_outputs` が前回値を引いてしまい、新しい実行で
+    /// `structured_output` が更新されないケースや LLM が前回ターンの
+    /// `<workflow_output>` を引用してきたケースで Contract 違反が
+    /// 「正常完了（Done）」扱いされる不具合の原因となる。
+    fn clear_step_outputs_for_new_execution(&mut self, step_index: usize) {
+        let step = &self.workflow.steps[step_index];
+        self.step_outputs.remove(&step.name);
+        if let Some(children) = step.parallel.as_ref() {
+            for child in children {
+                self.step_outputs.remove(&child.name);
+            }
+        }
+    }
+
     /// 次のステップ遷移先を判定する（純粋関数）。
     fn decide_next_step(&self) -> NextStepDecision {
         let current_index = self.current_step_index;
@@ -3664,6 +3684,7 @@ impl WorkflowEngine {
                 exec.current_step_index = idx;
                 exec.state = WorkflowExecutionState::Running;
                 *exec.step_execution_counts.entry(name).or_insert(0) += 1;
+                exec.clear_step_outputs_for_new_execution(idx);
                 exec.updated_at = current_timestamp();
 
                 // resets_cycle_for: 遷移先ステップの設定に従い指定ステップのカウントをリセット
@@ -3752,6 +3773,7 @@ impl WorkflowEngine {
                     .step_execution_counts
                     .entry(target_step_name.to_string())
                     .or_insert(0) += 1;
+                exec.clear_step_outputs_for_new_execution(idx);
                 exec.updated_at = current_timestamp();
 
                 // resets_cycle_for: 遷移先ステップの設定に従い指定ステップのカウントをリセット
@@ -10359,6 +10381,140 @@ mod tests {
         let outcome = WorkflowEngine::apply_transition(&mut exec, "step_a").unwrap();
         assert!(matches!(outcome, StepOutcome::Persist(_)));
         assert!(matches!(exec.state, WorkflowExecutionState::Failed { .. }));
+    }
+
+    // ---- step が新しい実行を開始する瞬間に step_outputs から前回値を破棄する（Spec issues-989） ----
+
+    fn make_step_output_fixture(step_name: &str, run_index: u32) -> StepOutput {
+        StepOutput {
+            step_name: step_name.to_string(),
+            run_index,
+            session_id: None,
+            result: Some("prev".to_string()),
+            structured_output: Some(serde_json::json!({"verdict": "LGTM"})),
+            output_contract: None,
+            token_usage: None,
+            completed_at: 1000.0,
+        }
+    }
+
+    #[test]
+    fn apply_advance_clears_step_outputs_for_new_step() {
+        // ループで同一 step が再実行されるとき、advance による遷移で
+        // 遷移先 step の前回出力が step_outputs から破棄されることを検証する。
+        let mut exec = make_exec(0); // plan → implement
+        exec.step_outputs.insert(
+            "implement".to_string(),
+            make_step_output_fixture("implement", 1),
+        );
+        // 他 step の前回出力は残り続けることも併せて確認。
+        exec.step_outputs
+            .insert("plan".to_string(), make_step_output_fixture("plan", 1));
+
+        let outcome = WorkflowEngine::apply_advance(&mut exec);
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "implement"
+        );
+        assert!(!exec.step_outputs.contains_key("implement"));
+        assert!(exec.step_outputs.contains_key("plan"));
+    }
+
+    #[test]
+    fn apply_transition_clears_step_outputs_for_target_step() {
+        // ループで前ステップ（review）に戻る遷移でも、遷移先の前回出力が破棄される。
+        let mut exec = make_exec(2); // review
+        exec.step_outputs.insert(
+            "implement".to_string(),
+            make_step_output_fixture("implement", 1),
+        );
+
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "implement").unwrap();
+        assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+        assert_eq!(
+            exec.workflow.steps[exec.current_step_index].name,
+            "implement"
+        );
+        assert!(!exec.step_outputs.contains_key("implement"));
+    }
+
+    #[test]
+    fn apply_transition_to_parallel_block_clears_block_and_children() {
+        // 並列ブロックへの遷移では、ブロック自身と全子 step の前回出力が破棄される。
+        let parallel_block = Step {
+            name: "code_review_parallel".to_string(),
+            mode: None,
+            policy: None,
+            knowledge: None,
+            instruction: None,
+            output_contract: None,
+            rules: vec![],
+            cycle_guard: None,
+            pass_previous_response: None,
+            pass_output_from: None,
+            inline_prompt: None,
+            collect: None,
+            parallel: Some(vec![
+                make_parallel_step("review_security"),
+                make_parallel_step("review_style"),
+            ]),
+            aggregate: None,
+            resets_cycle_for: None,
+            model: None,
+            permission: None,
+        };
+        let wf = Workflow {
+            name: "loop-parallel".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            steps: vec![
+                make_test_step("fix", StepMode::Auto, "Fix", vec![], None),
+                parallel_block,
+            ],
+        };
+        let mut exec = WorkflowExecution {
+            id: "exec-1".to_string(),
+            workflow: wf,
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: HashMap::new(),
+            step_history: vec![],
+            step_outputs: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "code_review_parallel".to_string(),
+                    make_step_output_fixture("code_review_parallel", 1),
+                );
+                m.insert(
+                    "review_security".to_string(),
+                    make_step_output_fixture("review_security", 1),
+                );
+                m.insert(
+                    "review_style".to_string(),
+                    make_step_output_fixture("review_style", 1),
+                );
+                m.insert("fix".to_string(), make_step_output_fixture("fix", 1));
+                m
+            },
+            chat_session_id: "s1".to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        };
+
+        let outcome = WorkflowEngine::apply_transition(&mut exec, "code_review_parallel").unwrap();
+        assert!(matches!(outcome, StepOutcome::StartParallel(_)));
+        assert!(!exec.step_outputs.contains_key("code_review_parallel"));
+        assert!(!exec.step_outputs.contains_key("review_security"));
+        assert!(!exec.step_outputs.contains_key("review_style"));
+        // 並列ブロック外の step の前回出力は破棄されない。
+        assert!(exec.step_outputs.contains_key("fix"));
     }
 
     // ---- resolve_step_settings ----
