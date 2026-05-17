@@ -278,7 +278,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 
 ## マイルストーン
 
-### M0: 設計境界の固定
+### [01] 設計境界の固定
 
 目的: 互換性の圧力で設計が崩れる前に、目標モデルを固定する。
 
@@ -294,7 +294,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - モデルが文書化されている。
 - どの module が compatibility adapter で、どの module が future core か説明できる。
 
-### M1: Normalized Workflow
+### [02] Normalized Workflow
 
 目的: 既存 `Step` YAML と将来の `NodeDefinition` 実行を分離する。
 
@@ -312,7 +312,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - `spec-driven-development.yml` が挙動変更なしで normalize できる。
 - mode/type/parallel 変換の unit test がある。
 
-### M2: Run Store / Run ID
+### [03] Run Store / Run ID
 
 目的: workflow 実行を `run_id` で参照できるようにする。
 
@@ -330,7 +330,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - active run と completed run を metadata/logs から一覧できる。
 - 既存の worktree-scoped state が動き続ける。
 
-### M3: Command / Event Boundary
+### [04] Command / Event Boundary
 
 目的: state change を typed command 経由にする。
 
@@ -347,7 +347,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - 新しい internal command path が test されている。
 - state transition が main-agent free text に依存しない。
 
-### M4: Read-Only Run APIs + CLI
+### [05] Read-Only Run APIs + CLI
 
 目的: 外部 caller が workflow run を観測できるようにする。
 
@@ -369,7 +369,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - running workflow を `run_id` で inspect できる。
 - completed workflow の log を `run_id` で読める。
 
-### M5: Mutating CLI
+### [06] Mutating CLI
 
 目的: `run_id` を操作の主語にする。
 
@@ -388,7 +388,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - 既存 UI approval が動き続ける。
 - stale な approval target や unauthorized target が拒否される。
 
-### M6: Workflow Panel / Command Center
+### [07] Workflow Panel / Command Center
 
 目的: UI model を整理する。
 
@@ -406,7 +406,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - workflow step が自由対話 chat tab と同格に見えない。
 - 多数の chat session を切り替えなくても run を inspect できる。
 
-### M7: OutputForm CLI
+### [08] OutputForm CLI
 
 目的: agent-to-engine のデータ受け渡しを typed にする。
 
@@ -426,7 +426,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - step agent が prose parsing に頼らず structured output を提出できる。
 - invalid output が決定論的な validation error になる。
 
-### M8: Node Type + Bash Gate
+### [13] Node Type + Bash Gate
 
 目的: agent 以外の決定論的実行を追加する。
 
@@ -448,7 +448,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - workflow から `pnpm test` や `cargo test` を validation node として実行できる。
 - validation failure を fix node へ route できる。
 
-### M9: Templates
+### [14] Templates
 
 目的: 新しい primitive を実用 workflow にする。
 
@@ -466,7 +466,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - template が必要に応じて bash gate と run management を使う。
 - template が YAML として読みやすい。
 
-### M10: Skill
+### [15] Skill
 
 目的: Agent に Releash workflow の使い方を教える。
 
@@ -485,7 +485,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 
 - Agent が追加の UI instruction なしに、適切な workflow を CLI で起動できる。
 
-### M11: Main Agent Mediation
+### [16] Main Agent Mediation
 
 目的: main agent に state authority を与えず、自然な workflow 対話を実現する。
 
