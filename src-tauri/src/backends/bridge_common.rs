@@ -2577,9 +2577,16 @@ async fn get_session_internal_with_data_dir(
             let (turn_phase, raw_parts, streaming_mid) = {
                 let map = handles.lock().await;
                 if let Some(proc) = map.get(session_id) {
-                    // Override persisted mode with runtime mode to reflect
-                    // in-flight permission changes that haven't been persisted yet.
-                    session.permission_mode = proc.current_permission_mode.clone();
+                    // Prefer the queued pending message's permission_mode when present,
+                    // because prepare_send_agent_message_internal persists a new mode to
+                    // SessionStore and pending_message while busy without updating
+                    // current_permission_mode. Falling back to current_permission_mode
+                    // keeps in-flight runtime changes (e.g. SDK-driven transitions) visible.
+                    session.permission_mode = proc
+                        .pending_message
+                        .as_ref()
+                        .map(|pending| pending.permission_mode.clone())
+                        .unwrap_or_else(|| proc.current_permission_mode.clone());
                     let phase = proc.turn_phase;
                     if proc.state == BridgeState::Streaming {
                         (
