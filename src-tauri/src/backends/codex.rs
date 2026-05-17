@@ -459,9 +459,9 @@ mod tests {
 
     #[test]
     fn redact_secrets_redacts_api_key_value() {
-        let s = "api_key=sk_live_supersecretvalue123";
+        let s = "api_key=fake_test_key_value_1234567890";
         let redacted = redact_secrets(s);
-        assert!(!redacted.contains("supersecretvalue123"));
+        assert!(!redacted.contains("fake_test_key_value_1234567890"));
         assert!(redacted.contains("[REDACTED]"));
     }
 

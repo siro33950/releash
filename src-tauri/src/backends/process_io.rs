@@ -76,6 +76,9 @@ impl ProcessTreeGuard {
         if !self.armed {
             return;
         }
+        // PGID 再利用時に二度 kill しないよう、kill 前に disarm する。
+        // これにより以降の kill_now（Drop 経由含む）は no-op となる。
+        self.armed = false;
         kill_process_tree(
             #[cfg(unix)]
             self.pgid,

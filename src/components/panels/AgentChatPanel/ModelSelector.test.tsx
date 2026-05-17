@@ -16,7 +16,7 @@ describe("ModelSelector", () => {
 			/>,
 		);
 		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
-			"未指定",
+			"Unset",
 		);
 	});
 

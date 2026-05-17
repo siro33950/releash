@@ -554,9 +554,10 @@ mod tests {
     }
 
     fn make_test_app_config() -> Arc<AppConfig> {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
         Arc::new(AppConfig::new(
             crate::config::ReleashConfig::default(),
-            std::path::PathBuf::from("/tmp/test-releash.toml"),
+            tmp.path().to_path_buf(),
         ))
     }
 

@@ -25,7 +25,7 @@ export function ModelSelector({
 	const currentLabel =
 		models.find((m) => m.value === currentModelId)?.value ??
 		currentModelId ??
-		"未指定";
+		"Unset";
 
 	return (
 		<DropdownMenu>
@@ -52,7 +52,7 @@ export function ModelSelector({
 							value=""
 							data-testid="model-selector-clear"
 						>
-							未指定
+							Unset
 						</DropdownMenuRadioItem>
 					)}
 					{models.map((m) => (

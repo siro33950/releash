@@ -182,7 +182,7 @@ describe("MessageInput", () => {
 		render(<MessageInput {...defaultProps} />);
 		expect(screen.getByTestId("model-selector-trigger")).toBeDefined();
 		expect(screen.getByTestId("model-selector-trigger")).toHaveTextContent(
-			"未指定",
+			"Unset",
 		);
 	});
 

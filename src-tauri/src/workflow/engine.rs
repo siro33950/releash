@@ -974,12 +974,18 @@ impl WorkflowEngine {
         let worktree_path = session.worktree_path.clone();
 
         // ステップ設定のmodel検証: 各 model から所属 backend を一意に解決する。
-        if let Some(registry) = app.try_state::<Arc<crate::backends::AgentBackendRegistry>>() {
-            crate::workflow::validation::validate_models(&workflow, |model| {
-                registry.resolve_backend_for_model(model)
-            })
-            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
-        }
+        // registry 未登録自体を InvalidWorkflow として即時失敗にする（検証スキップを避ける）。
+        let registry = app
+            .try_state::<Arc<crate::backends::AgentBackendRegistry>>()
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidWorkflow(
+                    "AgentBackendRegistry is not registered".to_string(),
+                )
+            })?;
+        crate::workflow::validation::validate_models(&workflow, |model| {
+            registry.resolve_backend_for_model(model)
+        })
+        .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
 
         let now = current_timestamp();
         let mut execution = WorkflowExecution {

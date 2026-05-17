@@ -2667,14 +2667,10 @@ fn get_persisted_spawn_info(
     app: &tauri::AppHandle,
     session_store: &SessionStore,
     chat_session_id: &str,
-) -> (Option<String>, Option<String>, String) {
-    let persisted = resolve_data_dir(app).ok().and_then(|data_dir| {
-        session_store
-            .get_session(&data_dir, chat_session_id)
-            .ok()
-            .flatten()
-    });
-    resolve_spawn_info(persisted)
+) -> Result<(Option<String>, Option<String>, String), String> {
+    let data_dir = resolve_data_dir(app)?;
+    let persisted = session_store.get_session(&data_dir, chat_session_id)?;
+    Ok(resolve_spawn_info(persisted))
 }
 
 /// 永続化セッションから spawn 情報を組み立てる純粋関数。
@@ -2724,7 +2720,7 @@ pub(crate) async fn start_agent_session_internal(
     }
 
     let (resume_sid, selected_model, backend_id) =
-        get_persisted_spawn_info(app, session_store, chat_session_id);
+        get_persisted_spawn_info(app, session_store, chat_session_id)?;
 
     spawn_bridge_process(
         app,
@@ -2766,7 +2762,7 @@ pub(crate) async fn start_agent_turn(
         || async {
             wait_until_session_close_finished(chat_session_id).await;
             let (resume_sid, selected_model, backend_id) =
-                get_persisted_spawn_info(app, session_store, chat_session_id);
+                get_persisted_spawn_info(app, session_store, chat_session_id)?;
 
             spawn_bridge_process(
                 app,
@@ -2820,7 +2816,7 @@ async fn start_agent_turn_locked(
         images,
         || async {
             let (resume_sid, selected_model, backend_id) =
-                get_persisted_spawn_info(app, session_store, chat_session_id);
+                get_persisted_spawn_info(app, session_store, chat_session_id)?;
 
             spawn_bridge_process(
                 app,

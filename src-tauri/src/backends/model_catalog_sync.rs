@@ -95,10 +95,10 @@ pub(crate) async fn handle_supported_models_message(
     chat_session_id: &str,
     msg: &serde_json::Value,
 ) {
-    let (selected_model, backend_id) = {
+    let backend_id = {
         let map = handles.lock().await;
         match map.get(chat_session_id) {
-            Some(proc) => (proc.selected_model.clone(), proc.backend_id.clone()),
+            Some(proc) => proc.backend_id.clone(),
             None => {
                 log::warn!(
                     "supported_models 受信時に session '{chat_session_id}' の active process が見つからないため何もしません"
@@ -112,12 +112,29 @@ pub(crate) async fn handle_supported_models_message(
         return;
     };
 
-    {
+    // ロック解放中に session が再作成 / backend 切替された可能性があるため、
+    // 2 回目のロックでは backend_id の一致を再検証してから更新・emit する。
+    let selected_model = {
         let mut map = handles.lock().await;
-        if let Some(proc) = map.get_mut(chat_session_id) {
-            proc.available_models = models.clone();
+        match map.get_mut(chat_session_id) {
+            Some(proc) if proc.backend_id == backend_id => {
+                proc.available_models = models.clone();
+                proc.selected_model.clone()
+            }
+            Some(_) => {
+                log::warn!(
+                    "supported_models 受信処理中に session '{chat_session_id}' の backend が切り替わったため更新をスキップします"
+                );
+                return;
+            }
+            None => {
+                log::warn!(
+                    "supported_models 受信処理中に session '{chat_session_id}' の active process が失われたため更新をスキップします"
+                );
+                return;
+            }
         }
-    }
+    };
 
     if let Some(app) = app {
         let _ = app.emit(
