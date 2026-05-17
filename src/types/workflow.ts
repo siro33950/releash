@@ -1,3 +1,5 @@
+import type { PermissionMode } from "./session";
+
 export type JsonValue =
 	| string
 	| number
@@ -59,6 +61,8 @@ export interface ParallelStep {
 	output_contract?: string;
 	pass_previous_response?: boolean;
 	pass_output_from?: string[];
+	model?: string;
+	permission?: PermissionMode;
 }
 
 export interface AggregateConfig {
@@ -83,6 +87,8 @@ export interface Step {
 	collect?: CollectConfig;
 	parallel?: ParallelStep[];
 	aggregate?: AggregateConfig;
+	model?: string;
+	permission?: PermissionMode;
 }
 
 export interface CollectConfig {

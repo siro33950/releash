@@ -12,6 +12,11 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import {
+	PERMISSION_MODE_LABELS,
+	PERMISSION_MODES,
+	type PermissionMode,
+} from "@/types/session";
 import type { ReduceStrategy, Step, StepMode } from "@/types/workflow";
 
 const FACET_SLOTS = [
@@ -150,6 +155,33 @@ export function StepEditor({
 							<SelectContent>
 								<SelectItem value="auto">Auto</SelectItem>
 								<SelectItem value="approval">Approval</SelectItem>
+							</SelectContent>
+						</Select>
+					</div>
+
+					{/* Permission */}
+					<div className="flex flex-col gap-1">
+						<span className="font-medium text-muted-foreground">
+							Permission
+						</span>
+						<Select
+							value={step.permission}
+							onValueChange={(v) =>
+								onUpdate((s) => ({ ...s, permission: v as PermissionMode }))
+							}
+						>
+							<SelectTrigger
+								className="h-7 text-xs"
+								data-testid={`step-${index}-permission`}
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{PERMISSION_MODES.map((mode) => (
+									<SelectItem key={mode} value={mode}>
+										{PERMISSION_MODE_LABELS[mode]}
+									</SelectItem>
+								))}
 							</SelectContent>
 						</Select>
 					</div>

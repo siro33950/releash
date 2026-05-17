@@ -22,7 +22,7 @@ const defaultProps = {
 	onSend: vi.fn(),
 	onInterrupt: vi.fn(),
 	isStreaming: false,
-	mode: "acceptEdits" as const,
+	mode: "edit" as const,
 	onModeChange: vi.fn(),
 	models: [],
 	currentModelId: null,
@@ -153,11 +153,11 @@ describe("MessageInput", () => {
 		render(<MessageInput {...defaultProps} />);
 		expect(screen.getByTestId("mode-selector-trigger")).toBeDefined();
 		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent(
-			"Code",
+			"Edit",
 		);
 	});
 
-	it("renders CodexPermissionControl instead of ModeSelector for Codex", () => {
+	it("renders the same ModeSelector for the Codex backend (no backend-specific UI)", () => {
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -174,8 +174,7 @@ describe("MessageInput", () => {
 			/>,
 		);
 
-		expect(screen.getByTestId("codex-permission-trigger")).toBeDefined();
-		expect(screen.queryByTestId("mode-selector-trigger")).toBeNull();
+		expect(screen.getByTestId("mode-selector-trigger")).toBeDefined();
 	});
 
 	it("renders ModelSelector inside the input container", () => {

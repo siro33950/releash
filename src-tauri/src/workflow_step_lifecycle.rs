@@ -188,7 +188,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
@@ -485,7 +485,7 @@ mod tests {
             proc.turn_phase = crate::agent_sdk::TurnPhase::Idle;
             proc.pending_message = Some(crate::agent_sdk::PendingMessage {
                 content: "next".to_string(),
-                permission_mode: "acceptEdits".to_string(),
+                permission_mode: "edit".to_string(),
                 images: Vec::new(),
                 worktree_path: "/repo".to_string(),
                 mentions: Vec::new(),
@@ -978,7 +978,7 @@ mod tests {
         let mut proc = crate::agent_sdk::make_test_agent_process();
         proc.pending_message = Some(crate::agent_sdk::PendingMessage {
             content: "continue".to_string(),
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             images: Vec::new(),
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),

@@ -11,7 +11,7 @@ function makeSession(overrides?: Partial<ChatSession>): ChatSession {
 		state: "active",
 		createdAt: 1000,
 		updatedAt: 1000,
-		permissionMode: "acceptEdits" as const,
+		permissionMode: "edit" as const,
 		...overrides,
 	};
 }
@@ -35,7 +35,7 @@ describe("agentChatReducer", () => {
 			activeSession: null,
 			turnPhases: {},
 			error: null,
-			permissionMode: "acceptEdits" as const,
+			permissionMode: "edit" as const,
 			pendingPermissions: {},
 			availableModels: [],
 			availableModelsByBackend: {},
@@ -56,7 +56,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1000,
 					firstMessage: "hello",
 					messageCount: 1,
-					permissionMode: "acceptEdits" as const,
+					permissionMode: "edit" as const,
 				},
 			];
 			const next = reducer(INITIAL_STATE, {
@@ -80,7 +80,7 @@ describe("agentChatReducer", () => {
 						updatedAt: 1000,
 						firstMessage: "first",
 						messageCount: 1,
-						permissionMode: "acceptEdits" as const,
+						permissionMode: "edit" as const,
 					},
 					{
 						id: "s2",
@@ -90,7 +90,7 @@ describe("agentChatReducer", () => {
 						updatedAt: 900,
 						firstMessage: "second",
 						messageCount: 1,
-						permissionMode: "acceptEdits" as const,
+						permissionMode: "edit" as const,
 					},
 				],
 			};
@@ -104,7 +104,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1100,
 					firstMessage: "third",
 					messageCount: 1,
-					permissionMode: "acceptEdits" as const,
+					permissionMode: "edit" as const,
 				},
 			];
 			const next = reducer(state, {
@@ -128,7 +128,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1000,
 					firstMessage: "first",
 					messageCount: 1,
-					permissionMode: "acceptEdits" as const,
+					permissionMode: "edit" as const,
 				},
 				{
 					id: "s3",
@@ -138,7 +138,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1100,
 					firstMessage: "third",
 					messageCount: 1,
-					permissionMode: "acceptEdits" as const,
+					permissionMode: "edit" as const,
 				},
 			];
 			const next = reducer(state, { type: "SET_SESSIONS", sessions });
@@ -171,7 +171,7 @@ describe("agentChatReducer", () => {
 					updatedAt: 1000,
 					firstMessage: "hello",
 					messageCount: 1,
-					permissionMode: "acceptEdits" as const,
+					permissionMode: "edit" as const,
 				},
 			];
 			const next = reducer(INITIAL_STATE, {
@@ -315,24 +315,24 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("SET_PERMISSION_MODE", () => {
-		it("updates permissionMode", () => {
+		it("updates permissionMode to readonly", () => {
 			const next = reducer(INITIAL_STATE, {
 				type: "SET_PERMISSION_MODE",
-				mode: "default",
+				mode: "readonly",
 			});
-			expect(next.permissionMode).toBe("default");
+			expect(next.permissionMode).toBe("readonly");
 		});
 
-		it("switches from default to plan", () => {
+		it("switches from readonly to full", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				permissionMode: "default",
+				permissionMode: "readonly",
 			};
 			const next = reducer(state, {
 				type: "SET_PERMISSION_MODE",
-				mode: "plan",
+				mode: "full",
 			});
-			expect(next.permissionMode).toBe("plan");
+			expect(next.permissionMode).toBe("full");
 		});
 	});
 

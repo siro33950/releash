@@ -19,7 +19,6 @@ import type {
 	PermissionMode,
 } from "@/types/session";
 import { BackendSelector } from "./BackendSelector";
-import { CodexPermissionControl } from "./CodexPermissionControl";
 import { MentionPopup } from "./MentionPopup";
 import { ModelSelector } from "./ModelSelector";
 import { ModeSelector } from "./ModeSelector";
@@ -455,19 +454,11 @@ export function MessageInput({
 							onBackendChange={onBackendChange}
 							disabled={backendDisabled}
 						/>
-						{currentBackendId === "codex" ? (
-							<CodexPermissionControl
-								mode={mode}
-								onModeChange={onModeChange}
-								disabled={false}
-							/>
-						) : (
-							<ModeSelector
-								mode={mode}
-								onModeChange={onModeChange}
-								disabled={false}
-							/>
-						)}
+						<ModeSelector
+							mode={mode}
+							onModeChange={onModeChange}
+							disabled={false}
+						/>
 						<ModelSelector
 							models={models}
 							currentModelId={currentModelId}

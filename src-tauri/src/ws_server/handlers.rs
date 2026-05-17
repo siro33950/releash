@@ -355,7 +355,19 @@ pub(super) async fn handle_agent_session_start_request(
     req: &AgentSessionStartRequest,
     state: &WsServerState,
 ) -> Option<WsMessage> {
-    if !is_managed_worktree(state, &req.worktree_path).await {
+    // WebSocket 境界で wire 型 → typed handler request に変換する。欠落・対象外値は
+    // セッション状態を変更せず bridge にも送らない（Spec issues-947）。
+    let typed = match AgentSessionStartHandlerRequest::try_from(req) {
+        Ok(typed) => typed,
+        Err(e) => {
+            return Some(agent_session_start_error(
+                req.backend_id.clone(),
+                e.to_string(),
+            ));
+        }
+    };
+
+    if !is_managed_worktree(state, &typed.worktree_path).await {
         return Some(agent_session_start_error(
             None,
             "指定されたworktreeが見つかりません",
@@ -364,14 +376,21 @@ pub(super) async fn handle_agent_session_start_request(
 
     let registry = state.get_backend_registry();
 
-    let resolved_backend_id = match registry.resolve_backend_id(req.backend_id.clone()) {
+    let resolved_backend_id = match registry.resolve_backend_id(typed.backend_id.clone()) {
         Ok(id) => id,
         Err(e) => {
             return Some(agent_session_start_error(None, e));
         }
     };
 
-    match state.create_session(&req.worktree_path, Some(resolved_backend_id.clone())) {
+    // 検証済み PermissionMode を初回保存で確定する。
+    // edit デフォルトで保存→update する二段階保存をやめ、途中失敗時に edit のセッションだけ残る
+    // 中間状態を排除する（Spec issues-947: セッション保存層を permission_mode の正典とする）。
+    match state.create_session_with_permission(
+        &typed.worktree_path,
+        Some(resolved_backend_id.clone()),
+        typed.permission_mode,
+    ) {
         Ok(session) => Some(WsMessage::AgentSessionStartResponse(
             AgentSessionStartResponse {
                 success: true,
@@ -380,7 +399,7 @@ pub(super) async fn handle_agent_session_start_request(
                 error: None,
             },
         )),
-        Err(e) => Some(agent_session_start_error(None, e)),
+        Err(e) => Some(agent_session_start_error(Some(resolved_backend_id), e)),
     }
 }
 
@@ -390,7 +409,14 @@ pub(super) async fn handle_agent_message_request(
 ) -> Option<WsMessage> {
     use tauri::Manager;
 
-    if req.session_id.is_none() && !is_managed_worktree(state, &req.worktree_path).await {
+    // Spec issues-947: WS 境界で wire 型 → typed handler request に変換する。欠落・対象外値は
+    // セッション状態を変更せず bridge にも送らずに success=false を返す。
+    let typed = match AgentMessageHandlerRequest::try_from(req) {
+        Ok(typed) => typed,
+        Err(e) => return Some(agent_message_error(req, e.to_string())),
+    };
+
+    if typed.session_id.is_none() && !is_managed_worktree(state, &typed.worktree_path).await {
         return Some(agent_message_error(
             req,
             "指定されたworktreeが見つかりません",
@@ -419,7 +445,7 @@ pub(super) async fn handle_agent_message_request(
         Ok(data_dir) => data_dir,
         Err(e) => return Some(agent_message_error(req, e)),
     };
-    let persisted_session = if let Some(session_id) = req.session_id.as_deref() {
+    let persisted_session = if let Some(session_id) = typed.session_id.as_deref() {
         match session_store.get_session(&data_dir, session_id) {
             Ok(session) => session,
             Err(e) => return Some(agent_message_error(req, e)),
@@ -459,11 +485,11 @@ pub(super) async fn handle_agent_message_request(
             handles: &handles,
         },
         crate::agent_message_dispatcher::AgentMessageDispatchRequest {
-            chat_session_id: req.session_id.clone(),
+            chat_session_id: typed.session_id.clone(),
             worktree_path,
-            content: req.content.clone(),
-            permission_mode: req.permission_mode.clone(),
-            backend_id: req.backend_id.clone(),
+            content: typed.content.clone(),
+            permission_mode: typed.permission_mode,
+            backend_id: typed.backend_id.clone(),
             images: None,
             mentions: None,
         },
@@ -590,6 +616,62 @@ async fn handle_agent_model_set_request_with_data_dir(
     Some(agent_model_set_response(req, result))
 }
 
+pub(super) async fn handle_agent_permission_mode_set_request(
+    req: &AgentPermissionModeSetRequest,
+    state: &WsServerState,
+) -> Option<WsMessage> {
+    use tauri::Manager;
+
+    let typed = match AgentPermissionModeSetHandlerRequest::try_from(req) {
+        Ok(typed) => typed,
+        Err(e) => {
+            return Some(WsMessage::AgentPermissionModeSetResponse(
+                AgentPermissionModeSetResponse {
+                    success: false,
+                    session_id: req.session_id.clone(),
+                    permission_mode: req.permission_mode.clone(),
+                    error: Some(e.to_string()),
+                },
+            ));
+        }
+    };
+
+    let result = if let Some(app) = &state.app_handle {
+        let session_store = app
+            .state::<Arc<crate::session::SessionStore>>()
+            .inner()
+            .clone();
+        let handles = app
+            .state::<Arc<tokio::sync::Mutex<crate::agent_sdk::AgentProcessMap>>>()
+            .inner()
+            .clone();
+        match crate::session::resolve_data_dir(app) {
+            Ok(data_dir) => {
+                crate::agent_sdk::set_agent_permission_mode_internal(
+                    &session_store,
+                    &handles,
+                    &data_dir,
+                    &typed.session_id,
+                    typed.permission_mode.as_str(),
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        }
+    } else {
+        Err("App handle not available".to_string())
+    };
+
+    Some(WsMessage::AgentPermissionModeSetResponse(
+        AgentPermissionModeSetResponse {
+            success: result.is_ok(),
+            session_id: typed.session_id,
+            permission_mode: typed.permission_mode.as_str().to_string(),
+            error: result.err(),
+        },
+    ))
+}
+
 pub(super) async fn handle_pty_kill_request(
     req: &PtyKillRequest,
     state: &WsServerState,
@@ -676,7 +758,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: Some("claude".to_string()),
@@ -991,7 +1073,7 @@ mod tests {
             session_id: None,
             worktree_path: "/nonexistent/worktree".to_string(),
             content: "hello".to_string(),
-            permission_mode: Some("acceptEdits".to_string()),
+            permission_mode: Some("edit".to_string()),
             backend_id: Some("claude".to_string()),
         };
 
@@ -1012,7 +1094,7 @@ mod tests {
             session_id: Some("session-1".to_string()),
             worktree_path: "/request/worktree".to_string(),
             content: "hello".to_string(),
-            permission_mode: Some("acceptEdits".to_string()),
+            permission_mode: Some("edit".to_string()),
             backend_id: None,
         };
         let session = make_chat_session("session-1", "/persisted/worktree");
@@ -1028,13 +1110,159 @@ mod tests {
             session_id: Some("missing-session".to_string()),
             worktree_path: "/request/worktree".to_string(),
             content: "hello".to_string(),
-            permission_mode: Some("acceptEdits".to_string()),
+            permission_mode: Some("edit".to_string()),
             backend_id: None,
         };
 
         let error = effective_agent_message_worktree(&req, None).unwrap_err();
 
         assert!(error.contains("missing-session"));
+    }
+
+    // Spec issues-947: AgentSessionStartRequest の正常系3モード（readonly/edit/full）が
+    // handler 経路を通って保存済み ChatSession.permission_mode に記録されることを検証する。
+    // 検証済み抽象 PermissionMode を初回保存で確定する経路（edit デフォルトで保存→update する
+    // 二段階保存をやめる）が壊れたら、ここで検出する。
+    #[tokio::test]
+    async fn handle_agent_session_start_request_persists_each_abstract_mode() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let tmp_data = TempDir::new().unwrap();
+        let session_store = Arc::new(crate::session::SessionStore::default());
+        let mut registry = crate::backends::AgentBackendRegistry::new();
+        registry.register(Arc::new(crate::backends::claude::ClaudeBackend::new()));
+        registry.set_default(Some("claude".to_string()));
+        let config = crate::config::ReleashConfig::default();
+        let app_config = std::sync::Arc::new(crate::config::AppConfig::new(
+            config,
+            std::path::PathBuf::from("/tmp/test-releash.toml"),
+        ));
+        let mut state = WsServerState::new(
+            None,
+            std::sync::Arc::new(WsBroadcaster::default()),
+            None,
+            std::sync::Arc::new(parking_lot::RwLock::new(vec![repo_path.clone()])),
+            app_config,
+            None,
+            false,
+            std::sync::Arc::new(crate::git_host::PrCache::new()),
+            std::sync::Arc::new(registry),
+        );
+        state.set_test_session_deps(session_store.clone(), tmp_data.path().to_path_buf());
+
+        for mode in ["readonly", "edit", "full"] {
+            let req = AgentSessionStartRequest {
+                worktree_path: repo_path.clone(),
+                backend_id: Some("claude".to_string()),
+                permission_mode: Some(mode.to_string()),
+            };
+            let result = handle_agent_session_start_request(&req, &state).await;
+            let session_id = match result {
+                Some(WsMessage::AgentSessionStartResponse(response)) => {
+                    assert!(
+                        response.success,
+                        "mode={mode}: expected success, got error: {:?}",
+                        response.error
+                    );
+                    assert_eq!(response.backend_id.as_deref(), Some("claude"));
+                    response.session_id.expect("session_id must be present")
+                }
+                other => panic!("expected AgentSessionStartResponse, got {other:?}"),
+            };
+            let persisted = session_store
+                .get_session(tmp_data.path(), &session_id)
+                .unwrap()
+                .expect("session must be persisted");
+            assert_eq!(persisted.permission_mode, mode, "mode={mode}");
+            assert_eq!(persisted.backend_id.as_deref(), Some("claude"));
+            assert_eq!(persisted.worktree_path, repo_path);
+        }
+    }
+
+    // Spec issues-947: WS 境界での AgentSessionStartRequest.permission_mode 拒否。
+    // None / acceptEdits / unknown / 空文字 のいずれも success=false を返し、エラーメッセージに
+    // 許可一覧（readonly, edit, full）を含む。is_managed_worktree がエラー応答を生み出さないよう
+    // 必ず存在する worktree を渡す。
+    #[tokio::test]
+    async fn handle_agent_session_start_request_rejects_invalid_permission_mode() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let state = make_state(vec![repo_path.clone()]);
+        let cases: &[Option<&str>] = &[
+            None,
+            Some(""),
+            Some("acceptEdits"),
+            Some("bypassPermissions"),
+            Some("plan"),
+            Some("default"),
+            Some("unknown"),
+        ];
+        for permission in cases {
+            let req = AgentSessionStartRequest {
+                worktree_path: repo_path.clone(),
+                backend_id: Some("claude".to_string()),
+                permission_mode: permission.map(|s| s.to_string()),
+            };
+            let result = handle_agent_session_start_request(&req, &state).await;
+            match result {
+                Some(WsMessage::AgentSessionStartResponse(response)) => {
+                    assert!(
+                        !response.success,
+                        "permission_mode={:?} must be rejected",
+                        permission
+                    );
+                    assert!(response.session_id.is_none());
+                    let error = response.error.unwrap_or_default();
+                    assert!(
+                        error.contains("readonly, edit, full"),
+                        "error must include allowed list, got: {error}"
+                    );
+                }
+                other => panic!("expected AgentSessionStartResponse, got {other:?}"),
+            }
+        }
+    }
+
+    // Spec issues-947: AgentMessageRequest.permission_mode の欠落・対象外値も WS 境界で拒否する。
+    // WS レスポンスでの success=false と、許可一覧を含むエラーメッセージを直接検証する。
+    #[tokio::test]
+    async fn handle_agent_message_request_rejects_invalid_permission_mode() {
+        let (_dir, repo_path) = setup_repo_with_file("file.txt", "content");
+        let state = make_state(vec![repo_path.clone()]);
+        let cases: &[Option<&str>] = &[
+            None,
+            Some(""),
+            Some("acceptEdits"),
+            Some("bypassPermissions"),
+            Some("plan"),
+            Some("default"),
+            Some("unknown"),
+        ];
+        for permission in cases {
+            let req = AgentMessageRequest {
+                session_id: None,
+                worktree_path: repo_path.clone(),
+                content: "hello".to_string(),
+                permission_mode: permission.map(|s| s.to_string()),
+                backend_id: Some("claude".to_string()),
+            };
+            let result = handle_agent_message_request(&req, &state).await;
+            match result {
+                Some(WsMessage::AgentMessageResponse(response)) => {
+                    assert!(
+                        !response.success,
+                        "permission_mode={:?} must be rejected",
+                        permission
+                    );
+                    assert!(response.human_message_id.is_none());
+                    assert!(response.agent_message_id.is_none());
+                    let error = response.error.unwrap_or_default();
+                    assert!(
+                        error.contains("readonly, edit, full"),
+                        "error must include allowed list, got: {error}"
+                    );
+                }
+                other => panic!("expected AgentMessageResponse, got {other:?}"),
+            }
+        }
     }
 
     #[test]

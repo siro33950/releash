@@ -28,7 +28,7 @@ vi.mock("./useSessionStore", () => ({
 		state: "active",
 		createdAt: 1000,
 		updatedAt: 1000,
-		permissionMode: "acceptEdits",
+		permissionMode: "edit",
 	}),
 	addMessage: vi.fn(),
 	updateSessionState: vi.fn().mockResolvedValue(undefined),
@@ -49,7 +49,7 @@ vi.mock("./useSessionStore", () => ({
 			state: "active",
 			createdAt: 1000,
 			updatedAt: 1000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 			backendId: "codex",
 		},
 		turnPhase: "idle",
@@ -64,7 +64,7 @@ vi.mock("./useSessionStore", () => ({
 			state: "active",
 			createdAt: 1000,
 			updatedAt: 1000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		},
 		humanMessage: {
 			id: "msg-1",
@@ -88,7 +88,7 @@ vi.mock("./useSessionStore", () => ({
 			state: "active",
 			createdAt: 1000,
 			updatedAt: 1000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		},
 		humanMessage: {
 			id: "msg-1",
@@ -114,7 +114,7 @@ vi.mock("./useSessionStore", () => ({
 				state: "active",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 			},
 			turnPhase: "idle",
 			selectedModel: null,
@@ -164,7 +164,7 @@ describe("useAgentChat", () => {
 			null,
 			"/repo",
 			"hello",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -187,7 +187,7 @@ describe("useAgentChat", () => {
 			null,
 			"/repo",
 			"check this",
-			"acceptEdits",
+			"edit",
 			null,
 			images,
 			undefined,
@@ -214,7 +214,7 @@ describe("useAgentChat", () => {
 			null,
 			"/repo",
 			"check @src/main.rs:L10-L20",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			mentions,
@@ -237,7 +237,7 @@ describe("useAgentChat", () => {
 			null,
 			"/repo",
 			"",
-			"acceptEdits",
+			"edit",
 			null,
 			images,
 			undefined,
@@ -259,7 +259,7 @@ describe("useAgentChat", () => {
 			null,
 			"/repo",
 			"hello",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -285,7 +285,7 @@ describe("useAgentChat", () => {
 			null,
 			"/repo",
 			"hello",
-			"acceptEdits",
+			"edit",
 			"codex",
 			undefined,
 			undefined,
@@ -309,7 +309,7 @@ describe("useAgentChat", () => {
 			"s1",
 			"/repo",
 			"adjust policy",
-			"acceptEdits",
+			"edit",
 			undefined,
 			undefined,
 		);
@@ -331,7 +331,7 @@ describe("useAgentChat", () => {
 					updatedAt: 1,
 					firstMessage: "",
 					messageCount: 0,
-					permissionMode: "acceptEdits",
+					permissionMode: "edit",
 					workflowStepSession: true,
 				},
 			],
@@ -343,7 +343,7 @@ describe("useAgentChat", () => {
 					state: "active",
 					createdAt: 1000,
 					updatedAt: 1000,
-					permissionMode: "acceptEdits",
+					permissionMode: "edit",
 				},
 				turnPhase: "idle",
 				selectedModel: null,
@@ -361,7 +361,7 @@ describe("useAgentChat", () => {
 			"s1",
 			"/repo",
 			"continue",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -384,7 +384,7 @@ describe("useAgentChat", () => {
 			"s1",
 			"/repo",
 			"continue parent",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -404,7 +404,7 @@ describe("useAgentChat", () => {
 				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 			},
 			turnPhase: "idle",
 			selectedModel: null,
@@ -428,7 +428,7 @@ describe("useAgentChat", () => {
 			"old-step",
 			"/repo",
 			"continue old step",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -500,7 +500,7 @@ describe("useAgentChat", () => {
 			null,
 			"/repo",
 			"hello",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -528,7 +528,7 @@ describe("useAgentChat", () => {
 			"s1",
 			"/repo",
 			"second",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -582,7 +582,7 @@ describe("useAgentChat", () => {
 			state: "idle",
 			createdAt: 1000,
 			updatedAt: 1000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		};
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: mockSession,
@@ -666,7 +666,7 @@ describe("useAgentChat", () => {
 			state: "active",
 			createdAt: 1000,
 			updatedAt: 1000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		};
 
 		// getSession returns merged data from Rust backend (including streaming parts)
@@ -702,7 +702,7 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		act(() => {
-			result.current.setPermissionMode("plan" as never);
+			result.current.setPermissionMode("readonly");
 		});
 
 		await act(async () => {
@@ -713,7 +713,7 @@ describe("useAgentChat", () => {
 			null,
 			"/repo",
 			"hello",
-			"plan",
+			"readonly",
 			null,
 			undefined,
 			undefined,
@@ -733,12 +733,12 @@ describe("useAgentChat", () => {
 		mockInvoke.mockClear();
 
 		act(() => {
-			result.current.setPermissionMode("bypassPermissions" as never);
+			result.current.setPermissionMode("full" as never);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("set_agent_permission_mode", {
 			chatSessionId: "s1",
-			permissionMode: "bypassPermissions",
+			permissionMode: "full",
 		});
 	});
 
@@ -819,7 +819,7 @@ describe("useAgentChat", () => {
 			"s1",
 			"/repo",
 			"second",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -955,7 +955,7 @@ describe("useAgentChat", () => {
 			state: "active",
 			createdAt: 2000,
 			updatedAt: 2000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		};
 		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
 			newSession as never,
@@ -965,7 +965,11 @@ describe("useAgentChat", () => {
 			await result.current.createNewSession();
 		});
 
-		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo", null);
+		expect(sessionStore.createSession).toHaveBeenCalledWith(
+			"/repo",
+			"edit",
+			null,
+		);
 		expect(result.current.activeSession).toEqual(newSession);
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"start_agent_session",
@@ -997,7 +1001,7 @@ describe("useAgentChat", () => {
 			state: "active",
 			createdAt: 2000,
 			updatedAt: 2000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 			backendId: "codex",
 		};
 		const models = [{ value: "sonnet" }];
@@ -1042,7 +1046,7 @@ describe("useAgentChat", () => {
 			state: "active",
 			createdAt: 2000,
 			updatedAt: 2000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 			backendId: "claude",
 		};
 		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
@@ -1098,7 +1102,7 @@ describe("useAgentChat", () => {
 			state: "active",
 			createdAt: 2000,
 			updatedAt: 2000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 			backendId: "claude",
 		};
 		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
@@ -1127,7 +1131,7 @@ describe("useAgentChat", () => {
 			"new-s",
 			"/repo",
 			"hello",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -1162,7 +1166,7 @@ describe("useAgentChat", () => {
 			state: "active",
 			createdAt: 2000,
 			updatedAt: 2000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 			backendId: "claude",
 		};
 		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
@@ -1173,7 +1177,11 @@ describe("useAgentChat", () => {
 			await result.current.createNewSession();
 		});
 
-		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo", "claude");
+		expect(sessionStore.createSession).toHaveBeenCalledWith(
+			"/repo",
+			"edit",
+			"claude",
+		);
 	});
 
 	it("does not change selected backend while an existing session is active", async () => {
@@ -1198,7 +1206,7 @@ describe("useAgentChat", () => {
 					state: "active",
 					createdAt: 1000,
 					updatedAt: 1000,
-					permissionMode: "acceptEdits",
+					permissionMode: "edit",
 					backendId: "codex",
 				},
 				turnPhase: "idle",
@@ -1236,7 +1244,7 @@ describe("useAgentChat", () => {
 					state: "active",
 					createdAt: 1000,
 					updatedAt: 1000,
-					permissionMode: "acceptEdits",
+					permissionMode: "edit",
 					backendId: "claude",
 				},
 				turnPhase: "idle",
@@ -1259,7 +1267,7 @@ describe("useAgentChat", () => {
 				state: "active",
 				createdAt: 1000,
 				updatedAt: 1100,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 				backendId: "codex",
 			},
 			turnPhase: "idle",
@@ -1286,7 +1294,7 @@ describe("useAgentChat", () => {
 			state: "active",
 			createdAt: 2000,
 			updatedAt: 2000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 			backendId: "claude",
 		};
 		vi.mocked(sessionStore.createSession).mockResolvedValueOnce(
@@ -1297,7 +1305,11 @@ describe("useAgentChat", () => {
 			await result.current.createNewSession();
 		});
 
-		expect(sessionStore.createSession).toHaveBeenCalledWith("/repo", "claude");
+		expect(sessionStore.createSession).toHaveBeenCalledWith(
+			"/repo",
+			"edit",
+			"claude",
+		);
 	});
 
 	it("closeSession on non-active session keeps activeSession unchanged", async () => {
@@ -1368,7 +1380,7 @@ describe("useAgentChat", () => {
 			state: "active",
 			createdAt: 900,
 			updatedAt: 900,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		};
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: s2Full,
@@ -1438,7 +1450,7 @@ describe("useAgentChat", () => {
 			state: "idle",
 			createdAt: 500,
 			updatedAt: 500,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		};
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: restoredSession,
@@ -1481,7 +1493,7 @@ describe("useAgentChat", () => {
 			state: "idle",
 			createdAt: 500,
 			updatedAt: 500,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		};
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: restoredSession,
@@ -1500,7 +1512,7 @@ describe("useAgentChat", () => {
 			expect.objectContaining({
 				chatSessionId: "s-closed",
 				cwd: "/repo",
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 			}),
 		);
 	});
@@ -1530,7 +1542,7 @@ describe("useAgentChat", () => {
 			state: "idle",
 			createdAt: 500,
 			updatedAt: 500,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 			agentSessionId: "agent-session-1",
 		};
 		vi.mocked(sessionStore.restoreSession).mockResolvedValueOnce({
@@ -1574,7 +1586,7 @@ describe("useAgentChat", () => {
 				updatedAt: 1,
 				firstMessage: "",
 				messageCount: 1,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 				workflowStepSession: true,
 			},
 		] as never);
@@ -1593,7 +1605,7 @@ describe("useAgentChat", () => {
 				state: "idle",
 				createdAt: 500,
 				updatedAt: 500,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 				agentSessionId: "agent-session-1",
 			},
 			turnPhase: "idle",
@@ -1628,7 +1640,7 @@ describe("useAgentChat", () => {
 			state: "idle",
 			createdAt: 500,
 			updatedAt: 500,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		};
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: restoredSession,
@@ -1666,7 +1678,7 @@ describe("useAgentChat", () => {
 				state: "idle",
 				createdAt: 500,
 				updatedAt: 500,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 			},
 			turnPhase: "idle",
 			selectedModel: null,
@@ -1701,7 +1713,7 @@ describe("useAgentChat", () => {
 				state: "idle",
 				createdAt: 500,
 				updatedAt: 500,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 			},
 			turnPhase: "idle",
 			selectedModel: null,
@@ -1723,7 +1735,7 @@ describe("useAgentChat", () => {
 			"workflow-step-session",
 			"/repo",
 			"continue",
-			"acceptEdits",
+			"edit",
 			null,
 			undefined,
 			undefined,
@@ -1798,7 +1810,7 @@ describe("useAgentChat", () => {
 					state: "active",
 					createdAt: 1000,
 					updatedAt: 1000,
-					permissionMode: "acceptEdits",
+					permissionMode: "edit",
 				},
 				turnPhase: "idle",
 				selectedModel: null,
@@ -1872,7 +1884,7 @@ describe("permissionMode per-session persistence", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
-		// Mock getSession returning a session with "plan" permissionMode
+		// Mock getSession returning a session with "readonly" permissionMode
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
 				id: "s2",
@@ -1881,7 +1893,7 @@ describe("permissionMode per-session persistence", () => {
 				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "plan",
+				permissionMode: "readonly",
 			},
 			turnPhase: "idle",
 		} as never);
@@ -1890,7 +1902,7 @@ describe("permissionMode per-session persistence", () => {
 			await result.current.selectSession("s2");
 		});
 
-		expect(result.current.permissionMode).toBe("plan");
+		expect(result.current.permissionMode).toBe("readonly");
 	});
 
 	it("switching between sessions preserves independent permissionModes", async () => {
@@ -1905,7 +1917,7 @@ describe("permissionMode per-session persistence", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
-		// Switch to Session A with "plan" mode
+		// Switch to Session A with "readonly" mode
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
 				id: "session-a",
@@ -1914,7 +1926,7 @@ describe("permissionMode per-session persistence", () => {
 				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "plan",
+				permissionMode: "readonly",
 			},
 			turnPhase: "idle",
 		} as never);
@@ -1923,9 +1935,9 @@ describe("permissionMode per-session persistence", () => {
 			await result.current.selectSession("session-a");
 		});
 
-		expect(result.current.permissionMode).toBe("plan");
+		expect(result.current.permissionMode).toBe("readonly");
 
-		// Switch to Session B with "bypassPermissions" mode
+		// Switch to Session B with "full" mode
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
 				id: "session-b",
@@ -1934,7 +1946,7 @@ describe("permissionMode per-session persistence", () => {
 				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "bypassPermissions",
+				permissionMode: "full",
 			},
 			turnPhase: "idle",
 		} as never);
@@ -1943,9 +1955,9 @@ describe("permissionMode per-session persistence", () => {
 			await result.current.selectSession("session-b");
 		});
 
-		expect(result.current.permissionMode).toBe("bypassPermissions");
+		expect(result.current.permissionMode).toBe("full");
 
-		// Switch back to Session A — mode should still be "plan"
+		// Switch back to Session A — mode should still be "readonly"
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
 				id: "session-a",
@@ -1954,7 +1966,7 @@ describe("permissionMode per-session persistence", () => {
 				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "plan",
+				permissionMode: "readonly",
 			},
 			turnPhase: "idle",
 		} as never);
@@ -1963,7 +1975,7 @@ describe("permissionMode per-session persistence", () => {
 			await result.current.selectSession("session-a");
 		});
 
-		expect(result.current.permissionMode).toBe("plan");
+		expect(result.current.permissionMode).toBe("readonly");
 	});
 
 	it("createNewSession resets permissionMode to default", async () => {
@@ -1978,7 +1990,7 @@ describe("permissionMode per-session persistence", () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
-		// Change mode to plan via event
+		// Change mode to readonly via event
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		// First send a message to create session
 		await act(async () => {
@@ -1988,13 +2000,13 @@ describe("permissionMode per-session persistence", () => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "plan",
+					permission_mode: "readonly",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("plan");
+		expect(result.current.permissionMode).toBe("readonly");
 
-		// Create new session (returns default "acceptEdits")
+		// Create new session (returns default "edit")
 		vi.mocked(sessionStore.createSession).mockResolvedValueOnce({
 			id: "new-s",
 			worktreePath: "/repo",
@@ -2002,14 +2014,14 @@ describe("permissionMode per-session persistence", () => {
 			state: "active",
 			createdAt: 2000,
 			updatedAt: 2000,
-			permissionMode: "acceptEdits",
+			permissionMode: "edit",
 		} as never);
 
 		await act(async () => {
 			await result.current.createNewSession();
 		});
 
-		expect(result.current.permissionMode).toBe("acceptEdits");
+		expect(result.current.permissionMode).toBe("edit");
 	});
 
 	it("permissionMode is preserved after turn completion", async () => {
@@ -2030,11 +2042,11 @@ describe("permissionMode per-session persistence", () => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "plan",
+					permission_mode: "readonly",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("plan");
+		expect(result.current.permissionMode).toBe("readonly");
 
 		// Simulate turn completion via agent-session-state-changed event
 		const stateCb = listenCallbacks.get("agent-session-state-changed");
@@ -2048,11 +2060,11 @@ describe("permissionMode per-session persistence", () => {
 			});
 		});
 
-		// permissionMode should still be "plan" after turn completion
-		expect(result.current.permissionMode).toBe("plan");
+		// permissionMode should still be "readonly" after turn completion
+		expect(result.current.permissionMode).toBe("readonly");
 	});
 
-	it("permissionMode bypassPermissions is preserved after turn completion", async () => {
+	it("permissionMode full is preserved after turn completion", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -2064,17 +2076,17 @@ describe("permissionMode per-session persistence", () => {
 			await result.current.sendMessage("hello");
 		});
 
-		// Set mode to "bypassPermissions" via Rust event
+		// Set mode to "full" via Rust event
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		act(() => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "bypassPermissions",
+					permission_mode: "full",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("bypassPermissions");
+		expect(result.current.permissionMode).toBe("full");
 
 		// Simulate turn completion via agent-session-state-changed event
 		const stateCb = listenCallbacks.get("agent-session-state-changed");
@@ -2088,11 +2100,11 @@ describe("permissionMode per-session persistence", () => {
 			});
 		});
 
-		// permissionMode should still be "bypassPermissions" after turn completion
-		expect(result.current.permissionMode).toBe("bypassPermissions");
+		// permissionMode should still be "full" after turn completion
+		expect(result.current.permissionMode).toBe("full");
 	});
 
-	it("permissionMode default (Ask) is preserved after turn completion", async () => {
+	it("permissionMode readonly is preserved after turn completion", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -2104,17 +2116,17 @@ describe("permissionMode per-session persistence", () => {
 			await result.current.sendMessage("hello");
 		});
 
-		// Set mode to "default" (Ask) via Rust event
+		// Set mode to "readonly" via Rust event
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		act(() => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "default",
+					permission_mode: "readonly",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("default");
+		expect(result.current.permissionMode).toBe("readonly");
 
 		// Simulate turn completion via agent-session-state-changed event
 		const stateCb = listenCallbacks.get("agent-session-state-changed");
@@ -2128,13 +2140,13 @@ describe("permissionMode per-session persistence", () => {
 			});
 		});
 
-		// permissionMode should still be "default" after turn completion
-		expect(result.current.permissionMode).toBe("default");
+		// permissionMode should still be "readonly" after turn completion
+		expect(result.current.permissionMode).toBe("readonly");
 	});
 });
 
 describe("permissionMode sync from agent-permission-mode-changed event", () => {
-	it("syncs permissionMode when agent-permission-mode-changed event fires with plan", async () => {
+	it("syncs permissionMode when agent-permission-mode-changed event fires with readonly", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -2154,12 +2166,12 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "plan",
+					permission_mode: "readonly",
 				},
 			});
 		});
 
-		expect(result.current.permissionMode).toBe("plan");
+		expect(result.current.permissionMode).toBe("readonly");
 	});
 
 	it("restores resolved mode when Rust sends agent-permission-mode-changed after ExitPlanMode", async () => {
@@ -2174,35 +2186,35 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 			await result.current.sendMessage("hello");
 		});
 
-		expect(result.current.permissionMode).toBe("acceptEdits");
+		expect(result.current.permissionMode).toBe("edit");
 
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		expect(permCb).toBeDefined();
 
-		// Rust sends plan mode
+		// Rust sends readonly mode
 		act(() => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "plan",
+					permission_mode: "readonly",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("plan");
+		expect(result.current.permissionMode).toBe("readonly");
 
-		// Rust resolves and sends the restored mode (acceptEdits)
+		// Rust resolves and sends the restored edit mode
 		act(() => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "acceptEdits",
+					permission_mode: "edit",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("acceptEdits");
+		expect(result.current.permissionMode).toBe("edit");
 	});
 
-	it("restores bypassPermissions when Rust sends agent-permission-mode-changed after plan override", async () => {
+	it("restores full when Rust sends agent-permission-mode-changed after readonly override", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -2214,36 +2226,36 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 			await result.current.sendMessage("hello");
 		});
 
-		// User selects bypassPermissions
+		// User selects full
 		act(() => {
-			result.current.setPermissionMode("bypassPermissions");
+			result.current.setPermissionMode("full");
 		});
-		expect(result.current.permissionMode).toBe("bypassPermissions");
+		expect(result.current.permissionMode).toBe("full");
 
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		expect(permCb).toBeDefined();
 
-		// Rust sends plan mode
+		// Rust sends readonly mode
 		act(() => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "plan",
+					permission_mode: "readonly",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("plan");
+		expect(result.current.permissionMode).toBe("readonly");
 
-		// Rust resolves and sends bypassPermissions back
+		// Rust resolves and sends full back
 		act(() => {
 			permCb?.({
 				payload: {
 					chat_session_id: "s1",
-					permission_mode: "bypassPermissions",
+					permission_mode: "full",
 				},
 			});
 		});
-		expect(result.current.permissionMode).toBe("bypassPermissions");
+		expect(result.current.permissionMode).toBe("full");
 	});
 });
 
@@ -2321,7 +2333,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 					state: "active",
 					createdAt: 1000,
 					updatedAt: 1000,
-					permissionMode: "acceptEdits",
+					permissionMode: "edit",
 				},
 				turnPhase: "streaming",
 				selectedModel: null,
@@ -2398,7 +2410,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 					state: "idle",
 					createdAt: 1000,
 					updatedAt: 1000,
-					permissionMode: "acceptEdits",
+					permissionMode: "edit",
 				},
 				turnPhase: "idle",
 				selectedModel: null,
@@ -2457,7 +2469,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				state: "active",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 			},
 			turnPhase: "streaming",
 			selectedModel: null,
@@ -2487,7 +2499,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				state: "idle",
 				createdAt: 2000,
 				updatedAt: 2000,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 			},
 			turnPhase: "idle",
 			selectedModel: null,
@@ -2520,7 +2532,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 				state: "idle",
 				createdAt: 1000,
 				updatedAt: 1000,
-				permissionMode: "acceptEdits",
+				permissionMode: "edit",
 			},
 			turnPhase: "idle",
 			selectedModel: null,

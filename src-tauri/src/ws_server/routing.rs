@@ -32,6 +32,9 @@ pub(super) async fn route_message(
         WsMessage::AgentMessageRequest(req) => handle_agent_message_request(req, state).await,
         WsMessage::AgentInterruptRequest(req) => handle_agent_interrupt_request(req, state).await,
         WsMessage::AgentModelSetRequest(req) => handle_agent_model_set_request(req, state).await,
+        WsMessage::AgentPermissionModeSetRequest(req) => {
+            handle_agent_permission_mode_set_request(req, state).await
+        }
         _ => Some(WsMessage::Error(ErrorMsg {
             code: "INVALID_MESSAGE".to_string(),
             message: "Unexpected message from client".to_string(),
@@ -270,6 +273,7 @@ mod tests {
         let msg = WsMessage::AgentSessionStartRequest(AgentSessionStartRequest {
             worktree_path: "/nonexistent/repo".to_string(),
             backend_id: Some("claude".to_string()),
+            permission_mode: Some("edit".to_string()),
         });
         let result = route_message(&msg, &state, &wt).await;
         match result {

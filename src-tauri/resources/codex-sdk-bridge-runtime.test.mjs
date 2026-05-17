@@ -67,6 +67,18 @@ function makeRuntime(codex) {
 	return { runtime, emitted, exits };
 }
 
+// Spec issues-947: init は具体フラグ（approvalPolicy/sandboxMode）必須。
+// 各テストの個別関心（resume / setModel 等）と分離するため、デフォルト引数を helper で集約する。
+function initCmd(overrides = {}) {
+	return {
+		type: "init",
+		cwd: "/repo",
+		approvalPolicy: "on-request",
+		sandboxMode: "workspace-write",
+		...overrides,
+	};
+}
+
 function makeFsApi() {
 	const calls = {
 		mkdtemp: [],
@@ -112,7 +124,8 @@ describe("CodexBridgeRuntime", () => {
 		runtime.handleCommand({
 			type: "init",
 			cwd: "/repo",
-			permissionMode: "acceptEdits",
+			approvalPolicy: "never",
+			sandboxMode: "workspace-write",
 			model: "gpt-5.4",
 		});
 		runtime.close();
@@ -150,11 +163,9 @@ describe("CodexBridgeRuntime", () => {
 			cwd: "/repo",
 		});
 
-		runtime.handleCommand({
-			type: "init",
-			cwd: "/repo",
-			codexCliPath: "/usr/local/bin/codex",
-		});
+		runtime.handleCommand(
+			initCmd({ codexCliPath: "/usr/local/bin/codex" }),
+		);
 		runtime.close();
 
 		expect(calls).toEqual(["/usr/local/bin/codex"]);
@@ -173,11 +184,7 @@ describe("CodexBridgeRuntime", () => {
 		const codex = new FakeCodex();
 		const { runtime, emitted } = makeRuntime(codex);
 
-		runtime.handleCommand({
-			type: "init",
-			cwd: "/repo",
-			sessionId: "old-thread",
-		});
+		runtime.handleCommand(initCmd({ sessionId: "old-thread" }));
 		runtime.close();
 
 		expect(codex.resumed[0]).toMatchObject({ id: "old-thread" });
@@ -201,7 +208,7 @@ describe("CodexBridgeRuntime", () => {
 		]);
 		const { runtime, emitted, exits } = makeRuntime(codex);
 
-		runtime.handleCommand({ type: "init", cwd: "/repo" });
+		runtime.handleCommand(initCmd());
 		runtime.handleCommand({ type: "message", prompt: "hi" });
 		await waitFor(() => emitted.some((e) => e.type === "turn_complete"));
 		runtime.handleCommand({ type: "close" });
@@ -231,7 +238,7 @@ describe("CodexBridgeRuntime", () => {
 		const codex = new FakeCodex();
 		const { runtime } = makeRuntime(codex);
 
-		runtime.handleCommand({ type: "init", cwd: "/repo" });
+		runtime.handleCommand(initCmd());
 		runtime.handleCommand({ type: "setModel", modelId: "gpt-5.3-codex" });
 		runtime.close();
 
@@ -240,11 +247,73 @@ describe("CodexBridgeRuntime", () => {
 		});
 	});
 
+	// Spec issues-947: Rust 変換層が抽象モード→具体 Codex フラグに変換した結果を bridge runtime に
+	// 送る。setMode は次 turn の thread を新フラグで再作成し、init 時の旧フラグを再利用しない。
+	it("applies setMode flags to the next thread options without re-using init flags", () => {
+		const codex = new FakeCodex();
+		const { runtime } = makeRuntime(codex);
+
+		runtime.handleCommand(
+			initCmd({ approvalPolicy: "on-request", sandboxMode: "workspace-write" }),
+		);
+		runtime.handleCommand({
+			type: "setMode",
+			approvalPolicy: "never",
+			sandboxMode: "danger-full-access",
+		});
+		runtime.close();
+
+		expect(codex.started[0].options).toMatchObject({
+			approvalPolicy: "on-request",
+			sandboxMode: "workspace-write",
+		});
+		expect(codex.started[1].options).toMatchObject({
+			approvalPolicy: "never",
+			sandboxMode: "danger-full-access",
+		});
+	});
+
+	it("rejects setMode missing approvalPolicy or sandboxMode without recreating thread", () => {
+		const codex = new FakeCodex();
+		const writeError = vi.fn();
+		const runtime = new CodexBridgeRuntime({
+			codex,
+			emit: () => {},
+			writeError,
+			exit: () => {},
+			cwd: "/repo",
+		});
+
+		runtime.handleCommand(initCmd());
+		runtime.handleCommand({ type: "setMode", approvalPolicy: "never" });
+		runtime.handleCommand({ type: "setMode", sandboxMode: "read-only" });
+		runtime.close();
+
+		// init で 1 回 startThread されるが、setMode は欠落フラグを拒否するため thread 再作成は走らない。
+		expect(codex.started).toHaveLength(1);
+		expect(writeError).toHaveBeenCalledWith(
+			expect.stringContaining("setMode requires both approvalPolicy and sandboxMode"),
+		);
+	});
+
+	it("rejects init missing approvalPolicy or sandboxMode", () => {
+		const codex = new FakeCodex();
+		const { runtime } = makeRuntime(codex);
+
+		expect(() =>
+			runtime.handleInit({ type: "init", cwd: "/repo", sandboxMode: "workspace-write" }),
+		).toThrow(/init requires both approvalPolicy and sandboxMode/);
+		expect(() =>
+			runtime.handleInit({ type: "init", cwd: "/repo", approvalPolicy: "on-request" }),
+		).toThrow(/init requires both approvalPolicy and sandboxMode/);
+		expect(codex.started).toHaveLength(0);
+	});
+
 	it("interrupt aborts the active turn and returns to idle completion", async () => {
 		const codex = new FakeCodex([["wait-for-abort"]]);
 		const { runtime, emitted } = makeRuntime(codex);
 
-		runtime.handleCommand({ type: "init", cwd: "/repo" });
+		runtime.handleCommand(initCmd());
 		runtime.handleCommand({ type: "message", prompt: "stop soon" });
 		await waitFor(() => codex.started[0].thread.runCalls.length > 0);
 		runtime.handleCommand({ type: "interrupt" });
@@ -299,7 +368,7 @@ describe("CodexBridgeRuntime", () => {
 			random: () => 0.5,
 		});
 
-		runtime.handleCommand({ type: "init", cwd: "/repo" });
+		runtime.handleCommand(initCmd());
 		runtime.handleCommand({
 			type: "message",
 			prompt: "inspect",
@@ -332,7 +401,7 @@ describe("CodexBridgeRuntime", () => {
 		const codex = new FakeCodex([["throw-error"]]);
 		const { runtime, emitted, exits } = makeRuntime(codex);
 
-		runtime.handleCommand({ type: "init", cwd: "/repo", sessionId: "old-thread" });
+		runtime.handleCommand(initCmd({ sessionId: "old-thread" }));
 		runtime.handleCommand({ type: "message", prompt: "hi" });
 		await runtime.completion;
 
@@ -363,7 +432,7 @@ describe("CodexBridgeRuntime", () => {
 		]);
 		const { runtime, emitted, exits } = makeRuntime(codex);
 
-		runtime.handleCommand({ type: "init", cwd: "/repo", sessionId: "old-thread" });
+		runtime.handleCommand(initCmd({ sessionId: "old-thread" }));
 		runtime.handleCommand({ type: "message", prompt: "please continue" });
 		await waitFor(() => emitted.some((e) => e.type === "turn_complete"));
 		runtime.handleCommand({ type: "close" });
@@ -395,7 +464,7 @@ describe("CodexBridgeRuntime", () => {
 		]);
 		const { runtime, emitted, exits } = makeRuntime(codex);
 
-		runtime.handleCommand({ type: "init", cwd: "/repo", sessionId: "old-thread" });
+		runtime.handleCommand(initCmd({ sessionId: "old-thread" }));
 		runtime.handleCommand({ type: "message", prompt: "hi" });
 		await runtime.completion;
 
@@ -416,7 +485,7 @@ describe("CodexBridgeRuntime", () => {
 		const codex = new FakeCodex();
 		const { runtime, exits } = makeRuntime(codex);
 
-		runtime.handleCommand({ type: "init", cwd: "/repo" });
+		runtime.handleCommand(initCmd());
 		runtime.handleCommand({ type: "close" });
 		await runtime.completion;
 

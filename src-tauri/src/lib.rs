@@ -16,6 +16,7 @@ mod mcp;
 mod menu;
 mod native_drop;
 mod notion;
+mod permission;
 mod protocol;
 mod pty;
 mod qr_code;

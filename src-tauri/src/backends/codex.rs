@@ -573,7 +573,7 @@ printf '{"models":[]}'
             content: "hello".to_string(),
             streaming_message_id: "message-1".to_string(),
             images: vec![],
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
         };
 
         assert!(backend.send_message(&session, message).await.is_err());

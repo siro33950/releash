@@ -13,6 +13,10 @@ pub type SessionStateChangeListener =
 
 pub struct SessionStore {
     cache: RwLock<HashMap<String, ChatSession>>,
+    /// 壊れた / 旧形式の session JSON を session_id 単位で隔離する。
+    /// Spec issues-947: 1つの不正セッションで全体ロードを Err にせず、無関係な正常セッションの
+    /// 一覧取得・取得は素通しさせる。値は API に返す汎化済みエラー文言（フルパス・serde 生メッセージは含まない）。
+    invalid_sessions: RwLock<HashMap<String, String>>,
     file_lock: parking_lot::Mutex<()>,
     loaded: AtomicBool,
     state_change_listeners: RwLock<Vec<SessionStateChangeListener>>,
@@ -22,6 +26,7 @@ impl Default for SessionStore {
     fn default() -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
+            invalid_sessions: RwLock::new(HashMap::new()),
             file_lock: parking_lot::Mutex::new(()),
             loaded: AtomicBool::new(false),
             state_change_listeners: RwLock::new(Vec::new()),
@@ -43,6 +48,23 @@ fn session_file(app_data_dir: &Path, session_id: &str) -> Result<PathBuf, String
         return Err(format!("Invalid session_id: {session_id}"));
     }
     Ok(sessions_dir(app_data_dir).join(format!("{session_id}.json")))
+}
+
+/// API（Tauri invoke / WebSocket）に返す汎化済みエラー文言。
+/// フルパスや serde の生メッセージは含めず、許可される抽象モード一覧のみを露出する
+/// （Spec issues-947: リモート WS 応答経由でローカル app data パスが漏れないようにする）。
+fn invalid_session_error_message_with_id(session_id: &str) -> String {
+    format!(
+        "Invalid session data (id={session_id}, allowed permission modes: {})",
+        crate::permission::PermissionMode::allowed_list()
+    )
+}
+
+fn invalid_session_error_message() -> String {
+    format!(
+        "Invalid session data (allowed permission modes: {})",
+        crate::permission::PermissionMode::allowed_list()
+    )
 }
 
 impl SessionStore {
@@ -96,6 +118,9 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<Option<ChatSession>, String> {
         self.ensure_loaded(app_data_dir)?;
+        if let Some(err) = self.invalid_sessions.read().get(session_id) {
+            return Err(err.clone());
+        }
         let cache = self.cache.read();
         Ok(cache.get(session_id).cloned())
     }
@@ -115,6 +140,11 @@ impl SessionStore {
     }
 
     pub fn save_session(&self, app_data_dir: &Path, session: &ChatSession) -> Result<(), String> {
+        // Spec issues-947: 保存層を抽象 permission_mode の正典とする。
+        // cache / ファイルへの書き込み前に抽象モードを検証し、対象外値（旧語彙・未知語彙・空文字）の
+        // 永続化を防ぐ。
+        crate::permission::PermissionMode::parse(&session.permission_mode)
+            .map_err(|e| e.to_string())?;
         // file_lock を保持したまま listener を同期実行すると、listener から
         // save_session / set_session_state などへ再入したときに parking_lot::Mutex の
         // 自己デッドロックが発生する。lock スコープは永続化と cache 更新までに限定し、
@@ -147,6 +177,7 @@ impl SessionStore {
             .cache
             .write()
             .insert(session.id.clone(), session.clone());
+        self.invalid_sessions.write().remove(&session.id);
         Ok(prev.as_ref().map(|p| &p.state) != Some(&session.state))
     }
 
@@ -184,7 +215,11 @@ impl SessionStore {
         session_id: &str,
         permission_mode: &str,
     ) -> Result<(), String> {
+        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
         self.ensure_loaded(app_data_dir)?;
+        if let Some(err) = self.invalid_sessions.read().get(session_id) {
+            return Err(err.clone());
+        }
         let mut session = {
             let cache = self.cache.read();
             cache
@@ -213,22 +248,66 @@ impl SessionStore {
         let entries =
             std::fs::read_dir(&dir).map_err(|e| format!("Failed to read sessions dir: {e}"))?;
         let mut cache = self.cache.write();
+        let mut invalid_sessions = self.invalid_sessions.write();
         for entry in entries {
             let entry = entry.map_err(|e| format!("Failed to read dir entry: {e}"))?;
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "json") {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => match serde_json::from_str::<ChatSession>(&content) {
-                        Ok(session) => {
-                            cache.insert(session.id.clone(), session);
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to parse session file {:?}: {e}", path);
-                        }
-                    },
-                    Err(e) => {
-                        log::warn!("Failed to read session file {:?}: {e}", path);
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            // ファイル名（UUID）から session_id を導出する。serde 失敗時の隔離キーとして使う。
+            let file_session_id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|s| UUID_RE.is_match(s))
+                .map(str::to_string);
+            let Some(file_session_id) = file_session_id else {
+                continue;
+            };
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Failed to read session file {:?}: {e}", path.display());
+                    invalid_sessions.insert(file_session_id, invalid_session_error_message());
+                    continue;
+                }
+            };
+            match serde_json::from_str::<ChatSession>(&content) {
+                Ok(session) => {
+                    if session.id != file_session_id {
+                        log::error!(
+                            "Session id mismatch in session file {:?}: file id={}, json id={}",
+                            path.display(),
+                            file_session_id,
+                            session.id
+                        );
+                        invalid_sessions.insert(
+                            file_session_id.clone(),
+                            invalid_session_error_message_with_id(&file_session_id),
+                        );
+                        continue;
                     }
+                    if let Err(e) =
+                        crate::permission::PermissionMode::parse(&session.permission_mode)
+                    {
+                        log::error!(
+                            "Invalid permission_mode in session file {:?}: {e}",
+                            path.display()
+                        );
+                        invalid_sessions.insert(
+                            file_session_id.clone(),
+                            invalid_session_error_message_with_id(&file_session_id),
+                        );
+                        continue;
+                    }
+                    cache.insert(session.id.clone(), session);
+                }
+                Err(e) => {
+                    log::error!("Failed to parse session file {:?}: {e}", path.display());
+                    invalid_sessions.insert(
+                        file_session_id.clone(),
+                        invalid_session_error_message_with_id(&file_session_id),
+                    );
                 }
             }
         }
@@ -265,7 +344,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -426,6 +505,38 @@ mod tests {
     }
 
     #[test]
+    fn save_session_rejects_invalid_permission_mode() {
+        // Spec issues-947: save_session は cache/ファイル書き込み前に PermissionMode::parse を通す。
+        // 旧語彙・未知語彙・空文字は許可一覧付きエラーで拒否し、cache に残らない。
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let valid = make_session(UUID1, "/repo");
+        store.save_session(tmp.path(), &valid).unwrap();
+
+        for invalid in [
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "default",
+            "unknown",
+            "",
+        ] {
+            let mut bad = make_session(UUID2, "/repo");
+            bad.permission_mode = invalid.to_string();
+            let err = store.save_session(tmp.path(), &bad).unwrap_err();
+            assert!(
+                err.contains("readonly, edit, full"),
+                "invalid '{invalid}' must include allowed list, got: {err}"
+            );
+            // cache に invalid なセッションが残らないこと。
+            assert!(store.get_session(tmp.path(), UUID2).unwrap().is_none());
+        }
+        // 既存の valid セッションは破壊されない。
+        let loaded = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
+        assert_eq!(loaded.permission_mode, "edit");
+    }
+
+    #[test]
     fn save_session_rejects_invalid_id() {
         let tmp = TempDir::new().unwrap();
         let store = SessionStore::default();
@@ -455,24 +566,212 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = SessionStore::default();
         let session = make_session(UUID1, "/repo");
-        assert_eq!(session.permission_mode, "acceptEdits");
+        assert_eq!(session.permission_mode, "edit");
 
         store.save_session(tmp.path(), &session).unwrap();
         store
-            .update_permission_mode(tmp.path(), UUID1, "plan")
+            .update_permission_mode(tmp.path(), UUID1, "readonly")
             .unwrap();
 
         let loaded = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
-        assert_eq!(loaded.permission_mode, "plan");
+        assert_eq!(loaded.permission_mode, "readonly");
     }
 
     #[test]
     fn update_permission_mode_nonexistent_session_returns_error() {
         let tmp = TempDir::new().unwrap();
         let store = SessionStore::default();
-        let result = store.update_permission_mode(tmp.path(), UUID1, "plan");
+        let result = store.update_permission_mode(tmp.path(), UUID1, "readonly");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Session not found"));
+    }
+
+    #[test]
+    fn update_permission_mode_rejects_legacy_value() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::default();
+        let session = make_session(UUID1, "/repo");
+        store.save_session(tmp.path(), &session).unwrap();
+        for legacy in ["acceptEdits", "bypassPermissions", "plan", "default", ""] {
+            let err = store
+                .update_permission_mode(tmp.path(), UUID1, legacy)
+                .unwrap_err();
+            assert!(
+                err.contains("readonly, edit, full"),
+                "legacy '{legacy}' must be rejected with allowed list, got: {err}"
+            );
+        }
+        // Ensure the persisted value was not corrupted by failed attempts
+        let loaded = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
+        assert_eq!(loaded.permission_mode, "edit");
+    }
+
+    fn write_session_json(dir: &Path, session_id: &str, json: &str) {
+        let sessions = sessions_dir(dir);
+        std::fs::create_dir_all(&sessions).unwrap();
+        let file = sessions.join(format!("{session_id}.json"));
+        std::fs::write(&file, json).unwrap();
+    }
+
+    fn session_json_with_permission(session_id: &str, permission_field: Option<&str>) -> String {
+        let permission_segment = match permission_field {
+            Some(value) => format!(",\"permissionMode\":\"{value}\""),
+            None => String::new(),
+        };
+        format!(
+            r#"{{"id":"{session_id}","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0,"workflowStepSession":false{permission_segment}}}"#
+        )
+    }
+
+    #[test]
+    fn ensure_loaded_rejects_missing_permission_mode() {
+        let tmp = TempDir::new().unwrap();
+        write_session_json(
+            tmp.path(),
+            UUID1,
+            &session_json_with_permission(UUID1, None),
+        );
+        let store = SessionStore::default();
+        let err = store.get_session(tmp.path(), UUID1).unwrap_err();
+        assert!(
+            err.contains("readonly, edit, full"),
+            "missing permissionMode must be rejected with allowed list, got: {err}"
+        );
+    }
+
+    #[test]
+    fn ensure_loaded_rejects_legacy_and_unknown_permission_modes() {
+        for invalid in [
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "default",
+            "unknown",
+            "",
+        ] {
+            let tmp = TempDir::new().unwrap();
+            write_session_json(
+                tmp.path(),
+                UUID1,
+                &session_json_with_permission(UUID1, Some(invalid)),
+            );
+            let store = SessionStore::default();
+            let err = store.get_session(tmp.path(), UUID1).unwrap_err();
+            assert!(
+                err.contains("readonly, edit, full"),
+                "invalid permissionMode '{invalid}' must be rejected with allowed list, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_session_is_ignored_by_list_but_rejected_by_targeted_operations() {
+        // Spec issues-947: 一覧では invalid session を隔離し、無関係な正常 session を返す。
+        // 個別取得や更新では invalid session は汎化済みエラーを返す。
+        let tmp = TempDir::new().unwrap();
+        // valid session
+        let store_for_save = SessionStore::default();
+        store_for_save
+            .save_session(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+        // invalid session（旧語彙を含む生 JSON を直接書き込み）
+        write_session_json(
+            tmp.path(),
+            UUID2,
+            &session_json_with_permission(UUID2, Some("acceptEdits")),
+        );
+
+        let store = SessionStore::default();
+
+        let summaries = store.list_sessions(tmp.path(), "/repo").unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, UUID1);
+
+        let sessions = store.list_worktree_sessions(tmp.path(), "/repo").unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, UUID1);
+
+        // valid 単体取得は成功
+        let loaded = store.get_session(tmp.path(), UUID1).unwrap();
+        assert_eq!(loaded.unwrap().id, UUID1);
+
+        // invalid 単体取得は許可一覧付きエラー（生パス・serde メッセージは含まない）
+        let err = store.get_session(tmp.path(), UUID2).unwrap_err();
+        assert!(err.contains("readonly, edit, full"), "got: {err}");
+        assert!(
+            !err.contains(tmp.path().to_str().unwrap()),
+            "path must not leak: {err}"
+        );
+        assert!(!err.contains(".json"), "filename must not leak: {err}");
+
+        // update_permission_mode も invalid は弾く
+        let err = store
+            .update_permission_mode(tmp.path(), UUID2, "edit")
+            .unwrap_err();
+        assert!(err.contains("readonly, edit, full"), "got: {err}");
+    }
+
+    #[test]
+    fn invalid_session_isolation_key_uses_file_session_id_for_permission_errors() {
+        let tmp = TempDir::new().unwrap();
+        write_session_json(
+            tmp.path(),
+            UUID1,
+            &session_json_with_permission(UUID2, Some("acceptEdits")),
+        );
+        let store = SessionStore::default();
+
+        let err = store.get_session(tmp.path(), UUID1).unwrap_err();
+        assert!(
+            err.contains(UUID1),
+            "file id must be the invalid key: {err}"
+        );
+        let by_json_id = store.get_session(tmp.path(), UUID2).unwrap();
+        assert!(by_json_id.is_none());
+
+        let listed = store.list_sessions(tmp.path(), "/repo").unwrap();
+        assert!(listed.is_empty());
+    }
+
+    #[test]
+    fn save_session_removes_stale_invalid_marker_for_same_id() {
+        let tmp = TempDir::new().unwrap();
+        write_session_json(
+            tmp.path(),
+            UUID1,
+            &session_json_with_permission(UUID1, Some("acceptEdits")),
+        );
+        let store = SessionStore::default();
+        let err = store.get_session(tmp.path(), UUID1).unwrap_err();
+        assert!(err.contains("readonly, edit, full"), "got: {err}");
+
+        store
+            .save_session(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+
+        let loaded = store.get_session(tmp.path(), UUID1).unwrap().unwrap();
+        assert_eq!(loaded.permission_mode, "edit");
+        let summaries = store.list_sessions(tmp.path(), "/repo").unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, UUID1);
+    }
+
+    #[test]
+    fn ensure_loaded_accepts_valid_permission_modes() {
+        for valid in ["readonly", "edit", "full"] {
+            let tmp = TempDir::new().unwrap();
+            write_session_json(
+                tmp.path(),
+                UUID1,
+                &session_json_with_permission(UUID1, Some(valid)),
+            );
+            let store = SessionStore::default();
+            let session = store
+                .get_session(tmp.path(), UUID1)
+                .unwrap()
+                .expect("session loads with valid permission_mode");
+            assert_eq!(session.permission_mode, valid);
+        }
     }
 
     #[test]
@@ -529,9 +828,9 @@ mod tests {
             *count_for_listener.lock() += 1;
         }));
 
-        // 状態は変えずに permission_mode を更新する
+        // 状態は変えずに permission_mode を更新する（Spec issues-947 で抽象3値のみ受理）
         store
-            .update_permission_mode(tmp.path(), UUID1, "plan")
+            .update_permission_mode(tmp.path(), UUID1, "readonly")
             .unwrap();
 
         assert_eq!(*count.lock(), 0);

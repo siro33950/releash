@@ -1,35 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
-	approvalPolicyFromPermissionMode,
 	codexEventToBridgeMessages,
 	createThreadOptions,
-	sandboxModeFromPermissionMode,
 	textDeltaForItem,
 } from "./codex-sdk-bridge-utils.mjs";
 
 describe("codex-sdk-bridge-utils", () => {
-	it("maps permission modes to Codex approval policy", () => {
-		expect(approvalPolicyFromPermissionMode("default")).toBe("on-request");
-		expect(approvalPolicyFromPermissionMode("acceptEdits")).toBe("never");
-		expect(approvalPolicyFromPermissionMode("plan")).toBe("never");
-		expect(approvalPolicyFromPermissionMode("bypassPermissions")).toBe("never");
-	});
-
-	it("maps permission modes to Codex sandbox mode", () => {
-		expect(sandboxModeFromPermissionMode("plan")).toBe("read-only");
-		expect(sandboxModeFromPermissionMode("default")).toBe("workspace-write");
-		expect(sandboxModeFromPermissionMode("acceptEdits")).toBe("workspace-write");
-		expect(sandboxModeFromPermissionMode("bypassPermissions")).toBe(
-			"danger-full-access",
-		);
-	});
-
-	it("builds thread options for Codex SDK", () => {
+	it("passes through Codex flags supplied by Rust without translation", () => {
+		// Rust 側のバックエンド変換層が抽象モード → approvalPolicy / sandboxMode を解決し、
+		// このユーティリティは値をそのまま @openai/codex-sdk に渡す。
 		expect(
 			createThreadOptions({
 				cwd: "/repo",
 				modelId: "gpt-5.4",
-				permissionMode: "acceptEdits",
+				approvalPolicy: "never",
+				sandboxMode: "workspace-write",
 			}),
 		).toEqual({
 			workingDirectory: "/repo",
@@ -40,34 +25,35 @@ describe("codex-sdk-bridge-utils", () => {
 		});
 	});
 
-	it("builds workspace ask thread options for Codex default mode", () => {
-		expect(
-			createThreadOptions({
-				cwd: "/repo",
-				modelId: "gpt-5.4",
-				permissionMode: "default",
-			}),
-		).toEqual({
-			workingDirectory: "/repo",
-			skipGitRepoCheck: false,
-			approvalPolicy: "on-request",
-			sandboxMode: "workspace-write",
-			model: "gpt-5.4",
-		});
-	});
-
-	it("builds read-only thread options for Codex plan mode", () => {
+	it("passes through read-only sandbox flags from Rust", () => {
 		expect(
 			createThreadOptions({
 				cwd: "/repo",
 				modelId: null,
-				permissionMode: "plan",
+				approvalPolicy: "never",
+				sandboxMode: "read-only",
 			}),
 		).toEqual({
 			workingDirectory: "/repo",
 			skipGitRepoCheck: false,
 			approvalPolicy: "never",
 			sandboxMode: "read-only",
+		});
+	});
+
+	it("passes through danger-full-access sandbox flags from Rust", () => {
+		expect(
+			createThreadOptions({
+				cwd: "/repo",
+				modelId: null,
+				approvalPolicy: "never",
+				sandboxMode: "danger-full-access",
+			}),
+		).toEqual({
+			workingDirectory: "/repo",
+			skipGitRepoCheck: false,
+			approvalPolicy: "never",
+			sandboxMode: "danger-full-access",
 		});
 	});
 

@@ -33,7 +33,6 @@ import {
 	TaskToolActivity,
 	ToolActivity,
 } from "./ActivityLog";
-import { nextCodexPermissionMode } from "./CodexPermissionControl";
 import type { MessageInputHandle } from "./MessageInput";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
@@ -449,14 +448,10 @@ export function AgentChatPanel({
 	]);
 
 	const cycleMode = useCallback(() => {
-		if (selectedBackendId === "codex") {
-			setPermissionMode(nextCodexPermissionMode(permissionMode));
-			return;
-		}
 		const currentIndex = MODES.findIndex((m) => m.value === permissionMode);
 		const nextIndex = (currentIndex + 1) % MODES.length;
 		setPermissionMode(MODES[nextIndex].value);
-	}, [permissionMode, selectedBackendId, setPermissionMode]);
+	}, [permissionMode, setPermissionMode]);
 
 	const handleHistoryOpen = useCallback(
 		(open: boolean) => {

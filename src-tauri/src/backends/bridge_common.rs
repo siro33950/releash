@@ -91,8 +91,9 @@ pub struct AgentProcess {
     /// Auto-consumed on turn_complete by the stdout reader.
     pub pending_message: Option<PendingMessage>,
     /// Runtime permission mode tracked from SDK notifications.
-    /// Unlike `ChatSession.permission_mode` (persisted, excludes transient "plan"),
-    /// this reflects the actual SDK state including "plan" mode.
+    /// Holds the abstract mode (readonly / edit / full) and is updated when the SDK
+    /// reports a transition that maps cleanly to an abstract mode; unmapped values
+    /// (e.g. transient "plan" from Claude SDK) are ignored.
     pub current_permission_mode: String,
     /// Available models from Agent SDK.
     pub available_models: Vec<ModelInfo>,
@@ -147,7 +148,7 @@ pub(crate) fn make_test_agent_process() -> AgentProcess {
         last_message_id: None,
         task_id_map: HashMap::new(),
         pending_message: None,
-        current_permission_mode: "acceptEdits".to_string(),
+        current_permission_mode: "edit".to_string(),
         available_models: Vec::new(),
         selected_model: None,
         last_result_token_usage: None,
@@ -305,7 +306,7 @@ impl AgentProcess {
 
     /// Write setMode + setModel commands to the Bridge stdin before a turn starts.
     async fn sync_pre_turn_settings(&mut self, permission_mode: &str) -> Result<(), String> {
-        let mode_data = build_set_mode_command(permission_mode);
+        let mode_data = build_set_mode_command_for_backend(permission_mode, &self.backend_id)?;
         self.stdin
             .write_all(mode_data.as_bytes())
             .await
@@ -1051,16 +1052,6 @@ pub(crate) fn notify_status_transition(
 
 const CLOSE_TIMEOUT_SECS: u64 = 5;
 
-/// Resolve permission mode: "plan" → "default" (= acceptEdits), others unchanged.
-/// Called when SDK sends permissionMode: "default" (after Plan approval).
-fn resolve_permission_mode(mode: &str) -> &str {
-    if mode == "plan" {
-        "default"
-    } else {
-        mode
-    }
-}
-
 fn emit_permission_mode_changed(app: &tauri::AppHandle, chat_session_id: &str, mode: &str) {
     use tauri::Emitter;
     let _ = app.emit(
@@ -1072,12 +1063,143 @@ fn emit_permission_mode_changed(app: &tauri::AppHandle, chat_session_id: &str, m
     );
 }
 
-fn build_set_mode_command(permission_mode: &str) -> String {
-    let cmd = serde_json::json!({
-        "type": "setMode",
-        "permissionMode": permission_mode,
-    });
-    format!("{}\n", cmd)
+/// SDK 由来の `permissionMode` 通知を保存値ベースで処理する。
+/// Spec issues-947: 保存値の読み取り失敗時は SDK 値に fallback せず、log::error! を残して
+/// runtime/UI を更新せずに通知の処理だけスキップする（保存値が edit/full のセッションを
+/// 誤って readonly に落とさないため）。後段の `write_bridge_command` 失敗も log に記録する。
+async fn handle_sdk_permission_mode_notification(
+    sdk_mode: &str,
+    app: &tauri::AppHandle,
+    session_store: &std::sync::Arc<crate::session::SessionStore>,
+    handles: &std::sync::Arc<tokio::sync::Mutex<crate::backends::bridge_common::AgentProcessMap>>,
+    chat_session_id: &str,
+) {
+    let sdk_abstract = crate::backends::permission_flags::mode_from_claude_flag(sdk_mode);
+    let data_dir = match crate::session::resolve_data_dir(app) {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::error!(
+                "Failed to resolve data dir for SDK permissionMode notification \
+                 (chat_session_id={chat_session_id}): {e}"
+            );
+            return;
+        }
+    };
+    let saved_session = match session_store.get_session(&data_dir, chat_session_id) {
+        Ok(session) => session,
+        Err(e) => {
+            log::error!(
+                "Failed to read saved session for SDK permissionMode notification \
+                 (chat_session_id={chat_session_id}): {e}"
+            );
+            return;
+        }
+    };
+    let Some(session) = saved_session else {
+        log::error!(
+            "Saved session not found for SDK permissionMode notification \
+             (chat_session_id={chat_session_id})"
+        );
+        return;
+    };
+    let canonical_mode = match crate::permission::PermissionMode::parse(&session.permission_mode) {
+        Ok(mode) => mode,
+        Err(e) => {
+            log::error!(
+                "Saved permission_mode is invalid for SDK permissionMode notification \
+                     (chat_session_id={chat_session_id}): {e}"
+            );
+            return;
+        }
+    };
+    let canonical_str = canonical_mode.as_str();
+    let (backend_for_resync, needs_resync) = {
+        let mut map = handles.lock().await;
+        if let Some(proc) = map.get_mut(chat_session_id) {
+            proc.current_permission_mode = canonical_str.to_string();
+            let backend_id = proc.backend_id.clone();
+            let resync = sdk_abstract.is_some_and(|mode| mode != canonical_mode);
+            (Some(backend_id), resync)
+        } else {
+            (None, false)
+        }
+    };
+    emit_permission_mode_changed(app, chat_session_id, canonical_str);
+    if !needs_resync {
+        return;
+    }
+    let Some(backend_id) = backend_for_resync else {
+        return;
+    };
+    let payload = build_set_mode_payload_for_mode(canonical_mode, &backend_id);
+    if let Err(e) = write_bridge_command(handles, chat_session_id, payload).await {
+        log::error!(
+            "Failed to resync permission mode to bridge \
+             (chat_session_id={chat_session_id}, backend_id={backend_id}): {e}"
+        );
+    }
+}
+
+/// 抽象モード文字列（"readonly"/"edit"/"full"）→ バックエンド固有の setMode コマンドを生成する。
+/// 対象外の値が渡された場合はエラー（境界で検証済みを前提）。
+fn build_set_mode_command_for_backend(
+    permission_mode: &str,
+    backend_id: &str,
+) -> Result<String, String> {
+    let pm =
+        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+    Ok(build_set_mode_command_for_mode(pm, backend_id))
+}
+
+fn build_set_mode_payload_for_mode(
+    pm: crate::permission::PermissionMode,
+    backend_id: &str,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({ "type": "setMode" });
+    let obj = payload
+        .as_object_mut()
+        .expect("setMode payload is an object");
+    for (k, v) in bridge_permission_fields(pm, backend_id) {
+        obj.insert(k, v);
+    }
+    payload
+}
+
+fn build_set_mode_command_for_mode(
+    pm: crate::permission::PermissionMode,
+    backend_id: &str,
+) -> String {
+    format!("{}\n", build_set_mode_payload_for_mode(pm, backend_id))
+}
+
+/// `(PermissionMode, backend_id)` から JS bridge の init / setMode コマンドに載せる
+/// permission 関連フィールドのみを生成する。init と setMode の双方からこのヘルパー経由で
+/// 同じ変換ロジックを参照し、Claude/Codex 判定とフラグ変換の重複実装を防ぐ
+/// （Spec issues-947: バックエンド変換層の DRY 化）。
+fn bridge_permission_fields(
+    pm: crate::permission::PermissionMode,
+    backend_id: &str,
+) -> Vec<(String, serde_json::Value)> {
+    use crate::backends::permission_flags::{
+        claude_flag_from_mode, codex_approval_policy_from_mode, codex_sandbox_mode_from_mode,
+    };
+    if backend_id == CODEX_BACKEND_ID {
+        vec![
+            (
+                "approvalPolicy".to_string(),
+                serde_json::Value::String(codex_approval_policy_from_mode(pm).to_string()),
+            ),
+            (
+                "sandboxMode".to_string(),
+                serde_json::Value::String(codex_sandbox_mode_from_mode(pm).to_string()),
+            ),
+        ]
+    } else {
+        vec![(
+            "permissionMode".to_string(),
+            serde_json::Value::String(claude_flag_from_mode(pm).to_string()),
+        )]
+    }
 }
 
 fn build_set_model_command(model_id: Option<&str>) -> String {
@@ -1590,7 +1712,7 @@ async fn spawn_bridge_process(
     backend_id: String,
     session_id: Option<String>,
     cwd: &str,
-    permission_mode: Option<String>,
+    permission_mode: String,
     selected_model: Option<String>,
     system_prompt: Option<String>,
 ) -> Result<(), String> {
@@ -1601,6 +1723,12 @@ async fn spawn_bridge_process(
             bridge_path.display()
         ));
     }
+
+    // spawn 前にパーミッションモードを検証する。Tauri/WS 境界で検証済みのはずだが、
+    // 内部経路の保護として二重に弾く（不正値で子プロセス起動を許さない）。
+    let initial_permission_mode = permission_mode;
+    crate::permission::PermissionMode::parse(&initial_permission_mode)
+        .map_err(|e| e.to_string())?;
 
     let mut cmd = Command::new("node");
     cmd.arg(
@@ -1667,9 +1795,15 @@ async fn spawn_bridge_process(
         .take()
         .ok_or_else(|| "Failed to capture stderr".to_string())?;
 
-    // Send init command
-    let initial_permission_mode = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
-    let mut init_cmd = build_init_cmd(cwd, &initial_permission_mode, &session_id, system_prompt);
+    // Send init command（permission_mode は抽象モード文字列を期待）。
+    // initial_permission_mode は spawn 前に検証済み（上方参照）。
+    let mut init_cmd = build_init_cmd(
+        cwd,
+        &initial_permission_mode,
+        &session_id,
+        system_prompt,
+        &backend_id,
+    )?;
     let runtime_config = backend_runtime_config(app, &backend_id);
     if let Some(init_obj) = init_cmd.as_object_mut() {
         for (key, value) in runtime_config.bridge_init_options {
@@ -2156,61 +2290,31 @@ async fn spawn_bridge_process(
                         }
 
                         // Handle permissionMode sync from SDK on Rust side
+                        // Claude SDK は "default"/"acceptEdits"/"bypassPermissions"/"plan" を送る。
+                        // 永続化は検証済み Tauri/WS リクエストや明示 UI 操作経由に限定するため、
+                        // ここでは SessionStore の値は書き換えない（Spec issues-947）。
+                        //
+                        // SDK は ExitPlanMode 等の遷移時に "default" を送ることがあるが、保存値が
+                        // edit/full のセッションでは runtime/UI が readonly に落ちると整合性が崩れる。
+                        // そのため SDK 通知をきっかけにせず、保存済み ChatSession.permission_mode を
+                        // 正典として読み直し、ランタイムと UI をそれに合わせる。保存値と SDK 値が
+                        // ズレた場合は setMode を再送して bridge を保存値に追従させる。
                         if msg_type == "system" {
                             if let Some(sdk_mode) =
                                 msg.get("permissionMode").and_then(|v| v.as_str())
                             {
-                                if sdk_mode == "default" {
-                                    // Plan approval: resolve persisted permission_mode
-                                    let data_dir_result = resolve_data_dir(&app_stdout);
-                                    if let Ok(data_dir) = data_dir_result {
-                                        if let Ok(Some(session)) =
-                                            session_store_clone.get_session(&data_dir, &csid_stdout)
-                                        {
-                                            let restored =
-                                                resolve_permission_mode(&session.permission_mode);
-                                            // Send restored mode to Bridge
-                                            let mode_data = build_set_mode_command(restored);
-                                            let mut map = handles_stdout.lock().await;
-                                            if let Some(proc) = map.get_mut(&csid_stdout) {
-                                                let _ = proc
-                                                    .stdin
-                                                    .write_all(mode_data.as_bytes())
-                                                    .await;
-                                                let _ = proc.stdin.flush().await;
-                                                proc.current_permission_mode = restored.to_string();
-                                            }
-                                            drop(map);
-                                            // Persist resolved mode if it changed (plan → default)
-                                            if restored != session.permission_mode {
-                                                let _ = session_store_clone.update_permission_mode(
-                                                    &data_dir,
-                                                    &csid_stdout,
-                                                    restored,
-                                                );
-                                            }
-                                            // Notify frontend
-                                            emit_permission_mode_changed(
-                                                &app_stdout,
-                                                &csid_stdout,
-                                                restored,
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    // SDK changed mode (e.g., to "plan") — update runtime state & notify frontend
-                                    {
-                                        let mut map = handles_stdout.lock().await;
-                                        if let Some(proc) = map.get_mut(&csid_stdout) {
-                                            proc.current_permission_mode = sdk_mode.to_string();
-                                        }
-                                    }
-                                    emit_permission_mode_changed(
-                                        &app_stdout,
-                                        &csid_stdout,
-                                        sdk_mode,
-                                    );
-                                }
+                                // 保存値を正典として扱う経路。読み取り失敗時は SDK 由来の値で
+                                // fallback せず、log::error! を出して runtime/UI を更新せずに
+                                // 当該通知の処理だけスキップする（Spec issues-947: 保存値が
+                                // edit/full のセッションを readonly に落とすような誤更新を排除）。
+                                handle_sdk_permission_mode_notification(
+                                    sdk_mode,
+                                    &app_stdout,
+                                    &session_store_clone,
+                                    &handles_stdout,
+                                    &csid_stdout,
+                                )
+                                .await;
                             }
                         }
 
@@ -2473,7 +2577,8 @@ async fn get_session_internal_with_data_dir(
             let (turn_phase, raw_parts, streaming_mid) = {
                 let map = handles.lock().await;
                 if let Some(proc) = map.get(session_id) {
-                    // Override persisted mode with runtime mode (includes transient "plan")
+                    // Override persisted mode with runtime mode to reflect
+                    // in-flight permission changes that haven't been persisted yet.
                     session.permission_mode = proc.current_permission_mode.clone();
                     let phase = proc.turn_phase;
                     if proc.state == BridgeState::Streaming {
@@ -2707,6 +2812,24 @@ pub(crate) async fn start_agent_session_internal(
     permission_mode: Option<String>,
     system_prompt: Option<String>,
 ) -> Result<(), String> {
+    // 抽象パーミッションモードを境界で解決・検証する。
+    // - Some: その場で検証（Tauri/WS 境界が既に弾いている想定だが内部経路でも二重防御）。
+    // - None: 内部呼び出し（workflow engine 等）として保存済みセッション値を明示参照する。
+    let resolved_permission_mode = match permission_mode {
+        Some(value) => crate::permission::PermissionMode::parse(&value)
+            .map(|m| m.as_str().to_string())
+            .map_err(|e| e.to_string())?,
+        None => {
+            let data_dir = resolve_data_dir(app)?;
+            let session = session_store
+                .get_session(&data_dir, chat_session_id)?
+                .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
+            crate::permission::PermissionMode::parse(&session.permission_mode)
+                .map(|m| m.as_str().to_string())
+                .map_err(|e| e.to_string())?
+        }
+    };
+
     wait_until_session_close_finished(chat_session_id).await;
     let _spawn_guard = acquire_spawn_session_guard(chat_session_id).await;
     {
@@ -2730,7 +2853,7 @@ pub(crate) async fn start_agent_session_internal(
         backend_id,
         resume_sid,
         cwd,
-        permission_mode,
+        resolved_permission_mode,
         selected_model,
         system_prompt,
     )
@@ -2772,7 +2895,7 @@ pub(crate) async fn start_agent_turn(
                 backend_id,
                 resume_sid,
                 cwd,
-                Some(permission_mode.to_string()),
+                permission_mode.to_string(),
                 selected_model,
                 None,
             )
@@ -2826,7 +2949,7 @@ async fn start_agent_turn_locked(
                 backend_id,
                 resume_sid,
                 cwd,
-                Some(permission_mode.to_string()),
+                permission_mode.to_string(),
                 selected_model,
                 None,
             )
@@ -3266,15 +3389,38 @@ pub async fn set_agent_permission_mode(
     chat_session_id: String,
     permission_mode: String,
 ) -> Result<(), String> {
-    let data = build_set_mode_command(&permission_mode);
-
-    // Persist to SessionStore
     let data_dir = resolve_data_dir(&app)?;
-    session_store.update_permission_mode(&data_dir, &chat_session_id, &permission_mode)?;
+    set_agent_permission_mode_internal(
+        session_store.inner(),
+        handles.inner(),
+        &data_dir,
+        &chat_session_id,
+        &permission_mode,
+    )
+    .await
+}
+
+/// `set_agent_permission_mode` の内部実装。Tauri コマンドから AppHandle 依存を切り離し、
+/// 境界での invalid 値拒否（保存値・current_permission_mode・bridge stdin 不変）を
+/// テストから直接検証できるようにする（Spec issues-947）。
+pub(crate) async fn set_agent_permission_mode_internal(
+    session_store: &Arc<SessionStore>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    data_dir: &Path,
+    chat_session_id: &str,
+    permission_mode: &str,
+) -> Result<(), String> {
+    // 境界で抽象モードを検証。対象外の値はセッション状態を変更せず bridge にも送らない。
+    let pm =
+        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+
+    // Persist to SessionStore（検証済みの抽象モード）
+    session_store.update_permission_mode(data_dir, chat_session_id, pm.as_str())?;
 
     {
         let mut map = handles.lock().await;
-        if let Some(proc) = map.get_mut(&chat_session_id) {
+        if let Some(proc) = map.get_mut(chat_session_id) {
+            let data = build_set_mode_command_for_mode(pm, &proc.backend_id);
             proc.stdin
                 .write_all(data.as_bytes())
                 .await
@@ -3283,7 +3429,7 @@ pub async fn set_agent_permission_mode(
                 .flush()
                 .await
                 .map_err(|e| format!("Failed to flush setMode: {e}"))?;
-            proc.current_permission_mode = permission_mode.clone();
+            proc.current_permission_mode = pm.as_str().to_string();
         }
         // If no process exists, silently ignore (process not yet started)
     }
@@ -3581,32 +3727,45 @@ async fn prepare_send_agent_message_internal(
     chat_session_id: Option<String>,
     worktree_path: String,
     content: String,
-    permission_mode: Option<String>,
+    permission_mode: crate::permission::PermissionMode,
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::file_mention::MentionReference>>,
 ) -> Result<(SendMessageResponse, Option<PreparedAgentTurn>), String> {
-    let pm = permission_mode.unwrap_or_else(|| "acceptEdits".to_string());
+    let pm = permission_mode.as_str().to_string();
     let images = images.unwrap_or_default();
     let mentions = mentions.unwrap_or_default();
 
     // 1. Create or get session
     let session = if let Some(ref sid) = chat_session_id {
-        let session = session_store
+        let mut session = session_store
             .get_session(data_dir, sid)?
             .ok_or_else(|| format!("Session not found: {sid}"))?;
         if !session.workflow_step_session && session.worktree_path != worktree_path {
             return Err(session_target_rejected());
         }
+        // 既存セッション分岐でも検証済み pm をセッション保存層に書き戻す。
+        // 新規セッション分岐と対称化し、リモート UI で start → message とした場合に
+        // 選択した permission_mode が ChatSession.permission_mode に反映されるようにする。
+        if session.permission_mode != pm {
+            session_store.update_permission_mode(data_dir, sid, &pm)?;
+            session.permission_mode = pm.clone();
+        }
         ensure_session_backend_selected(session_store, registry, data_dir, session)?
     } else {
         let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
+        // 新規セッションは検証済み抽象モードを初回保存で確定する。
+        // 既定値で save → update_permission_mode の二段階保存を行うと、途中失敗時に
+        // 選択値ではない permission_mode で永続化されたセッションが残ってしまうため
+        // （Spec issues-947: セッション保存層が permission_mode の正典）、生成 API を一本化する。
+        // backend の登録済み初期モデルがあれば selected_model に永続化する（Spec issues-946）。
         crate::session::create_session_with_initial_model(
             session_store,
             registry,
             data_dir,
             &worktree_path,
             resolved_backend_id,
+            permission_mode,
         )?
     };
     let sid = session.id.clone();
@@ -3738,7 +3897,7 @@ pub async fn send_agent_message_internal(
     chat_session_id: Option<String>,
     worktree_path: String,
     content: String,
-    permission_mode: Option<String>,
+    permission_mode: crate::permission::PermissionMode,
     backend_id: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::file_mention::MentionReference>>,
@@ -3965,23 +4124,30 @@ pub async fn scan_slash_commands(cwd: String) -> Result<Vec<SlashCommandEntry>, 
 
 // --- Image attachment support ---
 
-/// Build a JSON command to send a user message (with optional images) to the Bridge.
+/// 抽象モード文字列 + backend_id を受け取り、バックエンド固有の init コマンドを構築する。
 fn build_init_cmd(
     cwd: &str,
     permission_mode: &str,
     session_id: &Option<String>,
     system_prompt: Option<String>,
-) -> serde_json::Value {
+    backend_id: &str,
+) -> Result<serde_json::Value, String> {
+    let pm =
+        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
     let mut cmd = serde_json::json!({
         "type": "init",
         "cwd": cwd,
-        "permissionMode": permission_mode,
         "sessionId": session_id,
     });
+    if let Some(obj) = cmd.as_object_mut() {
+        for (k, v) in bridge_permission_fields(pm, backend_id) {
+            obj.insert(k, v);
+        }
+    }
     if let Some(sp) = system_prompt {
         cmd["systemPrompt"] = serde_json::Value::String(sp);
     }
-    cmd
+    Ok(cmd)
 }
 
 fn build_message_cmd(prompt: &str, images: &[ImageAttachment]) -> serde_json::Value {
@@ -4254,7 +4420,7 @@ mod tests {
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-resume-id".to_string()),
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: Some("sonnet".to_string()),
             workflow_state: None,
             backend_id: Some("mock".to_string()),
@@ -5917,7 +6083,7 @@ mod tests {
             Some(step_session.id.clone()),
             "/different-request-worktree".to_string(),
             "continue completed step".to_string(),
-            Some("acceptEdits".to_string()),
+            crate::permission::PermissionMode::Edit,
             None,
             None,
             None,
@@ -6020,7 +6186,7 @@ mod tests {
             Some(regular_session.id),
             worktree_path,
             "regular chat".to_string(),
-            Some("acceptEdits".to_string()),
+            crate::permission::PermissionMode::Edit,
             None,
             None,
             None,
@@ -6040,6 +6206,47 @@ mod tests {
             before.runtime_states[&step_session.id].runtime_active,
             after.runtime_states[&step_session.id].runtime_active
         );
+    }
+
+    #[tokio::test]
+    async fn prepare_send_persists_selected_permission_mode_for_new_session() {
+        // Spec issues-947: 新規セッション作成時、選択された抽象モードがそのまま
+        // ChatSession.permission_mode に保存される（PreparedAgentTurn と乖離しない）。
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: "mock".to_string(),
+            models: vec![],
+        }));
+        let registry = Arc::new(registry);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        let worktree_path = "/repo".to_string();
+
+        let (response, prepared_turn) = prepare_send_agent_message_internal(
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            None,
+            worktree_path.clone(),
+            "hi".to_string(),
+            crate::permission::PermissionMode::Readonly,
+            Some("mock".to_string()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let prepared_turn = prepared_turn.expect("new session should start a turn");
+        assert_eq!(prepared_turn.permission_mode, "readonly");
+        assert_eq!(response.session.permission_mode, "readonly");
+        let saved = session_store
+            .get_session(data_dir.path(), &response.session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.permission_mode, "readonly");
     }
 
     #[tokio::test]
@@ -6075,7 +6282,7 @@ mod tests {
             Some(step_session.id.clone()),
             worktree_path.clone(),
             "resume step".to_string(),
-            Some("acceptEdits".to_string()),
+            crate::permission::PermissionMode::Edit,
             None,
             None,
             None,
@@ -6105,7 +6312,7 @@ mod tests {
             None,
             &handles,
             &session_id,
-            "acceptEdits",
+            "edit",
             "resume step",
             "agent-msg-1",
             &[],
@@ -6150,7 +6357,7 @@ mod tests {
             None,
             &handles,
             &session_id,
-            "acceptEdits",
+            "edit",
             "continue step",
             "agent-msg-2",
             &[],
@@ -6187,7 +6394,7 @@ mod tests {
                     None,
                     &handles,
                     &session_id,
-                    "acceptEdits",
+                    "edit",
                     "resume step",
                     "agent-msg-locked",
                     &[],
@@ -6242,7 +6449,7 @@ mod tests {
                     None,
                     &handles,
                     &session_id,
-                    "acceptEdits",
+                    "edit",
                     "first",
                     "agent-msg-1",
                     &[],
@@ -6272,7 +6479,7 @@ mod tests {
                     None,
                     &handles,
                     &session_id,
-                    "acceptEdits",
+                    "edit",
                     "second",
                     "agent-msg-2",
                     &[],
@@ -6576,7 +6783,7 @@ mod tests {
                 last_message_id: None,
                 task_id_map: HashMap::new(),
                 pending_message: None,
-                current_permission_mode: "acceptEdits".to_string(),
+                current_permission_mode: "edit".to_string(),
                 available_models: Vec::new(),
                 selected_model: None,
                 last_result_token_usage: None,
@@ -6595,7 +6802,7 @@ mod tests {
             Some(session.id.clone()),
             worktree_path.clone(),
             "Narrow the policy to reviewed findings.".to_string(),
-            Some("acceptEdits".to_string()),
+            crate::permission::PermissionMode::Edit,
             None,
             None,
             None,
@@ -6716,7 +6923,7 @@ mod tests {
             first_message: String::new(),
             message_count: 0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
         };
@@ -6735,7 +6942,7 @@ mod tests {
             first_message: "hello".to_string(),
             message_count: 1,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
         };
@@ -6757,7 +6964,7 @@ mod tests {
             first_message: "history".to_string(),
             message_count: 3,
             agent_session_id: Some("sdk-session".to_string()),
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             backend_id: Some("claude".to_string()),
             workflow_step_session: true,
         };
@@ -6788,7 +6995,7 @@ mod tests {
             proc.turn_phase = TurnPhase::Idle;
             proc.pending_message = Some(PendingMessage {
                 content: "next".to_string(),
-                permission_mode: "acceptEdits".to_string(),
+                permission_mode: "edit".to_string(),
                 images: Vec::new(),
                 worktree_path: "/repo".to_string(),
                 mentions: Vec::new(),
@@ -6812,7 +7019,7 @@ mod tests {
         let mut proc = make_test_agent_process();
         proc.pending_message = Some(PendingMessage {
             content: "next".to_string(),
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             images: Vec::new(),
             worktree_path: "/repo".to_string(),
             mentions: Vec::new(),
@@ -6956,15 +7163,15 @@ mod tests {
 
     #[test]
     fn init_command_format() {
-        let cwd = "/repo";
-        let permission_mode = "acceptEdits";
-        let session_id: Option<String> = Some("sess-abc".to_string());
-        let cmd = serde_json::json!({
-            "type": "init",
-            "cwd": cwd,
-            "permissionMode": permission_mode,
-            "sessionId": session_id,
-        });
+        // 抽象モード "edit" を Claude バックエンド向けに変換すると acceptEdits になる。
+        let cmd = build_init_cmd(
+            "/repo",
+            "edit",
+            &Some("sess-abc".to_string()),
+            None,
+            CLAUDE_BACKEND_ID,
+        )
+        .unwrap();
         assert_eq!(cmd["type"], "init");
         assert_eq!(cmd["cwd"], "/repo");
         assert_eq!(cmd["permissionMode"], "acceptEdits");
@@ -6973,24 +7180,11 @@ mod tests {
 
     #[test]
     fn set_mode_command_format() {
-        let permission_mode = "bypassPermissions";
-        let cmd = serde_json::json!({
-            "type": "setMode",
-            "permissionMode": permission_mode,
-        });
+        let data =
+            build_set_mode_command_for_backend("full", CLAUDE_BACKEND_ID).expect("valid mode");
+        let cmd: serde_json::Value = serde_json::from_str(data.trim()).unwrap();
         assert_eq!(cmd["type"], "setMode");
         assert_eq!(cmd["permissionMode"], "bypassPermissions");
-    }
-
-    #[test]
-    fn set_mode_command_with_default() {
-        let permission_mode: Option<String> = None;
-        let cmd = serde_json::json!({
-            "type": "setMode",
-            "permissionMode": permission_mode.as_deref().unwrap_or("acceptEdits"),
-        });
-        assert_eq!(cmd["type"], "setMode");
-        assert_eq!(cmd["permissionMode"], "acceptEdits");
     }
 
     #[test]
@@ -7011,13 +7205,7 @@ mod tests {
 
     #[test]
     fn init_command_without_session_id() {
-        let session_id: Option<String> = None;
-        let cmd = serde_json::json!({
-            "type": "init",
-            "cwd": "/repo",
-            "permissionMode": "acceptEdits",
-            "sessionId": session_id,
-        });
+        let cmd = build_init_cmd("/repo", "edit", &None, None, CLAUDE_BACKEND_ID).unwrap();
         assert!(cmd["sessionId"].is_null());
     }
 
@@ -8376,26 +8564,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_permission_mode_plan_returns_default() {
-        assert_eq!(resolve_permission_mode("plan"), "default");
-    }
-
-    #[test]
-    fn resolve_permission_mode_accept_edits_unchanged() {
-        assert_eq!(resolve_permission_mode("acceptEdits"), "acceptEdits");
-    }
-
-    #[test]
-    fn resolve_permission_mode_bypass_unchanged() {
-        assert_eq!(
-            resolve_permission_mode("bypassPermissions"),
-            "bypassPermissions"
-        );
-    }
-
-    #[test]
-    fn resolve_permission_mode_default_unchanged() {
-        assert_eq!(resolve_permission_mode("default"), "default");
+    fn claude_flag_round_trip_via_permission_flags_module() {
+        use crate::backends::permission_flags::{claude_flag_from_mode, mode_from_claude_flag};
+        use crate::permission::PermissionMode;
+        for (abstract_mode, expected_flag) in [
+            (PermissionMode::Readonly, "default"),
+            (PermissionMode::Edit, "acceptEdits"),
+            (PermissionMode::Full, "bypassPermissions"),
+        ] {
+            assert_eq!(claude_flag_from_mode(abstract_mode), expected_flag);
+            assert_eq!(mode_from_claude_flag(expected_flag), Some(abstract_mode));
+        }
+        // "plan" は廃止語彙のため抽象モードに戻せない（None）。
+        assert!(mode_from_claude_flag("plan").is_none());
     }
 
     // --- Image attachment tests ---
@@ -8530,8 +8711,8 @@ mod tests {
     }
 
     #[test]
-    fn build_init_cmd_without_system_prompt() {
-        let cmd = build_init_cmd("/repo", "acceptEdits", &None, None);
+    fn build_init_cmd_without_system_prompt_for_claude() {
+        let cmd = build_init_cmd("/repo", "edit", &None, None, CLAUDE_BACKEND_ID).unwrap();
         assert_eq!(cmd["type"], "init");
         assert_eq!(cmd["cwd"], "/repo");
         assert_eq!(cmd["permissionMode"], "acceptEdits");
@@ -8540,13 +8721,15 @@ mod tests {
     }
 
     #[test]
-    fn build_init_cmd_with_system_prompt() {
+    fn build_init_cmd_with_system_prompt_for_claude() {
         let cmd = build_init_cmd(
             "/repo",
-            "acceptEdits",
+            "edit",
             &Some("prev-session".to_string()),
             Some("You are a coder.".to_string()),
-        );
+            CLAUDE_BACKEND_ID,
+        )
+        .unwrap();
         assert_eq!(cmd["type"], "init");
         assert_eq!(cmd["cwd"], "/repo");
         assert_eq!(cmd["permissionMode"], "acceptEdits");
@@ -8555,10 +8738,304 @@ mod tests {
     }
 
     #[test]
-    fn build_init_cmd_bypass_permissions() {
-        let cmd = build_init_cmd("/repo", "bypassPermissions", &None, None);
+    fn build_init_cmd_full_for_claude_emits_bypass_permissions() {
+        let cmd = build_init_cmd("/repo", "full", &None, None, CLAUDE_BACKEND_ID).unwrap();
         assert_eq!(cmd["permissionMode"], "bypassPermissions");
         assert!(cmd.get("systemPrompt").is_none());
+    }
+
+    #[test]
+    fn build_init_cmd_readonly_for_claude_emits_default() {
+        let cmd = build_init_cmd("/repo", "readonly", &None, None, CLAUDE_BACKEND_ID).unwrap();
+        assert_eq!(cmd["permissionMode"], "default");
+    }
+
+    #[test]
+    fn build_init_cmd_for_codex_emits_sandbox_and_approval() {
+        let cmd = build_init_cmd("/repo", "edit", &None, None, CODEX_BACKEND_ID).unwrap();
+        assert_eq!(cmd["type"], "init");
+        assert_eq!(cmd["sandboxMode"], "workspace-write");
+        assert_eq!(cmd["approvalPolicy"], "on-request");
+        // Codex 用 init には permissionMode は載らない（バックエンド固有フラグのみ）
+        assert!(cmd.get("permissionMode").is_none());
+    }
+
+    #[test]
+    fn build_init_cmd_for_codex_readonly_and_full() {
+        let readonly = build_init_cmd("/repo", "readonly", &None, None, CODEX_BACKEND_ID).unwrap();
+        assert_eq!(readonly["sandboxMode"], "read-only");
+        assert_eq!(readonly["approvalPolicy"], "never");
+        let full = build_init_cmd("/repo", "full", &None, None, CODEX_BACKEND_ID).unwrap();
+        assert_eq!(full["sandboxMode"], "danger-full-access");
+        assert_eq!(full["approvalPolicy"], "never");
+    }
+
+    #[test]
+    fn build_init_cmd_rejects_invalid_abstract_mode() {
+        assert!(
+            build_init_cmd("/repo", "acceptEdits", &None, None, CLAUDE_BACKEND_ID).is_err(),
+            "legacy claude flag must be rejected at the boundary"
+        );
+        assert!(build_init_cmd("/repo", "plan", &None, None, CLAUDE_BACKEND_ID).is_err());
+        assert!(build_init_cmd("/repo", "", &None, None, CODEX_BACKEND_ID).is_err());
+    }
+
+    /// spawn_bridge_process が spawn 前にパーミッションモードを検証することの担保。
+    /// 本テストは spawn 前の `PermissionMode::parse` 早期 return を直接利用するためのスモークテスト。
+    #[test]
+    fn pre_spawn_permission_validation_smoke() {
+        // 抽象モード以外は早期に弾かれる契約を確認する。
+        for invalid in ["acceptEdits", "bypassPermissions", "plan", "default", ""] {
+            assert!(
+                crate::permission::PermissionMode::parse(invalid).is_err(),
+                "spawn 前の検証は '{invalid}' を弾く必要がある"
+            );
+        }
+        for valid in ["readonly", "edit", "full"] {
+            assert!(crate::permission::PermissionMode::parse(valid).is_ok());
+        }
+    }
+
+    #[test]
+    fn build_set_mode_command_emits_claude_flag() {
+        let data =
+            build_set_mode_command_for_backend("edit", CLAUDE_BACKEND_ID).expect("valid mode");
+        let cmd: serde_json::Value = serde_json::from_str(data.trim()).unwrap();
+        assert_eq!(cmd["type"], "setMode");
+        assert_eq!(cmd["permissionMode"], "acceptEdits");
+        assert!(cmd.get("approvalPolicy").is_none());
+        assert!(cmd.get("sandboxMode").is_none());
+    }
+
+    #[test]
+    fn build_set_mode_command_emits_codex_flags() {
+        let data =
+            build_set_mode_command_for_backend("full", CODEX_BACKEND_ID).expect("valid mode");
+        let cmd: serde_json::Value = serde_json::from_str(data.trim()).unwrap();
+        assert_eq!(cmd["type"], "setMode");
+        assert_eq!(cmd["sandboxMode"], "danger-full-access");
+        assert_eq!(cmd["approvalPolicy"], "never");
+        assert!(cmd.get("permissionMode").is_none());
+    }
+
+    #[test]
+    fn build_set_mode_command_rejects_legacy_value() {
+        for legacy in ["acceptEdits", "bypassPermissions", "plan", "default", ""] {
+            assert!(
+                build_set_mode_command_for_backend(legacy, CLAUDE_BACKEND_ID).is_err(),
+                "legacy '{legacy}' must be rejected"
+            );
+        }
+    }
+
+    fn chat_session_for_permission_test(session_id: &str, permission: &str) -> ChatSession {
+        ChatSession {
+            id: session_id.to_string(),
+            worktree_path: "/repo".to_string(),
+            messages: Vec::new(),
+            state: crate::session::SessionState::Active,
+            created_at: 1.0,
+            updated_at: 1.0,
+            agent_session_id: None,
+            permission_mode: permission.to_string(),
+            selected_model: None,
+            workflow_state: None,
+            backend_id: Some("mock".to_string()),
+            workflow_step_session: false,
+        }
+    }
+
+    /// Spec issues-947: bridge stdin への書き込みを観測するために、stdout 側を pipe で
+    /// 開いた `cat` を spawn し、process が複製した stdout を返す。`cat` は stdin を
+    /// stdout にエコーするので、stdout が空 == bridge への書き込みなし、を観測できる。
+    fn make_test_agent_process_with_stdout() -> (AgentProcess, tokio::process::ChildStdout) {
+        use std::process::Stdio;
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn cat test process");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let proc = AgentProcess {
+            stdin,
+            backend_id: "mock".to_string(),
+            state: BridgeState::Ready,
+            turn_phase: TurnPhase::Idle,
+            sdk_session_id: None,
+            child,
+            generation_id: 0,
+            #[cfg(unix)]
+            pgid: None,
+            streaming_message_id: None,
+            streaming_parts: Vec::new(),
+            last_message_id: None,
+            task_id_map: HashMap::new(),
+            pending_message: None,
+            current_permission_mode: "edit".to_string(),
+            available_models: Vec::new(),
+            selected_model: None,
+            last_result_token_usage: None,
+            pending_stream_part_count: 0,
+            pending_stream_bytes: 0,
+            last_stream_emit_at: None,
+            streaming_timer_active: false,
+        };
+        (proc, stdout)
+    }
+
+    #[tokio::test]
+    async fn set_agent_permission_mode_internal_rejects_invalid_without_mutating_state() {
+        use tokio::io::AsyncReadExt;
+
+        // Spec issues-947: 外部境界（set_agent_permission_mode 相当）で invalid 値を受けたとき、
+        // 保存値・current_permission_mode・bridge stdin のいずれも変化させない。
+        // bridge stdin の不変は、stdout を pipe で開いた `cat` を bridge process に見立てて
+        // 「invalid を拒否した後で stdin を閉じ、stdout の echo が空である」ことで観測する。
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session = chat_session_for_permission_test(&session_id, "edit");
+        session_store
+            .save_session(data_dir.path(), &session)
+            .unwrap();
+
+        let (proc, mut stdout) = make_test_agent_process_with_stdout();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+        handles.lock().await.insert(session_id.clone(), proc);
+
+        for invalid in [
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "default",
+            "unknown",
+            "",
+        ] {
+            let err = set_agent_permission_mode_internal(
+                &session_store,
+                &handles,
+                data_dir.path(),
+                &session_id,
+                invalid,
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("invalid '{invalid}' must be rejected"));
+            assert!(
+                err.contains("readonly, edit, full"),
+                "invalid '{invalid}' must include allowed list, got: {err}"
+            );
+
+            // 保存値が変わらない。
+            let saved = session_store
+                .get_session(data_dir.path(), &session_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                saved.permission_mode, "edit",
+                "persisted permission_mode must remain unchanged for '{invalid}'"
+            );
+
+            // current_permission_mode（ランタイム）も変わらない。
+            let map = handles.lock().await;
+            let proc = map.get(&session_id).expect("agent process retained");
+            assert_eq!(
+                proc.current_permission_mode, "edit",
+                "current_permission_mode must remain unchanged for '{invalid}'"
+            );
+        }
+
+        // 全ての invalid 入力を試した後、bridge stdin への書き込みなしを直接観測する。
+        // Map から AgentProcess を取り出して child を kill し、stdin を drop することで
+        // `cat` が EOF を読み取って終了し、stdout 読み取りが完了する。`cat` は受け取った
+        // バイトをそのまま echo するため、stdout が空 == bridge stdin 未書き込み。
+        let mut proc = handles.lock().await.remove(&session_id).unwrap();
+        let _ = proc.child.kill().await;
+        drop(proc.stdin);
+        let mut buf = Vec::new();
+        stdout
+            .read_to_end(&mut buf)
+            .await
+            .expect("read stdout to EOF");
+        assert!(
+            buf.is_empty(),
+            "no bytes must be written to bridge stdin for invalid permission modes, got: {:?}",
+            String::from_utf8_lossy(&buf)
+        );
+    }
+
+    #[tokio::test]
+    async fn set_agent_permission_mode_internal_persists_valid_abstract_mode() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session = chat_session_for_permission_test(&session_id, "edit");
+        session_store
+            .save_session(data_dir.path(), &session)
+            .unwrap();
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        set_agent_permission_mode_internal(
+            &session_store,
+            &handles,
+            data_dir.path(),
+            &session_id,
+            "readonly",
+        )
+        .await
+        .expect("valid abstract mode must be accepted");
+
+        let saved = session_store
+            .get_session(data_dir.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.permission_mode, "readonly");
+    }
+
+    #[tokio::test]
+    async fn prepare_send_persists_selected_permission_mode_for_existing_session() {
+        // Spec issues-947: 既存セッションに対する送信時にも、検証済み permission_mode が
+        // 異なれば ChatSession.permission_mode に書き戻される（保存層が単一の正典）。
+        let data_dir = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(SessionStore::default());
+        let mut registry = AgentBackendRegistry::new();
+        registry.register(Arc::new(MockModelBackend {
+            backend_id: "mock".to_string(),
+            models: vec![],
+        }));
+        let registry = Arc::new(registry);
+        let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
+
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session = chat_session_for_permission_test(&session_id, "edit");
+        session_store
+            .save_session(data_dir.path(), &session)
+            .unwrap();
+
+        let (response, _prepared_turn) = prepare_send_agent_message_internal(
+            &session_store,
+            &registry,
+            &handles,
+            data_dir.path(),
+            Some(session_id.clone()),
+            "/repo".to_string(),
+            "hello".to_string(),
+            crate::permission::PermissionMode::Readonly,
+            Some("mock".to_string()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.session.permission_mode, "readonly");
+        let saved = session_store
+            .get_session(data_dir.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.permission_mode, "readonly");
     }
 
     #[test]
@@ -8879,7 +9356,7 @@ mod tests {
                 last_message_id: None,
                 task_id_map: HashMap::new(),
                 pending_message: None,
-                current_permission_mode: "default".to_string(),
+                current_permission_mode: "readonly".to_string(),
                 available_models: Vec::new(),
                 selected_model: None,
                 last_result_token_usage: None,

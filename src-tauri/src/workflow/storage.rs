@@ -254,7 +254,7 @@ mod tests {
                 aggregate: None,
                 resets_cycle_for: None,
                 model: None,
-                permission: None,
+                permission: Some("edit".to_string()),
             }],
         }
     }

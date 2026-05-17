@@ -1,0 +1,66 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { Workflow } from "@/types/workflow";
+import { WorkflowEditor } from "./WorkflowEditor";
+
+beforeAll(() => {
+	HTMLElement.prototype.hasPointerCapture = vi.fn() as never;
+	HTMLElement.prototype.releasePointerCapture = vi.fn() as never;
+	HTMLElement.prototype.setPointerCapture = vi.fn() as never;
+	HTMLElement.prototype.scrollIntoView = vi.fn() as never;
+});
+
+const ALL_FACET_KEYS = {
+	policy: [],
+	knowledge: [],
+	instruction: [],
+	output_contract: [],
+};
+
+describe("WorkflowEditor permission handling", () => {
+	it("does not backfill missing permission when saving an existing draft", async () => {
+		const workflow = {
+			name: "wf",
+			description: "",
+			steps: [
+				{ name: "plan", mode: "auto", rules: [] },
+				{
+					name: "fanout",
+					mode: "auto",
+					rules: [],
+					permission: "readonly",
+					parallel: [
+						{ name: "child-a", mode: "auto" },
+						{ name: "child-b", mode: "auto", permission: "readonly" },
+					],
+				},
+			],
+		} as unknown as Workflow;
+
+		const onSave = vi.fn().mockResolvedValue({ ok: true });
+		const onCancel = vi.fn();
+
+		render(
+			<WorkflowEditor
+				workflow={workflow}
+				allFacetKeys={ALL_FACET_KEYS}
+				onSave={onSave}
+				onCancel={onCancel}
+			/>,
+		);
+
+		const user = userEvent.setup();
+		await user.click(screen.getByRole("button", { name: "Save" }));
+
+		expect(onSave).toHaveBeenCalledTimes(1);
+		const savedWorkflow = onSave.mock.calls[0][0] as Workflow;
+
+		expect(savedWorkflow.steps[0].permission).toBeUndefined();
+
+		const parallelStep = savedWorkflow.steps[1];
+		expect(parallelStep.permission).toBe("readonly");
+		expect(parallelStep.parallel?.[0].permission).toBeUndefined();
+		expect(parallelStep.parallel?.[1].permission).toBe("readonly");
+	});
+});

@@ -174,7 +174,9 @@ pub struct ChatSession {
     pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
-    #[serde(default = "default_permission_mode")]
+    /// 抽象モード文字列（"readonly" / "edit" / "full"）。
+    /// serde の default を意図的に付けない: 保存済みセッションで欠落していた場合は
+    /// デシリアライズエラーで起動を拒否する（破壊的変更、Spec issues-947 参照）。
     pub permission_mode: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub selected_model: Option<String>,
@@ -184,10 +186,6 @@ pub struct ChatSession {
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_step_session: bool,
-}
-
-fn default_permission_mode() -> String {
-    "acceptEdits".to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -361,18 +359,76 @@ pub async fn list_sessions(
 }
 
 /// Internal (non-command) version of create_session, callable from agent_sdk.
+/// `permission_mode` 未指定の経路（ワークフロー engine 起点の step session 等）向けに
+/// `PermissionMode::Edit` を既定値として用いる。検証済み抽象モードを保有する経路
+/// （WS handler / message → 新規 session）は [`create_session_internal_with_permission`] を呼ぶこと。
+#[cfg(test)]
 pub fn create_session_internal(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
     worktree_path: &str,
     backend_id: Option<String>,
 ) -> Result<ChatSession, String> {
-    let session = build_new_session(worktree_path, backend_id);
+    create_session_internal_with_permission(
+        session_store,
+        data_dir,
+        worktree_path,
+        backend_id,
+        crate::permission::PermissionMode::Edit,
+    )
+}
+
+/// 検証済みの抽象 [`crate::permission::PermissionMode`] を初回保存で確定するセッション生成 API。
+/// WS handler や message → 新規 session 経路から呼び、edit デフォルトで保存→update の二段階を回避する
+/// （Spec issues-947: セッション保存層が permission_mode の正典）。
+pub fn create_session_internal_with_permission(
+    session_store: &SessionStore,
+    data_dir: &std::path::Path,
+    worktree_path: &str,
+    backend_id: Option<String>,
+    permission_mode: crate::permission::PermissionMode,
+) -> Result<ChatSession, String> {
+    create_session_internal_with_attributes(
+        session_store,
+        data_dir,
+        worktree_path,
+        backend_id,
+        permission_mode,
+        None,
+        false,
+    )
+}
+
+/// 検証済み抽象モード・selected_model・workflow_step_session フラグを初回保存で確定する内部 API。
+/// ワークフロー engine の step session 生成経路から呼び、edit デフォルトで保存→属性上書きの
+/// 二段階保存を回避する（Spec issues-947: 途中失敗時の不正中間状態の排除）。
+pub fn create_session_internal_with_attributes(
+    session_store: &SessionStore,
+    data_dir: &std::path::Path,
+    worktree_path: &str,
+    backend_id: Option<String>,
+    permission_mode: crate::permission::PermissionMode,
+    selected_model: Option<String>,
+    workflow_step_session: bool,
+) -> Result<ChatSession, String> {
+    let session = build_new_session(
+        worktree_path,
+        backend_id,
+        permission_mode,
+        selected_model,
+        workflow_step_session,
+    );
     session_store.save_session(data_dir, &session)?;
     Ok(session)
 }
 
-fn build_new_session(worktree_path: &str, backend_id: Option<String>) -> ChatSession {
+fn build_new_session(
+    worktree_path: &str,
+    backend_id: Option<String>,
+    permission_mode: crate::permission::PermissionMode,
+    selected_model: Option<String>,
+    workflow_step_session: bool,
+) -> ChatSession {
     let now = now_timestamp();
     ChatSession {
         id: uuid::Uuid::new_v4().to_string(),
@@ -382,11 +438,11 @@ fn build_new_session(worktree_path: &str, backend_id: Option<String>) -> ChatSes
         created_at: now,
         updated_at: now,
         agent_session_id: None,
-        permission_mode: default_permission_mode(),
-        selected_model: None,
+        permission_mode: permission_mode.as_str().to_string(),
+        selected_model,
         workflow_state: None,
         backend_id,
-        workflow_step_session: false,
+        workflow_step_session,
     }
 }
 
@@ -396,18 +452,25 @@ fn build_new_session(worktree_path: &str, backend_id: Option<String>) -> ChatSes
 /// 「selected_model=None」を「明示的に未指定」の意味に固定するため、初期モデルは
 /// セッション作成時にのみ書き込む。以後の spawn 経路では `selected_model` が None
 /// なら暗黙の既定モデルへフォールバックさせない。
+///
+/// `permission_mode` は検証済みの抽象 [`crate::permission::PermissionMode`] を要求し、
+/// 初回保存で確定する（Spec issues-947: セッション保存層が permission_mode の正典）。
 pub fn create_session_with_initial_model(
     session_store: &SessionStore,
     registry: &crate::backends::AgentBackendRegistry,
     data_dir: &std::path::Path,
     worktree_path: &str,
     backend_id: String,
+    permission_mode: crate::permission::PermissionMode,
 ) -> Result<ChatSession, String> {
-    let mut session = build_new_session(worktree_path, Some(backend_id.clone()));
-    if let Some(initial_model) = registry.initial_model_for(&backend_id) {
-        session.selected_model = Some(initial_model);
-        session.updated_at = now_timestamp();
-    }
+    let initial_model = registry.initial_model_for(&backend_id);
+    let session = build_new_session(
+        worktree_path,
+        Some(backend_id),
+        permission_mode,
+        initial_model,
+        false,
+    );
     session_store.save_session(data_dir, &session)?;
     Ok(session)
 }
@@ -442,22 +505,44 @@ pub fn add_message_internal(
     Ok(message)
 }
 
+fn create_session_command_inner(
+    session_store: &SessionStore,
+    registry: &crate::backends::AgentBackendRegistry,
+    data_dir: &std::path::Path,
+    worktree_path: &str,
+    permission_mode: &str,
+    backend_id: Option<String>,
+) -> Result<ChatSession, String> {
+    let permission_mode =
+        crate::permission::PermissionMode::parse(permission_mode).map_err(|e| e.to_string())?;
+    let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
+    create_session_with_initial_model(
+        session_store,
+        registry,
+        data_dir,
+        worktree_path,
+        resolved_backend_id,
+        permission_mode,
+    )
+}
+
 #[tauri::command]
 pub fn create_session(
     state: State<'_, Arc<SessionStore>>,
     registry: State<'_, Arc<crate::backends::AgentBackendRegistry>>,
     app: tauri::AppHandle,
     worktree_path: String,
+    permission_mode: String,
     backend_id: Option<String>,
 ) -> Result<ChatSession, String> {
-    let resolved_backend_id = registry.resolve_backend_id(backend_id)?;
     let data_dir = resolve_data_dir(&app)?;
-    create_session_with_initial_model(
-        &state,
-        registry.inner(),
+    create_session_command_inner(
+        state.inner().as_ref(),
+        registry.inner().as_ref(),
         &data_dir,
         &worktree_path,
-        resolved_backend_id,
+        &permission_mode,
+        backend_id,
     )
 }
 
@@ -524,6 +609,15 @@ pub fn resolve_session_backend(
     Ok(())
 }
 
+/// セッション起動時の permission_mode 検証。
+/// 対象外の値（旧語彙 acceptEdits / bypassPermissions / plan / default、未知語彙、空文字）が
+/// 保存されていた場合はバリデーションエラーで拒否し、ユーザに手動更新を求める（破壊的変更）。
+pub fn validate_session_permission_mode(session: &ChatSession) -> Result<(), String> {
+    crate::permission::PermissionMode::parse(&session.permission_mode)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreSessionResponse {
@@ -564,6 +658,51 @@ mod tests {
     use crate::workflow::state::{StepHistoryEntry, TokenUsage, WorkflowExecutionState};
 
     #[test]
+    fn chat_session_missing_permission_mode_rejected_on_deserialize() {
+        // Spec issues-947: 保存済みセッションで permissionMode フィールドが欠落していた場合は、
+        // serde default で補完せず、デシリアライズエラーで起動を拒否する（破壊的変更）。
+        let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0}"#;
+        let err = serde_json::from_str::<ChatSession>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("permissionMode"),
+            "missing permissionMode must be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn chat_session_legacy_permission_mode_rejected_by_validation() {
+        // 保存済みセッションが旧語彙や未知語彙を持っていた場合、validate_session_permission_mode が拒否する。
+        for legacy in [
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "default",
+            "unknown",
+            "",
+        ] {
+            let session = ChatSession {
+                id: "s1".to_string(),
+                worktree_path: "/repo".to_string(),
+                messages: vec![],
+                state: SessionState::Active,
+                created_at: 1000.0,
+                updated_at: 1000.0,
+                agent_session_id: None,
+                permission_mode: legacy.to_string(),
+                selected_model: None,
+                workflow_state: None,
+                backend_id: None,
+                workflow_step_session: false,
+            };
+            let err = validate_session_permission_mode(&session).unwrap_err();
+            assert!(
+                err.contains("readonly, edit, full"),
+                "legacy '{legacy}' must be rejected with allowed list, got: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn chat_session_to_summary_basic() {
         let session = ChatSession {
             id: "s1".to_string(),
@@ -582,7 +721,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -615,7 +754,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -647,7 +786,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -670,7 +809,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -696,7 +835,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: Some("agent-session".to_string()),
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -834,7 +973,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: None,
@@ -850,7 +989,7 @@ mod tests {
 
     #[test]
     fn chat_session_without_selected_model_deserializes() {
-        let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0}"#;
+        let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0,"permissionMode":"edit"}"#;
         let session: ChatSession = serde_json::from_str(json).unwrap();
         assert_eq!(session.selected_model, None);
     }
@@ -865,7 +1004,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: Some("claude-opus-4-6".to_string()),
             workflow_state: None,
             backend_id: None,
@@ -1468,7 +1607,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: Some(WorkflowState {
                 execution_id: "exec-1".to_string(),
@@ -1533,6 +1672,99 @@ mod tests {
         assert_eq!(session.backend_id, None);
     }
 
+    // Spec issues-947: WS handler の AgentSessionStartRequest 経路は
+    // `create_session_internal_with_permission` で session を生成し、検証済み抽象モードを
+    // 初回保存で確定する。readonly / edit / full それぞれが保存済みセッションの
+    // permission_mode として選択値どおりに記録されることを確認する。
+    #[test]
+    fn create_session_with_permission_persists_selected_abstract_mode() {
+        for mode in [
+            crate::permission::PermissionMode::Readonly,
+            crate::permission::PermissionMode::Edit,
+            crate::permission::PermissionMode::Full,
+        ] {
+            let store = SessionStore::default();
+            let dir = tempfile::tempdir().unwrap();
+            let created = create_session_internal_with_permission(
+                &store,
+                dir.path(),
+                "/repo",
+                Some("claude".to_string()),
+                mode,
+            )
+            .unwrap();
+            assert_eq!(created.permission_mode, mode.as_str());
+
+            let loaded = store.get_session(dir.path(), &created.id).unwrap().unwrap();
+            assert_eq!(loaded.permission_mode, mode.as_str());
+        }
+    }
+
+    fn test_backend_registry() -> crate::backends::AgentBackendRegistry {
+        let mut registry = crate::backends::AgentBackendRegistry::new();
+        registry.register(std::sync::Arc::new(
+            crate::backends::claude::ClaudeBackend::new(),
+        ));
+        registry
+    }
+
+    #[test]
+    fn create_session_command_inner_persists_valid_permission_modes() {
+        for mode in ["readonly", "edit", "full"] {
+            let store = SessionStore::default();
+            let dir = tempfile::tempdir().unwrap();
+            let registry = test_backend_registry();
+
+            let created = create_session_command_inner(
+                &store,
+                &registry,
+                dir.path(),
+                "/repo",
+                mode,
+                Some("claude".to_string()),
+            )
+            .unwrap();
+
+            assert_eq!(created.permission_mode, mode);
+            let loaded = store.get_session(dir.path(), &created.id).unwrap().unwrap();
+            assert_eq!(loaded.permission_mode, mode);
+        }
+    }
+
+    #[test]
+    fn create_session_command_inner_rejects_invalid_permission_without_creating_session() {
+        for invalid in [
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "default",
+            "unknown",
+            "",
+        ] {
+            let store = SessionStore::default();
+            let dir = tempfile::tempdir().unwrap();
+            let registry = test_backend_registry();
+
+            let err = create_session_command_inner(
+                &store,
+                &registry,
+                dir.path(),
+                "/repo",
+                invalid,
+                Some("claude".to_string()),
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("readonly, edit, full"),
+                "invalid mode '{invalid}' must include allowed list, got: {err}"
+            );
+            assert!(store
+                .list_worktree_sessions(dir.path(), "/repo")
+                .unwrap()
+                .is_empty());
+        }
+    }
+
     #[test]
     fn create_session_with_initial_model_persists_when_registered() {
         // spec: 既定モデルが現行の一覧に含まれる場合は初期モデルとして使われる。
@@ -1564,6 +1796,7 @@ mod tests {
             dir.path(),
             "/repo",
             "claude".to_string(),
+            crate::permission::PermissionMode::Edit,
         )
         .unwrap();
         assert_eq!(session.selected_model, Some("opus-4".to_string()));
@@ -1604,6 +1837,7 @@ mod tests {
             dir.path(),
             "/repo",
             "claude".to_string(),
+            crate::permission::PermissionMode::Edit,
         )
         .unwrap();
         assert_eq!(session.selected_model, None);
@@ -1611,7 +1845,7 @@ mod tests {
 
     #[test]
     fn chat_session_without_backend_id_deserializes() {
-        let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0}"#;
+        let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0,"permissionMode":"edit"}"#;
         let session: ChatSession = serde_json::from_str(json).unwrap();
         assert_eq!(session.backend_id, None);
     }
@@ -1626,7 +1860,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: Some("claude".to_string()),
@@ -1657,7 +1891,7 @@ mod tests {
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
-            permission_mode: "acceptEdits".to_string(),
+            permission_mode: "edit".to_string(),
             selected_model: None,
             workflow_state: None,
             backend_id: Some("claude".to_string()),
@@ -1729,7 +1963,7 @@ mod tests {
                 created_at: 1000.0,
                 updated_at: 1000.0,
                 agent_session_id: None,
-                permission_mode: "acceptEdits".to_string(),
+                permission_mode: "edit".to_string(),
                 selected_model: None,
                 workflow_state: None,
                 backend_id: backend_id.map(|s| s.to_string()),
