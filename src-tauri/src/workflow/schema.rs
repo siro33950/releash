@@ -400,7 +400,7 @@ nodes:
   - name: plan
     type: agent
     instruction: plan
-    model: claude-opus-4-7
+    model: test-model
     permission: edit
   - name: implement
     type: agent
@@ -409,7 +409,7 @@ nodes:
     permission: readonly
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(wf.nodes[0].model.as_deref(), Some("claude-opus-4-7"));
+        assert_eq!(wf.nodes[0].model.as_deref(), Some("test-model"));
         assert_eq!(wf.nodes[0].permission.as_deref(), Some("edit"));
         assert_eq!(wf.nodes[1].model.as_deref(), Some("gpt-5.5"));
     }
