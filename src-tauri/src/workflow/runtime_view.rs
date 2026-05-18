@@ -72,7 +72,7 @@ mod tests {
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
-                steps: vec![],
+                nodes: vec![],
             },
             total_token_usage: TokenUsage::default(),
             step_states: HashMap::new(),

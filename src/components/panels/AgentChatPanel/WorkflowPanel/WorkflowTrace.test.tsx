@@ -27,10 +27,10 @@ function makeWorkflowState(
 			name: "test-workflow",
 			description: "test",
 			builtin: false,
-			steps: [
-				{ name: "plan", mode: "auto", instruction: "plan", rules: [] },
-				{ name: "review", mode: "approval", instruction: "review", rules: [] },
-				{ name: "fix", mode: "approval", instruction: "fix", rules: [] },
+			nodes: [
+				{ name: "plan", type: "agent", instruction: "plan", rules: [] },
+				{ name: "review", type: "approval", instruction: "review", rules: [] },
+				{ name: "fix", type: "approval", instruction: "fix", rules: [] },
 			],
 		},
 		totalTokenUsage: { inputTokens: 100, outputTokens: 200 },
@@ -57,7 +57,7 @@ describe("WorkflowTrace", () => {
 	it("renders the active trace item with mode and state", () => {
 		render(<WorkflowTrace workflowState={makeWorkflowState()} />);
 		expect(screen.getByText("plan")).toBeInTheDocument();
-		expect(screen.getByText("auto")).toBeInTheDocument();
+		expect(screen.getByText("agent")).toBeInTheDocument();
 		expect(screen.getByText("Running")).toBeInTheDocument();
 		expect(screen.queryByText("run 1")).not.toBeInTheDocument();
 	});
@@ -327,18 +327,19 @@ describe("WorkflowTrace", () => {
 						name: "test-workflow",
 						description: "test",
 						builtin: false,
-						steps: [
+						nodes: [
 							{
 								name: "parallel-review",
 								rules: [],
-								parallel: [
-									{ name: "arch-review", mode: "auto" },
-									{ name: "security-review", mode: "auto" },
+								type: "parallel",
+								parallel_children: [
+									{ name: "arch-review", type: "agent" },
+									{ name: "security-review", type: "agent" },
 								],
 							},
 							{
 								name: "report",
-								mode: "auto",
+								type: "agent",
 								instruction: "report",
 								rules: [],
 							},
@@ -404,18 +405,19 @@ describe("WorkflowTrace", () => {
 						name: "test-workflow",
 						description: "test",
 						builtin: false,
-						steps: [
+						nodes: [
 							{
 								name: "parallel-review",
 								rules: [],
-								parallel: [
-									{ name: "arch-review", mode: "auto" },
-									{ name: "security-review", mode: "auto" },
+								type: "parallel",
+								parallel_children: [
+									{ name: "arch-review", type: "agent" },
+									{ name: "security-review", type: "agent" },
 								],
 							},
 							{
 								name: "report",
-								mode: "auto",
+								type: "agent",
 								instruction: "report",
 								rules: [],
 							},
@@ -512,10 +514,10 @@ describe("WorkflowTrace", () => {
 						name: "test-workflow",
 						description: "test",
 						builtin: false,
-						steps: [
+						nodes: [
 							{
 								name: "plan",
-								mode: "auto",
+								type: "agent",
 								instruction: "plan",
 								rules: [],
 							},
@@ -773,10 +775,10 @@ describe("WorkflowTrace", () => {
 						name: "test-workflow",
 						description: "test",
 						builtin: false,
-						steps: [
+						nodes: [
 							{
 								name: "plan",
-								mode: "auto",
+								type: "agent",
 								instruction: "plan",
 								rules: [],
 								collect: {
@@ -786,13 +788,13 @@ describe("WorkflowTrace", () => {
 							},
 							{
 								name: "review",
-								mode: "approval",
+								type: "approval",
 								instruction: "review",
 								rules: [],
 							},
 							{
 								name: "fix",
-								mode: "approval",
+								type: "approval",
 								instruction: "fix",
 								rules: [],
 							},
@@ -820,18 +822,19 @@ describe("WorkflowTrace", () => {
 						name: "test-workflow",
 						description: "test",
 						builtin: false,
-						steps: [
+						nodes: [
 							{
 								name: "parallel-review",
 								rules: [],
-								parallel: [
-									{ name: "arch-review", mode: "auto" },
-									{ name: "security-review", mode: "auto" },
+								type: "parallel",
+								parallel_children: [
+									{ name: "arch-review", type: "agent" },
+									{ name: "security-review", type: "agent" },
 								],
 							},
 							{
 								name: "report",
-								mode: "auto",
+								type: "agent",
 								instruction: "report",
 								rules: [],
 							},
@@ -879,13 +882,14 @@ describe("WorkflowTrace", () => {
 						name: "test-workflow",
 						description: "test",
 						builtin: false,
-						steps: [
+						nodes: [
 							{
 								name: "parallel-review",
 								rules: [],
-								parallel: [
-									{ name: "arch-review", mode: "auto" },
-									{ name: "security-review", mode: "auto" },
+								type: "parallel",
+								parallel_children: [
+									{ name: "arch-review", type: "agent" },
+									{ name: "security-review", type: "agent" },
 								],
 								aggregate: {
 									all_match: "LGTM",
@@ -896,7 +900,7 @@ describe("WorkflowTrace", () => {
 							},
 							{
 								name: "report",
-								mode: "auto",
+								type: "agent",
 								instruction: "report",
 								rules: [],
 							},
@@ -1083,22 +1087,22 @@ describe("WorkflowTrace", () => {
 						name: "test-workflow",
 						description: "test",
 						builtin: false,
-						steps: [
+						nodes: [
 							{
 								name: "plan",
-								mode: "auto",
+								type: "agent",
 								instruction: "plan",
 								rules: [],
 							},
 							{
 								name: "plan_fix_policy",
-								mode: "approval",
+								type: "approval",
 								instruction: "policy",
 								rules: [],
 							},
 							{
 								name: "fix",
-								mode: "auto",
+								type: "agent",
 								instruction: "fix",
 								rules: [],
 							},
@@ -1126,18 +1130,19 @@ describe("WorkflowTrace", () => {
 						name: "test-workflow",
 						description: "test",
 						builtin: false,
-						steps: [
+						nodes: [
 							{
 								name: "parallel-review",
 								rules: [],
-								parallel: [
-									{ name: "arch-review", mode: "auto" },
-									{ name: "security-review", mode: "auto" },
+								type: "parallel",
+								parallel_children: [
+									{ name: "arch-review", type: "agent" },
+									{ name: "security-review", type: "agent" },
 								],
 							},
 							{
 								name: "report",
-								mode: "auto",
+								type: "agent",
 								instruction: "report",
 								rules: [],
 							},
@@ -1254,18 +1259,19 @@ describe("WorkflowTrace", () => {
 				name: "test-workflow",
 				description: "test",
 				builtin: false,
-				steps: [
+				nodes: [
 					{
 						name: "parallel-review",
 						rules: [],
-						parallel: [
-							{ name: "arch-review", mode: "auto" },
-							{ name: "security-review", mode: "auto" },
+						type: "parallel",
+						parallel_children: [
+							{ name: "arch-review", type: "agent" },
+							{ name: "security-review", type: "agent" },
 						],
 					},
 					{
 						name: "report",
-						mode: "auto",
+						type: "agent",
 						instruction: "report",
 						rules: [],
 					},
@@ -1319,18 +1325,19 @@ describe("WorkflowTrace", () => {
 				name: "test-workflow",
 				description: "test",
 				builtin: false,
-				steps: [
+				nodes: [
 					{
 						name: "parallel-review",
 						rules: [],
-						parallel: [
-							{ name: "arch-review", mode: "auto" },
-							{ name: "security-review", mode: "auto" },
+						type: "parallel",
+						parallel_children: [
+							{ name: "arch-review", type: "agent" },
+							{ name: "security-review", type: "agent" },
 						],
 					},
 					{
 						name: "report",
-						mode: "auto",
+						type: "agent",
 						instruction: "report",
 						rules: [],
 					},
@@ -1465,13 +1472,14 @@ describe("WorkflowTrace", () => {
 						name: "test-workflow",
 						description: "test",
 						builtin: false,
-						steps: [
+						nodes: [
 							{
 								name: "parallel-review",
 								rules: [],
-								parallel: [
-									{ name: "arch-review", mode: "auto" },
-									{ name: "security-review", mode: "auto" },
+								type: "parallel",
+								parallel_children: [
+									{ name: "arch-review", type: "agent" },
+									{ name: "security-review", type: "agent" },
 								],
 							},
 						],

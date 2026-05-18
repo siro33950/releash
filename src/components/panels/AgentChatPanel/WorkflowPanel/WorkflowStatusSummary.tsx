@@ -12,8 +12,8 @@ export function WorkflowStatusSummary({
 		workflowState.totalTokenUsage.inputTokens +
 		workflowState.totalTokenUsage.outputTokens;
 	const state = workflowState.state.type;
-	const currentStep = workflowState.workflowDefinition.steps.find(
-		(step) => step.name === workflowState.currentStepName,
+	const currentStep = workflowState.workflowDefinition.nodes.find(
+		(node) => node.name === workflowState.currentStepName,
 	);
 
 	let label = "Workflow completed";
@@ -28,7 +28,7 @@ export function WorkflowStatusSummary({
 		state === "failed" && "reason" in workflowState.state
 			? workflowState.state.reason
 			: currentStep
-				? `${currentStep.parallel ? "parallel" : (currentStep.mode ?? "auto")} step`
+				? `${currentStep.type} step`
 				: `${workflowState.stepHistory.length} recorded steps`;
 
 	return (

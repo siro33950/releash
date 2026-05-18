@@ -114,64 +114,66 @@ fn workflow_definition_to_view(workflow: schema::Workflow) -> protocol::Workflow
         name: workflow.name,
         description: workflow.description,
         builtin: workflow.builtin,
-        steps: workflow
-            .steps
+        nodes: workflow
+            .nodes
             .into_iter()
-            .map(workflow_step_to_view)
+            .map(workflow_node_to_view)
             .collect(),
     }
 }
 
-fn workflow_step_to_view(step: schema::Step) -> protocol::WorkflowStepDefinitionView {
-    protocol::WorkflowStepDefinitionView {
-        name: step.name,
-        mode: step.mode.map(step_mode_to_view),
-        policy: step.policy,
-        knowledge: step.knowledge,
-        instruction: step.instruction,
-        output_contract: step.output_contract,
-        rules: step
-            .rules
+fn workflow_node_to_view(node: schema::NodeDefinition) -> protocol::WorkflowNodeDefinitionView {
+    protocol::WorkflowNodeDefinitionView {
+        name: node.name,
+        node_type: node_type_to_view(node.node_type),
+        policy: node.policy,
+        knowledge: node.knowledge,
+        instruction: node.instruction,
+        output_contract: node.output_contract,
+        pass_previous_response: node.pass_previous_response,
+        pass_output_from: node.pass_output_from,
+        inline_prompt: node.inline_prompt,
+        collect: node.collect.map(collect_config_to_view),
+        command: node.command,
+        parallel_children: node
+            .parallel_children
+            .map(|children| children.into_iter().map(child_node_to_view).collect()),
+        aggregate: node.aggregate.map(aggregate_config_to_view),
+        rules: node
+            .transition_rules
             .into_iter()
             .map(transition_rule_to_view)
             .collect(),
-        cycle_guard: step.cycle_guard.map(cycle_guard_to_view),
-        pass_previous_response: step.pass_previous_response,
-        pass_output_from: step.pass_output_from,
-        inline_prompt: step.inline_prompt,
-        collect: step.collect.map(collect_config_to_view),
-        parallel: step
-            .parallel
-            .map(|steps| steps.into_iter().map(parallel_step_to_view).collect()),
-        aggregate: step.aggregate.map(aggregate_config_to_view),
-        resets_cycle_for: step.resets_cycle_for,
-        model: step.model,
-        permission: step.permission,
+        cycle_guard: node.cycle_guard.map(cycle_guard_to_view),
+        resets_cycle_for: node.resets_cycle_for,
+        model: node.model,
+        permission: node.permission,
     }
 }
 
-fn parallel_step_to_view(
-    step: schema::ParallelStep,
-) -> protocol::WorkflowParallelStepDefinitionView {
-    protocol::WorkflowParallelStepDefinitionView {
-        name: step.name,
-        mode: step_mode_to_view(step.mode),
-        policy: step.policy,
-        knowledge: step.knowledge,
-        instruction: step.instruction,
-        output_contract: step.output_contract,
-        pass_previous_response: step.pass_previous_response,
-        pass_output_from: step.pass_output_from,
-        model: step.model,
-        permission: step.permission,
+fn child_node_to_view(
+    child: schema::ChildNodeDefinition,
+) -> protocol::WorkflowChildNodeDefinitionView {
+    protocol::WorkflowChildNodeDefinitionView {
+        name: child.name,
+        node_type: node_type_to_view(child.node_type),
+        policy: child.policy,
+        knowledge: child.knowledge,
+        instruction: child.instruction,
+        output_contract: child.output_contract,
+        pass_previous_response: child.pass_previous_response,
+        pass_output_from: child.pass_output_from,
+        model: child.model,
+        permission: child.permission,
     }
 }
 
-fn step_mode_to_view(mode: schema::StepMode) -> protocol::WorkflowStepModeView {
-    match mode {
-        schema::StepMode::Auto => protocol::WorkflowStepModeView::Auto,
-        schema::StepMode::Approval => protocol::WorkflowStepModeView::Approval,
-        schema::StepMode::Interactive => protocol::WorkflowStepModeView::Interactive,
+fn node_type_to_view(node_type: schema::NodeType) -> protocol::WorkflowNodeTypeView {
+    match node_type {
+        schema::NodeType::Agent => protocol::WorkflowNodeTypeView::Agent,
+        schema::NodeType::Bash => protocol::WorkflowNodeTypeView::Bash,
+        schema::NodeType::Approval => protocol::WorkflowNodeTypeView::Approval,
+        schema::NodeType::Parallel => protocol::WorkflowNodeTypeView::Parallel,
     }
 }
 
@@ -207,7 +209,7 @@ fn reduce_strategy_to_view(reduce: schema::ReduceStrategy) -> protocol::Workflow
 }
 
 fn aggregate_config_to_view(
-    aggregate: schema::AggregateConfig,
+    aggregate: schema::ParallelAggregate,
 ) -> protocol::WorkflowAggregateConfigView {
     protocol::WorkflowAggregateConfigView {
         all_match: aggregate.all_match,
@@ -318,7 +320,7 @@ mod tests {
                 name: "wf".to_string(),
                 description: String::new(),
                 builtin: false,
-                steps: vec![],
+                nodes: vec![],
             },
             total_token_usage: TokenUsage::default(),
             step_states: HashMap::new(),

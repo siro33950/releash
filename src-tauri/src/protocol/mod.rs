@@ -358,7 +358,7 @@ mod tests {
                                 name: "test".to_string(),
                                 description: "test".to_string(),
                                 builtin: false,
-                                steps: vec![],
+                                nodes: vec![],
                             },
                             total_token_usage: crate::workflow::state::TokenUsage::default(),
                             workflow_variables: std::collections::HashMap::new(),

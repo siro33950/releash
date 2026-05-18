@@ -16,10 +16,10 @@ function makeWorkflow(): Workflow {
 		name: "wf",
 		description: "test workflow",
 		builtin: false,
-		steps: [
+		nodes: [
 			{
 				name: "implement",
-				mode: "auto",
+				type: "agent",
 				policy: "coding",
 				knowledge: "architecture",
 				instruction: "implement",

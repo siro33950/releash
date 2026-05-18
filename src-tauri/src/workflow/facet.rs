@@ -1,11 +1,19 @@
 use super::builtin;
-use super::schema::Step;
+use super::schema::{ChildNodeDefinition, NodeDefinition, ResolvedFacets, Workflow};
 use super::storage;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// ファセットの読み込みベースディレクトリ。
+///
+/// [02] 境界: storage / builtin / engine の caller 全てがここを参照することで、
+/// builtin → storage の循環依存を生まず、facet 側を単一の owner にする。
+pub fn facets_base_dir() -> PathBuf {
+    storage::workflows_dir()
+}
 
 /// システム定義テンプレート変数（commands.rs / diagnostics.rs 両方から参照）
 pub const SYSTEM_TEMPLATE_VARIABLES: &[&str] = &["project_name", "task"];
@@ -297,20 +305,31 @@ pub fn resolve_facet_path(
     Ok(path)
 }
 
-pub fn compose_facets_from_refs(
-    policy: Option<&str>,
-    knowledge: Option<&str>,
-    instruction: Option<&str>,
-    output_contract: Option<&str>,
-    base_dir: &Path,
-) -> Result<ComposedPrompt, FacetError> {
-    // system_prompt: policy + output_contract（ターン非依存な常設情報）
+/// node の prompt 関連 facet 参照から組み立てた `ComposedPrompt` を返す。
+///
+/// [02] schema 境界: 実行時に未解決 ref を残さないため、`NodeDefinition.resolved_facets`
+/// を唯一の参照源とする。ファイル I/O fallback は持たない（呼び出し前に
+/// `storage::load_workflow` / `builtin::load_builtin_workflow_resolved` 経由で
+/// `resolved_facets` を populate しておくこと）。
+///
+/// agent / approval 種別の node が対象。bash / parallel node には facet 参照は存在しない。
+pub fn compose_facets(node: &NodeDefinition) -> ComposedPrompt {
+    compose_from_resolved(&node.resolved_facets)
+}
+
+/// 並列子 node の prompt 関連 facet 参照から組み立てた `ComposedPrompt` を返す。
+/// `compose_facets` と同じく `ChildNodeDefinition.resolved_facets` のみを参照する。
+pub fn compose_child_facets(child: &ChildNodeDefinition) -> ComposedPrompt {
+    compose_from_resolved(&child.resolved_facets)
+}
+
+fn compose_from_resolved(resolved: &ResolvedFacets) -> ComposedPrompt {
     let mut system_parts: Vec<String> = Vec::new();
-    if let Some(key) = policy {
-        system_parts.push(load_facet(FacetKind::Policy, key, base_dir)?);
+    if let Some(ref content) = resolved.policy {
+        system_parts.push(content.clone());
     }
-    if let Some(key) = output_contract {
-        system_parts.push(load_facet(FacetKind::OutputContract, key, base_dir)?);
+    if let Some(ref content) = resolved.output_contract {
+        system_parts.push(content.clone());
     }
     let system_prompt = if system_parts.is_empty() {
         None
@@ -318,61 +337,139 @@ pub fn compose_facets_from_refs(
         Some(system_parts.join("\n\n"))
     };
 
-    // user_message: knowledge + instruction（参照知識とそのターンのタスク手順）
     let mut user_parts: Vec<String> = Vec::new();
-    if let Some(key) = knowledge {
-        user_parts.push(load_facet(FacetKind::Knowledge, key, base_dir)?);
+    if let Some(ref content) = resolved.knowledge {
+        user_parts.push(content.clone());
     }
-    if let Some(key) = instruction {
-        user_parts.push(load_facet(FacetKind::Instruction, key, base_dir)?);
+    if let Some(ref content) = resolved.instruction {
+        user_parts.push(content.clone());
     }
-
-    Ok(ComposedPrompt {
+    ComposedPrompt {
         system_prompt,
         user_message: user_parts.join("\n\n"),
-    })
+    }
 }
 
-pub fn compose_facets(step: &Step, base_dir: &Path) -> Result<ComposedPrompt, FacetError> {
-    compose_facets_from_refs(
-        step.policy.as_deref(),
-        step.knowledge.as_deref(),
-        step.instruction.as_deref(),
-        step.output_contract.as_deref(),
+/// `Workflow` に含まれる全 node / 子 node の facet 参照を解決し、
+/// それぞれの `resolved_facets` フィールドに本文を格納する。
+///
+/// `storage::load_workflow` から呼ばれ、未解決 ref を schema 層に残さないようにする
+/// （[02] schema 境界）。欠損 facet があれば `FacetError::NotFound` を伝搬し、
+/// load 経路で実行可能とは判定しない。
+pub fn resolve_workflow_facets(workflow: &mut Workflow, base_dir: &Path) -> Result<(), FacetError> {
+    for node in &mut workflow.nodes {
+        node.resolved_facets = resolve_refs(
+            node.policy.as_deref(),
+            node.knowledge.as_deref(),
+            node.instruction.as_deref(),
+            node.output_contract.as_deref(),
+            base_dir,
+        )?;
+        if let Some(ref mut children) = node.parallel_children {
+            for child in children {
+                child.resolved_facets = resolve_refs(
+                    child.policy.as_deref(),
+                    child.knowledge.as_deref(),
+                    child.instruction.as_deref(),
+                    child.output_contract.as_deref(),
+                    base_dir,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// テスト用ヘルパー: 単一 node の facet 参照を `base_dir` から解決し
+/// `resolved_facets` に格納する。production の `resolve_workflow_facets` が
+/// workflow 全体に対して行う処理を、engine / facet 各モジュールの単体テストで
+/// 個別 node 単位に分解して使うためのもの。
+///
+/// `unwrap()` 等で潰さず `FacetError` をそのまま返すため、欠損 facet のテスト
+/// シナリオもこのヘルパーを経由して書ける。
+#[cfg(test)]
+pub(crate) fn resolve_node_facets(
+    node: &mut crate::workflow::schema::NodeDefinition,
+    base_dir: &Path,
+) -> Result<(), FacetError> {
+    node.resolved_facets = resolve_refs(
+        node.policy.as_deref(),
+        node.knowledge.as_deref(),
+        node.instruction.as_deref(),
+        node.output_contract.as_deref(),
         base_dir,
-    )
+    )?;
+    Ok(())
+}
+
+/// テスト用ヘルパー: 並列子 node の facet 参照を解決する。
+/// `resolve_node_facets` の `ChildNodeDefinition` 版。
+#[cfg(test)]
+pub(crate) fn resolve_child_facets(
+    child: &mut crate::workflow::schema::ChildNodeDefinition,
+    base_dir: &Path,
+) -> Result<(), FacetError> {
+    child.resolved_facets = resolve_refs(
+        child.policy.as_deref(),
+        child.knowledge.as_deref(),
+        child.instruction.as_deref(),
+        child.output_contract.as_deref(),
+        base_dir,
+    )?;
+    Ok(())
+}
+
+fn resolve_refs(
+    policy: Option<&str>,
+    knowledge: Option<&str>,
+    instruction: Option<&str>,
+    output_contract: Option<&str>,
+    base_dir: &Path,
+) -> Result<ResolvedFacets, FacetError> {
+    let resolved_policy = match policy {
+        Some(k) => Some(load_facet(FacetKind::Policy, k, base_dir)?),
+        None => None,
+    };
+    let resolved_knowledge = match knowledge {
+        Some(k) => Some(load_facet(FacetKind::Knowledge, k, base_dir)?),
+        None => None,
+    };
+    let resolved_instruction = match instruction {
+        Some(k) => Some(load_facet(FacetKind::Instruction, k, base_dir)?),
+        None => None,
+    };
+    let resolved_oc = match output_contract {
+        Some(k) => Some(load_facet(FacetKind::OutputContract, k, base_dir)?),
+        None => None,
+    };
+    Ok(ResolvedFacets {
+        policy: resolved_policy,
+        knowledge: resolved_knowledge,
+        instruction: resolved_instruction,
+        output_contract: resolved_oc,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::schema::StepMode;
+    use crate::workflow::schema::NodeType;
     use tempfile::TempDir;
 
-    fn make_facet_step(
+    fn make_facet_node(
         policy: Option<&str>,
         knowledge: Option<&str>,
         instruction: Option<&str>,
         output_contract: Option<&str>,
-    ) -> Step {
-        Step {
+    ) -> NodeDefinition {
+        NodeDefinition {
             name: "test".to_string(),
-            mode: Some(StepMode::Auto),
+            node_type: NodeType::Agent,
             policy: policy.map(String::from),
             knowledge: knowledge.map(String::from),
             instruction: instruction.map(String::from),
             output_contract: output_contract.map(String::from),
-            rules: vec![],
-            cycle_guard: None,
-            pass_previous_response: None,
-            pass_output_from: None,
-            inline_prompt: None,
-            collect: None,
-            parallel: None,
-            aggregate: None,
-            resets_cycle_for: None,
-            model: None,
-            permission: None,
+            ..NodeDefinition::default()
         }
     }
 
@@ -505,6 +602,9 @@ mod tests {
         assert!(keys.is_empty());
     }
 
+    // `resolve_node_facets` はモジュール直下の `#[cfg(test)] pub(crate)` ヘルパーを
+    // `super::resolve_node_facets` 経由で利用する（engine.rs のテストヘルパーと共有）。
+
     // --- compose_facets ---
     // Gherkin: ワークフローエンジンはステップ宣言から system_prompt と user_message を合成する
 
@@ -514,8 +614,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let step = make_facet_step(Some("coding"), None, None, Some("plan-doc"));
-        let result = compose_facets(&step, tmp.path()).unwrap();
+        let mut node = make_facet_node(Some("coding"), None, None, Some("plan-doc"));
+        resolve_node_facets(&mut node, tmp.path()).unwrap();
+        let result = compose_facets(&node);
 
         let sys = result.system_prompt.expect("system_prompt should be set");
         assert!(sys.contains("Follow best practices."));
@@ -529,8 +630,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let step = make_facet_step(Some("coding"), None, None, None);
-        let result = compose_facets(&step, tmp.path()).unwrap();
+        let mut node = make_facet_node(Some("coding"), None, None, None);
+        resolve_node_facets(&mut node, tmp.path()).unwrap();
+        let result = compose_facets(&node);
 
         assert_eq!(
             result.system_prompt.as_deref(),
@@ -545,8 +647,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let step = make_facet_step(None, None, None, Some("plan-doc"));
-        let result = compose_facets(&step, tmp.path()).unwrap();
+        let mut node = make_facet_node(None, None, None, Some("plan-doc"));
+        resolve_node_facets(&mut node, tmp.path()).unwrap();
+        let result = compose_facets(&node);
 
         assert_eq!(result.system_prompt.as_deref(), Some("Output as markdown."));
         assert_eq!(result.user_message, "");
@@ -558,8 +661,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let step = make_facet_step(None, Some("architecture"), Some("implement"), None);
-        let result = compose_facets(&step, tmp.path()).unwrap();
+        let mut node = make_facet_node(None, Some("architecture"), Some("implement"), None);
+        resolve_node_facets(&mut node, tmp.path()).unwrap();
+        let result = compose_facets(&node);
 
         assert!(result.system_prompt.is_none());
     }
@@ -570,8 +674,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let step = make_facet_step(None, Some("architecture"), Some("implement"), None);
-        let result = compose_facets(&step, tmp.path()).unwrap();
+        let mut node = make_facet_node(None, Some("architecture"), Some("implement"), None);
+        resolve_node_facets(&mut node, tmp.path()).unwrap();
+        let result = compose_facets(&node);
 
         assert!(result.user_message.contains("The system uses Tauri."));
         assert!(result.user_message.contains("Implement the feature."));
@@ -583,8 +688,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let step = make_facet_step(Some("coding"), None, None, None);
-        let result = compose_facets(&step, tmp.path()).unwrap();
+        let mut node = make_facet_node(Some("coding"), None, None, None);
+        resolve_node_facets(&mut node, tmp.path()).unwrap();
+        let result = compose_facets(&node);
 
         assert_eq!(result.user_message, "");
     }
@@ -594,13 +700,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let step = make_facet_step(
+        let mut node = make_facet_node(
             Some("coding"),
             Some("architecture"),
             Some("implement"),
             Some("plan-doc"),
         );
-        let result = compose_facets(&step, tmp.path()).unwrap();
+        resolve_node_facets(&mut node, tmp.path()).unwrap();
+        let result = compose_facets(&node);
 
         let sys = result.system_prompt.expect("system_prompt should be set");
         assert!(sys.contains("Follow best practices."));
@@ -609,36 +716,38 @@ mod tests {
         assert!(result.user_message.contains("Implement the feature."));
     }
 
+    /// 解決経路における欠損 facet は load 時 (`resolve_refs`) で NotFound として
+    /// 弾かれる。`compose_facets` 自体は I/O fallback を持たず、unresolved な node を
+    /// 受け取った場合は空合成結果になる（実 production では load 経路で先に弾かれる）。
     #[test]
-    fn compose_with_missing_facet_returns_error() {
-        // Scenario: 参照先ファセットが存在しないステップはプロンプト合成時に NotFound 相当のエラーで失敗する
+    fn resolve_with_missing_facet_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let step = make_facet_step(Some("nonexistent"), None, None, None);
-        let result = compose_facets(&step, tmp.path());
+        let mut node = make_facet_node(Some("nonexistent"), None, None, None);
+        let result = resolve_node_facets(&mut node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
     #[test]
-    fn compose_with_missing_knowledge_returns_error() {
+    fn resolve_with_missing_knowledge_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let step = make_facet_step(None, Some("nonexistent"), None, None);
-        let result = compose_facets(&step, tmp.path());
+        let mut node = make_facet_node(None, Some("nonexistent"), None, None);
+        let result = resolve_node_facets(&mut node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
     #[test]
-    fn compose_with_missing_instruction_returns_error() {
+    fn resolve_with_missing_instruction_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let step = make_facet_step(None, None, Some("nonexistent"), None);
-        let result = compose_facets(&step, tmp.path());
+        let mut node = make_facet_node(None, None, Some("nonexistent"), None);
+        let result = resolve_node_facets(&mut node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
     #[test]
-    fn compose_with_missing_output_contract_returns_error() {
+    fn resolve_with_missing_output_contract_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let step = make_facet_step(None, None, None, Some("nonexistent"));
-        let result = compose_facets(&step, tmp.path());
+        let mut node = make_facet_node(None, None, None, Some("nonexistent"));
+        let result = resolve_node_facets(&mut node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
@@ -664,8 +773,9 @@ mod tests {
         )
         .unwrap();
 
-        let step = make_facet_step(Some("coding"), None, Some("impl"), None);
-        let composed = compose_facets(&step, tmp.path()).unwrap();
+        let mut node = make_facet_node(Some("coding"), None, Some("impl"), None);
+        resolve_node_facets(&mut node, tmp.path()).unwrap();
+        let composed = compose_facets(&node);
 
         let worktree_path = "/home/user/my-project";
         let task = Some("Fix the bug");

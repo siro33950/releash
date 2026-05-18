@@ -67,7 +67,7 @@ describe("useAutomation", () => {
 			name: "test-wf",
 			description: "desc",
 			builtin: false,
-			steps: [{ name: "step-1", mode: "auto" as const, rules: [] }],
+			nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
 		};
 
 		let saveResult!: { ok: boolean };
@@ -93,7 +93,7 @@ describe("useAutomation", () => {
 			name: "new-name",
 			description: "desc",
 			builtin: false,
-			steps: [{ name: "step-1", mode: "auto" as const, rules: [] }],
+			nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
 		};
 
 		await act(async () => {
@@ -132,7 +132,7 @@ describe("useAutomation", () => {
 			name: "test",
 			description: "",
 			builtin: false,
-			steps: [{ name: "s1", mode: "auto" as const, rules: [] }],
+			nodes: [{ name: "s1", type: "agent" as const, rules: [] }],
 		};
 
 		let saveResult!: { ok: boolean; error?: string };
@@ -263,7 +263,7 @@ describe("useAutomation", () => {
 			name: "test",
 			description: "desc",
 			builtin: false,
-			steps: [],
+			nodes: [],
 		};
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_workflow") return Promise.resolve(mockWorkflow);

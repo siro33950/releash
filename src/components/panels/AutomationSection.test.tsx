@@ -180,7 +180,7 @@ describe("AutomationSection", () => {
 				name: "my-custom",
 				description: "A custom workflow",
 				builtin: false,
-				steps: [{ name: "step-1", mode: "auto" as const, rules: [] }],
+				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
 			},
 		});
 		render(<AutomationSection automation={automation} />);
@@ -193,7 +193,7 @@ describe("AutomationSection", () => {
 				name: "spec-driven-development",
 				description: "Builtin",
 				builtin: true,
-				steps: [{ name: "step-1", mode: "auto" as const, rules: [] }],
+				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
 			},
 		});
 		render(<AutomationSection automation={automation} />);
@@ -261,7 +261,7 @@ describe("AutomationSection", () => {
 				name: "my-custom",
 				description: "A custom workflow",
 				builtin: false,
-				steps: [{ name: "step-1", mode: "auto" as const, rules: [] }],
+				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
 			},
 			externalChangeDetected: true,
 			loadAllFacetKeys: vi.fn().mockResolvedValue({
@@ -293,7 +293,7 @@ describe("AutomationSection", () => {
 				name: "my-custom",
 				description: "A custom workflow",
 				builtin: false,
-				steps: [{ name: "step-1", mode: "auto" as const, rules: [] }],
+				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
 			},
 			externalChangeDetected: true,
 			clearExternalChange,
@@ -444,7 +444,7 @@ describe("AutomationSection", () => {
 				name: "test-wf",
 				description: "Test",
 				builtin: false,
-				steps: [{ name: "step-1", mode: "auto" as const, rules: [] }],
+				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
 			},
 			loadAllFacetKeys: vi.fn().mockResolvedValue({
 				policy: [],
@@ -481,7 +481,7 @@ describe("AutomationSection", () => {
 				name: "test-wf",
 				description: "Test",
 				builtin: false,
-				steps: [{ name: "step-1", mode: "auto" as const, rules: [] }],
+				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
 			},
 			loadAllFacetKeys: vi.fn().mockResolvedValue({
 				policy: [],
@@ -502,11 +502,11 @@ describe("AutomationSection", () => {
 		await user.click(screen.getByText("step-1"));
 
 		await waitFor(() => {
-			expect(screen.getByText("Mode")).toBeInTheDocument();
+			expect(screen.getByText("Type")).toBeInTheDocument();
 		});
 
-		const modeTrigger = screen.getByText("Auto").closest("button");
-		if (!modeTrigger) throw new Error("Mode trigger button not found");
+		const modeTrigger = screen.getByText("Agent").closest("button");
+		if (!modeTrigger) throw new Error("Type trigger button not found");
 		await user.click(modeTrigger);
 
 		await waitFor(() => {
@@ -529,10 +529,10 @@ describe("AutomationSection", () => {
 				name: "detail-wf",
 				description: "Full details",
 				builtin: false,
-				steps: [
+				nodes: [
 					{
 						name: "complex-step",
-						mode: "auto" as const,
+						type: "agent" as const,
 						policy: "coding-policy",
 						knowledge: "project-docs",
 						instruction: "do-thing",
@@ -546,9 +546,9 @@ describe("AutomationSection", () => {
 							from: ["step-a", "step-b"],
 							reduce: "concat" as const,
 						},
-						parallel: [
-							{ name: "child-1", mode: "auto" as const },
-							{ name: "child-2", mode: "approval" as const },
+						parallel_children: [
+							{ name: "child-1", type: "agent" as const },
+							{ name: "child-2", type: "approval" as const },
 						],
 						aggregate: {
 							all_match: "pass",
@@ -587,7 +587,7 @@ describe("AutomationSection", () => {
 				name: "diag-wf",
 				description: "Workflow with diagnostics",
 				builtin: false,
-				steps: [{ name: "step-1", mode: "auto" as const, rules: [] }],
+				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
 			},
 			report: {
 				...EMPTY_REPORT,

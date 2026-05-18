@@ -17,26 +17,28 @@
 
 ## 前提となる互換性境界
 
-本文書で定義する未来形モデルは、既存ランタイムの互換性を破壊しない。`docs/workflow-engine-evolution-plan.md` の「互換性境界」節に従い、本マイルストーン以降も以下が維持される前提を持つ。
+本文書で定義する未来形モデルは、[02] Normalized Workflow 以降は**互換性境界の責務を縮退させる**。`docs/workflow-engine-evolution-plan.md` の「互換性境界」節に従い、以下が前提となる。
 
-- 既存 YAML（`Workflow` / `Step` / `ParallelStep` / `AggregateConfig` を含む `steps:` 記法）は有効なまま deserialize できる。
-- 既存 Tauri command（`commands.rs` で公開される workflow 操作）は呼び出し可能であり続ける。
-- 既存 `WorkflowState` JSON は deserialize 互換を保つ（フィールドの後方互換維持）。
-- 新モデルは旧概念を曲げない。旧 `Step` から新 `NodeDefinition` への変換は専用の normalization レイヤーに閉じ込める（[02] 以降）。
+- 旧 schema 型（`Workflow` / `Step` / `ParallelStep` / `AggregateConfig` / `StepMode`）は [02] で codebase から削除済み。`schema.rs` は新 `Workflow`（`nodes: Vec<NodeDefinition>`）/ `NodeDefinition` を YAML deserialize 先として直接保持する。
+- 旧 YAML `steps:` 記法と `mode` フィールドは廃止された。新 YAML は `nodes:` 配下に `type: agent | bash | approval | parallel` で記述する。
+- 既存 `WorkflowState` JSON / NDJSON event log の在庫はリリース時に破棄される前提を許容する（互換は維持しない）。
+- 既存 Tauri command（`commands.rs` で公開される workflow 操作）の入口・出口形は [02] 範囲では維持される。後続マイルストーンで `WorkflowCommand` typed 入口に寄せる。
+- 旧 `Step` から新 `NodeDefinition` への変換層（`workflow/normalized.rs`）は新設しない。schema 層が直接 deserialize 先となる。
 - `worktree_path` 主語の API は、active `run_id` を解決する互換 wrapper として残す。
+- compat adapter 層は user-authored YAML（新 schema として記述される）の入力経路と built-in YAML 提供経路のみに縮退する。
 
 ## 未来形モデル
 
 5 モデルの関係を概念図で示す。
 
 ```text
-Workflow Definition (既存 YAML / Workflow / Step)
+Workflow Definition (新 schema YAML)
         |
+        |  serde deserialize → schema::Workflow / NodeDefinition
+        |  ＋ validation（schema 構造の静的検証）
+        |  ＋ facet 解決（resolved_facets に格納）（load 経路）
         v
-  normalize（[02] 以降の責務）
-        |
-        v
-NodeDefinition*  ← run の中の各実行単位を正規化した shape
+NodeDefinition*  ← run の中の各実行単位（解決済み）
         |
         |  StartRun (WorkflowCommand)
         v
@@ -48,6 +50,9 @@ NodeExecution*（run に紐づく実行結果）
 
 外部 (UI / CLI / Agent / Remote) ──► WorkflowCommand ──► engine
 ```
+
+[02] 完了時点では旧 schema は削除済みで、`schema.rs` が新 YAML を直接 deserialize する。
+旧→新の変換層（`workflow/normalized.rs`）は新設しない。
 
 それぞれのモデルは、現行コードの対応物が部分的に存在するが、本文書では「将来このように扱う」という宣言にとどめ、現行コードへの注釈や型強制は行わない。
 
@@ -82,36 +87,58 @@ workflow template を 1 回起動した実行インスタンスを識別する�
 
 ### NodeDefinition
 
-run の中で扱われる、正規化済みの実行単位。既存 `Step` / `ParallelStep` / `AggregateConfig` のさまざまな記述スタイルを、engine 内部で一貫した shape に揃える。
+run の中で扱われる実行単位。[02] では新 schema YAML が直接 deserialize 先となり、engine は `NodeDefinition` のみを参照する（旧 `Step` / `ParallelStep` / `AggregateConfig` は削除済み）。
 
 責務:
 
 - run 中の各実行単位を「種別 + 振る舞いに必要な設定」として均一に表現する。
-- YAML の記述ゆれ（`mode` の有無、`parallel` block の有無、暗黙の `agent` 既定など）を吸収し、engine 中核がスタイルに依存しないようにする。
+- 新 YAML 記法（`type: agent | bash | approval | parallel`）を直接 deserialize 先として保持する。
 - node 種別ごとの実行戦略の入口を一本化する。
 
 フィールド（暫定）:
 
 - `node_name`: 当該実行単位の名前。run 内で識別子として用いる。
-- `node_type`: `agent` / `bash` / `approval` / `parallel` / `aggregate` などの実行種別。[13] で `bash` の取り扱いが具体化する。
+- `node_type`: `agent` / `bash` / `approval` / `parallel` の 4 種の実行種別（aggregate は parallel node の収束設定として `parallel_children` 側に集約される）。[13] で `bash` の取り扱いが具体化する。
 - `agent_config`: type=agent 系の振る舞い設定（policy / knowledge / instruction / output_contract、pass_previous_response、pass_output_from、inline_prompt、collect 等）。
 - `command_config`: type=bash 系の command 表現（command 文字列、exit code 取り扱い方針など）。
 - `approval_config`: type=approval 系の必要承認条件・承認後遷移ルール。
-- `parallel_children`: type=parallel 時に並列実行する子 NodeDefinition 群と aggregate 戦略。
+- `parallel_children`: type=parallel 時に並列実行する子 node 群（`ChildNodeDefinition`、子専用型で top-level 専用フィールドを構造的に持たない）と aggregate 戦略。
+- `resolved_facets`: load 経路で facet ref（policy / knowledge / instruction / output_contract）から解決した本文キャッシュ（serialize 対象外）。実行時に engine が直接参照し、未解決 ref を schema 層に残さない。
 - `transition_rules`: 完了結果に応じた次 node 解決ルール（既存 `TransitionRule` 相当）。
 - `cycle_guard` / `resets_cycle_for`: 既存サイクルガード意味論をそのまま受け継ぐ。
 - `model` / `permission` などの実行コンテキスト override。
 
-旧 `Step` との対応関係（変換規則の例示）:
+[02] では旧 `Step` schema が削除されたため、変換ではなく**新 schema の構文として直接 `node_type` を表現する**:
 
 ```text
-mode 未指定 / mode: auto  -> node_type: agent
-mode: approval            -> node_type: approval
-mode: interactive         -> node_type: agent（対話前提の agent として扱う）
-type: bash                -> node_type: bash
-parallel: [...]           -> node_type: parallel + parallel_children
-aggregate: ...            -> parallel node の aggregate 振る舞い
+新 YAML 構文（[02] Normalized Workflow 以降）
+
+nodes:
+  - name: ...
+    type: agent          # 旧 mode: auto / interactive / 未指定 はすべて agent に統合
+    instruction: ...
+    policy: ...
+  - name: ...
+    type: approval       # 旧 mode: approval
+    instruction: ...
+  - name: ...
+    type: bash           # 新規。実行系統は [13] で具体化
+    command: ...
+  - name: ...
+    type: parallel       # 旧 parallel: [...] block
+    parallel_children:   # ChildNodeDefinition の列。再帰構造は持たない（DoS 防御）
+      - name: ...
+        type: agent
+        # 子 node は transition_rules / cycle_guard / parallel_children / aggregate /
+        # command / collect / resets_cycle_for を型レベルで持てない。
+      ...
+    aggregate:           # 旧 aggregate: ...
+      all_match: LGTM
+      then: ...
+      else: ...
 ```
+
+旧 schema からの YAML マイグレーションは利用者が手で行う前提とする（自動マイグレーションツールは [02] では作らない）。
 
 他モデルとの関係:
 
@@ -217,25 +244,25 @@ engine が発行する append-only な事実列。`WorkflowCommand` の処理結
 分類の語彙:
 
 - **future core**: 未来形 5 モデル（Run / Node / Command / Event）に直接寄せていく中核責務。将来は新モデルに対して語る形にリファクタリングされる。
-- **compatibility adapter**: 旧概念（`Workflow` / `Step` / `WorkflowState` / `worktree_path`）を未来形モデルへ橋渡しする責務。互換性維持のため、旧 API / 旧 YAML / 旧 JSON の入口として残る。future core からも再利用される補助も、一次責務が旧概念側にあるものはここに分類する。
+- **compatibility adapter**: 旧概念（`WorkflowState` / `worktree_path`）と新 schema の入力経路（user-authored YAML / built-in YAML）を未来形モデルへ橋渡しする責務。一次責務が旧概念側または YAML 入口にあるものはここに分類する。[02] 完了後、旧 `Step` / 旧 YAML / 旧 JSON 互換は維持されない。
 
 ### 分類表
 
 | モジュール | 分類 | 担当する責務（現状） | 未来形モデルとの関係 |
 | --- | --- | --- | --- |
-| `schema.rs` | compatibility adapter | ユーザー記述の `Workflow` / `Step` / `ParallelStep` / `AggregateConfig` などの YAML スキーマ定義。 | 旧 `Step` を `NodeDefinition` へ正規化する変換の入力。本モジュール自体は YAML 入口として残り続ける。 |
-| `validation.rs` | compatibility adapter | `Workflow` スキーマの静的検証（名前重複、未知 next、facet 参照欠落など）。 | YAML レイヤーの検証は引き続き必要。`NodeDefinition` 化後の検証は [02] 以降の新モジュール（normalized 層）が担う。 |
+| `schema.rs` | future core 寄り（YAML 入口） | 新 `Workflow`（template 定義）/ `NodeDefinition` の YAML スキーマ定義。`type: agent | bash | approval | parallel` で node 種別を表現する。 | `NodeDefinition` を直接 YAML deserialize 先として保持する。旧 schema 型は [02] で削除済み。 |
+| `validation.rs` | compatibility adapter | 新 `Workflow` スキーマの静的検証（名前重複、未知 next、facet 参照キーの形式、parallel 子の制約など）。`facet` 本文（解決済み内容）は参照しない。本文の解決失敗は `facet.rs` 側で扱う。 | YAML レイヤーの検証は引き続き必要。`NodeDefinition` ベースで検証する。 |
 | `engine.rs` | future core | 状態遷移の権威。step 実行、approval、parallel/aggregate、cycle guard、contract 検証の中枢。 | 将来は `WorkflowCommand` を入口、`WorkflowEvent` を出口とする shape へ寄せる。現時点では旧モデル上で動作する future core 候補。 |
 | `state.rs` | compatibility adapter | UI 向け `WorkflowState`、`StepHistoryEntry`、`StepOutput`、`ParallelStepState`、`TokenUsage` などのシリアライズ shape。 | 多くのフィールドは `NodeExecution` の前身。互換 deserialize を維持しつつ、新モデルへ段階的に投影する対象。 |
 | `log.rs` | future core（vocabulary は adapter 寄り） | append-only な `WorkflowEventLog` / `WorkflowLogEvent` の NDJSON 永続化。 | 仕組み（append-only 性質）は `WorkflowEvent` と整合。語彙は旧 `step_*` 命名のため、`WorkflowEvent` 語彙へ段階的に寄せる。 |
 | `commands.rs` | compatibility adapter | Tauri / local API command の wrapper 群。UI / Remote の現行操作口。 | 旧 `worktree_path` 主語の入口を `WorkflowCommand` へ変換する adapter として残る。新 CLI / API も最終的にここから `WorkflowCommand` を介する。 |
-| `storage.rs` | compatibility adapter | workflow YAML 定義の保存・読み込み・ビルトイン保護。 | 旧 `Workflow` YAML 入口側の永続化を担い、future core からも参照されうるが一次責務は旧概念側にある。run / event の永続化は別レイヤー（[03] 以降）。 |
+| `storage.rs` | compatibility adapter | workflow YAML 定義の保存・読み込み・ビルトイン保護。 | 新 `Workflow` / `NodeDefinition` の YAML 入口側の永続化を担い、future core からも参照されうるが一次責務は YAML 入口側にある。run / event の永続化は別レイヤー（[03] 以降）。 |
 | `contract.rs` | future core | `<workflow_output>` の抽出と output contract の検証・repair prompt 生成。 | `WorkflowCommand::SubmitOutput` 検証と `OutputSubmitted` / `ValidationPassed` / `ValidationFailed` event の中核ロジック。 |
-| `facet.rs` | compatibility adapter | policy / knowledge / instruction / output_contract のファセット解決。 | 旧 `Step` の facet 参照解決を一次責務として担い、`NodeDefinition.agent_config` の素材としても再利用される。一次入口は旧概念側にある。 |
+| `facet.rs` | compatibility adapter | policy / knowledge / instruction / output_contract のファセット解決。 | 新 `NodeDefinition` / `ChildNodeDefinition` の facet 参照解決を一次責務として担い、load 経路で `resolved_facets` に解決結果を流し込む。一次入口は YAML 入口側にある。 |
 | `runtime_view.rs` | compatibility adapter | `WorkflowState` 上から step 関連 session id を集約するビュー処理。 | UI / session 連携の互換補助。長期的には `NodeExecution` ベースのビューに置き換わる候補。 |
 | `diagnostics.rs` | compatibility adapter | YAML レイヤーの追加診断（facet 欠落、参照不一致など）。 | `validation.rs` と同様に YAML 入口側の責務。 |
 | `session_errors.rs` | compatibility adapter | workflow 由来エラーの redaction ヘルパ。 | 旧 `WorkflowState` / 旧 session 連携で生じるエラー文言の整形を一次責務とし、future core 側からも再利用されうるが入口は旧概念側にある。 |
-| `builtin.rs` / `builtin/` / `builtin_facets/` | compatibility adapter | curated built-in workflow / facet の同梱。 | 旧 YAML 入口の curated assets として機能する。将来 [14] で template 追加が進んでも本モジュール群の役割（旧 YAML レイヤーへの同梱・提供）は変わらない。 |
+| `builtin.rs` / `builtin/` / `builtin_facets/` | compatibility adapter | curated built-in workflow / facet の同梱。 | 新 schema YAML 入口の curated assets として機能する。将来 [14] で template 追加が進んでも本モジュール群の役割（新 `Workflow` / `NodeDefinition` レイヤーへの同梱・提供）は変わらない。 |
 
 ### 補足: ランタイム振る舞いとの境界
 
@@ -248,9 +275,9 @@ engine が発行する append-only な事実列。`WorkflowCommand` の処理結
 - state を変化させる入口は `WorkflowCommand` に一本化される。旧 Tauri command や旧 worktree 主語 API も、最終的に compat adapter を通じて `WorkflowCommand` に変換されて engine に到達する。
 - engine が発行する事実は `WorkflowEvent` の append-only な事実列として積み上がる。発行済み event は書き換わらず、撤回や補正も追加 event として表現される。
 - 実行の単位は `WorkflowRun` として識別される。worktree 主語の参照は active `run_id` 解決を経て扱われる。
-- workflow template の実行単位は、engine 内部では `NodeDefinition` の正規化済み表現で扱う。YAML 記述スタイルのゆれは正規化レイヤーが吸収する。
+- workflow template の実行単位は、engine 内部では `NodeDefinition` で扱う。YAML 記述ゆれは `schema.rs` の deserialize で吸収する（正規化レイヤー `workflow/normalized.rs` は新設しない）。
 - 1 回の node 実行結果は `NodeExecution` として記録され、所属 `WorkflowRun` および対応する `NodeDefinition` に紐づく。
-- 旧 YAML / 旧 `WorkflowState` JSON / 旧 Tauri command は互換性が維持される。新設計を旧概念に合わせて曲げず、旧概念を新モデルへ adapter する。
+- 旧 YAML / 旧 `WorkflowState` JSON / 旧 NDJSON event log の互換性は [02] で破棄された。Tauri command の入口・出口形は本マイルストーン範囲では維持する。新設計は旧概念に合わせて曲げず、旧 schema 廃止後は新 schema が一次入口となる。
 
 ## 関連文書
 

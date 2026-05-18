@@ -2,11 +2,11 @@ name: spec-driven-development
 description: Spec-driven development workflow (requirements → behavior → architecture → review → implement → review → approve)
 builtin: true
 
-steps:
+nodes:
   # 1. 要求整理（approval、Spec作成）
   - name: plan_requirements
-    mode: approval
-    model: claude-opus-4-7
+    type: approval
+    model: default
     permission: edit
     instruction: plan-requirements
     policy: planning
@@ -14,8 +14,8 @@ steps:
 
   # 2. 振る舞い定義（approval、Spec更新）
   - name: plan_behavior
-    mode: approval
-    model: claude-opus-4-7
+    type: approval
+    model: default
     permission: edit
     instruction: plan-behavior
     policy: planning
@@ -24,19 +24,20 @@ steps:
 
   # 3. アーキテクチャ概要（approval、Spec更新）
   - name: plan_architecture
-    mode: approval
-    model: claude-opus-4-7
+    type: approval
+    model: default
     permission: edit
     instruction: plan-architecture
     policy: planning
     pass_output_from:
       - plan_requirements
 
-  # 4-5. アーキテクチャ概要レビュー 4観点（parallel auto）+ 集約
+  # 4-5. アーキテクチャ概要レビュー 4観点（parallel agent）+ 集約
   - name: plan_review_parallel
-    parallel:
+    type: parallel
+    parallel_children:
       - name: plan_review_completeness
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: plan-review-completeness
@@ -46,7 +47,7 @@ steps:
           - plan_requirements
           - plan_fix_policy
       - name: plan_review_clarity
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: plan-review-clarity
@@ -56,7 +57,7 @@ steps:
           - plan_requirements
           - plan_fix_policy
       - name: plan_review_security
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: plan-review-security
@@ -66,7 +67,7 @@ steps:
           - plan_requirements
           - plan_fix_policy
       - name: plan_review_consistency
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: plan-review-consistency
@@ -82,8 +83,8 @@ steps:
 
   # 6. Plan修正方針確認（approval）
   - name: plan_fix_policy
-    mode: approval
-    model: claude-opus-4-7
+    type: approval
+    model: default
     permission: readonly
     instruction: plan-fix-policy
     policy: planning
@@ -96,10 +97,10 @@ steps:
       - match: reject
         next: plan_approval
 
-  # 7. アーキテクチャ概要修正（auto、Spec更新）
+  # 7. アーキテクチャ概要修正（agent、Spec更新）
   - name: plan_fix
-    mode: auto
-    model: claude-opus-4-7
+    type: agent
+    model: default
     permission: edit
     instruction: plan-fix
     policy: planning
@@ -117,8 +118,8 @@ steps:
 
   # 8. アーキテクチャ概要承認（approval）
   - name: plan_approval
-    mode: approval
-    model: claude-opus-4-7
+    type: approval
+    model: default
     permission: readonly
     instruction: plan-approval
     policy: planning
@@ -131,21 +132,22 @@ steps:
       - match: reject
         next: plan_fix_policy
 
-  # 9. 実装（auto）
+  # 9. 実装（agent）
   - name: implement
-    mode: auto
-    model: claude-opus-4-7
+    type: agent
+    model: default
     permission: edit
     instruction: implement
     policy: coding
     pass_output_from:
       - plan_requirements
 
-  # 10-11. コードレビュー 6観点（parallel auto）+ 集約
+  # 10-11. コードレビュー 6観点（parallel agent）+ 集約
   - name: code_review_parallel
-    parallel:
+    type: parallel
+    parallel_children:
       - name: code_review_acceptance
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: review-acceptance
@@ -155,7 +157,7 @@ steps:
           - plan_requirements
           - implementation_fix_policy
       - name: code_review_structure
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: review-structure
@@ -165,7 +167,7 @@ steps:
           - plan_requirements
           - implementation_fix_policy
       - name: code_review_quality
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: review-quality
@@ -175,7 +177,7 @@ steps:
           - plan_requirements
           - implementation_fix_policy
       - name: code_review_test
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: review-test
@@ -185,7 +187,7 @@ steps:
           - plan_requirements
           - implementation_fix_policy
       - name: code_review_security
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: review-security
@@ -195,7 +197,7 @@ steps:
           - plan_requirements
           - implementation_fix_policy
       - name: code_review_architecture
-        mode: auto
+        type: agent
         model: gpt-5.5
         permission: readonly
         instruction: review-architecture
@@ -211,8 +213,8 @@ steps:
 
   # 12. 実装修正方針確認（approval）
   - name: implementation_fix_policy
-    mode: approval
-    model: claude-opus-4-7
+    type: approval
+    model: default
     permission: readonly
     instruction: implementation-fix-policy
     policy: coding
@@ -225,10 +227,10 @@ steps:
       - match: reject
         next: implementation_approval
 
-  # 13. 修正（auto）
+  # 13. 修正（agent）
   - name: fix
-    mode: auto
-    model: claude-opus-4-7
+    type: agent
+    model: default
     permission: edit
     instruction: implement-fix
     policy: coding
@@ -246,8 +248,8 @@ steps:
 
   # 14. 実装結果承認（approval）
   - name: implementation_approval
-    mode: approval
-    model: claude-opus-4-7
+    type: approval
+    model: default
     permission: readonly
     instruction: implementation-approval
     policy: coding

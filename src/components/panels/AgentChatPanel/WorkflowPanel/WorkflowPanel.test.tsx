@@ -43,9 +43,9 @@ function makeWorkflowState(
 			name: "test-workflow",
 			description: "test",
 			builtin: false,
-			steps: [
-				{ name: "step-1", mode: "auto", instruction: "implement", rules: [] },
-				{ name: "step-2", mode: "approval", instruction: "review", rules: [] },
+			nodes: [
+				{ name: "step-1", type: "agent", instruction: "implement", rules: [] },
+				{ name: "step-2", type: "approval", instruction: "review", rules: [] },
 			],
 		},
 		totalTokenUsage: { inputTokens: 100, outputTokens: 200 },
@@ -467,14 +467,14 @@ describe("WorkflowPanel", () => {
 			name: "test-workflow",
 			description: "test",
 			builtin: false,
-			steps: [
+			nodes: [
 				{
 					name: "review",
-					mode: "approval" as const,
+					type: "approval" as const,
 					instruction: "review",
 					rules: [{ match: "reject", next: "fix" }],
 				},
-				{ name: "fix", mode: "auto" as const, instruction: "fix", rules: [] },
+				{ name: "fix", type: "agent" as const, instruction: "fix", rules: [] },
 			],
 		} satisfies WorkflowState["workflowDefinition"];
 		const { rerender } = render(

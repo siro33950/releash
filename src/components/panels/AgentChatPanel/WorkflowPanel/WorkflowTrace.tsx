@@ -17,8 +17,8 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { useStepApprovalAction } from "@/hooks/useStepApprovalAction";
 import type {
 	JsonValue,
+	NodeDefinition,
 	ParallelStepState,
-	Step,
 	StepHistoryEntry,
 	WorkflowLogEvent,
 	WorkflowState,
@@ -157,7 +157,7 @@ function useAutoFollowScroll(autoFollowVersion: string) {
 type TraceItem =
 	| {
 			kind: "completed";
-			step: Step | undefined;
+			step: NodeDefinition | undefined;
 			stepName: string;
 			occurrence: number;
 			entry: StepHistoryEntry;
@@ -168,7 +168,7 @@ type TraceItem =
 	  }
 	| {
 			kind: "current";
-			step: Step | undefined;
+			step: NodeDefinition | undefined;
 			stepName: string;
 			occurrence: number;
 			sessionId?: string;
@@ -178,7 +178,7 @@ type TraceItem =
 	  }
 	| {
 			kind: "parallel";
-			step: Step | undefined;
+			step: NodeDefinition | undefined;
 			stepName: string;
 			occurrence: number;
 			childSteps: TraceParallelStepState[];
@@ -203,7 +203,7 @@ function runtimeFor(workflowState: WorkflowState, sessionId?: string) {
 
 function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 	const stepsByName = new Map(
-		workflowState.workflowDefinition.steps.map((step) => [step.name, step]),
+		workflowState.workflowDefinition.nodes.map((step) => [step.name, step]),
 	);
 	const seenCounts = new Map<string, number>();
 	const items: TraceItem[] = workflowState.stepHistory.map((entry) => {
@@ -211,8 +211,8 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 		seenCounts.set(entry.stepName, occurrence);
 		const step = stepsByName.get(entry.stepName);
 
-		if (step?.parallel && step.parallel.length > 0) {
-			const childSteps: TraceParallelStepState[] = step.parallel.map(
+		if (step?.parallel_children && step.parallel_children.length > 0) {
+			const childSteps: TraceParallelStepState[] = step.parallel_children.map(
 				(child) => {
 					// 履歴エントリにchild snapshotがあればそれを使用（run固有の情報）
 					const childSnapshot = entry.childOutputs?.find(
@@ -294,7 +294,11 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 			completedCount + 1;
 		const currentStep = stepsByName.get(workflowState.currentStepName);
 		const activeParallel = workflowState.activeParallelSteps;
-		if (currentStep?.parallel && activeParallel && activeParallel.length > 0) {
+		if (
+			currentStep?.parallel_children &&
+			activeParallel &&
+			activeParallel.length > 0
+		) {
 			const childSteps: TraceParallelStepState[] = activeParallel.map(
 				(step) => {
 					const runtime = runtimeFor(workflowState, step.sessionId);
@@ -371,11 +375,11 @@ function TraceItemRow({
 		);
 	}
 
-	const stepMode = item.step?.mode ?? "unknown";
+	const stepMode = item.step?.type ?? "unknown";
 	const approvalTarget =
 		workflowState.state.type === "waiting_approval" &&
 		item.kind === "current" &&
-		!item.step?.parallel &&
+		!item.step?.parallel_children &&
 		item.stepName === workflowState.currentStepName
 			? approvalAction
 			: undefined;
