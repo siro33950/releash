@@ -282,6 +282,35 @@ impl RunStoreInner {
         }
         Some(removed)
     }
+
+    /// `complete_run` / `update_active` の永続化失敗時の rollback で、`previous` スナップショットを
+    /// `active` / `by_worktree` に再投入する。
+    ///
+    /// `complete_run` は `remove_run` 実行と persist の間で Mutex を解放するため、その間に同一
+    /// `worktree_path` へ別 run が `register_active` で割り当てられる可能性がある。その状態で
+    /// 無条件に再投入すると以下の不変条件が壊れる:
+    /// - `active` 内に同一 `worktree_path` を持つ run が 2 件存在する
+    /// - `by_worktree` と `active` の双方向整合が崩れる（`by_worktree` は 1 件のみ）
+    ///
+    /// そのため、再投入前に以下を検査し、いずれかが競合する場合は再投入をスキップして false を
+    /// 返す。呼出側は warn ログを出して PersistFailed を返すことで、不変条件を保ったまま rollback
+    /// を諦める（永続化失敗で失われた状態は呼出元の上位経路で対応する）。
+    /// - `by_worktree[previous.worktree_path]` が `previous.run_id` 以外を指している
+    /// - `active` に既に `previous.run_id` が存在する
+    fn try_reinsert_after_persist_failure(&mut self, previous: WorkflowRun) -> bool {
+        let worktree_conflict = self
+            .by_worktree
+            .get(&previous.worktree_path)
+            .is_some_and(|id| id != &previous.run_id);
+        let run_id_conflict = self.active.contains_key(&previous.run_id);
+        if worktree_conflict || run_id_conflict {
+            return false;
+        }
+        self.by_worktree
+            .insert(previous.worktree_path.clone(), previous.run_id.clone());
+        self.active.insert(previous.run_id.clone(), previous);
+        true
+    }
 }
 
 /// Run Store: active set + 永続化された run metadata の双方を管理する。
@@ -572,12 +601,16 @@ impl RunStore {
         if let Some(store) = metadata_store {
             if let Err(e) = store.persist(completed).await {
                 // rollback: terminal 化を取り消し、active set / by_worktree に戻す。
+                // lock 解放区間に同一 worktree_path / run_id へ別 run が register_active
+                // されている場合は、再投入により不変条件（同一 worktree につき active は最大 1 件・
+                // by_worktree と active の双方向整合）が壊れるため、競合検出時は再投入を諦める。
                 let mut inner = self.inner.lock().await;
-                inner
-                    .by_worktree
-                    .entry(previous.worktree_path.clone())
-                    .or_insert_with(|| previous.run_id.clone());
-                inner.active.insert(previous.run_id.clone(), previous);
+                let previous_run_id = previous.run_id.clone();
+                if !inner.try_reinsert_after_persist_failure(previous) {
+                    log::warn!(
+                        "RunStore: skip rollback reinsertion for {previous_run_id} due to concurrent active conflict"
+                    );
+                }
                 return Err(RunStoreError::PersistFailed {
                     run_id: run_id.to_string(),
                     reason: e,
@@ -1395,6 +1428,116 @@ mod tests {
         assert_eq!(completed[0].status, RunStatus::Failed);
         assert_eq!(completed[0].error_reason.as_deref(), Some("boom"));
         assert_eq!(completed[0].completed_at, Some(105.0));
+    }
+
+    /// `complete_run` の rollback で、競合がない場合は previous が active / by_worktree に
+    /// 戻されることを検証する（既存挙動の回帰テスト）。
+    ///
+    /// `data_dir` を「ファイル」にすることで永続化を強制失敗させる。`register_active` は
+    /// data_dir 設定前に行うため、最初の登録は in-memory のみで成功する。
+    #[tokio::test]
+    async fn complete_run_reinserts_previous_on_persist_failure_without_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+
+        let store = RunStore::new_in_memory_for_tests();
+        store.set_data_dir(data_dir.clone()).await;
+
+        let run_id = test_uuid(1);
+        store
+            .register_active(make_run(&run_id, "/wt/a", RunStatus::Running, 100.0))
+            .await
+            .unwrap();
+
+        // data_dir をファイルに差し替えて persist を強制失敗させる
+        fs::remove_dir_all(&data_dir).unwrap();
+        fs::write(&data_dir, "blocking").unwrap();
+
+        let result = store
+            .complete_run(&run_id, TerminalRunStatus::Failed, 200.0, None)
+            .await;
+        assert!(matches!(result, Err(RunStoreError::PersistFailed { .. })));
+
+        // 競合がないので rollback により active / by_worktree に previous が戻っている
+        assert_eq!(store.active_len().await, 1);
+        let resolved = store.resolve_run_by_worktree("/wt/a").await;
+        assert_eq!(resolved.as_deref(), Some(run_id.as_str()));
+    }
+
+    /// `try_reinsert_after_persist_failure` の単体テスト: 競合なしのケース。
+    /// previous がそのまま `active` / `by_worktree` に再投入され、true を返す。
+    #[tokio::test]
+    async fn try_reinsert_after_persist_failure_succeeds_without_conflict() {
+        let mut inner = RunStoreInner::new();
+        let previous = make_run(&test_uuid(1), "/wt/a", RunStatus::Running, 100.0);
+        let prev_run_id = previous.run_id.clone();
+
+        let ok = inner.try_reinsert_after_persist_failure(previous);
+
+        assert!(ok);
+        assert_eq!(inner.active.len(), 1);
+        assert!(inner.active.contains_key(&prev_run_id));
+        assert_eq!(
+            inner.by_worktree.get("/wt/a").map(String::as_str),
+            Some(prev_run_id.as_str())
+        );
+    }
+
+    /// `try_reinsert_after_persist_failure` の単体テスト: by_worktree が別 run_id に
+    /// 取られているケース（concurrent register_active が同一 worktree へ別 run を割り当てた状況）。
+    /// 再投入をスキップし false を返す。`active` / `by_worktree` の状態は変更されない。
+    #[tokio::test]
+    async fn try_reinsert_after_persist_failure_skips_on_worktree_conflict() {
+        let mut inner = RunStoreInner::new();
+        // 競合状態を構築: 別 run_id (run2) が同一 worktree に紐づいている
+        let other_run_id = test_uuid(2);
+        let other_run = make_run(&other_run_id, "/wt/shared", RunStatus::Running, 150.0);
+        inner.active.insert(other_run_id.clone(), other_run);
+        inner
+            .by_worktree
+            .insert("/wt/shared".to_string(), other_run_id.clone());
+
+        // previous (run1) を再投入しようとしても、worktree が他の run に占有されているため拒否
+        let previous = make_run(&test_uuid(1), "/wt/shared", RunStatus::Running, 100.0);
+        let ok = inner.try_reinsert_after_persist_failure(previous);
+
+        assert!(!ok);
+        // 既存 (other_run) のみが残る。previous は混入しない。
+        assert_eq!(inner.active.len(), 1);
+        assert!(inner.active.contains_key(&other_run_id));
+        assert_eq!(
+            inner.by_worktree.get("/wt/shared").map(String::as_str),
+            Some(other_run_id.as_str())
+        );
+    }
+
+    /// `try_reinsert_after_persist_failure` の単体テスト: active に同一 run_id が
+    /// 既に存在するケース（理論上は起きにくいが防御的に拒否する）。
+    /// 再投入をスキップし false を返す。
+    #[tokio::test]
+    async fn try_reinsert_after_persist_failure_skips_on_run_id_conflict() {
+        let mut inner = RunStoreInner::new();
+        let run_id = test_uuid(1);
+        // 既に同一 run_id が active に存在する状況を構築
+        let existing = make_run(&run_id, "/wt/elsewhere", RunStatus::Running, 150.0);
+        inner.active.insert(run_id.clone(), existing);
+        inner
+            .by_worktree
+            .insert("/wt/elsewhere".to_string(), run_id.clone());
+
+        // 同一 run_id を別 worktree (/wt/a) で再投入しようとしても拒否
+        let previous = make_run(&run_id, "/wt/a", RunStatus::Running, 100.0);
+        let ok = inner.try_reinsert_after_persist_failure(previous);
+
+        assert!(!ok);
+        // 既存 entry はそのまま、/wt/a の by_worktree は作られない
+        assert_eq!(inner.active.len(), 1);
+        assert_eq!(
+            inner.active.get(&run_id).map(|r| r.worktree_path.as_str()),
+            Some("/wt/elsewhere")
+        );
+        assert_eq!(inner.by_worktree.get("/wt/a"), None);
     }
 
     #[tokio::test]
