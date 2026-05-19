@@ -192,6 +192,7 @@ function deriveActivityStatus(
 export function useAgentChat(
 	worktreePath: string,
 	workflowApprovalChatSessionId: string | null = null,
+	workflowApprovalRunId: string | null = null,
 ): UseAgentChatResult {
 	const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 	const worktreePathRef = useRef(worktreePath);
@@ -200,6 +201,8 @@ export function useAgentChat(
 		workflowApprovalChatSessionId,
 	);
 	workflowApprovalChatSessionIdRef.current = workflowApprovalChatSessionId;
+	const workflowApprovalRunIdRef = useRef(workflowApprovalRunId);
+	workflowApprovalRunIdRef.current = workflowApprovalRunId;
 	const activeSessionRef = useRef(state.activeSession);
 	activeSessionRef.current = state.activeSession;
 	const sessionsRef = useRef(state.sessions);
@@ -327,11 +330,13 @@ export function useAgentChat(
 				const backendId = sessionId ? null : selectedBackendIdRef.current;
 				const workflowApprovalChatSessionId =
 					workflowApprovalChatSessionIdRef.current;
+				const workflowApprovalRunId = workflowApprovalRunIdRef.current;
 				const response =
-					sessionId && workflowApprovalChatSessionId === sessionId
+					sessionId &&
+					workflowApprovalChatSessionId === sessionId &&
+					workflowApprovalRunId
 						? await sendWorkflowApprovalChatMessage(
-								sessionId,
-								wPath,
+								workflowApprovalRunId,
 								trimmed,
 								pm,
 								images,

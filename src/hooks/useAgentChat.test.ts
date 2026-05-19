@@ -297,7 +297,10 @@ describe("useAgentChat", () => {
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
 
-		const { result } = renderHook(() => useAgentChat("/repo", "s1"));
+		// Spec issues-1011 line 121: approval chat 経由は run_id 主語で送信する。
+		const { result } = renderHook(() =>
+			useAgentChat("/repo", "s1", "run-approval-1"),
+		);
 
 		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
 
@@ -306,8 +309,7 @@ describe("useAgentChat", () => {
 		});
 
 		expect(sessionStore.sendWorkflowApprovalChatMessage).toHaveBeenCalledWith(
-			"s1",
-			"/repo",
+			"run-approval-1",
 			"adjust policy",
 			"edit",
 			undefined,

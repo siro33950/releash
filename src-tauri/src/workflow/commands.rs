@@ -3,6 +3,7 @@ use super::diagnostics;
 use super::engine::{ApprovalDecision, WorkflowEngine};
 use super::facet::{self, FacetKind};
 use super::log::{WorkflowEventLog, WorkflowLogEvent};
+use super::run::WorkflowRunSummary;
 use super::schema::{FacetSummary, Summary, Workflow};
 use super::storage;
 use crate::agent_message_dispatcher::{
@@ -253,16 +254,37 @@ pub fn open_workflow_in_editor(
 
 // ---- ワークフロー実行コマンド ----
 
+fn parse_trigger_source(value: Option<String>) -> Result<super::run::TriggerSource, String> {
+    match value.as_deref() {
+        Some("cli") => Ok(super::run::TriggerSource::Cli),
+        Some("remote") => Ok(super::run::TriggerSource::Remote),
+        Some("agent") => Ok(super::run::TriggerSource::Agent),
+        Some("desktop_ui") | Some("desktop-ui") | None => Ok(super::run::TriggerSource::DesktopUi),
+        Some(other) => Err(format!("unknown trigger_source: {other}")),
+    }
+}
+
+fn parse_workflow_start_permission_mode(
+    permission_mode: Option<String>,
+) -> Result<PermissionMode, String> {
+    let permission_value = permission_mode.unwrap_or_else(|| PermissionMode::Readonly.to_string());
+    PermissionMode::parse(&permission_value).map_err(|e| e.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn start_workflow(
     app: tauri::AppHandle,
+    config: tauri::State<'_, Arc<AppConfig>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     workflow_name: String,
-    chat_session_id: String,
+    worktree_path: String,
     task: Option<String>,
-) -> Result<(), String> {
+    trigger_source: Option<String>,
+    permission_mode: Option<String>,
+) -> Result<String, String> {
     let dir = storage::workflows_dir();
     let facets_base = facet::facets_base_dir();
     let file_stem = workflow_name.clone();
@@ -279,15 +301,22 @@ pub async fn start_workflow(
     .await
     .map_err(|e| format!("task join error: {e}"))??;
 
+    let trigger = parse_trigger_source(trigger_source)?;
+    let permission_mode = parse_workflow_start_permission_mode(permission_mode)?;
+    let worktree_path =
+        super::worktree::canonicalize_managed_worktree_path(config.inner().clone(), worktree_path)
+            .await?;
     engine
         .start_workflow(
             &app,
             session_store.inner(),
             handles.inner(),
             workflow,
-            &chat_session_id,
+            worktree_path,
             &file_stem,
             task,
+            trigger,
+            permission_mode,
         )
         .await
         .map_err(|e| e.to_string())
@@ -299,10 +328,11 @@ pub async fn abort_workflow(
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
-    worktree_path: String,
+    run_id: String,
 ) -> Result<(), String> {
+    validate_run_id(&run_id)?;
     engine
-        .abort_workflow(&app, session_store.inner(), handles.inner(), &worktree_path)
+        .abort_workflow_by_run_id(&app, session_store.inner(), handles.inner(), &run_id)
         .await
         .map_err(|e| {
             let msg = e.to_string();
@@ -316,9 +346,10 @@ pub async fn get_workflow_state(
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     open_tabs: tauri::State<'_, Arc<OpenTabRegistry>>,
-    worktree_path: String,
+    run_id: String,
 ) -> Result<Option<WorkflowStateView>, String> {
-    match engine.get_state(&worktree_path).await {
+    validate_run_id(&run_id)?;
+    match engine.get_state_by_run_id(&run_id).await {
         Some(state) => Ok(Some(
             crate::workflow_state_events::build_workflow_state_view(
                 state,
@@ -338,19 +369,18 @@ pub async fn approve_workflow_step(
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
-    worktree_path: String,
+    run_id: String,
     decision: ApprovalDecision,
-    execution_id: String,
     step_name: String,
 ) -> Result<(), String> {
+    validate_run_id(&run_id)?;
     engine
         .handle_approval(
             &app,
             session_store.inner(),
             handles.inner(),
-            &worktree_path,
+            &run_id,
             decision,
-            Some(&execution_id),
             Some(&step_name),
         )
         .await
@@ -365,14 +395,21 @@ pub async fn send_workflow_approval_chat_message(
     session_store: tauri::State<'_, Arc<SessionStore>>,
     registry: tauri::State<'_, Arc<AgentBackendRegistry>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
-    chat_session_id: String,
-    worktree_path: String,
+    run_id: String,
     content: String,
     permission_mode: Option<String>,
     images: Option<Vec<ImageAttachment>>,
     mentions: Option<Vec<crate::file_mention::MentionReference>>,
 ) -> Result<crate::agent_sdk::SendMessageResponse, String> {
+    // Spec issues-1011 line 121: 起動以外の workflow 操作 API は run_id を主語に取る。
+    // chat_session_id / worktree_path は run_id から engine が解決する。
+    validate_run_id(&run_id)?;
     let permission_mode = parse_workflow_approval_permission_mode(permission_mode)?;
+
+    let (chat_session_id, worktree_path) = engine
+        .resolve_chat_session_for_approval(&run_id)
+        .await
+        .map_err(|e| e.to_string())?;
 
     engine
         .validate_approval_chat_instruction(&chat_session_id, &content)
@@ -438,39 +475,26 @@ pub async fn open_workflow_step_tab(
     Ok(())
 }
 
-fn validate_execution_id(execution_id: &str) -> Result<(), String> {
-    if !execution_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
-        return Err("Invalid execution_id format".to_string());
-    }
-    Ok(())
+/// `run_id` の形式検証（path traversal / 不正文字対策）。
+/// UUID（RFC 4122）形式のみ許容する。Run Store 内部でも canonicalize 後の
+/// `workflow_runs/` 配下チェックを行うが、command 入口でも形式不正を弾く。
+fn validate_run_id(run_id: &str) -> Result<(), String> {
+    uuid::Uuid::parse_str(run_id)
+        .map(|_| ())
+        .map_err(|_| "Invalid run_id format (must be UUID)".to_string())
 }
 
 // ---- ワークフロー履歴閲覧コマンド ----
 
 #[tauri::command]
-pub async fn list_workflow_executions(
-    app: tauri::AppHandle,
-    worktree_path: String,
-) -> Result<Vec<String>, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    let event_log = WorkflowEventLog::new(&data_dir);
-    tokio::task::spawn_blocking(move || event_log.list_execution_ids_for_worktree(&worktree_path))
-        .await
-        .map_err(|e| format!("task join error: {e}"))?
-}
-
-#[tauri::command]
 pub async fn get_workflow_execution_log(
     app: tauri::AppHandle,
-    execution_id: String,
+    run_id: String,
 ) -> Result<Vec<WorkflowLogEvent>, String> {
-    validate_execution_id(&execution_id)?;
+    validate_run_id(&run_id)?;
     let data_dir = resolve_data_dir(&app)?;
     let event_log = WorkflowEventLog::new(&data_dir);
-    tokio::task::spawn_blocking(move || event_log.read_log(&execution_id))
+    tokio::task::spawn_blocking(move || event_log.read_log(&run_id))
         .await
         .map_err(|e| format!("task join error: {e}"))?
 }
@@ -480,13 +504,13 @@ pub async fn get_workflow_execution_state(
     app: tauri::AppHandle,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     open_tabs: tauri::State<'_, Arc<OpenTabRegistry>>,
-    execution_id: String,
+    run_id: String,
 ) -> Result<Option<WorkflowStateView>, String> {
-    validate_execution_id(&execution_id)?;
+    validate_run_id(&run_id)?;
     let data_dir = resolve_data_dir(&app)?;
     let state = tokio::task::spawn_blocking(move || {
         let event_log = WorkflowEventLog::new(&data_dir);
-        let events = event_log.read_log(&execution_id)?;
+        let events = event_log.read_log(&run_id)?;
         // ログのスナップショット（WorkflowStarted.workflow_definition）からのみ復元する。
         // 旧 NDJSON（workflow_definition フィールドを欠く / 旧 shape）は新 schema で
         // deserialize できず、本ルートには到達しない（[02] で互換破棄）。
@@ -510,7 +534,7 @@ pub async fn get_workflow_execution_state(
             return Ok(None);
         };
         let workflow = snapshot_def;
-        WorkflowEventLog::reconstruct_state_from_events(&execution_id, &events, &workflow)
+        WorkflowEventLog::reconstruct_state_from_events(&run_id, &events, &workflow)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))??;
@@ -668,6 +692,64 @@ pub async fn render_facet_preview(
     ))
 }
 
+// ---- Run Store / WorkflowRun コマンド ----
+
+/// 進行中（active）の workflow run 一覧を返す。
+#[tauri::command]
+pub async fn list_active_workflow_runs(
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+) -> Result<Vec<WorkflowRunSummary>, String> {
+    Ok(engine.list_active_runs().await)
+}
+
+/// 終了済み（completed / failed / aborted）の workflow run 一覧を返す。
+/// `workflow_runs/{run_id}.json` を走査し、active set に含まれるものは除外する。
+/// 破損 metadata エントリは warn ログのうえスキップする。
+#[tauri::command]
+pub async fn list_completed_workflow_runs(
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+) -> Result<Vec<WorkflowRunSummary>, String> {
+    Ok(engine.list_completed_runs().await)
+}
+
+/// 指定 worktree の active / terminal workflow run 一覧を返す。
+#[tauri::command]
+pub async fn list_workflow_runs_for_worktree(
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    worktree_path: String,
+) -> Result<Vec<WorkflowRunSummary>, String> {
+    let worktree_path =
+        super::worktree::canonicalize_managed_worktree_path(config.inner().clone(), worktree_path)
+            .await?;
+    Ok(engine.list_runs_for_worktree(&worktree_path).await)
+}
+
+/// worktree_path から active な run_id を解決する（双方向 lookup の一方向）。
+#[tauri::command]
+pub async fn resolve_active_run_by_worktree(
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    worktree_path: String,
+) -> Result<Option<String>, String> {
+    let worktree_path =
+        super::worktree::canonicalize_managed_worktree_path(config.inner().clone(), worktree_path)
+            .await?;
+    Ok(engine.run_id_for_worktree(&worktree_path).await)
+}
+
+/// run_id から worktree_path を解決する（双方向 lookup のもう一方向）。
+/// active / 終了済みの両方について metadata 経由で解決する。
+/// path traversal 対策として command 入口で UUID 形式を検証する。
+#[tauri::command]
+pub async fn resolve_worktree_by_run(
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    run_id: String,
+) -> Result<Option<String>, String> {
+    validate_run_id(&run_id)?;
+    Ok(engine.resolve_worktree_by_run(&run_id).await)
+}
+
 #[tauri::command]
 pub fn get_automation_config_dir() -> Result<String, String> {
     let dir = storage::workflows_dir();
@@ -716,6 +798,49 @@ mod tests {
         assert!(!err.contains("message body"));
     }
 
+    /// Spec issues-1011 finding 12: command 入口の `validate_run_id` は path traversal や
+    /// 形式不正な run_id を拒否し、後段の Run Store / engine に到達させない。
+    /// abort_workflow / get_workflow_state / approve_workflow_step /
+    /// get_workflow_execution_log / get_workflow_execution_state / resolve_worktree_by_run
+    /// の全 command で共通に使われるため、入力種別ごとに受理/拒否を一括で担保する。
+    #[test]
+    fn validate_run_id_table_accepts_uuid_and_rejects_invalid_inputs() {
+        // 受理: 正規 UUID（生成値）と既知サンプル
+        let generated = uuid::Uuid::new_v4().to_string();
+        let accepted = [
+            generated.as_str(),
+            "550e8400-e29b-41d4-a716-446655440000",
+            "00000000-0000-0000-0000-000000000000",
+        ];
+        for input in accepted {
+            assert!(
+                validate_run_id(input).is_ok(),
+                "valid UUID must be accepted: {input}"
+            );
+        }
+
+        // 拒否: 空文字 / 非 UUID / path traversal / 不正文字 / 余分なスペース / 長さ違い
+        let rejected = [
+            "",
+            "not-a-uuid",
+            "../etc/passwd",
+            "../../workflow_runs/secret",
+            "run-1",
+            "550e8400-e29b-41d4-a716-44665544000", // 1 文字不足
+            "550e8400-e29b-41d4-a716-4466554400000", // 1 文字過剰
+            "550e8400-e29b-41d4-a716-44665544000g", // 非 hex
+            "550e8400-e29b-41d4-a716-446655440000\n",
+            " 550e8400-e29b-41d4-a716-446655440000",
+            "550e8400-e29b-41d4-a716-446655440000 ",
+        ];
+        for input in rejected {
+            assert!(
+                validate_run_id(input).is_err(),
+                "invalid run_id must be rejected: {input:?}"
+            );
+        }
+    }
+
     #[test]
     fn workflow_approval_chat_permission_mode_rejects_invalid_values_before_dispatch() {
         for invalid in [
@@ -744,6 +869,35 @@ mod tests {
             let parsed = parse_workflow_approval_permission_mode(Some(value.to_string())).unwrap();
             assert_eq!(parsed, expected);
         }
+    }
+
+    #[test]
+    fn parse_trigger_source_rejects_unknown_values() {
+        assert!(matches!(
+            parse_trigger_source(None).unwrap(),
+            crate::workflow::run::TriggerSource::DesktopUi
+        ));
+        assert!(matches!(
+            parse_trigger_source(Some("remote".to_string())).unwrap(),
+            crate::workflow::run::TriggerSource::Remote
+        ));
+        let err = parse_trigger_source(Some("unknown".to_string())).unwrap_err();
+        assert!(err.contains("unknown trigger_source"));
+    }
+
+    #[test]
+    fn workflow_start_permission_mode_defaults_readonly_and_rejects_invalid_values() {
+        assert_eq!(
+            parse_workflow_start_permission_mode(None).unwrap(),
+            PermissionMode::Readonly
+        );
+        assert_eq!(
+            parse_workflow_start_permission_mode(Some("edit".to_string())).unwrap(),
+            PermissionMode::Edit
+        );
+        let err = parse_workflow_start_permission_mode(Some("acceptEdits".to_string()))
+            .expect_err("provider-specific permission flags must not be accepted");
+        assert!(err.contains("readonly, edit, full"));
     }
 
     #[test]

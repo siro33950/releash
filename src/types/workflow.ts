@@ -180,6 +180,22 @@ export interface ApprovalOperations {
 	canReject: boolean;
 }
 
+/// Workflow run 一覧コマンドから返る
+/// WorkflowRun のサマリ表現。Rust 側 `WorkflowRunSummary` のフィールドに対応する（camelCase）。
+export interface WorkflowRunSummary {
+	runId: string;
+	workflowName: string;
+	task?: string | null;
+	status: "running" | "waiting_approval" | "completed" | "failed" | "aborted";
+	worktreePath: string;
+	currentNodeName?: string | null;
+	triggerSource: "desktop_ui" | "remote" | "cli" | "agent";
+	startedAt: number;
+	updatedAt: number;
+	completedAt?: number | null;
+	errorReason?: string | null;
+}
+
 export interface WorkflowStatePayload {
 	worktreePath: string;
 	workflowState: WorkflowState;

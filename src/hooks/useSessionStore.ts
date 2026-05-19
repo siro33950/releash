@@ -247,8 +247,7 @@ export async function sendAgentMessage(
 }
 
 export async function sendWorkflowApprovalChatMessage(
-	chatSessionId: string,
-	worktreePath: string,
+	runId: string,
 	content: string,
 	permissionMode: PermissionMode,
 	images?: ImageAttachment[],
@@ -257,8 +256,7 @@ export async function sendWorkflowApprovalChatMessage(
 	const raw = await invoke<RawSendMessageResponse>(
 		"send_workflow_approval_chat_message",
 		{
-			chatSessionId,
-			worktreePath,
+			runId,
 			content,
 			permissionMode,
 			images: images && images.length > 0 ? images : undefined,
