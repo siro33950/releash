@@ -254,6 +254,12 @@ export function AgentChatPanel({
 		workflowState?.state.type === "waiting_approval"
 			? (workflowState.currentSessionId ?? workflowState.chatSessionId)
 			: null;
+	// Spec issues-1011 line 121: approval 操作系 API は run_id 主語のため、
+	// useAgentChat にも run_id を渡して send_workflow_approval_chat_message を run_id で呼ぶ。
+	const workflowApprovalRunId =
+		workflowState?.state.type === "waiting_approval"
+			? (workflowState.executionId ?? null)
+			: null;
 	const {
 		sessions,
 		orderedSessions,
@@ -282,7 +288,11 @@ export function AgentChatPanel({
 		backends,
 		selectedBackendId,
 		setBackend,
-	} = useAgentChat(worktreePath, workflowApprovalChatSessionId);
+	} = useAgentChat(
+		worktreePath,
+		workflowApprovalChatSessionId,
+		workflowApprovalRunId,
+	);
 	const knownWorkflowSessionIds = useMemo(() => {
 		return new Set(sessions.map((session) => session.id));
 	}, [sessions]);
@@ -722,7 +732,7 @@ export function AgentChatPanel({
 					<WorkflowPanel
 						workflowState={workflowState ?? null}
 						worktreePath={worktreePath}
-						chatSessionId={activeSession?.id ?? null}
+						permissionMode={permissionMode}
 						onSessionClick={openWorkflowStepSession}
 						onCloseSession={closeSession}
 					/>

@@ -190,9 +190,8 @@ describe("WorkflowTrace", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Approve step" }));
 
 		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
-			worktreePath: "/repo",
+			runId: "exec-001",
 			decision: "approve",
-			executionId: "exec-001",
 			stepName: "review",
 		});
 

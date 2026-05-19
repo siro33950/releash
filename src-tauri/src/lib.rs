@@ -250,7 +250,15 @@ pub fn run() {
                 ));
             }
             app.manage(agent_status_center);
-            app.manage(Arc::new(workflow::engine::WorkflowEngine::new()));
+            let workflow_engine = Arc::new(workflow::engine::WorkflowEngine::new());
+            // Run Store の永続化先（data_dir）を設定する。失敗しても起動は止めない。
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                let engine_for_init = workflow_engine.clone();
+                tauri::async_runtime::block_on(async move {
+                    engine_for_init.set_run_store_data_dir(data_dir).await;
+                });
+            }
+            app.manage(workflow_engine);
 
             // AgentBackendRegistry を構築・登録
             let agent_handles = app
@@ -546,9 +554,13 @@ pub fn run() {
             workflow::commands::approve_workflow_step,
             workflow::commands::send_workflow_approval_chat_message,
             workflow::commands::open_workflow_step_tab,
-            workflow::commands::list_workflow_executions,
             workflow::commands::get_workflow_execution_log,
             workflow::commands::get_workflow_execution_state,
+            workflow::commands::list_active_workflow_runs,
+            workflow::commands::list_completed_workflow_runs,
+            workflow::commands::list_workflow_runs_for_worktree,
+            workflow::commands::resolve_active_run_by_worktree,
+            workflow::commands::resolve_worktree_by_run,
             workflow::commands::list_facets,
             workflow::commands::get_facet,
             workflow::commands::save_facet,

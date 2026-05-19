@@ -27,9 +27,8 @@ export function useStepApprovalAction({
 
 	const approve = useCallback(() => {
 		return invoke("approve_workflow_step", {
-			worktreePath,
+			runId: executionId,
 			decision: "approve",
-			executionId,
 			stepName,
 		})
 			.then(() => setApprovalError(null))
@@ -37,7 +36,7 @@ export function useStepApprovalAction({
 				console.warn("[useStepApprovalAction] approve_workflow_step failed", e);
 				setApprovalError(formatWorkflowApprovalError(e));
 			});
-	}, [worktreePath, executionId, stepName]);
+	}, [executionId, stepName]);
 
 	const openReject = useCallback(() => {
 		setRejectMode(true);
@@ -56,9 +55,8 @@ export function useStepApprovalAction({
 			return Promise.resolve();
 		}
 		return invoke("approve_workflow_step", {
-			worktreePath,
+			runId: executionId,
 			decision: { reject: { comment: rejectComment } },
-			executionId,
 			stepName,
 		})
 			.then(() => {
@@ -70,7 +68,7 @@ export function useStepApprovalAction({
 				console.warn("[useStepApprovalAction] approve_workflow_step failed", e);
 				setApprovalError(formatWorkflowApprovalError(e));
 			});
-	}, [worktreePath, executionId, stepName, rejectComment, canSubmitReject]);
+	}, [executionId, stepName, rejectComment, canSubmitReject]);
 
 	return {
 		rejectMode,

@@ -37,6 +37,28 @@ const makeState = (overrides: Partial<WorkflowState> = {}): WorkflowState => ({
 	...overrides,
 });
 
+/**
+ * Spec issues-1011 finding 13: 二段階 invoke の契約を厳密に検証するため、
+ * `resolve_active_run_by_worktree` と `get_workflow_state` の戻り値を
+ * command ごとに分離して mock するヘルパー。
+ * 1 つの `mockResolvedValue` で全 command を同じ戻り値にする旧 mock は、
+ * 両 command が同じ shape を返してしまい契約逸脱を検知できない。
+ */
+const mockResolveAndState = (
+	runId: string | null,
+	state: WorkflowState | null,
+) => {
+	mockInvoke.mockImplementation((cmd: string) => {
+		if (cmd === "resolve_active_run_by_worktree") {
+			return Promise.resolve(runId);
+		}
+		if (cmd === "get_workflow_state") {
+			return Promise.resolve(state);
+		}
+		return Promise.resolve(null);
+	});
+};
+
 describe("useWorkflowState", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -51,20 +73,23 @@ describe("useWorkflowState", () => {
 
 	it("fetches initial state via get_workflow_state", async () => {
 		const state = makeState();
-		mockInvoke.mockResolvedValue(state);
+		mockResolveAndState("exec-1", state);
 
 		const { result } = renderHook(() => useWorkflowState("/repo"));
 
 		await waitFor(() => {
 			expect(result.current.workflowState).toEqual(state);
 		});
-		expect(mockInvoke).toHaveBeenCalledWith("get_workflow_state", {
+		expect(mockInvoke).toHaveBeenCalledWith("resolve_active_run_by_worktree", {
 			worktreePath: "/repo",
+		});
+		expect(mockInvoke).toHaveBeenCalledWith("get_workflow_state", {
+			runId: "exec-1",
 		});
 	});
 
 	it("updates state when matching workflow-state-changed fires", async () => {
-		mockInvoke.mockResolvedValue(makeState());
+		mockResolveAndState("exec-1", makeState());
 
 		type Cb = (event: { payload: WorkflowStatePayload }) => void;
 		let cb: Cb | null = null;
@@ -92,7 +117,7 @@ describe("useWorkflowState", () => {
 	});
 
 	it("ignores events for other worktrees", async () => {
-		mockInvoke.mockResolvedValue(makeState());
+		mockResolveAndState("exec-1", makeState());
 
 		type Cb = (event: { payload: WorkflowStatePayload }) => void;
 		let cb: Cb | null = null;
@@ -117,7 +142,7 @@ describe("useWorkflowState", () => {
 	});
 
 	it("resets to null when worktreePath changes to undefined", async () => {
-		mockInvoke.mockResolvedValue(makeState());
+		mockResolveAndState("exec-1", makeState());
 
 		const { result, rerender } = renderHook(
 			({ wt }: { wt: string | undefined }) => useWorkflowState(wt),
@@ -133,14 +158,33 @@ describe("useWorkflowState", () => {
 	});
 
 	it("ignores stale response when worktreePath changes", async () => {
-		let resolveFirst: ((v: WorkflowState) => void) | null = null;
-		const firstPromise = new Promise<WorkflowState>((r) => {
+		// 1 つ目の worktree への resolve_active_run_by_worktree が pending な状態を作る。
+		let resolveFirst: ((v: string | null) => void) | null = null;
+		const firstPromise = new Promise<string | null>((r) => {
 			resolveFirst = r;
 		});
 
-		mockInvoke
-			.mockImplementationOnce(() => firstPromise)
-			.mockResolvedValue(makeState({ currentStepIndex: 2 }));
+		// 後続の二段階 invoke を command ごとに振り分け、stale な /repo-a 応答が
+		// 入った後でも /repo-b の state が保持されることを直接検証する。
+		mockInvoke.mockImplementation(
+			(cmd: string, args?: { runId?: string; worktreePath?: string }) => {
+				if (cmd === "resolve_active_run_by_worktree") {
+					if (args?.worktreePath === "/repo-a") return firstPromise;
+					if (args?.worktreePath === "/repo-b")
+						return Promise.resolve("exec-b");
+					return Promise.resolve(null);
+				}
+				if (cmd === "get_workflow_state") {
+					if (args?.runId === "exec-b") {
+						return Promise.resolve(makeState({ currentStepIndex: 2 }));
+					}
+					if (args?.runId === "exec-a-stale") {
+						return Promise.resolve(makeState({ currentStepIndex: 99 }));
+					}
+				}
+				return Promise.resolve(null);
+			},
+		);
 
 		const { result, rerender } = renderHook(
 			({ wt }: { wt: string | undefined }) => useWorkflowState(wt),
@@ -156,7 +200,7 @@ describe("useWorkflowState", () => {
 
 		// Now resolve the stale first request — should be ignored
 		await act(async () => {
-			resolveFirst?.(makeState({ currentStepIndex: 99 }));
+			resolveFirst?.("exec-a-stale");
 		});
 
 		// State should still be from /repo-b, not the stale /repo-a response
@@ -164,7 +208,12 @@ describe("useWorkflowState", () => {
 	});
 
 	it("handles invoke failure gracefully", async () => {
-		mockInvoke.mockRejectedValue(new Error("fail"));
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "resolve_active_run_by_worktree") {
+				return Promise.reject(new Error("fail"));
+			}
+			return Promise.resolve(null);
+		});
 		const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		const { result } = renderHook(() => useWorkflowState("/repo"));

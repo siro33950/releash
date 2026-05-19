@@ -8,14 +8,19 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
-import type { WorkflowLogEvent, WorkflowState } from "@/types/workflow";
+import type { PermissionMode } from "@/types/session";
+import type {
+	WorkflowLogEvent,
+	WorkflowRunSummary,
+	WorkflowState,
+} from "@/types/workflow";
 import { WorkflowStatusSummary } from "./WorkflowStatusSummary";
 import { WorkflowTrace } from "./WorkflowTrace";
 
 interface WorkflowPanelProps {
 	workflowState: WorkflowState | null;
 	worktreePath: string;
-	chatSessionId: string | null;
+	permissionMode?: PermissionMode;
 	onSessionClick?: (sessionId: string) => void;
 	onCloseSession?: (sessionId: string) => void;
 }
@@ -23,7 +28,7 @@ interface WorkflowPanelProps {
 export function WorkflowPanel({
 	workflowState,
 	worktreePath,
-	chatSessionId,
+	permissionMode = "readonly",
 	onSessionClick,
 	onCloseSession,
 }: WorkflowPanelProps) {
@@ -33,10 +38,12 @@ export function WorkflowPanel({
 	const [historyOpen, setHistoryOpen] = useState(false);
 
 	const fetchExecutionIds = useCallback(() => {
-		invoke<string[]>("list_workflow_executions", { worktreePath })
-			.then(setExecutionIds)
+		invoke<WorkflowRunSummary[]>("list_workflow_runs_for_worktree", {
+			worktreePath,
+		})
+			.then((runs) => setExecutionIds(runs.map((r) => r.runId)))
 			.catch((e) =>
-				console.warn("[WorkflowPanel] list_workflow_executions failed", e),
+				console.warn("[WorkflowPanel] list workflow run summaries failed", e),
 			);
 	}, [worktreePath]);
 
@@ -156,7 +163,10 @@ export function WorkflowPanel({
 					))}
 				</TabsList>
 				<div className="flex-1" />
-				{chatSessionId && <NewWorkflowButton chatSessionId={chatSessionId} />}
+				<NewWorkflowButton
+					worktreePath={worktreePath}
+					permissionMode={permissionMode}
+				/>
 				<Popover open={historyOpen} onOpenChange={setHistoryOpen}>
 					<PopoverTrigger asChild>
 						<button
@@ -226,7 +236,13 @@ export function WorkflowPanel({
 	);
 }
 
-function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
+function NewWorkflowButton({
+	worktreePath,
+	permissionMode,
+}: {
+	worktreePath: string;
+	permissionMode: PermissionMode;
+}) {
 	const [open, setOpen] = useState(false);
 	const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
 	const [taskInput, setTaskInput] = useState("");
@@ -243,8 +259,9 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 		setIsPending(true);
 		invoke("start_workflow", {
 			workflowName: selectedWorkflow,
-			chatSessionId,
+			worktreePath,
 			task: taskInput.trim() || null,
+			permissionMode,
 		})
 			.then(() => {
 				setOpen(false);
@@ -253,7 +270,7 @@ function NewWorkflowButton({ chatSessionId }: { chatSessionId: string }) {
 			})
 			.catch((e) => console.warn("[WorkflowPanel] start_workflow failed", e))
 			.finally(() => setIsPending(false));
-	}, [selectedWorkflow, chatSessionId, taskInput, isPending]);
+	}, [selectedWorkflow, worktreePath, taskInput, permissionMode, isPending]);
 
 	const handleBack = useCallback(() => {
 		setSelectedWorkflow(null);
@@ -371,10 +388,10 @@ function ExecutionView({
 
 		Promise.all([
 			invoke<WorkflowState | null>("get_workflow_execution_state", {
-				executionId,
+				runId: executionId,
 			}),
 			invoke<WorkflowLogEvent[]>("get_workflow_execution_log", {
-				executionId,
+				runId: executionId,
 			}),
 		])
 			.then(([state, logEvents]) => {
@@ -480,13 +497,13 @@ function WorkflowActivePanel({
 	}
 
 	const handleAbort = useCallback(() => {
-		invoke("abort_workflow", { worktreePath })
+		invoke("abort_workflow", { runId: workflowState.executionId })
 			.then(() => setAbortError(null))
 			.catch((e) => {
 				console.warn("[WorkflowPanel] abort_workflow failed", e);
 				setAbortError(String(e));
 			});
-	}, [worktreePath]);
+	}, [workflowState.executionId]);
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden">

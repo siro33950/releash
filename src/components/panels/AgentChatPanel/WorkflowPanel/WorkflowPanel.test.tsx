@@ -26,6 +26,23 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const { WorkflowPanel } = await import("./WorkflowPanel");
 
+/// run_id 一覧の test helper。`list_workflow_runs_for_worktree` が返す
+/// `WorkflowRunSummary[]` の最小形を生成する。
+function makeRunSummaries(
+	runIds: string[],
+	worktreePath: string,
+): Array<Record<string, unknown>> {
+	return runIds.map((runId) => ({
+		runId,
+		workflowName: "wf",
+		status: "completed",
+		worktreePath,
+		triggerSource: "desktop_ui",
+		startedAt: 0,
+		updatedAt: 0,
+	}));
+}
+
 function makeWorkflowState(
 	overrides: Partial<WorkflowState> = {},
 ): WorkflowState {
@@ -67,7 +84,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState()}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		expect(screen.getByText("test-workflow")).toBeInTheDocument();
@@ -79,7 +95,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState()}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		expect(screen.getByText("300 tokens")).toBeInTheDocument();
@@ -90,7 +105,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState()}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		const status = screen.getByTestId("workflow-status-summary");
@@ -106,8 +120,10 @@ describe("WorkflowPanel", () => {
 			clientHeight: 100,
 		});
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_executions") {
-				return Promise.resolve(["exec-current", "exec-old"]);
+			if (cmd === "list_workflow_runs_for_worktree") {
+				return Promise.resolve(
+					makeRunSummaries(["exec-current", "exec-old"], "/repo"),
+				);
 			}
 			if (cmd === "get_workflow_execution_state") {
 				return Promise.resolve(
@@ -133,7 +149,6 @@ describe("WorkflowPanel", () => {
 				<WorkflowPanel
 					workflowState={makeWorkflowState({ executionId: "exec-current" })}
 					worktreePath="/repo"
-					chatSessionId="session-1"
 				/>,
 			);
 			const currentTrace = screen.getByTestId("workflow-trace-scroll");
@@ -167,7 +182,6 @@ describe("WorkflowPanel", () => {
 				<WorkflowPanel
 					workflowState={makeWorkflowState()}
 					worktreePath="/repo-a"
-					chatSessionId="session-1"
 				/>,
 			);
 			const trace = screen.getByTestId("workflow-trace-scroll");
@@ -179,7 +193,6 @@ describe("WorkflowPanel", () => {
 				<WorkflowPanel
 					workflowState={makeWorkflowState()}
 					worktreePath="/repo-b"
-					chatSessionId="session-1"
 				/>,
 			);
 
@@ -194,7 +207,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({ state: { type: "running" } })}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		expect(
@@ -214,7 +226,6 @@ describe("WorkflowPanel", () => {
 					state: { type: "waiting_approval" },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		expect(
@@ -227,7 +238,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({ state: { type: "completed" } })}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		expect(
@@ -242,7 +252,6 @@ describe("WorkflowPanel", () => {
 					state: { type: "failed", reason: "error" },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		expect(
@@ -255,12 +264,11 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState()}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
 		expect(mockInvoke).toHaveBeenCalledWith("abort_workflow", {
-			worktreePath: "/repo",
+			runId: "exec-001",
 		});
 	});
 
@@ -276,7 +284,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState()}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
@@ -296,7 +303,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState()}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
@@ -306,7 +312,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({ executionId: "exec-002" })}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 
@@ -320,7 +325,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState()}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		const tabs = screen.getAllByRole("tab");
@@ -329,13 +333,7 @@ describe("WorkflowPanel", () => {
 	});
 
 	it("shows empty state when no workflow and no history", () => {
-		render(
-			<WorkflowPanel
-				workflowState={null}
-				worktreePath="/repo"
-				chatSessionId="session-1"
-			/>,
-		);
+		render(<WorkflowPanel workflowState={null} worktreePath="/repo" />);
 		expect(screen.getByText("No workflow running")).toBeInTheDocument();
 	});
 
@@ -344,7 +342,6 @@ describe("WorkflowPanel", () => {
 			<WorkflowPanel
 				workflowState={makeWorkflowState({ state: { type: "completed" } })}
 				worktreePath="/repo"
-				chatSessionId="s1"
 			/>,
 		);
 		const badge = c1.querySelector(".bg-green-500\\/20");
@@ -359,7 +356,6 @@ describe("WorkflowPanel", () => {
 					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		const currentRow = screen.getByTestId("trace-item-step-1-1");
@@ -384,7 +380,6 @@ describe("WorkflowPanel", () => {
 					approvalOperations: { canReject: false },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		const currentRow = screen.getByTestId("trace-item-step-1-1");
@@ -403,14 +398,12 @@ describe("WorkflowPanel", () => {
 					state: { type: "waiting_approval" },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Approve step" }));
 		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
-			worktreePath: "/repo",
+			runId: "exec-001",
 			decision: "approve",
-			executionId: "exec-001",
 			stepName: "step-1",
 		});
 	});
@@ -431,7 +424,6 @@ describe("WorkflowPanel", () => {
 					state: { type: "waiting_approval" },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		const currentRow = screen.getByTestId("trace-item-step-1-1");
@@ -452,7 +444,6 @@ describe("WorkflowPanel", () => {
 					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
@@ -492,7 +483,6 @@ describe("WorkflowPanel", () => {
 					workflowDefinition,
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
@@ -504,9 +494,8 @@ describe("WorkflowPanel", () => {
 		).not.toBeDisabled();
 		fireEvent.click(screen.getByRole("button", { name: "Submit reject" }));
 		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
-			worktreePath: "/repo",
+			runId: "exec-001",
 			decision: { reject: { comment: "Please fix the bug" } },
-			executionId: "exec-001",
 			stepName: "review",
 		});
 		await waitFor(() => {
@@ -534,7 +523,6 @@ describe("WorkflowPanel", () => {
 					workflowDefinition,
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 
@@ -557,7 +545,6 @@ describe("WorkflowPanel", () => {
 					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
@@ -578,7 +565,6 @@ describe("WorkflowPanel", () => {
 					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
@@ -598,7 +584,6 @@ describe("WorkflowPanel", () => {
 					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
@@ -615,7 +600,6 @@ describe("WorkflowPanel", () => {
 					approvalOperations: { canReject: true },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Reject step" }));
@@ -626,7 +610,6 @@ describe("WorkflowPanel", () => {
 					state: { type: "running" },
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		expect(screen.queryByLabelText("Reject comment")).not.toBeInTheDocument();
@@ -650,7 +633,7 @@ describe("WorkflowPanel", () => {
 						},
 					]);
 				}
-				if (cmd === "list_workflow_executions") {
+				if (cmd === "list_workflow_runs_for_worktree") {
 					return Promise.resolve([]);
 				}
 				return Promise.resolve(undefined);
@@ -658,13 +641,7 @@ describe("WorkflowPanel", () => {
 		});
 
 		it("shows workflow list when + button is clicked", async () => {
-			render(
-				<WorkflowPanel
-					workflowState={null}
-					worktreePath="/repo"
-					chatSessionId="session-1"
-				/>,
-			);
+			render(<WorkflowPanel workflowState={null} worktreePath="/repo" />);
 			fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
 			await waitFor(() => {
 				expect(screen.getByText("quick-fix")).toBeInTheDocument();
@@ -673,13 +650,7 @@ describe("WorkflowPanel", () => {
 		});
 
 		it("shows task input after selecting a workflow", async () => {
-			render(
-				<WorkflowPanel
-					workflowState={null}
-					worktreePath="/repo"
-					chatSessionId="session-1"
-				/>,
-			);
+			render(<WorkflowPanel workflowState={null} worktreePath="/repo" />);
 			fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
 			await waitFor(() => {
 				expect(screen.getByText("quick-fix")).toBeInTheDocument();
@@ -692,13 +663,7 @@ describe("WorkflowPanel", () => {
 		});
 
 		it("invokes start_workflow with task when Start is clicked", async () => {
-			render(
-				<WorkflowPanel
-					workflowState={null}
-					worktreePath="/repo"
-					chatSessionId="session-1"
-				/>,
-			);
+			render(<WorkflowPanel workflowState={null} worktreePath="/repo" />);
 			fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
 			await waitFor(() => {
 				expect(screen.getByText("quick-fix")).toBeInTheDocument();
@@ -711,19 +676,14 @@ describe("WorkflowPanel", () => {
 			fireEvent.click(screen.getByText("Start"));
 			expect(mockInvoke).toHaveBeenCalledWith("start_workflow", {
 				workflowName: "quick-fix",
-				chatSessionId: "session-1",
+				worktreePath: "/repo",
 				task: "Fix the login bug",
+				permissionMode: "readonly",
 			});
 		});
 
 		it("invokes start_workflow with task: null when task input is empty", async () => {
-			render(
-				<WorkflowPanel
-					workflowState={null}
-					worktreePath="/repo"
-					chatSessionId="session-1"
-				/>,
-			);
+			render(<WorkflowPanel workflowState={null} worktreePath="/repo" />);
 			fireEvent.click(screen.getByRole("button", { name: "New workflow" }));
 			await waitFor(() => {
 				expect(screen.getByText("quick-fix")).toBeInTheDocument();
@@ -732,8 +692,9 @@ describe("WorkflowPanel", () => {
 			fireEvent.click(screen.getByText("Start"));
 			expect(mockInvoke).toHaveBeenCalledWith("start_workflow", {
 				workflowName: "quick-fix",
-				chatSessionId: "session-1",
+				worktreePath: "/repo",
 				task: null,
+				permissionMode: "readonly",
 			});
 		});
 	});
@@ -746,7 +707,6 @@ describe("WorkflowPanel", () => {
 					currentStepIndex: 0,
 				})}
 				worktreePath="/repo"
-				chatSessionId="session-1"
 			/>,
 		);
 		expect(
@@ -762,8 +722,8 @@ describe("WorkflowPanel", () => {
 
 	it("keeps past execution workflow status outside the trace scroll region", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_executions") {
-				return Promise.resolve(["exec-old"]);
+			if (cmd === "list_workflow_runs_for_worktree") {
+				return Promise.resolve(makeRunSummaries(["exec-old"], "/repo"));
 			}
 			if (cmd === "get_workflow_execution_state") {
 				return Promise.resolve(
@@ -783,13 +743,7 @@ describe("WorkflowPanel", () => {
 			return Promise.resolve(undefined);
 		});
 
-		render(
-			<WorkflowPanel
-				workflowState={null}
-				worktreePath="/repo"
-				chatSessionId="session-1"
-			/>,
-		);
+		render(<WorkflowPanel workflowState={null} worktreePath="/repo" />);
 		fireEvent.click(screen.getByRole("button", { name: "Execution history" }));
 		fireEvent.click(await screen.findByText("exec-old"));
 
@@ -803,8 +757,8 @@ describe("WorkflowPanel", () => {
 
 	it("shows an alert instead of Loading when past execution data fails to load", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_executions") {
-				return Promise.resolve(["exec-old"]);
+			if (cmd === "list_workflow_runs_for_worktree") {
+				return Promise.resolve(makeRunSummaries(["exec-old"], "/repo"));
 			}
 			if (cmd === "get_workflow_execution_state") {
 				return Promise.reject(new Error("state failed"));
@@ -815,13 +769,7 @@ describe("WorkflowPanel", () => {
 			return Promise.resolve(undefined);
 		});
 
-		render(
-			<WorkflowPanel
-				workflowState={null}
-				worktreePath="/repo"
-				chatSessionId="session-1"
-			/>,
-		);
+		render(<WorkflowPanel workflowState={null} worktreePath="/repo" />);
 		fireEvent.click(screen.getByRole("button", { name: "Execution history" }));
 		fireEvent.click(await screen.findByText("exec-old"));
 
@@ -834,8 +782,8 @@ describe("WorkflowPanel", () => {
 
 	it("shows an alert instead of Loading when past execution state is missing", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_executions") {
-				return Promise.resolve(["exec-old"]);
+			if (cmd === "list_workflow_runs_for_worktree") {
+				return Promise.resolve(makeRunSummaries(["exec-old"], "/repo"));
 			}
 			if (cmd === "get_workflow_execution_state") {
 				return Promise.resolve(null);
@@ -846,13 +794,7 @@ describe("WorkflowPanel", () => {
 			return Promise.resolve(undefined);
 		});
 
-		render(
-			<WorkflowPanel
-				workflowState={null}
-				worktreePath="/repo"
-				chatSessionId="session-1"
-			/>,
-		);
+		render(<WorkflowPanel workflowState={null} worktreePath="/repo" />);
 		fireEvent.click(screen.getByRole("button", { name: "Execution history" }));
 		fireEvent.click(await screen.findByText("exec-old"));
 
@@ -865,8 +807,8 @@ describe("WorkflowPanel", () => {
 
 	it("shows an alert instead of Loading when past execution log fails to load", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_executions") {
-				return Promise.resolve(["exec-old"]);
+			if (cmd === "list_workflow_runs_for_worktree") {
+				return Promise.resolve(makeRunSummaries(["exec-old"], "/repo"));
 			}
 			if (cmd === "get_workflow_execution_state") {
 				return Promise.resolve(
@@ -882,13 +824,7 @@ describe("WorkflowPanel", () => {
 			return Promise.resolve(undefined);
 		});
 
-		render(
-			<WorkflowPanel
-				workflowState={null}
-				worktreePath="/repo"
-				chatSessionId="session-1"
-			/>,
-		);
+		render(<WorkflowPanel workflowState={null} worktreePath="/repo" />);
 		fireEvent.click(screen.getByRole("button", { name: "Execution history" }));
 		fireEvent.click(await screen.findByText("exec-old"));
 

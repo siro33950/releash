@@ -496,8 +496,11 @@ impl WorkflowEventLog {
         }))
     }
 
-    /// 指定worktreeに属する実行IDを返す。
+    /// 指定worktreeに属する実行IDを返す（旧 `list_workflow_executions` Tauri command の
+    /// バックエンド。production からは廃止済みだが、過去 NDJSON の worktree フィルタを
+    /// 維持するため、テスト用補助メソッドとして温存する）。
     /// 各NDJSONファイルの1行目（WorkflowStarted）のworktree_pathと照合する。
+    #[cfg(test)]
     pub fn list_execution_ids_for_worktree(
         &self,
         worktree_path: &str,
