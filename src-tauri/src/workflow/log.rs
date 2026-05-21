@@ -204,13 +204,15 @@ mod tests {
     /// log.rs の責務縮退（[04]: NDJSON adapter に閉じる）に伴い、再構築は
     /// `event_projection::reconstruct_state_from_events` を経由する。テストの
     /// 表現を変えないために本ファイル内ヘルパーとして残す。
+    ///
+    /// [04] schema 境界: 復元用の `Workflow` は `RunStarted.workflow_definition` snapshot
+    /// からのみ取り出す。本 shim は workflow を引数で受け取らない。
     fn reconstruct_state_via_log(
         log: &WorkflowEventLog,
         run_id: &str,
-        workflow: &Workflow,
     ) -> Result<Option<crate::workflow::state::WorkflowState>, String> {
         let events = log.read_log(run_id)?;
-        reconstruct_state_from_events(run_id, &events, workflow)
+        reconstruct_state_from_events(run_id, &events)
     }
 
     /// テスト用の最小 Workflow。
@@ -676,8 +678,7 @@ mod tests {
     fn reconstruct_state_empty_log() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
-        let wf = make_test_workflow();
-        let result = reconstruct_state_via_log(&log, "nonexistent", &wf).unwrap();
+        let result = reconstruct_state_via_log(&log, "nonexistent").unwrap();
         assert!(result.is_none());
     }
 
@@ -692,7 +693,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: minimal_workflow_for_log("test"),
+            workflow_definition: wf.clone(),
             timestamp: 1000.0,
         })
         .unwrap();
@@ -765,9 +766,7 @@ mod tests {
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-1", &wf)
-            .unwrap()
-            .unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-1").unwrap().unwrap();
         assert_eq!(state.execution_id, "exec-1");
         assert_eq!(state.state, WorkflowExecutionState::Completed);
         assert_eq!(state.step_history.len(), 2);
@@ -808,7 +807,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: minimal_workflow_for_log("test"),
+            workflow_definition: wf.clone(),
             timestamp: 2000.0,
         })
         .unwrap();
@@ -836,9 +835,7 @@ mod tests {
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-2", &wf)
-            .unwrap()
-            .unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-2").unwrap().unwrap();
         assert_eq!(
             state.state,
             WorkflowExecutionState::Failed {
@@ -847,6 +844,8 @@ mod tests {
         );
         assert_eq!(state.step_states["plan"], "failed");
         assert_eq!(state.step_states["implement"], "pending");
+        // make_test_workflow() の nodes が snapshot 経由で復元されていること
+        assert_eq!(state.total_steps, wf.nodes.len());
     }
 
     /// 並列ブロックを含むワークフローのNDJSON復元テスト。
@@ -893,7 +892,7 @@ mod tests {
                 workflow_name: "parallel-wf".to_string(),
                 workflow_file_stem: "parallel-wf".to_string(),
                 worktree_path: "/repo".to_string(),
-                workflow_definition: minimal_workflow_for_log("test"),
+                workflow_definition: wf.clone(),
                 timestamp: 1000.0,
             },
             WorkflowEvent::NodeStarted {
@@ -1009,9 +1008,7 @@ mod tests {
             log.append(event).unwrap();
         }
 
-        let state = reconstruct_state_via_log(&log, "exec-p", &wf)
-            .unwrap()
-            .unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-p").unwrap().unwrap();
 
         assert_eq!(
             state.step_history.len(),
@@ -1045,7 +1042,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: minimal_workflow_for_log("test"),
+            workflow_definition: wf.clone(),
             timestamp: 1000.0,
         })
         .unwrap();
@@ -1073,9 +1070,7 @@ mod tests {
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-r", &wf)
-            .unwrap()
-            .unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-r").unwrap().unwrap();
 
         assert_eq!(state.step_history.len(), 1);
         assert_eq!(state.step_history[0].step_name, "review");
@@ -1100,7 +1095,7 @@ mod tests {
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: minimal_workflow_for_log("test"),
+            workflow_definition: wf.clone(),
             timestamp: 1000.0,
         })
         .unwrap();
@@ -1120,9 +1115,7 @@ mod tests {
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-ap", &wf)
-            .unwrap()
-            .unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-ap").unwrap().unwrap();
         assert_eq!(state.state, WorkflowExecutionState::WaitingApproval);
         assert_eq!(state.current_step_name, "review");
         // workflow.nodes は plan/implement/review の順なので review の index は 2。
@@ -1166,7 +1159,7 @@ mod tests {
             workflow_name: "approval-then-next".to_string(),
             workflow_file_stem: "approval-then-next".to_string(),
             worktree_path: "/repo".to_string(),
-            workflow_definition: minimal_workflow_for_log("test"),
+            workflow_definition: wf.clone(),
             timestamp: 2000.0,
         })
         .unwrap();
@@ -1215,9 +1208,7 @@ mod tests {
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-an", &wf)
-            .unwrap()
-            .unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-an").unwrap().unwrap();
         assert_eq!(
             state.state,
             WorkflowExecutionState::Running,

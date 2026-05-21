@@ -645,30 +645,11 @@ pub async fn get_workflow_execution_state(
     let state = tokio::task::spawn_blocking(move || {
         let event_log = WorkflowEventLog::new(&data_dir);
         let events = event_log.read_log(&run_id)?;
-        // ログのスナップショット（WorkflowStarted.workflow_definition）からのみ復元する。
+        // [04] schema 境界: 復元は `RunStarted.workflow_definition` snapshot 経由のみ。
         // 旧 NDJSON（workflow_definition フィールドを欠く / 旧 shape）は新 schema で
-        // deserialize できず、本ルートには到達しない（[02] で互換破棄）。
-        let started = events.iter().find_map(|e| match e {
-            super::event::WorkflowEvent::RunStarted {
-                workflow_definition,
-                workflow_file_stem,
-                workflow_name,
-                ..
-            } => {
-                let stem = if workflow_file_stem.is_empty() {
-                    workflow_name.clone()
-                } else {
-                    workflow_file_stem.clone()
-                };
-                Some((workflow_definition.clone(), stem))
-            }
-            _ => None,
-        });
-        let Some((snapshot_def, _file_stem)) = started else {
-            return Ok(None);
-        };
-        let workflow = snapshot_def;
-        super::event_projection::reconstruct_state_from_events(&run_id, &events, &workflow)
+        // deserialize できず、本ルートには到達しない（[02] で互換破棄）。snapshot 抽出は
+        // `reconstruct_state_from_events` の内部不変条件として閉じ込めてある。
+        super::event_projection::reconstruct_state_from_events(&run_id, &events)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))??;
