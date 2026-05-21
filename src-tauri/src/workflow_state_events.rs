@@ -84,8 +84,8 @@ pub(crate) async fn build_workflow_state_view(
     )
 }
 
-pub(crate) async fn emit_workflow_state(
-    app: &tauri::AppHandle,
+pub(crate) async fn emit_workflow_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     worktree_path: &str,
     state: crate::workflow::state::WorkflowState,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -97,8 +97,8 @@ pub(crate) async fn emit_workflow_state(
     }
 }
 
-pub(crate) async fn emit_workflow_step_target_state(
-    app: &tauri::AppHandle,
+pub(crate) async fn emit_workflow_step_target_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     engine: &crate::workflow::engine::WorkflowEngine,
     target: &crate::workflow_step_lifecycle::ResolvedWorkflowStepSession,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -109,8 +109,8 @@ pub(crate) async fn emit_workflow_step_target_state(
     }
 }
 
-pub(crate) async fn emit_after_workflow_step_message(
-    app: &tauri::AppHandle,
+pub(crate) async fn emit_after_workflow_step_message<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     engine: &crate::workflow::engine::WorkflowEngine,
     session: &crate::session::ChatSession,
     handles: &Arc<Mutex<AgentProcessMap>>,
@@ -124,8 +124,8 @@ pub(crate) async fn emit_after_workflow_step_message(
     }
 }
 
-pub(crate) async fn emit_workflow_state_snapshot(
-    app: &tauri::AppHandle,
+pub(crate) async fn emit_workflow_state_snapshot<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     worktree_path: &str,
     workflow_state: crate::workflow::state::WorkflowState,
 ) {

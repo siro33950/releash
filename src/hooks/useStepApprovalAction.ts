@@ -28,7 +28,10 @@ export function useStepApprovalAction({
 	const approve = useCallback(() => {
 		return invoke("approve_workflow_step", {
 			runId: executionId,
-			decision: "approve",
+			// [04] Command / Event Boundary（issues-1013）: ApprovalDecision::Approve は
+			// comment を内包する struct variant となり、wire 形式は
+			// `{ approve: { comment: null } }` 等。旧 unit variant `"approve"` は破棄済み。
+			decision: { approve: {} },
 			stepName,
 		})
 			.then(() => setApprovalError(null))
@@ -56,7 +59,7 @@ export function useStepApprovalAction({
 		}
 		return invoke("approve_workflow_step", {
 			runId: executionId,
-			decision: { reject: { comment: rejectComment } },
+			decision: { reject: { reason: rejectComment } },
 			stepName,
 		})
 			.then(() => {

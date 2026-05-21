@@ -191,7 +191,7 @@ describe("WorkflowTrace", () => {
 
 		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
 			runId: "exec-001",
-			decision: "approve",
+			decision: { approve: {} },
 			stepName: "review",
 		});
 
@@ -624,17 +624,24 @@ describe("WorkflowTrace", () => {
 				workflowState={makeWorkflowState()}
 				events={[
 					{
-						event: "workflow_started",
-						execution_id: "exec-001",
+						event: "run_started",
+						run_id: "exec-001",
 						workflow_name: "test-workflow",
+						workflow_file_stem: "test-workflow",
 						worktree_path: "/repo",
+						workflow_definition: {
+							name: "test-workflow",
+							description: "",
+							builtin: false,
+							nodes: [],
+						},
 						timestamp: 1000,
 					},
 					{
-						event: "step_started",
-						execution_id: "exec-001",
+						event: "node_started",
+						run_id: "exec-001",
 						workflow_name: "test-workflow",
-						step_name: "plan",
+						node_name: "plan",
 						execution_count: 1,
 						timestamp: 1001,
 					},
@@ -642,8 +649,8 @@ describe("WorkflowTrace", () => {
 			/>,
 		);
 		expect(screen.getByText("Event log")).toBeInTheDocument();
-		expect(screen.getByText("workflow_started")).toBeInTheDocument();
-		expect(screen.getByText("step_started")).toBeInTheDocument();
+		expect(screen.getByText("run_started")).toBeInTheDocument();
+		expect(screen.getByText("node_started")).toBeInTheDocument();
 		expect(screen.getByText("(plan)")).toBeInTheDocument();
 	});
 
@@ -969,27 +976,27 @@ describe("WorkflowTrace", () => {
 				workflowState={makeWorkflowState()}
 				events={[
 					{
-						event: "step_started",
-						execution_id: "exec-001",
+						event: "node_started",
+						run_id: "exec-001",
 						workflow_name: "test-workflow",
-						step_name: "plan",
+						node_name: "plan",
 						execution_count: 1,
 						timestamp: 1001,
 					},
 					{
 						event: "contract_repair_requested",
-						execution_id: "exec-001",
+						run_id: "exec-001",
 						workflow_name: "test-workflow",
-						step_name: "plan",
+						node_name: "plan",
 						attempt: 1,
 						violation_reason: "missing verdict field",
 						timestamp: 1002,
 					},
 					{
 						event: "contract_repair_requested",
-						execution_id: "exec-001",
+						run_id: "exec-001",
 						workflow_name: "test-workflow",
-						step_name: "plan",
+						node_name: "plan",
 						attempt: 2,
 						violation_reason: "invalid format",
 						timestamp: 1003,

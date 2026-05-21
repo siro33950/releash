@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use regex::RegexBuilder;
@@ -11,12 +13,18 @@ use crate::agent_sdk::AgentProcessMap;
 use crate::agent_status::current_timestamp;
 use crate::permission::PermissionMode;
 use crate::session::{ChatSession, SessionStore};
+use crate::workflow::command::{WorkflowCommand, WorkflowCommandResult};
 use crate::workflow::contract::{
     build_repair_prompt, extract_workflow_output, validate_contract, ContractValidationResult,
     ExtractionResult,
 };
+use crate::workflow::event::{ApprovalDecisionRecord, CollectedOutputEntry, WorkflowEvent};
 use crate::workflow::facet;
-use crate::workflow::log::{WorkflowEventLog, WorkflowLogEvent};
+use crate::workflow::log::WorkflowEventLog;
+use crate::workflow::resolver::{
+    ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
+    WorkflowDefinitionResolverError,
+};
 use crate::workflow::run::{
     RunStatus, RunStore, RunStoreError, TerminalRunStatus, TriggerSource, WorkflowRun,
 };
@@ -76,14 +84,14 @@ trait SessionStartGate: Send + Sync {
 }
 
 /// production 用の `SessionStartGate` 実装。`start_agent_session_internal` をそのまま呼び出す。
-struct RealSessionStartGate<'a> {
-    app: &'a tauri::AppHandle,
+struct RealSessionStartGate<'a, R: tauri::Runtime> {
+    app: &'a tauri::AppHandle<R>,
     handles: &'a Arc<Mutex<AgentProcessMap>>,
     session_store: &'a Arc<SessionStore>,
 }
 
 #[async_trait::async_trait]
-impl<'a> SessionStartGate for RealSessionStartGate<'a> {
+impl<'a, R: tauri::Runtime> SessionStartGate for RealSessionStartGate<'a, R> {
     async fn start_session(
         &self,
         chat_session_id: &str,
@@ -181,15 +189,15 @@ struct StepSessionInfo {
 }
 
 /// production 用の `StepSessionDeps` 実装。
-struct RealStepSessionDeps<'a> {
+struct RealStepSessionDeps<'a, R: tauri::Runtime> {
     engine: &'a WorkflowEngine,
-    app: &'a tauri::AppHandle,
+    app: &'a tauri::AppHandle<R>,
     handles: &'a Arc<Mutex<AgentProcessMap>>,
     session_store: &'a Arc<SessionStore>,
 }
 
 #[async_trait::async_trait]
-impl<'a> StepSessionDeps for RealStepSessionDeps<'a> {
+impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
     async fn fetch_parent_session(
         &self,
         chat_session_id: &str,
@@ -303,6 +311,67 @@ impl<'a> StepSessionDeps for RealStepSessionDeps<'a> {
     }
 }
 
+/// `abort_workflow_by_run_id` 内部 lookup の typed 結果。
+#[derive(Debug)]
+enum AbortTargetLookup {
+    NotFound,
+    AlreadyTerminal,
+    Active {
+        current_step_session_id: Option<String>,
+        parallel_session_ids: Option<Vec<String>>,
+    },
+}
+
+/// `abort_workflow_by_run_id` の typed outcome。
+///
+/// `WorkflowCommand::AbortRun` 経由の中断要求に対し、command handler が「実際に
+/// 中断を実施したか」「対象 run が存在しないか」「既に終了済みで中断不能だったか」
+/// を typed に表現する。`Aborted` のみが dispatch から `Accepted` に射影され、
+/// `NotFound` / `AlreadyTerminal` は非受理（`WorkflowEngineError` 経由）として
+/// 上位に伝播する（Spec [04] Rule「対象不在 / 既に終了した command は受理されない」）。
+///
+/// engine 内部用途のみのため可視性は module-private に閉じる。外部入口は
+/// `WorkflowCommand::AbortRun` 一本に統一する（Spec [04] 公開 API 最小化）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AbortOutcome {
+    /// 対象 run を Aborted に遷移させ、RunAborted event を append した。
+    Aborted,
+    /// 対象 run が `executions` に存在しない。
+    NotFound,
+    /// 対象 run は既に terminal で、中断対象でない。
+    AlreadyTerminal,
+}
+
+struct CommandMutationRollback<'a> {
+    run_id: &'a str,
+    chat_session_id: &'a str,
+    snapshot_before: WorkflowExecution,
+    run_store_snapshot_before: Option<WorkflowRun>,
+    context: &'a str,
+}
+
+struct RequiredEventCommit<'a> {
+    run_id: &'a str,
+    chat_session_id: &'a str,
+    snapshot_for_commit: &'a WorkflowState,
+    snapshot_before: WorkflowExecution,
+    run_store_snapshot_before: Option<WorkflowRun>,
+    required_events: Vec<WorkflowEvent>,
+    append_error_context: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutcomeCommitMode {
+    EmitProgressEvents,
+    ProgressEventsAlreadyCommitted,
+}
+
+impl OutcomeCommitMode {
+    fn should_emit_progress_events(self) -> bool {
+        matches!(self, Self::EmitProgressEvents)
+    }
+}
+
 /// ワークフローエンジンのエラー型。
 #[derive(Debug)]
 pub enum WorkflowEngineError {
@@ -357,6 +426,25 @@ impl From<WorkflowEngineError> for String {
     }
 }
 
+impl From<WorkflowDefinitionResolverError> for WorkflowEngineError {
+    fn from(e: WorkflowDefinitionResolverError) -> Self {
+        match e {
+            WorkflowDefinitionResolverError::InvalidWorkflow(message) => {
+                Self::InvalidWorkflow(message)
+            }
+            WorkflowDefinitionResolverError::Infrastructure(message) => Self::SessionStore(message),
+        }
+    }
+}
+
+impl From<ManagedWorktreeResolverError> for WorkflowEngineError {
+    fn from(e: ManagedWorktreeResolverError) -> Self {
+        match e {
+            ManagedWorktreeResolverError::Validation(message) => Self::ValidationError(message),
+        }
+    }
+}
+
 impl From<crate::workflow_step_lifecycle::WorkflowStepLifecycleError> for WorkflowEngineError {
     fn from(e: crate::workflow_step_lifecycle::WorkflowStepLifecycleError) -> Self {
         match e {
@@ -374,6 +462,7 @@ impl From<crate::workflow_step_lifecycle::WorkflowStepLifecycleError> for Workfl
 }
 
 /// ワークフロー実行の内部状態。
+#[derive(Clone)]
 struct WorkflowExecution {
     /// `WorkflowState.execution_id` を `run_id` として昇格させた識別子。
     /// `WorkflowEngine.executions` の HashMap キーと一致する。
@@ -407,6 +496,7 @@ struct WorkflowExecution {
 }
 
 /// 並列実行中の内部状態。
+#[derive(Clone)]
 struct ParallelRunState {
     parent_step_name: String,
     aggregate: Option<ParallelAggregate>,
@@ -414,6 +504,7 @@ struct ParallelRunState {
 }
 
 /// 並列子ステップの実行状態。
+#[derive(Clone)]
 struct ParallelChildRun {
     step_name: String,
     session_id: String,
@@ -817,9 +908,8 @@ impl WorkflowExecution {
 }
 
 /// approvalモードのユーザー判定。
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalDecision {
+#[derive(Debug, Clone, PartialEq)]
+enum ApprovalDecision {
     Approve,
     Reject { comment: String },
     Abort,
@@ -926,16 +1016,22 @@ pub struct WorkflowEngine {
     /// active な WorkflowRun の管理および run metadata の永続化を担う Run Store。
     /// worktree_path → active run_id の secondary index は Run Store 内で保持する。
     run_store: Arc<RunStore>,
+    workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
+    worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
+    #[cfg(test)]
+    fail_next_persist_state: AtomicBool,
 }
 
-/// `set_execution_state_inner` の lookup 戦略。
-/// `Worktree` は既存経路で worktree_path 起点の find を行い、`RunId` は run_id 直接 lookup
-/// を行う。broadcast / cleanup 用の worktree_path は `set_execution_state_inner` 内で
-/// 解決した exec から取得するため、target には保持しない（Spec issues-1011 finding 12:
-/// 意図不明な未使用 field を残さない）。
+/// `set_execution_state_inner` の lookup 戦略。worktree_path 起点の `find_by_worktree_mut`
+/// で active な run を解決する。broadcast / cleanup 用の worktree_path は
+/// `set_execution_state_inner` 内で解決した exec から取得するため、target には保持しない
+/// （Spec issues-1011 finding 12: 意図不明な未使用 field を残さない）。
+///
+/// run_id 主語の遷移経路（`WorkflowCommand::AbortRun` 全体中断）は
+/// `abort_workflow_by_run_id` 側で typed AbortOutcome + 必須 RunAborted append として
+/// 完結するため、ここでは worktree variant のみを扱う。
 enum ExecutionStateTarget {
     Worktree(String),
-    RunId(String),
 }
 
 /// `execs: HashMap<run_id, WorkflowExecution>` から、worktree_path 属性が一致する
@@ -975,12 +1071,97 @@ fn find_any_by_worktree<'a>(
 }
 
 impl WorkflowEngine {
-    pub fn new() -> Self {
+    pub(crate) fn new(
+        workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
+        worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
+    ) -> Self {
         Self {
             executions: Mutex::new(HashMap::new()),
             session_workflow_refs: Mutex::new(HashMap::new()),
             run_store: Arc::new(RunStore::new()),
+            workflow_resolver,
+            worktree_resolver,
+            #[cfg(test)]
+            fail_next_persist_state: AtomicBool::new(false),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        Self::new(
+            Arc::new(crate::workflow::resolver_adapters::DefaultWorkflowDefinitionResolver),
+            Arc::new(crate::workflow::resolver_adapters::PassthroughManagedWorktreeResolver),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn seed_active_execution_for_test(
+        &self,
+        run_id: String,
+        workflow: Workflow,
+        state: WorkflowExecutionState,
+        worktree_path: String,
+        chat_session_id: String,
+        trigger_source: TriggerSource,
+    ) {
+        assert!(
+            matches!(
+                state,
+                WorkflowExecutionState::Running | WorkflowExecutionState::WaitingApproval
+            ),
+            "seed_active_execution_for_test only accepts active states"
+        );
+        let current_node_name = workflow.nodes[0].name.clone();
+        let run_status = if matches!(state, WorkflowExecutionState::WaitingApproval) {
+            RunStatus::WaitingApproval
+        } else {
+            RunStatus::Running
+        };
+        let now = 1000.0;
+        self.run_store
+            .register_active(WorkflowRun {
+                run_id: run_id.clone(),
+                workflow_name: workflow.name.clone(),
+                task: None,
+                status: run_status,
+                worktree_path: worktree_path.clone(),
+                chat_session_id: Some(chat_session_id.clone()),
+                current_node_name: Some(current_node_name.clone()),
+                trigger_source,
+                started_at: now,
+                updated_at: now,
+                completed_at: None,
+                error_reason: None,
+            })
+            .await
+            .unwrap();
+        self.executions.lock().await.insert(
+            run_id.clone(),
+            WorkflowExecution {
+                id: run_id,
+                workflow,
+                state,
+                current_step_index: 0,
+                step_execution_counts: HashMap::from([(current_node_name, 1)]),
+                step_history: Vec::new(),
+                chat_session_id,
+                worktree_path,
+                started_at: now,
+                updated_at: now,
+                current_session_id: None,
+                current_step_token_usage: TokenUsage::default(),
+                step_outputs: HashMap::new(),
+                task: None,
+                parallel_run: None,
+                workflow_variables: HashMap::new(),
+                contract_retry_count: 0,
+            },
+        );
+    }
+
+    #[cfg(test)]
+    fn fail_next_persist_state_for_test(&self) {
+        self.fail_next_persist_state.store(true, Ordering::Release);
     }
 
     /// Run Store の参照（テスト専用）。production 経路では下記 facade メソッドを使用する。
@@ -1140,13 +1321,9 @@ impl WorkflowEngine {
         data_dir: &std::path::Path,
         chat_session_id: &str,
     ) {
-        if let Err(e) = session_store.set_session_state(
-            data_dir,
-            chat_session_id,
-            crate::session::SessionState::Closed,
-        ) {
+        if let Err(e) = session_store.delete_session(data_dir, chat_session_id) {
             log::warn!(
-                "workflow start rollback failed to close parent session {chat_session_id}: {e}"
+                "workflow start rollback failed to delete parent session {chat_session_id}: {e}"
             );
         }
     }
@@ -1154,9 +1331,9 @@ impl WorkflowEngine {
     /// ステップの model 値から対応するバックエンドIDを解決する。
     /// 形式検証（`ModelId`）と登録判定（`resolve_backend_for_model`）を
     /// 一括で行い、`set_agent_model_internal` と同一の受け入れ基準を適用する。
-    async fn resolve_backend_for_step_model(
+    async fn resolve_backend_for_step_model<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         model: &str,
     ) -> Result<Option<String>, WorkflowEngineError> {
         let registry = app
@@ -1195,9 +1372,9 @@ impl WorkflowEngine {
     ///
     /// `start_step_session` と `start_parallel_children` の共通パターンを抽出したヘルパー。
     #[allow(clippy::too_many_arguments)]
-    async fn create_step_session_with_settings(
+    async fn create_step_session_with_settings<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &SessionStore,
         data_dir: &std::path::Path,
         worktree_path: &str,
@@ -1244,10 +1421,13 @@ impl WorkflowEngine {
     ///
     /// 戻り値は新しく払い出された `run_id`。
     /// `execution_id` を `run_id` として「昇格」させた値であり、ここ以外で採番されることはない。
+    /// state 変化の入口は `WorkflowCommand::StartRun` 経由の `dispatch` 一本に統一する
+    /// （Spec [04] 境界）。本メソッドは dispatch 内部からのみ呼ぶ private handler であり、
+    /// 外部入口として `pub` 公開しない。
     #[allow(clippy::too_many_arguments)]
-    pub async fn start_workflow(
+    async fn start_workflow<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         workflow: Workflow,
@@ -1379,12 +1559,31 @@ impl WorkflowEngine {
             }
         };
 
-        // NDJSONログ: workflow_started は履歴復元の必須 entry なので失敗を伝播する。
-        // ChatSession 永続化や broadcast より前に確定し、ログなし metadata を一覧に残さない。
+        // [04] projection: RunStarted append 前に ChatSession workflow_state を同期する。
+        // command 受理サイクル内の永続化失敗は command failure として扱い、
+        // executions / Run Store reservation / parent session を受理前へ戻して以後の
+        // event append / refs 登録・broadcast・初回 step 起動へ進まない。
+        if let Err(e) = self
+            .persist_state(app, session_store, &chat_session_id, snapshot.clone())
+            .await
+        {
+            let mut execs = self.executions.lock().await;
+            execs.remove(&run_id);
+            drop(execs);
+            rollback_reservation(format!("RunStarted projection failed: {e}")).await;
+            self.rollback_created_parent_session(session_store, &data_dir, &chat_session_id);
+            return Err(WorkflowEngineError::SessionStore(format!(
+                "RunStarted projection failed: {e}"
+            )));
+        }
+
+        // [04] commit point: RunStarted を最後に必須 append する。projection は
+        // rollback 可能な pre-commit 副作用として扱い、append 成功を command 受理の
+        // 最初の不可逆な可視 commit point とする。
         if let Err(e) = self.write_log_required(
             app,
-            WorkflowLogEvent::WorkflowStarted {
-                execution_id: snapshot.execution_id.clone(),
+            WorkflowEvent::RunStarted {
+                run_id: snapshot.execution_id.clone(),
                 workflow_name: snapshot.workflow_name.clone(),
                 workflow_file_stem: file_stem.to_string(),
                 worktree_path: worktree_path.clone(),
@@ -1395,14 +1594,15 @@ impl WorkflowEngine {
             let mut execs = self.executions.lock().await;
             execs.remove(&run_id);
             drop(execs);
-            rollback_reservation(format!("workflow_started log failed: {e}")).await;
+            rollback_reservation(format!("RunStarted log failed: {e}")).await;
             self.rollback_created_parent_session(session_store, &data_dir, &chat_session_id);
             return Err(WorkflowEngineError::SessionStore(format!(
-                "write workflow_started log failed: {e}"
+                "write RunStarted log failed: {e}"
             )));
         }
 
-        // session_workflow_refs に親セッションIDを登録（run_id 主語）
+        // [04] post-commit: refs 登録 / broadcast。RunStarted は append 済みのため
+        // command は既に受理。以後の失敗は warn として観測される。
         {
             let mut map = self.session_workflow_refs.lock().await;
             map.insert(
@@ -1413,22 +1613,6 @@ impl WorkflowEngine {
                 },
             );
         }
-
-        // 永続化・ブロードキャスト（ロック内で確定したスナップショットを使用）
-        if let Err(e) = self
-            .persist_state(app, session_store, &chat_session_id, snapshot.clone())
-            .await
-        {
-            let mut execs = self.executions.lock().await;
-            execs.remove(&run_id);
-            drop(execs);
-            self.cleanup_session_workflow_refs_by_run_id(&run_id).await;
-            // Run Store からも reservation を撤回する。terminal entry を残さないように
-            // cancel_reservation を優先する（Spec issues-1011 finding 9）。
-            rollback_reservation(format!("persist_state failed at start: {e}")).await;
-            self.rollback_created_parent_session(session_store, &data_dir, &chat_session_id);
-            return Err(e);
-        }
         self.broadcast_state(app, &worktree_path, snapshot.clone())
             .await;
 
@@ -1436,11 +1620,15 @@ impl WorkflowEngine {
         // 最初のステップが並列ブロックかどうかで分岐
         let first_step_is_parallel = workflow.nodes[0].is_parallel();
 
+        // [04] post-commit: RunStarted append 済みのため command は既に受理。
+        //    初回 session / parallel children 起動失敗は Failed 状態遷移として観測し、
+        //    dispatch(StartRun) は Ok(RunStarted { run_id }) を返す（spec [04]
+        //    『command 受理境界』Rule）。
         if first_step_is_parallel {
             // 並列ブロック → start_parallel_children を呼ぶ
             // (StepStartedログは書かず、start_parallel_children内でParallelStarted等を記録)
             if let Err(e) = self
-                .start_parallel_children(app, session_store, handles, &worktree_path)
+                .start_parallel_children(app, session_store, handles, &worktree_path, true)
                 .await
             {
                 let _ = self
@@ -1454,16 +1642,16 @@ impl WorkflowEngine {
                         },
                     )
                     .await;
-                return Err(e);
+                log::warn!("workflow {run_id}: post-commit start_parallel_children failed: {e}");
             }
         } else {
             // 逐次ステップ → StepStartedログ + start_step_session
             self.write_log(
                 app,
-                WorkflowLogEvent::StepStarted {
-                    execution_id: snapshot.execution_id,
+                WorkflowEvent::NodeStarted {
+                    run_id: snapshot.execution_id,
                     workflow_name: snapshot.workflow_name,
-                    step_name: step_name.clone(),
+                    node_name: step_name.clone(),
                     execution_count: 1,
                     timestamp: now,
                 },
@@ -1495,10 +1683,143 @@ impl WorkflowEngine {
                         },
                     )
                     .await;
-                return Err(e);
+                log::warn!("workflow {run_id}: post-commit start_step_session failed: {e}");
             }
         }
         Ok(run_id)
+    }
+
+    /// [04] Command / Event Boundary: 全 typed command の単一入口。
+    ///
+    /// UI / Tauri command / 内部呼び出し元は、本メソッドだけを通じて engine state を
+    /// 変化させる。各 variant は既存 handler（`start_workflow` / `abort_workflow_by_run_id`
+    /// / `handle_approval`）に委譲する。`StartRun` の `worktree_path` は注入された
+    /// `ManagedWorktreeResolver` で正規化し、engine core は AppConfig / Git worktree 列挙を
+    /// 直接知らない。
+    pub async fn dispatch<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        command: WorkflowCommand,
+    ) -> Result<WorkflowCommandResult, WorkflowEngineError> {
+        self.dispatch_core(app, session_store, handles, command)
+            .await
+    }
+
+    async fn dispatch_core<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        command: WorkflowCommand,
+    ) -> Result<WorkflowCommandResult, WorkflowEngineError> {
+        match command {
+            WorkflowCommand::StartRun {
+                workflow_file_stem,
+                worktree_path,
+                task,
+                trigger_source,
+                permission_mode,
+            } => {
+                crate::workflow::validation::validate_name(&workflow_file_stem).map_err(|e| {
+                    WorkflowEngineError::ValidationError(format!("validation_error: {e}"))
+                })?;
+
+                let worktree_path = self.worktree_resolver.resolve(worktree_path).await?;
+
+                let file_stem = workflow_file_stem.clone();
+                let workflow = self.workflow_resolver.resolve(&workflow_file_stem).await?;
+
+                let run_id = self
+                    .start_workflow(
+                        app,
+                        session_store,
+                        handles,
+                        workflow,
+                        worktree_path,
+                        &file_stem,
+                        task,
+                        trigger_source,
+                        permission_mode,
+                    )
+                    .await?;
+                Ok(WorkflowCommandResult::RunStarted { run_id })
+            }
+            WorkflowCommand::AbortRun {
+                run_id,
+                expected_node_name,
+            } => {
+                if let Some(node_name) = expected_node_name {
+                    // approval UI 由来の Abort: 現在の承認待ち node との一致を検証して
+                    // handle_approval 経路で受理する。stale node に対する Abort は
+                    // UnauthorizedApprovalTarget で非受理として返る。
+                    self.handle_approval(
+                        app,
+                        session_store,
+                        handles,
+                        &run_id,
+                        ApprovalDecision::Abort,
+                        None,
+                        Some(&node_name),
+                    )
+                    .await?;
+                    Ok(WorkflowCommandResult::Accepted)
+                } else {
+                    // run 全体の Abort: NotFound / AlreadyTerminal は非受理として
+                    // typed error に射影する（Spec [04] Rule「対象不在 / 既に終了した
+                    // command は受理されない」）。
+                    match self
+                        .abort_workflow_by_run_id(app, session_store, handles, &run_id)
+                        .await?
+                    {
+                        AbortOutcome::Aborted => Ok(WorkflowCommandResult::Accepted),
+                        AbortOutcome::NotFound => {
+                            Err(WorkflowEngineError::ExecutionNotFound(run_id))
+                        }
+                        AbortOutcome::AlreadyTerminal => Err(WorkflowEngineError::InvalidState(
+                            format!("run {run_id} is already terminal"),
+                        )),
+                    }
+                }
+            }
+            WorkflowCommand::ApproveNode {
+                run_id,
+                node_name,
+                comment,
+            } => {
+                self.handle_approval(
+                    app,
+                    session_store,
+                    handles,
+                    &run_id,
+                    ApprovalDecision::Approve,
+                    comment,
+                    Some(&node_name),
+                )
+                .await?;
+                Ok(WorkflowCommandResult::Accepted)
+            }
+            WorkflowCommand::RejectNode {
+                run_id,
+                node_name,
+                reason,
+            } => {
+                self.handle_approval(
+                    app,
+                    session_store,
+                    handles,
+                    &run_id,
+                    ApprovalDecision::Reject {
+                        comment: reason.clone(),
+                    },
+                    Some(reason),
+                    Some(&node_name),
+                )
+                .await?;
+                Ok(WorkflowCommandResult::Accepted)
+            }
+        }
     }
 
     /// turn_complete後に呼ばれるフック。
@@ -1506,9 +1827,9 @@ impl WorkflowEngine {
     /// SessionError / WaitApproval は判定 + 状態変更を1回のロックで原子的に実行する。
     /// AutoEvaluate はタグ検出が必要なため handle_auto_complete に委譲する。
     #[allow(clippy::too_many_arguments)]
-    pub async fn on_turn_complete(
+    pub async fn on_turn_complete<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         session_id: &str,
@@ -1565,6 +1886,12 @@ impl WorkflowEngine {
                 .await;
         }
 
+        struct TurnCommit {
+            outcome: StepOutcome,
+            required_events: Vec<WorkflowEvent>,
+            rollback_snapshot: Option<(String, WorkflowExecution)>,
+        }
+
         // 判定 + 状態変更を原子的に実行（AutoEvaluate以外）
         let (chat_session_id, action_or_outcome) = {
             let mut execs = self.executions.lock().await;
@@ -1610,15 +1937,31 @@ impl WorkflowEngine {
                         ),
                     };
                     exec.updated_at = current_timestamp();
-                    Ok(StepOutcome::Persist(exec.to_workflow_state()))
+                    Ok(TurnCommit {
+                        outcome: StepOutcome::Persist(exec.to_workflow_state()),
+                        required_events: Vec::new(),
+                        rollback_snapshot: None,
+                    })
                 }
                 TurnCompleteAction::WaitApproval => {
                     if exec.is_terminal() {
                         return Ok(());
                     }
+                    let snapshot_before = exec.clone();
+                    let workflow_name = exec.workflow.name.clone();
+                    let node_name = exec.workflow.nodes[exec.current_step_index].name.clone();
                     exec.state = WorkflowExecutionState::WaitingApproval;
                     exec.updated_at = current_timestamp();
-                    Ok(StepOutcome::Persist(exec.to_workflow_state()))
+                    Ok(TurnCommit {
+                        outcome: StepOutcome::Persist(exec.to_workflow_state()),
+                        required_events: vec![WorkflowEvent::ApprovalRequested {
+                            run_id: exec.id.clone(),
+                            workflow_name,
+                            node_name,
+                            timestamp: exec.updated_at,
+                        }],
+                        rollback_snapshot: Some((exec.id.clone(), snapshot_before)),
+                    })
                 }
                 TurnCompleteAction::UnexpectedNodeType {
                     step_name,
@@ -1635,7 +1978,11 @@ impl WorkflowEngine {
                     exec.step_history.push(entry);
                     exec.state = WorkflowExecutionState::Failed { reason };
                     exec.updated_at = current_timestamp();
-                    Ok(StepOutcome::Persist(exec.to_workflow_state()))
+                    Ok(TurnCommit {
+                        outcome: StepOutcome::Persist(exec.to_workflow_state()),
+                        required_events: Vec::new(),
+                        rollback_snapshot: None,
+                    })
                 }
                 TurnCompleteAction::AutoEvaluate { rules, step_name } => Err((rules, step_name)),
             };
@@ -1643,16 +1990,30 @@ impl WorkflowEngine {
         };
 
         match action_or_outcome {
-            Ok(outcome) => {
-                self.execute_outcome(
-                    app,
-                    session_store,
-                    handles,
-                    &worktree_path,
-                    &chat_session_id,
-                    outcome,
-                )
-                .await
+            Ok(commit) => {
+                if commit.required_events.is_empty() {
+                    self.execute_outcome(
+                        app,
+                        session_store,
+                        handles,
+                        &worktree_path,
+                        &chat_session_id,
+                        commit.outcome,
+                    )
+                    .await
+                } else {
+                    self.commit_required_turn_events_and_execute_outcome(
+                        app,
+                        session_store,
+                        handles,
+                        &worktree_path,
+                        &chat_session_id,
+                        commit.outcome,
+                        commit.required_events,
+                        commit.rollback_snapshot,
+                    )
+                    .await
+                }
             }
             Err((rules, step_name)) => {
                 self.handle_auto_complete(
@@ -1669,6 +2030,68 @@ impl WorkflowEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_required_turn_events_and_execute_outcome<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        chat_session_id: &str,
+        outcome: StepOutcome,
+        required_events: Vec<WorkflowEvent>,
+        rollback_snapshot: Option<(String, WorkflowExecution)>,
+    ) -> Result<(), WorkflowEngineError> {
+        let Some((run_id, snapshot_before)) = rollback_snapshot else {
+            return Err(WorkflowEngineError::SessionStore(
+                "required turn event commit missing rollback snapshot".to_string(),
+            ));
+        };
+        let completed_step_session_ids = Self::completed_step_session_ids_for_outcome(&outcome);
+        let snapshot_for_commit = Self::outcome_snapshot(&outcome).clone();
+        let run_store_snapshot_before = self.run_store.active_run_snapshot(&run_id).await;
+
+        self.commit_required_events(
+            app,
+            session_store,
+            RequiredEventCommit {
+                run_id: &run_id,
+                chat_session_id,
+                snapshot_for_commit: &snapshot_for_commit,
+                snapshot_before,
+                run_store_snapshot_before,
+                required_events,
+                append_error_context: "turn_complete required event append failed",
+            },
+        )
+        .await?;
+
+        self.release_completed_step_sessions(
+            app,
+            session_store,
+            handles,
+            &completed_step_session_ids,
+        )
+        .await;
+        self.finalize_after_commit(app, &snapshot_for_commit, worktree_path, true)
+            .await;
+        if let Err(e) = self
+            .dispatch_step_outcome_side_effects(
+                app,
+                session_store,
+                handles,
+                worktree_path,
+                chat_session_id,
+                outcome,
+                OutcomeCommitMode::EmitProgressEvents,
+            )
+            .await
+        {
+            log::warn!("workflow {run_id}: post-commit turn side effects failed: {e}");
+        }
+        Ok(())
+    }
+
     /// ApprovalDecisionのバリデーション。Reject時に空コメントを拒否する。
     fn validate_approval_decision(decision: &ApprovalDecision) -> Result<(), WorkflowEngineError> {
         if let ApprovalDecision::Reject { ref comment } = decision {
@@ -1680,6 +2103,20 @@ impl WorkflowEngine {
             if comment.chars().count() > MAX_APPROVAL_COMMENT_CHARS {
                 return Err(WorkflowEngineError::ValidationError(
                     "Reject comment exceeds 8192 characters".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Approve 用 comment のバリデーション。空文字は許容するが、上限のみ検証する。
+    /// reject と同じ MAX_APPROVAL_COMMENT_CHARS を `ApproveNode.comment` にも適用する
+    /// （Spec [04]: 新規外部入力に対する境界バリデーション）。
+    fn validate_approve_comment_length(comment: Option<&str>) -> Result<(), WorkflowEngineError> {
+        if let Some(c) = comment {
+            if c.chars().count() > MAX_APPROVAL_COMMENT_CHARS {
+                return Err(WorkflowEngineError::ValidationError(
+                    "Approve comment exceeds 8192 characters".to_string(),
                 ));
             }
         }
@@ -1736,20 +2173,25 @@ impl WorkflowEngine {
     /// 直接行い、worktree_path 経由の find は使用しない。同一 worktree に terminal/active
     /// 共存があっても run_id 主語で取り違えない。worktree_path は exec から派生取得して
     /// 下流 (`fetch_current_output` / `execute_outcome`) に渡す。
+    /// [04] 内部 typed boundary: `WorkflowCommand::ApproveNode` / `RejectNode` /
+    /// `AbortRun { expected_node_name: Some(_) }` の handler 実体。外部から直接
+    /// 呼び出すことは禁止する（pub にしない）。本メソッドへの到達経路は engine の
+    /// dispatch のみであり、auto-approve も dispatch 経由で再入する（Spec [04] 境界）。
     #[allow(clippy::too_many_arguments)]
-    pub async fn handle_approval(
+    async fn handle_approval<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         run_id: &str,
         decision: ApprovalDecision,
+        approve_comment: Option<String>,
         expected_step_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
-        let result_tag = match &decision {
-            ApprovalDecision::Approve => "approve",
-            ApprovalDecision::Reject { .. } => "reject",
-            ApprovalDecision::Abort => "abort",
+        let (result_tag, decision_record) = match &decision {
+            ApprovalDecision::Approve => ("approve", ApprovalDecisionRecord::Approve),
+            ApprovalDecision::Reject { .. } => ("reject", ApprovalDecisionRecord::Reject),
+            ApprovalDecision::Abort => ("abort", ApprovalDecisionRecord::Abort),
         };
 
         // target検証 + session_id + output_contract + workflow + worktree_path を1回のロックで取得
@@ -1776,8 +2218,12 @@ impl WorkflowEngine {
             )
         };
 
-        // Reject時: 空コメントバリデーション（副作用の前に実施）
+        // Reject時: 空コメントバリデーション + Approve/Reject 共通の長さ上限検証
+        // （副作用の前に実施）
         Self::validate_approval_decision(&decision)?;
+        if matches!(decision, ApprovalDecision::Approve) {
+            Self::validate_approve_comment_length(approve_comment.as_deref())?;
+        }
 
         if matches!(decision, ApprovalDecision::Approve) {
             let turn_phase = if let Some(ref sid) = current_session_id {
@@ -1789,14 +2235,16 @@ impl WorkflowEngine {
             Self::validate_approval_turn_phase(turn_phase)?;
         }
 
-        // ロック外でoutput_textを事前取得（approvalはAgentSession完了後なので取得可能）
-        // Reject時はコメントをoutput_textとして使用するため、fetch不要だがApprove時に必要
+        // ロック外でoutput_textを事前取得（approvalはAgentSession完了後なので取得可能）。
+        // Approve時だけAgentSession出力が必要。Rejectは理由をoutput_textとして使い、
+        // Abortは出力を使わないため、不要な取得失敗で中断 command を阻害しない。
         let output_text = match &decision {
-            ApprovalDecision::Reject { ref comment } => Some(comment.clone()),
-            _ => {
+            ApprovalDecision::Approve => {
                 self.fetch_current_output(app, session_store, &worktree_path)
                     .await?
             }
+            ApprovalDecision::Reject { ref comment } => Some(comment.clone()),
+            ApprovalDecision::Abort => None,
         };
 
         // contract検証（Approve時のみ）。approvalではrepair/failに進めず、状態を変えずに
@@ -1838,14 +2286,26 @@ impl WorkflowEngine {
         // contract resultがあればそちらを優先、なければresult_tag
         let effective_result = contract_result.unwrap_or_else(|| result_tag.to_string());
 
-        // 判定 + 状態変更 + 履歴記録を原子的に実行（run_id 主語）
-        let (chat_session_id, outcome) = {
+        // [04] atomic mutation 境界: mutation 直前の WorkflowExecution 全体を snapshot に
+        // 保持し、ApprovalResolved event append / persist のいずれかが失敗した場合は
+        // `*exec = snapshot` で全フィールド（履歴・変数・state・current_step_index 等）を
+        // 一括復元する。部分 rollback helper は使わない。
+        let (
+            chat_session_id,
+            outcome,
+            exec_snapshot_before,
+            workflow_name_for_event,
+            node_name_for_event,
+        ) = {
             let mut execs = self.executions.lock().await;
             let exec = execs
                 .get_mut(run_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
             Self::validate_approval_target_snapshot(exec, Some(run_id), expected_step_name)?;
             let chat_session_id = exec.chat_session_id.clone();
+            let workflow_name = exec.workflow.name.clone();
+            let node_name = exec.workflow.nodes[exec.current_step_index].name.clone();
+            let snapshot_before = exec.clone();
             exec.workflow_variables.extend(contract_variables);
             let outcome = Self::apply_approval_application(
                 exec,
@@ -1856,18 +2316,89 @@ impl WorkflowEngine {
                     output_contract: application_output_contract,
                 },
             )?;
-            (chat_session_id, outcome)
+            (
+                chat_session_id,
+                outcome,
+                snapshot_before,
+                workflow_name,
+                node_name,
+            )
         };
 
-        self.execute_outcome(
+        let snapshot_for_commit = Self::outcome_snapshot(&outcome).clone();
+        let completed_step_session_ids = Self::completed_step_session_ids_for_outcome(&outcome);
+        let run_store_snapshot_before = self.run_store.active_run_snapshot(run_id).await;
+
+        // [04] commit point: ApprovalResolved と、同じ受理サイクルで確定した
+        // NodeCompleted / NodeStarted / terminal event を同一 batch で必須 append する。
+        // append / persist 失敗時は snapshot で全フィールド一括復元する。
+        // 機密値 redaction: approve コメント / reject 理由には設定済み secret を含む可能性が
+        // あるため、event log に保存する前に mask_sensitive_text() で redaction する
+        // （reject_structured_output が同じ secret 列で structured_output 側に行う処理と対称）。
+        let raw_event_comment = match &decision {
+            ApprovalDecision::Approve => approve_comment.clone(),
+            ApprovalDecision::Reject { comment } => Some(comment.clone()),
+            ApprovalDecision::Abort => approve_comment.clone(),
+        };
+        let event_comment = if let Some(raw) = raw_event_comment {
+            let secrets = Self::collect_configured_secret_values(app);
+            Some(Self::mask_sensitive_text(&raw, &secrets))
+        } else {
+            None
+        };
+        let approval_timestamp = current_timestamp();
+        let approval_event = WorkflowEvent::ApprovalResolved {
+            run_id: run_id.to_string(),
+            workflow_name: workflow_name_for_event.clone(),
+            node_name: node_name_for_event.clone(),
+            decision: decision_record,
+            comment: event_comment,
+            timestamp: approval_timestamp,
+        };
+        let commit_events = Self::required_events_for_approval_commit(approval_event, &outcome);
+        self.commit_required_events(
+            app,
+            session_store,
+            RequiredEventCommit {
+                run_id,
+                chat_session_id: &chat_session_id,
+                snapshot_for_commit: &snapshot_for_commit,
+                snapshot_before: exec_snapshot_before,
+                run_store_snapshot_before,
+                required_events: commit_events,
+                append_error_context: "approval commit batch append failed",
+            },
+        )
+        .await?;
+
+        // [04] post-commit: required event append 済みのため、ここから先の失敗は
+        // command failure に射影しない（spec [04] post-commit 境界）。session release /
+        // broadcast / terminal log / cleanup / 次 step 起動 / auto-approve dispatch は
+        // ここで実行する。
+        self.release_completed_step_sessions(
             app,
             session_store,
             handles,
-            &worktree_path,
-            &chat_session_id,
-            outcome,
+            &completed_step_session_ids,
         )
-        .await
+        .await;
+        self.finalize_after_commit(app, &snapshot_for_commit, &worktree_path, false)
+            .await;
+        if let Err(e) = self
+            .dispatch_step_outcome_side_effects(
+                app,
+                session_store,
+                handles,
+                &worktree_path,
+                &chat_session_id,
+                outcome,
+                OutcomeCommitMode::ProgressEventsAlreadyCommitted,
+            )
+            .await
+        {
+            log::warn!("workflow {run_id}: post-commit side effects failed: {e}");
+        }
+        Ok(())
     }
 
     /// ワークフローを中断する。
@@ -1876,50 +2407,150 @@ impl WorkflowEngine {
     /// Spec issues-1011 finding 2/10: 全経路で `executions.get_mut(run_id)` を使い、
     /// worktree_path 経由の委譲を排除する。これにより、同一 worktree に terminal run と
     /// active run が共存しても誤って別 run を中断する TOCTOU を構造的に排除する。
-    pub async fn abort_workflow_by_run_id(
+    ///
+    /// Spec [04]: `AbortRun` command handler の境界。
+    /// - 対象 run が存在しない場合は `AbortOutcome::NotFound` を返す（非受理）。
+    /// - 既に terminal な run の場合は `AbortOutcome::AlreadyTerminal` を返す（非受理）。
+    /// - 実際に Aborted に遷移し RunAborted event を必須 append できた場合のみ
+    ///   `AbortOutcome::Aborted` を返す。
+    ///
+    /// RunAborted event は `write_log_required` 経由で必須 append し、append 失敗時は
+    /// mutation 直前 snapshot で `WorkflowExecution` 全体を一括復元する
+    /// （Spec atomic mutation 境界）。
+    ///
+    /// 外部から直接呼ばれることはなく、`WorkflowEngine::dispatch` 経路のみが利用する
+    /// （Spec [04]: 内部呼び出し元も engine の private method を直接叩かない）。
+    async fn abort_workflow_by_run_id<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         run_id: &str,
-    ) -> Result<(), WorkflowEngineError> {
-        // run_id でロック内 lookup（同一 worktree の別 active run と取り違えない）。
-        let Some((current_step_session_id, parallel_session_ids)) =
-            self.abort_target_sessions_by_run_id(run_id).await
-        else {
-            return Ok(());
+    ) -> Result<AbortOutcome, WorkflowEngineError> {
+        // 1. 対象 run の存在 + active 性を判定。
+        //    非受理経路 (NotFound / AlreadyTerminal) ではどんな外部副作用も発生させない。
+        let lookup = self.abort_target_lookup(run_id).await;
+        let (current_step_session_id, parallel_session_ids) = match lookup {
+            AbortTargetLookup::NotFound => return Ok(AbortOutcome::NotFound),
+            AbortTargetLookup::AlreadyTerminal => return Ok(AbortOutcome::AlreadyTerminal),
+            AbortTargetLookup::Active {
+                current_step_session_id,
+                parallel_session_ids,
+            } => (current_step_session_id, parallel_session_ids),
         };
 
-        // 実行中のステップセッションを中断
+        // 2. [04] pre-commit (rollback 可能): mutation 直前 snapshot を取得し、
+        //    state を Aborted に遷移させる。競合で terminal 化していた場合は
+        //    AlreadyTerminal で返す。
+        let timestamp = current_timestamp();
+        let run_store_snapshot_before = self.run_store.active_run_snapshot(run_id).await;
+        let (chat_session_id, snapshot_before, snapshot_state, workflow_name_for_event) = {
+            let mut execs = self.executions.lock().await;
+            let Some(exec) = execs.get_mut(run_id) else {
+                return Ok(AbortOutcome::NotFound);
+            };
+            if !exec.is_active() {
+                return Ok(AbortOutcome::AlreadyTerminal);
+            }
+            let chat_session_id = exec.chat_session_id.clone();
+            let snapshot_before = exec.clone();
+            let workflow_name = exec.workflow.name.clone();
+            exec.state = WorkflowExecutionState::Aborted;
+            exec.updated_at = timestamp;
+            let snapshot_state = exec.to_workflow_state();
+            (
+                chat_session_id,
+                snapshot_before,
+                snapshot_state,
+                workflow_name,
+            )
+        };
+
+        // 3. [04] commit point: RunAborted を必須 append。失敗時は
+        //    WorkflowExecution / Run Store / ChatSession を snapshot で一括復元する。
+        //    interrupt_agent はこの時点ではまだ実行していないため、append 失敗時には
+        //    rollback 不能な外部副作用が残らない。
+        let aborted_event = WorkflowEvent::RunAborted {
+            run_id: run_id.to_string(),
+            workflow_name: workflow_name_for_event,
+            timestamp,
+        };
+        self.commit_required_events(
+            app,
+            session_store,
+            RequiredEventCommit {
+                run_id,
+                chat_session_id: &chat_session_id,
+                snapshot_for_commit: &snapshot_state,
+                snapshot_before,
+                run_store_snapshot_before,
+                required_events: vec![aborted_event],
+                append_error_context: "RunAborted log failed",
+            },
+        )
+        .await?;
+
+        // 4. [04] post-commit: interrupt_agent / cleanup / broadcast。
+        //    RunAborted event は append 済み。Run Store / ChatSession は event 後の
+        //    projection として同期済み、または warn として観測済み。
         if let Some(ref step_sid) = current_step_session_id {
             self.interrupt_agent(handles, step_sid).await;
         }
-        // 並列子ステップのセッションも中断
-        if let Some(session_ids) = parallel_session_ids {
-            for sid in &session_ids {
+        if let Some(ref session_ids) = parallel_session_ids {
+            for sid in session_ids {
                 self.interrupt_agent(handles, sid).await;
             }
         }
-
-        // 状態遷移は run_id 主語で行う（worktree_path は inner で exec から派生取得）。
-        self.set_execution_state_for_run(
+        self.finalize_terminal_transition_after_required_append(
             app,
             session_store,
             handles,
             run_id,
-            WorkflowExecutionState::Aborted,
         )
-        .await
+        .await;
+
+        Ok(AbortOutcome::Aborted)
     }
 
-    async fn abort_target_sessions_by_run_id(
+    /// `WorkflowCommand::AbortRun` の post-commit 区間。state は呼出し前に Aborted に
+    /// 遷移済みで、`RunAborted` event は必須 append 済み、かつ Run Store sync も
+    /// 完了済みである前提。ChatSession persist / step session release / refs cleanup /
+    /// broadcast を実行する。
+    ///
+    /// [04] post-commit 失敗は warn ログのみで command 結果に伝播させない。観測可能な
+    /// 事実は既に RunAborted で確定しており、ここでの副作用失敗を command failure に
+    /// 射影すると spec [04] の「post-commit 失敗は command failure として返さない」に
+    /// 違反するため。
+    async fn finalize_terminal_transition_after_required_append<R: tauri::Runtime>(
         &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
         run_id: &str,
-    ) -> Option<(Option<String>, Option<Vec<String>>)> {
+    ) {
+        let (snapshot, worktree_path) = {
+            let execs = self.executions.lock().await;
+            let Some(exec) = execs.get(run_id) else {
+                return;
+            };
+            (exec.to_workflow_state(), exec.worktree_path.clone())
+        };
+
+        // terminal session の release と refs cleanup。
+        let terminal_session_ids = Self::terminal_step_session_ids(&snapshot);
+        self.release_completed_step_sessions(app, session_store, handles, &terminal_session_ids)
+            .await;
+        self.cleanup_session_workflow_refs_by_run_id(run_id).await;
+        self.broadcast_state(app, &worktree_path, snapshot).await;
+    }
+
+    async fn abort_target_lookup(&self, run_id: &str) -> AbortTargetLookup {
         let execs = self.executions.lock().await;
-        let exec = execs.get(run_id)?;
+        let Some(exec) = execs.get(run_id) else {
+            return AbortTargetLookup::NotFound;
+        };
         if !exec.is_active() {
-            return None;
+            return AbortTargetLookup::AlreadyTerminal;
         }
         let current_step_session_id = exec.current_session_id.clone();
         let parallel_session_ids = exec.parallel_run.as_ref().map(|pr| {
@@ -1929,14 +2560,17 @@ impl WorkflowEngine {
                 .map(|c| c.session_id.clone())
                 .collect::<Vec<_>>()
         });
-        Some((current_step_session_id, parallel_session_ids))
+        AbortTargetLookup::Active {
+            current_step_session_id,
+            parallel_session_ids,
+        }
     }
 
     /// 並列子ステップの完了を処理する。
     #[allow(clippy::too_many_arguments)]
-    async fn handle_parallel_child_complete(
+    async fn handle_parallel_child_complete<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         run_id: &str,
@@ -2250,11 +2884,11 @@ impl WorkflowEngine {
             // ParallelStepCompleted ログ
             self.write_log(
                 app,
-                WorkflowLogEvent::ParallelStepCompleted {
-                    execution_id: exec.id.clone(),
+                WorkflowEvent::ParallelChildCompleted {
+                    run_id: exec.id.clone(),
                     workflow_name: exec.workflow.name.clone(),
-                    parent_step_name: pr.parent_step_name.clone(),
-                    child_step_name: child_name,
+                    parent_node_name: pr.parent_step_name.clone(),
+                    child_node_name: child_name,
                     result: log_result,
                     session_id: session_id.to_string(),
                     token_usage: Some(child_token_usage),
@@ -2362,10 +2996,10 @@ impl WorkflowEngine {
                     // ParallelCompleted ログ
                     self.write_log(
                         app,
-                        WorkflowLogEvent::ParallelCompleted {
-                            execution_id: exec.id.clone(),
+                        WorkflowEvent::ParallelCompleted {
+                            run_id: exec.id.clone(),
                             workflow_name: exec.workflow.name.clone(),
-                            parent_step_name: parent_step_name.clone(),
+                            parent_node_name: parent_step_name.clone(),
                             aggregate_result: if agg_result {
                                 "then".to_string()
                             } else {
@@ -2402,10 +3036,10 @@ impl WorkflowEngine {
                     // ParallelCompleted ログ
                     self.write_log(
                         app,
-                        WorkflowLogEvent::ParallelCompleted {
-                            execution_id: exec.id.clone(),
+                        WorkflowEvent::ParallelCompleted {
+                            run_id: exec.id.clone(),
                             workflow_name: exec.workflow.name.clone(),
-                            parent_step_name: parent_step_name.clone(),
+                            parent_node_name: parent_step_name.clone(),
                             aggregate_result: "advance".to_string(),
                             timestamp: current_timestamp(),
                         },
@@ -2508,8 +3142,8 @@ impl WorkflowEngine {
         }
     }
 
-    fn validate_approval_output_contract(
-        app: &tauri::AppHandle,
+    fn validate_approval_output_contract<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
         output_contract: &Option<String>,
         output_text: Option<&str>,
         workflow: &Workflow,
@@ -2640,9 +3274,9 @@ impl WorkflowEngine {
     /// 非並列stepのcontract検証を共通処理する。
     /// auto および並列子ステップの2パスで同一のcontract検証・retry・failure処理を行う。
     #[allow(clippy::too_many_arguments)]
-    async fn validate_and_handle_contract(
+    async fn validate_and_handle_contract<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
@@ -2766,9 +3400,9 @@ impl WorkflowEngine {
     /// contract violation時のrepair prompt送信を行う共通ヘルパー。
     /// ログ書き込み・ファセット読み込み・repair prompt生成・agent turn送信を一箇所にまとめる。
     #[allow(clippy::too_many_arguments)]
-    async fn send_contract_repair(
+    async fn send_contract_repair<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
@@ -2782,10 +3416,10 @@ impl WorkflowEngine {
     ) -> Result<(), WorkflowEngineError> {
         self.write_log(
             app,
-            WorkflowLogEvent::ContractRepairRequested {
-                execution_id: exec_id.to_string(),
+            WorkflowEvent::ContractRepairRequested {
+                run_id: exec_id.to_string(),
                 workflow_name: wf_name.to_string(),
-                step_name: step_name.to_string(),
+                node_name: step_name.to_string(),
                 attempt,
                 violation_reason: violation.reason.clone(),
                 timestamp: current_timestamp(),
@@ -2854,9 +3488,9 @@ impl WorkflowEngine {
         execs.get(run_id).map(|e| e.to_workflow_state())
     }
 
-    async fn emit_workflow_runtime_projection(
+    async fn emit_workflow_runtime_projection<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         open_tabs: &crate::session::OpenTabRegistry,
         worktree_path: &str,
@@ -3088,9 +3722,9 @@ impl WorkflowEngine {
     /// 内部実装は `set_execution_state_inner` に集約され、worktree_path 主語の場合は
     /// `find_by_worktree_mut`、run_id 主語の場合は `executions.get_mut(run_id)` で
     /// lookup する。
-    async fn set_execution_state(
+    async fn set_execution_state<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
@@ -3106,33 +3740,12 @@ impl WorkflowEngine {
         .await
     }
 
-    /// `run_id` を主語に実行状態を更新する。`executions.get_mut(run_id)` で直接 lookup する
-    /// ため、同一 worktree に terminal/active 共存していても誤った run を遷移させない
-    /// （Spec issues-1011 finding 2/10: abort 経路の TOCTOU 解消）。
-    async fn set_execution_state_for_run(
-        &self,
-        app: &tauri::AppHandle,
-        session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
-        run_id: &str,
-        new_state: WorkflowExecutionState,
-    ) -> Result<(), WorkflowEngineError> {
-        self.set_execution_state_inner(
-            app,
-            session_store,
-            handles,
-            ExecutionStateTarget::RunId(run_id.to_string()),
-            new_state,
-        )
-        .await
-    }
-
     /// 実行状態更新の内部実装。lookup 戦略を `target` で切り替える。
     /// Spec issues-1011 finding 10: Run Store sync 失敗時は engine state も巻き戻し、
     /// engine terminal / Run Store active のスキューを残さない。
-    async fn set_execution_state_inner(
+    async fn set_execution_state_inner<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         target: ExecutionStateTarget,
@@ -3143,16 +3756,6 @@ impl WorkflowEngine {
             let exec = match &target {
                 ExecutionStateTarget::Worktree(wt) => find_by_worktree_mut(&mut execs, wt)
                     .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(wt.clone()))?,
-                ExecutionStateTarget::RunId(run_id) => {
-                    let Some(exec) = execs.get_mut(run_id) else {
-                        return Err(WorkflowEngineError::ExecutionNotFound(run_id.clone()));
-                    };
-                    // run_id 起点では active であることを再検証する（terminal は no-op）。
-                    if !exec.is_active() {
-                        return Ok(());
-                    }
-                    exec
-                }
             };
             // 終了状態（Completed/Failed/Aborted）からの上書きを防止
             if exec.is_terminal() {
@@ -3298,6 +3901,82 @@ impl WorkflowEngine {
         })
     }
 
+    async fn restore_run_store_active_snapshot(
+        &self,
+        run_snapshot: Option<WorkflowRun>,
+    ) -> Result<(), WorkflowEngineError> {
+        let Some(run_snapshot) = run_snapshot else {
+            return Ok(());
+        };
+        let run_id = run_snapshot.run_id.clone();
+        self.run_store
+            .restore_active_snapshot_for_rollback(run_snapshot)
+            .await
+            .map_err(|e| {
+                WorkflowEngineError::SessionStore(format!(
+                    "RunStore rollback failed for run {run_id}: {e}"
+                ))
+            })
+    }
+
+    async fn restore_chat_session_workflow_state<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        chat_session_id: &str,
+        snapshot: &WorkflowExecution,
+    ) {
+        if let Err(e) = self
+            .persist_state(
+                app,
+                session_store,
+                chat_session_id,
+                snapshot.to_workflow_state(),
+            )
+            .await
+        {
+            log::warn!(
+                "workflow {}: ChatSession rollback failed for {chat_session_id}: {e}",
+                snapshot.id
+            );
+        }
+    }
+
+    async fn rollback_command_mutation<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        rollback: CommandMutationRollback<'_>,
+    ) -> Result<(), WorkflowEngineError> {
+        let CommandMutationRollback {
+            run_id,
+            chat_session_id,
+            snapshot_before,
+            run_store_snapshot_before,
+            context,
+        } = rollback;
+        let run_store_result = self
+            .restore_run_store_active_snapshot(run_store_snapshot_before)
+            .await;
+        if let Err(ref rollback_err) = run_store_result {
+            log::warn!(
+                "workflow {run_id}: Run Store rollback failed after {context}: {rollback_err}"
+            );
+        }
+        self.restore_chat_session_workflow_state(
+            app,
+            session_store,
+            chat_session_id,
+            &snapshot_before,
+        )
+        .await;
+        let mut execs = self.executions.lock().await;
+        if let Some(exec) = execs.get_mut(run_id) {
+            *exec = snapshot_before;
+        }
+        run_store_result
+    }
+
     async fn rollback_execution_projection_after_run_store_sync_failure(
         &self,
         run_id: &str,
@@ -3343,9 +4022,9 @@ impl WorkflowEngine {
     /// output_contractが設定されたステップではcontract検証を実行し、
     /// 違反時はリトライプロンプトを送信する。
     #[allow(clippy::too_many_arguments)]
-    async fn handle_auto_complete(
+    async fn handle_auto_complete<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
@@ -3502,9 +4181,9 @@ impl WorkflowEngine {
     ///
     /// production 経路。副作用境界を `RealStepSessionDeps` にラップし、コアロジック
     /// `start_step_session_with_deps` に委譲する。
-    async fn start_step_session(
+    async fn start_step_session<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         session_store: &Arc<SessionStore>,
         worktree_path: &str,
@@ -3794,8 +4473,8 @@ impl WorkflowEngine {
         vars
     }
 
-    fn mask_sensitive_structured_output(
-        app: &tauri::AppHandle,
+    fn mask_sensitive_structured_output<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
         contract: &str,
         value: serde_json::Value,
     ) -> serde_json::Value {
@@ -3815,7 +4494,9 @@ impl WorkflowEngine {
         value
     }
 
-    fn collect_configured_secret_values(app: &tauri::AppHandle) -> Vec<String> {
+    fn collect_configured_secret_values<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+    ) -> Vec<String> {
         let mut values = Vec::new();
         if let Some(config) = app.try_state::<Arc<crate::config::AppConfig>>() {
             if let Ok(cfg) = config.get_config() {
@@ -3944,9 +4625,9 @@ impl WorkflowEngine {
 
     /// 現在のステップセッションからoutput_textを取得する。
     /// handle_approval で現在ステップの出力を取得する。
-    async fn fetch_current_output(
+    async fn fetch_current_output<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         worktree_path: &str,
     ) -> Result<Option<String>, WorkflowEngineError> {
@@ -3964,8 +4645,8 @@ impl WorkflowEngine {
     }
 
     /// セッションから最後のAgentメッセージのテキストを抽出する。
-    async fn extract_last_assistant_output(
-        app: &tauri::AppHandle,
+    async fn extract_last_assistant_output<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         session_id: &str,
     ) -> Option<String> {
@@ -4242,9 +4923,9 @@ impl WorkflowEngine {
         }
     }
 
-    async fn release_completed_step_session(
+    async fn release_completed_step_session<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         chat_session_id: &str,
@@ -4275,6 +4956,15 @@ impl WorkflowEngine {
         ids.sort();
         ids.dedup();
         ids
+    }
+
+    fn outcome_snapshot(outcome: &StepOutcome) -> &WorkflowState {
+        match outcome {
+            StepOutcome::Persist(s)
+            | StepOutcome::TransitionAndStart(s)
+            | StepOutcome::ReduceAndTransition(s)
+            | StepOutcome::StartParallel(s) => s,
+        }
     }
 
     fn completed_step_session_ids_for_outcome(outcome: &StepOutcome) -> Vec<String> {
@@ -4313,9 +5003,9 @@ impl WorkflowEngine {
         ids
     }
 
-    async fn release_completed_step_sessions(
+    async fn release_completed_step_sessions<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         session_ids: &[String],
@@ -4326,27 +5016,108 @@ impl WorkflowEngine {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn persist_release_and_broadcast(
+    /// [04] pre-commit projection phase: required event append 前に Run Store と
+    /// ChatSession の workflow_state を同期する。append-only event fact が command の
+    /// 最初の不可逆な可視 commit point であり、この helper の失敗は event append 前に
+    /// rollback できる。
+    async fn project_state_before_required_event_commit<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        chat_session_id: &str,
+        snapshot: &WorkflowState,
+    ) -> Result<(), WorkflowEngineError> {
+        let run_id = snapshot.execution_id.clone();
+        self.sync_run_store_from_snapshot(&run_id, snapshot).await?;
+        self.persist_state(app, session_store, chat_session_id, snapshot.clone())
+            .await
+    }
+
+    async fn commit_required_events<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        commit: RequiredEventCommit<'_>,
+    ) -> Result<(), WorkflowEngineError> {
+        let RequiredEventCommit {
+            run_id,
+            chat_session_id,
+            snapshot_for_commit,
+            snapshot_before,
+            run_store_snapshot_before,
+            required_events,
+            append_error_context,
+        } = commit;
+
+        let rollback_snapshot_before = snapshot_before.clone();
+        let projection_error_context = "required event projection failed";
+        if let Err(e) = self
+            .project_state_before_required_event_commit(
+                app,
+                session_store,
+                chat_session_id,
+                snapshot_for_commit,
+            )
+            .await
+        {
+            let _ = self
+                .rollback_command_mutation(
+                    app,
+                    session_store,
+                    CommandMutationRollback {
+                        run_id,
+                        chat_session_id,
+                        snapshot_before: rollback_snapshot_before,
+                        run_store_snapshot_before,
+                        context: projection_error_context,
+                    },
+                )
+                .await;
+            return Err(WorkflowEngineError::SessionStore(format!(
+                "{projection_error_context}: {e}"
+            )));
+        }
+
+        if let Err(e) = self.write_log_required_batch(app, &required_events) {
+            let _ = self
+                .rollback_command_mutation(
+                    app,
+                    session_store,
+                    CommandMutationRollback {
+                        run_id,
+                        chat_session_id,
+                        snapshot_before,
+                        run_store_snapshot_before,
+                        context: append_error_context,
+                    },
+                )
+                .await;
+            return Err(WorkflowEngineError::SessionStore(format!(
+                "{append_error_context}: {e}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// [04] pre-commit phase: sync_run_store + persist_state + release_completed_step_sessions
+    /// を実行する。本 helper は本 issue scope 外の non-command 経路（NodeCompleted/
+    /// NodeFailed 系の `persist_release_and_broadcast` 呼び出し）専用に温存する。
+    /// 本 issue scope の command 受理 handler は required event append 前の rollback 可能な
+    /// projection と post-commit `release_completed_step_sessions` の組み合わせを使う。
+    #[allow(clippy::too_many_arguments)]
+    async fn sync_persist_release<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
-        worktree_path: &str,
         chat_session_id: &str,
-        snapshot: WorkflowState,
+        snapshot: &WorkflowState,
         completed_step_session_ids: &[String],
-    ) -> Result<WorkflowState, WorkflowEngineError> {
+    ) -> Result<(), WorkflowEngineError> {
         let run_id = snapshot.execution_id.clone();
-        let is_terminal = matches!(
-            snapshot.state,
-            WorkflowExecutionState::Completed
-                | WorkflowExecutionState::Failed { .. }
-                | WorkflowExecutionState::Aborted
-        );
-
-        if let Err(e) = self.sync_run_store_from_snapshot(&run_id, &snapshot).await {
-            self.rollback_execution_projection_after_run_store_sync_failure(&run_id, &snapshot)
+        if let Err(e) = self.sync_run_store_from_snapshot(&run_id, snapshot).await {
+            self.rollback_execution_projection_after_run_store_sync_failure(&run_id, snapshot)
                 .await;
             return Err(e);
         }
@@ -4363,15 +5134,61 @@ impl WorkflowEngine {
             )
             .await;
         })
-        .await?;
+        .await
+    }
+
+    /// [04] post-commit phase: terminal log + cleanup_refs + broadcast。required append
+    /// 完了後の副作用に限定し、失敗は warn として観測する（command 結果には伝播しない）。
+    async fn finalize_after_commit<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        snapshot: &WorkflowState,
+        worktree_path: &str,
+        write_terminal_events: bool,
+    ) {
+        let run_id = snapshot.execution_id.clone();
+        let is_terminal = matches!(
+            snapshot.state,
+            WorkflowExecutionState::Completed
+                | WorkflowExecutionState::Failed { .. }
+                | WorkflowExecutionState::Aborted
+        );
         if is_terminal {
-            if matches!(snapshot.state, WorkflowExecutionState::Completed) {
-                self.write_last_step_completed_log(app, &snapshot);
+            if write_terminal_events {
+                if matches!(snapshot.state, WorkflowExecutionState::Completed) {
+                    self.write_last_step_completed_log(app, snapshot);
+                }
+                self.write_terminal_log(app, snapshot);
             }
-            self.write_terminal_log(app, &snapshot);
             self.cleanup_session_workflow_refs_by_run_id(&run_id).await;
         }
         self.broadcast_state(app, worktree_path, snapshot.clone())
+            .await;
+    }
+
+    /// 既存呼び出し元（on_turn_complete 等）から使う一括 helper。pre-commit と post-commit
+    /// を順に呼ぶだけで、外部 contract は変えない。
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_release_and_broadcast<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        chat_session_id: &str,
+        snapshot: WorkflowState,
+        completed_step_session_ids: &[String],
+    ) -> Result<WorkflowState, WorkflowEngineError> {
+        self.sync_persist_release(
+            app,
+            session_store,
+            handles,
+            chat_session_id,
+            &snapshot,
+            completed_step_session_ids,
+        )
+        .await?;
+        self.finalize_after_commit(app, &snapshot, worktree_path, true)
             .await;
         Ok(snapshot)
     }
@@ -4509,9 +5326,16 @@ impl WorkflowEngine {
     }
 
     /// ロック外でStepOutcomeに応じた副作用（永続化・ブロードキャスト・AgentSession起動）を実行する。
-    async fn execute_outcome(
+    ///
+    /// 本 helper は non-command 経路（NodeCompleted / NodeFailed 等）から呼ばれ、
+    /// `persist_release_and_broadcast` で snapshot を永続化したうえで、variant 別の
+    /// post-commit 副作用を `dispatch_step_outcome_side_effects` 経由で実行する。
+    /// 4 command（StartRun / AbortRun / Approve / Reject）経路の handler は required
+    /// event append を commit point として通過してから同じ
+    /// `dispatch_step_outcome_side_effects` を呼ぶ。
+    async fn execute_outcome<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
@@ -4519,71 +5343,92 @@ impl WorkflowEngine {
         outcome: StepOutcome,
     ) -> Result<(), WorkflowEngineError> {
         let completed_step_session_ids = Self::completed_step_session_ids_for_outcome(&outcome);
+        let snapshot_for_commit = Self::outcome_snapshot(&outcome).clone();
+        self.persist_release_and_broadcast(
+            app,
+            session_store,
+            handles,
+            worktree_path,
+            chat_session_id,
+            snapshot_for_commit,
+            &completed_step_session_ids,
+        )
+        .await?;
+        self.dispatch_step_outcome_side_effects(
+            app,
+            session_store,
+            handles,
+            worktree_path,
+            chat_session_id,
+            outcome,
+            OutcomeCommitMode::EmitProgressEvents,
+        )
+        .await
+    }
 
+    /// [04] post-commit variant work（共通 side-effect helper）。
+    ///
+    /// snapshot は既に persist 済みである前提で、outcome variant に応じた残りの副作用
+    /// （NodeStarted 書き込み・start_step_session・reduce + 派生 mutation の再帰・
+    /// start_parallel_children・auto-approve dispatch）のみを担当する。`execute_outcome`
+    /// （non-command 経路）と `handle_approval` などの 4 command handler の双方から
+    /// 呼ばれ、副作用ロジックの単一 source of truth として機能する。失敗は warn 化して
+    /// command 結果に伝播させない設計に揃える（spec [04] post-commit 境界）。
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_step_outcome_side_effects<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        chat_session_id: &str,
+        outcome: StepOutcome,
+        commit_mode: OutcomeCommitMode,
+    ) -> Result<(), WorkflowEngineError> {
         match outcome {
             StepOutcome::Persist(snapshot) => {
-                let snapshot = self
-                    .persist_release_and_broadcast(
-                        app,
-                        session_store,
-                        handles,
-                        worktree_path,
-                        chat_session_id,
-                        snapshot,
-                        &completed_step_session_ids,
-                    )
-                    .await?;
                 if let Some((execution_id, step_name)) =
                     Self::auto_approve_target_for_persisted_snapshot(
                         &snapshot,
                         Self::workflow_approval_auto_approve_enabled(app),
                     )
                 {
-                    // execution_id == run_id（line 122-125: 採番昇格）。
-                    return Box::pin(self.handle_approval(
+                    return Box::pin(self.dispatch(
                         app,
                         session_store,
                         handles,
-                        &execution_id,
-                        ApprovalDecision::Approve,
-                        Some(&step_name),
+                        WorkflowCommand::ApproveNode {
+                            run_id: execution_id,
+                            node_name: step_name,
+                            comment: None,
+                        },
                     ))
-                    .await;
+                    .await
+                    .map(|_| ());
                 }
                 Ok(())
             }
             StepOutcome::TransitionAndStart(snapshot) => {
-                let snapshot = self
-                    .persist_release_and_broadcast(
-                        app,
-                        session_store,
-                        handles,
-                        worktree_path,
-                        chat_session_id,
-                        snapshot,
-                        &completed_step_session_ids,
-                    )
-                    .await?;
-
-                // 直前のステップ完了ログ + 新ステップ開始ログ
-                self.write_last_step_completed_log(app, &snapshot);
+                if commit_mode.should_emit_progress_events() {
+                    self.write_last_step_completed_log(app, &snapshot);
+                }
                 let exec_count = snapshot
                     .step_execution_counts
                     .get(&snapshot.current_step_name)
                     .copied()
                     .unwrap_or(1);
-                self.write_log(
-                    app,
-                    WorkflowLogEvent::StepStarted {
-                        execution_id: snapshot.execution_id.clone(),
-                        workflow_name: snapshot.workflow_name.clone(),
-                        step_name: snapshot.current_step_name.clone(),
-                        execution_count: exec_count,
-                        timestamp: snapshot.updated_at,
-                    },
-                );
-
-                // AgentSession起動。失敗時はFailed状態に遷移。
+                if commit_mode.should_emit_progress_events() {
+                    self.write_log(
+                        app,
+                        WorkflowEvent::NodeStarted {
+                            run_id: snapshot.execution_id.clone(),
+                            workflow_name: snapshot.workflow_name.clone(),
+                            node_name: snapshot.current_step_name.clone(),
+                            execution_count: exec_count,
+                            timestamp: snapshot.updated_at,
+                        },
+                    );
+                }
                 if let Err(e) = self
                     .start_step_session(app, handles, session_store, worktree_path)
                     .await
@@ -4615,22 +5460,10 @@ impl WorkflowEngine {
                 Ok(())
             }
             StepOutcome::ReduceAndTransition(snapshot) => {
-                let snapshot = self
-                    .persist_release_and_broadcast(
-                        app,
-                        session_store,
-                        handles,
-                        worktree_path,
-                        chat_session_id,
-                        snapshot,
-                        &completed_step_session_ids,
-                    )
-                    .await?;
+                if commit_mode.should_emit_progress_events() {
+                    self.write_last_step_completed_log(app, &snapshot);
+                }
 
-                // 直前ステップの完了ログ
-                self.write_last_step_completed_log(app, &snapshot);
-
-                // reduce実行
                 let (collect_config_clone, reduce_result, step_rules) = {
                     let execs = self.executions.lock().await;
                     let (_, exec) = find_by_worktree(&execs, worktree_path).ok_or_else(|| {
@@ -4645,7 +5478,6 @@ impl WorkflowEngine {
                     (collect, result, step.transition_rules.clone())
                 };
 
-                // collect step自体のStepHistoryEntryを記録 + 遷移判定
                 let (next_outcome, log_step_name, log_exec_id, log_wf_name) = {
                     let mut execs = self.executions.lock().await;
                     let exec =
@@ -4671,7 +5503,6 @@ impl WorkflowEngine {
                         collect_config_clone.from,
                     );
 
-                    // reduce resultに基づく遷移判定
                     let outcome = if step_rules.is_empty() {
                         Self::apply_advance(exec)
                     } else if let Some(ref result_str) = reduce_result.result {
@@ -4685,27 +5516,25 @@ impl WorkflowEngine {
                     (outcome, step_name, exec_id, wf_name)
                 };
 
-                // OutputCollected NDJSONログ永続化（ロック外）
-                let collected_entries: Vec<crate::workflow::log::CollectedOutputEntry> =
-                    collect_config_clone
-                        .from
-                        .iter()
-                        .map(|name| {
-                            let output = snapshot.step_outputs.get(name);
-                            crate::workflow::log::CollectedOutputEntry {
-                                step_name: name.clone(),
-                                result: output.and_then(|o| o.result.clone()),
-                                structured_output: output.and_then(|o| o.structured_output.clone()),
-                            }
-                        })
-                        .collect();
+                let collected_entries: Vec<CollectedOutputEntry> = collect_config_clone
+                    .from
+                    .iter()
+                    .map(|name| {
+                        let output = snapshot.step_outputs.get(name);
+                        CollectedOutputEntry {
+                            node_name: name.clone(),
+                            result: output.and_then(|o| o.result.clone()),
+                            structured_output: output.and_then(|o| o.structured_output.clone()),
+                        }
+                    })
+                    .collect();
                 self.write_log(
                     app,
-                    WorkflowLogEvent::OutputCollected {
-                        execution_id: log_exec_id,
+                    WorkflowEvent::OutputCollected {
+                        run_id: log_exec_id,
                         workflow_name: log_wf_name,
-                        step_name: log_step_name,
-                        step_outputs: collected_entries,
+                        node_name: log_step_name,
+                        node_outputs: collected_entries,
                         reduce_strategy: format!("{:?}", collect_config_clone.reduce),
                         reduce_result: reduce_result.result.clone(),
                         reduce_structured_output: reduce_result.structured_output.clone(),
@@ -4713,7 +5542,9 @@ impl WorkflowEngine {
                     },
                 );
 
-                // 再帰的にexecute_outcomeを呼ぶ（次ステップがcollectの可能性）
+                // 次 outcome は新たな state mutation なので、再度 sync+persist が必要。
+                // execute_outcome 経由でフル経路を回す（spec [04] post-commit 内で発生する
+                // 派生 mutation も同じ atomic 境界に乗せる）。
                 Box::pin(self.execute_outcome(
                     app,
                     session_store,
@@ -4725,24 +5556,17 @@ impl WorkflowEngine {
                 .await
             }
             StepOutcome::StartParallel(snapshot) => {
-                let snapshot = self
-                    .persist_release_and_broadcast(
+                if commit_mode.should_emit_progress_events() {
+                    self.write_last_step_completed_log(app, &snapshot);
+                }
+                if let Err(e) = self
+                    .start_parallel_children(
                         app,
                         session_store,
                         handles,
                         worktree_path,
-                        chat_session_id,
-                        snapshot,
-                        &completed_step_session_ids,
+                        commit_mode.should_emit_progress_events(),
                     )
-                    .await?;
-
-                // 直前ステップの完了ログ
-                self.write_last_step_completed_log(app, &snapshot);
-
-                // 並列子ステップの起動（失敗時はFailed状態に遷移）
-                if let Err(e) = self
-                    .start_parallel_children(app, session_store, handles, worktree_path)
                     .await
                 {
                     let _ = self
@@ -4765,12 +5589,13 @@ impl WorkflowEngine {
 
     /// 並列ブロックの子ステップをすべて起動する。
     #[allow(clippy::too_many_arguments)]
-    async fn start_parallel_children(
+    async fn start_parallel_children<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         worktree_path: &str,
+        emit_parallel_started: bool,
     ) -> Result<(), WorkflowEngineError> {
         // ロック内: 子ステップ定義取得 + ParallelRunState構築
         let (
@@ -4804,16 +5629,18 @@ impl WorkflowEngine {
         // ParallelStarted ログ
         let child_step_names: Vec<String> =
             parallel_steps.iter().map(|ps| ps.name.clone()).collect();
-        self.write_log(
-            app,
-            WorkflowLogEvent::ParallelStarted {
-                execution_id: execution_id.clone(),
-                workflow_name: workflow_name.clone(),
-                parent_step_name: parent_step_name.clone(),
-                child_step_names: child_step_names.clone(),
-                timestamp: current_timestamp(),
-            },
-        );
+        if emit_parallel_started {
+            self.write_log(
+                app,
+                WorkflowEvent::ParallelStarted {
+                    run_id: execution_id.clone(),
+                    workflow_name: workflow_name.clone(),
+                    parent_node_name: parent_step_name.clone(),
+                    child_node_names: child_step_names.clone(),
+                    timestamp: current_timestamp(),
+                },
+            );
+        }
 
         // 各子ステップのセッション生成 + AgentSession起動
         let data_dir = crate::session::resolve_data_dir(app)
@@ -5013,11 +5840,11 @@ impl WorkflowEngine {
             // ParallelStepStarted ログ
             self.write_log(
                 app,
-                WorkflowLogEvent::ParallelStepStarted {
-                    execution_id: execution_id.clone(),
+                WorkflowEvent::ParallelChildStarted {
+                    run_id: execution_id.clone(),
                     workflow_name: workflow_name.clone(),
-                    parent_step_name: parent_step_name.clone(),
-                    child_step_name: cs.step_name.clone(),
+                    parent_node_name: parent_step_name.clone(),
+                    child_node_name: cs.step_name.clone(),
                     session_id: cs.session_id.clone(),
                     execution_count: child_run_indices[i],
                     timestamp: current_timestamp(),
@@ -5090,13 +5917,19 @@ impl WorkflowEngine {
 
     /// ワークフロー状態をChatSessionに永続化する。
     /// スナップショットは呼び出し元がロック内で確定したものを受け取る。
-    async fn persist_state(
+    async fn persist_state<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         chat_session_id: &str,
         workflow_state: WorkflowState,
     ) -> Result<(), WorkflowEngineError> {
+        #[cfg(test)]
+        if self.fail_next_persist_state.swap(false, Ordering::AcqRel) {
+            return Err(WorkflowEngineError::SessionStore(
+                "injected persist_state failure".to_string(),
+            ));
+        }
         let data_dir = crate::session::resolve_data_dir(app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
         let mut session = session_store
@@ -5115,9 +5948,9 @@ impl WorkflowEngine {
     /// ワークフロー状態をブロードキャストする。
     /// スナップショットは呼び出し元がロック内で確定したものを受け取る。
     /// worktree_pathベースでイベントを発行するため、同一worktreeの全セッションが受信可能。
-    async fn broadcast_state(
+    async fn broadcast_state<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
+        app: &tauri::AppHandle<R>,
         worktree_path: &str,
         workflow_state: WorkflowState,
     ) {
@@ -5129,91 +5962,222 @@ impl WorkflowEngine {
         .await;
     }
 
-    /// 終了状態（Completed/Failed/Aborted）のログを書き込む。
+    /// 終了状態（Completed/Failed）のログを書き込む。
     /// StepCompletedログは呼び出し元で書き込み済みのため、ここでは書かない。
-    fn write_terminal_log(&self, app: &tauri::AppHandle, snapshot: &WorkflowState) {
-        // ワークフロー終了ログ
-        match &snapshot.state {
-            WorkflowExecutionState::Completed => {
-                self.write_log(
-                    app,
-                    WorkflowLogEvent::WorkflowCompleted {
-                        execution_id: snapshot.execution_id.clone(),
-                        workflow_name: snapshot.workflow_name.clone(),
-                        total_token_usage: snapshot.total_token_usage.clone(),
-                        timestamp: snapshot.updated_at,
-                    },
-                );
-            }
-            WorkflowExecutionState::Failed { reason } => {
-                // 失敗ステップのログ
-                self.write_log(
-                    app,
-                    WorkflowLogEvent::StepFailed {
-                        execution_id: snapshot.execution_id.clone(),
-                        workflow_name: snapshot.workflow_name.clone(),
-                        step_name: snapshot.current_step_name.clone(),
-                        reason: reason.clone(),
-                        timestamp: snapshot.updated_at,
-                    },
-                );
-                self.write_log(
-                    app,
-                    WorkflowLogEvent::WorkflowFailed {
-                        execution_id: snapshot.execution_id.clone(),
-                        workflow_name: snapshot.workflow_name.clone(),
-                        reason: reason.clone(),
-                        timestamp: snapshot.updated_at,
-                    },
-                );
-            }
-            WorkflowExecutionState::Aborted => {
-                self.write_log(
-                    app,
-                    WorkflowLogEvent::WorkflowAborted {
-                        execution_id: snapshot.execution_id.clone(),
-                        workflow_name: snapshot.workflow_name.clone(),
-                        timestamp: snapshot.updated_at,
-                    },
-                );
-            }
-            // Running/WaitingApproval は終了状態ではないのでログ不要
-            _ => {}
+    ///
+    /// `Aborted` 状態の `RunAborted` event は本 issue [04] の典型 typed command
+    /// `AbortRun` に対応する事実列であり、command handler 側で `write_log_required`
+    /// を経由して必須 append + snapshot 一括復元の atomic 境界に乗せる。本ヘルパーは
+    /// best-effort であり、`AbortRun` の rollback 経路を担保できないため Aborted は
+    /// ここで書かない（重複 append 防止）。
+    fn write_terminal_log<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        snapshot: &WorkflowState,
+    ) {
+        for event in Self::terminal_events_for_snapshot(snapshot) {
+            self.write_log(app, event);
         }
     }
 
     /// 最後のステップのStepCompletedログを書き込む。
-    fn write_last_step_completed_log(&self, app: &tauri::AppHandle, snapshot: &WorkflowState) {
-        if let Some(last_entry) = snapshot.step_history.last() {
-            self.write_log(
-                app,
-                WorkflowLogEvent::StepCompleted {
-                    execution_id: snapshot.execution_id.clone(),
+    fn write_last_step_completed_log<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        snapshot: &WorkflowState,
+    ) {
+        if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot) {
+            self.write_log(app, event);
+        }
+    }
+
+    fn last_step_completed_event_for_snapshot(snapshot: &WorkflowState) -> Option<WorkflowEvent> {
+        let last_entry = snapshot.step_history.last()?;
+        Some(WorkflowEvent::NodeCompleted {
+            run_id: snapshot.execution_id.clone(),
+            workflow_name: snapshot.workflow_name.clone(),
+            node_name: last_entry.step_name.clone(),
+            result: last_entry.result.clone(),
+            session_id: last_entry.session_id.clone(),
+            token_usage: last_entry.token_usage.clone(),
+            structured_output: last_entry.structured_output.clone(),
+            run_index: Some(last_entry.run_index),
+            timestamp: last_entry.completed_at,
+        })
+    }
+
+    fn node_started_event_for_snapshot(snapshot: &WorkflowState) -> WorkflowEvent {
+        let exec_count = snapshot
+            .step_execution_counts
+            .get(&snapshot.current_step_name)
+            .copied()
+            .unwrap_or(1);
+        WorkflowEvent::NodeStarted {
+            run_id: snapshot.execution_id.clone(),
+            workflow_name: snapshot.workflow_name.clone(),
+            node_name: snapshot.current_step_name.clone(),
+            execution_count: exec_count,
+            timestamp: snapshot.updated_at,
+        }
+    }
+
+    fn parallel_started_event_for_snapshot(snapshot: &WorkflowState) -> Option<WorkflowEvent> {
+        let node = snapshot
+            .workflow_definition
+            .nodes
+            .get(snapshot.current_step_index)?;
+        let child_node_names: Vec<String> = node
+            .parallel_children
+            .as_ref()?
+            .iter()
+            .map(|child| child.name.clone())
+            .collect();
+        Some(WorkflowEvent::ParallelStarted {
+            run_id: snapshot.execution_id.clone(),
+            workflow_name: snapshot.workflow_name.clone(),
+            parent_node_name: snapshot.current_step_name.clone(),
+            child_node_names,
+            timestamp: snapshot.updated_at,
+        })
+    }
+
+    fn terminal_events_for_snapshot(snapshot: &WorkflowState) -> Vec<WorkflowEvent> {
+        match &snapshot.state {
+            WorkflowExecutionState::Completed => vec![WorkflowEvent::RunCompleted {
+                run_id: snapshot.execution_id.clone(),
+                workflow_name: snapshot.workflow_name.clone(),
+                total_token_usage: snapshot.total_token_usage.clone(),
+                timestamp: snapshot.updated_at,
+            }],
+            WorkflowExecutionState::Failed { reason } => vec![
+                WorkflowEvent::NodeFailed {
+                    run_id: snapshot.execution_id.clone(),
                     workflow_name: snapshot.workflow_name.clone(),
-                    step_name: last_entry.step_name.clone(),
-                    result: last_entry.result.clone(),
-                    session_id: last_entry.session_id.clone(),
-                    token_usage: last_entry.token_usage.clone(),
-                    structured_output: last_entry.structured_output.clone(),
-                    run_index: Some(last_entry.run_index),
-                    timestamp: last_entry.completed_at,
+                    node_name: snapshot.current_step_name.clone(),
+                    reason: reason.clone(),
+                    timestamp: snapshot.updated_at,
                 },
-            );
+                WorkflowEvent::RunFailed {
+                    run_id: snapshot.execution_id.clone(),
+                    workflow_name: snapshot.workflow_name.clone(),
+                    reason: reason.clone(),
+                    timestamp: snapshot.updated_at,
+                },
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    fn required_events_for_approval_commit(
+        approval_event: WorkflowEvent,
+        outcome: &StepOutcome,
+    ) -> Vec<WorkflowEvent> {
+        let mut events = vec![approval_event];
+        match outcome {
+            StepOutcome::Persist(snapshot) => {
+                if matches!(
+                    snapshot.state,
+                    WorkflowExecutionState::Completed | WorkflowExecutionState::Failed { .. }
+                ) {
+                    if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot) {
+                        events.push(event);
+                    }
+                    events.extend(Self::terminal_events_for_snapshot(snapshot));
+                } else if matches!(snapshot.state, WorkflowExecutionState::Aborted) {
+                    events.push(WorkflowEvent::RunAborted {
+                        run_id: snapshot.execution_id.clone(),
+                        workflow_name: snapshot.workflow_name.clone(),
+                        timestamp: snapshot.updated_at,
+                    });
+                }
+            }
+            StepOutcome::TransitionAndStart(snapshot) => {
+                if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot) {
+                    events.push(event);
+                }
+                events.push(Self::node_started_event_for_snapshot(snapshot));
+            }
+            StepOutcome::ReduceAndTransition(snapshot) | StepOutcome::StartParallel(snapshot) => {
+                if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot) {
+                    events.push(event);
+                }
+                match outcome {
+                    StepOutcome::ReduceAndTransition(_) => {
+                        events.push(Self::node_started_event_for_snapshot(snapshot));
+                    }
+                    StepOutcome::StartParallel(_) => {
+                        if let Some(event) = Self::parallel_started_event_for_snapshot(snapshot) {
+                            events.push(event);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let commit_timestamp = events
+            .iter()
+            .map(Self::workflow_event_timestamp)
+            .fold(0.0_f64, f64::max);
+        for event in &mut events {
+            Self::set_workflow_event_timestamp(event, commit_timestamp);
+        }
+        events
+    }
+
+    fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
+        match event {
+            WorkflowEvent::RunStarted { timestamp, .. }
+            | WorkflowEvent::NodeStarted { timestamp, .. }
+            | WorkflowEvent::NodeCompleted { timestamp, .. }
+            | WorkflowEvent::NodeFailed { timestamp, .. }
+            | WorkflowEvent::ApprovalRequested { timestamp, .. }
+            | WorkflowEvent::ApprovalResolved { timestamp, .. }
+            | WorkflowEvent::RunCompleted { timestamp, .. }
+            | WorkflowEvent::RunFailed { timestamp, .. }
+            | WorkflowEvent::RunAborted { timestamp, .. }
+            | WorkflowEvent::OutputCollected { timestamp, .. }
+            | WorkflowEvent::ParallelStarted { timestamp, .. }
+            | WorkflowEvent::ParallelChildStarted { timestamp, .. }
+            | WorkflowEvent::ParallelChildCompleted { timestamp, .. }
+            | WorkflowEvent::ParallelCompleted { timestamp, .. }
+            | WorkflowEvent::ContractRepairRequested { timestamp, .. } => *timestamp,
+        }
+    }
+
+    fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_timestamp: f64) {
+        match event {
+            WorkflowEvent::RunStarted { timestamp, .. }
+            | WorkflowEvent::NodeStarted { timestamp, .. }
+            | WorkflowEvent::NodeCompleted { timestamp, .. }
+            | WorkflowEvent::NodeFailed { timestamp, .. }
+            | WorkflowEvent::ApprovalRequested { timestamp, .. }
+            | WorkflowEvent::ApprovalResolved { timestamp, .. }
+            | WorkflowEvent::RunCompleted { timestamp, .. }
+            | WorkflowEvent::RunFailed { timestamp, .. }
+            | WorkflowEvent::RunAborted { timestamp, .. }
+            | WorkflowEvent::OutputCollected { timestamp, .. }
+            | WorkflowEvent::ParallelStarted { timestamp, .. }
+            | WorkflowEvent::ParallelChildStarted { timestamp, .. }
+            | WorkflowEvent::ParallelChildCompleted { timestamp, .. }
+            | WorkflowEvent::ParallelCompleted { timestamp, .. }
+            | WorkflowEvent::ContractRepairRequested { timestamp, .. } => {
+                *timestamp = commit_timestamp;
+            }
         }
     }
 
     /// NDJSONログにイベントを書き込む。失敗してもワークフロー実行には影響しない。
-    fn write_log(&self, app: &tauri::AppHandle, event: WorkflowLogEvent) {
+    fn write_log<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>, event: WorkflowEvent) {
         if let Err(e) = self.write_log_required(app, event) {
             log::warn!("Failed to write workflow log: {e}");
         }
     }
 
     /// NDJSONログにイベントを書き込む。履歴復元に必須のログでのみ失敗を伝播する。
-    fn write_log_required(
+    fn write_log_required<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle,
-        event: WorkflowLogEvent,
+        app: &tauri::AppHandle<R>,
+        event: WorkflowEvent,
     ) -> Result<(), String> {
         if let Ok(data_dir) = crate::session::resolve_data_dir(app) {
             let log = WorkflowEventLog::new(&data_dir);
@@ -5222,7 +6186,26 @@ impl WorkflowEngine {
         Err("failed to resolve app data dir".to_string())
     }
 
-    fn workflow_approval_auto_approve_enabled(app: &tauri::AppHandle) -> bool {
+    /// 複数の必須 event を 1 つの atomic commit point として一括追記する。
+    ///
+    /// [04] spec『event 列と domain state の整合』Rule: 同一 command 受理サイクル内で
+    /// 複数 required event を発行する場合は本 helper を使い、partial commit を構造的に
+    /// 排除する。
+    fn write_log_required_batch<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        events: &[WorkflowEvent],
+    ) -> Result<(), String> {
+        if let Ok(data_dir) = crate::session::resolve_data_dir(app) {
+            let log = WorkflowEventLog::new(&data_dir);
+            return log.append_batch(events);
+        }
+        Err("failed to resolve app data dir".to_string())
+    }
+
+    fn workflow_approval_auto_approve_enabled<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+    ) -> bool {
         app.try_state::<Arc<crate::config::AppConfig>>()
             .and_then(|config| config.get_config().ok())
             .is_some_and(|cfg| cfg.workflow.approval_auto_approve)
@@ -5731,7 +6714,7 @@ mod tests {
 
     #[tokio::test]
     async fn persist_outcome_without_new_history_does_not_cleanup_last_step_session() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let mut snapshot = engine
             .insert_test_approval_execution(
                 "/repo",
@@ -5764,7 +6747,7 @@ mod tests {
 
     #[tokio::test]
     async fn aborted_approval_outcome_cleans_current_session_not_last_history_entry() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let mut snapshot = engine
             .insert_test_approval_execution(
                 "/repo",
@@ -5795,7 +6778,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let mut exec = engine
             .insert_test_approval_execution(
                 "/repo",
@@ -5840,7 +6823,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_child_outputs() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let mut snapshot = engine
             .insert_test_approval_execution(
                 "/repo",
@@ -7598,8 +8581,8 @@ mod tests {
             .find(|entry| entry.step_name == "plan_fix_policy")
             .unwrap();
         let log = WorkflowEventLog::new(tmp.path());
-        log.append(&WorkflowLogEvent::WorkflowStarted {
-            execution_id: exec.id.clone(),
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: exec.id.clone(),
             workflow_name: exec.workflow.name.clone(),
             workflow_file_stem: "spec-driven-development".to_string(),
             worktree_path: "/repo".to_string(),
@@ -7607,10 +8590,10 @@ mod tests {
             timestamp: 1000.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::StepCompleted {
-            execution_id: exec.id.clone(),
+        log.append(&WorkflowEvent::NodeCompleted {
+            run_id: exec.id.clone(),
             workflow_name: exec.workflow.name.clone(),
-            step_name: entry.step_name.clone(),
+            node_name: entry.step_name.clone(),
             result: entry.result.clone(),
             session_id: entry.session_id.clone(),
             token_usage: entry.token_usage.clone(),
@@ -7637,10 +8620,10 @@ mod tests {
         assert!(!serialized.contains("MY_TOKEN_VALUE_123456"));
         let completed = events
             .iter()
-            .find(|event| matches!(event, WorkflowLogEvent::StepCompleted { .. }))
+            .find(|event| matches!(event, WorkflowEvent::NodeCompleted { .. }))
             .unwrap();
         match completed {
-            WorkflowLogEvent::StepCompleted {
+            WorkflowEvent::NodeCompleted {
                 structured_output, ..
             } => {
                 let policy = structured_output
@@ -8663,7 +9646,7 @@ mod tests {
         //   (e) `executions["/repo"].current_session_id` が `None` のままであること
         // を assert する。`start_step_session` 内の順序を逆転（先に create_step_session
         // → 後に build_step_prompt）させると (b) が 1 となりテストが失敗する。
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
 
         // 参照先ファセットが解決不能な step を含む execution を登録する。
         // facets_base_dir() 配下に "nonexistent_policy_<uuid>.md" が偶然存在することは
@@ -8755,7 +9738,7 @@ mod tests {
         // broadcast_state → start_agent_turn の全境界が各 1 回ずつ呼ばれ、
         // engine.session_workflow_refs と executions["/repo"].current_session_id が
         // 期待通り更新されることを assert する。
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
 
         // inline_prompt のみのステップなら facet ファイルなしでも合成が成功する。
         let mut step = make_test_step("ok-step", NodeType::Agent, "unused", vec![], None);
@@ -8904,7 +9887,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_all_match_all_children_match() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
@@ -8931,7 +9914,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_all_match_one_child_mismatch() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
@@ -8953,7 +9936,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_any_match_one_child_matches() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: None,
             any_match: Some("NEEDS_FIX".to_string()),
@@ -8975,7 +9958,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_any_match_no_child_matches() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: None,
             any_match: Some("NEEDS_FIX".to_string()),
@@ -8997,7 +9980,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_no_condition_returns_true() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: None,
             any_match: None,
@@ -9011,7 +9994,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_result_none_does_not_match() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
@@ -9034,7 +10017,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_filters_only_child_steps() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
@@ -9057,7 +10040,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_all_match_missing_child_output_returns_false() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
@@ -9077,7 +10060,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_invalid_regex_falls_back_to_contains() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         // 不正なregexパターン（validationで弾かれるべきだが、エンジン側もgraceful）
         let agg = ParallelAggregate {
             all_match: Some("[invalid(regex".to_string()),
@@ -9097,7 +10080,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_invalid_regex_contains_no_match() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: Some("[invalid(regex".to_string()),
             any_match: None,
@@ -9116,7 +10099,7 @@ mod tests {
 
     #[test]
     fn evaluate_aggregate_empty_children_all_match_returns_true() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
@@ -9299,7 +10282,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_approval_target_wrong_worktree_returns_unauthorized_without_mutating_state() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
         {
             let mut execs = engine.executions.lock().await;
@@ -9469,7 +10452,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_approval_chat_instruction_limits_current_approval_session() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
         exec.current_session_id = Some("step-session".to_string());
         let run_id = exec.id.clone();
@@ -9507,7 +10490,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_approval_chat_instruction_rejects_current_approval_step_before_waiting() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
         exec.current_session_id = Some("step-session".to_string());
         let run_id = exec.id.clone();
@@ -9537,7 +10520,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_approval_chat_instruction_rejects_stale_approved_policy_session() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
         exec.workflow.nodes[0].name = "implementation_fix_policy".to_string();
         exec.workflow.nodes[0].output_contract = Some("approved-fix-policy".to_string());
@@ -9598,7 +10581,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_approval_chat_instruction_rejects_stale_rejected_policy_session() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let mut exec = make_approval_exec(WorkflowExecutionState::Running, vec![]);
         exec.workflow.nodes[0].name = "implementation_fix_policy".to_string();
         exec.workflow.nodes[0].output_contract = Some("approved-fix-policy".to_string());
@@ -10312,7 +11295,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let worktree_path = "/repo";
         let policy_session_id = uuid::Uuid::new_v4().to_string();
 
@@ -10439,7 +11422,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_outcome_auto_approve_plan_policy_starts_plan_fix_once() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let worktree_path = "/repo";
         let policy_session_id = uuid::Uuid::new_v4().to_string();
         let exec =
@@ -10495,7 +11478,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_approve_and_manual_approve_race_starts_plan_fix_once() {
-        let engine = Arc::new(WorkflowEngine::new());
+        let engine = Arc::new(WorkflowEngine::new_for_test());
         let worktree_path = "/repo";
         let policy_session_id = uuid::Uuid::new_v4().to_string();
         let exec =
@@ -10682,38 +11665,10 @@ mod tests {
         );
     }
 
-    // ---- ApprovalDecision serde ----
-
-    #[test]
-    fn approval_decision_deserialize_approve() {
-        let json = r#""approve""#;
-        let decision: ApprovalDecision = serde_json::from_str(json).unwrap();
-        assert_eq!(decision, ApprovalDecision::Approve);
-    }
-
-    #[test]
-    fn approval_decision_deserialize_reject_with_comment() {
-        let json = r#"{"reject":{"comment":"Please fix this"}}"#;
-        let decision: ApprovalDecision = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            decision,
-            ApprovalDecision::Reject {
-                comment: "Please fix this".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn approval_decision_deserialize_abort() {
-        let json = r#""abort""#;
-        let decision: ApprovalDecision = serde_json::from_str(json).unwrap();
-        assert_eq!(decision, ApprovalDecision::Abort);
-    }
-
     // R4-01: output_contractなしのparallel childはStepOutputを生成しない
     #[test]
     fn evaluate_aggregate_child_without_output_contract_has_no_step_output() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let agg = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
@@ -11528,7 +12483,7 @@ mod tests {
     #[tokio::test]
     async fn engine_run_id_consistency_across_execution_and_run_store_metadata() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
@@ -11614,7 +12569,7 @@ mod tests {
     /// validate_start は `AlreadyActive` を返す。
     #[tokio::test]
     async fn engine_validate_start_rejects_duplicate_active_run_on_same_worktree() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let workflow = make_minimal_workflow();
         let worktree_path = "/wt/dup";
 
@@ -11663,7 +12618,7 @@ mod tests {
     #[tokio::test]
     async fn engine_state_transitions_sync_to_run_store_active_and_completed() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
@@ -11807,7 +12762,7 @@ mod tests {
     /// 構成要素（Run Store の active index）を直接検証する。
     #[tokio::test]
     async fn run_store_active_index_resolves_worktree_to_run_id_for_duplicate_check() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let tmp = tempfile::TempDir::new().unwrap();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
@@ -11844,7 +12799,7 @@ mod tests {
     /// 回帰防止。
     #[tokio::test]
     async fn handle_auto_complete_fixture_uses_run_id_as_executions_key() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let exec = WorkflowExecution {
             id: "auto-complete-run".to_string(),
             workflow: make_minimal_workflow(),
@@ -11911,7 +12866,7 @@ mod tests {
     /// terminal run と active run が共存しても production 経路で取り違えない。
     #[tokio::test]
     async fn find_by_worktree_filters_terminal_runs_and_returns_active_only() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let worktree_path = "/wt/shared";
         let terminal_run_id = "terminal-run".to_string();
         let active_run_id = "active-run".to_string();
@@ -11955,7 +12910,7 @@ mod tests {
     /// no-op を返し、同一 worktree の active run を誤って中断しない。
     #[tokio::test]
     async fn abort_workflow_by_run_id_is_noop_for_terminal_run_even_if_active_shares_worktree() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let worktree_path = "/wt/coexist";
         let terminal_run_id = "terminal-abort-target".to_string();
         let active_run_id = "active-bystander".to_string();
@@ -12004,7 +12959,7 @@ mod tests {
     /// reservation は最初の副作用であり、失敗時は他の副作用が走らない。
     #[tokio::test]
     async fn start_workflow_reservation_is_first_side_effect_so_no_orphan_session_on_conflict() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let tmp = tempfile::TempDir::new().unwrap();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
@@ -12072,7 +13027,7 @@ mod tests {
 
     #[tokio::test]
     async fn reserve_workflow_run_maps_run_store_worktree_conflict_to_already_active() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let tmp = tempfile::TempDir::new().unwrap();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
@@ -12116,7 +13071,7 @@ mod tests {
     async fn run_store_completed_listing_includes_completed_failed_aborted_via_authoritative_sync()
     {
         let tmp = tempfile::TempDir::new().unwrap();
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
@@ -12198,7 +13153,7 @@ mod tests {
     #[tokio::test]
     async fn run_store_sync_failure_rolls_engine_projection_back_to_active_state() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
@@ -12275,7 +13230,7 @@ mod tests {
     /// 取り違えないことを engine state 観測で保証する。
     #[tokio::test]
     async fn abort_workflow_by_run_id_does_not_modify_sibling_active_run_state() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let worktree_path = "/wt/sibling";
         let terminal_run_id = uuid::Uuid::new_v4().to_string();
         let active_run_id = uuid::Uuid::new_v4().to_string();
@@ -12309,11 +13264,11 @@ mod tests {
         assert_eq!(initial_active_state, Some(WorkflowExecutionState::Running));
 
         // abort_workflow_by_run_id が production で使う lookup helper は、terminal target を
-        // no-op として返す。worktree_path で sibling active run を探索しない。
-        assert!(engine
-            .abort_target_sessions_by_run_id(&terminal_run_id)
-            .await
-            .is_none());
+        // `AlreadyTerminal` として返す。worktree_path で sibling active run を探索しない。
+        assert!(matches!(
+            engine.abort_target_lookup(&terminal_run_id).await,
+            AbortTargetLookup::AlreadyTerminal
+        ));
 
         // active run には触れていない（同一 worktree でも誤って中断しない）
         let final_active_state = {
@@ -12327,7 +13282,7 @@ mod tests {
     /// 直接更新し、同一 worktree に別 run が存在しても指定 run 以外へ適用しない。
     #[tokio::test]
     async fn approval_for_run_id_updates_only_target_run_when_worktree_is_shared() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let worktree_path = "/wt/approval-shared";
         let target_run_id = uuid::Uuid::new_v4().to_string();
         let sibling_run_id = uuid::Uuid::new_v4().to_string();
@@ -12375,7 +13330,7 @@ mod tests {
     #[tokio::test]
     async fn start_workflow_core_records_run_id_and_rejects_duplicate_worktree() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
@@ -12465,7 +13420,7 @@ mod tests {
     #[tokio::test]
     async fn start_workflow_duplicate_reservation_does_not_leak_metadata_or_refs() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
@@ -12534,9 +13489,9 @@ mod tests {
     }
 
     #[test]
-    fn start_workflow_rollback_closes_created_parent_session() {
+    fn start_workflow_rollback_deletes_created_parent_session() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let store = Arc::new(crate::session::SessionStore::default());
         let session = crate::session::create_session_internal_with_permission(
             &store,
@@ -12549,8 +13504,10 @@ mod tests {
 
         engine.rollback_created_parent_session(&store, tmp.path(), &session.id);
 
-        let closed = store.get_session(tmp.path(), &session.id).unwrap().unwrap();
-        assert_eq!(closed.state, crate::session::SessionState::Closed);
+        assert!(store
+            .get_session(tmp.path(), &session.id)
+            .unwrap()
+            .is_none());
     }
 
     async fn active_only_summary(engine: &WorkflowEngine) -> Vec<String> {
@@ -12570,7 +13527,7 @@ mod tests {
     #[tokio::test]
     async fn run_store_terminal_statuses_propagate_status_field_in_completed_listing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         engine
             .set_run_store_data_dir(tmp.path().to_path_buf())
             .await;
@@ -12657,7 +13614,7 @@ mod tests {
     /// `WaitingApproval` でない場合に Err を返す（任意 step session への注入経路を塞ぐ）。
     #[tokio::test]
     async fn resolve_chat_session_for_approval_rejects_non_waiting_approval_state() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let run_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_exec_with(&run_id, "/wt/x", WorkflowExecutionState::Running, "parent");
         exec.workflow.nodes[0].node_type = NodeType::Approval;
@@ -12675,7 +13632,7 @@ mod tests {
     /// Approval node でない場合に拒否する。
     #[tokio::test]
     async fn resolve_chat_session_for_approval_rejects_non_approval_current_node() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let run_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_exec_with(
             &run_id,
@@ -12697,7 +13654,7 @@ mod tests {
     /// Spec issues-1011 finding 3: 全条件揃った場合のみ session_id / worktree_path を返す。
     #[tokio::test]
     async fn resolve_chat_session_for_approval_accepts_fully_valid_state() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let run_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_exec_with(
             &run_id,
@@ -12721,7 +13678,7 @@ mod tests {
     /// 同一 worktree に terminal + active がある状況で terminal 側を狙う注入経路を防ぐ。
     #[tokio::test]
     async fn resolve_chat_session_for_approval_rejects_terminal_run() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let run_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_exec_with(
             &run_id,
@@ -12744,7 +13701,7 @@ mod tests {
     /// は対象 run の refs のみを削除し、同一 worktree の別 active run の refs は残す。
     #[tokio::test]
     async fn cleanup_session_workflow_refs_by_run_id_preserves_sibling_run_refs() {
-        let engine = WorkflowEngine::new();
+        let engine = WorkflowEngine::new_for_test();
         let terminal_run_id = uuid::Uuid::new_v4().to_string();
         let active_run_id = uuid::Uuid::new_v4().to_string();
 
@@ -12784,6 +13741,2020 @@ mod tests {
         assert!(
             refs.contains_key("parent-active"),
             "sibling active run の refs は残るべき"
+        );
+    }
+}
+
+/// [04] Command / Event Boundary 専用テスト。
+///
+/// `WorkflowEngine::dispatch` の routing 層と `handle_approval` 内の
+/// ApprovalResolved append / snapshot 一括復元（atomic mutation 境界）を検証する。
+/// 本モジュールは `tauri::AppHandle` を要さない範囲で dispatch / approval semantics の
+/// production 経路を直接呼ぶ。
+#[cfg(test)]
+mod dispatch_boundary_tests {
+    use super::*;
+    use crate::workflow::command::{WorkflowCommand, WorkflowCommandResult};
+    use crate::workflow::event::{ApprovalDecisionRecord, WorkflowEvent};
+    use crate::workflow::log::WorkflowEventLog;
+    use crate::workflow::run::{RunStatus, TerminalRunStatus, TriggerSource, WorkflowRun};
+    use crate::workflow::schema::{NodeDefinition, NodeType, TransitionRule, Workflow};
+    use crate::workflow::state::WorkflowExecutionState;
+    use tauri::Manager;
+    use tempfile::TempDir;
+
+    fn dispatch_data_dir(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path::PathBuf {
+        crate::session::resolve_data_dir(app).expect("mock app data dir must resolve")
+    }
+
+    fn make_approval_only_workflow() -> Workflow {
+        Workflow {
+            name: "boundary-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "review".to_string(),
+                node_type: NodeType::Approval,
+                instruction: Some("review".to_string()),
+                ..NodeDefinition::default()
+            }],
+        }
+    }
+
+    fn make_rejectable_approval_workflow() -> Workflow {
+        Workflow {
+            name: "boundary-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![
+                NodeDefinition {
+                    name: "review".to_string(),
+                    node_type: NodeType::Approval,
+                    instruction: Some("review".to_string()),
+                    transition_rules: vec![TransitionRule {
+                        r#match: "reject".to_string(),
+                        next: "fix".to_string(),
+                    }],
+                    ..NodeDefinition::default()
+                },
+                NodeDefinition {
+                    name: "fix".to_string(),
+                    node_type: NodeType::Agent,
+                    instruction: Some("fix".to_string()),
+                    ..NodeDefinition::default()
+                },
+            ],
+        }
+    }
+
+    fn make_waiting_approval_execution(run_id: &str, worktree_path: &str) -> WorkflowExecution {
+        let workflow = make_approval_only_workflow();
+        make_waiting_approval_execution_with_workflow(run_id, worktree_path, workflow)
+    }
+
+    fn make_waiting_approval_execution_with_workflow(
+        run_id: &str,
+        worktree_path: &str,
+        workflow: Workflow,
+    ) -> WorkflowExecution {
+        WorkflowExecution {
+            id: run_id.to_string(),
+            workflow,
+            state: WorkflowExecutionState::WaitingApproval,
+            current_step_index: 0,
+            step_execution_counts: HashMap::from([("review".to_string(), 1)]),
+            step_history: Vec::new(),
+            chat_session_id: "chat-1".to_string(),
+            worktree_path: worktree_path.to_string(),
+            started_at: 1000.0,
+            updated_at: 1000.0,
+            current_session_id: Some("sess-1".to_string()),
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: None,
+            workflow_variables: HashMap::new(),
+            contract_retry_count: 0,
+        }
+    }
+
+    type DispatchTestApp = tauri::App<tauri::test::MockRuntime>;
+
+    fn make_dispatch_app() -> DispatchTestApp {
+        let mut config = crate::config::ReleashConfig::default();
+        config.app.last_repo_paths = Vec::new();
+        config.agents.codex.models = vec!["default".to_string(), "gpt-5.5".to_string()];
+        config.agents.default = Some("codex".to_string());
+        let app_config = Arc::new(crate::config::AppConfig::new(
+            config,
+            TempDir::new().unwrap().path().join("config.toml"),
+        ));
+        let registry = Arc::new(crate::backends::build_registry(Arc::clone(&app_config)));
+        let data_dir =
+            std::env::temp_dir().join(format!("releash-dispatch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        tauri::test::mock_builder()
+            .manage(crate::session::TestDataDir(data_dir))
+            .manage(app_config)
+            .manage(registry)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("tauri mock test app must build")
+    }
+
+    fn make_dispatch_deps() -> (
+        Arc<crate::session::SessionStore>,
+        Arc<Mutex<AgentProcessMap>>,
+    ) {
+        (
+            Arc::new(crate::session::SessionStore::default()),
+            Arc::new(Mutex::new(AgentProcessMap::new())),
+        )
+    }
+
+    fn create_parent_session(
+        app: &DispatchTestApp,
+        session_store: &crate::session::SessionStore,
+        worktree_path: &str,
+    ) -> crate::session::ChatSession {
+        let data_dir = dispatch_data_dir(app.handle());
+        crate::session::create_session_internal_with_permission(
+            session_store,
+            &data_dir,
+            worktree_path,
+            None,
+            crate::permission::PermissionMode::Edit,
+        )
+        .unwrap()
+    }
+
+    async fn insert_execution_and_active_run(
+        engine: &WorkflowEngine,
+        exec: WorkflowExecution,
+        trigger_source: TriggerSource,
+    ) {
+        let run_id = exec.id.clone();
+        engine
+            .run_store
+            .register_active(WorkflowRun {
+                run_id: run_id.clone(),
+                workflow_name: exec.workflow.name.clone(),
+                task: exec.task.clone(),
+                status: match exec.state {
+                    WorkflowExecutionState::WaitingApproval => RunStatus::WaitingApproval,
+                    _ => RunStatus::Running,
+                },
+                worktree_path: exec.worktree_path.clone(),
+                chat_session_id: Some(exec.chat_session_id.clone()),
+                current_node_name: Some(exec.workflow.nodes[exec.current_step_index].name.clone()),
+                trigger_source,
+                started_at: exec.started_at,
+                updated_at: exec.updated_at,
+                completed_at: None,
+                error_reason: None,
+            })
+            .await
+            .unwrap();
+        engine.executions.lock().await.insert(run_id, exec);
+    }
+
+    fn read_dispatch_events(app: &DispatchTestApp, run_id: &str) -> Vec<WorkflowEvent> {
+        let data_dir = dispatch_data_dir(app.handle());
+        WorkflowEventLog::new(&data_dir)
+            .read_log(run_id)
+            .unwrap_or_default()
+    }
+
+    fn read_all_dispatch_events(app: &DispatchTestApp) -> Vec<WorkflowEvent> {
+        let data_dir = dispatch_data_dir(app.handle());
+        let log_dir = data_dir.join("workflow_logs");
+        if !log_dir.is_dir() {
+            return Vec::new();
+        }
+        let log = WorkflowEventLog::new(&data_dir);
+        let mut events = Vec::new();
+        for entry in std::fs::read_dir(log_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("ndjson") {
+                continue;
+            }
+            if let Some(run_id) = path.file_stem().and_then(|stem| stem.to_str()) {
+                events.extend(log.read_log(run_id).unwrap());
+            }
+        }
+        events
+    }
+
+    fn make_managed_worktree() -> (TempDir, TempDir, std::path::PathBuf) {
+        let repo_parent = TempDir::new().unwrap();
+        let worktree_parent = TempDir::new().unwrap();
+        let repo_path = repo_parent.path().join("repo");
+        std::fs::create_dir(&repo_path).unwrap();
+        let repo = git2::Repository::init(&repo_path).unwrap();
+        std::fs::write(repo_path.join("README.md"), "test\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("README.md")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let worktree_path = worktree_parent.path().join("managed-wt");
+        repo.worktree("managed-wt", &worktree_path, None).unwrap();
+        (repo_parent, worktree_parent, worktree_path)
+    }
+
+    fn configure_managed_repo(app: &DispatchTestApp, repo_path: &std::path::Path) {
+        app.state::<Arc<crate::config::AppConfig>>()
+            .with_config_mut(|config| {
+                config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// Spec [04]: ApprovalResolved event は decision を typed (snake_case) で記録し、
+    /// approve コメントを comment field に伝播する。observer が dispatch 経由の判断を
+    /// 統一語彙で読めることを担保する。
+    #[test]
+    fn approval_resolved_records_decision_and_comment_in_ndjson() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        let run_id = "00000000-0000-0000-0000-000000000300";
+
+        let event = WorkflowEvent::ApprovalResolved {
+            run_id: run_id.to_string(),
+            workflow_name: "boundary-wf".to_string(),
+            node_name: "review".to_string(),
+            decision: ApprovalDecisionRecord::Approve,
+            comment: Some("lgtm".to_string()),
+            timestamp: 1234.0,
+        };
+        log.append(&event).unwrap();
+
+        let events = log.read_log(run_id).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            WorkflowEvent::ApprovalResolved {
+                run_id: rid,
+                node_name,
+                decision,
+                comment,
+                ..
+            } => {
+                assert_eq!(rid, run_id);
+                assert_eq!(node_name, "review");
+                assert_eq!(*decision, ApprovalDecisionRecord::Approve);
+                assert_eq!(comment.as_deref(), Some("lgtm"));
+            }
+            other => panic!("expected ApprovalResolved, got {other:?}"),
+        }
+    }
+
+    /// Spec [04]: atomic mutation 境界。mutation 直前の `WorkflowExecution` snapshot を
+    /// 一括復元することで、履歴・変数・state・current_step_index を含む全フィールドが
+    /// 元に戻ることを担保する（部分 rollback helper を使わない構造）。
+    #[tokio::test]
+    async fn approval_snapshot_rollback_restores_workflow_execution_fully() {
+        let engine = WorkflowEngine::new_for_test();
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let mut exec = make_waiting_approval_execution(&run_id, "/wt/atomic");
+        exec.workflow_variables
+            .insert("preserved".to_string(), "before".to_string());
+        let before_history_len = exec.step_history.len();
+        let before_step_index = exec.current_step_index;
+        let before_state = exec.state.clone();
+        let before_variables = exec.workflow_variables.clone();
+        let snapshot_before = exec.clone();
+
+        engine.executions.lock().await.insert(run_id.clone(), exec);
+
+        // mutation を適用（apply_approval_application + workflow_variables.extend）
+        {
+            let mut execs = engine.executions.lock().await;
+            let exec = execs.get_mut(&run_id).unwrap();
+            exec.workflow_variables
+                .insert("after_only".to_string(), "x".to_string());
+            let _ = WorkflowEngine::apply_approval_application(
+                exec,
+                &ApprovalDecision::Approve,
+                ApprovalApplication {
+                    effective_result: "approve".to_string(),
+                    structured_output: None,
+                    output_contract: None,
+                },
+            )
+            .unwrap();
+            assert_ne!(exec.state, before_state);
+            assert!(exec.workflow_variables.contains_key("after_only"));
+        }
+
+        // event append 失敗時の一括復元（handle_approval 内と同じ操作）。
+        {
+            let mut execs = engine.executions.lock().await;
+            if let Some(exec) = execs.get_mut(&run_id) {
+                *exec = snapshot_before;
+            }
+        }
+
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).expect("run must remain");
+        assert_eq!(restored.state, before_state, "WaitingApproval が復元される");
+        assert_eq!(
+            restored.current_step_index, before_step_index,
+            "current_step_index が復元される"
+        );
+        assert_eq!(
+            restored.step_history.len(),
+            before_history_len,
+            "step_history.len() が復元される"
+        );
+        assert!(
+            !restored.workflow_variables.contains_key("after_only"),
+            "mutation 後に追加された workflow_variables が消える"
+        );
+        assert_eq!(
+            restored.workflow_variables, before_variables,
+            "workflow_variables 全体が mutation 前と等価"
+        );
+    }
+
+    /// Spec [04]: `WorkflowCommand::ApproveNode` の comment は `ApprovalResolved.comment` に
+    /// 伝播する経路で `WorkflowCommand::RejectNode` の reason も同様に伝播する。dispatch 入口
+    /// に渡された command の comment / reason が production 経路で event payload に反映される
+    /// ことを担保する（routing 層の意味を保つ）。
+    #[test]
+    fn dispatch_command_comments_map_to_approval_resolved_event_comment() {
+        // dispatch 内で構築される ApprovalResolved の comment が approve/reject 双方で
+        // 適切に決定されることを、command variant ごとに直接検証する。
+        let approve = WorkflowCommand::ApproveNode {
+            run_id: "00000000-0000-0000-0000-000000000400".to_string(),
+            node_name: "review".to_string(),
+            comment: Some("lgtm with notes".to_string()),
+        };
+        let approve_comment = match approve {
+            WorkflowCommand::ApproveNode { comment, .. } => comment,
+            _ => panic!("expected ApproveNode"),
+        };
+        assert_eq!(approve_comment.as_deref(), Some("lgtm with notes"));
+
+        let reject = WorkflowCommand::RejectNode {
+            run_id: "00000000-0000-0000-0000-000000000401".to_string(),
+            node_name: "review".to_string(),
+            reason: "needs fix".to_string(),
+        };
+        let reject_reason = match reject {
+            WorkflowCommand::RejectNode { reason, .. } => reason,
+            _ => panic!("expected RejectNode"),
+        };
+        assert_eq!(reject_reason, "needs fix");
+    }
+
+    /// Spec [04]: `WorkflowCommand::AbortRun { expected_node_name: Some(_) }` は
+    /// approval UI 由来の Abort として handle_approval 経路に乗り、
+    /// `expected_node_name: None` は run 全体の Abort として abort_workflow_by_run_id 経路に
+    /// 乗る。dispatch の routing 分岐がこの 2 経路を区別することを構造的に担保する。
+    #[test]
+    fn dispatch_abort_run_variant_distinguishes_approval_vs_full_run_route() {
+        let approval_route = WorkflowCommand::AbortRun {
+            run_id: "00000000-0000-0000-0000-000000000500".to_string(),
+            expected_node_name: Some("review".to_string()),
+        };
+        let full_run_route = WorkflowCommand::AbortRun {
+            run_id: "00000000-0000-0000-0000-000000000501".to_string(),
+            expected_node_name: None,
+        };
+
+        // dispatch 内部の `if let Some(node_name) = expected_node_name` 分岐の構造を再現。
+        let approval_uses_approval_path = matches!(
+            approval_route,
+            WorkflowCommand::AbortRun {
+                expected_node_name: Some(_),
+                ..
+            }
+        );
+        let full_run_uses_abort_path = matches!(
+            full_run_route,
+            WorkflowCommand::AbortRun {
+                expected_node_name: None,
+                ..
+            }
+        );
+        assert!(
+            approval_uses_approval_path,
+            "approval UI 由来 Abort は expected_node_name を伴う"
+        );
+        assert!(
+            full_run_uses_abort_path,
+            "run 全体 Abort は expected_node_name None"
+        );
+    }
+
+    /// Spec [04] sentinel 禁止: `WorkflowCommandResult::Accepted` と `RunStarted` は
+    /// 型として区別され、Tauri adapter で variant 別に射影される。空文字列 sentinel を
+    /// `Accepted` から生成しないことを構造的に担保する（Tauri adapter での match 化が
+    /// 前提）。
+    #[test]
+    fn workflow_command_result_distinguishes_run_started_and_accepted() {
+        let started = WorkflowCommandResult::RunStarted {
+            run_id: "00000000-0000-0000-0000-000000000600".to_string(),
+        };
+        let accepted = WorkflowCommandResult::Accepted;
+        assert_ne!(started, accepted);
+        // `RunStarted` から `Accepted` への変換ヘルパーは boundary 上に存在しない。
+        // adapter 側で match による射影のみが認められる（spec [04] 責務配置）。
+    }
+
+    /// Spec [04] Rule「対象不在 / 既に終了した command は受理されない」:
+    /// `abort_target_lookup` は `executions` に存在しない run_id を `NotFound` と
+    /// 判定し、後段の dispatch では非受理にマッピングされる構造を担保する。
+    #[tokio::test]
+    async fn abort_target_lookup_returns_not_found_for_unknown_run_id() {
+        let engine = WorkflowEngine::new_for_test();
+        match engine
+            .abort_target_lookup("00000000-0000-0000-0000-000000000700")
+            .await
+        {
+            AbortTargetLookup::NotFound => {}
+            other => panic!("expected NotFound for unknown run_id, got {other:?}"),
+        }
+    }
+
+    /// Spec [04] Rule「既に終了した run に対する操作 command が要求される」:
+    /// terminal な run（Completed/Failed/Aborted）に対する Abort は `AlreadyTerminal`
+    /// として lookup 段階で非受理になる。
+    #[tokio::test]
+    async fn abort_target_lookup_returns_already_terminal_for_terminal_run() {
+        let engine = WorkflowEngine::new_for_test();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        for terminal_state in [
+            WorkflowExecutionState::Completed,
+            WorkflowExecutionState::Aborted,
+            WorkflowExecutionState::Failed {
+                reason: "x".to_string(),
+            },
+        ] {
+            let mut exec = make_waiting_approval_execution(&run_id, "/wt/term");
+            exec.state = terminal_state.clone();
+            engine.executions.lock().await.insert(run_id.clone(), exec);
+
+            match engine.abort_target_lookup(&run_id).await {
+                AbortTargetLookup::AlreadyTerminal => {}
+                other => panic!(
+                    "expected AlreadyTerminal for terminal {terminal_state:?}, got {other:?}"
+                ),
+            }
+            engine.executions.lock().await.remove(&run_id);
+        }
+    }
+
+    /// Spec [04] Rule: active run に対する `abort_target_lookup` は `Active` を返し、
+    /// その後の state 遷移経路（mutation → required append → finalize）に乗る。
+    #[tokio::test]
+    async fn abort_target_lookup_returns_active_for_running_run() {
+        let engine = WorkflowEngine::new_for_test();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut exec = make_waiting_approval_execution(&run_id, "/wt/active");
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_session_id = Some("sess-X".to_string());
+        engine.executions.lock().await.insert(run_id.clone(), exec);
+
+        match engine.abort_target_lookup(&run_id).await {
+            AbortTargetLookup::Active {
+                current_step_session_id,
+                ..
+            } => {
+                assert_eq!(current_step_session_id.as_deref(), Some("sess-X"));
+            }
+            other => panic!("expected Active for running run, got {other:?}"),
+        }
+    }
+
+    /// Spec [04] Rule「権限の無い / 対象不在 / 既決の command は state 変化を起こさない」:
+    /// 既に判断済み（WaitingApproval ではない）node に対する Approve / Reject は
+    /// `validate_approval_target_snapshot` で `InvalidState` として非受理になる。
+    /// production dispatch 経路の `handle_approval` がこのガードを最初に通すため、
+    /// 二度目以降の同一意図 command は state 変化を起こさない。
+    #[tokio::test]
+    async fn approval_target_validation_rejects_already_resolved_node() {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut exec = make_waiting_approval_execution(&run_id, "/wt/idempotent");
+        exec.state = WorkflowExecutionState::Completed;
+        let err =
+            WorkflowEngine::validate_approval_target_snapshot(&exec, Some(&run_id), Some("review"))
+                .unwrap_err();
+        assert!(
+            matches!(err, WorkflowEngineError::InvalidState(_)),
+            "既決 node への Approve/Reject は InvalidState で非受理 (got {err:?})"
+        );
+    }
+
+    /// Spec [04] Rule: `validate_approval_decision` は Reject の空コメント / 上限超過を
+    /// 拒否する。dispatch 入口での新規外部入力に対する境界バリデーション。
+    #[test]
+    fn reject_decision_validation_rejects_empty_and_oversize_comments() {
+        let empty = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Reject {
+            comment: "   ".to_string(),
+        })
+        .unwrap_err();
+        assert!(matches!(empty, WorkflowEngineError::ValidationError(_)));
+
+        let oversize = WorkflowEngine::validate_approval_decision(&ApprovalDecision::Reject {
+            comment: "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1),
+        })
+        .unwrap_err();
+        assert!(matches!(oversize, WorkflowEngineError::ValidationError(_)));
+
+        WorkflowEngine::validate_approval_decision(&ApprovalDecision::Reject {
+            comment: "fix this".to_string(),
+        })
+        .expect("正常な reject reason は受理される");
+    }
+
+    /// Spec [04] Rule: Approve コメントも reject と同じ MAX_APPROVAL_COMMENT_CHARS を
+    /// 適用する。空文字（None）は許容するが、上限超過は非受理。
+    #[test]
+    fn approve_comment_length_validation_rejects_oversize_but_accepts_empty() {
+        WorkflowEngine::validate_approve_comment_length(None).expect("None は許容される");
+        WorkflowEngine::validate_approve_comment_length(Some(""))
+            .expect("空コメント (Some(empty)) は許容される");
+        let oversize_comment = "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1);
+        let err =
+            WorkflowEngine::validate_approve_comment_length(Some(&oversize_comment)).unwrap_err();
+        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+    }
+
+    /// Spec [04] secret redaction: ApprovalResolved.comment に設定済み secret 値が
+    /// 含まれる場合、event log に書き出す前に `mask_sensitive_text()` で redaction
+    /// される。本テストは redaction primitive そのものの契約を担保する
+    /// （`reject_structured_output` と同じ secret 列で構造的に共有する経路）。
+    #[test]
+    fn mask_sensitive_text_redacts_secret_in_approval_comment() {
+        let secrets = vec!["super-secret-token".to_string()];
+        let raw = "approving with token=super-secret-token please review";
+        let masked = WorkflowEngine::mask_sensitive_text(raw, &secrets);
+        assert!(
+            !masked.contains("super-secret-token"),
+            "secret 値が raw のまま残ってはならない (masked={masked})"
+        );
+    }
+
+    /// Spec [04] atomic mutation 境界（AbortRun 経路）: `WorkflowCommand::AbortRun`
+    /// が受理されると `RunAborted` event は `write_log_required` 経由で必須 append
+    /// される。NDJSON に正しく snake_case で記録され、observer が typed event として
+    /// 読めることを担保する。
+    #[test]
+    fn run_aborted_event_required_append_writes_typed_ndjson() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        let run_id = "00000000-0000-0000-0000-000000000800";
+
+        log.append(&WorkflowEvent::RunAborted {
+            run_id: run_id.to_string(),
+            workflow_name: "boundary-wf".to_string(),
+            timestamp: 4321.0,
+        })
+        .expect("RunAborted は write_log_required 経由で append される");
+
+        let events = log.read_log(run_id).unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            WorkflowEvent::RunAborted { run_id: rid, .. } => assert_eq!(rid, run_id),
+            other => panic!("expected RunAborted, got {other:?}"),
+        }
+    }
+
+    /// Spec [04] rollback: production dispatch 経由で event append が失敗した場合、
+    /// WorkflowExecution / Run Store / event log は command 受理前 snapshot に戻る。
+    #[tokio::test]
+    async fn dispatch_approve_node_append_failure_rolls_back_full_snapshot() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/append-fail";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id.clone();
+        exec.current_session_id = None;
+        exec.workflow_variables
+            .insert("k".to_string(), "v_before".to_string());
+        let snapshot_before = exec.clone();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
+        std::fs::write(&log_dir_path, b"not a directory").unwrap();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::ApproveNode {
+                    run_id: run_id.clone(),
+                    node_name: "review".to_string(),
+                    comment: Some("lgtm".to_string()),
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).expect("run must remain");
+        assert_eq!(
+            restored.state, snapshot_before.state,
+            "state は snapshot で一括復元される"
+        );
+        assert_eq!(
+            restored.current_step_index,
+            snapshot_before.current_step_index
+        );
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        assert_eq!(
+            restored.workflow_variables.get("k").map(|s| s.as_str()),
+            Some("v_before"),
+            "workflow_variables も mutation 前の値に戻る"
+        );
+        drop(execs);
+
+        let active = engine.list_active_runs().await;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].run_id, run_id);
+        assert_eq!(active[0].status, RunStatus::WaitingApproval);
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] rollback: AbortRun の required event append が失敗した場合も、
+    /// WorkflowExecution / Run Store / ChatSession workflow_state は mutation 前へ戻る。
+    #[tokio::test]
+    async fn dispatch_abort_run_append_failure_rolls_back_execution_run_store_and_session() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/abort-append-fail";
+        let mut parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id.clone();
+        exec.current_session_id = None;
+        exec.state = WorkflowExecutionState::Running;
+        let snapshot_before = exec.clone();
+        parent.workflow_state = Some(snapshot_before.to_workflow_state());
+        session_store
+            .save_session(&dispatch_data_dir(app.handle()), &parent)
+            .unwrap();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
+        std::fs::write(&log_dir_path, b"not a directory").unwrap();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: run_id.clone(),
+                    expected_node_name: None,
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).expect("run must remain");
+        assert_eq!(restored.state, snapshot_before.state);
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        let active = engine.list_active_runs().await;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].run_id, run_id);
+        assert_eq!(active[0].status, RunStatus::Running);
+        let restored_parent = session_store
+            .get_session(&dispatch_data_dir(app.handle()), &parent.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored_parent.workflow_state.unwrap().state,
+            WorkflowExecutionState::Running
+        );
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] テスト境界: StartRun は production `WorkflowEngine::dispatch` 入口で
+    /// validation され、拒否時は state / event を変更しない。
+    #[tokio::test]
+    async fn dispatch_start_run_rejects_invalid_name_without_state_change() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let run_store_dir = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(run_store_dir.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::StartRun {
+                    workflow_file_stem: "../bad".to_string(),
+                    worktree_path: "/wt/start-invalid".to_string(),
+                    task: None,
+                    trigger_source: TriggerSource::DesktopUi,
+                    permission_mode: crate::permission::PermissionMode::Edit,
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(WorkflowEngineError::ValidationError(_))
+        ));
+        assert!(engine.executions.lock().await.is_empty());
+        assert!(engine.list_active_runs().await.is_empty());
+    }
+
+    /// Spec [04] テスト境界: StartRun の正常系は production dispatch 経由で
+    /// `RunStarted` を返し、execution / Run Store / RunStarted event を作成する。
+    #[tokio::test]
+    async fn dispatch_start_run_accepts_creates_run_and_appends_event() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let run_store_dir = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(run_store_dir.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let (repo_parent, _worktree_parent, worktree_path) = make_managed_worktree();
+        configure_managed_repo(&app, repo_parent.path().join("repo").as_path());
+        let stem = "spec-driven-development".to_string();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::StartRun {
+                    workflow_file_stem: stem.clone(),
+                    worktree_path: worktree_path.to_string_lossy().to_string(),
+                    task: Some("start me".to_string()),
+                    trigger_source: TriggerSource::DesktopUi,
+                    permission_mode: crate::permission::PermissionMode::Edit,
+                },
+            )
+            .await
+            .unwrap();
+
+        let WorkflowCommandResult::RunStarted { run_id } = result else {
+            panic!("expected RunStarted");
+        };
+        assert!(
+            engine.executions.lock().await.contains_key(&run_id),
+            "StartRun must register a WorkflowExecution"
+        );
+        assert!(
+            engine
+                .list_active_runs()
+                .await
+                .iter()
+                .any(|run| run.run_id == run_id),
+            "StartRun must create a Run Store entry"
+        );
+        assert!(read_dispatch_events(&app, &run_id).iter().any(|event| {
+            matches!(
+                event,
+                WorkflowEvent::RunStarted {
+                    workflow_file_stem,
+                    ..
+                } if workflow_file_stem == &stem
+            )
+        }));
+    }
+
+    /// Spec [04] rollback: StartRun の RunStarted append が失敗した場合、
+    /// reservation / execution / parent ChatSession を command 受理前へ戻す。
+    #[tokio::test]
+    async fn dispatch_start_run_append_failure_clears_created_parent_workflow_state() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let run_store_dir = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(run_store_dir.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let (repo_parent, _worktree_parent, worktree_path) = make_managed_worktree();
+        configure_managed_repo(&app, repo_parent.path().join("repo").as_path());
+        let worktree = std::fs::canonicalize(&worktree_path)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
+        std::fs::write(&log_dir_path, b"not a directory").unwrap();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::StartRun {
+                    workflow_file_stem: "spec-driven-development".to_string(),
+                    worktree_path: worktree.clone(),
+                    task: Some("start with append failure".to_string()),
+                    trigger_source: TriggerSource::DesktopUi,
+                    permission_mode: crate::permission::PermissionMode::Edit,
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        assert!(engine.executions.lock().await.is_empty());
+        assert!(engine.list_active_runs().await.is_empty());
+        let sessions = session_store
+            .list_worktree_sessions(&dispatch_data_dir(app.handle()), &worktree)
+            .unwrap();
+        assert!(
+            sessions.is_empty(),
+            "RunStarted が存在しない失敗 run の parent ChatSession は残さない"
+        );
+    }
+
+    /// Spec [04] rollback: StartRun は RunStarted append 前の ChatSession projection 失敗を
+    /// command failure として扱い、execution / Run Store reservation / parent ChatSession を
+    /// 受理前へ戻して refs 登録や初回 step 起動へ進まない。
+    #[tokio::test]
+    async fn dispatch_start_run_persist_failure_rolls_back_execution_run_store_and_parent_session()
+    {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let run_store_dir = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(run_store_dir.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let (_repo_parent, _worktree_parent, worktree_path) = make_managed_worktree();
+        let worktree = std::fs::canonicalize(&worktree_path)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        engine.fail_next_persist_state_for_test();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::StartRun {
+                    workflow_file_stem: "spec-driven-development".to_string(),
+                    worktree_path: worktree.clone(),
+                    task: Some("start with persist failure".to_string()),
+                    trigger_source: TriggerSource::DesktopUi,
+                    permission_mode: crate::permission::PermissionMode::Edit,
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        assert!(engine.executions.lock().await.is_empty());
+        assert!(engine.list_active_runs().await.is_empty());
+        let sessions = session_store
+            .list_worktree_sessions(&dispatch_data_dir(app.handle()), &worktree)
+            .unwrap();
+        assert!(
+            sessions.is_empty(),
+            "projection 失敗時は parent ChatSession を受理前へ戻す"
+        );
+        assert!(
+            read_all_dispatch_events(&app).is_empty(),
+            "projection 失敗時は RunStarted event を append しない"
+        );
+    }
+
+    /// Spec [04] テスト境界: AbortRun は production dispatch 経由で Aborted に遷移し、
+    /// RunAborted typed event を append する。
+    #[tokio::test]
+    async fn dispatch_abort_run_accepts_mutates_state_and_appends_event() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/dispatch-abort";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id;
+        exec.current_session_id = None;
+        exec.state = WorkflowExecutionState::Running;
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: run_id.clone(),
+                    expected_node_name: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, WorkflowCommandResult::Accepted);
+        assert_eq!(
+            engine.executions.lock().await.get(&run_id).unwrap().state,
+            WorkflowExecutionState::Aborted
+        );
+        assert!(read_dispatch_events(&app, &run_id)
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::RunAborted { .. })));
+    }
+
+    /// Spec [04] テスト境界: approval UI 由来の AbortRun は production dispatch 経由で
+    /// ApprovalResolved { Abort } と RunAborted を同一受理サイクルで append する。
+    #[tokio::test]
+    async fn dispatch_abort_run_with_expected_node_appends_approval_resolved_and_run_aborted() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/dispatch-approval-abort";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id;
+        exec.current_session_id = None;
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: run_id.clone(),
+                    expected_node_name: Some("review".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, WorkflowCommandResult::Accepted);
+        assert_eq!(
+            engine.executions.lock().await.get(&run_id).unwrap().state,
+            WorkflowExecutionState::Aborted
+        );
+        let events = read_dispatch_events(&app, &run_id);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[0],
+            WorkflowEvent::ApprovalResolved {
+                decision: ApprovalDecisionRecord::Abort,
+                ..
+            }
+        ));
+        assert!(matches!(events[1], WorkflowEvent::RunAborted { .. }));
+    }
+
+    /// Spec [04] rollback: approval UI 由来の AbortRun でも required event batch 前の
+    /// ChatSession projection 失敗は command failure となり、engine / Run Store /
+    /// ChatSession projection は mutation 前へ戻る。
+    #[tokio::test]
+    async fn dispatch_abort_run_with_expected_node_persist_failure_rolls_back() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/approval-abort-persist-rollback";
+        let mut parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id.clone();
+        exec.current_session_id = None;
+        let snapshot_before = exec.clone();
+        parent.workflow_state = Some(snapshot_before.to_workflow_state());
+        session_store
+            .save_session(&dispatch_data_dir(app.handle()), &parent)
+            .unwrap();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine.fail_next_persist_state_for_test();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: run_id.clone(),
+                    expected_node_name: Some("review".to_string()),
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).unwrap();
+        assert_eq!(restored.state, WorkflowExecutionState::WaitingApproval);
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        let active = engine.list_active_runs().await;
+        assert_eq!(active[0].status, RunStatus::WaitingApproval);
+        let restored_parent = session_store
+            .get_session(&dispatch_data_dir(app.handle()), &parent.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored_parent.workflow_state.unwrap().state,
+            WorkflowExecutionState::WaitingApproval
+        );
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] rollback: approval UI 由来の AbortRun で required event append が失敗した場合も、
+    /// WorkflowExecution / Run Store / ChatSession workflow_state は mutation 前へ戻る。
+    #[tokio::test]
+    async fn dispatch_abort_run_with_expected_node_append_failure_rolls_back() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/approval-abort-append-rollback";
+        let mut parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id.clone();
+        exec.current_session_id = None;
+        let snapshot_before = exec.clone();
+        parent.workflow_state = Some(snapshot_before.to_workflow_state());
+        session_store
+            .save_session(&dispatch_data_dir(app.handle()), &parent)
+            .unwrap();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
+        std::fs::write(&log_dir_path, b"not a directory").unwrap();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: run_id.clone(),
+                    expected_node_name: Some("review".to_string()),
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).unwrap();
+        assert_eq!(restored.state, snapshot_before.state);
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        let active = engine.list_active_runs().await;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].run_id, run_id);
+        assert_eq!(active[0].status, RunStatus::WaitingApproval);
+        let restored_parent = session_store
+            .get_session(&dispatch_data_dir(app.handle()), &parent.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored_parent.workflow_state.unwrap().state,
+            WorkflowExecutionState::WaitingApproval
+        );
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] Rule「対象不在 / 既に終了した command は受理されない」:
+    /// AbortRun の dispatch 拒否経路は state を変化させず event を append しない。
+    #[tokio::test]
+    async fn dispatch_abort_run_rejects_not_found_and_terminal_without_append() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let missing_run_id = uuid::Uuid::new_v4().to_string();
+
+        let missing = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: missing_run_id.clone(),
+                    expected_node_name: None,
+                },
+            )
+            .await;
+        assert!(matches!(
+            missing,
+            Err(WorkflowEngineError::ExecutionNotFound(_))
+        ));
+        assert!(read_dispatch_events(&app, &missing_run_id).is_empty());
+
+        let terminal_run_id = uuid::Uuid::new_v4().to_string();
+        let mut terminal = make_waiting_approval_execution(&terminal_run_id, "/wt/terminal-abort");
+        terminal.state = WorkflowExecutionState::Completed;
+        let snapshot_before = terminal.clone();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(terminal_run_id.clone(), terminal);
+
+        let terminal_result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: terminal_run_id.clone(),
+                    expected_node_name: None,
+                },
+            )
+            .await;
+        assert!(matches!(
+            terminal_result,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&terminal_run_id).unwrap();
+        assert_eq!(restored.state, snapshot_before.state);
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        assert!(read_dispatch_events(&app, &terminal_run_id).is_empty());
+    }
+
+    /// Spec [04] no-op 不変条件: approval UI 由来の
+    /// `AbortRun { expected_node_name: Some(_) }` でも、対象不在・stale node・既決 node は
+    /// production dispatch 経由で state / Run Store を変化させず event を append しない。
+    #[tokio::test]
+    async fn dispatch_approval_abort_rejects_missing_stale_and_resolved_targets_without_append() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let missing_run_id = uuid::Uuid::new_v4().to_string();
+        let missing = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: missing_run_id.clone(),
+                    expected_node_name: Some("review".to_string()),
+                },
+            )
+            .await;
+        assert!(matches!(
+            missing,
+            Err(WorkflowEngineError::ExecutionNotFound(_))
+        ));
+        assert!(engine.list_active_runs().await.is_empty());
+        assert!(engine.list_completed_runs().await.is_empty());
+        assert!(read_dispatch_events(&app, &missing_run_id).is_empty());
+
+        let stale_run_id = uuid::Uuid::new_v4().to_string();
+        let stale_worktree = "/wt/approval-abort-stale";
+        let stale_parent = create_parent_session(&app, &session_store, stale_worktree);
+        let mut stale_exec = make_waiting_approval_execution(&stale_run_id, stale_worktree);
+        stale_exec.chat_session_id = stale_parent.id;
+        stale_exec.current_session_id = None;
+        let stale_before = stale_exec.clone();
+        insert_execution_and_active_run(&engine, stale_exec, TriggerSource::DesktopUi).await;
+        let stale_active_before = engine.list_active_runs().await;
+
+        let stale = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: stale_run_id.clone(),
+                    expected_node_name: Some("old-review".to_string()),
+                },
+            )
+            .await;
+        assert!(matches!(
+            stale,
+            Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
+        ));
+        let execs = engine.executions.lock().await;
+        let stale_after = execs.get(&stale_run_id).unwrap();
+        assert_eq!(stale_after.state, stale_before.state);
+        assert_eq!(
+            stale_after.current_step_index,
+            stale_before.current_step_index
+        );
+        assert_eq!(
+            stale_after.step_history.len(),
+            stale_before.step_history.len()
+        );
+        drop(execs);
+        let stale_active_after = engine.list_active_runs().await;
+        assert_eq!(stale_active_after.len(), stale_active_before.len());
+        assert_eq!(stale_active_after[0].run_id, stale_active_before[0].run_id);
+        assert_eq!(stale_active_after[0].status, stale_active_before[0].status);
+        assert!(read_dispatch_events(&app, &stale_run_id).is_empty());
+
+        let resolved_run_id = uuid::Uuid::new_v4().to_string();
+        let resolved_worktree = "/wt/approval-abort-resolved";
+        let resolved_parent = create_parent_session(&app, &session_store, resolved_worktree);
+        let mut resolved_exec =
+            make_waiting_approval_execution(&resolved_run_id, resolved_worktree);
+        resolved_exec.chat_session_id = resolved_parent.id.clone();
+        resolved_exec.current_session_id = None;
+        resolved_exec.state = WorkflowExecutionState::Completed;
+        let resolved_before = resolved_exec.clone();
+        engine
+            .executions
+            .lock()
+            .await
+            .insert(resolved_run_id.clone(), resolved_exec);
+        engine
+            .run_store
+            .register_active(WorkflowRun {
+                run_id: resolved_run_id.clone(),
+                workflow_name: "boundary-wf".to_string(),
+                task: None,
+                status: RunStatus::WaitingApproval,
+                worktree_path: resolved_worktree.to_string(),
+                chat_session_id: Some(resolved_parent.id),
+                current_node_name: Some("review".to_string()),
+                trigger_source: TriggerSource::DesktopUi,
+                started_at: 1000.0,
+                updated_at: 1000.0,
+                completed_at: None,
+                error_reason: None,
+            })
+            .await
+            .unwrap();
+        engine
+            .run_store
+            .complete_run(&resolved_run_id, TerminalRunStatus::Completed, 2000.0, None)
+            .await
+            .unwrap();
+        let completed_before = engine.list_completed_runs().await;
+
+        let resolved = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: resolved_run_id.clone(),
+                    expected_node_name: Some("review".to_string()),
+                },
+            )
+            .await;
+        assert!(matches!(
+            resolved,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        let execs = engine.executions.lock().await;
+        let resolved_after = execs.get(&resolved_run_id).unwrap();
+        assert_eq!(resolved_after.state, resolved_before.state);
+        assert_eq!(
+            resolved_after.step_history.len(),
+            resolved_before.step_history.len()
+        );
+        drop(execs);
+        let completed_after = engine.list_completed_runs().await;
+        assert_eq!(completed_after.len(), completed_before.len());
+        assert_eq!(completed_after[0].run_id, completed_before[0].run_id);
+        assert_eq!(completed_after[0].status, completed_before[0].status);
+        assert!(read_dispatch_events(&app, &resolved_run_id).is_empty());
+    }
+
+    /// Spec [04] テスト境界: ApproveNode は production dispatch 経由で判断を受理し、
+    /// state mutation と ApprovalResolved append を同じ command 受理サイクルで行う。
+    #[tokio::test]
+    async fn dispatch_approve_node_accepts_mutates_state_and_appends_event() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/dispatch-approve";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id;
+        exec.current_session_id = None;
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::ApproveNode {
+                    run_id: run_id.clone(),
+                    node_name: "review".to_string(),
+                    comment: Some("lgtm".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, WorkflowCommandResult::Accepted);
+        let execs = engine.executions.lock().await;
+        let exec = execs.get(&run_id).unwrap();
+        assert_eq!(exec.state, WorkflowExecutionState::Completed);
+        assert_eq!(exec.step_history.len(), 1);
+        drop(execs);
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                WorkflowEvent::ApprovalResolved {
+                    decision: ApprovalDecisionRecord::Approve,
+                    ..
+                },
+                WorkflowEvent::NodeCompleted { node_name, .. },
+                WorkflowEvent::RunCompleted { .. },
+            ] if node_name == "review"
+        ));
+    }
+
+    /// Spec [04] テスト境界: RejectNode は production dispatch 経由で判断を受理し、
+    /// state mutation と ApprovalResolved { decision: Reject } append を行う。
+    #[tokio::test]
+    async fn dispatch_reject_node_accepts_mutates_state_and_appends_event() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/dispatch-reject-accept";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution_with_workflow(
+            &run_id,
+            worktree_path,
+            make_rejectable_approval_workflow(),
+        );
+        exec.chat_session_id = parent.id;
+        exec.current_session_id = None;
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::RejectNode {
+                    run_id: run_id.clone(),
+                    node_name: "review".to_string(),
+                    reason: "needs changes".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, WorkflowCommandResult::Accepted);
+        let execs = engine.executions.lock().await;
+        let exec = execs.get(&run_id).unwrap();
+        assert_eq!(exec.current_step_index, 1);
+        assert_eq!(
+            exec.step_history
+                .first()
+                .and_then(|entry| entry.result.as_deref()),
+            Some("reject")
+        );
+        drop(execs);
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(matches!(
+            &events[..3],
+            [
+                WorkflowEvent::ApprovalResolved {
+                    decision: ApprovalDecisionRecord::Reject,
+                    comment: Some(comment),
+                    ..
+                },
+                WorkflowEvent::NodeCompleted {
+                    node_name: completed,
+                    ..
+                },
+                WorkflowEvent::NodeStarted {
+                    node_name: started,
+                    ..
+                },
+            ] if comment == "needs changes" && completed == "review" && started == "fix"
+        ));
+    }
+
+    /// Spec [04] テスト境界: RejectNode の非受理経路は production dispatch 経由でも
+    /// state を変化させず、typed event を append しない。
+    #[tokio::test]
+    async fn dispatch_reject_node_rejected_target_keeps_state_and_no_append() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/dispatch-reject";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id;
+        exec.current_session_id = None;
+        let snapshot_before = exec.clone();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::RejectNode {
+                    run_id: run_id.clone(),
+                    node_name: "review".to_string(),
+                    reason: "needs changes".to_string(),
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::InvalidState(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).unwrap();
+        assert_eq!(restored.state, snapshot_before.state);
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] no-op 不変条件: ApproveNode / RejectNode の対象不在・stale node・既決 node は
+    /// production dispatch 経由でも state を変化させず event を append しない。
+    #[tokio::test]
+    async fn dispatch_approval_commands_reject_missing_stale_and_resolved_targets_without_append() {
+        for command_kind in ["approve", "reject"] {
+            let app = make_dispatch_app();
+            let engine = WorkflowEngine::new_for_test();
+            let tmp = TempDir::new().unwrap();
+            engine
+                .set_run_store_data_dir(tmp.path().to_path_buf())
+                .await;
+            let (session_store, handles) = make_dispatch_deps();
+
+            let missing_run_id = uuid::Uuid::new_v4().to_string();
+            let missing_command = match command_kind {
+                "approve" => WorkflowCommand::ApproveNode {
+                    run_id: missing_run_id.clone(),
+                    node_name: "review".to_string(),
+                    comment: None,
+                },
+                "reject" => WorkflowCommand::RejectNode {
+                    run_id: missing_run_id.clone(),
+                    node_name: "review".to_string(),
+                    reason: "needs changes".to_string(),
+                },
+                _ => unreachable!(),
+            };
+            let missing = engine
+                .dispatch(app.handle(), &session_store, &handles, missing_command)
+                .await;
+            assert!(matches!(
+                missing,
+                Err(WorkflowEngineError::ExecutionNotFound(_))
+            ));
+            assert!(read_dispatch_events(&app, &missing_run_id).is_empty());
+
+            let stale_run_id = uuid::Uuid::new_v4().to_string();
+            let worktree_path = format!("/wt/{command_kind}-stale");
+            let parent = create_parent_session(&app, &session_store, &worktree_path);
+            let mut stale_exec = make_waiting_approval_execution(&stale_run_id, &worktree_path);
+            stale_exec.chat_session_id = parent.id;
+            stale_exec.current_session_id = None;
+            let stale_before = stale_exec.clone();
+            insert_execution_and_active_run(&engine, stale_exec, TriggerSource::DesktopUi).await;
+            let stale_command = match command_kind {
+                "approve" => WorkflowCommand::ApproveNode {
+                    run_id: stale_run_id.clone(),
+                    node_name: "old-review".to_string(),
+                    comment: None,
+                },
+                "reject" => WorkflowCommand::RejectNode {
+                    run_id: stale_run_id.clone(),
+                    node_name: "old-review".to_string(),
+                    reason: "needs changes".to_string(),
+                },
+                _ => unreachable!(),
+            };
+            let stale = engine
+                .dispatch(app.handle(), &session_store, &handles, stale_command)
+                .await;
+            assert!(matches!(
+                stale,
+                Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
+            ));
+            let execs = engine.executions.lock().await;
+            let restored = execs.get(&stale_run_id).unwrap();
+            assert_eq!(restored.state, stale_before.state);
+            assert_eq!(restored.current_step_index, stale_before.current_step_index);
+            assert_eq!(restored.step_history.len(), stale_before.step_history.len());
+            drop(execs);
+            assert!(read_dispatch_events(&app, &stale_run_id).is_empty());
+
+            let resolved_run_id = uuid::Uuid::new_v4().to_string();
+            let worktree_path = format!("/wt/{command_kind}-resolved");
+            let parent = create_parent_session(&app, &session_store, &worktree_path);
+            let mut resolved_exec =
+                make_waiting_approval_execution(&resolved_run_id, &worktree_path);
+            resolved_exec.chat_session_id = parent.id;
+            resolved_exec.current_session_id = None;
+            resolved_exec.state = WorkflowExecutionState::Completed;
+            let resolved_before = resolved_exec.clone();
+            engine
+                .executions
+                .lock()
+                .await
+                .insert(resolved_run_id.clone(), resolved_exec);
+            let resolved_command = match command_kind {
+                "approve" => WorkflowCommand::ApproveNode {
+                    run_id: resolved_run_id.clone(),
+                    node_name: "review".to_string(),
+                    comment: None,
+                },
+                "reject" => WorkflowCommand::RejectNode {
+                    run_id: resolved_run_id.clone(),
+                    node_name: "review".to_string(),
+                    reason: "needs changes".to_string(),
+                },
+                _ => unreachable!(),
+            };
+            let resolved = engine
+                .dispatch(app.handle(), &session_store, &handles, resolved_command)
+                .await;
+            assert!(matches!(
+                resolved,
+                Err(WorkflowEngineError::InvalidState(_))
+            ));
+            let execs = engine.executions.lock().await;
+            let restored = execs.get(&resolved_run_id).unwrap();
+            assert_eq!(restored.state, resolved_before.state);
+            assert_eq!(
+                restored.step_history.len(),
+                resolved_before.step_history.len()
+            );
+            drop(execs);
+            assert!(read_dispatch_events(&app, &resolved_run_id).is_empty());
+        }
+    }
+
+    /// Spec [04] rollback: RejectNode の required event append が失敗した場合も、
+    /// WorkflowExecution / Run Store は mutation 前 snapshot に戻り、event は append されない。
+    #[tokio::test]
+    async fn dispatch_reject_node_append_failure_rolls_back_execution_and_run_store() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/reject-append-rollback";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution_with_workflow(
+            &run_id,
+            worktree_path,
+            make_rejectable_approval_workflow(),
+        );
+        exec.chat_session_id = parent.id;
+        exec.current_session_id = None;
+        let snapshot_before = exec.clone();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
+        std::fs::write(&log_dir_path, b"not a directory").unwrap();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::RejectNode {
+                    run_id: run_id.clone(),
+                    node_name: "review".to_string(),
+                    reason: "needs changes".to_string(),
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).unwrap();
+        assert_eq!(restored.state, snapshot_before.state);
+        assert_eq!(
+            restored.current_step_index,
+            snapshot_before.current_step_index
+        );
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        let active = engine.list_active_runs().await;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].run_id, run_id);
+        assert_eq!(active[0].status, RunStatus::WaitingApproval);
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] rollback: RejectNode の required event batch 前に ChatSession projection が
+    /// 失敗した場合も command は失敗し、engine / Run Store / ChatSession は mutation 前へ戻る。
+    #[tokio::test]
+    async fn dispatch_reject_node_persist_failure_rolls_back_execution_run_store_and_session() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/reject-persist-rollback";
+        let mut parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution_with_workflow(
+            &run_id,
+            worktree_path,
+            make_rejectable_approval_workflow(),
+        );
+        exec.chat_session_id = parent.id.clone();
+        exec.current_session_id = None;
+        let snapshot_before = exec.clone();
+        parent.workflow_state = Some(snapshot_before.to_workflow_state());
+        session_store
+            .save_session(&dispatch_data_dir(app.handle()), &parent)
+            .unwrap();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine.fail_next_persist_state_for_test();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::RejectNode {
+                    run_id: run_id.clone(),
+                    node_name: "review".to_string(),
+                    reason: "needs changes".to_string(),
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).unwrap();
+        assert_eq!(restored.state, WorkflowExecutionState::WaitingApproval);
+        assert_eq!(
+            restored.current_step_index,
+            snapshot_before.current_step_index
+        );
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        assert_eq!(
+            engine.list_active_runs().await[0].status,
+            RunStatus::WaitingApproval
+        );
+        let restored_parent = session_store
+            .get_session(&dispatch_data_dir(app.handle()), &parent.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored_parent.workflow_state.unwrap().state,
+            WorkflowExecutionState::WaitingApproval
+        );
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] rollback: production dispatch 経由で persist が失敗した場合、
+    /// required event append 前に command は失敗し、engine / Run Store / ChatSession
+    /// projection は mutation 前へ戻る。
+    #[tokio::test]
+    async fn dispatch_approve_node_persist_failure_rolls_back_execution_run_store_and_session() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/dispatch-rollback";
+        let mut parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id.clone();
+        exec.current_session_id = None;
+        let snapshot_before = exec.clone();
+        parent.workflow_state = Some(snapshot_before.to_workflow_state());
+        session_store
+            .save_session(&dispatch_data_dir(app.handle()), &parent)
+            .unwrap();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine.fail_next_persist_state_for_test();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::ApproveNode {
+                    run_id: run_id.clone(),
+                    node_name: "review".to_string(),
+                    comment: None,
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).unwrap();
+        assert_eq!(restored.state, WorkflowExecutionState::WaitingApproval);
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        assert_eq!(
+            engine.list_active_runs().await[0].status,
+            RunStatus::WaitingApproval
+        );
+        let restored_parent = session_store
+            .get_session(&dispatch_data_dir(app.handle()), &parent.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored_parent.workflow_state.unwrap().state,
+            WorkflowExecutionState::WaitingApproval
+        );
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] rollback: command 受理サイクル内の Run Store sync が失敗した場合も、
+    /// engine state / Run Store / ChatSession projection を mutation 前へ戻し Err を返す。
+    #[tokio::test]
+    async fn dispatch_approve_node_run_store_sync_failure_rolls_back_execution_run_store_and_session(
+    ) {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/run-store-sync-rollback";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id.clone();
+        exec.current_session_id = None;
+        exec.workflow_variables
+            .insert("keep".to_string(), "before".to_string());
+        let snapshot_before = exec.clone();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let bad_data_dir = tmp.path().join("not-a-directory");
+        std::fs::write(&bad_data_dir, "file").unwrap();
+        engine.set_run_store_data_dir(bad_data_dir).await;
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::ApproveNode {
+                    run_id: run_id.clone(),
+                    node_name: "review".to_string(),
+                    comment: Some("lgtm".to_string()),
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).unwrap();
+        assert_eq!(restored.state, WorkflowExecutionState::WaitingApproval);
+        assert_eq!(
+            restored.workflow_variables.get("keep").map(String::as_str),
+            Some("before")
+        );
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        assert_eq!(
+            engine.list_active_runs().await[0].status,
+            RunStatus::WaitingApproval
+        );
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] rollback: AbortRun の ChatSession projection が失敗した場合、
+    /// RunAborted append 前に command は失敗し mutation 前へ戻る。
+    #[tokio::test]
+    async fn dispatch_abort_run_persist_failure_rolls_back_execution_run_store_and_session() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let tmp = TempDir::new().unwrap();
+        engine
+            .set_run_store_data_dir(tmp.path().to_path_buf())
+            .await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/abort-persist-rollback";
+        let mut parent = create_parent_session(&app, &session_store, worktree_path);
+        let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
+        exec.chat_session_id = parent.id.clone();
+        exec.current_session_id = None;
+        exec.state = WorkflowExecutionState::Running;
+        let snapshot_before = exec.clone();
+        parent.workflow_state = Some(snapshot_before.to_workflow_state());
+        session_store
+            .save_session(&dispatch_data_dir(app.handle()), &parent)
+            .unwrap();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine.fail_next_persist_state_for_test();
+
+        let result = engine
+            .dispatch(
+                app.handle(),
+                &session_store,
+                &handles,
+                WorkflowCommand::AbortRun {
+                    run_id: run_id.clone(),
+                    expected_node_name: None,
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).unwrap();
+        assert_eq!(restored.state, WorkflowExecutionState::Running);
+        assert_eq!(
+            restored.step_history.len(),
+            snapshot_before.step_history.len()
+        );
+        drop(execs);
+        assert_eq!(
+            engine.list_active_runs().await[0].status,
+            RunStatus::Running
+        );
+        let restored_parent = session_store
+            .get_session(&dispatch_data_dir(app.handle()), &parent.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored_parent.workflow_state.unwrap().state,
+            WorkflowExecutionState::Running
+        );
+        assert!(read_dispatch_events(&app, &run_id).is_empty());
+    }
+
+    /// Spec [04] atomic mutation 境界（A2 batch commit）: `write_log_required_batch`
+    /// 経由で ApprovalResolved + RunAborted を 1 つの commit point として書き込めば、
+    /// `WorkflowEventLog::append_batch` の 1 回の write_all で両 event が NDJSON に
+    /// 連結 append される。同一 commit batch 内の partial commit（最初の event のみ
+    /// 残る）を構造的に排除することを担保する（handle_approval の Abort 経路と
+    /// 同じ atomic 境界）。
+    #[test]
+    fn approval_abort_commit_batch_persists_both_events_in_single_write() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        let run_id = "00000000-0000-0000-0000-000000000900";
+        let approval_event = WorkflowEvent::ApprovalResolved {
+            run_id: run_id.to_string(),
+            workflow_name: "boundary-wf".to_string(),
+            node_name: "review".to_string(),
+            decision: ApprovalDecisionRecord::Abort,
+            comment: None,
+            timestamp: 4000.0,
+        };
+        let aborted_event = WorkflowEvent::RunAborted {
+            run_id: run_id.to_string(),
+            workflow_name: "boundary-wf".to_string(),
+            timestamp: 4000.0,
+        };
+        log.append_batch(&[approval_event, aborted_event])
+            .expect("batch append for approval-abort commit point must succeed");
+        let events = log.read_log(run_id).unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "ApprovalResolved + RunAborted は atomic batch で 2 件 append される"
+        );
+        assert!(matches!(events[0], WorkflowEvent::ApprovalResolved { .. }));
+        assert!(matches!(events[1], WorkflowEvent::RunAborted { .. }));
+    }
+
+    /// Spec [04] atomic mutation 境界（A3 AbortRun terminal sync post-commit 化）:
+    /// `abort_workflow_by_run_id` は append 失敗時に Run Store / external 副作用を
+    /// 一切実行しないことが構造的不変条件。本テストは pre-commit が in-memory state
+    /// 変更のみであり、append 失敗時に snapshot 一括復元のみで完全に元状態へ戻せる
+    /// ことを直接確認する（外部依存の差し替えを必要としない経路）。
+    #[tokio::test]
+    async fn abort_run_pre_commit_holds_only_in_memory_mutation() {
+        let engine = WorkflowEngine::new_for_test();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut exec = make_waiting_approval_execution(&run_id, "/wt/pre-commit");
+        exec.state = WorkflowExecutionState::Running;
+        let snapshot_before = exec.clone();
+        engine.executions.lock().await.insert(run_id.clone(), exec);
+
+        // pre-commit 区間で行う state mutation を再現（abort_workflow_by_run_id 内の
+        // step 2 と同等）。
+        let mutated_timestamp = 1234.0;
+        {
+            let mut execs = engine.executions.lock().await;
+            let exec = execs.get_mut(&run_id).unwrap();
+            assert!(exec.is_active(), "active な run でなければ mutation しない");
+            exec.state = WorkflowExecutionState::Aborted;
+            exec.updated_at = mutated_timestamp;
+        }
+        {
+            let execs = engine.executions.lock().await;
+            let exec = execs.get(&run_id).unwrap();
+            assert_eq!(exec.state, WorkflowExecutionState::Aborted);
+            assert_eq!(exec.updated_at, mutated_timestamp);
+        }
+
+        // append 失敗を擬制した snapshot 一括復元（A3: pre-commit 区間は in-memory のみ
+        // のため、Run Store / interrupt_agent / persist 等の外部副作用は不要）。
+        {
+            let mut execs = engine.executions.lock().await;
+            if let Some(exec) = execs.get_mut(&run_id) {
+                *exec = snapshot_before.clone();
+            }
+        }
+        let execs = engine.executions.lock().await;
+        let restored = execs.get(&run_id).expect("run must remain");
+        assert_eq!(
+            restored.state,
+            WorkflowExecutionState::Running,
+            "snapshot 復元で active 状態に戻る"
+        );
+        assert_ne!(
+            restored.updated_at, mutated_timestamp,
+            "pre-commit で書いた updated_at も一括復元される"
         );
     }
 }

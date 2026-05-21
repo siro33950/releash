@@ -9,6 +9,7 @@ pub mod runtime_coordinator;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tauri::Manager;
 use tauri::State;
 use tokio::sync::Mutex;
 
@@ -137,7 +138,7 @@ pub trait AgentBackend: Send + Sync {
     }
 
     /// Bridge 起動時に必要なバックエンド固有の設定を返す。
-    fn runtime_config(&self, _app: &tauri::AppHandle) -> BackendRuntimeConfig {
+    fn runtime_config(&self, _app_config: Option<&AppConfig>) -> BackendRuntimeConfig {
         BackendRuntimeConfig::default()
     }
 
@@ -330,8 +331,17 @@ impl AgentBackendRegistry {
             .collect())
     }
 
-    pub fn runtime_config(&self, id: &str, app: &tauri::AppHandle) -> Option<BackendRuntimeConfig> {
-        self.get(id).map(|backend| backend.runtime_config(app))
+    /// Bridge 起動時に必要な backend 固有 runtime config を registry 経由で解決する。
+    pub fn runtime_config_for<R: tauri::Runtime>(
+        &self,
+        id: &str,
+        app: &tauri::AppHandle<R>,
+    ) -> Result<BackendRuntimeConfig, String> {
+        let backend = self
+            .get(id)
+            .ok_or_else(|| format!("バックエンド '{id}' がレジストリに登録されていません"))?;
+        let app_config = app.try_state::<Arc<AppConfig>>();
+        Ok(backend.runtime_config(app_config.as_deref().map(Arc::as_ref)))
     }
 
     /// 指定されたバックエンドIDを検証し、未指定の場合はデフォルトを解決する。

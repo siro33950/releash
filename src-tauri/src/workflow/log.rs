@@ -2,150 +2,35 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use parking_lot::Mutex;
 
-use crate::workflow::schema::Workflow;
-use crate::workflow::state::{
-    ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
-    WorkflowState,
-};
+use crate::workflow::event::WorkflowEvent;
 
-/// NDJSONログに書き込むイベントの種類。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "event")]
-pub enum WorkflowLogEvent {
-    WorkflowStarted {
-        execution_id: String,
-        workflow_name: String,
-        workflow_file_stem: String,
-        worktree_path: String,
-        /// [02] schema 境界: 旧 NDJSON ログ（workflow_definition を持たない、または旧 schema を持つ）は
-        /// この required フィールドの deserialize に失敗するため、新バージョンの listing /
-        /// reconstruction の参照対象とならない。
-        workflow_definition: Workflow,
-        timestamp: f64,
-    },
-    StepStarted {
-        execution_id: String,
-        workflow_name: String,
-        step_name: String,
-        execution_count: u32,
-        timestamp: f64,
-    },
-    StepCompleted {
-        execution_id: String,
-        workflow_name: String,
-        step_name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        token_usage: Option<TokenUsage>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        structured_output: Option<serde_json::Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        run_index: Option<u32>,
-        timestamp: f64,
-    },
-    StepFailed {
-        execution_id: String,
-        workflow_name: String,
-        step_name: String,
-        reason: String,
-        timestamp: f64,
-    },
-    WorkflowCompleted {
-        execution_id: String,
-        workflow_name: String,
-        total_token_usage: TokenUsage,
-        timestamp: f64,
-    },
-    WorkflowFailed {
-        execution_id: String,
-        workflow_name: String,
-        reason: String,
-        timestamp: f64,
-    },
-    WorkflowAborted {
-        execution_id: String,
-        workflow_name: String,
-        timestamp: f64,
-    },
-    OutputCollected {
-        execution_id: String,
-        workflow_name: String,
-        step_name: String,
-        step_outputs: Vec<CollectedOutputEntry>,
-        reduce_strategy: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reduce_result: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reduce_structured_output: Option<serde_json::Value>,
-        timestamp: f64,
-    },
-    ParallelStarted {
-        execution_id: String,
-        workflow_name: String,
-        parent_step_name: String,
-        child_step_names: Vec<String>,
-        timestamp: f64,
-    },
-    ParallelStepStarted {
-        execution_id: String,
-        workflow_name: String,
-        parent_step_name: String,
-        child_step_name: String,
-        session_id: String,
-        execution_count: u32,
-        timestamp: f64,
-    },
-    ParallelStepCompleted {
-        execution_id: String,
-        workflow_name: String,
-        parent_step_name: String,
-        child_step_name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<String>,
-        session_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        token_usage: Option<TokenUsage>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        structured_output: Option<serde_json::Value>,
-        run_index: u32,
-        timestamp: f64,
-    },
-    ParallelCompleted {
-        execution_id: String,
-        workflow_name: String,
-        parent_step_name: String,
-        aggregate_result: String,
-        timestamp: f64,
-    },
-    ContractRepairRequested {
-        execution_id: String,
-        workflow_name: String,
-        step_name: String,
-        attempt: u32,
-        violation_reason: String,
-        timestamp: f64,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CollectedOutputEntry {
-    pub step_name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub result: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub structured_output: Option<serde_json::Value>,
-}
-
-/// ワークフロー実行ログの書き込み・読み込み。
+/// ワークフロー実行ログ（`WorkflowEvent` の NDJSON 書き込み・読み込み）。
+///
+/// 旧 `WorkflowLogEvent` 列挙体は [04] で `WorkflowEvent` に完全置換された。
+/// 旧 NDJSON 在庫は破棄前提（互換 wrapper は導入しない）。
+///
+/// [04] spec 責務配置: 本モジュールは NDJSON の append/read のみを担う永続化アダプタ。
+/// `WorkflowEvent` 列から `WorkflowState` への projection は `event_projection.rs` 側
+/// (`reconstruct_state_from_events`) に置く。
 pub struct WorkflowEventLog {
     log_dir: PathBuf,
+}
+
+static LOG_FILE_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn log_file_lock(path: &Path) -> Arc<Mutex<()>> {
+    let mut locks = LOG_FILE_LOCKS.lock();
+    Arc::clone(
+        locks
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(()))),
+    )
 }
 
 impl WorkflowEventLog {
@@ -155,46 +40,97 @@ impl WorkflowEventLog {
         }
     }
 
-    fn log_path(&self, execution_id: &str) -> PathBuf {
-        self.log_dir.join(format!("{execution_id}.ndjson"))
+    fn log_path(&self, run_id: &str) -> PathBuf {
+        self.log_dir.join(format!("{run_id}.ndjson"))
     }
 
     /// イベントをNDJSON形式でログファイルに追記する。
-    pub fn append(&self, event: &WorkflowLogEvent) -> Result<(), String> {
+    pub fn append(&self, event: &WorkflowEvent) -> Result<(), String> {
+        self.append_batch(std::slice::from_ref(event))
+    }
+
+    /// 複数 event を atomic な commit point として追記する。
+    ///
+    /// [04] spec『event 列と domain state の整合』Rule: 同一 command 受理サイクル内で
+    /// 複数の required event を発行する必要がある場合（approval abort: ApprovalResolved +
+    /// RunAborted など）、2 段の `append` だと 2 本目失敗時に 1 本目だけが NDJSON に
+    /// 残り state rollback と event log が分裂する。本メソッドは serialize 結果を 1 本の
+    /// バッファに連結したうえで、既存ログ + 追記分を同一ディレクトリの一時ファイルへ
+    /// 書き出し、最後に rename する。既存ログファイルを直接変更しないため、write_all /
+    /// sync / rename のどこで失敗しても command 受理前の NDJSON を破壊しない。
+    ///
+    /// 入力 event は全て同一 run_id に属する必要がある。空の入力は no-op。
+    pub fn append_batch(&self, events: &[WorkflowEvent]) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let run_id = events[0].run_id().to_string();
+        for event in &events[1..] {
+            if event.run_id() != run_id {
+                return Err(format!(
+                    "append_batch requires uniform run_id (got {} and {})",
+                    run_id,
+                    event.run_id()
+                ));
+            }
+        }
+
         fs::create_dir_all(&self.log_dir).map_err(|e| format!("Failed to create log dir: {e}"))?;
 
-        let execution_id = match event {
-            WorkflowLogEvent::WorkflowStarted { execution_id, .. }
-            | WorkflowLogEvent::StepStarted { execution_id, .. }
-            | WorkflowLogEvent::StepCompleted { execution_id, .. }
-            | WorkflowLogEvent::StepFailed { execution_id, .. }
-            | WorkflowLogEvent::WorkflowCompleted { execution_id, .. }
-            | WorkflowLogEvent::WorkflowFailed { execution_id, .. }
-            | WorkflowLogEvent::WorkflowAborted { execution_id, .. }
-            | WorkflowLogEvent::OutputCollected { execution_id, .. }
-            | WorkflowLogEvent::ParallelStarted { execution_id, .. }
-            | WorkflowLogEvent::ParallelStepStarted { execution_id, .. }
-            | WorkflowLogEvent::ParallelStepCompleted { execution_id, .. }
-            | WorkflowLogEvent::ParallelCompleted { execution_id, .. }
-            | WorkflowLogEvent::ContractRepairRequested { execution_id, .. } => execution_id,
+        let mut buffer = String::new();
+        for event in events {
+            let json = serde_json::to_string(event)
+                .map_err(|e| format!("Failed to serialize event: {e}"))?;
+            buffer.push_str(&json);
+            buffer.push('\n');
+        }
+
+        let path = self.log_path(&run_id);
+        let lock = log_file_lock(&path);
+        let _guard = lock.lock();
+        let existing = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(format!("Failed to read existing log file: {e}")),
         };
-
-        let path = self.log_path(execution_id);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| format!("Failed to open log file: {e}"))?;
-
-        let json =
-            serde_json::to_string(event).map_err(|e| format!("Failed to serialize event: {e}"))?;
-        writeln!(file, "{json}").map_err(|e| format!("Failed to write log: {e}"))?;
+        let temp_path = self.create_temp_log_path(&path)?;
+        let write_result = (|| -> Result<(), String> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)
+                .map_err(|e| format!("Failed to create temp log file: {e}"))?;
+            file.write_all(&existing)
+                .map_err(|e| format!("Failed to copy existing log into temp file: {e}"))?;
+            file.write_all(buffer.as_bytes())
+                .map_err(|e| format!("Failed to write log batch to temp file: {e}"))?;
+            file.sync_all()
+                .map_err(|e| format!("Failed to sync temp log file: {e}"))?;
+            fs::rename(&temp_path, &path).map_err(|e| format!("Failed to commit log file: {e}"))?;
+            Ok(())
+        })();
+        if let Err(e) = write_result {
+            let _ = fs::remove_file(&temp_path);
+            return Err(e);
+        }
         Ok(())
     }
 
-    /// 指定された実行IDのNDJSONログを読み込み、イベント一覧を返す。
-    pub fn read_log(&self, execution_id: &str) -> Result<Vec<WorkflowLogEvent>, String> {
-        let path = self.log_path(execution_id);
+    fn create_temp_log_path(&self, path: &Path) -> Result<PathBuf, String> {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Failed to derive log temp file name".to_string())?;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| format!("System clock error while creating temp log path: {e}"))?
+            .as_nanos();
+        Ok(path.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), nanos)))
+    }
+
+    /// 指定された run_id の NDJSON ログを読み込み、イベント一覧を返す。
+    pub fn read_log(&self, run_id: &str) -> Result<Vec<WorkflowEvent>, String> {
+        let path = self.log_path(run_id);
         if !path.exists() {
             return Ok(vec![]);
         }
@@ -206,305 +142,19 @@ impl WorkflowEventLog {
             if line.trim().is_empty() {
                 continue;
             }
-            let event: WorkflowLogEvent =
+            let event: WorkflowEvent =
                 serde_json::from_str(line).map_err(|e| format!("Failed to parse log line: {e}"))?;
             events.push(event);
         }
         Ok(events)
     }
 
-    /// ログファイルを読み込み、ワークフロー定義からWorkflowStateを再構築する。
-    #[cfg(test)]
-    pub fn reconstruct_state(
-        &self,
-        execution_id: &str,
-        workflow: &Workflow,
-    ) -> Result<Option<WorkflowState>, String> {
-        let events = self.read_log(execution_id)?;
-        Self::reconstruct_state_from_events(execution_id, &events, workflow)
-    }
-
-    /// 既にパース済みのイベント列からWorkflowStateを再構築する。
-    pub fn reconstruct_state_from_events(
-        execution_id: &str,
-        events: &[WorkflowLogEvent],
-        workflow: &Workflow,
-    ) -> Result<Option<WorkflowState>, String> {
-        if events.is_empty() {
-            return Ok(None);
-        }
-
-        let mut started_at = 0.0;
-        let mut updated_at = 0.0;
-        let mut step_history: Vec<StepHistoryEntry> = Vec::new();
-        let mut step_execution_counts: HashMap<String, u32> = HashMap::new();
-        let mut step_outputs: HashMap<String, StepOutput> = HashMap::new();
-        let mut total_token_usage = TokenUsage::default();
-        let mut exec_state = WorkflowExecutionState::Running;
-        let mut current_step_name = workflow
-            .nodes
-            .first()
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
-        let mut current_step_index = 0usize;
-        let mut workflow_name = String::new();
-        let mut active_parallel_steps: Vec<ParallelStepState> = Vec::new();
-
-        for event in events {
-            match event {
-                WorkflowLogEvent::WorkflowStarted {
-                    timestamp,
-                    workflow_name: wn,
-                    ..
-                } => {
-                    started_at = *timestamp;
-                    updated_at = *timestamp;
-                    workflow_name = wn.clone();
-                }
-                WorkflowLogEvent::StepStarted {
-                    step_name,
-                    execution_count,
-                    timestamp,
-                    ..
-                } => {
-                    current_step_name = step_name.clone();
-                    current_step_index = workflow
-                        .nodes
-                        .iter()
-                        .position(|s| s.name == *step_name)
-                        .unwrap_or(0);
-                    step_execution_counts.insert(step_name.clone(), *execution_count);
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::StepCompleted {
-                    step_name,
-                    result,
-                    session_id,
-                    token_usage,
-                    structured_output,
-                    run_index,
-                    timestamp,
-                    ..
-                } => {
-                    let ri = run_index.unwrap_or_else(|| {
-                        step_execution_counts.get(step_name).copied().unwrap_or(0)
-                    });
-                    step_history.push(StepHistoryEntry {
-                        step_name: step_name.clone(),
-                        completed_at: *timestamp,
-                        result: result.clone(),
-                        session_id: session_id.clone(),
-                        token_usage: token_usage.clone(),
-                        structured_output: structured_output.clone(),
-                        run_index: ri,
-                        child_outputs: None,
-                    });
-                    if structured_output.is_some() {
-                        step_outputs.insert(
-                            step_name.clone(),
-                            StepOutput {
-                                step_name: step_name.clone(),
-                                run_index: ri,
-                                session_id: session_id.clone(),
-                                result: result.clone(),
-                                structured_output: structured_output.clone(),
-                                output_contract: None,
-                                token_usage: token_usage.clone(),
-                                completed_at: *timestamp,
-                            },
-                        );
-                    }
-                    if let Some(ref usage) = token_usage {
-                        total_token_usage.add(usage);
-                    }
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::StepFailed {
-                    reason, timestamp, ..
-                } => {
-                    for ps in &mut active_parallel_steps {
-                        if ps.state == "running" {
-                            ps.state = "failed".to_string();
-                        }
-                    }
-                    exec_state = WorkflowExecutionState::Failed {
-                        reason: reason.clone(),
-                    };
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::WorkflowCompleted {
-                    total_token_usage: tu,
-                    timestamp,
-                    ..
-                } => {
-                    exec_state = WorkflowExecutionState::Completed;
-                    total_token_usage = tu.clone();
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::WorkflowFailed {
-                    reason, timestamp, ..
-                } => {
-                    exec_state = WorkflowExecutionState::Failed {
-                        reason: reason.clone(),
-                    };
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::WorkflowAborted { timestamp, .. } => {
-                    exec_state = WorkflowExecutionState::Aborted;
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::OutputCollected { timestamp, .. } => {
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::ParallelStarted {
-                    parent_step_name,
-                    child_step_names,
-                    timestamp,
-                    ..
-                } => {
-                    current_step_name = parent_step_name.clone();
-                    current_step_index = workflow
-                        .nodes
-                        .iter()
-                        .position(|s| s.name == *parent_step_name)
-                        .unwrap_or(current_step_index);
-                    active_parallel_steps = child_step_names
-                        .iter()
-                        .map(|name| ParallelStepState {
-                            step_name: name.clone(),
-                            state: "running".to_string(),
-                            session_id: None,
-                            result: None,
-                            run_index: 0,
-                            completed_at: None,
-                            structured_output: None,
-                            output_contract: None,
-                        })
-                        .collect();
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::ParallelStepStarted {
-                    child_step_name,
-                    session_id,
-                    execution_count,
-                    timestamp,
-                    ..
-                } => {
-                    step_execution_counts.insert(child_step_name.clone(), *execution_count);
-                    if let Some(ps) = active_parallel_steps
-                        .iter_mut()
-                        .find(|p| p.step_name == *child_step_name)
-                    {
-                        ps.state = "running".to_string();
-                        ps.session_id = Some(session_id.clone());
-                        ps.result = None;
-                        ps.run_index = *execution_count;
-                        ps.completed_at = None;
-                    } else {
-                        active_parallel_steps.push(ParallelStepState {
-                            step_name: child_step_name.clone(),
-                            state: "running".to_string(),
-                            session_id: Some(session_id.clone()),
-                            result: None,
-                            run_index: *execution_count,
-                            completed_at: None,
-                            structured_output: None,
-                            output_contract: None,
-                        });
-                    }
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::ParallelStepCompleted {
-                    child_step_name,
-                    result,
-                    session_id,
-                    token_usage,
-                    structured_output,
-                    run_index,
-                    timestamp,
-                    ..
-                } => {
-                    // active_parallel_stepsの該当エントリを更新
-                    if let Some(ps) = active_parallel_steps
-                        .iter_mut()
-                        .find(|p| p.step_name == *child_step_name)
-                    {
-                        ps.state = "completed".to_string();
-                        ps.result = result.clone();
-                        ps.completed_at = Some(*timestamp);
-                        ps.structured_output = structured_output.clone();
-                    }
-                    // step_historyへの追加はParallelCompletedで親ブロックとして合成する
-                    // （ライブ実行と同じ構造にするため）
-                    step_outputs.insert(
-                        child_step_name.clone(),
-                        StepOutput {
-                            step_name: child_step_name.clone(),
-                            run_index: *run_index,
-                            session_id: Some(session_id.clone()),
-                            result: result.clone(),
-                            structured_output: structured_output.clone(),
-                            output_contract: None,
-                            token_usage: token_usage.clone(),
-                            completed_at: *timestamp,
-                        },
-                    );
-                    if let Some(ref usage) = token_usage {
-                        total_token_usage.add(usage);
-                    }
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::ParallelCompleted { timestamp, .. } => {
-                    // step_historyへの追加は後続のStepCompletedが正本。
-                    // ここではactive_parallel_stepsのクリアのみ行う。
-                    active_parallel_steps.clear();
-                    updated_at = *timestamp;
-                }
-                WorkflowLogEvent::ContractRepairRequested { timestamp, .. } => {
-                    updated_at = *timestamp;
-                }
-            }
-        }
-
-        let step_states = crate::workflow::state::compute_step_states(
-            workflow,
-            current_step_index,
-            &exec_state,
-            &step_history,
-        );
-
-        Ok(Some(WorkflowState {
-            execution_id: execution_id.to_string(),
-            workflow_name,
-            chat_session_id: None,
-            state: exec_state,
-            current_step_index,
-            current_step_name,
-            current_session_id: None,
-            total_steps: workflow.nodes.len(),
-            step_history,
-            step_execution_counts,
-            workflow_definition: workflow.clone(),
-            total_token_usage,
-            step_outputs,
-            step_states,
-            active_parallel_steps,
-            workflow_variables: HashMap::new(),
-            approval_operations: None,
-            started_at,
-            updated_at,
-        }))
-    }
-
-    /// 指定worktreeに属する実行IDを返す（旧 `list_workflow_executions` Tauri command の
+    /// 指定worktreeに属する run_id を返す（旧 `list_workflow_executions` Tauri command の
     /// バックエンド。production からは廃止済みだが、過去 NDJSON の worktree フィルタを
     /// 維持するため、テスト用補助メソッドとして温存する）。
-    /// 各NDJSONファイルの1行目（WorkflowStarted）のworktree_pathと照合する。
+    /// 各NDJSONファイルの1行目（RunStarted）のworktree_pathと照合する。
     #[cfg(test)]
-    pub fn list_execution_ids_for_worktree(
-        &self,
-        worktree_path: &str,
-    ) -> Result<Vec<String>, String> {
+    pub fn list_run_ids_for_worktree(&self, worktree_path: &str) -> Result<Vec<String>, String> {
         if !self.log_dir.exists() {
             return Ok(vec![]);
         }
@@ -521,17 +171,17 @@ impl WorkflowEventLog {
             let Some(stem) = path.file_stem() else {
                 continue;
             };
-            let execution_id = stem.to_string_lossy().to_string();
+            let run_id = stem.to_string_lossy().to_string();
 
             // 1行目を読んでworktree_pathを照合
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Some(first_line) = content.lines().next() {
-                    if let Ok(WorkflowLogEvent::WorkflowStarted {
+                    if let Ok(WorkflowEvent::RunStarted {
                         worktree_path: wt, ..
                     }) = serde_json::from_str(first_line)
                     {
                         if wt == worktree_path {
-                            ids.push(execution_id);
+                            ids.push(run_id);
                         }
                     }
                 }
@@ -544,10 +194,26 @@ impl WorkflowEventLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workflow::event::{ApprovalDecisionRecord, CollectedOutputEntry};
+    use crate::workflow::event_projection::reconstruct_state_from_events;
+    use crate::workflow::schema::Workflow;
+    use crate::workflow::state::{TokenUsage, WorkflowExecutionState};
     use tempfile::TempDir;
 
+    /// 旧 `WorkflowEventLog::reconstruct_state` の shim。
+    /// log.rs の責務縮退（[04]: NDJSON adapter に閉じる）に伴い、再構築は
+    /// `event_projection::reconstruct_state_from_events` を経由する。テストの
+    /// 表現を変えないために本ファイル内ヘルパーとして残す。
+    fn reconstruct_state_via_log(
+        log: &WorkflowEventLog,
+        run_id: &str,
+        workflow: &Workflow,
+    ) -> Result<Option<crate::workflow::state::WorkflowState>, String> {
+        let events = log.read_log(run_id)?;
+        reconstruct_state_from_events(run_id, &events, workflow)
+    }
+
     /// テスト用の最小 Workflow。
-    /// log event の `workflow_definition` フィールド（必須）を埋めるために使う。
     fn minimal_workflow_for_log(name: &str) -> Workflow {
         use crate::workflow::schema::{NodeDefinition, NodeType};
         Workflow {
@@ -563,15 +229,15 @@ mod tests {
         }
     }
 
-    /// [02] schema 境界: 旧 NDJSON（`workflow_definition` フィールドを持たない）は
-    /// 新 `WorkflowLogEvent` deserialize で必ず失敗する。
+    /// [04] 旧 NDJSON（旧 `workflow_started` 語彙、`execution_id` フィールド）は
+    /// 新 `WorkflowEvent` deserialize で必ず失敗する（互換 wrapper を持たないことの担保）。
     #[test]
-    fn old_ndjson_without_workflow_definition_fails_to_deserialize() {
-        let legacy_line = r#"{"event":"workflow_started","execution_id":"old-1","workflow_name":"legacy","workflow_file_stem":"legacy","worktree_path":"/repo","timestamp":1000.0}"#;
-        let result: Result<WorkflowLogEvent, _> = serde_json::from_str(legacy_line);
+    fn legacy_ndjson_with_old_event_tag_fails_to_deserialize() {
+        let legacy_line = r#"{"event":"workflow_started","execution_id":"old-1","workflow_name":"legacy","workflow_file_stem":"legacy","worktree_path":"/repo","workflow_definition":{"name":"legacy","description":"","builtin":false,"nodes":[]},"timestamp":1000.0}"#;
+        let result: Result<WorkflowEvent, _> = serde_json::from_str(legacy_line);
         assert!(
             result.is_err(),
-            "旧 NDJSON の WorkflowStarted は新 schema で必ず deserialize 失敗する"
+            "旧 event tag (workflow_started) は新 schema で必ず deserialize 失敗する"
         );
     }
 
@@ -579,8 +245,8 @@ mod tests {
     /// 新 schema（`workflow_definition.nodes` + `deny_unknown_fields`）として deserialize できない。
     #[test]
     fn old_ndjson_with_legacy_steps_shape_fails_to_deserialize() {
-        let legacy_line = r#"{"event":"workflow_started","execution_id":"old-1","workflow_name":"legacy","workflow_file_stem":"legacy","worktree_path":"/repo","workflow_definition":{"name":"legacy","description":"","builtin":false,"steps":[{"name":"x","mode":"auto","instruction":"x"}]},"timestamp":1000.0}"#;
-        let result: Result<WorkflowLogEvent, _> = serde_json::from_str(legacy_line);
+        let legacy_line = r#"{"event":"run_started","run_id":"old-1","workflow_name":"legacy","workflow_file_stem":"legacy","worktree_path":"/repo","workflow_definition":{"name":"legacy","description":"","builtin":false,"steps":[{"name":"x","mode":"auto","instruction":"x"}]},"timestamp":1000.0}"#;
+        let result: Result<WorkflowEvent, _> = serde_json::from_str(legacy_line);
         assert!(
             result.is_err(),
             "旧 workflow_definition.steps を含む NDJSON は新 schema で deserialize 失敗する"
@@ -589,29 +255,29 @@ mod tests {
 
     /// 旧 `workflow_definition.steps` を含む NDJSON は listing / reconstruction の対象外となる。
     #[test]
-    fn list_execution_ids_excludes_legacy_steps_ndjson() {
+    fn list_run_ids_excludes_legacy_steps_ndjson() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
         fs::create_dir_all(&log.log_dir).unwrap();
         let legacy_path = log.log_path("legacy-steps");
         fs::write(
             &legacy_path,
-            r#"{"event":"workflow_started","execution_id":"legacy-steps","workflow_name":"old","workflow_file_stem":"old","worktree_path":"/repo","workflow_definition":{"name":"old","description":"","builtin":false,"steps":[{"name":"x","mode":"auto","instruction":"x"}]},"timestamp":1000.0}"#,
+            r#"{"event":"run_started","run_id":"legacy-steps","workflow_name":"old","workflow_file_stem":"old","worktree_path":"/repo","workflow_definition":{"name":"old","description":"","builtin":false,"steps":[{"name":"x","mode":"auto","instruction":"x"}]},"timestamp":1000.0}"#,
         )
         .unwrap();
         // read_log は parse 失敗を返す（旧 shape は復元対象外）
         assert!(log.read_log("legacy-steps").is_err());
         // listing も除外（listing は parse 失敗 line をスキップする）
-        let ids = log.list_execution_ids_for_worktree("/repo").unwrap();
+        let ids = log.list_run_ids_for_worktree("/repo").unwrap();
         assert!(!ids.iter().any(|i| i == "legacy-steps"));
     }
 
-    /// 旧 NDJSON が listing から除外されること（read_log 失敗 ⇒ list_execution_ids_for_worktree でも対象外）。
+    /// 旧 NDJSON が listing から除外されること（read_log 失敗 ⇒ list_run_ids_for_worktree でも対象外）。
     #[test]
-    fn list_execution_ids_for_worktree_excludes_legacy_ndjson() {
+    fn list_run_ids_for_worktree_excludes_legacy_ndjson() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
-        // worktree 一致する旧 NDJSON を直接書き込む（workflow_definition フィールドを欠く）
+        // worktree 一致する旧 NDJSON を直接書き込む（旧 event tag）
         fs::create_dir_all(&log.log_dir).unwrap();
         let legacy_path = log.log_path("legacy");
         fs::write(
@@ -621,8 +287,8 @@ mod tests {
         .unwrap();
 
         // 新 NDJSON も同じ worktree で書き込む
-        log.append(&WorkflowLogEvent::WorkflowStarted {
-            execution_id: "new-1".to_string(),
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: "new-1".to_string(),
             workflow_name: "new".to_string(),
             workflow_file_stem: "new".to_string(),
             worktree_path: "/repo".to_string(),
@@ -631,7 +297,7 @@ mod tests {
         })
         .unwrap();
 
-        let ids = log.list_execution_ids_for_worktree("/repo").unwrap();
+        let ids = log.list_run_ids_for_worktree("/repo").unwrap();
         assert!(
             !ids.iter().any(|i| i == "legacy"),
             "旧 NDJSON は listing 対象から除外される"
@@ -639,30 +305,109 @@ mod tests {
         assert!(ids.iter().any(|i| i == "new-1"));
     }
 
+    /// [04] atomic batch append: 複数 event を 1 回の write でまとめて append すれば、
+    /// partial commit（最初の event のみ NDJSON に残る）を構造的に排除できることを
+    /// 担保する。append_batch 経由で書き込んだ 2 件は read_log で順序通り 2 件として
+    /// 読み出される。
+    #[test]
+    fn append_batch_writes_all_events_atomically_in_order() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        let run_id = "00000000-0000-0000-0000-000000000700";
+        let events = vec![
+            WorkflowEvent::ApprovalResolved {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                decision: ApprovalDecisionRecord::Abort,
+                comment: None,
+                timestamp: 1000.0,
+            },
+            WorkflowEvent::RunAborted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                timestamp: 1000.0,
+            },
+        ];
+        log.append_batch(&events)
+            .expect("batch append should succeed");
+        let read_back = log.read_log(run_id).unwrap();
+        assert_eq!(
+            read_back.len(),
+            2,
+            "両方の event が atomic に append される"
+        );
+        assert!(matches!(
+            read_back[0],
+            WorkflowEvent::ApprovalResolved { .. }
+        ));
+        assert!(matches!(read_back[1], WorkflowEvent::RunAborted { .. }));
+    }
+
+    /// [04] atomic batch append: 入力 event が異なる run_id を含む場合は append 前に
+    /// Err を返し、partial 書き込みを起こさない（構造的不変条件）。
+    #[test]
+    fn append_batch_rejects_mixed_run_ids_before_writing() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        let events = vec![
+            WorkflowEvent::ApprovalResolved {
+                run_id: "run-a".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                decision: ApprovalDecisionRecord::Approve,
+                comment: None,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::RunAborted {
+                run_id: "run-b".to_string(),
+                workflow_name: "wf".to_string(),
+                timestamp: 2.0,
+            },
+        ];
+        let err = log.append_batch(&events).unwrap_err();
+        assert!(
+            err.contains("uniform run_id"),
+            "異 run_id 混在は uniform run_id エラーで拒否される: {err}"
+        );
+        // どちらの run_id の NDJSON も生成されていない
+        assert!(log.read_log("run-a").unwrap().is_empty());
+        assert!(log.read_log("run-b").unwrap().is_empty());
+    }
+
+    /// [04] atomic batch append: 空入力は no-op として Ok を返す（NDJSON は生成されない）。
+    #[test]
+    fn append_batch_with_empty_input_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        log.append_batch(&[]).expect("empty input is no-op Ok");
+        assert!(log.read_log("any").unwrap().is_empty());
+    }
+
     #[test]
     fn append_and_read_log() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
 
-        let event1 = WorkflowLogEvent::WorkflowStarted {
-            execution_id: "exec-1".to_string(),
+        let event1 = WorkflowEvent::RunStarted {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
             workflow_definition: minimal_workflow_for_log("test"),
             timestamp: 1000.0,
         };
-        let event2 = WorkflowLogEvent::StepStarted {
-            execution_id: "exec-1".to_string(),
+        let event2 = WorkflowEvent::NodeStarted {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "plan".to_string(),
+            node_name: "plan".to_string(),
             execution_count: 1,
             timestamp: 1001.0,
         };
-        let event3 = WorkflowLogEvent::StepCompleted {
-            execution_id: "exec-1".to_string(),
+        let event3 = WorkflowEvent::NodeCompleted {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "plan".to_string(),
+            node_name: "plan".to_string(),
             result: Some("done".to_string()),
             session_id: Some("sess-1".to_string()),
             token_usage: Some(TokenUsage {
@@ -691,20 +436,20 @@ mod tests {
     }
 
     #[test]
-    fn list_execution_ids_for_worktree_empty() {
+    fn list_run_ids_for_worktree_empty() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
-        let ids = log.list_execution_ids_for_worktree("/repo").unwrap();
+        let ids = log.list_run_ids_for_worktree("/repo").unwrap();
         assert!(ids.is_empty());
     }
 
     #[test]
-    fn list_execution_ids_for_worktree_filters_by_path() {
+    fn list_run_ids_for_worktree_filters_by_path() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
 
-        log.append(&WorkflowLogEvent::WorkflowStarted {
-            execution_id: "exec-a".to_string(),
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: "exec-a".to_string(),
             workflow_name: "wf-a".to_string(),
             workflow_file_stem: "wf-a".to_string(),
             worktree_path: "/repo-1".to_string(),
@@ -712,8 +457,8 @@ mod tests {
             timestamp: 1000.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::WorkflowStarted {
-            execution_id: "exec-b".to_string(),
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: "exec-b".to_string(),
             workflow_name: "wf-b".to_string(),
             workflow_file_stem: "wf-b".to_string(),
             worktree_path: "/repo-2".to_string(),
@@ -721,8 +466,8 @@ mod tests {
             timestamp: 1001.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::WorkflowStarted {
-            execution_id: "exec-c".to_string(),
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: "exec-c".to_string(),
             workflow_name: "wf-c".to_string(),
             workflow_file_stem: "wf-c".to_string(),
             worktree_path: "/repo-1".to_string(),
@@ -731,39 +476,39 @@ mod tests {
         })
         .unwrap();
 
-        let mut ids = log.list_execution_ids_for_worktree("/repo-1").unwrap();
+        let mut ids = log.list_run_ids_for_worktree("/repo-1").unwrap();
         ids.sort();
         assert_eq!(ids, vec!["exec-a", "exec-c"]);
 
-        let ids2 = log.list_execution_ids_for_worktree("/repo-2").unwrap();
+        let ids2 = log.list_run_ids_for_worktree("/repo-2").unwrap();
         assert_eq!(ids2, vec!["exec-b"]);
 
-        let ids3 = log.list_execution_ids_for_worktree("/other").unwrap();
+        let ids3 = log.list_run_ids_for_worktree("/other").unwrap();
         assert!(ids3.is_empty());
     }
 
     #[test]
     fn event_serde_all_variants() {
         let events = vec![
-            WorkflowLogEvent::WorkflowStarted {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::RunStarted {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: "/repo".to_string(),
                 workflow_definition: minimal_workflow_for_log("test"),
                 timestamp: 1.0,
             },
-            WorkflowLogEvent::StepStarted {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::NodeStarted {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
-                step_name: "s1".to_string(),
+                node_name: "s1".to_string(),
                 execution_count: 1,
                 timestamp: 2.0,
             },
-            WorkflowLogEvent::StepCompleted {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::NodeCompleted {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
-                step_name: "s1".to_string(),
+                node_name: "s1".to_string(),
                 result: None,
                 session_id: None,
                 token_usage: None,
@@ -771,15 +516,29 @@ mod tests {
                 run_index: None,
                 timestamp: 3.0,
             },
-            WorkflowLogEvent::StepFailed {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::NodeFailed {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
-                step_name: "s1".to_string(),
+                node_name: "s1".to_string(),
                 reason: "error".to_string(),
                 timestamp: 4.0,
             },
-            WorkflowLogEvent::WorkflowCompleted {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::ApprovalRequested {
+                run_id: "e1".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "s1".to_string(),
+                timestamp: 4.5,
+            },
+            WorkflowEvent::ApprovalResolved {
+                run_id: "e1".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "s1".to_string(),
+                decision: ApprovalDecisionRecord::Approve,
+                comment: None,
+                timestamp: 4.7,
+            },
+            WorkflowEvent::RunCompleted {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
                 total_token_usage: TokenUsage {
                     input_tokens: 100,
@@ -787,23 +546,23 @@ mod tests {
                 },
                 timestamp: 5.0,
             },
-            WorkflowLogEvent::WorkflowFailed {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::RunFailed {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
                 reason: "failed".to_string(),
                 timestamp: 6.0,
             },
-            WorkflowLogEvent::WorkflowAborted {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::RunAborted {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
                 timestamp: 7.0,
             },
-            WorkflowLogEvent::OutputCollected {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::OutputCollected {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
-                step_name: "collect".to_string(),
-                step_outputs: vec![CollectedOutputEntry {
-                    step_name: "s1".to_string(),
+                node_name: "collect".to_string(),
+                node_outputs: vec![CollectedOutputEntry {
+                    node_name: "s1".to_string(),
                     result: Some("LGTM".to_string()),
                     structured_output: None,
                 }],
@@ -812,27 +571,27 @@ mod tests {
                 reduce_structured_output: None,
                 timestamp: 8.0,
             },
-            WorkflowLogEvent::ParallelStarted {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::ParallelStarted {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
-                child_step_names: vec!["arch-review".to_string(), "security-review".to_string()],
+                parent_node_name: "parallel-review".to_string(),
+                child_node_names: vec!["arch-review".to_string(), "security-review".to_string()],
                 timestamp: 9.0,
             },
-            WorkflowLogEvent::ParallelStepStarted {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::ParallelChildStarted {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
-                child_step_name: "arch-review".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "arch-review".to_string(),
                 session_id: "sess-1".to_string(),
                 execution_count: 1,
                 timestamp: 10.0,
             },
-            WorkflowLogEvent::ParallelStepCompleted {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::ParallelChildCompleted {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
-                child_step_name: "arch-review".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "arch-review".to_string(),
                 result: None,
                 session_id: "sess-1".to_string(),
                 token_usage: Some(TokenUsage {
@@ -843,17 +602,17 @@ mod tests {
                 run_index: 0,
                 timestamp: 11.0,
             },
-            WorkflowLogEvent::ParallelCompleted {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::ParallelCompleted {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
+                parent_node_name: "parallel-review".to_string(),
                 aggregate_result: "then".to_string(),
                 timestamp: 12.0,
             },
-            WorkflowLogEvent::ContractRepairRequested {
-                execution_id: "e1".to_string(),
+            WorkflowEvent::ContractRepairRequested {
+                run_id: "e1".to_string(),
                 workflow_name: "wf".to_string(),
-                step_name: "s1".to_string(),
+                node_name: "s1".to_string(),
                 attempt: 1,
                 violation_reason: "missing_field".to_string(),
                 timestamp: 13.0,
@@ -862,7 +621,7 @@ mod tests {
 
         for event in &events {
             let json = serde_json::to_string(event).unwrap();
-            let back: WorkflowLogEvent = serde_json::from_str(&json).unwrap();
+            let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
             let json2 = serde_json::to_string(&back).unwrap();
             assert_eq!(json, json2);
         }
@@ -918,7 +677,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
         let wf = make_test_workflow();
-        let result = log.reconstruct_state("nonexistent", &wf).unwrap();
+        let result = reconstruct_state_via_log(&log, "nonexistent", &wf).unwrap();
         assert!(result.is_none());
     }
 
@@ -928,8 +687,8 @@ mod tests {
         let log = WorkflowEventLog::new(tmp.path());
         let wf = make_test_workflow();
 
-        log.append(&WorkflowLogEvent::WorkflowStarted {
-            execution_id: "exec-1".to_string(),
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -937,18 +696,18 @@ mod tests {
             timestamp: 1000.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::StepStarted {
-            execution_id: "exec-1".to_string(),
+        log.append(&WorkflowEvent::NodeStarted {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "plan".to_string(),
+            node_name: "plan".to_string(),
             execution_count: 1,
             timestamp: 1001.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::StepCompleted {
-            execution_id: "exec-1".to_string(),
+        log.append(&WorkflowEvent::NodeCompleted {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "plan".to_string(),
+            node_name: "plan".to_string(),
             result: Some("done".to_string()),
             session_id: Some("sess-plan".to_string()),
             token_usage: Some(TokenUsage {
@@ -960,18 +719,18 @@ mod tests {
             timestamp: 1002.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::StepStarted {
-            execution_id: "exec-1".to_string(),
+        log.append(&WorkflowEvent::NodeStarted {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "implement".to_string(),
+            node_name: "implement".to_string(),
             execution_count: 1,
             timestamp: 1003.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::StepCompleted {
-            execution_id: "exec-1".to_string(),
+        log.append(&WorkflowEvent::NodeCompleted {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "implement".to_string(),
+            node_name: "implement".to_string(),
             result: None,
             session_id: Some("sess-impl".to_string()),
             token_usage: None,
@@ -980,12 +739,12 @@ mod tests {
             timestamp: 1004.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::OutputCollected {
-            execution_id: "exec-1".to_string(),
+        log.append(&WorkflowEvent::OutputCollected {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "collect".to_string(),
-            step_outputs: vec![CollectedOutputEntry {
-                step_name: "plan".to_string(),
+            node_name: "collect".to_string(),
+            node_outputs: vec![CollectedOutputEntry {
+                node_name: "plan".to_string(),
                 result: Some("done".to_string()),
                 structured_output: None,
             }],
@@ -995,8 +754,8 @@ mod tests {
             timestamp: 1004.5,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::WorkflowCompleted {
-            execution_id: "exec-1".to_string(),
+        log.append(&WorkflowEvent::RunCompleted {
+            run_id: "exec-1".to_string(),
             workflow_name: "test-wf".to_string(),
             total_token_usage: TokenUsage {
                 input_tokens: 200,
@@ -1006,7 +765,9 @@ mod tests {
         })
         .unwrap();
 
-        let state = log.reconstruct_state("exec-1", &wf).unwrap().unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-1", &wf)
+            .unwrap()
+            .unwrap();
         assert_eq!(state.execution_id, "exec-1");
         assert_eq!(state.state, WorkflowExecutionState::Completed);
         assert_eq!(state.step_history.len(), 2);
@@ -1033,7 +794,6 @@ mod tests {
         assert_eq!(state.step_states["implement"], "completed");
         assert_eq!(state.step_states["review"], "pending");
         assert_eq!(state.started_at, 1000.0);
-        // OutputCollectedのtimestamp=1004.5よりWorkflowCompletedの1005.0が最終
         assert_eq!(state.updated_at, 1005.0);
     }
 
@@ -1043,8 +803,8 @@ mod tests {
         let log = WorkflowEventLog::new(tmp.path());
         let wf = make_test_workflow();
 
-        log.append(&WorkflowLogEvent::WorkflowStarted {
-            execution_id: "exec-2".to_string(),
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: "exec-2".to_string(),
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -1052,31 +812,33 @@ mod tests {
             timestamp: 2000.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::StepStarted {
-            execution_id: "exec-2".to_string(),
+        log.append(&WorkflowEvent::NodeStarted {
+            run_id: "exec-2".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "plan".to_string(),
+            node_name: "plan".to_string(),
             execution_count: 1,
             timestamp: 2001.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::StepFailed {
-            execution_id: "exec-2".to_string(),
+        log.append(&WorkflowEvent::NodeFailed {
+            run_id: "exec-2".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "plan".to_string(),
+            node_name: "plan".to_string(),
             reason: "exit code 1".to_string(),
             timestamp: 2002.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::WorkflowFailed {
-            execution_id: "exec-2".to_string(),
+        log.append(&WorkflowEvent::RunFailed {
+            run_id: "exec-2".to_string(),
             workflow_name: "test-wf".to_string(),
             reason: "step failed".to_string(),
             timestamp: 2003.0,
         })
         .unwrap();
 
-        let state = log.reconstruct_state("exec-2", &wf).unwrap().unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-2", &wf)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             state.state,
             WorkflowExecutionState::Failed {
@@ -1088,7 +850,7 @@ mod tests {
     }
 
     /// 並列ブロックを含むワークフローのNDJSON復元テスト。
-    /// ParallelCompleted + StepCompleted で親ステップが重複しないことを検証する。
+    /// ParallelCompleted + NodeCompleted で親ステップが重複しないことを検証する。
     #[test]
     fn reconstruct_state_parallel_block_no_duplicate_history() {
         use crate::workflow::schema::{NodeDefinition, NodeType, ParallelAggregate};
@@ -1125,27 +887,26 @@ mod tests {
             nodes: vec![make_agent_node("plan", "plan"), parallel_review],
         };
 
-        // NDJSON: plan完了 → 並列開始 → 子2つ完了 → ParallelCompleted → StepCompleted(親)
         let events = vec![
-            WorkflowLogEvent::WorkflowStarted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::RunStarted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 workflow_file_stem: "parallel-wf".to_string(),
                 worktree_path: "/repo".to_string(),
                 workflow_definition: minimal_workflow_for_log("test"),
                 timestamp: 1000.0,
             },
-            WorkflowLogEvent::StepStarted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
-                step_name: "plan".to_string(),
+                node_name: "plan".to_string(),
                 execution_count: 1,
                 timestamp: 1001.0,
             },
-            WorkflowLogEvent::StepCompleted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::NodeCompleted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
-                step_name: "plan".to_string(),
+                node_name: "plan".to_string(),
                 result: Some("done".to_string()),
                 session_id: Some("sess-plan".to_string()),
                 token_usage: Some(TokenUsage {
@@ -1156,36 +917,36 @@ mod tests {
                 run_index: Some(1),
                 timestamp: 1002.0,
             },
-            WorkflowLogEvent::ParallelStarted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::ParallelStarted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
-                child_step_names: vec!["arch-review".to_string(), "security-review".to_string()],
+                parent_node_name: "parallel-review".to_string(),
+                child_node_names: vec!["arch-review".to_string(), "security-review".to_string()],
                 timestamp: 1003.0,
             },
-            WorkflowLogEvent::ParallelStepStarted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::ParallelChildStarted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
-                child_step_name: "arch-review".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "arch-review".to_string(),
                 session_id: "sess-arch".to_string(),
                 execution_count: 1,
                 timestamp: 1004.0,
             },
-            WorkflowLogEvent::ParallelStepStarted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::ParallelChildStarted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
-                child_step_name: "security-review".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "security-review".to_string(),
                 session_id: "sess-sec".to_string(),
                 execution_count: 1,
                 timestamp: 1004.0,
             },
-            WorkflowLogEvent::ParallelStepCompleted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::ParallelChildCompleted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
-                child_step_name: "arch-review".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "arch-review".to_string(),
                 result: Some("LGTM".to_string()),
                 session_id: "sess-arch".to_string(),
                 token_usage: Some(TokenUsage {
@@ -1196,11 +957,11 @@ mod tests {
                 run_index: 1,
                 timestamp: 1005.0,
             },
-            WorkflowLogEvent::ParallelStepCompleted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::ParallelChildCompleted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
-                child_step_name: "security-review".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "security-review".to_string(),
                 result: Some("LGTM".to_string()),
                 session_id: "sess-sec".to_string(),
                 token_usage: Some(TokenUsage {
@@ -1211,18 +972,18 @@ mod tests {
                 run_index: 1,
                 timestamp: 1006.0,
             },
-            WorkflowLogEvent::ParallelCompleted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::ParallelCompleted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
-                parent_step_name: "parallel-review".to_string(),
+                parent_node_name: "parallel-review".to_string(),
                 aggregate_result: "then".to_string(),
                 timestamp: 1007.0,
             },
-            // engine.rsのwrite_last_step_completed_logが親ステップのStepCompletedを出力
-            WorkflowLogEvent::StepCompleted {
-                execution_id: "exec-p".to_string(),
+            // engine.rsのwrite_last_step_completed_logが親ステップのNodeCompletedを出力
+            WorkflowEvent::NodeCompleted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
-                step_name: "parallel-review".to_string(),
+                node_name: "parallel-review".to_string(),
                 result: Some("then".to_string()),
                 session_id: None,
                 token_usage: Some(TokenUsage {
@@ -1233,8 +994,8 @@ mod tests {
                 run_index: Some(1),
                 timestamp: 1007.0,
             },
-            WorkflowLogEvent::WorkflowCompleted {
-                execution_id: "exec-p".to_string(),
+            WorkflowEvent::RunCompleted {
+                run_id: "exec-p".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 total_token_usage: TokenUsage {
                     input_tokens: 450,
@@ -1248,9 +1009,10 @@ mod tests {
             log.append(event).unwrap();
         }
 
-        let state = log.reconstruct_state("exec-p", &wf).unwrap().unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-p", &wf)
+            .unwrap()
+            .unwrap();
 
-        // step_historyは「plan」と「parallel-review」の2エントリのみ（重複なし）
         assert_eq!(
             state.step_history.len(),
             2,
@@ -1261,15 +1023,12 @@ mod tests {
         assert_eq!(state.step_history[1].result, Some("then".to_string()));
         assert_eq!(state.step_history[1].structured_output, None);
 
-        // current_step はParallelStartedで更新された並列ブロック
         assert_eq!(state.current_step_name, "parallel-review");
         assert_eq!(state.current_step_index, 1);
 
-        // step_outputsに子ステップの出力が存在
         assert!(state.step_outputs.contains_key("arch-review"));
         assert!(state.step_outputs.contains_key("security-review"));
 
-        // 並列ブロック完了後はactive_parallel_stepsがクリアされる
         assert!(state.active_parallel_steps.is_empty());
 
         assert_eq!(state.state, WorkflowExecutionState::Completed);
@@ -1281,8 +1040,8 @@ mod tests {
         let log = WorkflowEventLog::new(tmp.path());
         let wf = make_test_workflow();
 
-        log.append(&WorkflowLogEvent::WorkflowStarted {
-            execution_id: "exec-r".to_string(),
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: "exec-r".to_string(),
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -1290,18 +1049,18 @@ mod tests {
             timestamp: 1000.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::StepStarted {
-            execution_id: "exec-r".to_string(),
+        log.append(&WorkflowEvent::NodeStarted {
+            run_id: "exec-r".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "review".to_string(),
+            node_name: "review".to_string(),
             execution_count: 1,
             timestamp: 1001.0,
         })
         .unwrap();
-        log.append(&WorkflowLogEvent::StepCompleted {
-            execution_id: "exec-r".to_string(),
+        log.append(&WorkflowEvent::NodeCompleted {
+            run_id: "exec-r".to_string(),
             workflow_name: "test-wf".to_string(),
-            step_name: "review".to_string(),
+            node_name: "review".to_string(),
             result: Some("reject".to_string()),
             session_id: Some("sess-review".to_string()),
             token_usage: Some(TokenUsage {
@@ -1314,15 +1073,157 @@ mod tests {
         })
         .unwrap();
 
-        let state = log.reconstruct_state("exec-r", &wf).unwrap().unwrap();
+        let state = reconstruct_state_via_log(&log, "exec-r", &wf)
+            .unwrap()
+            .unwrap();
 
-        // step_history にReject結果が保存されている
         assert_eq!(state.step_history.len(), 1);
         assert_eq!(state.step_history[0].step_name, "review");
         assert_eq!(state.step_history[0].result, Some("reject".to_string()));
         assert!(state.step_history[0].structured_output.is_none());
 
-        // Reject時はstructured_outputがないのでstep_outputsには格納されない
         assert!(!state.step_outputs.contains_key("review"));
+    }
+
+    /// [04] ApprovalRequested projection: 承認待ちに到達すると state が
+    /// WaitingApproval に切り替わり、current_step_name / current_step_index が
+    /// approval 対象 node に揃う。updated_at は ApprovalRequested の timestamp に
+    /// 進む。観測者が承認待ち run を識別できる境界を担保する。
+    #[test]
+    fn reconstruct_state_approval_requested_sets_waiting_approval() {
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        let wf = make_test_workflow();
+
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: "exec-ap".to_string(),
+            workflow_name: "test-wf".to_string(),
+            workflow_file_stem: "test-wf".to_string(),
+            worktree_path: "/repo".to_string(),
+            workflow_definition: minimal_workflow_for_log("test"),
+            timestamp: 1000.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::NodeStarted {
+            run_id: "exec-ap".to_string(),
+            workflow_name: "test-wf".to_string(),
+            node_name: "review".to_string(),
+            execution_count: 1,
+            timestamp: 1001.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::ApprovalRequested {
+            run_id: "exec-ap".to_string(),
+            workflow_name: "test-wf".to_string(),
+            node_name: "review".to_string(),
+            timestamp: 1002.0,
+        })
+        .unwrap();
+
+        let state = reconstruct_state_via_log(&log, "exec-ap", &wf)
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.state, WorkflowExecutionState::WaitingApproval);
+        assert_eq!(state.current_step_name, "review");
+        // workflow.nodes は plan/implement/review の順なので review の index は 2。
+        assert_eq!(state.current_step_index, 2);
+        assert_eq!(state.updated_at, 1002.0);
+    }
+
+    /// [04] approval 承認 → 次 node 開始: ApprovalRequested で WaitingApproval に
+    /// 切り替わった後、ApprovalResolved → NodeCompleted → NodeStarted の順に
+    /// 進むと、exec_state は次 node 開始時に Running へ復元される。
+    /// projection のバグ「WaitingApproval が固定される」回帰防止。
+    #[test]
+    fn reconstruct_state_node_started_after_approval_resets_to_running() {
+        use crate::workflow::schema::{NodeDefinition, NodeType, TransitionRule};
+
+        let tmp = TempDir::new().unwrap();
+        let log = WorkflowEventLog::new(tmp.path());
+        // approval node のあとに後続 node を続ける workflow を作る。
+        let mut review = make_approval_node("review", "review");
+        review.transition_rules = vec![TransitionRule {
+            r#match: "approve".to_string(),
+            next: "ship".to_string(),
+        }];
+        let wf = Workflow {
+            name: "approval-then-next".to_string(),
+            description: "".to_string(),
+            builtin: false,
+            nodes: vec![
+                review,
+                NodeDefinition {
+                    name: "ship".to_string(),
+                    node_type: NodeType::Agent,
+                    instruction: Some("ship".to_string()),
+                    ..NodeDefinition::default()
+                },
+            ],
+        };
+
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: "exec-an".to_string(),
+            workflow_name: "approval-then-next".to_string(),
+            workflow_file_stem: "approval-then-next".to_string(),
+            worktree_path: "/repo".to_string(),
+            workflow_definition: minimal_workflow_for_log("test"),
+            timestamp: 2000.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::NodeStarted {
+            run_id: "exec-an".to_string(),
+            workflow_name: "approval-then-next".to_string(),
+            node_name: "review".to_string(),
+            execution_count: 1,
+            timestamp: 2001.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::ApprovalRequested {
+            run_id: "exec-an".to_string(),
+            workflow_name: "approval-then-next".to_string(),
+            node_name: "review".to_string(),
+            timestamp: 2002.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::ApprovalResolved {
+            run_id: "exec-an".to_string(),
+            workflow_name: "approval-then-next".to_string(),
+            node_name: "review".to_string(),
+            decision: ApprovalDecisionRecord::Approve,
+            comment: None,
+            timestamp: 2003.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::NodeCompleted {
+            run_id: "exec-an".to_string(),
+            workflow_name: "approval-then-next".to_string(),
+            node_name: "review".to_string(),
+            result: Some("approve".to_string()),
+            session_id: Some("sess-review".to_string()),
+            token_usage: None,
+            structured_output: None,
+            run_index: Some(1),
+            timestamp: 2004.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::NodeStarted {
+            run_id: "exec-an".to_string(),
+            workflow_name: "approval-then-next".to_string(),
+            node_name: "ship".to_string(),
+            execution_count: 1,
+            timestamp: 2005.0,
+        })
+        .unwrap();
+
+        let state = reconstruct_state_via_log(&log, "exec-an", &wf)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.state,
+            WorkflowExecutionState::Running,
+            "次 node 開始で WaitingApproval は Running に復元される"
+        );
+        assert_eq!(state.current_step_name, "ship");
+        assert_eq!(state.current_step_index, 1);
     }
 }

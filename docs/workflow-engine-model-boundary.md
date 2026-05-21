@@ -194,8 +194,10 @@ workflow state を変化させる唯一の入口。UI button、CLI、remote UI�
 - `ApproveNode { run_id, node_name, comment? }`: approval node に対する承認。
 - `RejectNode { run_id, node_name, reason }`: approval node に対する却下。
 - `SubmitOutput { run_id, node_name, contract_type, payload }`: 構造化出力の提出。
-- `CompleteNode { run_id, node_name, ... }`: node 完了の通知（内部用途中心）。
-- `FailNode { run_id, node_name, reason }`: node 失敗の通知（内部用途中心）。
+- `CompleteNode { run_id, node_name, ... }`: node 完了の通知（内部用途中心。マイルストーン [05] で導入）。
+- `FailNode { run_id, node_name, reason }`: node 失敗の通知（内部用途中心。マイルストーン [05] で導入）。
+
+`CompleteNode` / `FailNode` はマイルストーン [04] では導入せず、観測経路（API / CLI）整備と同じマイルストーン [05] で typed 化される。マイルストーン [04] の対象は外部入口を伴う 4 command（`StartRun` / `AbortRun` / `ApproveNode` / `RejectNode`）に限定される。
 
 他モデルとの関係:
 
@@ -210,7 +212,7 @@ engine が発行する append-only な事実列。`WorkflowCommand` の処理結
 責務:
 
 - engine の状態遷移を観測可能な事実として外部に提示する（UI timeline、CLI logs、main agent narrator、remote sync が共通購読する語彙）。
-- 既存 `WorkflowLogEvent` / NDJSON ログとの共存を維持しつつ、新 event 語彙へ段階的に寄せる土台になる。
+- 既存 `WorkflowLogEvent` 語彙を置換し、`WorkflowEvent` の NDJSON 列を唯一の event log vocabulary として扱う。旧 NDJSON 在庫は破棄前提で、互換 reader は持たない。
 - 「事実」と「現在状態」を分離する: 現在状態は `WorkflowRun` / `NodeExecution` から読み、履歴は event 列から辿る。
 
 主要 event（暫定）:
@@ -252,9 +254,9 @@ engine が発行する append-only な事実列。`WorkflowCommand` の処理結
 | --- | --- | --- | --- |
 | `schema.rs` | future core 寄り（YAML 入口） | 新 `Workflow`（template 定義）/ `NodeDefinition` の YAML スキーマ定義。`type: agent | bash | approval | parallel` で node 種別を表現する。 | `NodeDefinition` を直接 YAML deserialize 先として保持する。旧 schema 型は [02] で削除済み。 |
 | `validation.rs` | compatibility adapter | 新 `Workflow` スキーマの静的検証（名前重複、未知 next、facet 参照キーの形式、parallel 子の制約など）。`facet` 本文（解決済み内容）は参照しない。本文の解決失敗は `facet.rs` 側で扱う。 | YAML レイヤーの検証は引き続き必要。`NodeDefinition` ベースで検証する。 |
-| `engine.rs` | future core | 状態遷移の権威。step 実行、approval、parallel/aggregate、cycle guard、contract 検証の中枢。 | 将来は `WorkflowCommand` を入口、`WorkflowEvent` を出口とする shape へ寄せる。現時点では旧モデル上で動作する future core 候補。 |
+| `engine.rs` | future core | 状態遷移の権威。step 実行、approval、parallel/aggregate、cycle guard、contract 検証の中枢。 | `WorkflowCommand` を入口、`WorkflowEvent` を出口とする shape を担う。 |
 | `state.rs` | compatibility adapter | UI 向け `WorkflowState`、`StepHistoryEntry`、`StepOutput`、`ParallelStepState`、`TokenUsage` などのシリアライズ shape。 | 多くのフィールドは `NodeExecution` の前身。互換 deserialize を維持しつつ、新モデルへ段階的に投影する対象。 |
-| `log.rs` | future core（vocabulary は adapter 寄り） | append-only な `WorkflowEventLog` / `WorkflowLogEvent` の NDJSON 永続化。 | 仕組み（append-only 性質）は `WorkflowEvent` と整合。語彙は旧 `step_*` 命名のため、`WorkflowEvent` 語彙へ段階的に寄せる。 |
+| `log.rs` | future core（永続化 adapter） | append-only な `WorkflowEventLog` の NDJSON 永続化。 | `WorkflowEvent` をそのまま append/read する。旧 `WorkflowLogEvent` / 旧 NDJSON 在庫との互換は持たない。 |
 | `commands.rs` | compatibility adapter | Tauri / local API command の wrapper 群。UI / Remote の現行操作口。 | 旧 `worktree_path` 主語の入口を `WorkflowCommand` へ変換する adapter として残る。新 CLI / API も最終的にここから `WorkflowCommand` を介する。 |
 | `storage.rs` | compatibility adapter | workflow YAML 定義の保存・読み込み・ビルトイン保護。 | 新 `Workflow` / `NodeDefinition` の YAML 入口側の永続化を担い、future core からも参照されうるが一次責務は YAML 入口側にある。run / event の永続化は別レイヤー（[03] 以降）。 |
 | `contract.rs` | future core | `<workflow_output>` の抽出と output contract の検証・repair prompt 生成。 | `WorkflowCommand::SubmitOutput` 検証と `OutputSubmitted` / `ValidationPassed` / `ValidationFailed` event の中核ロジック。 |

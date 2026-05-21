@@ -403,7 +403,7 @@ describe("WorkflowPanel", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Approve step" }));
 		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
 			runId: "exec-001",
-			decision: "approve",
+			decision: { approve: {} },
 			stepName: "step-1",
 		});
 	});
@@ -495,7 +495,7 @@ describe("WorkflowPanel", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Submit reject" }));
 		expect(mockInvoke).toHaveBeenCalledWith("approve_workflow_step", {
 			runId: "exec-001",
-			decision: { reject: { comment: "Please fix the bug" } },
+			decision: { reject: { reason: "Please fix the bug" } },
 			stepName: "review",
 		});
 		await waitFor(() => {

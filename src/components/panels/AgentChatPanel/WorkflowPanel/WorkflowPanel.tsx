@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import type { PermissionMode } from "@/types/session";
 import type {
-	WorkflowLogEvent,
+	WorkflowEvent,
 	WorkflowRunSummary,
 	WorkflowState,
 } from "@/types/workflow";
@@ -375,7 +375,7 @@ function ExecutionView({
 	onCloseSession?: (sessionId: string) => void;
 }) {
 	const [historyState, setHistoryState] = useState<WorkflowState | null>(null);
-	const [events, setEvents] = useState<WorkflowLogEvent[]>([]);
+	const [events, setEvents] = useState<WorkflowEvent[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
 	const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -390,7 +390,7 @@ function ExecutionView({
 			invoke<WorkflowState | null>("get_workflow_execution_state", {
 				runId: executionId,
 			}),
-			invoke<WorkflowLogEvent[]>("get_workflow_execution_log", {
+			invoke<WorkflowEvent[]>("get_workflow_execution_log", {
 				runId: executionId,
 			}),
 		])

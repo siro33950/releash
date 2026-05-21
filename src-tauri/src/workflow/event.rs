@@ -1,0 +1,362 @@
+//! [04] Command / Event Boundary: workflow engine が発行する append-only な事実列の型。
+//!
+//! 旧 `WorkflowLogEvent` 列挙体は本 issue で完全廃止し、本ファイルの `WorkflowEvent` に
+//! 完全置換する。旧 NDJSON 在庫は破棄前提（互換 wrapper は導入しない）。
+//!
+//! 仕様詳細は `docs/spec/issues-1013.md` / `docs/workflow-engine-model-boundary.md` 参照。
+//! `CompleteNode` / `FailNode` に相当する内部 typed 遷移 command は [05] で導入する。
+
+use serde::{Deserialize, Serialize};
+
+use crate::workflow::schema::Workflow;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl TokenUsage {
+    pub fn add(&mut self, other: &TokenUsage) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+    }
+}
+
+/// workflow engine が発行する append-only な事実列の型。
+///
+/// `run_id` を主語とし、過去事実は書き換えない（撤回も追加 event として表現する）。
+/// NDJSON 永続化時の tag は `event` フィールドに snake_case で出力される。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "event")]
+pub enum WorkflowEvent {
+    /// `WorkflowCommand::StartRun` を engine が受理し、新しい run を開始した。
+    RunStarted {
+        run_id: String,
+        workflow_name: String,
+        workflow_file_stem: String,
+        worktree_path: String,
+        /// reconstruct 経路の必須フィールド（[02] 互換境界）。
+        workflow_definition: Workflow,
+        timestamp: f64,
+    },
+    /// node が実行開始された（agent / approval / bash いずれも対象）。
+    NodeStarted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        execution_count: u32,
+        timestamp: f64,
+    },
+    /// node が完了した（approval 経由の completion も含む）。
+    NodeCompleted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_usage: Option<TokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        structured_output: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_index: Option<u32>,
+        timestamp: f64,
+    },
+    /// node が失敗した。
+    NodeFailed {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        reason: String,
+        timestamp: f64,
+    },
+    /// `WorkflowCommand::ApproveNode` / `RejectNode` の受理直前に、approval 対象の到達を記録する。
+    ApprovalRequested {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        timestamp: f64,
+    },
+    /// approval node に対するユーザー判断（approve / reject / abort）が受理された。
+    ApprovalResolved {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        decision: ApprovalDecisionRecord,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        comment: Option<String>,
+        timestamp: f64,
+    },
+    /// run 全体が成功完了した。
+    RunCompleted {
+        run_id: String,
+        workflow_name: String,
+        total_token_usage: TokenUsage,
+        timestamp: f64,
+    },
+    /// run 全体が失敗終了した。
+    RunFailed {
+        run_id: String,
+        workflow_name: String,
+        reason: String,
+        timestamp: f64,
+    },
+    /// `WorkflowCommand::AbortRun` の受理結果として run が中断された。
+    RunAborted {
+        run_id: String,
+        workflow_name: String,
+        timestamp: f64,
+    },
+    /// collect step の reduce 結果。
+    OutputCollected {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        node_outputs: Vec<CollectedOutputEntry>,
+        reduce_strategy: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reduce_result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reduce_structured_output: Option<serde_json::Value>,
+        timestamp: f64,
+    },
+    /// 並列ブロックが開始された（parent node の入口マーカー）。
+    ParallelStarted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        child_node_names: Vec<String>,
+        timestamp: f64,
+    },
+    /// 並列ブロックの子 node が実行開始された。
+    ParallelChildStarted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        child_node_name: String,
+        session_id: String,
+        execution_count: u32,
+        timestamp: f64,
+    },
+    /// 並列ブロックの子 node が完了した。
+    ParallelChildCompleted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        child_node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_usage: Option<TokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        structured_output: Option<serde_json::Value>,
+        run_index: u32,
+        timestamp: f64,
+    },
+    /// 並列ブロック全体が完了し、aggregate 評価結果に基づき遷移する。
+    ParallelCompleted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        aggregate_result: String,
+        timestamp: f64,
+    },
+    /// output_contract repair prompt が送信された。
+    ContractRepairRequested {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        attempt: u32,
+        violation_reason: String,
+        timestamp: f64,
+    },
+}
+
+/// approval 判断結果の typed 表現。NDJSON 上は snake_case として出力される。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecisionRecord {
+    Approve,
+    Reject,
+    Abort,
+}
+
+/// collect step の各子要素出力エントリ。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectedOutputEntry {
+    pub node_name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub structured_output: Option<serde_json::Value>,
+}
+
+impl WorkflowEvent {
+    /// event の primary key となる `run_id` を返す。
+    pub fn run_id(&self) -> &str {
+        match self {
+            Self::RunStarted { run_id, .. }
+            | Self::NodeStarted { run_id, .. }
+            | Self::NodeCompleted { run_id, .. }
+            | Self::NodeFailed { run_id, .. }
+            | Self::ApprovalRequested { run_id, .. }
+            | Self::ApprovalResolved { run_id, .. }
+            | Self::RunCompleted { run_id, .. }
+            | Self::RunFailed { run_id, .. }
+            | Self::RunAborted { run_id, .. }
+            | Self::OutputCollected { run_id, .. }
+            | Self::ParallelStarted { run_id, .. }
+            | Self::ParallelChildStarted { run_id, .. }
+            | Self::ParallelChildCompleted { run_id, .. }
+            | Self::ParallelCompleted { run_id, .. }
+            | Self::ContractRepairRequested { run_id, .. } => run_id,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_workflow() -> Workflow {
+        use crate::workflow::schema::{NodeDefinition, NodeType};
+        Workflow {
+            name: "wf".to_string(),
+            description: "".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "n1".to_string(),
+                node_type: NodeType::Agent,
+                instruction: Some("do".to_string()),
+                ..NodeDefinition::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn run_started_serializes_with_event_tag() {
+        let event = WorkflowEvent::RunStarted {
+            run_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            workflow_name: "wf".to_string(),
+            workflow_file_stem: "wf".to_string(),
+            worktree_path: "/repo".to_string(),
+            workflow_definition: minimal_workflow(),
+            timestamp: 1.0,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"run_started\""));
+        assert!(json.contains("\"run_id\":\"00000000-0000-0000-0000-000000000001\""));
+        let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, WorkflowEvent::RunStarted { .. }));
+    }
+
+    /// approval 判断結果は典型的な NDJSON 観測者から snake_case で読める。
+    #[test]
+    fn approval_resolved_decision_serde_round_trips() {
+        for decision in [
+            ApprovalDecisionRecord::Approve,
+            ApprovalDecisionRecord::Reject,
+            ApprovalDecisionRecord::Abort,
+        ] {
+            let event = WorkflowEvent::ApprovalResolved {
+                run_id: "00000000-0000-0000-0000-000000000002".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                decision,
+                comment: Some("c".to_string()),
+                timestamp: 2.0,
+            };
+            let json = serde_json::to_string(&event).unwrap();
+            assert!(json.contains("\"event\":\"approval_resolved\""));
+            let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
+            match back {
+                WorkflowEvent::ApprovalResolved {
+                    decision: back_decision,
+                    ..
+                } => assert_eq!(back_decision, decision),
+                _ => panic!("expected ApprovalResolved"),
+            }
+        }
+    }
+
+    /// `WorkflowEvent::run_id()` がすべての variant で primary key を露出する。
+    #[test]
+    fn run_id_accessor_exposes_primary_key_for_all_variants() {
+        let rid = "00000000-0000-0000-0000-000000000003";
+        let events = vec![
+            WorkflowEvent::RunStarted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                workflow_file_stem: "w".to_string(),
+                worktree_path: "/r".to_string(),
+                workflow_definition: minimal_workflow(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                execution_count: 1,
+                timestamp: 0.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                result: None,
+                session_id: None,
+                token_usage: None,
+                structured_output: None,
+                run_index: None,
+                timestamp: 0.0,
+            },
+            WorkflowEvent::NodeFailed {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                reason: "x".to_string(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::ApprovalRequested {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::ApprovalResolved {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                node_name: "n".to_string(),
+                decision: ApprovalDecisionRecord::Approve,
+                comment: None,
+                timestamp: 0.0,
+            },
+            WorkflowEvent::RunCompleted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                total_token_usage: TokenUsage::default(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::RunFailed {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                reason: "x".to_string(),
+                timestamp: 0.0,
+            },
+            WorkflowEvent::RunAborted {
+                run_id: rid.to_string(),
+                workflow_name: "w".to_string(),
+                timestamp: 0.0,
+            },
+        ];
+        for event in events {
+            assert_eq!(event.run_id(), rid);
+        }
+    }
+}

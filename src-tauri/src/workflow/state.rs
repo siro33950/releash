@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::workflow::event::TokenUsage;
 use crate::workflow::schema::Workflow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,20 +60,6 @@ impl WorkflowExecutionState {
             Self::Failed { .. } => "failed",
             Self::Aborted => "aborted",
         }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct TokenUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-}
-
-impl TokenUsage {
-    pub fn add(&mut self, other: &TokenUsage) {
-        self.input_tokens += other.input_tokens;
-        self.output_tokens += other.output_tokens;
     }
 }
 
