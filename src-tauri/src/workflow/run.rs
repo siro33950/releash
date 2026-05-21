@@ -470,6 +470,64 @@ impl RunStore {
         Ok(())
     }
 
+    /// command rollback 専用: mutation 前の active snapshot を in-memory Run Store に戻す。
+    ///
+    /// 通常の `register_active` は metadata 永続化に失敗すると in-memory 挿入も取り消す。
+    /// しかし command 受理サイクルの rollback では、失敗原因が Run Store 永続化先そのものの
+    /// 障害である場合でも、少なくとも process 内の active projection は mutation 前 snapshot
+    /// に戻す必要がある。metadata persist は best-effort として試み、失敗は Err で返すが、
+    /// in-memory snapshot は保持する。
+    pub(crate) async fn restore_active_snapshot_for_rollback(
+        &self,
+        run: WorkflowRun,
+    ) -> Result<(), RunStoreError> {
+        if !is_valid_run_id(&run.run_id) {
+            return Err(RunStoreError::InvalidRunId {
+                run_id: run.run_id.clone(),
+            });
+        }
+        if run.status.is_terminal() {
+            return Err(RunStoreError::TerminalStatusInActiveSet {
+                run_id: run.run_id.clone(),
+                status: run.status,
+            });
+        }
+        let metadata_store = self.metadata_store().await?;
+        {
+            let mut inner = self.inner.lock().await;
+            if let Some(existing) = inner.active.get(&run.run_id) {
+                if existing.worktree_path != run.worktree_path {
+                    return Err(RunStoreError::RunIdWorktreeMismatch {
+                        run_id: run.run_id.clone(),
+                        existing_worktree_path: existing.worktree_path.clone(),
+                        new_worktree_path: run.worktree_path.clone(),
+                    });
+                }
+            }
+            if let Some(existing_run_id) = inner.by_worktree.get(&run.worktree_path) {
+                if existing_run_id != &run.run_id {
+                    return Err(RunStoreError::WorktreeAlreadyActive {
+                        worktree_path: run.worktree_path.clone(),
+                        existing_run_id: existing_run_id.clone(),
+                    });
+                }
+            }
+            inner
+                .by_worktree
+                .insert(run.worktree_path.clone(), run.run_id.clone());
+            inner.active.insert(run.run_id.clone(), run.clone());
+        }
+        if let Some(store) = metadata_store {
+            if let Err(e) = store.persist(run.clone()).await {
+                return Err(RunStoreError::PersistFailed {
+                    run_id: run.run_id,
+                    reason: e,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// active run の現在 node / status / updated_at を更新する（状態遷移ではない属性更新含む）。
     /// `mutator` は in-memory の run を直接書き換える。metadata 永続化は Mutex を解放してから
     /// `spawn_blocking` 経由で行い、永続化失敗時は同一 snapshot の場合だけ rollback する。
@@ -564,6 +622,12 @@ impl RunStore {
             run.updated_at = updated_at;
         })
         .await
+    }
+
+    /// active run の現在値を rollback 用 snapshot として取得する。
+    pub async fn active_run_snapshot(&self, run_id: &str) -> Option<WorkflowRun> {
+        let inner = self.inner.lock().await;
+        inner.active.get(run_id).cloned()
     }
 
     /// active run を terminal 状態に遷移させ、active set から除外する。metadata は更新して残す。

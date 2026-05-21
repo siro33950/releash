@@ -88,8 +88,8 @@ fn fallback_models_from_config(
 }
 
 /// `supported_models` メッセージ受信時の完全処理。
-pub(crate) async fn handle_supported_models_message(
-    app: Option<&tauri::AppHandle>,
+pub(crate) async fn handle_supported_models_message<R: tauri::Runtime>(
+    app: Option<&tauri::AppHandle<R>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     registry: Option<&crate::backends::AgentBackendRegistry>,
     chat_session_id: &str,
@@ -227,8 +227,8 @@ pub async fn propagate_refreshed_models_to_active_sessions(
     notify_backend_models_updated(app, backend_id, &model_infos);
 }
 
-fn notify_backend_models_updated(
-    app: &tauri::AppHandle,
+fn notify_backend_models_updated<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     backend_id: &str,
     available_models: &[ModelInfo],
 ) {

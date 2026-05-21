@@ -11,6 +11,9 @@ pub use crate::workflow::state::WorkflowState;
 pub use open_tabs::OpenTabRegistry;
 pub use store::SessionStore;
 
+#[cfg(test)]
+pub(crate) struct TestDataDir(pub std::path::PathBuf);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessagePart {
@@ -256,7 +259,13 @@ impl ChatSession {
     }
 }
 
-pub(crate) fn resolve_data_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn resolve_data_dir<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<std::path::PathBuf, String> {
+    #[cfg(test)]
+    if let Some(data_dir) = app.try_state::<TestDataDir>() {
+        return Ok(data_dir.0.clone());
+    }
     app.path()
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {e}"))

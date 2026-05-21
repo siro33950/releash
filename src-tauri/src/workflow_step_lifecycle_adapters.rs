@@ -167,13 +167,13 @@ pub(crate) fn try_close_step_session_tab_state(
     Ok(true)
 }
 
-struct TauriWorkflowStepSessionGateway<'a> {
-    app: &'a tauri::AppHandle,
+struct TauriWorkflowStepSessionGateway<'a, R: tauri::Runtime> {
+    app: &'a tauri::AppHandle<R>,
     session_store: &'a SessionStore,
     open_tabs: &'a OpenTabRegistry,
 }
 
-impl WorkflowStepSessionGateway for TauriWorkflowStepSessionGateway<'_> {
+impl<R: tauri::Runtime> WorkflowStepSessionGateway for TauriWorkflowStepSessionGateway<'_, R> {
     fn resolve_step_session(
         &self,
         session_id: &str,
@@ -204,13 +204,13 @@ impl WorkflowStepSessionGateway for TauriWorkflowStepSessionGateway<'_> {
     }
 }
 
-struct TauriWorkflowStepRuntimeGateway<'a> {
-    app: &'a tauri::AppHandle,
+struct TauriWorkflowStepRuntimeGateway<'a, R: tauri::Runtime> {
+    app: &'a tauri::AppHandle<R>,
     handles: &'a Arc<Mutex<AgentProcessMap>>,
 }
 
 #[async_trait::async_trait]
-impl WorkflowStepRuntimeGateway for TauriWorkflowStepRuntimeGateway<'_> {
+impl<R: tauri::Runtime> WorkflowStepRuntimeGateway for TauriWorkflowStepRuntimeGateway<'_, R> {
     async fn close_idle_runtime_on_tab_close(
         &self,
         session_id: &str,
@@ -234,14 +234,14 @@ impl WorkflowStepRuntimeGateway for TauriWorkflowStepRuntimeGateway<'_> {
     }
 }
 
-pub(crate) struct TauriWorkflowStepLifecycle<'a> {
-    sessions: TauriWorkflowStepSessionGateway<'a>,
-    runtime: TauriWorkflowStepRuntimeGateway<'a>,
+pub(crate) struct TauriWorkflowStepLifecycle<'a, R: tauri::Runtime> {
+    sessions: TauriWorkflowStepSessionGateway<'a, R>,
+    runtime: TauriWorkflowStepRuntimeGateway<'a, R>,
 }
 
-impl<'a> TauriWorkflowStepLifecycle<'a> {
+impl<'a, R: tauri::Runtime> TauriWorkflowStepLifecycle<'a, R> {
     pub(crate) fn new(
-        app: &'a tauri::AppHandle,
+        app: &'a tauri::AppHandle<R>,
         session_store: &'a SessionStore,
         handles: &'a Arc<Mutex<AgentProcessMap>>,
         open_tabs: &'a OpenTabRegistry,
@@ -318,14 +318,17 @@ impl WorkflowStepSessionGateway for StoredWorkflowStepSessionGateway<'_> {
     }
 }
 
-pub(crate) fn mark_started_step_tab_open(app: &tauri::AppHandle, session_id: &str) {
+pub(crate) fn mark_started_step_tab_open<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: &str,
+) {
     if let Some(open_tabs) = app.try_state::<Arc<OpenTabRegistry>>() {
         open_tabs.add(session_id);
     }
 }
 
-pub(crate) async fn release_step_runtime_on_done(
-    app: &tauri::AppHandle,
+pub(crate) async fn release_step_runtime_on_done<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     open_tabs: Option<&OpenTabRegistry>,

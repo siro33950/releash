@@ -20,14 +20,14 @@ import type {
 	NodeDefinition,
 	ParallelStepState,
 	StepHistoryEntry,
-	WorkflowLogEvent,
+	WorkflowEvent,
 	WorkflowState,
 } from "@/types/workflow";
 import { workflowStateClasses } from "./workflowStateStyles";
 
 interface WorkflowTraceProps {
 	workflowState: WorkflowState;
-	events?: WorkflowLogEvent[];
+	events?: WorkflowEvent[];
 	/** tab が閉じている step session を開く / 既に開いていればフォーカスする */
 	onSessionClick?: (sessionId: string) => void;
 	/** tab が開いている step session を閉じる */
@@ -105,7 +105,7 @@ function readScrollMetrics(element: HTMLElement): ScrollMetrics {
 
 function buildAutoFollowVersion(
 	workflowState: WorkflowState,
-	events: WorkflowLogEvent[],
+	events: WorkflowEvent[],
 ) {
 	const activeParallelVersion =
 		workflowState.activeParallelSteps
@@ -848,32 +848,30 @@ function VerdictBadge({ verdict }: { verdict: string }) {
 	);
 }
 
-function EventTrace({ events }: { events: WorkflowLogEvent[] }) {
+function EventTrace({ events }: { events: WorkflowEvent[] }) {
 	return (
 		<div className="rounded-md border">
 			<div className="border-b px-3 py-1.5 text-xs font-medium text-muted-foreground">
 				Event log
 			</div>
 			<div className="max-h-32 overflow-auto px-3 py-1">
-				{events.map((event) => (
-					<div
-						key={`${event.event}-${"step_name" in event ? event.step_name : ""}-${event.timestamp}`}
-						className="py-0.5 text-xs text-muted-foreground"
-					>
-						<span className="font-mono">{event.event}</span>
-						{"step_name" in event && event.step_name && (
-							<span className="ml-1">({event.step_name})</span>
-						)}
-						{event.event === "contract_repair_requested" &&
-							"attempt" in event && (
+				{events.map((event) => {
+					const nodeName = "node_name" in event ? event.node_name : undefined;
+					return (
+						<div
+							key={`${event.event}-${nodeName ?? ""}-${event.timestamp}`}
+							className="py-0.5 text-xs text-muted-foreground"
+						>
+							<span className="font-mono">{event.event}</span>
+							{nodeName && <span className="ml-1">({nodeName})</span>}
+							{event.event === "contract_repair_requested" && (
 								<span className="ml-1 text-yellow-600 dark:text-yellow-400">
-									retry #{event.attempt as number}
-									{"violation_reason" in event &&
-										`: ${event.violation_reason as string}`}
+									retry #{event.attempt}: {event.violation_reason}
 								</span>
 							)}
-					</div>
-				))}
+						</div>
+					);
+				})}
 			</div>
 		</div>
 	);

@@ -129,8 +129,17 @@ fn error_message_for_failure(status_code: Option<i32>) -> String {
     )
 }
 
-pub(crate) fn configured_cli_path(app: &tauri::AppHandle) -> Option<String> {
+pub(crate) fn configured_cli_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<String> {
     app.try_state::<std::sync::Arc<crate::config::AppConfig>>()
+        .and_then(|cfg_state| cfg_state.get_config().ok())
+        .and_then(|cfg| cfg.agents.codex.cli_path)
+        .filter(|path| !path.trim().is_empty())
+}
+
+fn configured_cli_path_from_config(
+    app_config: Option<&crate::config::AppConfig>,
+) -> Option<String> {
+    app_config
         .and_then(|cfg_state| cfg_state.get_config().ok())
         .and_then(|cfg| cfg.agents.codex.cli_path)
         .filter(|path| !path.trim().is_empty())
@@ -375,12 +384,15 @@ impl AgentBackend for CodexBackend {
         Ok(models)
     }
 
-    fn runtime_config(&self, app: &tauri::AppHandle) -> BackendRuntimeConfig {
+    fn runtime_config(
+        &self,
+        app_config: Option<&crate::config::AppConfig>,
+    ) -> BackendRuntimeConfig {
         let mut bridge_init_options = serde_json::Map::new();
         bridge_init_options.insert(
             "codexCliPath".to_string(),
             serde_json::Value::String(
-                configured_cli_path(app).unwrap_or_else(|| "codex".to_string()),
+                configured_cli_path_from_config(app_config).unwrap_or_else(|| "codex".to_string()),
             ),
         );
 

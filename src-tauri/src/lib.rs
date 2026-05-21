@@ -250,7 +250,14 @@ pub fn run() {
                 ));
             }
             app.manage(agent_status_center);
-            let workflow_engine = Arc::new(workflow::engine::WorkflowEngine::new());
+            let workflow_engine = Arc::new(workflow::engine::WorkflowEngine::new(
+                Arc::new(workflow::resolver_adapters::DefaultWorkflowDefinitionResolver),
+                Arc::new(
+                    workflow::resolver_adapters::AppConfigManagedWorktreeResolver::new(
+                        app_config.clone(),
+                    ),
+                ),
+            ));
             // Run Store の永続化先（data_dir）を設定する。失敗しても起動は止めない。
             if let Ok(data_dir) = app.path().app_data_dir() {
                 let engine_for_init = workflow_engine.clone();

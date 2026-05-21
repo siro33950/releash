@@ -208,8 +208,8 @@ pub(crate) fn dev_bridge_path(backend_id: &str) -> PathBuf {
         .join(dev_name)
 }
 
-pub(crate) fn resolve_bridge_script(
-    app: &tauri::AppHandle,
+pub(crate) fn resolve_bridge_script<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     backend_id: &str,
 ) -> Result<PathBuf, String> {
     #[cfg(debug_assertions)]
@@ -265,9 +265,20 @@ const STREAMING_PENDING_PART_LIMIT: usize = 1000;
 /// operation, soft cap (allowed to overflow) while delivery is failing.
 const STREAMING_PENDING_BYTE_LIMIT: usize = 256 * 1024;
 
-fn backend_runtime_config(app: &tauri::AppHandle, backend_id: &str) -> BackendRuntimeConfig {
+fn backend_runtime_config<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    backend_id: &str,
+) -> BackendRuntimeConfig {
     app.try_state::<Arc<crate::backends::AgentBackendRegistry>>()
-        .and_then(|registry| registry.runtime_config(backend_id, app))
+        .and_then(
+            |registry| match registry.runtime_config_for(backend_id, app) {
+                Ok(config) => Some(config),
+                Err(e) => {
+                    log::warn!("backend '{backend_id}' runtime config could not be resolved: {e}");
+                    None
+                }
+            },
+        )
         .unwrap_or_default()
 }
 
@@ -415,9 +426,9 @@ pub fn cleanup_orphan_processes(app_data_dir: &Path) {
     }
 }
 
-fn persist_streaming_parts(
+fn persist_streaming_parts<R: tauri::Runtime>(
     session_store: &SessionStore,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
     chat_session_id: &str,
     message_id: &str,
     parts: &[MessagePart],
@@ -457,8 +468,8 @@ fn persist_streaming_parts(
     }
 }
 
-fn emit_session_state_changed(
-    app: &tauri::AppHandle,
+fn emit_session_state_changed<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     chat_session_id: &str,
     turn_phase: TurnPhase,
     exit_code: Option<i64>,
@@ -484,8 +495,8 @@ fn emit_session_state_changed(
 /// `streaming_parts`). Treating the WS channel as always-true here matches
 /// that contract; callers that need to simulate a WS-side failure (unit
 /// tests) drive `apply_streaming_emit_result` directly.
-fn emit_streaming_parts(
-    app: &tauri::AppHandle,
+fn emit_streaming_parts<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     chat_session_id: &str,
     message_id: &str,
     parts: Vec<MessagePart>,
@@ -686,8 +697,8 @@ fn force_flush_pending_streaming<F>(
 /// pending buffer is empty (prevents idle-tick re-delivery and double-flush
 /// from forced-flush paths). On success, clears pending and updates
 /// `last_stream_emit_at`. On failure, retains both so the next flush retries.
-fn flush_streaming(
-    app: &tauri::AppHandle,
+fn flush_streaming<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     proc: &mut AgentProcess,
     chat_session_id: &str,
     message_id: &str,
@@ -980,8 +991,8 @@ fn apply_bridge_eof_crash(
 /// 状態遷移時に AgentStatusCenter へ通知し、必要に応じて Webhook 送信を行う統一エントリ。
 /// session_store から ChatSession を引いて worktree_path / SessionState を取得する。
 /// `session_state_override` を渡すと、ストア値より優先される（Bridge crash 時など）。
-pub(crate) fn notify_status_transition(
-    app: &tauri::AppHandle,
+pub(crate) fn notify_status_transition<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
     turn_phase: TurnPhase,
@@ -1052,7 +1063,11 @@ pub(crate) fn notify_status_transition(
 
 const CLOSE_TIMEOUT_SECS: u64 = 5;
 
-fn emit_permission_mode_changed(app: &tauri::AppHandle, chat_session_id: &str, mode: &str) {
+fn emit_permission_mode_changed<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    chat_session_id: &str,
+    mode: &str,
+) {
     use tauri::Emitter;
     let _ = app.emit(
         "agent-permission-mode-changed",
@@ -1067,9 +1082,9 @@ fn emit_permission_mode_changed(app: &tauri::AppHandle, chat_session_id: &str, m
 /// Spec issues-947: 保存値の読み取り失敗時は SDK 値に fallback せず、log::error! を残して
 /// runtime/UI を更新せずに通知の処理だけスキップする（保存値が edit/full のセッションを
 /// 誤って readonly に落とさないため）。後段の `write_bridge_command` 失敗も log に記録する。
-async fn handle_sdk_permission_mode_notification(
+async fn handle_sdk_permission_mode_notification<R: tauri::Runtime>(
     sdk_mode: &str,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
     session_store: &std::sync::Arc<crate::session::SessionStore>,
     handles: &std::sync::Arc<tokio::sync::Mutex<crate::backends::bridge_common::AgentProcessMap>>,
     chat_session_id: &str,
@@ -1704,8 +1719,8 @@ fn accumulate_sdk_message(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn spawn_bridge_process(
-    app: &tauri::AppHandle,
+async fn spawn_bridge_process<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -2506,8 +2521,8 @@ fn try_mark_streaming_timer_active(proc: &mut AgentProcess) -> bool {
 /// surface buffered content within one interval. Exits when the turn ends
 /// and the buffer is fully drained, on generation mismatch, or on crash.
 /// Idempotent: a second call while a timer is already alive is a no-op.
-fn spawn_streaming_timer(
-    app: &tauri::AppHandle,
+fn spawn_streaming_timer<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
     proc: &mut AgentProcess,
@@ -2775,8 +2790,8 @@ pub async fn get_session(
 /// 初期モデルはセッション作成時 (`create_session_with_initial_model`) に解決して
 /// 永続化されているため、spawn 経路では「`selected_model == None` は常に
 /// 明示的に未指定」を意味する。暗黙の既定モデルへのフォールバックはしない。
-fn get_persisted_spawn_info(
-    app: &tauri::AppHandle,
+fn get_persisted_spawn_info<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     session_store: &SessionStore,
     chat_session_id: &str,
 ) -> Result<(Option<String>, Option<String>, String), String> {
@@ -2810,8 +2825,8 @@ fn persisted_spawn_info_from_session(
         .unwrap_or((None, None, CLAUDE_BACKEND_ID.to_string()))
 }
 
-pub(crate) async fn start_agent_session_internal(
-    app: &tauri::AppHandle,
+pub(crate) async fn start_agent_session_internal<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -2870,8 +2885,8 @@ pub(crate) async fn start_agent_session_internal(
 /// Core logic for starting a new agent turn: spawn Bridge if needed, send prompt.
 /// Used by send_agent_message and pending message consumption.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn start_agent_turn(
-    app: &tauri::AppHandle,
+pub(crate) async fn start_agent_turn<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -2925,8 +2940,8 @@ pub(crate) async fn start_agent_turn(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn start_agent_turn_locked(
-    app: &tauri::AppHandle,
+async fn start_agent_turn_locked<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -2979,8 +2994,8 @@ async fn start_agent_turn_locked(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn start_agent_turn_with_runtime_spawner<F, Fut>(
-    app: Option<&tauri::AppHandle>,
+async fn start_agent_turn_with_runtime_spawner<R: tauri::Runtime, F, Fut>(
+    app: Option<&tauri::AppHandle<R>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
     permission_mode: &str,
@@ -3009,8 +3024,8 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn start_agent_turn_with_runtime_spawner_locked<F, Fut>(
-    app: Option<&tauri::AppHandle>,
+async fn start_agent_turn_with_runtime_spawner_locked<R: tauri::Runtime, F, Fut>(
+    app: Option<&tauri::AppHandle<R>>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
     permission_mode: &str,
@@ -3133,8 +3148,8 @@ fn pending_turn_start_failed_log_message() -> &'static str {
 /// Acquires `session_runtime_lock(chat_session_id)` internally via the standard
 /// `start_agent_turn` path. Callers must NOT hold the lock for this session id,
 /// otherwise tokio Mutex non-reentrancy will deadlock (see issues-929).
-async fn start_pending_message_turn(
-    app: &tauri::AppHandle,
+async fn start_pending_message_turn<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -3228,8 +3243,8 @@ pub async fn interrupt_agent_query(
     Ok(())
 }
 
-pub(crate) async fn close_agent_session_internal(
-    app: &tauri::AppHandle,
+pub(crate) async fn close_agent_session_internal<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     chat_session_id: &str,
 ) -> Result<(), String> {
@@ -4277,8 +4292,8 @@ pub async fn prepare_image_attachments_from_paths(
 /// AgentSessionを開始し、プロンプトを送信する。
 /// メッセージの追加(human + agent)とstart_agent_turnをまとめて行う。
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn start_agent_turn_internal(
-    app: &tauri::AppHandle,
+pub(crate) async fn start_agent_turn_internal<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -4302,8 +4317,8 @@ pub(crate) async fn start_agent_turn_internal(
 
 /// Runtime lock acquired by the caller variant used by workflow step startup.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn start_agent_turn_internal_locked(
-    app: &tauri::AppHandle,
+pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     handles: &Arc<Mutex<AgentProcessMap>>,
     session_store: &Arc<SessionStore>,
     chat_session_id: &str,
@@ -6316,7 +6331,7 @@ mod tests {
         let spawn_count = Arc::new(AtomicUsize::new(0));
 
         start_agent_turn_with_runtime_spawner(
-            None,
+            None::<&tauri::AppHandle>,
             &handles,
             &session_id,
             "edit",
@@ -6361,7 +6376,7 @@ mod tests {
         let spawn_count = Arc::new(AtomicUsize::new(0));
 
         start_agent_turn_with_runtime_spawner(
-            None,
+            None::<&tauri::AppHandle>,
             &handles,
             &session_id,
             "edit",
@@ -6398,7 +6413,7 @@ mod tests {
             let spawn_count = Arc::clone(&spawn_count);
             tokio::spawn(async move {
                 start_agent_turn_with_runtime_spawner(
-                    None,
+                    None::<&tauri::AppHandle>,
                     &handles,
                     &session_id,
                     "edit",
@@ -6453,7 +6468,7 @@ mod tests {
             let spawn_count = Arc::clone(&spawn_count);
             async move {
                 start_agent_turn_with_runtime_spawner(
-                    None,
+                    None::<&tauri::AppHandle>,
                     &handles,
                     &session_id,
                     "edit",
@@ -6483,7 +6498,7 @@ mod tests {
             let spawn_count = Arc::clone(&spawn_count);
             async move {
                 start_agent_turn_with_runtime_spawner(
-                    None,
+                    None::<&tauri::AppHandle>,
                     &handles,
                     &session_id,
                     "edit",
@@ -6731,7 +6746,7 @@ mod tests {
     async fn approval_chat_adjustment_send_path_keeps_session_and_updates_latest_output() {
         let worktree = tempfile::tempdir().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let engine = Arc::new(WorkflowEngine::new());
+        let engine = Arc::new(WorkflowEngine::new_for_test());
         let data_dir = tempfile::tempdir().unwrap();
         let session_store = Arc::new(SessionStore::default());
         let session = create_session_internal(
@@ -10074,7 +10089,14 @@ mod tests {
             "models": [{"value": "gpt-5.5"}, {"value": "o3"}]
         });
 
-        handle_supported_models_message(None, &handles, Some(&*registry), "sess-1", &msg).await;
+        handle_supported_models_message(
+            None::<&tauri::AppHandle>,
+            &handles,
+            Some(&*registry),
+            "sess-1",
+            &msg,
+        )
+        .await;
 
         // config に書き込まれている
         let cfg = config.get_config().unwrap();
@@ -10111,7 +10133,14 @@ mod tests {
 
         // models 配列無し → all-or-nothing で拒否
         let msg = serde_json::json!({"type": "supported_models"});
-        handle_supported_models_message(None, &handles, Some(&*registry), "sess-1", &msg).await;
+        handle_supported_models_message(
+            None::<&tauri::AppHandle>,
+            &handles,
+            Some(&*registry),
+            "sess-1",
+            &msg,
+        )
+        .await;
 
         let cfg = config.get_config().unwrap();
         assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);
@@ -10143,7 +10172,14 @@ mod tests {
         }
 
         let msg = serde_json::json!({"type": "supported_models", "models": []});
-        handle_supported_models_message(None, &handles, Some(&*registry), "sess-1", &msg).await;
+        handle_supported_models_message(
+            None::<&tauri::AppHandle>,
+            &handles,
+            Some(&*registry),
+            "sess-1",
+            &msg,
+        )
+        .await;
 
         let cfg = config.get_config().unwrap();
         assert_eq!(cfg.agents.codex.models, vec!["existing".to_string()]);

@@ -1,10 +1,15 @@
 pub mod builtin;
+pub mod command;
 pub mod commands;
 pub mod contract;
 pub mod diagnostics;
 pub mod engine;
+pub mod event;
+pub(crate) mod event_projection;
 pub mod facet;
 pub mod log;
+pub(crate) mod resolver;
+pub(crate) mod resolver_adapters;
 pub mod run;
 pub mod runtime_view;
 pub mod schema;

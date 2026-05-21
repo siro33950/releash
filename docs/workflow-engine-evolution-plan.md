@@ -187,7 +187,7 @@ RunFailed
 RunAborted
 ```
 
-既存の `WorkflowEventLog` は、現在の log 互換性を維持しつつ、この event vocabulary に近づける。
+既存の `WorkflowEventLog` は `WorkflowEvent` NDJSON adapter に縮退する。旧 `WorkflowLogEvent` 語彙と旧 NDJSON 在庫の互換は維持せず、リリース時に破棄される前提で扱う。
 
 ## 互換性境界
 
@@ -315,7 +315,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 ```
 
 - `built-in/spec-driven-development.yml` を新 schema で書き直す（既存挙動と等価）。
-- `state.rs::WorkflowState.workflow_definition` と `log.rs::WorkflowLogEvent::WorkflowStarted.workflow_definition` の型を新 `Workflow` に置換する（在庫 JSON / NDJSON は破棄前提）。
+- `state.rs::WorkflowState.workflow_definition` と `event.rs::WorkflowEvent::RunStarted.workflow_definition` の型を新 `Workflow` に揃える（在庫 JSON / 旧 NDJSON は破棄前提）。
 - `engine.rs` / `contract.rs` は旧 schema 型を一切 import しない状態にする。
 - `validation.rs` / `diagnostics.rs` / `storage.rs` / `facet.rs` / `builtin.rs` / `runtime_view.rs` の compat adapter 群と、`commands.rs` / `agent_commands.rs` / `session_commands.rs` / `session/mod.rs` / `workflow_state_presenter.rs` の caller 群を新型に追従させる。
 
@@ -354,7 +354,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 - `WorkflowCommand` を追加する。
 - start、approve、reject、abort の command handler を追加する。
 - 既存 Tauri command は残しつつ wrapper 化する。
-- 既存 `WorkflowLogEvent` と共存できる形で `WorkflowEvent` を追加する。
+- 既存 `WorkflowLogEvent` を廃止し、`WorkflowEvent` NDJSON へ完全置換する。
 
 完了条件:
 
@@ -364,7 +364,7 @@ main agent は state transition を所有しない。approve、reject、abort、
 
 ### [05] Read-Only Run APIs + CLI
 
-目的: 外部 caller が workflow run を観測できるようにする。
+目的: 外部 caller が workflow run を観測できるようにし、engine 内部の node 完了/失敗遷移も typed command として揃える。
 
 作業:
 
@@ -378,11 +378,16 @@ main agent は state transition を所有しない。approve、reject、abort、
   - `workflow runs`
   - `workflow status <run-id>`
   - `workflow logs <run-id>`
+- engine 内部の typed 遷移 command を追加する:
+  - `WorkflowCommand::CompleteNode`
+  - `WorkflowCommand::FailNode`
+  - これらは外部入口（UI / CLI / Agent）には公開せず、engine 内部の状態遷移を typed に表現するためのもの。NodeCompleted / NodeFailed event の発行点として、観測経路（API / CLI）整備と同じ marker で揃える。
 
 完了条件:
 
 - running workflow を `run_id` で inspect できる。
 - completed workflow の log を `run_id` で読める。
+- engine 内部の node 完了/失敗遷移が `CompleteNode` / `FailNode` typed command 経由で行われる。
 
 ### [06] Mutating CLI
 
@@ -569,4 +574,3 @@ src-tauri/src/workflow/event.rs     # [04] WorkflowEvent 出口（NDJSON vocabul
 Future core は Run / Node / Command / Event を見る。
 Compatibility adapter が Step / WorkflowState / worktree_path をその model へ変換する。
 ```
-

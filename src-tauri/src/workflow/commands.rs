@@ -1,8 +1,10 @@
 use super::builtin;
+use super::command::{WorkflowCommand, WorkflowCommandResult};
 use super::diagnostics;
-use super::engine::{ApprovalDecision, WorkflowEngine};
+use super::engine::WorkflowEngine;
+use super::event::WorkflowEvent;
 use super::facet::{self, FacetKind};
-use super::log::{WorkflowEventLog, WorkflowLogEvent};
+use super::log::WorkflowEventLog;
 use super::run::WorkflowRunSummary;
 use super::schema::{FacetSummary, Summary, Workflow};
 use super::storage;
@@ -272,10 +274,54 @@ fn parse_workflow_start_permission_mode(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn start_workflow_adapter<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    engine: &Arc<WorkflowEngine>,
+    workflow_name: String,
+    worktree_path: String,
+    task: Option<String>,
+    trigger_source: Option<String>,
+    permission_mode: Option<String>,
+) -> Result<String, String> {
+    super::validation::validate_name(&workflow_name).map_err(validation_error_string)?;
+    let trigger = parse_trigger_source(trigger_source)?;
+    let permission_mode = parse_workflow_start_permission_mode(permission_mode)?;
+    // [04] managed worktree 検証は dispatch 経路（= 全 command 入口の合流地点）で行う。
+    // Tauri adapter は文字列引数のまま command を組み立て、engine 入口で正規化される境界に揃える。
+    engine
+        .dispatch(
+            app,
+            session_store,
+            handles,
+            WorkflowCommand::StartRun {
+                workflow_file_stem: workflow_name,
+                worktree_path,
+                task,
+                trigger_source: trigger,
+                permission_mode,
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|result| match result {
+            WorkflowCommandResult::RunStarted { run_id } => Ok(run_id),
+            // dispatch routing が壊れていない限り `StartRun` → `RunStarted` のみが
+            // 返るはずで、ここに到達する場合は engine 内部不整合（spec [04] 責務配置：
+            // sentinel 禁止）として明示的に Err にする。空文字列 run_id を成功扱い
+            // することはしない。
+            WorkflowCommandResult::Accepted => Err(
+                "start_workflow received non-RunStarted dispatch result; internal inconsistency"
+                    .to_string(),
+            ),
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn start_workflow(
     app: tauri::AppHandle,
-    config: tauri::State<'_, Arc<AppConfig>>,
     handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
     session_store: tauri::State<'_, Arc<SessionStore>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
@@ -285,41 +331,54 @@ pub async fn start_workflow(
     trigger_source: Option<String>,
     permission_mode: Option<String>,
 ) -> Result<String, String> {
-    let dir = storage::workflows_dir();
-    let facets_base = facet::facets_base_dir();
-    let file_stem = workflow_name.clone();
-    let workflow = tokio::task::spawn_blocking(move || {
-        super::validation::validate_name(&workflow_name).map_err(validation_error_string)?;
-        let file_path = dir.join(format!("{workflow_name}.yml"));
-        if file_path.exists() {
-            return storage::load_workflow(&file_path, &facets_base).map_err(|e| e.to_string());
-        }
-        builtin::load_builtin_workflow_resolved(&workflow_name)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("ワークフロー '{workflow_name}' が見つかりません"))
-    })
+    start_workflow_adapter(
+        &app,
+        handles.inner(),
+        session_store.inner(),
+        engine.inner(),
+        workflow_name,
+        worktree_path,
+        task,
+        trigger_source,
+        permission_mode,
+    )
     .await
-    .map_err(|e| format!("task join error: {e}"))??;
+}
 
-    let trigger = parse_trigger_source(trigger_source)?;
-    let permission_mode = parse_workflow_start_permission_mode(permission_mode)?;
-    let worktree_path =
-        super::worktree::canonicalize_managed_worktree_path(config.inner().clone(), worktree_path)
-            .await?;
+async fn abort_workflow_adapter<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    engine: &Arc<WorkflowEngine>,
+    run_id: String,
+) -> Result<(), String> {
+    validate_run_id(&run_id)?;
     engine
-        .start_workflow(
-            &app,
-            session_store.inner(),
-            handles.inner(),
-            workflow,
-            worktree_path,
-            &file_stem,
-            task,
-            trigger,
-            permission_mode,
+        .dispatch(
+            app,
+            session_store,
+            handles,
+            WorkflowCommand::AbortRun {
+                run_id,
+                expected_node_name: None,
+            },
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            let msg = e.to_string();
+            log::error!("abort_workflow failed: code=ABORT_WORKFLOW_FAILED");
+            msg
+        })
+        .and_then(|result| match result {
+            WorkflowCommandResult::Accepted => Ok(()),
+            // dispatch routing が壊れていない限り `AbortRun` → `Accepted` のみが返るはず。
+            // ここに到達する場合は engine 内部不整合（spec [04] sentinel 禁止）として
+            // 明示的に Err にする。
+            WorkflowCommandResult::RunStarted { .. } => Err(
+                "abort_workflow received non-Accepted dispatch result; internal inconsistency"
+                    .to_string(),
+            ),
+        })
 }
 
 #[tauri::command]
@@ -330,15 +389,14 @@ pub async fn abort_workflow(
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     run_id: String,
 ) -> Result<(), String> {
-    validate_run_id(&run_id)?;
-    engine
-        .abort_workflow_by_run_id(&app, session_store.inner(), handles.inner(), &run_id)
-        .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            log::error!("abort_workflow failed: code=ABORT_WORKFLOW_FAILED");
-            msg
-        })
+    abort_workflow_adapter(
+        &app,
+        handles.inner(),
+        session_store.inner(),
+        engine.inner(),
+        run_id,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -362,6 +420,84 @@ pub async fn get_workflow_state(
     }
 }
 
+/// approval UI / Tauri command 境界からの判断入力 DTO。
+///
+/// [04] Command / Event Boundary: engine 内部の `ApprovalDecision` には依存させず、
+/// command 境界専用の DTO として `WorkflowCommand` への変換責務だけを担う。
+/// wire 形式: `{"approve":{"comment":...}}` / `{"reject":{"reason":...}}` / `"abort"`。
+/// 旧 unit variant `"approve"` は受理しない。
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecisionInput {
+    Approve {
+        #[serde(default)]
+        comment: Option<String>,
+    },
+    Reject {
+        reason: String,
+    },
+    Abort,
+}
+
+impl ApprovalDecisionInput {
+    /// approval UI 判断を `WorkflowCommand` に変換する。
+    ///
+    /// `Approve` / `Reject` は `ApproveNode` / `RejectNode` に対応し、`Abort` は
+    /// 「現在の承認待ち node を対象にした AbortRun」として中断系 command に揃える。
+    /// `step_name` は approval UI 上の対象 node 名であり、`Abort` 経路では
+    /// engine 側の stale target 検証用に `expected_node_name` として伝播する。
+    fn into_command(self, run_id: String, step_name: String) -> WorkflowCommand {
+        match self {
+            Self::Approve { comment } => WorkflowCommand::ApproveNode {
+                run_id,
+                node_name: step_name,
+                comment,
+            },
+            Self::Reject { reason } => WorkflowCommand::RejectNode {
+                run_id,
+                node_name: step_name,
+                reason,
+            },
+            Self::Abort => WorkflowCommand::AbortRun {
+                run_id,
+                expected_node_name: Some(step_name),
+            },
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn approve_workflow_step_adapter<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    handles: &Arc<Mutex<AgentProcessMap>>,
+    session_store: &Arc<SessionStore>,
+    engine: &Arc<WorkflowEngine>,
+    run_id: String,
+    decision: ApprovalDecisionInput,
+    step_name: String,
+) -> Result<(), String> {
+    validate_run_id(&run_id)?;
+    // [04] approval UI からの decision は command 境界専用 DTO で受け取り、
+    // `WorkflowCommand` に変換して engine へ受け渡す。engine 内部 domain 型
+    // `ApprovalDecision` を Tauri 境界に露出させない（同一意図は呼び出し経路に依らず
+    // engine から等価に扱われる）。
+    let command = decision.into_command(run_id, step_name);
+    engine
+        .dispatch(app, session_store, handles, command)
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|result| match result {
+            WorkflowCommandResult::Accepted => Ok(()),
+            // dispatch routing が壊れていない限り approval 系 command → `Accepted` のみが
+            // 返るはず。ここに到達する場合は engine 内部不整合（spec [04] sentinel 禁止）と
+            // して明示的に Err にする。
+            WorkflowCommandResult::RunStarted { .. } => Err(
+                "approve_workflow_step received non-Accepted dispatch result; internal inconsistency"
+                    .to_string(),
+            ),
+        })
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn approve_workflow_step(
@@ -370,21 +506,19 @@ pub async fn approve_workflow_step(
     session_store: tauri::State<'_, Arc<SessionStore>>,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     run_id: String,
-    decision: ApprovalDecision,
+    decision: ApprovalDecisionInput,
     step_name: String,
 ) -> Result<(), String> {
-    validate_run_id(&run_id)?;
-    engine
-        .handle_approval(
-            &app,
-            session_store.inner(),
-            handles.inner(),
-            &run_id,
-            decision,
-            Some(&step_name),
-        )
-        .await
-        .map_err(|e| e.to_string())
+    approve_workflow_step_adapter(
+        &app,
+        handles.inner(),
+        session_store.inner(),
+        engine.inner(),
+        run_id,
+        decision,
+        step_name,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -490,7 +624,7 @@ fn validate_run_id(run_id: &str) -> Result<(), String> {
 pub async fn get_workflow_execution_log(
     app: tauri::AppHandle,
     run_id: String,
-) -> Result<Vec<WorkflowLogEvent>, String> {
+) -> Result<Vec<WorkflowEvent>, String> {
     validate_run_id(&run_id)?;
     let data_dir = resolve_data_dir(&app)?;
     let event_log = WorkflowEventLog::new(&data_dir);
@@ -511,30 +645,11 @@ pub async fn get_workflow_execution_state(
     let state = tokio::task::spawn_blocking(move || {
         let event_log = WorkflowEventLog::new(&data_dir);
         let events = event_log.read_log(&run_id)?;
-        // ログのスナップショット（WorkflowStarted.workflow_definition）からのみ復元する。
+        // [04] schema 境界: 復元は `RunStarted.workflow_definition` snapshot 経由のみ。
         // 旧 NDJSON（workflow_definition フィールドを欠く / 旧 shape）は新 schema で
-        // deserialize できず、本ルートには到達しない（[02] で互換破棄）。
-        let started = events.iter().find_map(|e| match e {
-            super::log::WorkflowLogEvent::WorkflowStarted {
-                workflow_definition,
-                workflow_file_stem,
-                workflow_name,
-                ..
-            } => {
-                let stem = if workflow_file_stem.is_empty() {
-                    workflow_name.clone()
-                } else {
-                    workflow_file_stem.clone()
-                };
-                Some((workflow_definition.clone(), stem))
-            }
-            _ => None,
-        });
-        let Some((snapshot_def, _file_stem)) = started else {
-            return Ok(None);
-        };
-        let workflow = snapshot_def;
-        WorkflowEventLog::reconstruct_state_from_events(&run_id, &events, &workflow)
+        // deserialize できず、本ルートには到達しない（[02] で互換破棄）。snapshot 抽出は
+        // `reconstruct_state_from_events` の内部不変条件として閉じ込めてある。
+        super::event_projection::reconstruct_state_from_events(&run_id, &events)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))??;
@@ -770,7 +885,239 @@ fn validate_template_variables(content: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workflow::event::WorkflowEvent;
+    use crate::workflow::log::WorkflowEventLog;
+    use crate::workflow::resolver::{
+        ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
+        WorkflowDefinitionResolverError,
+    };
+    use crate::workflow::run::{RunStatus, TriggerSource};
+    use crate::workflow::schema::{NodeDefinition, NodeType};
+    use crate::workflow::state::WorkflowExecutionState;
     use std::path::Path;
+    use tempfile::TempDir;
+
+    struct StaticWorkflowResolver;
+
+    #[async_trait::async_trait]
+    impl WorkflowDefinitionResolver for StaticWorkflowResolver {
+        async fn resolve(
+            &self,
+            _file_stem: &str,
+        ) -> Result<Workflow, WorkflowDefinitionResolverError> {
+            Ok(approval_only_workflow())
+        }
+    }
+
+    struct TestWorktreeResolver;
+
+    #[async_trait::async_trait]
+    impl ManagedWorktreeResolver for TestWorktreeResolver {
+        async fn resolve(
+            &self,
+            worktree_path: String,
+        ) -> Result<String, ManagedWorktreeResolverError> {
+            Ok(worktree_path)
+        }
+    }
+
+    type AdapterTestApp = tauri::App<tauri::test::MockRuntime>;
+
+    fn approval_only_workflow() -> Workflow {
+        Workflow {
+            name: "adapter-boundary".to_string(),
+            description: "adapter command test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "review".to_string(),
+                node_type: NodeType::Approval,
+                instruction: Some("review".to_string()),
+                ..NodeDefinition::default()
+            }],
+        }
+    }
+
+    fn rejectable_adapter_workflow() -> Workflow {
+        Workflow {
+            name: "adapter-boundary".to_string(),
+            description: "adapter command test".to_string(),
+            builtin: false,
+            nodes: vec![
+                NodeDefinition {
+                    name: "review".to_string(),
+                    node_type: NodeType::Approval,
+                    instruction: Some("review".to_string()),
+                    transition_rules: vec![crate::workflow::schema::TransitionRule {
+                        r#match: "reject".to_string(),
+                        next: "fix".to_string(),
+                    }],
+                    ..NodeDefinition::default()
+                },
+                NodeDefinition {
+                    name: "fix".to_string(),
+                    node_type: NodeType::Agent,
+                    instruction: Some("fix".to_string()),
+                    ..NodeDefinition::default()
+                },
+            ],
+        }
+    }
+
+    fn make_adapter_app() -> AdapterTestApp {
+        let mut config = crate::config::ReleashConfig::default();
+        config.agents.codex.models = vec!["default".to_string(), "gpt-5.5".to_string()];
+        config.agents.default = Some("codex".to_string());
+        let app_config = Arc::new(crate::config::AppConfig::new(
+            config,
+            TempDir::new().unwrap().path().join("config.toml"),
+        ));
+        let registry = Arc::new(crate::backends::build_registry(Arc::clone(&app_config)));
+        let data_dir =
+            std::env::temp_dir().join(format!("releash-command-adapter-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        tauri::test::mock_builder()
+            .manage(crate::session::TestDataDir(data_dir))
+            .manage(app_config)
+            .manage(registry)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("tauri mock test app must build")
+    }
+
+    fn make_adapter_engine() -> Arc<WorkflowEngine> {
+        Arc::new(WorkflowEngine::new(
+            Arc::new(StaticWorkflowResolver),
+            Arc::new(TestWorktreeResolver),
+        ))
+    }
+
+    fn make_adapter_deps() -> (Arc<SessionStore>, Arc<Mutex<AgentProcessMap>>) {
+        (
+            Arc::new(SessionStore::default()),
+            Arc::new(Mutex::new(AgentProcessMap::new())),
+        )
+    }
+
+    async fn configure_run_store(
+        app: &AdapterTestApp,
+        engine: &Arc<WorkflowEngine>,
+    ) -> std::path::PathBuf {
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        engine
+            .set_run_store_data_dir(data_dir.join("workflow_runs"))
+            .await;
+        data_dir
+    }
+
+    fn create_adapter_parent_session(
+        app: &AdapterTestApp,
+        session_store: &SessionStore,
+        worktree_path: &str,
+    ) -> crate::session::ChatSession {
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        crate::session::create_session_internal_with_permission(
+            session_store,
+            &data_dir,
+            worktree_path,
+            None,
+            PermissionMode::Edit,
+        )
+        .unwrap()
+    }
+
+    fn read_adapter_events(data_dir: &Path, run_id: &str) -> Vec<WorkflowEvent> {
+        WorkflowEventLog::new(data_dir).read_log(run_id).unwrap()
+    }
+
+    async fn start_adapter_run(
+        app: &AdapterTestApp,
+        engine: &Arc<WorkflowEngine>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+    ) -> String {
+        start_workflow_adapter(
+            app.handle(),
+            handles,
+            session_store,
+            engine,
+            "adapter-boundary".to_string(),
+            worktree_path.to_string(),
+            Some("task".to_string()),
+            Some("desktop_ui".to_string()),
+            Some("edit".to_string()),
+        )
+        .await
+        .expect("adapter start_workflow must succeed")
+    }
+
+    async fn start_direct_run(
+        app: &AdapterTestApp,
+        engine: &Arc<WorkflowEngine>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+    ) -> String {
+        let result = engine
+            .dispatch(
+                app.handle(),
+                session_store,
+                handles,
+                WorkflowCommand::StartRun {
+                    workflow_file_stem: "adapter-boundary".to_string(),
+                    worktree_path: worktree_path.to_string(),
+                    task: Some("task".to_string()),
+                    trigger_source: TriggerSource::DesktopUi,
+                    permission_mode: PermissionMode::Edit,
+                },
+            )
+            .await
+            .expect("direct StartRun dispatch must succeed");
+        match result {
+            WorkflowCommandResult::RunStarted { run_id } => run_id,
+            other => panic!("StartRun must return RunStarted, got {other:?}"),
+        }
+    }
+
+    fn event_kinds(events: &[WorkflowEvent]) -> Vec<&'static str> {
+        events
+            .iter()
+            .map(|event| match event {
+                WorkflowEvent::RunStarted { .. } => "RunStarted",
+                WorkflowEvent::NodeStarted { .. } => "NodeStarted",
+                WorkflowEvent::NodeCompleted { .. } => "NodeCompleted",
+                WorkflowEvent::NodeFailed { .. } => "NodeFailed",
+                WorkflowEvent::ApprovalRequested { .. } => "ApprovalRequested",
+                WorkflowEvent::ApprovalResolved { .. } => "ApprovalResolved",
+                WorkflowEvent::RunCompleted { .. } => "RunCompleted",
+                WorkflowEvent::RunFailed { .. } => "RunFailed",
+                WorkflowEvent::RunAborted { .. } => "RunAborted",
+                WorkflowEvent::OutputCollected { .. } => "OutputCollected",
+                WorkflowEvent::ParallelStarted { .. } => "ParallelStarted",
+                WorkflowEvent::ParallelChildStarted { .. } => "ParallelChildStarted",
+                WorkflowEvent::ParallelChildCompleted { .. } => "ParallelChildCompleted",
+                WorkflowEvent::ParallelCompleted { .. } => "ParallelCompleted",
+                WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
+            })
+            .collect()
+    }
+
+    async fn adapter_run_status(engine: &WorkflowEngine, run_id: &str) -> RunStatus {
+        if let Some(run) = engine
+            .list_active_runs()
+            .await
+            .into_iter()
+            .find(|run| run.run_id == run_id)
+        {
+            return run.status;
+        }
+        engine
+            .list_completed_runs()
+            .await
+            .into_iter()
+            .find(|run| run.run_id == run_id)
+            .map(|run| run.status)
+            .expect("run must exist in active or completed store")
+    }
 
     #[test]
     fn parse_facet_kind_valid_kinds() {
@@ -784,6 +1131,523 @@ mod tests {
             parse_facet_kind("output_contract").unwrap(),
             FacetKind::OutputContract
         );
+    }
+
+    /// Spec [04] Rule「同一意図 command は呼び出し経路に依らず等価」:
+    /// Tauri adapter の start_workflow は typed `WorkflowCommand::StartRun` を組み立て、
+    /// direct dispatch と同じ state / Run Store / event vocabulary に到達する。
+    #[tokio::test]
+    async fn start_workflow_adapter_matches_direct_start_run_dispatch() {
+        let adapter_app = make_adapter_app();
+        let adapter_engine = make_adapter_engine();
+        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
+        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let adapter_run_id = start_adapter_run(
+            &adapter_app,
+            &adapter_engine,
+            &adapter_store,
+            &adapter_handles,
+            "/wt/adapter-start",
+        )
+        .await;
+
+        let direct_app = make_adapter_app();
+        let direct_engine = make_adapter_engine();
+        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
+        let (direct_store, direct_handles) = make_adapter_deps();
+        let direct_run_id = start_direct_run(
+            &direct_app,
+            &direct_engine,
+            &direct_store,
+            &direct_handles,
+            "/wt/direct-start",
+        )
+        .await;
+
+        let adapter_state = adapter_engine
+            .get_state_by_run_id(&adapter_run_id)
+            .await
+            .expect("adapter start must create state");
+        let direct_state = direct_engine
+            .get_state_by_run_id(&direct_run_id)
+            .await
+            .expect("direct start must create state");
+        assert_eq!(adapter_state.state, direct_state.state);
+        assert_eq!(
+            adapter_state.current_step_name,
+            direct_state.current_step_name
+        );
+        assert_eq!(adapter_state.workflow_name, direct_state.workflow_name);
+        assert_eq!(
+            event_kinds(&read_adapter_events(&adapter_data_dir, &adapter_run_id)),
+            event_kinds(&read_adapter_events(&direct_data_dir, &direct_run_id))
+        );
+    }
+
+    /// Tauri adapter の abort_workflow は `AbortRun { expected_node_name: None }` に射影され、
+    /// direct dispatch と同じ terminal state / Run Store / event log を返す。
+    #[tokio::test]
+    async fn abort_workflow_adapter_matches_direct_abort_run_dispatch() {
+        let adapter_app = make_adapter_app();
+        let adapter_engine = make_adapter_engine();
+        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
+        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let adapter_run_id = uuid::Uuid::new_v4().to_string();
+        let adapter_parent =
+            create_adapter_parent_session(&adapter_app, &adapter_store, "/wt/adapter-abort");
+        adapter_engine
+            .seed_active_execution_for_test(
+                adapter_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::Running,
+                "/wt/adapter-abort".to_string(),
+                adapter_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let direct_app = make_adapter_app();
+        let direct_engine = make_adapter_engine();
+        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
+        let (direct_store, direct_handles) = make_adapter_deps();
+        let direct_run_id = uuid::Uuid::new_v4().to_string();
+        let direct_parent =
+            create_adapter_parent_session(&direct_app, &direct_store, "/wt/direct-abort");
+        direct_engine
+            .seed_active_execution_for_test(
+                direct_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::Running,
+                "/wt/direct-abort".to_string(),
+                direct_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        abort_workflow_adapter(
+            adapter_app.handle(),
+            &adapter_handles,
+            &adapter_store,
+            &adapter_engine,
+            adapter_run_id.clone(),
+        )
+        .await
+        .expect("adapter abort must succeed");
+        let direct_result = direct_engine
+            .dispatch(
+                direct_app.handle(),
+                &direct_store,
+                &direct_handles,
+                WorkflowCommand::AbortRun {
+                    run_id: direct_run_id.clone(),
+                    expected_node_name: None,
+                },
+            )
+            .await
+            .expect("direct abort must succeed");
+        assert_eq!(direct_result, WorkflowCommandResult::Accepted);
+
+        assert_eq!(
+            adapter_engine
+                .get_state_by_run_id(&adapter_run_id)
+                .await
+                .unwrap()
+                .state,
+            WorkflowExecutionState::Aborted
+        );
+        assert_eq!(
+            direct_engine
+                .get_state_by_run_id(&direct_run_id)
+                .await
+                .unwrap()
+                .state,
+            WorkflowExecutionState::Aborted
+        );
+        assert_eq!(
+            adapter_engine.list_completed_runs().await[0].status,
+            RunStatus::Aborted
+        );
+        assert_eq!(
+            direct_engine.list_completed_runs().await[0].status,
+            RunStatus::Aborted
+        );
+        assert_eq!(
+            event_kinds(&read_adapter_events(&adapter_data_dir, &adapter_run_id)),
+            event_kinds(&read_adapter_events(&direct_data_dir, &direct_run_id))
+        );
+    }
+
+    /// Tauri adapter の approve_workflow_step は approval DTO を `ApproveNode` に変換し、
+    /// direct dispatch と同じ state / Run Store / typed event を返す。
+    #[tokio::test]
+    async fn approve_workflow_step_adapter_matches_direct_approve_node_dispatch() {
+        let adapter_app = make_adapter_app();
+        let adapter_engine = make_adapter_engine();
+        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
+        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let adapter_run_id = uuid::Uuid::new_v4().to_string();
+        let adapter_parent =
+            create_adapter_parent_session(&adapter_app, &adapter_store, "/wt/adapter-approve");
+        adapter_engine
+            .seed_active_execution_for_test(
+                adapter_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/adapter-approve".to_string(),
+                adapter_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let direct_app = make_adapter_app();
+        let direct_engine = make_adapter_engine();
+        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
+        let (direct_store, direct_handles) = make_adapter_deps();
+        let direct_run_id = uuid::Uuid::new_v4().to_string();
+        let direct_parent =
+            create_adapter_parent_session(&direct_app, &direct_store, "/wt/direct-approve");
+        direct_engine
+            .seed_active_execution_for_test(
+                direct_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/direct-approve".to_string(),
+                direct_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        approve_workflow_step_adapter(
+            adapter_app.handle(),
+            &adapter_handles,
+            &adapter_store,
+            &adapter_engine,
+            adapter_run_id.clone(),
+            ApprovalDecisionInput::Approve {
+                comment: Some("lgtm".to_string()),
+            },
+            "review".to_string(),
+        )
+        .await
+        .expect("adapter approval must succeed");
+        let direct_result = direct_engine
+            .dispatch(
+                direct_app.handle(),
+                &direct_store,
+                &direct_handles,
+                WorkflowCommand::ApproveNode {
+                    run_id: direct_run_id.clone(),
+                    node_name: "review".to_string(),
+                    comment: Some("lgtm".to_string()),
+                },
+            )
+            .await
+            .expect("direct approval must succeed");
+        assert_eq!(direct_result, WorkflowCommandResult::Accepted);
+
+        let adapter_state = adapter_engine
+            .get_state_by_run_id(&adapter_run_id)
+            .await
+            .unwrap();
+        let direct_state = direct_engine
+            .get_state_by_run_id(&direct_run_id)
+            .await
+            .unwrap();
+        assert_eq!(adapter_state.state, WorkflowExecutionState::Completed);
+        assert_eq!(direct_state.state, WorkflowExecutionState::Completed);
+        assert_eq!(
+            adapter_state.step_history.len(),
+            direct_state.step_history.len()
+        );
+        assert_eq!(
+            adapter_engine.list_completed_runs().await[0].status,
+            direct_engine.list_completed_runs().await[0].status
+        );
+        assert_eq!(
+            event_kinds(&read_adapter_events(&adapter_data_dir, &adapter_run_id)),
+            event_kinds(&read_adapter_events(&direct_data_dir, &direct_run_id))
+        );
+    }
+
+    /// Tauri adapter の Reject decision は `RejectNode` に射影され、
+    /// direct dispatch と同じ state / Run Store status / typed event sequence に到達する。
+    #[tokio::test]
+    async fn approve_workflow_step_adapter_matches_direct_reject_node_dispatch() {
+        let adapter_app = make_adapter_app();
+        let adapter_engine = make_adapter_engine();
+        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
+        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let adapter_run_id = uuid::Uuid::new_v4().to_string();
+        let adapter_parent =
+            create_adapter_parent_session(&adapter_app, &adapter_store, "/wt/adapter-reject");
+        adapter_engine
+            .seed_active_execution_for_test(
+                adapter_run_id.clone(),
+                rejectable_adapter_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/adapter-reject".to_string(),
+                adapter_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let direct_app = make_adapter_app();
+        let direct_engine = make_adapter_engine();
+        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
+        let (direct_store, direct_handles) = make_adapter_deps();
+        let direct_run_id = uuid::Uuid::new_v4().to_string();
+        let direct_parent =
+            create_adapter_parent_session(&direct_app, &direct_store, "/wt/direct-reject");
+        direct_engine
+            .seed_active_execution_for_test(
+                direct_run_id.clone(),
+                rejectable_adapter_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/direct-reject".to_string(),
+                direct_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        approve_workflow_step_adapter(
+            adapter_app.handle(),
+            &adapter_handles,
+            &adapter_store,
+            &adapter_engine,
+            adapter_run_id.clone(),
+            ApprovalDecisionInput::Reject {
+                reason: "needs changes".to_string(),
+            },
+            "review".to_string(),
+        )
+        .await
+        .expect("adapter reject must succeed");
+        let direct_result = direct_engine
+            .dispatch(
+                direct_app.handle(),
+                &direct_store,
+                &direct_handles,
+                WorkflowCommand::RejectNode {
+                    run_id: direct_run_id.clone(),
+                    node_name: "review".to_string(),
+                    reason: "needs changes".to_string(),
+                },
+            )
+            .await
+            .expect("direct reject must succeed");
+        assert_eq!(direct_result, WorkflowCommandResult::Accepted);
+
+        let adapter_state = adapter_engine
+            .get_state_by_run_id(&adapter_run_id)
+            .await
+            .unwrap();
+        let direct_state = direct_engine
+            .get_state_by_run_id(&direct_run_id)
+            .await
+            .unwrap();
+        assert_eq!(adapter_state.state, direct_state.state);
+        assert_eq!(
+            adapter_run_status(&adapter_engine, &adapter_run_id).await,
+            adapter_run_status(&direct_engine, &direct_run_id).await
+        );
+        assert_eq!(
+            event_kinds(&read_adapter_events(&adapter_data_dir, &adapter_run_id)),
+            event_kinds(&read_adapter_events(&direct_data_dir, &direct_run_id))
+        );
+    }
+
+    /// approval UI 由来の Abort decision は `AbortRun { expected_node_name: Some(_) }`
+    /// に射影され、direct dispatch と同じ terminal state / Run Store status / event sequence に到達する。
+    #[tokio::test]
+    async fn approve_workflow_step_adapter_matches_direct_approval_abort_dispatch() {
+        let adapter_app = make_adapter_app();
+        let adapter_engine = make_adapter_engine();
+        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
+        let (adapter_store, adapter_handles) = make_adapter_deps();
+        let adapter_run_id = uuid::Uuid::new_v4().to_string();
+        let adapter_parent = create_adapter_parent_session(
+            &adapter_app,
+            &adapter_store,
+            "/wt/adapter-approval-abort",
+        );
+        adapter_engine
+            .seed_active_execution_for_test(
+                adapter_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/adapter-approval-abort".to_string(),
+                adapter_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let direct_app = make_adapter_app();
+        let direct_engine = make_adapter_engine();
+        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
+        let (direct_store, direct_handles) = make_adapter_deps();
+        let direct_run_id = uuid::Uuid::new_v4().to_string();
+        let direct_parent =
+            create_adapter_parent_session(&direct_app, &direct_store, "/wt/direct-approval-abort");
+        direct_engine
+            .seed_active_execution_for_test(
+                direct_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/direct-approval-abort".to_string(),
+                direct_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        approve_workflow_step_adapter(
+            adapter_app.handle(),
+            &adapter_handles,
+            &adapter_store,
+            &adapter_engine,
+            adapter_run_id.clone(),
+            ApprovalDecisionInput::Abort,
+            "review".to_string(),
+        )
+        .await
+        .expect("adapter approval abort must succeed");
+        let direct_result = direct_engine
+            .dispatch(
+                direct_app.handle(),
+                &direct_store,
+                &direct_handles,
+                WorkflowCommand::AbortRun {
+                    run_id: direct_run_id.clone(),
+                    expected_node_name: Some("review".to_string()),
+                },
+            )
+            .await
+            .expect("direct approval abort must succeed");
+        assert_eq!(direct_result, WorkflowCommandResult::Accepted);
+
+        assert_eq!(
+            adapter_engine
+                .get_state_by_run_id(&adapter_run_id)
+                .await
+                .unwrap()
+                .state,
+            direct_engine
+                .get_state_by_run_id(&direct_run_id)
+                .await
+                .unwrap()
+                .state
+        );
+        assert_eq!(
+            adapter_engine.list_completed_runs().await[0].status,
+            RunStatus::Aborted
+        );
+        assert_eq!(
+            direct_engine.list_completed_runs().await[0].status,
+            RunStatus::Aborted
+        );
+        assert_eq!(
+            event_kinds(&read_adapter_events(&adapter_data_dir, &adapter_run_id)),
+            event_kinds(&read_adapter_events(&direct_data_dir, &direct_run_id))
+        );
+    }
+
+    // ---- ApprovalDecisionInput DTO（[04] command 境界の wire 形式 + WorkflowCommand 変換） ----
+
+    /// Spec [04] / issues-1013: `ApprovalDecisionInput::Approve` は任意 comment を内包し、
+    /// `{"approve":{}}` / `{"approve":{"comment":"..."}}` の双方を受理する。
+    #[test]
+    fn approval_decision_input_deserialize_approve_optional_comment() {
+        let no_comment: ApprovalDecisionInput = serde_json::from_str(r#"{"approve":{}}"#).unwrap();
+        assert_eq!(no_comment, ApprovalDecisionInput::Approve { comment: None });
+        let with_comment: ApprovalDecisionInput =
+            serde_json::from_str(r#"{"approve":{"comment":"lgtm"}}"#).unwrap();
+        assert_eq!(
+            with_comment,
+            ApprovalDecisionInput::Approve {
+                comment: Some("lgtm".to_string())
+            }
+        );
+    }
+
+    /// Spec [04] / issues-1013: `ApprovalDecisionInput::Reject` は `reason` 必須。
+    #[test]
+    fn approval_decision_input_deserialize_reject_with_reason() {
+        let decision: ApprovalDecisionInput =
+            serde_json::from_str(r#"{"reject":{"reason":"Please fix"}}"#).unwrap();
+        assert_eq!(
+            decision,
+            ApprovalDecisionInput::Reject {
+                reason: "Please fix".to_string()
+            }
+        );
+    }
+
+    /// Spec [04] / issues-1013: `ApprovalDecisionInput::Abort` は unit variant の wire 形式。
+    #[test]
+    fn approval_decision_input_deserialize_abort_unit_variant() {
+        let decision: ApprovalDecisionInput = serde_json::from_str(r#""abort""#).unwrap();
+        assert_eq!(decision, ApprovalDecisionInput::Abort);
+    }
+
+    /// Spec [04] / issues-1013: 旧 unit variant `"approve"` は受理しない
+    /// （後方互換 wrapper を持たない command 境界の不変条件）。
+    #[test]
+    fn approval_decision_input_rejects_legacy_unit_approve() {
+        assert!(serde_json::from_str::<ApprovalDecisionInput>(r#""approve""#).is_err());
+    }
+
+    /// Spec [04] / issues-1013: `into_command` は approval 入力を typed `WorkflowCommand`
+    /// にマップする。Approve → ApproveNode、Reject → RejectNode（reason が伝播）、
+    /// Abort → AbortRun（current node が `expected_node_name` に固定される）。
+    #[test]
+    fn approval_decision_input_into_command_routes_each_variant() {
+        let run_id = "00000000-0000-0000-0000-000000000099".to_string();
+        let step = "review".to_string();
+
+        let approve_input = ApprovalDecisionInput::Approve {
+            comment: Some("lgtm".to_string()),
+        };
+        let approve_cmd = approve_input.into_command(run_id.clone(), step.clone());
+        match approve_cmd {
+            WorkflowCommand::ApproveNode {
+                run_id: rid,
+                node_name,
+                comment,
+            } => {
+                assert_eq!(rid, run_id);
+                assert_eq!(node_name, step);
+                assert_eq!(comment.as_deref(), Some("lgtm"));
+            }
+            other => panic!("Approve must map to ApproveNode, got: {other:?}"),
+        }
+
+        let reject_input = ApprovalDecisionInput::Reject {
+            reason: "needs fix".to_string(),
+        };
+        let reject_cmd = reject_input.into_command(run_id.clone(), step.clone());
+        match reject_cmd {
+            WorkflowCommand::RejectNode {
+                run_id: rid,
+                node_name,
+                reason,
+            } => {
+                assert_eq!(rid, run_id);
+                assert_eq!(node_name, step);
+                assert_eq!(reason, "needs fix");
+            }
+            other => panic!("Reject must map to RejectNode, got: {other:?}"),
+        }
+
+        let abort_cmd = ApprovalDecisionInput::Abort.into_command(run_id.clone(), step.clone());
+        match abort_cmd {
+            WorkflowCommand::AbortRun {
+                run_id: rid,
+                expected_node_name,
+            } => {
+                assert_eq!(rid, run_id);
+                assert_eq!(expected_node_name.as_deref(), Some("review"));
+            }
+            other => panic!("Abort must map to AbortRun, got: {other:?}"),
+        }
     }
 
     #[test]
@@ -1252,9 +2116,6 @@ mod tests {
     // ---- duplicate logic tests ----
     // These test the core duplicate logic using storage/facet/builtin functions directly,
     // mirroring what the Tauri commands do inside spawn_blocking.
-
-    use crate::workflow::schema::{NodeDefinition, NodeType, Workflow};
-    use tempfile::TempDir;
 
     fn make_test_workflow(name: &str) -> Workflow {
         Workflow {

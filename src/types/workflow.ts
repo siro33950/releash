@@ -201,29 +201,35 @@ export interface WorkflowStatePayload {
 	workflowState: WorkflowState;
 }
 
-export type WorkflowLogEvent =
+/// [04] Command / Event Boundary: backend `WorkflowEvent` の TypeScript 表現。
+///
+/// NDJSON tag は snake_case（`run_started` / `node_started` 等）。`run_id` を主語とし、
+/// node 識別子は `node_name` で表す（旧 `execution_id` / `step_name` から完全置換）。
+/// 表示用フォーマット以外のロジックはここに追加しない（rust-first-logic 準拠）。
+export type WorkflowEvent =
 	| {
-			event: "workflow_started";
-			execution_id: string;
+			event: "run_started";
+			run_id: string;
 			workflow_name: string;
-			workflow_file_stem?: string;
+			workflow_file_stem: string;
 			worktree_path: string;
+			workflow_definition: Workflow;
 			timestamp: number;
 	  }
 	| {
-			event: "step_started";
-			execution_id: string;
+			event: "node_started";
+			run_id: string;
 			workflow_name: string;
-			step_name: string;
+			node_name: string;
 			execution_count: number;
 			timestamp: number;
 	  }
 	| {
-			event: "step_completed";
-			execution_id: string;
+			event: "node_completed";
+			run_id: string;
 			workflow_name: string;
-			step_name: string;
-			result: string | null;
+			node_name: string;
+			result?: string;
 			session_id?: string;
 			token_usage?: TokenUsage;
 			structured_output?: JsonValue;
@@ -231,39 +237,55 @@ export type WorkflowLogEvent =
 			timestamp: number;
 	  }
 	| {
-			event: "step_failed";
-			execution_id: string;
+			event: "node_failed";
+			run_id: string;
 			workflow_name: string;
-			step_name: string;
+			node_name: string;
 			reason: string;
 			timestamp: number;
 	  }
 	| {
-			event: "workflow_completed";
-			execution_id: string;
+			event: "approval_requested";
+			run_id: string;
+			workflow_name: string;
+			node_name: string;
+			timestamp: number;
+	  }
+	| {
+			event: "approval_resolved";
+			run_id: string;
+			workflow_name: string;
+			node_name: string;
+			decision: "approve" | "reject" | "abort";
+			comment?: string;
+			timestamp: number;
+	  }
+	| {
+			event: "run_completed";
+			run_id: string;
 			workflow_name: string;
 			total_token_usage: TokenUsage;
 			timestamp: number;
 	  }
 	| {
-			event: "workflow_failed";
-			execution_id: string;
+			event: "run_failed";
+			run_id: string;
 			workflow_name: string;
 			reason: string;
 			timestamp: number;
 	  }
 	| {
-			event: "workflow_aborted";
-			execution_id: string;
+			event: "run_aborted";
+			run_id: string;
 			workflow_name: string;
 			timestamp: number;
 	  }
 	| {
 			event: "output_collected";
-			execution_id: string;
+			run_id: string;
 			workflow_name: string;
-			step_name: string;
-			step_outputs: CollectedOutputEntry[];
+			node_name: string;
+			node_outputs: CollectedOutputEntry[];
 			reduce_strategy: string;
 			reduce_result?: string;
 			reduce_structured_output?: JsonValue;
@@ -271,38 +293,38 @@ export type WorkflowLogEvent =
 	  }
 	| {
 			event: "contract_repair_requested";
-			execution_id: string;
+			run_id: string;
 			workflow_name: string;
-			step_name: string;
+			node_name: string;
 			attempt: number;
 			violation_reason: string;
 			timestamp: number;
 	  }
 	| {
 			event: "parallel_started";
-			execution_id: string;
+			run_id: string;
 			workflow_name: string;
-			parent_step_name: string;
-			child_step_names: string[];
+			parent_node_name: string;
+			child_node_names: string[];
 			timestamp: number;
 	  }
 	| {
-			event: "parallel_step_started";
-			execution_id: string;
+			event: "parallel_child_started";
+			run_id: string;
 			workflow_name: string;
-			parent_step_name: string;
-			child_step_name: string;
+			parent_node_name: string;
+			child_node_name: string;
 			session_id: string;
 			execution_count: number;
 			timestamp: number;
 	  }
 	| {
-			event: "parallel_step_completed";
-			execution_id: string;
+			event: "parallel_child_completed";
+			run_id: string;
 			workflow_name: string;
-			parent_step_name: string;
-			child_step_name: string;
-			result: string | null;
+			parent_node_name: string;
+			child_node_name: string;
+			result?: string;
 			session_id: string;
 			token_usage?: TokenUsage;
 			structured_output?: JsonValue;
@@ -311,15 +333,15 @@ export type WorkflowLogEvent =
 	  }
 	| {
 			event: "parallel_completed";
-			execution_id: string;
+			run_id: string;
 			workflow_name: string;
-			parent_step_name: string;
+			parent_node_name: string;
 			aggregate_result: string;
 			timestamp: number;
 	  };
 
 export interface CollectedOutputEntry {
-	stepName: string;
+	nodeName: string;
 	result?: string;
 	structuredOutput?: JsonValue;
 }

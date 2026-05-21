@@ -195,7 +195,10 @@ impl AgentBackend for ClaudeBackend {
         Ok(models)
     }
 
-    fn runtime_config(&self, _app: &tauri::AppHandle) -> BackendRuntimeConfig {
+    fn runtime_config(
+        &self,
+        _app_config: Option<&crate::config::AppConfig>,
+    ) -> BackendRuntimeConfig {
         BackendRuntimeConfig {
             bridge_init_options: serde_json::Map::new(),
         }
