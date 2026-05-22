@@ -1,8 +1,5 @@
-レスポンスに `<workflow_output>` ブロックを必ず1つだけ含めること。
-
-フォーマット:
-```text
-<workflow_output type="review-verdict">
+データ:
+```json
 {
   "verdict": "LGTM" または "NEEDS_FIX",
   "findings": [
@@ -13,7 +10,6 @@
     }
   ]
 }
-</workflow_output>
 ```
 
 ルール:

@@ -18,7 +18,7 @@ const FACET_SUB_TABS: { id: FacetSubTab; label: string }[] = [
 	{ id: "policy", label: "Policy" },
 	{ id: "knowledge", label: "Knowledge" },
 	{ id: "instruction", label: "Instruction" },
-	{ id: "output_contract", label: "OutputContract" },
+	{ id: "contract", label: "Contract" },
 ];
 
 export function AutomationSection({

@@ -1,0 +1,133 @@
+name: spec-plan
+description: Spec-driven planning workflow (requirements → behavior → architecture → review → approve)
+builtin: true
+
+nodes:
+  # 1. 要求整理（approval、Spec作成）
+  - name: plan_requirements
+    type: approval
+    model: default
+    permission: edit
+    instruction: plan-requirements
+    policy: planning
+    output_contract: spec-file-path
+
+  # 2. 振る舞い定義（approval、Spec更新）
+  - name: plan_behavior
+    type: approval
+    model: default
+    permission: edit
+    instruction: plan-behavior
+    policy: planning
+    pass_output_from:
+      - plan_requirements
+
+  # 3. アーキテクチャ概要（approval、Spec更新）
+  - name: plan_architecture
+    type: approval
+    model: default
+    permission: edit
+    instruction: plan-architecture
+    policy: planning
+    pass_output_from:
+      - plan_requirements
+
+  # 4-5. アーキテクチャ概要レビュー 4観点（parallel agent）+ 集約
+  - name: plan_review_parallel
+    type: parallel
+    parallel_children:
+      - name: plan_review_completeness
+        type: agent
+        model: gpt-5.5
+        permission: readonly
+        instruction: plan-review-completeness
+        policy: plan-review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_requirements
+          - plan_fix_policy
+      - name: plan_review_clarity
+        type: agent
+        model: gpt-5.5
+        permission: readonly
+        instruction: plan-review-clarity
+        policy: plan-review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_requirements
+          - plan_fix_policy
+      - name: plan_review_security
+        type: agent
+        model: gpt-5.5
+        permission: readonly
+        instruction: plan-review-security
+        policy: plan-review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_requirements
+          - plan_fix_policy
+      - name: plan_review_consistency
+        type: agent
+        model: gpt-5.5
+        permission: readonly
+        instruction: plan-review-consistency
+        policy: plan-review
+        output_contract: review-verdict
+        pass_output_from:
+          - plan_requirements
+          - plan_fix_policy
+    aggregate:
+      all_match: LGTM
+      then: plan_approval
+      else: plan_fix_policy
+
+  # 6. Plan修正方針確認（approval）
+  - name: plan_fix_policy
+    type: approval
+    model: default
+    permission: readonly
+    instruction: plan-fix-policy
+    policy: planning
+    output_contract: approved-fix-policy
+    pass_output_from:
+      - plan_requirements
+      - plan_review_parallel
+      - plan_approval
+    rules:
+      - match: reject
+        next: plan_approval
+
+  # 7. アーキテクチャ概要修正（agent、Spec更新）
+  - name: plan_fix
+    type: agent
+    model: default
+    permission: edit
+    instruction: plan-fix
+    policy: planning
+    pass_output_from:
+      - plan_requirements
+      - plan_fix_policy
+    rules:
+      - match: NO_FIX_NEEDED
+        next: plan_approval
+      - match: ".*"
+        next: plan_review_parallel
+    cycle_guard:
+      max_iterations: 2
+      on_exhausted: plan_approval
+
+  # 8. アーキテクチャ概要承認（approval）
+  - name: plan_approval
+    type: approval
+    model: default
+    permission: readonly
+    instruction: plan-approval
+    policy: planning
+    pass_output_from:
+      - plan_requirements
+      - plan_review_parallel
+    resets_cycle_for:
+      - plan_fix
+    rules:
+      - match: reject
+        next: plan_fix_policy

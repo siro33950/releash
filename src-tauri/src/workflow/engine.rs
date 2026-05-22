@@ -3436,7 +3436,7 @@ impl WorkflowEngine {
         let contract_definition = {
             let base_dir = facet::facets_base_dir();
             crate::workflow::facet::load_facet(
-                crate::workflow::facet::FacetKind::OutputContract,
+                crate::workflow::facet::FacetKind::Contract,
                 contract,
                 &base_dir,
             )
@@ -4331,6 +4331,9 @@ impl WorkflowEngine {
                     step_history,
                     workflow_variables,
                 );
+                // facet ref を持たない inline_prompt step は input_contracts も持たない
+                // (`has_facet_refs` が false のため)。`<task>` 注入は行わず、
+                // inline_prompt 内で `{{task}}` テンプレートを使う設計に委ねる。
                 return Ok((None, prompt));
             }
             return Err(WorkflowEngineError::InvalidWorkflow(format!(
@@ -4353,13 +4356,17 @@ impl WorkflowEngine {
             .map(|s| Self::render_facet_variables(&s, worktree_path, task));
         let rendered_user =
             Self::render_facet_variables(&composed.user_message, worktree_path, task);
-        let prompt = Self::inject_step_outputs(
+        let mut prompt = Self::inject_step_outputs(
             &rendered_user,
             step,
             step_outputs,
             step_history,
             workflow_variables,
         );
+        // input_contracts を宣言している step だけが `<task>` ブロックを受け取る。
+        // 既存 builtin の `{{task}}` テンプレート展開と二重注入にならないようにする。
+        let allow_task = step.input_contracts.as_ref().is_some_and(|v| !v.is_empty());
+        Self::append_task_block(&mut prompt, task, allow_task);
         Ok((system_prompt, prompt))
     }
 
@@ -4712,6 +4719,44 @@ impl WorkflowEngine {
         Self::append_workflow_variables_block(&mut result, workflow_variables);
 
         result
+    }
+
+    /// task が非空、かつ呼び出し側が input_contracts 由来の task 入力を期待しているときに限り、
+    /// `<task>` ブロックを末尾に注入する。
+    ///
+    /// [02] Contract 双方向対称性: `<task>` ブロックは step が `input_contracts` で
+    /// 入力データ仕様を宣言しているときだけ engine が prompt に流し込む。
+    /// `input_contracts` を持たない既存 builtin step (例: plan-requirements は
+    /// instruction 内で `{{task}}` テンプレートを直接展開する) には注入しないことで、
+    /// 既存 prompt の同等性を保つ。
+    ///
+    /// task 文字列はユーザー制御の信頼境界外入力のため、`<`/`>`/`&` をエスケープし、
+    /// 偽の `</task>` 等で engine 注入ブロックを偽装する prompt injection を防ぐ。
+    fn append_task_block(prompt: &mut String, task: Option<&str>, allow_task_injection: bool) {
+        if !allow_task_injection {
+            return;
+        }
+        let Some(t) = task else { return };
+        if t.is_empty() {
+            return;
+        }
+        let escaped = Self::escape_xml_text(t);
+        prompt.push_str(&format!("\n\n<task>\n{}\n</task>", escaped));
+    }
+
+    /// XML 風タグ内に文字列を埋め込む際に `<` / `>` / `&` をエスケープする。
+    /// `<task>` ブロック等の信頼境界外データを engine が注入する経路で利用する。
+    fn escape_xml_text(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '&' => out.push_str("&amp;"),
+                other => out.push(other),
+            }
+        }
+        out
     }
 
     /// StepOutputのstructured_outputをJSON文字列としてフォーマットする。
@@ -5858,7 +5903,7 @@ impl WorkflowEngine {
     /// 並列子ステップ用のプロンプトを構築する。
     /// `build_step_prompt` と同様に純粋関数として切り出し、テスト可能にする。
     #[allow(clippy::too_many_arguments)]
-    fn build_parallel_step_prompt(
+    pub(crate) fn build_parallel_step_prompt(
         ps: &crate::workflow::schema::ChildNodeDefinition,
         worktree_path: &str,
         task: Option<&str>,
@@ -5911,6 +5956,9 @@ impl WorkflowEngine {
         }
 
         Self::append_workflow_variables_block(&mut user_message, workflow_variables);
+        // 並列子 node も top-level 同様、input_contracts 宣言があるときだけ `<task>` 注入する
+        let allow_task = ps.input_contracts.as_ref().is_some_and(|v| !v.is_empty());
+        Self::append_task_block(&mut user_message, task, allow_task);
 
         Ok((system_prompt, user_message))
     }
@@ -9071,10 +9119,10 @@ mod tests {
         let base = tmp.path();
         let instructions = base.join("instructions");
         let policies = base.join("policies");
-        let output_contracts = base.join("output_contracts");
+        let contracts = base.join("contracts");
         std::fs::create_dir_all(&instructions).unwrap();
         std::fs::create_dir_all(&policies).unwrap();
-        std::fs::create_dir_all(&output_contracts).unwrap();
+        std::fs::create_dir_all(&contracts).unwrap();
         std::fs::write(
             policies.join("coding.md"),
             "Coding policy for {{project_name}}.",
@@ -9085,7 +9133,7 @@ mod tests {
             "Task: {{task}}\nImplement the feature.",
         )
         .unwrap();
-        std::fs::write(output_contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
+        std::fs::write(contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
 
         let mut step = make_test_step("build", NodeType::Agent, "unused", vec![], None);
         step.instruction = Some("impl".to_string());
@@ -9202,11 +9250,11 @@ mod tests {
         // ドロップ・空文字置換が起きないこと。
         let tmp = tempfile::TempDir::new().unwrap();
         let policies = tmp.path().join("policies");
-        let output_contracts = tmp.path().join("output_contracts");
+        let contracts = tmp.path().join("contracts");
         std::fs::create_dir_all(&policies).unwrap();
-        std::fs::create_dir_all(&output_contracts).unwrap();
+        std::fs::create_dir_all(&contracts).unwrap();
         std::fs::write(policies.join("coding.md"), "POLICY_BODY").unwrap();
-        std::fs::write(output_contracts.join("plan-doc.md"), "CONTRACT_BODY").unwrap();
+        std::fs::write(contracts.join("plan-doc.md"), "CONTRACT_BODY").unwrap();
 
         let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
         step.policy = Some("coding".to_string());
@@ -9273,11 +9321,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let base = tmp.path();
         let policies = base.join("policies");
-        let output_contracts = base.join("output_contracts");
+        let contracts = base.join("contracts");
         std::fs::create_dir_all(&policies).unwrap();
-        std::fs::create_dir_all(&output_contracts).unwrap();
+        std::fs::create_dir_all(&contracts).unwrap();
         std::fs::write(policies.join("p.md"), "POLICY_BODY").unwrap();
-        std::fs::write(output_contracts.join("c.md"), "CONTRACT_BODY").unwrap();
+        std::fs::write(contracts.join("c.md"), "CONTRACT_BODY").unwrap();
 
         let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
         step.policy = Some("p".to_string());
@@ -9342,11 +9390,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let base = tmp.path();
         let policies = base.join("policies");
-        let output_contracts = base.join("output_contracts");
+        let contracts = base.join("contracts");
         std::fs::create_dir_all(&policies).unwrap();
-        std::fs::create_dir_all(&output_contracts).unwrap();
+        std::fs::create_dir_all(&contracts).unwrap();
         std::fs::write(policies.join("p.md"), "STEP_POLICY_BODY").unwrap();
-        std::fs::write(output_contracts.join("c.md"), "STEP_CONTRACT_BODY").unwrap();
+        std::fs::write(contracts.join("c.md"), "STEP_CONTRACT_BODY").unwrap();
 
         let mut step = make_test_step("s", NodeType::Agent, "unused", vec![], None);
         step.policy = Some("p".to_string());
@@ -9810,15 +9858,15 @@ mod tests {
         let policies = base.join("policies");
         let knowledges = base.join("knowledge");
         let instructions = base.join("instructions");
-        let output_contracts = base.join("output_contracts");
+        let contracts = base.join("contracts");
         std::fs::create_dir_all(&policies).unwrap();
         std::fs::create_dir_all(&knowledges).unwrap();
         std::fs::create_dir_all(&instructions).unwrap();
-        std::fs::create_dir_all(&output_contracts).unwrap();
+        std::fs::create_dir_all(&contracts).unwrap();
         std::fs::write(policies.join("pol.md"), "PARALLEL_POLICY_BODY").unwrap();
         std::fs::write(knowledges.join("know.md"), "PARALLEL_KNOWLEDGE_BODY").unwrap();
         std::fs::write(instructions.join("inst.md"), "PARALLEL_INSTRUCTION_BODY").unwrap();
-        std::fs::write(output_contracts.join("oc.md"), "PARALLEL_CONTRACT_BODY").unwrap();
+        std::fs::write(contracts.join("oc.md"), "PARALLEL_CONTRACT_BODY").unwrap();
 
         let mut ps = make_parallel_step("child");
         ps.policy = Some("pol".to_string());

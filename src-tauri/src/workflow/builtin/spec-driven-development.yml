@@ -89,6 +89,9 @@ nodes:
     instruction: plan-fix-policy
     policy: planning
     output_contract: approved-fix-policy
+    input_contracts:
+      - spec-file-path
+      - review-verdict
     pass_output_from:
       - plan_requirements
       - plan_review_parallel
@@ -104,6 +107,9 @@ nodes:
     permission: edit
     instruction: plan-fix
     policy: planning
+    input_contracts:
+      - spec-file-path
+      - approved-fix-policy
     pass_output_from:
       - plan_requirements
       - plan_fix_policy
@@ -139,10 +145,17 @@ nodes:
     permission: edit
     instruction: implement
     policy: coding
+    input_contracts:
+      - spec-file-path
     pass_output_from:
       - plan_requirements
 
   # 10-11. コードレビュー 6観点（parallel agent）+ 集約
+  #
+  # 注意: children では approved-fix-policy を input_contracts に含めない。
+  # 初回レビュー時には implementation_fix_policy が未実行で実値が届かないため、
+  # input_contracts は実行時に必ず届くデータ仕様だけを宣言する原則に従う
+  # （再レビュー時の実値注入は pass_output_from が担保する）。
   - name: code_review_parallel
     type: parallel
     parallel_children:
@@ -153,6 +166,8 @@ nodes:
         instruction: review-acceptance
         policy: review
         output_contract: review-verdict
+        input_contracts:
+          - spec-file-path
         pass_output_from:
           - plan_requirements
           - implementation_fix_policy
@@ -163,6 +178,8 @@ nodes:
         instruction: review-structure
         policy: review
         output_contract: review-verdict
+        input_contracts:
+          - spec-file-path
         pass_output_from:
           - plan_requirements
           - implementation_fix_policy
@@ -173,6 +190,8 @@ nodes:
         instruction: review-quality
         policy: review
         output_contract: review-verdict
+        input_contracts:
+          - spec-file-path
         pass_output_from:
           - plan_requirements
           - implementation_fix_policy
@@ -183,6 +202,8 @@ nodes:
         instruction: review-test
         policy: review
         output_contract: review-verdict
+        input_contracts:
+          - spec-file-path
         pass_output_from:
           - plan_requirements
           - implementation_fix_policy
@@ -193,6 +214,8 @@ nodes:
         instruction: review-security
         policy: review
         output_contract: review-verdict
+        input_contracts:
+          - spec-file-path
         pass_output_from:
           - plan_requirements
           - implementation_fix_policy
@@ -203,6 +226,8 @@ nodes:
         instruction: review-architecture
         policy: review
         output_contract: review-verdict
+        input_contracts:
+          - spec-file-path
         pass_output_from:
           - plan_requirements
           - implementation_fix_policy
@@ -219,6 +244,9 @@ nodes:
     instruction: implementation-fix-policy
     policy: coding
     output_contract: approved-fix-policy
+    input_contracts:
+      - spec-file-path
+      - review-verdict
     pass_output_from:
       - plan_requirements
       - code_review_parallel
@@ -234,6 +262,9 @@ nodes:
     permission: edit
     instruction: implement-fix
     policy: coding
+    input_contracts:
+      - spec-file-path
+      - approved-fix-policy
     pass_output_from:
       - plan_requirements
       - implementation_fix_policy
@@ -253,6 +284,9 @@ nodes:
     permission: readonly
     instruction: implementation-approval
     policy: coding
+    input_contracts:
+      - spec-file-path
+      - review-verdict
     pass_output_from:
       - plan_requirements
       - code_review_parallel

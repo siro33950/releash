@@ -102,8 +102,20 @@ pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
-pub fn save_workflow(dir: &Path, workflow: &Workflow) -> Result<(), StorageError> {
+pub fn save_workflow(
+    dir: &Path,
+    facets_base_dir: &Path,
+    workflow: &Workflow,
+) -> Result<(), StorageError> {
     validation::validate(workflow)?;
+    // [02] Contract 双方向対称性: user-authored workflow を保存する経路でも
+    // `input_contracts` / `output_contract` の参照キーが Contract facet として
+    // 実在することを検証する。load 時の facet 解決と同じ基準（呼び出し元が指定する
+    // `facets_base_dir`）で検証し、存在しない参照を持つ workflow がディスクに
+    // 書き出されないようにする。
+    validation::validate_facet_refs(workflow, |key| {
+        facet::load_facet(facet::FacetKind::Contract, key, facets_base_dir).is_ok()
+    })?;
 
     ensure_dir(dir)?;
 
@@ -281,7 +293,7 @@ mod tests {
         let dir = tmp.path();
 
         let wf = sample_workflow("my-workflow", false);
-        save_workflow(dir, &wf).unwrap();
+        save_workflow(dir, dir, &wf).unwrap();
 
         let file_path = dir.join("my-workflow.yml");
         assert!(file_path.exists());
@@ -297,18 +309,36 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, &sample_workflow("charlie", false)).unwrap();
-        save_workflow(dir, &sample_workflow("alpha", false)).unwrap();
-        save_workflow(dir, &sample_workflow("bravo", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("charlie", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("alpha", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("bravo", false)).unwrap();
 
         let list = list_workflows(dir).unwrap();
-        // ディスク3件 + ビルトイン(spec-driven-development) = 4件
-        assert_eq!(list.len(), 4);
+        // ディスク3件 + ビルトイン6件 (bug-fix, spec-driven-development, spec-implement,
+        // spec-plan, spec-review, spec-review-auto) = 9件。ソートは ASCII 順なので
+        // ディスク3件 + ビルトイン6件が辞書順でマージされる。
+        assert_eq!(list.len(), 9);
         assert_eq!(list[0].name, "alpha");
         assert_eq!(list[1].name, "bravo");
-        assert_eq!(list[2].name, "charlie");
-        assert_eq!(list[3].name, "spec-driven-development");
-        assert!(list[3].builtin);
+        assert_eq!(list[2].name, "bug-fix");
+        assert_eq!(list[3].name, "charlie");
+        assert_eq!(list[4].name, "spec-driven-development");
+        assert_eq!(list[5].name, "spec-implement");
+        assert_eq!(list[6].name, "spec-plan");
+        assert_eq!(list[7].name, "spec-review");
+        assert_eq!(list[8].name, "spec-review-auto");
+        // ビルトイン6件すべて builtin=true
+        for name in [
+            "bug-fix",
+            "spec-driven-development",
+            "spec-implement",
+            "spec-plan",
+            "spec-review",
+            "spec-review-auto",
+        ] {
+            let entry = list.iter().find(|s| s.name == name).unwrap();
+            assert!(entry.builtin, "builtin '{name}' must be marked builtin");
+        }
     }
 
     #[test]
@@ -317,7 +347,7 @@ mod tests {
         let dir = tmp.path();
 
         // save_workflowで作成（ファイル名 = YAML本文name）
-        save_workflow(dir, &sample_workflow("original", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("original", false)).unwrap();
 
         // ファイルをリネームしてYAML本文nameとファイルstemを乖離させる
         fs::rename(dir.join("original.yml"), dir.join("renamed.yml")).unwrap();
@@ -347,7 +377,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, &sample_workflow("deleteme", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("deleteme", false)).unwrap();
         assert!(dir.join("deleteme.yml").exists());
 
         delete_workflow(dir, "deleteme").unwrap();
@@ -382,7 +412,7 @@ mod tests {
     fn resolve_workflow_path_success() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
-        save_workflow(dir, &sample_workflow("my-workflow", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("my-workflow", false)).unwrap();
 
         let result = resolve_workflow_path(dir, "my-workflow");
         assert!(result.is_ok());
@@ -439,8 +469,8 @@ mod tests {
         let dir = tmp.path();
 
         // 既存ワークフローを作成
-        save_workflow(dir, &sample_workflow("existing", false)).unwrap();
-        save_workflow(dir, &sample_workflow("to-rename", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("existing", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("to-rename", false)).unwrap();
 
         // "to-rename" → "existing" へのリネームは重複検出されるべき
         let target_path = dir.join("existing.yml");
@@ -455,7 +485,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, &sample_workflow("my-flow", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("my-flow", false)).unwrap();
 
         // 同名の新規作成は重複チェックで検出されるべき
         let existing = dir.join("my-flow.yml");
@@ -555,18 +585,18 @@ steps:
         let policies = dir.join("policies");
         let knowledge = dir.join("knowledge");
         let instructions = dir.join("instructions");
-        let output_contracts = dir.join("output_contracts");
-        for d in [&policies, &knowledge, &instructions, &output_contracts] {
+        let contracts = dir.join("contracts");
+        for d in [&policies, &knowledge, &instructions, &contracts] {
             std::fs::create_dir_all(d).unwrap();
         }
         std::fs::write(policies.join("p.md"), "POLICY").unwrap();
         std::fs::write(knowledge.join("k.md"), "KNOWLEDGE").unwrap();
         std::fs::write(instructions.join("i.md"), "INSTRUCTION").unwrap();
-        std::fs::write(output_contracts.join("oc.md"), "OUTPUT_CONTRACT").unwrap();
+        std::fs::write(contracts.join("oc.md"), "OUTPUT_CONTRACT").unwrap();
         std::fs::write(policies.join("pc.md"), "CHILD_POLICY").unwrap();
         std::fs::write(knowledge.join("kc.md"), "CHILD_KNOWLEDGE").unwrap();
         std::fs::write(instructions.join("ic.md"), "CHILD_INSTRUCTION").unwrap();
-        std::fs::write(output_contracts.join("occ.md"), "CHILD_OUTPUT_CONTRACT").unwrap();
+        std::fs::write(contracts.join("occ.md"), "CHILD_OUTPUT_CONTRACT").unwrap();
 
         let yaml = r#"
 name: facet-all

@@ -141,6 +141,13 @@ pub enum ValidationError {
         value: String,
         reason: String,
     },
+    /// `input_contracts` / `output_contract` が存在しない Contract facet を参照している。
+    /// 信頼境界外入力 (user-authored workflow / フロントエンド編集) の保存時に検出する。
+    UnknownContractRef {
+        step: String,
+        slot: &'static str,
+        key: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -298,6 +305,12 @@ impl fmt::Display for ValidationError {
                 write!(
                     f,
                     "ステップ '{step}' のmodel '{value}' の所属バックエンドを解決できません: {reason}"
+                )
+            }
+            Self::UnknownContractRef { step, slot, key } => {
+                write!(
+                    f,
+                    "ステップ '{step}' の {slot} が存在しない Contract facet '{key}' を参照しています"
                 )
             }
         }
@@ -655,6 +668,71 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// `input_contracts` / `output_contract` の参照キーが Contract facet として
+/// 実在するかを検証する（[02] Contract 双方向対称性 + 信頼境界外入力の参照妥当性検査）。
+///
+/// `contract_exists` は呼び出し側が「facet base dir + builtin」での解決可否を返すクロージャ。
+/// validation.rs は facet I/O を持たない（境界保持）ため、storage.rs などの呼び出し側で
+/// `facet::load_facet(FacetKind::Contract, key, base_dir).is_ok()` を渡す形にする。
+///
+/// top-level node と parallel child の両方を網羅して検査する。
+pub fn validate_facet_refs<F>(
+    workflow: &Workflow,
+    contract_exists: F,
+) -> Result<(), ValidationError>
+where
+    F: Fn(&str) -> bool,
+{
+    fn check<F: Fn(&str) -> bool>(
+        step_name: &str,
+        output_contract: Option<&str>,
+        input_contracts: Option<&[String]>,
+        contract_exists: &F,
+    ) -> Result<(), ValidationError> {
+        if let Some(key) = output_contract {
+            if !contract_exists(key) {
+                return Err(ValidationError::UnknownContractRef {
+                    step: step_name.to_string(),
+                    slot: "output_contract",
+                    key: key.to_string(),
+                });
+            }
+        }
+        if let Some(keys) = input_contracts {
+            for key in keys {
+                if !contract_exists(key) {
+                    return Err(ValidationError::UnknownContractRef {
+                        step: step_name.to_string(),
+                        slot: "input_contracts",
+                        key: key.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    for node in &workflow.nodes {
+        check(
+            &node.name,
+            node.output_contract.as_deref(),
+            node.input_contracts.as_deref(),
+            &contract_exists,
+        )?;
+        if let Some(children) = node.parallel_children.as_ref() {
+            for child in children {
+                check(
+                    &child.name,
+                    child.output_contract.as_deref(),
+                    child.input_contracts.as_deref(),
+                    &contract_exists,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// node 数上限 (`MAX_NODES_PER_WORKFLOW`) と parallel 子 node 数上限
 /// (`MAX_PARALLEL_CHILDREN`) の DoS ガードを評価する。
 ///
@@ -740,7 +818,9 @@ fn validate_node_type_fields(step: &super::schema::NodeDefinition) -> Result<(),
                 });
             }
             if step.has_facet_refs() {
-                return Err(disallow("policy/knowledge/instruction/output_contract"));
+                return Err(disallow(
+                    "policy/knowledge/instruction/output_contract/input_contracts",
+                ));
             }
             if step.inline_prompt.is_some() {
                 return Err(disallow("inline_prompt"));
@@ -770,7 +850,9 @@ fn validate_node_type_fields(step: &super::schema::NodeDefinition) -> Result<(),
                 return Err(disallow("command"));
             }
             if step.has_facet_refs() {
-                return Err(disallow("policy/knowledge/instruction/output_contract"));
+                return Err(disallow(
+                    "policy/knowledge/instruction/output_contract/input_contracts",
+                ));
             }
             if step.inline_prompt.is_some() {
                 return Err(disallow("inline_prompt"));
@@ -2490,5 +2572,75 @@ mod tests {
             self.name = name.to_string();
             self
         }
+    }
+
+    // ---- validate_facet_refs ----
+
+    #[test]
+    fn validate_facet_refs_passes_when_all_contracts_exist() {
+        let wf = make_workflow(vec![NodeDefinition {
+            output_contract: Some("review-verdict".to_string()),
+            input_contracts: Some(vec![
+                "spec-file-path".to_string(),
+                "approved-fix-policy".to_string(),
+            ]),
+            ..make_step("step1", NodeType::Agent, vec![])
+        }]);
+        let known: HashSet<&str> =
+            HashSet::from(["review-verdict", "spec-file-path", "approved-fix-policy"]);
+        assert!(validate_facet_refs(&wf, |k| known.contains(k)).is_ok());
+    }
+
+    #[test]
+    fn validate_facet_refs_detects_missing_output_contract() {
+        let wf = make_workflow(vec![NodeDefinition {
+            output_contract: Some("nonexistent".to_string()),
+            ..make_step("step1", NodeType::Agent, vec![])
+        }]);
+        let err = validate_facet_refs(&wf, |_| false).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::UnknownContractRef { ref step, slot, ref key }
+                if step == "step1" && slot == "output_contract" && key == "nonexistent"
+        ));
+    }
+
+    #[test]
+    fn validate_facet_refs_detects_missing_input_contract() {
+        let wf = make_workflow(vec![NodeDefinition {
+            input_contracts: Some(vec!["unknown-key".to_string()]),
+            ..make_step("step1", NodeType::Agent, vec![])
+        }]);
+        let err = validate_facet_refs(&wf, |_| false).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::UnknownContractRef { ref step, slot, ref key }
+                if step == "step1" && slot == "input_contracts" && key == "unknown-key"
+        ));
+    }
+
+    #[test]
+    fn validate_facet_refs_inspects_parallel_children() {
+        let child = ChildNodeDefinition {
+            input_contracts: Some(vec!["nope".to_string()]),
+            ..make_parallel_step("child1")
+        };
+        let par = make_parallel_block(
+            "par",
+            vec![child],
+            Some(ParallelAggregate {
+                all_match: Some("LGTM".to_string()),
+                any_match: None,
+                then: "par".to_string(),
+                r#else: "par".to_string(),
+            }),
+        );
+        let wf = make_workflow(vec![par]);
+        let err = validate_facet_refs(&wf, |_| false).unwrap_err();
+        assert!(matches!(
+            err,
+            ValidationError::UnknownContractRef { ref step, slot, ref key }
+                if step == "child1" && slot == "input_contracts" && key == "nope"
+        ));
     }
 }

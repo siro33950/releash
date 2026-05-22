@@ -26,8 +26,8 @@ pub const MAX_PARALLEL_CHILDREN: usize = 64;
 
 /// load 時に解決した facet コンテンツのキャッシュ。
 ///
-/// `policy` / `knowledge` / `instruction` / `output_contract` のキー文字列ではなく、
-/// 既にファイルから読み込んだ markdown 本文を保持する。実行時には
+/// `policy` / `knowledge` / `instruction` / `output_contract` / `input_contracts` の
+/// キー文字列ではなく、既にファイルから読み込んだ markdown 本文を保持する。実行時には
 /// `engine.rs` がこのキャッシュから直接 system_prompt / user_message を組み立てる。
 ///
 /// `#[serde(skip)]` により YAML / JSON のシリアライズ対象外。
@@ -37,12 +37,16 @@ pub struct ResolvedFacets {
     pub policy: Option<String>,
     pub knowledge: Option<String>,
     pub instruction: Option<String>,
+    /// 出力側 Contract（step が生成する `<workflow_output>` のデータ仕様）。
+    /// 旧 `output_contract` ファセットの本文に相当する。
     pub output_contract: Option<String>,
+    /// 入力側 Contract の解決済み本文一覧（[02] Contract 双方向対称性）。
+    /// 同一 Contract facet を input / output 双方向で参照できる。
+    pub input_contracts: Vec<String>,
 }
 
 impl ResolvedFacets {
-    /// 4 種の facet (`policy` / `knowledge` / `instruction` / `output_contract`) が
-    /// すべて未解決（None）なら true を返す。
+    /// 主要 facet が未解決（None / 空）なら true を返す。
     ///
     /// 実行系では「facet 参照が宣言されている (`has_facet_refs()` が true) のに
     /// resolved_facets が空」のとき、load 経路の facet 解決が漏れたとみなして
@@ -52,6 +56,7 @@ impl ResolvedFacets {
             && self.knowledge.is_none()
             && self.instruction.is_none()
             && self.output_contract.is_none()
+            && self.input_contracts.is_empty()
     }
 }
 
@@ -98,6 +103,11 @@ pub struct NodeDefinition {
     pub instruction: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
+    /// 入力側 Contract 参照キー一覧。
+    /// 前段ステップ出力 / task / workflow_variables 等から受け取る入力の
+    /// データ仕様を宣言する（[02] Contract 双方向対称性）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_contracts: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_previous_response: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,13 +142,15 @@ pub struct NodeDefinition {
 }
 
 impl NodeDefinition {
-    /// node の prompt 関連 facet 参照（policy/knowledge/instruction/output_contract）が
+    /// node の prompt 関連 facet 参照
+    /// （policy / knowledge / instruction / output_contract / input_contracts）が
     /// いずれか 1 つでも指定されているか。
     pub fn has_facet_refs(&self) -> bool {
         self.policy.is_some()
             || self.knowledge.is_some()
             || self.instruction.is_some()
             || self.output_contract.is_some()
+            || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
     }
 
     pub fn is_parallel(&self) -> bool {
@@ -169,6 +181,8 @@ pub struct ChildNodeDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_contract: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_contracts: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_previous_response: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pass_output_from: Option<Vec<String>>,
@@ -186,6 +200,7 @@ impl ChildNodeDefinition {
             || self.knowledge.is_some()
             || self.instruction.is_some()
             || self.output_contract.is_some()
+            || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
     }
 }
 

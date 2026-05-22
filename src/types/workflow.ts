@@ -72,6 +72,7 @@ export interface ChildNodeDefinition {
 	knowledge?: string;
 	instruction?: string;
 	output_contract?: string;
+	input_contracts?: string[];
 	pass_previous_response?: boolean;
 	pass_output_from?: string[];
 	model?: string;
@@ -89,6 +90,7 @@ export interface NodeDefinition {
 	knowledge?: string;
 	instruction?: string;
 	output_contract?: string;
+	input_contracts?: string[];
 	pass_previous_response?: boolean;
 	pass_output_from?: string[];
 	inline_prompt?: string;
@@ -353,11 +355,7 @@ export type WorkflowSummary = {
 	is_running: boolean;
 };
 
-export type FacetKind =
-	| "policy"
-	| "knowledge"
-	| "instruction"
-	| "output_contract";
+export type FacetKind = "policy" | "knowledge" | "instruction" | "contract";
 
 export interface FacetSummary {
 	key: string;
