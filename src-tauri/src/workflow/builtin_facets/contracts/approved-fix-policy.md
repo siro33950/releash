@@ -2,7 +2,7 @@
 ```json
 {
   "policy": "全体方針の自由文（fix ステップが従う全体ガイダンス）",
-  "review_step": "code_review_parallel" または "plan_review_parallel",
+  "review_step": "code_review_parallel" | "plan_review_parallel" | "bug_investigation" | "bug_review_parallel",
   "findings": [
     {
       "severity": "error" | "warning" | "info",

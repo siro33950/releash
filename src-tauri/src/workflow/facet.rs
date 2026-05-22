@@ -111,7 +111,7 @@ pub fn output_contract_preamble(key: &str) -> String {
 /// データ仕様に一致する入力を取り出して扱う。
 pub fn input_contract_preamble(key: &str) -> String {
     format!(
-        "入力データは以下のいずれかのブロックで届く: `<task>...</task>` / `<step_output name=\"...\">...</step_output>` / `<workflow_variables>...</workflow_variables>`。\n`<step_output>` の内容が `(not yet completed)` のときは前段 step が未実行なので入力なしとして扱う。\n入力が JSON 以外の形式（自然言語の文中等）で渡されたときは、本文に含まれるキー値を抽出して下記データ仕様にマップして扱う。\n下記データ仕様 (型: {key}) に合致する入力を読み取って処理すること。\n\nデータ仕様 (型: {key}):"
+        "入力データは以下のいずれかのブロックで届く: `<task>...</task>` / `<step_output name=\"...\">...</step_output>` / `<workflow_variables>...</workflow_variables>`。\n`<step_output>` の内容が `(not yet completed)` または `(no structured output)` のときは、構造化された入力は来ていないものとして扱う（前者は前段 step が未実行、後者は前段 step が構造化出力を持たない）。\n入力が JSON 以外の形式（自然言語の文中等）で渡されたときは、本文に含まれるキー値を抽出して下記データ仕様にマップして扱う。\n下記データ仕様 (型: {key}) に合致する入力を読み取って処理すること。\n\nデータ仕様 (型: {key}):"
     )
 }
 

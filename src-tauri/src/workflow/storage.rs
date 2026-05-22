@@ -102,15 +102,19 @@ pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
-pub fn save_workflow(dir: &Path, workflow: &Workflow) -> Result<(), StorageError> {
+pub fn save_workflow(
+    dir: &Path,
+    facets_base_dir: &Path,
+    workflow: &Workflow,
+) -> Result<(), StorageError> {
     validation::validate(workflow)?;
     // [02] Contract 双方向対称性: user-authored workflow を保存する経路でも
     // `input_contracts` / `output_contract` の参照キーが Contract facet として
-    // 実在することを検証する。load 時の facet 解決と整合させ、存在しない参照を
-    // 持つ workflow がディスクに書き出されないようにする。
-    let facets_dir = facet::facets_base_dir();
+    // 実在することを検証する。load 時の facet 解決と同じ基準（呼び出し元が指定する
+    // `facets_base_dir`）で検証し、存在しない参照を持つ workflow がディスクに
+    // 書き出されないようにする。
     validation::validate_facet_refs(workflow, |key| {
-        facet::load_facet(facet::FacetKind::Contract, key, &facets_dir).is_ok()
+        facet::load_facet(facet::FacetKind::Contract, key, facets_base_dir).is_ok()
     })?;
 
     ensure_dir(dir)?;
@@ -289,7 +293,7 @@ mod tests {
         let dir = tmp.path();
 
         let wf = sample_workflow("my-workflow", false);
-        save_workflow(dir, &wf).unwrap();
+        save_workflow(dir, dir, &wf).unwrap();
 
         let file_path = dir.join("my-workflow.yml");
         assert!(file_path.exists());
@@ -305,9 +309,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, &sample_workflow("charlie", false)).unwrap();
-        save_workflow(dir, &sample_workflow("alpha", false)).unwrap();
-        save_workflow(dir, &sample_workflow("bravo", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("charlie", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("alpha", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("bravo", false)).unwrap();
 
         let list = list_workflows(dir).unwrap();
         // ディスク3件 + ビルトイン6件 (bug-fix, spec-driven-development, spec-implement,
@@ -343,7 +347,7 @@ mod tests {
         let dir = tmp.path();
 
         // save_workflowで作成（ファイル名 = YAML本文name）
-        save_workflow(dir, &sample_workflow("original", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("original", false)).unwrap();
 
         // ファイルをリネームしてYAML本文nameとファイルstemを乖離させる
         fs::rename(dir.join("original.yml"), dir.join("renamed.yml")).unwrap();
@@ -373,7 +377,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, &sample_workflow("deleteme", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("deleteme", false)).unwrap();
         assert!(dir.join("deleteme.yml").exists());
 
         delete_workflow(dir, "deleteme").unwrap();
@@ -408,7 +412,7 @@ mod tests {
     fn resolve_workflow_path_success() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
-        save_workflow(dir, &sample_workflow("my-workflow", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("my-workflow", false)).unwrap();
 
         let result = resolve_workflow_path(dir, "my-workflow");
         assert!(result.is_ok());
@@ -465,8 +469,8 @@ mod tests {
         let dir = tmp.path();
 
         // 既存ワークフローを作成
-        save_workflow(dir, &sample_workflow("existing", false)).unwrap();
-        save_workflow(dir, &sample_workflow("to-rename", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("existing", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("to-rename", false)).unwrap();
 
         // "to-rename" → "existing" へのリネームは重複検出されるべき
         let target_path = dir.join("existing.yml");
@@ -481,7 +485,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        save_workflow(dir, &sample_workflow("my-flow", false)).unwrap();
+        save_workflow(dir, dir, &sample_workflow("my-flow", false)).unwrap();
 
         // 同名の新規作成は重複チェックで検出されるべき
         let existing = dir.join("my-flow.yml");

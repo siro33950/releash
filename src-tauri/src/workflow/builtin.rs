@@ -941,6 +941,12 @@ mod tests {
                 case.node
             );
             assert!(
+                prompt.contains("(no structured output)"),
+                "'{}/{}' prompt must mention `(no structured output)` semantics. prompt={prompt}",
+                case.wf,
+                case.node
+            );
+            assert!(
                 prompt.contains("<workflow_variables>"),
                 "'{}/{}' prompt must contain <workflow_variables> block. prompt={prompt}",
                 case.wf,

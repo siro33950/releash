@@ -192,6 +192,7 @@ pub async fn save_workflow(
         ));
     }
     let dir = storage::workflows_dir();
+    let facets_base = facet::facets_base_dir();
     tokio::task::spawn_blocking(move || {
         // 新規作成 or リネーム時は既存名との重複チェック
         let is_new = original_name.is_none();
@@ -201,7 +202,7 @@ pub async fn save_workflow(
         }
 
         // 先に保存（validate含む）を実行し、成功した場合のみ旧ファイルを削除
-        storage::save_workflow(&dir, &workflow).map_err(|e| e.to_string())?;
+        storage::save_workflow(&dir, &facets_base, &workflow).map_err(|e| e.to_string())?;
 
         // リネーム時は旧ファイルを削除（保存成功後）
         if let Some(ref orig) = original_name {
@@ -756,7 +757,7 @@ pub async fn duplicate_workflow(source_name: String, new_name: String) -> Result
 
         wf.name = new_name;
         wf.builtin = false;
-        storage::save_workflow(&dir, &wf).map_err(|e| e.to_string())
+        storage::save_workflow(&dir, &facets_base, &wf).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
@@ -2134,7 +2135,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let wf = make_test_workflow("source-wf");
-        storage::save_workflow(dir, &wf).unwrap();
+        storage::save_workflow(dir, dir, &wf).unwrap();
 
         // Simulate duplicate logic
         let new_name = "copied-wf";
@@ -2145,7 +2146,7 @@ mod tests {
         let mut copied = storage::load_workflow(&dir.join("source-wf.yml"), dir).unwrap();
         copied.name = new_name.to_string();
         copied.builtin = false;
-        storage::save_workflow(dir, &copied).unwrap();
+        storage::save_workflow(dir, dir, &copied).unwrap();
 
         assert!(dir.join(format!("{new_name}.yml")).exists());
         let loaded = storage::load_workflow(&dir.join(format!("{new_name}.yml")), dir).unwrap();
@@ -2158,7 +2159,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
         let wf = make_test_workflow("existing-wf");
-        storage::save_workflow(dir, &wf).unwrap();
+        storage::save_workflow(dir, dir, &wf).unwrap();
 
         // Act: Simulate the duplicate check from the command
         let new_name = "existing-wf";
@@ -2314,8 +2315,8 @@ mod tests {
         // Create two workflows
         let wf_a = make_test_workflow("workflow-a");
         let wf_b = make_test_workflow("workflow-b");
-        storage::save_workflow(dir, &wf_a).unwrap();
-        storage::save_workflow(dir, &wf_b).unwrap();
+        storage::save_workflow(dir, dir, &wf_a).unwrap();
+        storage::save_workflow(dir, dir, &wf_b).unwrap();
 
         // Simulate renaming workflow-a to workflow-b (duplicate)
         let original_name = Some("workflow-a".to_string());
@@ -2425,7 +2426,7 @@ mod tests {
         if (is_new || is_rename) && dir.join(format!("{}.yml", workflow.name)).exists() {
             return Err(format!("ワークフロー '{}' は既に存在します", workflow.name));
         }
-        storage::save_workflow(dir, workflow).map_err(|e| e.to_string())?;
+        storage::save_workflow(dir, dir, workflow).map_err(|e| e.to_string())?;
         if let Some(orig) = original_name {
             if orig != workflow.name {
                 let old_path = dir.join(format!("{orig}.yml"));
@@ -2444,7 +2445,7 @@ mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("my-wf");
-        storage::save_workflow(dir, &wf).unwrap();
+        storage::save_workflow(dir, dir, &wf).unwrap();
 
         // Update same workflow (original_name = Some("my-wf"), name = "my-wf")
         let mut updated = make_test_workflow("my-wf");
@@ -2476,7 +2477,7 @@ mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("dup-wf");
-        storage::save_workflow(dir, &wf).unwrap();
+        storage::save_workflow(dir, dir, &wf).unwrap();
 
         let result = simulate_save_workflow(dir, &wf, None);
         assert!(result.is_err());
@@ -2489,7 +2490,7 @@ mod tests {
         let dir = tmp.path();
 
         let wf = make_test_workflow("old-name");
-        storage::save_workflow(dir, &wf).unwrap();
+        storage::save_workflow(dir, dir, &wf).unwrap();
 
         let mut renamed = make_test_workflow("new-name");
         renamed.description = "renamed".to_string();
@@ -2504,8 +2505,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        storage::save_workflow(dir, &make_test_workflow("wf-a")).unwrap();
-        storage::save_workflow(dir, &make_test_workflow("wf-b")).unwrap();
+        storage::save_workflow(dir, dir, &make_test_workflow("wf-a")).unwrap();
+        storage::save_workflow(dir, dir, &make_test_workflow("wf-b")).unwrap();
 
         let renamed = make_test_workflow("wf-b");
         let result = simulate_save_workflow(dir, &renamed, Some("wf-a"));
