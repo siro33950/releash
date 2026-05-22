@@ -38,7 +38,7 @@ export function WorkflowPanel({
 	const [historyOpen, setHistoryOpen] = useState(false);
 
 	const fetchExecutionIds = useCallback(() => {
-		invoke<WorkflowRunSummary[]>("list_workflow_runs_for_worktree", {
+		invoke<WorkflowRunSummary[]>("list_workflow_runs", {
 			worktreePath,
 		})
 			.then((runs) => setExecutionIds(runs.map((r) => r.runId)))
@@ -387,16 +387,16 @@ function ExecutionView({
 		setIsLoading(true);
 
 		Promise.all([
-			invoke<WorkflowState | null>("get_workflow_execution_state", {
+			invoke<WorkflowState | null>("get_workflow_run_state", {
 				runId: executionId,
 			}),
-			invoke<WorkflowEvent[]>("get_workflow_execution_log", {
+			invoke<WorkflowEvent[] | null>("get_workflow_run_log", {
 				runId: executionId,
 			}),
 		])
 			.then(([state, logEvents]) => {
 				if (cancelled) return;
-				if (!state) {
+				if (!state || !logEvents) {
 					setLoadError("Failed to load execution history.");
 					return;
 				}

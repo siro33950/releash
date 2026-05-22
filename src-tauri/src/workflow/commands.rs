@@ -5,7 +5,7 @@ use super::engine::WorkflowEngine;
 use super::event::WorkflowEvent;
 use super::facet::{self, FacetKind};
 use super::log::WorkflowEventLog;
-use super::run::WorkflowRunSummary;
+use super::run::{RunListFilter, RunStatusFilter, WorkflowRunSummary};
 use super::schema::{FacetSummary, Summary, Workflow};
 use super::storage;
 use crate::agent_message_dispatcher::{
@@ -134,21 +134,32 @@ fn validation_error_string(e: super::validation::ValidationError) -> String {
     format!("validation_error: {e}")
 }
 
+/// [05] `list_workflows` Tauri command が委譲する実 API inner 関数。
+///
+/// `running_names` は engine の in-memory active map 由来の workflow 名集合、
+/// `workflows_dir` は workflow YAML を読む対象ディレクトリ。Tauri State / Arc に
+/// 依存しない pure 関数として切り出すことで、API 経路と CLI 経路の意味的等価性を
+/// 直接テストできるようにする（spec [05] API / CLI の意味的等価性境界）。
+pub(crate) fn list_workflows_inner(
+    running_names: &std::collections::HashSet<String>,
+    workflows_dir: &std::path::Path,
+) -> Result<Vec<Summary>, String> {
+    let mut summaries = storage::list_workflows(workflows_dir).map_err(|e| e.to_string())?;
+    for s in &mut summaries {
+        s.is_running = running_names.contains(&s.name);
+    }
+    Ok(summaries)
+}
+
 #[tauri::command]
 pub async fn list_workflows(
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
 ) -> Result<Vec<Summary>, String> {
     let running_names = engine.running_workflow_names().await;
     let dir = storage::workflows_dir();
-    tokio::task::spawn_blocking(move || {
-        let mut summaries = storage::list_workflows(&dir).map_err(|e| e.to_string())?;
-        for s in &mut summaries {
-            s.is_running = running_names.contains(&s.name);
-        }
-        Ok(summaries)
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
+    tokio::task::spawn_blocking(move || list_workflows_inner(&running_names, &dir))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]
@@ -291,8 +302,10 @@ async fn start_workflow_adapter<R: tauri::Runtime>(
     let permission_mode = parse_workflow_start_permission_mode(permission_mode)?;
     // [04] managed worktree 検証は dispatch 経路（= 全 command 入口の合流地点）で行う。
     // Tauri adapter は文字列引数のまま command を組み立て、engine 入口で正規化される境界に揃える。
+    // [05] adapter-facing 拒否境界: 外部 adapter は internal-only variant を組み立てないため
+    // dispatch_external を経由する。
     engine
-        .dispatch(
+        .dispatch_external(
             app,
             session_store,
             handles,
@@ -355,7 +368,7 @@ async fn abort_workflow_adapter<R: tauri::Runtime>(
 ) -> Result<(), String> {
     validate_run_id(&run_id)?;
     engine
-        .dispatch(
+        .dispatch_external(
             app,
             session_store,
             handles,
@@ -484,7 +497,7 @@ async fn approve_workflow_step_adapter<R: tauri::Runtime>(
     // engine から等価に扱われる）。
     let command = decision.into_command(run_id, step_name);
     engine
-        .dispatch(app, session_store, handles, command)
+        .dispatch_external(app, session_store, handles, command)
         .await
         .map_err(|e| e.to_string())
         .and_then(|result| match result {
@@ -619,52 +632,166 @@ fn validate_run_id(run_id: &str) -> Result<(), String> {
         .map_err(|_| "Invalid run_id format (must be UUID)".to_string())
 }
 
-// ---- ワークフロー履歴閲覧コマンド ----
+// ---- [05] read-only Run 観測 API ----
+//
+// `run_id` 主語で workflow run を観測する read-only API。spec [05] により
+// 旧 `list_active_workflow_runs` / `list_completed_workflow_runs` /
+// `list_workflow_runs_for_worktree` / `get_workflow_execution_log` /
+// `get_workflow_execution_state` を破壊的に置換する。
 
-#[tauri::command]
-pub async fn get_workflow_execution_log(
-    app: tauri::AppHandle,
-    run_id: String,
-) -> Result<Vec<WorkflowEvent>, String> {
-    validate_run_id(&run_id)?;
-    let data_dir = resolve_data_dir(&app)?;
-    let event_log = WorkflowEventLog::new(&data_dir);
-    tokio::task::spawn_blocking(move || event_log.read_log(&run_id))
-        .await
-        .map_err(|e| format!("task join error: {e}"))?
+/// [05] worktree-scoped 認可境界: run metadata の `worktree_path` が caller の
+/// 認可済み (= 既存 managed worktree) のいずれかに合致するかを既存 helper
+/// `canonicalize_managed_worktree_path` で検証する。合致しない場合は `Ok(None)`
+/// として返し（not-found と同表現で存在情報を漏らさない）、observation 経路を
+/// 当該 caller から閉じる（spec [05] L104-108 観測経路の認可境界 / L182
+/// worktree-scoped Tauri 認証依拠）。
+async fn authorize_run_for_caller(
+    engine: &Arc<WorkflowEngine>,
+    config: &Arc<AppConfig>,
+    run_id: &str,
+) -> Result<Option<WorkflowRunSummary>, String> {
+    let Some(summary) = engine.get_run(run_id).await else {
+        return Ok(None);
+    };
+    match super::worktree::canonicalize_managed_worktree_path(
+        config.clone(),
+        summary.worktree_path.clone(),
+    )
+    .await
+    {
+        Ok(_) => Ok(Some(summary)),
+        Err(_) => Ok(None),
+    }
 }
 
+/// [05] read-only API: 過去 / 進行中の workflow run 一覧を返す。
+/// `worktree_path` は必須。caller の認可済み worktree のみを対象にすることで
+/// 別 worktree の run を観測できる経路を閉じる（spec [05] L104-108 観測経路の
+/// 認可境界）。`status` は optional な filter。
 #[tauri::command]
-pub async fn get_workflow_execution_state(
+pub async fn list_workflow_runs(
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    status: Option<String>,
+    worktree_path: String,
+) -> Result<Vec<WorkflowRunSummary>, String> {
+    let status = match status.as_deref() {
+        None | Some("") => None,
+        Some("active") => Some(RunStatusFilter::Active),
+        Some("terminal") => Some(RunStatusFilter::Terminal),
+        Some(other) => return Err(format!("Invalid status filter: {other}")),
+    };
+    let worktree_path =
+        super::worktree::canonicalize_managed_worktree_path(config.inner().clone(), worktree_path)
+            .await?;
+    Ok(engine
+        .list_runs(RunListFilter {
+            status,
+            worktree_path: Some(worktree_path),
+        })
+        .await)
+}
+
+/// [05] read-only API: 単一 run の summary metadata を返す。
+/// active / terminal のいずれであっても返す。該当 run なし、または run の
+/// worktree_path が caller の認可済み worktree に合致しない場合は `Ok(None)`
+/// （spec [05] L104-108 / L182）。
+#[tauri::command]
+pub async fn get_workflow_run(
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    run_id: String,
+) -> Result<Option<WorkflowRunSummary>, String> {
+    validate_run_id(&run_id)?;
+    authorize_run_for_caller(engine.inner(), config.inner(), &run_id).await
+}
+
+/// [05] read-only API: 指定 run の event log を返す。
+/// `workflow_logs/{run_id}.ndjson` を engine 一次 owner の log source として読む。
+/// 該当 run なし、または認可不一致は `None`（spec [05] L104-108 / L182）。
+#[tauri::command]
+pub async fn get_workflow_run_log(
     app: tauri::AppHandle,
-    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
-    open_tabs: tauri::State<'_, Arc<OpenTabRegistry>>,
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    run_id: String,
+) -> Result<Option<Vec<WorkflowEvent>>, String> {
+    get_workflow_run_log_inner(&app, engine.inner(), config.inner(), run_id).await
+}
+
+/// [05] generic 入口: テストで MockRuntime AppHandle を渡せるように runtime を generic 化する
+/// 内部経路。`#[tauri::command]` 側は Wry に固定して本関数に委譲する。
+async fn get_workflow_run_log_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    engine: &Arc<WorkflowEngine>,
+    config: &Arc<AppConfig>,
+    run_id: String,
+) -> Result<Option<Vec<WorkflowEvent>>, String> {
+    validate_run_id(&run_id)?;
+    if authorize_run_for_caller(engine, config, &run_id)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let data_dir = resolve_data_dir(app)?;
+    let event_log = WorkflowEventLog::new(&data_dir);
+    let events = tokio::task::spawn_blocking(move || event_log.read_log(&run_id))
+        .await
+        .map_err(|e| format!("task join error: {e}"))??;
+    Ok(Some(events))
+}
+
+/// [05] read-only API: 指定 run の現在 state を返す。
+/// NDJSON event log から `reconstruct_state_from_events` で投影する。
+///
+/// 観測結果の露出範囲境界（spec [05]）に従い、戻り値は engine が一次 owner として
+/// 保持している event log / state の純粋投影のみを含む。`AgentProcessMap` /
+/// `OpenTabRegistry` 由来の runtime_active / tab_open enrichment は read-only API
+/// 経路では含めない（同種情報は live emission 経路の `WorkflowStateChanged` event を
+/// 通じて UI に届ける）。
+///
+/// 認可不一致は `None`（spec [05] L104-108 / L182）。
+#[tauri::command]
+pub async fn get_workflow_run_state(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    run_id: String,
+) -> Result<Option<WorkflowStateView>, String> {
+    get_workflow_run_state_inner(&app, engine.inner(), config.inner(), run_id).await
+}
+
+/// [05] generic 入口: テストで MockRuntime AppHandle を渡せるように runtime を generic 化する
+/// 内部経路。`#[tauri::command]` 側は Wry に固定して本関数に委譲する。
+async fn get_workflow_run_state_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    engine: &Arc<WorkflowEngine>,
+    config: &Arc<AppConfig>,
     run_id: String,
 ) -> Result<Option<WorkflowStateView>, String> {
     validate_run_id(&run_id)?;
-    let data_dir = resolve_data_dir(&app)?;
+    if authorize_run_for_caller(engine, config, &run_id)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let data_dir = resolve_data_dir(app)?;
     let state = tokio::task::spawn_blocking(move || {
         let event_log = WorkflowEventLog::new(&data_dir);
         let events = event_log.read_log(&run_id)?;
         // [04] schema 境界: 復元は `RunStarted.workflow_definition` snapshot 経由のみ。
-        // 旧 NDJSON（workflow_definition フィールドを欠く / 旧 shape）は新 schema で
-        // deserialize できず、本ルートには到達しない（[02] で互換破棄）。snapshot 抽出は
-        // `reconstruct_state_from_events` の内部不変条件として閉じ込めてある。
         super::event_projection::reconstruct_state_from_events(&run_id, &events)
     })
     .await
     .map_err(|e| format!("task join error: {e}"))??;
-    match state {
-        Some(state) => Ok(Some(
-            crate::workflow_state_events::build_workflow_state_view(
-                state,
-                handles.inner(),
-                open_tabs.inner(),
-            )
-            .await,
-        )),
-        None => Ok(None),
-    }
+    Ok(state.map(|state| {
+        WorkflowStateView::from_parts(
+            crate::workflow_state_presenter::workflow_state_to_view(state),
+            std::collections::HashMap::new(),
+        )
+    }))
 }
 
 // ---- ファセットCRUDコマンド ----
@@ -809,37 +936,6 @@ pub async fn render_facet_preview(
 }
 
 // ---- Run Store / WorkflowRun コマンド ----
-
-/// 進行中（active）の workflow run 一覧を返す。
-#[tauri::command]
-pub async fn list_active_workflow_runs(
-    engine: tauri::State<'_, Arc<WorkflowEngine>>,
-) -> Result<Vec<WorkflowRunSummary>, String> {
-    Ok(engine.list_active_runs().await)
-}
-
-/// 終了済み（completed / failed / aborted）の workflow run 一覧を返す。
-/// `workflow_runs/{run_id}.json` を走査し、active set に含まれるものは除外する。
-/// 破損 metadata エントリは warn ログのうえスキップする。
-#[tauri::command]
-pub async fn list_completed_workflow_runs(
-    engine: tauri::State<'_, Arc<WorkflowEngine>>,
-) -> Result<Vec<WorkflowRunSummary>, String> {
-    Ok(engine.list_completed_runs().await)
-}
-
-/// 指定 worktree の active / terminal workflow run 一覧を返す。
-#[tauri::command]
-pub async fn list_workflow_runs_for_worktree(
-    engine: tauri::State<'_, Arc<WorkflowEngine>>,
-    config: tauri::State<'_, Arc<AppConfig>>,
-    worktree_path: String,
-) -> Result<Vec<WorkflowRunSummary>, String> {
-    let worktree_path =
-        super::worktree::canonicalize_managed_worktree_path(config.inner().clone(), worktree_path)
-            .await?;
-    Ok(engine.list_runs_for_worktree(&worktree_path).await)
-}
 
 /// worktree_path から active な run_id を解決する（双方向 lookup の一方向）。
 #[tauri::command]
@@ -1663,8 +1759,9 @@ mod tests {
     /// Spec issues-1011 finding 12: command 入口の `validate_run_id` は path traversal や
     /// 形式不正な run_id を拒否し、後段の Run Store / engine に到達させない。
     /// abort_workflow / get_workflow_state / approve_workflow_step /
-    /// get_workflow_execution_log / get_workflow_execution_state / resolve_worktree_by_run
-    /// の全 command で共通に使われるため、入力種別ごとに受理/拒否を一括で担保する。
+    /// get_workflow_run / get_workflow_run_log / get_workflow_run_state /
+    /// resolve_worktree_by_run の全 command で共通に使われるため、入力種別ごとに
+    /// 受理/拒否を一括で担保する。
     #[test]
     fn validate_run_id_table_accepts_uuid_and_rejects_invalid_inputs() {
         // 受理: 正規 UUID（生成値）と既知サンプル
@@ -2512,5 +2609,472 @@ mod tests {
         let result = simulate_save_workflow(dir, &renamed, Some("wf-a"));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("既に存在します"));
+    }
+
+    // ---- [05] read-only Run 観測 API: Tauri command 境界の直接テスト ----
+
+    fn read_only_test_uuid(seed: u8) -> String {
+        uuid::Uuid::from_bytes([seed; 16]).to_string()
+    }
+
+    fn make_read_only_run(
+        run_id: &str,
+        workflow_name: &str,
+        worktree: &str,
+        status: RunStatus,
+        started_at: f64,
+    ) -> crate::workflow::run::WorkflowRun {
+        crate::workflow::run::WorkflowRun {
+            run_id: run_id.to_string(),
+            workflow_name: workflow_name.to_string(),
+            task: None,
+            status,
+            worktree_path: worktree.to_string(),
+            chat_session_id: None,
+            current_node_name: None,
+            trigger_source: TriggerSource::DesktopUi,
+            started_at,
+            updated_at: started_at,
+            completed_at: if status.is_terminal() {
+                Some(started_at + 1.0)
+            } else {
+                None
+            },
+            error_reason: None,
+        }
+    }
+
+    fn write_read_only_run(data_dir: &Path, run: &crate::workflow::run::WorkflowRun) {
+        let runs_dir = data_dir.join("workflow_runs");
+        std::fs::create_dir_all(&runs_dir).unwrap();
+        let path = runs_dir.join(format!("{}.json", run.run_id));
+        let json = serde_json::to_string_pretty(run).unwrap();
+        std::fs::write(path, json).unwrap();
+    }
+
+    fn make_read_only_app() -> (AdapterTestApp, Arc<WorkflowEngine>, std::path::PathBuf) {
+        let app = make_adapter_app();
+        let engine = make_adapter_engine();
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        app.manage(engine.clone());
+        (app, engine, data_dir)
+    }
+
+    /// [05] worktree-scoped 認可境界のテスト用 fixture: 実 git repo + worktree を作り、
+    /// `AppConfig.last_repo_paths` に親 repo を登録する。戻り値は test app / engine /
+    /// data_dir / canonical worktree path / TempDir guards（lifetime 保持用）。
+    fn make_read_only_app_with_managed_worktree() -> (
+        AdapterTestApp,
+        Arc<WorkflowEngine>,
+        std::path::PathBuf,
+        String,
+        TempDir,
+        TempDir,
+    ) {
+        let (app, engine, data_dir) = make_read_only_app();
+        let repo_parent = TempDir::new().unwrap();
+        let worktree_parent = TempDir::new().unwrap();
+        let repo_path = repo_parent.path().join("repo");
+        std::fs::create_dir(&repo_path).unwrap();
+        let repo = git2::Repository::init(&repo_path).unwrap();
+        std::fs::write(repo_path.join("README.md"), "test\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("README.md")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let worktree_path = worktree_parent.path().join("managed-wt");
+        repo.worktree("managed-wt", &worktree_path, None).unwrap();
+        let canonical = worktree_path.canonicalize().unwrap();
+        let canonical_str = canonical.to_string_lossy().to_string();
+        app.state::<Arc<AppConfig>>()
+            .with_config_mut(|config| {
+                config.app.last_repo_paths = vec![repo_path.to_string_lossy().to_string()];
+                Ok(())
+            })
+            .unwrap();
+        (
+            app,
+            engine,
+            data_dir,
+            canonical_str,
+            repo_parent,
+            worktree_parent,
+        )
+    }
+
+    /// Spec [05] Rule: 外部 caller は run_id を主語として workflow run 一覧を観測できる。
+    /// `list_workflow_runs` Tauri command 経路が active を先頭・terminal を後続として
+    /// 並び替え、status filter が機能することを直接検証する。
+    ///
+    /// 観測経路の認可境界（spec [05] L104-108 / L182）として `worktree_path` は必須で、
+    /// caller の認可済み managed worktree のみを対象にする。
+    ///
+    /// active run は in-memory map + metadata file の両方に存在する境界状態であるため、
+    /// `RunStore::register_active` 経由で投入する。terminal run はメタデータファイル
+    /// のみに投入し、`list_completed` が拾い上げることを検証する。
+    #[tokio::test]
+    async fn list_workflow_runs_command_returns_active_first_filtered_by_status() {
+        let (app, engine, data_dir, worktree_path, _r, _w) =
+            make_read_only_app_with_managed_worktree();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let active_id = read_only_test_uuid(1);
+        let done_id = read_only_test_uuid(2);
+        engine
+            .run_store()
+            .register_active(make_read_only_run(
+                &active_id,
+                "wf-active",
+                &worktree_path,
+                RunStatus::Running,
+                200.0,
+            ))
+            .await
+            .expect("register_active must succeed");
+        write_read_only_run(
+            &data_dir,
+            &make_read_only_run(
+                &done_id,
+                "wf-done",
+                &worktree_path,
+                RunStatus::Completed,
+                100.0,
+            ),
+        );
+
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let all = list_workflow_runs(engine_state, config_state, None, worktree_path.clone())
+            .await
+            .expect("list_workflow_runs must succeed");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].status, RunStatus::Running);
+        assert_eq!(all[1].status, RunStatus::Completed);
+
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let terminal = list_workflow_runs(
+            engine_state,
+            config_state,
+            Some("terminal".to_string()),
+            worktree_path.clone(),
+        )
+        .await
+        .expect("terminal filter must succeed");
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].run_id, done_id);
+
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let bad = list_workflow_runs(
+            engine_state,
+            config_state,
+            Some("garbage".to_string()),
+            worktree_path.clone(),
+        )
+        .await;
+        assert!(bad.is_err(), "invalid status filter must be rejected");
+    }
+
+    /// Spec [05] Rule: 観測経路は API と CLI で等価な手段を提供する。
+    /// `list_workflow_runs` の `worktree_path` 入力は `canonicalize_managed_worktree_path`
+    /// で正規化されたうえで filter に渡されるため、末尾 `/` 付きや `.` を含む形で
+    /// 同一 managed worktree を指定しても、canonical 表現で永続化された run と一致する。
+    /// CLI 経路と同じ `normalize_worktree_filter_path` を経由する境界を直接検証する。
+    #[tokio::test]
+    async fn list_workflow_runs_canonicalizes_worktree_path_filter() {
+        let (app, engine, data_dir, canonical_str, _r, _w) =
+            make_read_only_app_with_managed_worktree();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+
+        // canonical な worktree_path で run を 1 件、別 worktree で run を 1 件登録する。
+        let target_id = read_only_test_uuid(40);
+        let other_id = read_only_test_uuid(41);
+        engine
+            .run_store()
+            .register_active(make_read_only_run(
+                &target_id,
+                "wf-target",
+                &canonical_str,
+                RunStatus::Running,
+                200.0,
+            ))
+            .await
+            .expect("register_active for target must succeed");
+        write_read_only_run(
+            &data_dir,
+            &make_read_only_run(
+                &other_id,
+                "wf-other",
+                "/wt/other",
+                RunStatus::Completed,
+                100.0,
+            ),
+        );
+
+        // 末尾 `/` を付けて非 canonical な表現で filter を渡す。
+        let trailing = format!("{canonical_str}/");
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let runs = list_workflow_runs(engine_state, config_state, None, trailing)
+            .await
+            .expect("list_workflow_runs with trailing slash must canonicalize and match");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, target_id);
+        assert_eq!(runs[0].worktree_path, canonical_str);
+
+        // managed worktree でない path は Err。
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let outside = TempDir::new().unwrap();
+        let bad = list_workflow_runs(
+            engine_state,
+            config_state,
+            None,
+            outside.path().to_string_lossy().to_string(),
+        )
+        .await;
+        assert!(
+            bad.is_err(),
+            "worktree_path outside managed worktrees must be rejected"
+        );
+    }
+
+    /// Spec [05] Rule: 観測経路は権限を持つ caller のみに開かれる。
+    /// Tauri API 経路では worktree-scoped 認可境界として
+    /// `canonicalize_managed_worktree_path` を経由するため、configured repo に紐づかない
+    /// worktree_path を渡した場合は観測結果が caller に伝わらない（Err として拒否される）。
+    /// 既存 `list_workflow_runs_command_canonicalizes_managed_worktree_filter` と相補的に
+    /// 観測経路ごとの unauthorized 経路を明示する境界テスト。
+    #[tokio::test]
+    async fn list_workflow_runs_rejects_unauthorized_worktree_observation() {
+        let (app, engine, data_dir) = make_read_only_app();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+
+        // run は存在する。ただし caller が指定する worktree_path は
+        // configured repo に紐づかない（= 観測権限を持たない）ので Err として弾かれる。
+        let run_id = read_only_test_uuid(60);
+        write_read_only_run(
+            &data_dir,
+            &make_read_only_run(&run_id, "wf", "/wt/inside", RunStatus::Running, 100.0),
+        );
+
+        let outside = TempDir::new().unwrap();
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let result = list_workflow_runs(
+            engine_state,
+            config_state,
+            None,
+            outside.path().to_string_lossy().to_string(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "unauthorized worktree_path must be rejected as Err (no observation leak)"
+        );
+    }
+
+    /// Spec [05] Rule: 指定 run の summary metadata を観測する。
+    /// Spec [05] Rule: 存在しない run_id は明示的に「該当 run なし」として扱われる。
+    /// Spec [05] L104-108 / L182: caller の認可済み worktree に紐づかない run は Ok(None)。
+    #[tokio::test]
+    async fn get_workflow_run_command_returns_summary_or_none() {
+        let (app, engine, data_dir, worktree_path, _r, _w) =
+            make_read_only_app_with_managed_worktree();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let run_id = read_only_test_uuid(3);
+        write_read_only_run(
+            &data_dir,
+            &make_read_only_run(&run_id, "wf", &worktree_path, RunStatus::Running, 300.0),
+        );
+
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let found = get_workflow_run(engine_state, config_state, run_id.clone())
+            .await
+            .expect("get_workflow_run must succeed");
+        let found = found.expect("run must be found");
+        assert_eq!(found.run_id, run_id);
+        assert_eq!(found.worktree_path, worktree_path);
+        assert_eq!(found.status, RunStatus::Running);
+
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let missing = get_workflow_run(engine_state, config_state, read_only_test_uuid(99))
+            .await
+            .expect("get_workflow_run for unknown run_id must Ok(None)");
+        assert!(missing.is_none());
+
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let invalid = get_workflow_run(engine_state, config_state, "not-a-uuid".to_string()).await;
+        assert!(invalid.is_err(), "non-UUID run_id must be rejected");
+    }
+
+    /// Spec [05] L104-108 / L182 negative test: 認可境界として、run metadata の
+    /// worktree_path が caller の認可済み managed worktree に合致しない場合、
+    /// `get_workflow_run` / `get_workflow_run_log` / `get_workflow_run_state` は
+    /// いずれも `Ok(None)` を返し、存在する run の summary / log / state を
+    /// 未認可 caller に伝えない。
+    #[tokio::test]
+    async fn single_run_read_only_apis_reject_unauthorized_worktree_observation() {
+        let (app, engine, data_dir, _managed, _r, _w) = make_read_only_app_with_managed_worktree();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+
+        // run は別 worktree に紐づく metadata で書かれている（未認可）。
+        let run_id = read_only_test_uuid(70);
+        let unauthorized_wt = "/wt/unauthorized";
+        write_read_only_run(
+            &data_dir,
+            &make_read_only_run(&run_id, "wf", unauthorized_wt, RunStatus::Running, 100.0),
+        );
+        let event_log = WorkflowEventLog::new(&data_dir);
+        event_log
+            .append(&WorkflowEvent::RunStarted {
+                run_id: run_id.clone(),
+                workflow_name: "wf".to_string(),
+                workflow_file_stem: "wf".to_string(),
+                worktree_path: unauthorized_wt.to_string(),
+                workflow_definition: Workflow {
+                    name: "wf".to_string(),
+                    description: "test".to_string(),
+                    builtin: false,
+                    nodes: vec![],
+                },
+                timestamp: 100.0,
+            })
+            .unwrap();
+
+        let engine_state = app.state::<Arc<WorkflowEngine>>();
+        let config_state = app.state::<Arc<AppConfig>>();
+        let summary = get_workflow_run(engine_state, config_state, run_id.clone())
+            .await
+            .expect("get_workflow_run must succeed");
+        assert!(
+            summary.is_none(),
+            "unauthorized run summary must not be observable"
+        );
+
+        let config_state = app.state::<Arc<AppConfig>>();
+        let log = get_workflow_run_log_inner(app.handle(), &engine, &config_state, run_id.clone())
+            .await
+            .expect("get_workflow_run_log must succeed");
+        assert!(
+            log.is_none(),
+            "unauthorized run event log must not be observable"
+        );
+
+        let config_state = app.state::<Arc<AppConfig>>();
+        let state =
+            get_workflow_run_state_inner(app.handle(), &engine, &config_state, run_id.clone())
+                .await
+                .expect("get_workflow_run_state must succeed");
+        assert!(
+            state.is_none(),
+            "unauthorized run state must not be observable"
+        );
+    }
+
+    /// Spec [05] Rule: 指定 run の event log を観測する。
+    /// `get_workflow_run_log` Tauri command が NDJSON から読み込んだ event 列を返す。
+    #[tokio::test]
+    async fn get_workflow_run_log_command_reads_persisted_ndjson() {
+        let (app, engine, data_dir, worktree_path, _r, _w) =
+            make_read_only_app_with_managed_worktree();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let run_id = read_only_test_uuid(4);
+        write_read_only_run(
+            &data_dir,
+            &make_read_only_run(&run_id, "wf", &worktree_path, RunStatus::Completed, 400.0),
+        );
+        let event_log = WorkflowEventLog::new(&data_dir);
+        event_log
+            .append(&WorkflowEvent::RunStarted {
+                run_id: run_id.clone(),
+                workflow_name: "wf".to_string(),
+                workflow_file_stem: "wf".to_string(),
+                worktree_path: worktree_path.clone(),
+                workflow_definition: Workflow {
+                    name: "wf".to_string(),
+                    description: "test".to_string(),
+                    builtin: false,
+                    nodes: vec![],
+                },
+                timestamp: 400.0,
+            })
+            .unwrap();
+
+        let config_state = app.state::<Arc<AppConfig>>();
+        let events =
+            get_workflow_run_log_inner(app.handle(), &engine, &config_state, run_id.clone())
+                .await
+                .expect("get_workflow_run_log must succeed")
+                .expect("run must be found");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], WorkflowEvent::RunStarted { .. }));
+
+        let config_state = app.state::<Arc<AppConfig>>();
+        let missing = get_workflow_run_log_inner(
+            app.handle(),
+            &engine,
+            &config_state,
+            read_only_test_uuid(98),
+        )
+        .await
+        .expect("get_workflow_run_log for unknown run_id must Ok(None)");
+        assert!(missing.is_none());
+    }
+
+    /// Spec [05] Rule: 指定 run の現在 state を観測する（event log からの純粋投影）。
+    /// 観測結果の露出範囲境界: AgentProcessMap / OpenTabRegistry 由来の runtime_active /
+    /// tab_open enrichment は含めない（戻り値の runtime_states は空）。
+    #[tokio::test]
+    async fn get_workflow_run_state_command_projects_state_without_runtime_enrichment() {
+        let (app, engine, data_dir, worktree_path, _r, _w) =
+            make_read_only_app_with_managed_worktree();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let run_id = read_only_test_uuid(5);
+        write_read_only_run(
+            &data_dir,
+            &make_read_only_run(&run_id, "wf", &worktree_path, RunStatus::Running, 500.0),
+        );
+        let event_log = WorkflowEventLog::new(&data_dir);
+        event_log
+            .append(&WorkflowEvent::RunStarted {
+                run_id: run_id.clone(),
+                workflow_name: "adapter-boundary".to_string(),
+                workflow_file_stem: "adapter-boundary".to_string(),
+                worktree_path: worktree_path.clone(),
+                workflow_definition: approval_only_workflow(),
+                timestamp: 500.0,
+            })
+            .unwrap();
+
+        let config_state = app.state::<Arc<AppConfig>>();
+        let view =
+            get_workflow_run_state_inner(app.handle(), &engine, &config_state, run_id.clone())
+                .await
+                .expect("get_workflow_run_state must succeed")
+                .expect("state must be available");
+        assert_eq!(view.state.execution_id, run_id);
+        assert!(
+            view.runtime_states.is_empty(),
+            "read-only state view must not include runtime enrichment"
+        );
+
+        // 存在しない run_id は Ok(None)。
+        let config_state = app.state::<Arc<AppConfig>>();
+        let missing = get_workflow_run_state_inner(
+            app.handle(),
+            &engine,
+            &config_state,
+            read_only_test_uuid(97),
+        )
+        .await
+        .expect("unknown run must Ok(None)");
+        assert!(missing.is_none());
     }
 }

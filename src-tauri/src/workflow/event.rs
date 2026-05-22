@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::workflow::schema::Workflow;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
     pub input_tokens: u64,

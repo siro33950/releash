@@ -26,7 +26,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const { WorkflowPanel } = await import("./WorkflowPanel");
 
-/// run_id 一覧の test helper。`list_workflow_runs_for_worktree` が返す
+/// run_id 一覧の test helper。`list_workflow_runs` が返す
 /// `WorkflowRunSummary[]` の最小形を生成する。
 function makeRunSummaries(
 	runIds: string[],
@@ -120,12 +120,12 @@ describe("WorkflowPanel", () => {
 			clientHeight: 100,
 		});
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_runs_for_worktree") {
+			if (cmd === "list_workflow_runs") {
 				return Promise.resolve(
 					makeRunSummaries(["exec-current", "exec-old"], "/repo"),
 				);
 			}
-			if (cmd === "get_workflow_execution_state") {
+			if (cmd === "get_workflow_run_state") {
 				return Promise.resolve(
 					makeWorkflowState({
 						executionId: "exec-old",
@@ -138,7 +138,7 @@ describe("WorkflowPanel", () => {
 					}),
 				);
 			}
-			if (cmd === "get_workflow_execution_log") {
+			if (cmd === "get_workflow_run_log") {
 				return Promise.resolve([]);
 			}
 			return Promise.resolve(undefined);
@@ -633,7 +633,7 @@ describe("WorkflowPanel", () => {
 						},
 					]);
 				}
-				if (cmd === "list_workflow_runs_for_worktree") {
+				if (cmd === "list_workflow_runs") {
 					return Promise.resolve([]);
 				}
 				return Promise.resolve(undefined);
@@ -722,10 +722,10 @@ describe("WorkflowPanel", () => {
 
 	it("keeps past execution workflow status outside the trace scroll region", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_runs_for_worktree") {
+			if (cmd === "list_workflow_runs") {
 				return Promise.resolve(makeRunSummaries(["exec-old"], "/repo"));
 			}
-			if (cmd === "get_workflow_execution_state") {
+			if (cmd === "get_workflow_run_state") {
 				return Promise.resolve(
 					makeWorkflowState({
 						executionId: "exec-old",
@@ -737,7 +737,7 @@ describe("WorkflowPanel", () => {
 					}),
 				);
 			}
-			if (cmd === "get_workflow_execution_log") {
+			if (cmd === "get_workflow_run_log") {
 				return Promise.resolve([]);
 			}
 			return Promise.resolve(undefined);
@@ -757,13 +757,13 @@ describe("WorkflowPanel", () => {
 
 	it("shows an alert instead of Loading when past execution data fails to load", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_runs_for_worktree") {
+			if (cmd === "list_workflow_runs") {
 				return Promise.resolve(makeRunSummaries(["exec-old"], "/repo"));
 			}
-			if (cmd === "get_workflow_execution_state") {
+			if (cmd === "get_workflow_run_state") {
 				return Promise.reject(new Error("state failed"));
 			}
-			if (cmd === "get_workflow_execution_log") {
+			if (cmd === "get_workflow_run_log") {
 				return Promise.resolve([]);
 			}
 			return Promise.resolve(undefined);
@@ -782,13 +782,13 @@ describe("WorkflowPanel", () => {
 
 	it("shows an alert instead of Loading when past execution state is missing", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_runs_for_worktree") {
+			if (cmd === "list_workflow_runs") {
 				return Promise.resolve(makeRunSummaries(["exec-old"], "/repo"));
 			}
-			if (cmd === "get_workflow_execution_state") {
+			if (cmd === "get_workflow_run_state") {
 				return Promise.resolve(null);
 			}
-			if (cmd === "get_workflow_execution_log") {
+			if (cmd === "get_workflow_run_log") {
 				return Promise.resolve([]);
 			}
 			return Promise.resolve(undefined);
@@ -807,10 +807,10 @@ describe("WorkflowPanel", () => {
 
 	it("shows an alert instead of Loading when past execution log fails to load", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "list_workflow_runs_for_worktree") {
+			if (cmd === "list_workflow_runs") {
 				return Promise.resolve(makeRunSummaries(["exec-old"], "/repo"));
 			}
-			if (cmd === "get_workflow_execution_state") {
+			if (cmd === "get_workflow_run_state") {
 				return Promise.resolve(
 					makeWorkflowState({
 						executionId: "exec-old",
@@ -818,7 +818,7 @@ describe("WorkflowPanel", () => {
 					}),
 				);
 			}
-			if (cmd === "get_workflow_execution_log") {
+			if (cmd === "get_workflow_run_log") {
 				return Promise.reject(new Error("log failed"));
 			}
 			return Promise.resolve(undefined);

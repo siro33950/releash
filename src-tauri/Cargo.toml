@@ -73,6 +73,7 @@ bytes = "1"
 flate2 = "1"
 tar = "0.4"
 url = "2"
+clap = { version = "4", features = ["derive"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
