@@ -70,7 +70,9 @@ pub enum FacetKind {
     Policy,
     Knowledge,
     Instruction,
-    OutputContract,
+    /// step 境界で受け渡されるデータ仕様。input / output いずれの位置でも
+    /// 同一定義を参照可能（[02] Contract 双方向対称性）。
+    Contract,
 }
 
 impl FacetKind {
@@ -79,9 +81,38 @@ impl FacetKind {
             Self::Policy => "policies",
             Self::Knowledge => "knowledge",
             Self::Instruction => "instructions",
-            Self::OutputContract => "output_contracts",
+            Self::Contract => "contracts",
         }
     }
+}
+
+/// 出力 Contract の前置定型文を組み立てる。
+///
+/// Contract facet 本文は純粋な JSON shape 仕様（フォーマット + フィールドルール）のみを
+/// 保持し、`<workflow_output>` エンベロープの要求は本 preamble に閉じる。これにより
+/// 同じ Contract 本文が input/output 双方で再利用可能になる（[02] Contract 双方向対称性）。
+pub fn output_contract_preamble(key: &str) -> String {
+    format!(
+        "レスポンスには下記データ仕様の `<workflow_output type=\"{key}\">...</workflow_output>` ブロックを必ず1つだけ含めること。\n\nデータ仕様 (型: {key}):"
+    )
+}
+
+/// 入力 Contract の前置定型文を組み立てる。
+///
+/// engine はメッセージ末尾に以下のいずれかの形式で入力データを注入する:
+/// - `<task>...</task>` ブロック（workflow 実行時の task 引数）
+/// - `<step_output name="...">{JSON | (not yet completed) | (no structured output)}</step_output>` ブロック
+///   （前段 step の output。`pass_output_from` / `pass_previous_response` 経由。
+///   前段が未実行のときは `(not yet completed)` リテラル）
+/// - `<workflow_variables>{JSON}</workflow_variables>` ブロック（workflow 変数）
+///
+/// 入力 Contract 本文はデータ仕様（フォーマット + フィールドルール）のみを示し、
+/// どのブロックから読み取るかは含めない。受け手 agent は以下のいずれかから
+/// データ仕様に一致する入力を取り出して扱う。
+pub fn input_contract_preamble(key: &str) -> String {
+    format!(
+        "入力データは以下のいずれかのブロックで届く: `<task>...</task>` / `<step_output name=\"...\">...</step_output>` / `<workflow_variables>...</workflow_variables>`。\n`<step_output>` の内容が `(not yet completed)` のときは前段 step が未実行なので入力なしとして扱う。\n入力が JSON 以外の形式（自然言語の文中等）で渡されたときは、本文に含まれるキー値を抽出して下記データ仕様にマップして扱う。\n下記データ仕様 (型: {key}) に合致する入力を読み取って処理すること。\n\nデータ仕様 (型: {key}):"
+    )
 }
 
 #[derive(Debug)]
@@ -314,22 +345,34 @@ pub fn resolve_facet_path(
 ///
 /// agent / approval 種別の node が対象。bash / parallel node には facet 参照は存在しない。
 pub fn compose_facets(node: &NodeDefinition) -> ComposedPrompt {
-    compose_from_resolved(&node.resolved_facets)
+    compose_from_parts(
+        &node.resolved_facets,
+        node.output_contract.as_deref(),
+        node.input_contracts.as_deref(),
+    )
 }
 
 /// 並列子 node の prompt 関連 facet 参照から組み立てた `ComposedPrompt` を返す。
 /// `compose_facets` と同じく `ChildNodeDefinition.resolved_facets` のみを参照する。
 pub fn compose_child_facets(child: &ChildNodeDefinition) -> ComposedPrompt {
-    compose_from_resolved(&child.resolved_facets)
+    compose_from_parts(
+        &child.resolved_facets,
+        child.output_contract.as_deref(),
+        child.input_contracts.as_deref(),
+    )
 }
 
-fn compose_from_resolved(resolved: &ResolvedFacets) -> ComposedPrompt {
+fn compose_from_parts(
+    resolved: &ResolvedFacets,
+    output_contract_key: Option<&str>,
+    input_contract_keys: Option<&[String]>,
+) -> ComposedPrompt {
     let mut system_parts: Vec<String> = Vec::new();
     if let Some(ref content) = resolved.policy {
         system_parts.push(content.clone());
     }
-    if let Some(ref content) = resolved.output_contract {
-        system_parts.push(content.clone());
+    if let (Some(ref content), Some(key)) = (&resolved.output_contract, output_contract_key) {
+        system_parts.push(format!("{}\n\n{}", output_contract_preamble(key), content));
     }
     let system_prompt = if system_parts.is_empty() {
         None
@@ -340,6 +383,13 @@ fn compose_from_resolved(resolved: &ResolvedFacets) -> ComposedPrompt {
     let mut user_parts: Vec<String> = Vec::new();
     if let Some(ref content) = resolved.knowledge {
         user_parts.push(content.clone());
+    }
+    if let Some(keys) = input_contract_keys {
+        // resolved.input_contracts と input_contract_keys は同じ順序・同じ長さで対応する
+        // ([02] Contract 双方向対称性: load 経路で keys を順に解決して body 配列に格納する)。
+        for (key, body) in keys.iter().zip(resolved.input_contracts.iter()) {
+            user_parts.push(format!("{}\n\n{}", input_contract_preamble(key), body));
+        }
     }
     if let Some(ref content) = resolved.instruction {
         user_parts.push(content.clone());
@@ -363,6 +413,7 @@ pub fn resolve_workflow_facets(workflow: &mut Workflow, base_dir: &Path) -> Resu
             node.knowledge.as_deref(),
             node.instruction.as_deref(),
             node.output_contract.as_deref(),
+            node.input_contracts.as_deref(),
             base_dir,
         )?;
         if let Some(ref mut children) = node.parallel_children {
@@ -372,6 +423,7 @@ pub fn resolve_workflow_facets(workflow: &mut Workflow, base_dir: &Path) -> Resu
                     child.knowledge.as_deref(),
                     child.instruction.as_deref(),
                     child.output_contract.as_deref(),
+                    child.input_contracts.as_deref(),
                     base_dir,
                 )?;
             }
@@ -397,6 +449,7 @@ pub(crate) fn resolve_node_facets(
         node.knowledge.as_deref(),
         node.instruction.as_deref(),
         node.output_contract.as_deref(),
+        node.input_contracts.as_deref(),
         base_dir,
     )?;
     Ok(())
@@ -414,6 +467,7 @@ pub(crate) fn resolve_child_facets(
         child.knowledge.as_deref(),
         child.instruction.as_deref(),
         child.output_contract.as_deref(),
+        child.input_contracts.as_deref(),
         base_dir,
     )?;
     Ok(())
@@ -424,6 +478,7 @@ fn resolve_refs(
     knowledge: Option<&str>,
     instruction: Option<&str>,
     output_contract: Option<&str>,
+    input_contracts: Option<&[String]>,
     base_dir: &Path,
 ) -> Result<ResolvedFacets, FacetError> {
     let resolved_policy = match policy {
@@ -439,14 +494,22 @@ fn resolve_refs(
         None => None,
     };
     let resolved_oc = match output_contract {
-        Some(k) => Some(load_facet(FacetKind::OutputContract, k, base_dir)?),
+        Some(k) => Some(load_facet(FacetKind::Contract, k, base_dir)?),
         None => None,
+    };
+    let resolved_inputs = match input_contracts {
+        Some(keys) => keys
+            .iter()
+            .map(|k| load_facet(FacetKind::Contract, k, base_dir))
+            .collect::<Result<Vec<_>, _>>()?,
+        None => Vec::new(),
     };
     Ok(ResolvedFacets {
         policy: resolved_policy,
         knowledge: resolved_knowledge,
         instruction: resolved_instruction,
         output_contract: resolved_oc,
+        input_contracts: resolved_inputs,
     })
 }
 
@@ -477,15 +540,15 @@ mod tests {
         let policies = dir.join("policies");
         let knowledge = dir.join("knowledge");
         let instructions = dir.join("instructions");
-        let output_contracts = dir.join("output_contracts");
-        for d in [&policies, &knowledge, &instructions, &output_contracts] {
+        let contracts = dir.join("contracts");
+        for d in [&policies, &knowledge, &instructions, &contracts] {
             fs::create_dir_all(d).unwrap();
         }
         fs::write(policies.join("coding.md"), "Follow best practices.").unwrap();
         fs::write(policies.join("review.md"), "Review carefully.").unwrap();
         fs::write(knowledge.join("architecture.md"), "The system uses Tauri.").unwrap();
         fs::write(instructions.join("implement.md"), "Implement the feature.").unwrap();
-        fs::write(output_contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
+        fs::write(contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
     }
 
     // --- validate_facet_key ---
@@ -644,6 +707,7 @@ mod tests {
     #[test]
     fn compose_system_prompt_from_output_contract_only() {
         // Scenario: output_contractのみを指定したステップでも system_prompt が合成される
+        // （engine が前置定型文を自動付与する）
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
@@ -651,8 +715,45 @@ mod tests {
         resolve_node_facets(&mut node, tmp.path()).unwrap();
         let result = compose_facets(&node);
 
-        assert_eq!(result.system_prompt.as_deref(), Some("Output as markdown."));
+        let sys = result.system_prompt.expect("system_prompt should be set");
+        // 出力 Contract preamble はキーに応じて `<workflow_output type="plan-doc">` の
+        // 署名を含み、本文（plan-doc Contract body）も連結される
+        assert!(sys.contains("<workflow_output type=\"plan-doc\">"));
+        assert!(sys.contains("Output as markdown."));
         assert_eq!(result.user_message, "");
+    }
+
+    #[test]
+    fn compose_input_contracts_into_user_message() {
+        // Scenario: input_contractsを指定したステップでは user_message に
+        // 入力前置 + Contract 本文が含まれる（Contract 双方向対称性）
+        let tmp = TempDir::new().unwrap();
+        setup_facet_files(tmp.path());
+
+        let mut node = NodeDefinition {
+            name: "test".to_string(),
+            node_type: NodeType::Agent,
+            input_contracts: Some(vec!["plan-doc".to_string()]),
+            ..NodeDefinition::default()
+        };
+        resolve_node_facets(&mut node, tmp.path()).unwrap();
+        let result = compose_facets(&node);
+
+        // 入力 Contract preamble は入力チャネル候補（<task> / <step_output> / <workflow_variables>）と
+        // 型ラベル (型: plan-doc) を含み、Contract 本文も連結される
+        assert!(result.user_message.contains("<task>...</task>"));
+        assert!(result
+            .user_message
+            .contains("<step_output name=\"...\">...</step_output>"));
+        assert!(result
+            .user_message
+            .contains("<workflow_variables>...</workflow_variables>"));
+        assert!(result.user_message.contains("型: plan-doc"));
+        // 全 input Contract 共通の一般ルール: JSON 以外の形式で渡された場合のキー値抽出
+        assert!(result.user_message.contains("JSON 以外の形式"));
+        assert!(result.user_message.contains("キー値を抽出"));
+        assert!(result.user_message.contains("Output as markdown."));
+        assert!(result.system_prompt.is_none());
     }
 
     #[test]

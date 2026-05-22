@@ -1,12 +1,6 @@
----
-type: instruction
-key: implementation-fix-policy
-description: 人間向けに修正方針を報告し、承認を得てから approved-fix-policy を出力する
----
-
 # Implementation Fix Policy Approval
 
-`code_review_parallel` から渡されたレビュー結果（6観点 reviewer の `review-verdict`）と、Spec ファイル（`plan_requirements` の出力経由）を読み込み、実装の修正方針を策定する。
+入力で渡されるレビュー結果（6観点 reviewer の `review-verdict`）と Spec ファイルを読み込み、実装の修正方針を策定する。
 
 ファイル編集は一切行わない。
 
@@ -41,26 +35,10 @@ description: 人間向けに修正方針を報告し、承認を得てから app
 - **却下（reject）された場合**:
   `reject` の意図を1行で確認応答する（`<workflow_output>` は出力しない）。ワークフローエンジンが `match: reject` ルールで分岐する。
 
-## `<workflow_output>` フォーマット（承認後のみ）
+## 承認後の出力
 
-```text
-<workflow_output type="approved-fix-policy">
-{
-  "policy": "承認された全体方針（自由文）",
-  "review_step": "code_review_parallel",
-  "findings": [
-    {
-      "severity": "error" | "warning" | "info",
-      "line": "<path>:<line>",
-      "message": "指摘内容",
-      "action": "fix" | "skip",
-      "rationale": "判断理由"
-    }
-  ]
-}
-</workflow_output>
-```
+ユーザーから承認を得た場合、`approved-fix-policy` Contract に従って `<workflow_output>` ブロックを 1 つだけ出力する。前後に文章を付けない。
 
+- `review_step` には `"code_review_parallel"` を指定する（本 policy が参照した一次入力の種別）
 - `findings` は人間に報告した内容と完全に一致させる
-- `line` は元の review-verdict から引き継ぐ（無い場合は省略）
 - 追加項目（review にない「ついでに直す」など）も同じ配列に入れる

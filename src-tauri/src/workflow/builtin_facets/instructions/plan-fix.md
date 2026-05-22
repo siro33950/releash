@@ -2,8 +2,8 @@
 
 ## 入力
 
-- ユーザーがApproveしたPlan修正方針（`approved-fix-policy`、ステップ出力経由）
-- Specファイルパス（`plan_requirements` の出力経由）
+- ユーザーがApproveしたPlan修正方針（入力で渡される `approved-fix-policy` Contract）
+- Specファイルパス（入力で渡される `spec-file-path` Contract）
 
 ## 早期終了判定（最優先）
 
@@ -17,7 +17,7 @@ NO_FIX_NEEDED
 
 ## プロセス（`action: "fix"` の指摘が1件以上ある場合）
 
-1. Specファイルを読み込む（`plan_requirements` の出力の `spec_file_path`）
+1. Specファイルを読み込む（入力で渡される `spec-file-path` Contract）
 2. `approved-fix-policy.findings` の各要素を参照し、`action: "fix"` のものだけを修正対象とする
 3. 各修正対象について:
    - Specの修正箇所を特定する（`line` がある場合はそれを参考）

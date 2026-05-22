@@ -5,7 +5,7 @@ export const FACET_KIND_DIR_MAP: Record<string, string> = {
 	policy: "policies",
 	knowledge: "knowledge",
 	instruction: "instructions",
-	output_contract: "output_contracts",
+	contract: "contracts",
 };
 
 export function facetKindToDirName(kind: string): string {

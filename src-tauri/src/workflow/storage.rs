@@ -104,6 +104,14 @@ pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
 
 pub fn save_workflow(dir: &Path, workflow: &Workflow) -> Result<(), StorageError> {
     validation::validate(workflow)?;
+    // [02] Contract 双方向対称性: user-authored workflow を保存する経路でも
+    // `input_contracts` / `output_contract` の参照キーが Contract facet として
+    // 実在することを検証する。load 時の facet 解決と整合させ、存在しない参照を
+    // 持つ workflow がディスクに書き出されないようにする。
+    let facets_dir = facet::facets_base_dir();
+    validation::validate_facet_refs(workflow, |key| {
+        facet::load_facet(facet::FacetKind::Contract, key, &facets_dir).is_ok()
+    })?;
 
     ensure_dir(dir)?;
 
@@ -302,13 +310,31 @@ mod tests {
         save_workflow(dir, &sample_workflow("bravo", false)).unwrap();
 
         let list = list_workflows(dir).unwrap();
-        // ディスク3件 + ビルトイン(spec-driven-development) = 4件
-        assert_eq!(list.len(), 4);
+        // ディスク3件 + ビルトイン6件 (bug-fix, spec-driven-development, spec-implement,
+        // spec-plan, spec-review, spec-review-auto) = 9件。ソートは ASCII 順なので
+        // ディスク3件 + ビルトイン6件が辞書順でマージされる。
+        assert_eq!(list.len(), 9);
         assert_eq!(list[0].name, "alpha");
         assert_eq!(list[1].name, "bravo");
-        assert_eq!(list[2].name, "charlie");
-        assert_eq!(list[3].name, "spec-driven-development");
-        assert!(list[3].builtin);
+        assert_eq!(list[2].name, "bug-fix");
+        assert_eq!(list[3].name, "charlie");
+        assert_eq!(list[4].name, "spec-driven-development");
+        assert_eq!(list[5].name, "spec-implement");
+        assert_eq!(list[6].name, "spec-plan");
+        assert_eq!(list[7].name, "spec-review");
+        assert_eq!(list[8].name, "spec-review-auto");
+        // ビルトイン6件すべて builtin=true
+        for name in [
+            "bug-fix",
+            "spec-driven-development",
+            "spec-implement",
+            "spec-plan",
+            "spec-review",
+            "spec-review-auto",
+        ] {
+            let entry = list.iter().find(|s| s.name == name).unwrap();
+            assert!(entry.builtin, "builtin '{name}' must be marked builtin");
+        }
     }
 
     #[test]
@@ -555,18 +581,18 @@ steps:
         let policies = dir.join("policies");
         let knowledge = dir.join("knowledge");
         let instructions = dir.join("instructions");
-        let output_contracts = dir.join("output_contracts");
-        for d in [&policies, &knowledge, &instructions, &output_contracts] {
+        let contracts = dir.join("contracts");
+        for d in [&policies, &knowledge, &instructions, &contracts] {
             std::fs::create_dir_all(d).unwrap();
         }
         std::fs::write(policies.join("p.md"), "POLICY").unwrap();
         std::fs::write(knowledge.join("k.md"), "KNOWLEDGE").unwrap();
         std::fs::write(instructions.join("i.md"), "INSTRUCTION").unwrap();
-        std::fs::write(output_contracts.join("oc.md"), "OUTPUT_CONTRACT").unwrap();
+        std::fs::write(contracts.join("oc.md"), "OUTPUT_CONTRACT").unwrap();
         std::fs::write(policies.join("pc.md"), "CHILD_POLICY").unwrap();
         std::fs::write(knowledge.join("kc.md"), "CHILD_KNOWLEDGE").unwrap();
         std::fs::write(instructions.join("ic.md"), "CHILD_INSTRUCTION").unwrap();
-        std::fs::write(output_contracts.join("occ.md"), "CHILD_OUTPUT_CONTRACT").unwrap();
+        std::fs::write(contracts.join("occ.md"), "CHILD_OUTPUT_CONTRACT").unwrap();
 
         let yaml = r#"
 name: facet-all

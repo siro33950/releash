@@ -16,11 +16,7 @@ const EMPTY_REPORT: DiagnosticReport = {
 	facet_usage: {},
 };
 
-export type FacetSubTab =
-	| "policy"
-	| "knowledge"
-	| "instruction"
-	| "output_contract";
+export type FacetSubTab = "policy" | "knowledge" | "instruction" | "contract";
 
 export function useAutomation(open: boolean) {
 	const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
@@ -290,26 +286,28 @@ export function useAutomation(open: boolean) {
 
 	const loadAllFacetKeys = useCallback(async () => {
 		try {
-			const [policies, knowledge, instructions, outputContracts] =
-				await Promise.all([
-					invoke<FacetSummary[]>("list_facet_summaries", {
-						kind: "policy",
-					}),
-					invoke<FacetSummary[]>("list_facet_summaries", {
-						kind: "knowledge",
-					}),
-					invoke<FacetSummary[]>("list_facet_summaries", {
-						kind: "instruction",
-					}),
-					invoke<FacetSummary[]>("list_facet_summaries", {
-						kind: "output_contract",
-					}),
-				]);
+			const [policies, knowledge, instructions, contracts] = await Promise.all([
+				invoke<FacetSummary[]>("list_facet_summaries", {
+					kind: "policy",
+				}),
+				invoke<FacetSummary[]>("list_facet_summaries", {
+					kind: "knowledge",
+				}),
+				invoke<FacetSummary[]>("list_facet_summaries", {
+					kind: "instruction",
+				}),
+				invoke<FacetSummary[]>("list_facet_summaries", {
+					kind: "contract",
+				}),
+			]);
 			return {
 				policy: policies.map((f) => f.key),
 				knowledge: knowledge.map((f) => f.key),
 				instruction: instructions.map((f) => f.key),
-				output_contract: outputContracts.map((f) => f.key),
+				// facet kind は "contract" だが、StepEditor の FacetSlot 名
+				// （schema フィールド名 output_contract）に合わせてキー名を保持する。
+				// input_contracts 編集 UI 導入時に統一する想定（別タスク）。
+				output_contract: contracts.map((f) => f.key),
 			};
 		} catch (e) {
 			setError(String(e));

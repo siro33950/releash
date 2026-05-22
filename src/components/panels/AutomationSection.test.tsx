@@ -143,7 +143,7 @@ describe("AutomationSection", () => {
 		expect(screen.getByText("Policy")).toBeInTheDocument();
 		expect(screen.getByText("Knowledge")).toBeInTheDocument();
 		expect(screen.getByText("Instruction")).toBeInTheDocument();
-		expect(screen.getByText("OutputContract")).toBeInTheDocument();
+		expect(screen.getByText("Contract")).toBeInTheDocument();
 	});
 
 	it("shows error message when error is set", () => {

@@ -2,8 +2,8 @@
 
 ## 入力
 
-- ユーザーがApproveした実装修正方針（`approved-fix-policy`、ステップ出力経由）
-- Specファイルパス（`plan_requirements` の出力経由）— 参照用
+- 承認済みの実装修正方針（`approved-fix-policy`）
+- Spec ファイルパス（参照用）
 
 ## 早期終了判定（最優先）
 

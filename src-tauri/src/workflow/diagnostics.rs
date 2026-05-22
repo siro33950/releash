@@ -10,7 +10,7 @@ const ALL_FACET_KINDS: [FacetKind; 4] = [
     FacetKind::Policy,
     FacetKind::Knowledge,
     FacetKind::Instruction,
-    FacetKind::OutputContract,
+    FacetKind::Contract,
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -338,6 +338,9 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::TooManyParallelChildren { step, .. } => {
             (Some(step.clone()), Some("parallel_children".to_string()))
         }
+        ValidationError::UnknownContractRef { step, slot, .. } => {
+            (Some(step.clone()), Some((*slot).to_string()))
+        }
     }
 }
 
@@ -599,20 +602,17 @@ fn diagnose_workflow(
         }
 
         // ファセット参照の存在チェック + usage 記録
-        check_step_facet_refs(
-            &step.name,
-            &FacetRefs {
-                policy: step.policy.as_deref(),
-                knowledge: step.knowledge.as_deref(),
-                instruction: step.instruction.as_deref(),
-                output_contract: step.output_contract.as_deref(),
-            },
-            name,
-            all_facet_keys,
-            items,
-            workflow_summaries,
-            facet_usage,
-        );
+        FacetRefCheckContext::new(name, all_facet_keys, items, workflow_summaries, facet_usage)
+            .check_step(
+                &step.name,
+                &FacetRefs {
+                    policy: step.policy.as_deref(),
+                    knowledge: step.knowledge.as_deref(),
+                    instruction: step.instruction.as_deref(),
+                    output_contract: step.output_contract.as_deref(),
+                    input_contracts: step.input_contracts.as_deref(),
+                },
+            );
 
         // ファセット未設定チェック（inline_prompt があればOK）。
         // bash node は command を持ち facet/inline_prompt は不要なため除外
@@ -642,19 +642,22 @@ fn diagnose_workflow(
         if let Some(ref children) = step.parallel_children {
             let child_names: HashSet<&str> = children.iter().map(|c| c.name.as_str()).collect();
             for child in children {
-                check_step_facet_refs(
+                FacetRefCheckContext::new(
+                    name,
+                    all_facet_keys,
+                    items,
+                    workflow_summaries,
+                    facet_usage,
+                )
+                .check_step(
                     &child.name,
                     &FacetRefs {
                         policy: child.policy.as_deref(),
                         knowledge: child.knowledge.as_deref(),
                         instruction: child.instruction.as_deref(),
                         output_contract: child.output_contract.as_deref(),
+                        input_contracts: child.input_contracts.as_deref(),
                     },
-                    name,
-                    all_facet_keys,
-                    items,
-                    workflow_summaries,
-                    facet_usage,
                 );
 
                 // 並列子stepの pass_output_from チェック（兄弟参照禁止、後方参照は許可）
@@ -745,63 +748,101 @@ struct FacetRefs<'a> {
     knowledge: Option<&'a str>,
     instruction: Option<&'a str>,
     output_contract: Option<&'a str>,
+    input_contracts: Option<&'a [String]>,
 }
 
-fn check_step_facet_refs(
-    step_name: &str,
-    facet_refs: &FacetRefs<'_>,
-    workflow_name: &str,
-    all_facet_keys: &HashSet<String>,
-    items: &mut Vec<DiagnosticItem>,
-    workflow_summaries: &mut HashMap<String, DiagnosticSummary>,
-    facet_usage: &mut HashMap<String, Vec<FacetUsageEntry>>,
-) {
-    let refs: Vec<(&str, FacetKind, Option<&str>)> = vec![
-        ("policy", FacetKind::Policy, facet_refs.policy),
-        ("knowledge", FacetKind::Knowledge, facet_refs.knowledge),
-        (
-            "instruction",
-            FacetKind::Instruction,
-            facet_refs.instruction,
-        ),
-        (
-            "output_contract",
-            FacetKind::OutputContract,
-            facet_refs.output_contract,
-        ),
-    ];
+/// 複数の facet 参照を 1 つの step スコープで一括検査するためのコンテキスト。
+///
+/// 旧 `check_single_facet_ref` は 9 引数で都度 sink / 一覧 / workflow 名を渡していたが、
+/// それらは「`diagnose_workflow` の 1 走行を通じて共有される」性質のもの。
+/// このコンテキストにまとめて `ctx.check(step, slot, kind, key)` の形で呼び出すことで、
+/// 凝集度を上げ `#[allow(clippy::too_many_arguments)]` を不要にする。
+struct FacetRefCheckContext<'a> {
+    workflow_name: &'a str,
+    all_facet_keys: &'a HashSet<String>,
+    items: &'a mut Vec<DiagnosticItem>,
+    workflow_summaries: &'a mut HashMap<String, DiagnosticSummary>,
+    facet_usage: &'a mut HashMap<String, Vec<FacetUsageEntry>>,
+}
 
-    for (slot, kind, key_opt) in refs {
-        if let Some(key) = key_opt {
-            let facet_id = format!("{}/{}", kind.dir_name(), key);
+impl<'a> FacetRefCheckContext<'a> {
+    fn new(
+        workflow_name: &'a str,
+        all_facet_keys: &'a HashSet<String>,
+        items: &'a mut Vec<DiagnosticItem>,
+        workflow_summaries: &'a mut HashMap<String, DiagnosticSummary>,
+        facet_usage: &'a mut HashMap<String, Vec<FacetUsageEntry>>,
+    ) -> Self {
+        Self {
+            workflow_name,
+            all_facet_keys,
+            items,
+            workflow_summaries,
+            facet_usage,
+        }
+    }
 
-            // usage 記録
-            facet_usage
-                .entry(facet_id.clone())
-                .or_default()
-                .push(FacetUsageEntry {
-                    workflow_name: workflow_name.to_string(),
-                    step_name: step_name.to_string(),
-                    slot: slot.to_string(),
-                });
+    /// 単一の facet 参照について usage 記録と存在チェックを行う。
+    fn check(&mut self, step_name: &str, slot: &str, kind: FacetKind, key: &str) {
+        let facet_id = format!("{}/{}", kind.dir_name(), key);
 
-            // 存在チェック
-            if !all_facet_keys.contains(&facet_id) {
-                let item = DiagnosticItem {
-                    severity: Severity::Error,
-                    message: format!(
-                        "ステップ '{}' が存在しないファセット '{}' ({}) を参照しています",
-                        step_name,
-                        key,
-                        kind.dir_name()
-                    ),
-                    workflow_name: Some(workflow_name.to_string()),
-                    step_name: Some(step_name.to_string()),
-                    facet_key: Some(key.to_string()),
-                    facet_kind: Some(kind.dir_name().to_string()),
-                    field: Some(slot.to_string()),
-                };
-                add_diagnostic(items, workflow_summaries, workflow_name, item);
+        self.facet_usage
+            .entry(facet_id.clone())
+            .or_default()
+            .push(FacetUsageEntry {
+                workflow_name: self.workflow_name.to_string(),
+                step_name: step_name.to_string(),
+                slot: slot.to_string(),
+            });
+
+        if !self.all_facet_keys.contains(&facet_id) {
+            let item = DiagnosticItem {
+                severity: Severity::Error,
+                message: format!(
+                    "ステップ '{}' が存在しないファセット '{}' ({}) を参照しています",
+                    step_name,
+                    key,
+                    kind.dir_name()
+                ),
+                workflow_name: Some(self.workflow_name.to_string()),
+                step_name: Some(step_name.to_string()),
+                facet_key: Some(key.to_string()),
+                facet_kind: Some(kind.dir_name().to_string()),
+                field: Some(slot.to_string()),
+            };
+            add_diagnostic(
+                self.items,
+                self.workflow_summaries,
+                self.workflow_name,
+                item,
+            );
+        }
+    }
+
+    /// 1 つの step が持つ全 facet ref（4 単数 slot + input_contracts 配列）を一括検査する。
+    fn check_step(&mut self, step_name: &str, facet_refs: &FacetRefs<'_>) {
+        let singles: &[(&str, FacetKind, Option<&str>)] = &[
+            ("policy", FacetKind::Policy, facet_refs.policy),
+            ("knowledge", FacetKind::Knowledge, facet_refs.knowledge),
+            (
+                "instruction",
+                FacetKind::Instruction,
+                facet_refs.instruction,
+            ),
+            (
+                "output_contract",
+                FacetKind::Contract,
+                facet_refs.output_contract,
+            ),
+        ];
+        for (slot, kind, key_opt) in singles {
+            if let Some(key) = key_opt {
+                self.check(step_name, slot, *kind, key);
+            }
+        }
+        if let Some(keys) = facet_refs.input_contracts {
+            for key in keys {
+                self.check(step_name, "input_contracts", FacetKind::Contract, key);
             }
         }
     }
@@ -850,7 +891,9 @@ fn add_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::schema::{CollectConfig, ReduceStrategy, TransitionRule, Workflow};
+    use crate::workflow::schema::{
+        ChildNodeDefinition, CollectConfig, ReduceStrategy, TransitionRule, Workflow,
+    };
     use std::fs;
     use tempfile::TempDir;
 
@@ -910,6 +953,107 @@ mod tests {
             .items
             .iter()
             .any(|i| i.severity == Severity::Error && i.message.contains("存在しないファセット")));
+    }
+
+    #[test]
+    fn diagnose_missing_input_contract_ref() {
+        // Scenario: input_contracts が存在しない Contract キーを参照していれば
+        // facet 参照チェックでエラーになる
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "instructions", "impl", "content");
+
+        let wf = Workflow {
+            name: "test-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                input_contracts: Some(vec!["nonexistent-contract".to_string()]),
+                ..make_step("step1", Some("impl"))
+            }],
+        };
+        save_workflow_yaml(wf_dir, &wf);
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        assert!(
+            report.items.iter().any(|i| i.severity == Severity::Error
+                && i.message.contains("存在しないファセット")
+                && i.message.contains("nonexistent-contract")
+                && i.field.as_deref() == Some("input_contracts")),
+            "Expected missing-input-contract error, got: {:?}",
+            report.items
+        );
+    }
+
+    #[test]
+    fn diagnose_input_contract_usage_recorded() {
+        // Scenario: input_contracts から参照された Contract は facet_usage に
+        // slot="input_contracts" で記録される
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "instructions", "impl", "content");
+        setup_facet(wf_dir, "contracts", "spec-file-path", "format: text");
+
+        let wf = Workflow {
+            name: "test-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                input_contracts: Some(vec!["spec-file-path".to_string()]),
+                ..make_step("step1", Some("impl"))
+            }],
+        };
+        save_workflow_yaml(wf_dir, &wf);
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        let usage = report
+            .facet_usage
+            .get("contracts/spec-file-path")
+            .expect("contracts/spec-file-path usage entry should exist");
+        assert!(
+            usage
+                .iter()
+                .any(|e| e.step_name == "step1" && e.slot == "input_contracts"),
+            "Expected input_contracts usage entry, got: {:?}",
+            usage
+        );
+    }
+
+    #[test]
+    fn diagnose_missing_input_contract_ref_in_parallel_child() {
+        // Scenario: parallel child の input_contracts でも存在しない Contract
+        // 参照を検出する
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "instructions", "impl", "content");
+
+        let wf = Workflow {
+            name: "test-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![ChildNodeDefinition {
+                    name: "child1".to_string(),
+                    node_type: NodeType::Agent,
+                    instruction: Some("impl".to_string()),
+                    input_contracts: Some(vec!["nonexistent-contract".to_string()]),
+                    ..ChildNodeDefinition::default()
+                }]),
+                ..make_step("parent", None)
+            }],
+        };
+        save_workflow_yaml(wf_dir, &wf);
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        assert!(
+            report.items.iter().any(|i| i.severity == Severity::Error
+                && i.message.contains("存在しないファセット")
+                && i.step_name.as_deref() == Some("child1")
+                && i.field.as_deref() == Some("input_contracts")),
+            "Expected missing-input-contract error on child, got: {:?}",
+            report.items
+        );
     }
 
     #[test]

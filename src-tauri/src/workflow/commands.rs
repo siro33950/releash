@@ -29,7 +29,7 @@ fn parse_facet_kind(kind: &str) -> Result<FacetKind, String> {
         "policy" => Ok(FacetKind::Policy),
         "knowledge" => Ok(FacetKind::Knowledge),
         "instruction" => Ok(FacetKind::Instruction),
-        "output_contract" => Ok(FacetKind::OutputContract),
+        "contract" => Ok(FacetKind::Contract),
         _ => Err(format!("Unknown facet kind: {kind}")),
     }
 }
@@ -1127,10 +1127,7 @@ mod tests {
             parse_facet_kind("instruction").unwrap(),
             FacetKind::Instruction
         );
-        assert_eq!(
-            parse_facet_kind("output_contract").unwrap(),
-            FacetKind::OutputContract
-        );
+        assert_eq!(parse_facet_kind("contract").unwrap(), FacetKind::Contract);
     }
 
     /// Spec [04] Rule「同一意図 command は呼び出し経路に依らず等価」:
@@ -1783,7 +1780,7 @@ mod tests {
     /// 正常経路に到達する（種別解決層）
     #[test]
     fn parse_facet_kind_resolves_all_four_kinds_for_command_routing() {
-        for kind in ["policy", "knowledge", "instruction", "output_contract"] {
+        for kind in ["policy", "knowledge", "instruction", "contract"] {
             assert!(
                 parse_facet_kind(kind).is_ok(),
                 "kind '{kind}' should be accepted"
@@ -1801,7 +1798,7 @@ mod tests {
         ("policy", "policies"),
         ("knowledge", "knowledge"),
         ("instruction", "instructions"),
-        ("output_contract", "output_contracts"),
+        ("contract", "contracts"),
     ];
 
     /// 4 種それぞれのディレクトリを作成し、各種に既存の非ビルトインキー（"sample-{kind}"）を配置する。
