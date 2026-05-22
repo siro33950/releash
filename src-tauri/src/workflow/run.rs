@@ -891,10 +891,16 @@ impl RunStore {
     /// active map → terminal metadata file の順で lookup する。`run_id` は UUID 形式
     /// として検証する（path traversal 対策）。
     pub async fn get_run(&self, run_id: &str) -> Option<WorkflowRunSummary> {
+        self.get_run_record(run_id)
+            .await
+            .map(|run| WorkflowRunSummary::from(&run))
+    }
+
+    pub(crate) async fn get_run_record(&self, run_id: &str) -> Option<WorkflowRun> {
         {
             let inner = self.inner.lock().await;
             if let Some(run) = inner.active.get(run_id) {
-                return Some(WorkflowRunSummary::from(run));
+                return Some(run.clone());
             }
         }
         if !is_valid_run_id(run_id) {
@@ -907,7 +913,7 @@ impl RunStore {
             return None;
         }
         match load_validated_metadata_entry(&runs_dir(&dir), &path) {
-            Ok(run) => Some(WorkflowRunSummary::from(&run)),
+            Ok(run) => Some(run),
             Err(e) => {
                 log::warn!(
                     "RunStore: failed to load run metadata at {} for get_run: {e}",

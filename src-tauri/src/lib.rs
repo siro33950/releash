@@ -260,7 +260,8 @@ pub fn run() {
                 ),
             ));
             // Run Store の永続化先（data_dir）を設定する。失敗しても起動は止めない。
-            if let Ok(data_dir) = app.path().app_data_dir() {
+            let pending_data_dir = app.path().app_data_dir().ok();
+            if let Some(data_dir) = pending_data_dir.clone() {
                 let engine_for_init = workflow_engine.clone();
                 tauri::async_runtime::block_on(async move {
                     engine_for_init.set_run_store_data_dir(data_dir).await;
@@ -306,6 +307,20 @@ pub fn run() {
                     backends::bridge_common::CODEX_BACKEND_ID,
                 ],
             );
+
+            // [06] CLI mutating CLI 経路の file watcher を起動する。初回 pickup は
+            // setup 済みの engine / AgentBackendRegistry を前提に dispatch するため、
+            // workflow 依存 state の登録完了後にだけ spawn する。
+            //
+            // data_dir が解決できなければ watcher は spawn せず、稼働中アプリでも CLI
+            // pending command は pickup されない（spec [06] CLI 起動独立性境界:
+            // それでも CLI 側の書き込み完了境界は保たれる）。
+            if let Some(data_dir) = pending_data_dir {
+                workflow::pending_command_watcher::spawn_pending_command_watcher(
+                    app.handle().clone(),
+                    data_dir,
+                );
+            }
 
             menu::setup_menu(app)?;
             tray::setup_tray(app)?;

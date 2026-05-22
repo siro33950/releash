@@ -48,24 +48,29 @@ pub enum WorkflowCommand {
     },
     /// 進行中の workflow run の中断。
     ///
-    /// `expected_node_name` が Some の場合、approval UI 由来の Abort として
-    /// 現在の承認待ち node と一致するかを engine 側で検証する。これにより
-    /// stale な approval UI から任意フェーズの run を誤って中断することを防ぐ。
-    /// None の場合は run 全体の中断要求として扱う。
+    /// `expected_node_name` が Some の場合、現在実行中または承認待ちの node と一致するかを
+    /// engine 側で検証してから run を中断する。これにより stale な UI / CLI から任意
+    /// フェーズの run を誤って中断することを防ぐ。None の場合は run 全体の中断要求として
+    /// 扱う。
     AbortRun {
         run_id: String,
         expected_node_name: Option<String>,
     },
     /// approval node に対する承認判断（任意のコメント付き）。
+    ///
+    /// `node_name` が None の場合、engine が live state ロック内で現在の承認待ち node を
+    /// 解決する。Some の場合は stale target guard として現在 node と照合する。
     ApproveNode {
         run_id: String,
-        node_name: String,
+        node_name: Option<String>,
         comment: Option<String>,
     },
     /// approval node に対する却下判断（理由必須）。
+    ///
+    /// `node_name` の意味は `ApproveNode` と同じ。
     RejectNode {
         run_id: String,
-        node_name: String,
+        node_name: Option<String>,
         reason: String,
     },
     /// [05] internal-only: engine 内部の node 完了遷移。発行 event は
@@ -208,7 +213,7 @@ mod tests {
     fn approve_node_carries_optional_comment_across_command_boundary() {
         let cmd = WorkflowCommand::ApproveNode {
             run_id: "00000000-0000-0000-0000-000000000011".to_string(),
-            node_name: "review".to_string(),
+            node_name: Some("review".to_string()),
             comment: Some("LGTM with notes".to_string()),
         };
         match cmd {

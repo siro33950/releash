@@ -464,12 +464,12 @@ impl ApprovalDecisionInput {
         match self {
             Self::Approve { comment } => WorkflowCommand::ApproveNode {
                 run_id,
-                node_name: step_name,
+                node_name: Some(step_name),
                 comment,
             },
             Self::Reject { reason } => WorkflowCommand::RejectNode {
                 run_id,
-                node_name: step_name,
+                node_name: Some(step_name),
                 reason,
             },
             Self::Abort => WorkflowCommand::AbortRun {
@@ -1194,7 +1194,18 @@ mod tests {
                 WorkflowEvent::ParallelChildCompleted { .. } => "ParallelChildCompleted",
                 WorkflowEvent::ParallelCompleted { .. } => "ParallelCompleted",
                 WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
+                WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
             })
+            .collect()
+    }
+
+    /// `event_kinds` から `CliMutationRequested` 発生（CLI 経路のみ追加される
+    /// 観測 event）を除外する。CLI / UI 経路の engine 出力等価性を比較する
+    /// 際に使用する（review R4-01）。
+    fn event_kinds_excluding_cli_mutation(events: &[WorkflowEvent]) -> Vec<&'static str> {
+        event_kinds(events)
+            .into_iter()
+            .filter(|kind| *kind != "CliMutationRequested")
             .collect()
     }
 
@@ -1431,7 +1442,7 @@ mod tests {
                 &direct_handles,
                 WorkflowCommand::ApproveNode {
                     run_id: direct_run_id.clone(),
-                    node_name: "review".to_string(),
+                    node_name: Some("review".to_string()),
                     comment: Some("lgtm".to_string()),
                 },
             )
@@ -1523,7 +1534,7 @@ mod tests {
                 &direct_handles,
                 WorkflowCommand::RejectNode {
                     run_id: direct_run_id.clone(),
-                    node_name: "review".to_string(),
+                    node_name: Some("review".to_string()),
                     reason: "needs changes".to_string(),
                 },
             )
@@ -1644,6 +1655,268 @@ mod tests {
         );
     }
 
+    // ---- CLI / UI 経路の engine 等価性（spec [06] L99-102 Rule, review R4-01） ----
+    //
+    // 同一意図の state 変化要求は呼び出し経路に依らず engine から見て等価に
+    // 扱われる、という Rule を直接検証する。各テストは UI adapter
+    // （`approve_workflow_step_adapter` / `abort_workflow_adapter`）と CLI
+    // pending dispatcher（`dispatch_pending_command`）を同一初期 state に
+    // 流し、`CliMutationRequested`（CLI 経路のみ追加される観測 event）を
+    // 除いた event 列が一致することを確認する。
+
+    /// CLI pending Approve は UI approve_workflow_step と engine 視点で等価。
+    #[tokio::test]
+    async fn cli_pending_approve_and_ui_approve_yield_equivalent_engine_outcome() {
+        let ui_app = make_adapter_app();
+        let ui_engine = make_adapter_engine();
+        let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
+        let (ui_store, ui_handles) = make_adapter_deps();
+        let ui_run_id = uuid::Uuid::new_v4().to_string();
+        let ui_parent = create_adapter_parent_session(&ui_app, &ui_store, "/wt/ui-approve-parity");
+        ui_engine
+            .seed_active_execution_for_test(
+                ui_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/ui-approve-parity".to_string(),
+                ui_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let cli_app = make_adapter_app();
+        let cli_engine = make_adapter_engine();
+        let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
+        let (cli_store, cli_handles) = make_adapter_deps();
+        let cli_run_id = uuid::Uuid::new_v4().to_string();
+        let cli_parent =
+            create_adapter_parent_session(&cli_app, &cli_store, "/wt/cli-approve-parity");
+        cli_engine
+            .seed_active_execution_for_test(
+                cli_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/cli-approve-parity".to_string(),
+                cli_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        approve_workflow_step_adapter(
+            ui_app.handle(),
+            &ui_handles,
+            &ui_store,
+            &ui_engine,
+            ui_run_id.clone(),
+            ApprovalDecisionInput::Approve {
+                comment: Some("parity-lgtm".to_string()),
+            },
+            "review".to_string(),
+        )
+        .await
+        .expect("UI approval must succeed");
+
+        let cli_outcome = crate::workflow::pending_command_dispatcher::dispatch_pending_command(
+            cli_app.handle(),
+            &cli_engine,
+            &cli_store,
+            &cli_handles,
+            crate::workflow::pending_command::PendingCommand::new(
+                cli_run_id.clone(),
+                crate::workflow::pending_command::PendingCommandPayload::Approve {
+                    node_name: Some("review".to_string()),
+                    comment: Some("parity-lgtm".to_string()),
+                },
+                100.0,
+            ),
+        )
+        .await;
+        assert_eq!(
+            cli_outcome,
+            crate::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
+        );
+
+        let ui_state = ui_engine.get_state_by_run_id(&ui_run_id).await.unwrap();
+        let cli_state = cli_engine.get_state_by_run_id(&cli_run_id).await.unwrap();
+        assert_eq!(ui_state.state, cli_state.state);
+        assert_eq!(
+            adapter_run_status(&ui_engine, &ui_run_id).await,
+            adapter_run_status(&cli_engine, &cli_run_id).await
+        );
+        assert_eq!(
+            event_kinds_excluding_cli_mutation(&read_adapter_events(&ui_data_dir, &ui_run_id)),
+            event_kinds_excluding_cli_mutation(&read_adapter_events(&cli_data_dir, &cli_run_id))
+        );
+    }
+
+    /// CLI pending Reject は UI approve_workflow_step Reject と engine 視点で等価。
+    #[tokio::test]
+    async fn cli_pending_reject_and_ui_reject_yield_equivalent_engine_outcome() {
+        let ui_app = make_adapter_app();
+        let ui_engine = make_adapter_engine();
+        let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
+        let (ui_store, ui_handles) = make_adapter_deps();
+        let ui_run_id = uuid::Uuid::new_v4().to_string();
+        let ui_parent = create_adapter_parent_session(&ui_app, &ui_store, "/wt/ui-reject-parity");
+        ui_engine
+            .seed_active_execution_for_test(
+                ui_run_id.clone(),
+                rejectable_adapter_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/ui-reject-parity".to_string(),
+                ui_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let cli_app = make_adapter_app();
+        let cli_engine = make_adapter_engine();
+        let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
+        let (cli_store, cli_handles) = make_adapter_deps();
+        let cli_run_id = uuid::Uuid::new_v4().to_string();
+        let cli_parent =
+            create_adapter_parent_session(&cli_app, &cli_store, "/wt/cli-reject-parity");
+        cli_engine
+            .seed_active_execution_for_test(
+                cli_run_id.clone(),
+                rejectable_adapter_workflow(),
+                WorkflowExecutionState::WaitingApproval,
+                "/wt/cli-reject-parity".to_string(),
+                cli_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        approve_workflow_step_adapter(
+            ui_app.handle(),
+            &ui_handles,
+            &ui_store,
+            &ui_engine,
+            ui_run_id.clone(),
+            ApprovalDecisionInput::Reject {
+                reason: "needs changes".to_string(),
+            },
+            "review".to_string(),
+        )
+        .await
+        .expect("UI reject must succeed");
+
+        let cli_outcome = crate::workflow::pending_command_dispatcher::dispatch_pending_command(
+            cli_app.handle(),
+            &cli_engine,
+            &cli_store,
+            &cli_handles,
+            crate::workflow::pending_command::PendingCommand::new(
+                cli_run_id.clone(),
+                crate::workflow::pending_command::PendingCommandPayload::Reject {
+                    node_name: Some("review".to_string()),
+                    reason: "needs changes".to_string(),
+                },
+                200.0,
+            ),
+        )
+        .await;
+        assert_eq!(
+            cli_outcome,
+            crate::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
+        );
+
+        let ui_state = ui_engine.get_state_by_run_id(&ui_run_id).await.unwrap();
+        let cli_state = cli_engine.get_state_by_run_id(&cli_run_id).await.unwrap();
+        assert_eq!(ui_state.state, cli_state.state);
+        assert_eq!(
+            adapter_run_status(&ui_engine, &ui_run_id).await,
+            adapter_run_status(&cli_engine, &cli_run_id).await
+        );
+        assert_eq!(
+            event_kinds_excluding_cli_mutation(&read_adapter_events(&ui_data_dir, &ui_run_id)),
+            event_kinds_excluding_cli_mutation(&read_adapter_events(&cli_data_dir, &cli_run_id))
+        );
+    }
+
+    /// CLI pending Abort（run 全体）は UI abort_workflow と engine 視点で等価。
+    #[tokio::test]
+    async fn cli_pending_abort_and_ui_abort_yield_equivalent_engine_outcome() {
+        let ui_app = make_adapter_app();
+        let ui_engine = make_adapter_engine();
+        let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
+        let (ui_store, ui_handles) = make_adapter_deps();
+        let ui_run_id = uuid::Uuid::new_v4().to_string();
+        let ui_parent = create_adapter_parent_session(&ui_app, &ui_store, "/wt/ui-abort-parity");
+        ui_engine
+            .seed_active_execution_for_test(
+                ui_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::Running,
+                "/wt/ui-abort-parity".to_string(),
+                ui_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let cli_app = make_adapter_app();
+        let cli_engine = make_adapter_engine();
+        let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
+        let (cli_store, cli_handles) = make_adapter_deps();
+        let cli_run_id = uuid::Uuid::new_v4().to_string();
+        let cli_parent =
+            create_adapter_parent_session(&cli_app, &cli_store, "/wt/cli-abort-parity");
+        cli_engine
+            .seed_active_execution_for_test(
+                cli_run_id.clone(),
+                approval_only_workflow(),
+                WorkflowExecutionState::Running,
+                "/wt/cli-abort-parity".to_string(),
+                cli_parent.id,
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        abort_workflow_adapter(
+            ui_app.handle(),
+            &ui_handles,
+            &ui_store,
+            &ui_engine,
+            ui_run_id.clone(),
+        )
+        .await
+        .expect("UI abort must succeed");
+
+        let cli_outcome = crate::workflow::pending_command_dispatcher::dispatch_pending_command(
+            cli_app.handle(),
+            &cli_engine,
+            &cli_store,
+            &cli_handles,
+            crate::workflow::pending_command::PendingCommand::new(
+                cli_run_id.clone(),
+                crate::workflow::pending_command::PendingCommandPayload::Abort { node_name: None },
+                300.0,
+            ),
+        )
+        .await;
+        assert_eq!(
+            cli_outcome,
+            crate::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
+        );
+
+        let ui_state = ui_engine.get_state_by_run_id(&ui_run_id).await.unwrap();
+        let cli_state = cli_engine.get_state_by_run_id(&cli_run_id).await.unwrap();
+        assert_eq!(ui_state.state, WorkflowExecutionState::Aborted);
+        assert_eq!(cli_state.state, WorkflowExecutionState::Aborted);
+        assert_eq!(
+            ui_engine.list_completed_runs().await[0].status,
+            RunStatus::Aborted
+        );
+        assert_eq!(
+            cli_engine.list_completed_runs().await[0].status,
+            RunStatus::Aborted
+        );
+        assert_eq!(
+            event_kinds_excluding_cli_mutation(&read_adapter_events(&ui_data_dir, &ui_run_id)),
+            event_kinds_excluding_cli_mutation(&read_adapter_events(&cli_data_dir, &cli_run_id))
+        );
+    }
+
     // ---- ApprovalDecisionInput DTO（[04] command 境界の wire 形式 + WorkflowCommand 変換） ----
 
     /// Spec [04] / issues-1013: `ApprovalDecisionInput::Approve` は任意 comment を内包し、
@@ -1708,7 +1981,7 @@ mod tests {
                 comment,
             } => {
                 assert_eq!(rid, run_id);
-                assert_eq!(node_name, step);
+                assert_eq!(node_name, Some(step.clone()));
                 assert_eq!(comment.as_deref(), Some("lgtm"));
             }
             other => panic!("Approve must map to ApproveNode, got: {other:?}"),
@@ -1725,7 +1998,7 @@ mod tests {
                 reason,
             } => {
                 assert_eq!(rid, run_id);
-                assert_eq!(node_name, step);
+                assert_eq!(node_name, Some(step.clone()));
                 assert_eq!(reason, "needs fix");
             }
             other => panic!("Reject must map to RejectNode, got: {other:?}"),
