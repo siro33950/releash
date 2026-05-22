@@ -7,7 +7,7 @@
 //!   ファイルシステムから列挙できるようにする。
 //! - 状態遷移ロジックは持たず、engine からの「開始通知」「終了通知」を受けて反映するのみ。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -70,6 +70,24 @@ pub enum TriggerSource {
     Remote,
     Cli,
     Agent,
+}
+
+/// [05] `list_workflow_runs` の status filter。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStatusFilter {
+    Active,
+    Terminal,
+}
+
+/// [05] `list_workflow_runs` の filter 入力。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunListFilter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<RunStatusFilter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 /// 1 回の workflow 実行インスタンス。
@@ -222,7 +240,68 @@ fn load_validated_metadata_entry(runs_dir: &Path, path: &Path) -> Result<Workflo
     load_validated_run_file(path)
 }
 
-fn iter_valid_run_metadata(data_dir: &Path) -> Vec<WorkflowRun> {
+/// [05] API / CLI 共通の projection helper。`Vec<WorkflowRun>` に filter（status /
+/// worktree_path）を適用し、active を先頭・以降は完了時刻降順で並べた
+/// `Vec<WorkflowRunSummary>` を返す。
+///
+/// `RunStore::list_runs`（API 経路）と CLI の file-direct 経路の双方が同じ projection
+/// に揃うことで観測ロジックの divergence を防ぐ（spec [05] API / CLI の意味的等価性境界）。
+pub fn project_runs_to_summaries(
+    runs: Vec<WorkflowRun>,
+    filter: &RunListFilter,
+) -> Vec<WorkflowRunSummary> {
+    let mut summaries: Vec<WorkflowRunSummary> = runs
+        .into_iter()
+        .filter(|run| match filter.status {
+            Some(RunStatusFilter::Active) => !run.status.is_terminal(),
+            Some(RunStatusFilter::Terminal) => run.status.is_terminal(),
+            None => true,
+        })
+        .filter(|run| match filter.worktree_path.as_deref() {
+            Some(wt) => run.worktree_path == wt,
+            None => true,
+        })
+        .map(|run| WorkflowRunSummary::from(&run))
+        .collect();
+    sort_summaries_active_first(&mut summaries);
+    summaries
+}
+
+/// `Vec<WorkflowRunSummary>` を「active を先頭・以降は completed_at（無ければ updated_at）
+/// の降順」で並び替える。projection helper と RunStore::list_runs から共通で使う。
+pub(crate) fn sort_summaries_active_first(summaries: &mut [WorkflowRunSummary]) {
+    summaries.sort_by(|a, b| {
+        let a_active = !a.status.is_terminal();
+        let b_active = !b.status.is_terminal();
+        match (a_active, b_active) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => {
+                let a_key = a.completed_at.unwrap_or(a.updated_at);
+                let b_key = b.completed_at.unwrap_or(b.updated_at);
+                b_key
+                    .partial_cmp(&a_key)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }
+        }
+    });
+}
+
+/// [05] CLI: `workflow_runs/` 配下の active 状態の run から、現在 running 中の
+/// workflow_name の集合を導出する。CLI の `workflow list` で `is_running` を
+/// 反映するために使用する（spec [05] Rule: 観測経路は API と CLI で等価な手段を提供する）。
+///
+/// API 側は engine の in-memory active map から `running_workflow_names()` で
+/// 集合を取るが、CLI は file-direct で同等の集合を導出する。
+pub fn running_workflow_names_from_metadata(data_dir: &Path) -> HashSet<String> {
+    iter_valid_run_metadata(data_dir)
+        .into_iter()
+        .filter(|run| !run.status.is_terminal())
+        .map(|run| run.workflow_name)
+        .collect()
+}
+
+pub(crate) fn iter_valid_run_metadata(data_dir: &Path) -> Vec<WorkflowRun> {
     let runs_dir = runs_dir(data_dir);
     if !runs_dir.exists() {
         return Vec::new();
@@ -733,6 +812,11 @@ impl RunStore {
     /// 検証済み loader（`load_validated_run_file`）を経由するため、ファイル名 stem が
     /// UUID 形式でない、もしくは metadata.run_id が一致しないエントリは破損として
     /// warn ログのうえスキップする（Spec issues-1011 line 130 / Rule 7 / finding 11）。
+    ///
+    /// 本メソッドは観測経路の primary entry ではない（spec [05]: production 観測は
+    /// `list_runs` に集約され `project_runs_to_summaries` を経由する）。テストでの
+    /// metadata file 直読を検証するための補助 API として温存する。
+    #[allow(dead_code)]
     pub async fn list_completed(&self) -> Vec<WorkflowRunSummary> {
         let Some(store) = self.metadata_store().await.ok().flatten() else {
             return Vec::new();
@@ -757,19 +841,81 @@ impl RunStore {
         summaries
     }
 
-    /// worktree_path に紐づく active / terminal run を結合し、新しい更新順で返す。
+    /// テスト専用: worktree_path 限定の active+terminal 一覧（合成順）を返す。
+    /// production 経路は `list_runs(RunListFilter { worktree_path: Some(..), .. })` を使う。
+    #[cfg(test)]
     pub async fn list_for_worktree(&self, worktree_path: &str) -> Vec<WorkflowRunSummary> {
-        let mut summaries = self.list_active().await;
-        summaries.extend(self.list_completed().await);
-        summaries.retain(|run| run.worktree_path == worktree_path);
-        summaries.sort_by(|a, b| {
-            let a_key = a.completed_at.unwrap_or(a.updated_at);
-            let b_key = b.completed_at.unwrap_or(b.updated_at);
-            b_key
-                .partial_cmp(&a_key)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        summaries
+        self.list_runs(RunListFilter {
+            status: None,
+            worktree_path: Some(worktree_path.to_string()),
+        })
+        .await
+    }
+
+    /// [05] read-only API: active / terminal を含む全 run summary を、optional な
+    /// status / worktree filter を適用して返す。filter なしの場合は全件を返す。
+    /// 並び順は active を先頭・以降は完了時刻降順とする。
+    ///
+    /// 観測経路は file metadata（`workflow_runs/{run_id}.json`）全件を一次 source とし、
+    /// in-memory active map に存在する run はその snapshot で de-dupe / 上書きする
+    /// （in-memory 側が状態遷移時点で先行するため）。最終的に CLI と同じ
+    /// `project_runs_to_summaries` を経由することで観測ロジックの divergence を防ぐ
+    /// （spec [05] API / CLI の意味的等価性境界, 観測値の整合性境界: list / get の
+    /// データソース統一）。
+    pub async fn list_runs(&self, filter: RunListFilter) -> Vec<WorkflowRunSummary> {
+        let active_runs: HashMap<String, WorkflowRun> = {
+            let inner = self.inner.lock().await;
+            inner.active.clone()
+        };
+        let file_runs = match self.metadata_store().await {
+            Ok(Some(store)) => store.list_valid().await,
+            _ => Vec::new(),
+        };
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut combined: Vec<WorkflowRun> =
+            Vec::with_capacity(file_runs.len() + active_runs.len());
+        for run in active_runs.values() {
+            if seen.insert(run.run_id.clone()) {
+                combined.push(run.clone());
+            }
+        }
+        for run in file_runs {
+            if seen.insert(run.run_id.clone()) {
+                combined.push(run);
+            }
+        }
+        project_runs_to_summaries(combined, &filter)
+    }
+
+    /// [05] read-only API: 単一 run の summary を取得する。
+    /// active map → terminal metadata file の順で lookup する。`run_id` は UUID 形式
+    /// として検証する（path traversal 対策）。
+    pub async fn get_run(&self, run_id: &str) -> Option<WorkflowRunSummary> {
+        {
+            let inner = self.inner.lock().await;
+            if let Some(run) = inner.active.get(run_id) {
+                return Some(WorkflowRunSummary::from(run));
+            }
+        }
+        if !is_valid_run_id(run_id) {
+            log::warn!("RunStore: rejected non-UUID run_id in get_run");
+            return None;
+        }
+        let dir = self.data_dir().await?;
+        let path = run_file_path(&dir, run_id);
+        if !path.exists() {
+            return None;
+        }
+        match load_validated_metadata_entry(&runs_dir(&dir), &path) {
+            Ok(run) => Some(WorkflowRunSummary::from(&run)),
+            Err(e) => {
+                log::warn!(
+                    "RunStore: failed to load run metadata at {} for get_run: {e}",
+                    path.display()
+                );
+                None
+            }
+        }
     }
 
     /// worktree_path から active な run_id を解決する。
@@ -1117,6 +1263,9 @@ mod tests {
         assert_eq!(metadata.task.as_deref(), Some("do thing"));
     }
 
+    /// [05] list_runs / list_for_worktree は active を先頭、以降は完了時刻降順で
+    /// 返す（spec [05] read-only API 並び順）。worktree filter で対象 worktree のみに
+    /// 絞り込まれる。
     #[tokio::test]
     async fn list_for_worktree_combines_filters_and_sorts_runs() {
         let tmp = TempDir::new().unwrap();
@@ -1154,7 +1303,8 @@ mod tests {
 
         let runs = store.list_for_worktree("/wt/a").await;
         let ids: Vec<_> = runs.iter().map(|run| run.run_id.as_str()).collect();
-        assert_eq!(ids, vec![completed_new.as_str(), active.as_str()]);
+        // active が先頭、以降は完了時刻降順（spec [05] 並び順）。
+        assert_eq!(ids, vec![active.as_str(), completed_new.as_str()]);
     }
 
     /// 終了 status は completed / failed / aborted の 3 つを含む
@@ -1899,6 +2049,138 @@ mod tests {
 
         let predictable_tmp = run_file_path(tmp.path(), &run_id).with_extension("json.tmp");
         assert!(!predictable_tmp.exists());
+    }
+
+    // ---- [05] read-only API: list_runs / get_run ----
+
+    /// Rule [05]: 外部 caller は run_id を主語として workflow run を観測できる
+    /// （単一 run の summary metadata を観測する）。get_run は active / terminal の
+    /// いずれであっても summary を返す。
+    #[tokio::test]
+    async fn get_run_returns_summary_for_active_and_terminal_runs() {
+        let tmp = TempDir::new().unwrap();
+        let store = RunStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+
+        let active_id = test_uuid(20);
+        let done_id = test_uuid(21);
+        store
+            .register_active(make_run(&active_id, "/wt/a", RunStatus::Running, 100.0))
+            .await
+            .unwrap();
+        store
+            .register_active(make_run(&done_id, "/wt/b", RunStatus::Running, 90.0))
+            .await
+            .unwrap();
+        store
+            .complete_run(&done_id, TerminalRunStatus::Completed, 95.0, None)
+            .await
+            .unwrap();
+
+        let active_summary = store.get_run(&active_id).await.unwrap();
+        assert_eq!(active_summary.run_id, active_id);
+        assert_eq!(active_summary.status, RunStatus::Running);
+        assert_eq!(active_summary.worktree_path, "/wt/a");
+
+        let terminal_summary = store.get_run(&done_id).await.unwrap();
+        assert_eq!(terminal_summary.run_id, done_id);
+        assert_eq!(terminal_summary.status, RunStatus::Completed);
+        assert_eq!(terminal_summary.completed_at, Some(95.0));
+    }
+
+    /// Rule [05]: 観測対象として存在しない run_id は明示的に「該当 run なし」として扱われる。
+    #[tokio::test]
+    async fn get_run_returns_none_for_unknown_run_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = RunStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let result = store.get_run(&test_uuid(99)).await;
+        assert!(result.is_none());
+    }
+
+    /// Spec [05]: get_run は path traversal 対策として非 UUID run_id を拒否する。
+    #[tokio::test]
+    async fn get_run_rejects_non_uuid_run_id() {
+        let tmp = TempDir::new().unwrap();
+        let store = RunStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let result = store.get_run("../etc/passwd").await;
+        assert!(result.is_none());
+    }
+
+    /// Rule [05]: list_runs は active と terminal を統合し、active を先頭・以降は完了時刻
+    /// 降順で返す。status filter で active のみ / terminal のみに絞り込める。
+    #[tokio::test]
+    async fn list_runs_returns_active_and_terminal_with_status_filter() {
+        let tmp = TempDir::new().unwrap();
+        let store = RunStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+
+        let active_id = test_uuid(30);
+        let done_id = test_uuid(31);
+        store
+            .register_active(make_run(&active_id, "/wt/a", RunStatus::Running, 100.0))
+            .await
+            .unwrap();
+        store
+            .register_active(make_run(&done_id, "/wt/b", RunStatus::Running, 90.0))
+            .await
+            .unwrap();
+        store
+            .complete_run(&done_id, TerminalRunStatus::Completed, 95.0, None)
+            .await
+            .unwrap();
+
+        let all = store.list_runs(RunListFilter::default()).await;
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].run_id, active_id);
+        assert_eq!(all[1].run_id, done_id);
+
+        let active_only = store
+            .list_runs(RunListFilter {
+                status: Some(RunStatusFilter::Active),
+                worktree_path: None,
+            })
+            .await;
+        assert_eq!(active_only.len(), 1);
+        assert_eq!(active_only[0].run_id, active_id);
+
+        let terminal_only = store
+            .list_runs(RunListFilter {
+                status: Some(RunStatusFilter::Terminal),
+                worktree_path: None,
+            })
+            .await;
+        assert_eq!(terminal_only.len(), 1);
+        assert_eq!(terminal_only[0].run_id, done_id);
+    }
+
+    /// Rule [05]: list_runs の worktree filter は指定 worktree の run のみを返す。
+    #[tokio::test]
+    async fn list_runs_with_worktree_filter_returns_matching_runs_only() {
+        let tmp = TempDir::new().unwrap();
+        let store = RunStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+
+        let run_a = test_uuid(40);
+        let run_b = test_uuid(41);
+        store
+            .register_active(make_run(&run_a, "/wt/a", RunStatus::Running, 100.0))
+            .await
+            .unwrap();
+        store
+            .register_active(make_run(&run_b, "/wt/b", RunStatus::Running, 100.0))
+            .await
+            .unwrap();
+
+        let filtered = store
+            .list_runs(RunListFilter {
+                status: None,
+                worktree_path: Some("/wt/a".to_string()),
+            })
+            .await;
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].run_id, run_a);
     }
 
     /// Spec issues-1011 finding 12: `complete_run` は `TerminalRunStatus` のみを受け付ける。

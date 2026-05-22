@@ -1292,22 +1292,42 @@ impl WorkflowEngine {
         self.run_store.resolve_worktree_by_run(run_id).await
     }
 
-    /// 進行中の WorkflowRun summary 一覧を返す（facade）。
-    pub async fn list_active_runs(&self) -> Vec<crate::workflow::run::WorkflowRunSummary> {
-        self.run_store.list_active().await
-    }
-
-    /// 終了済み WorkflowRun summary 一覧を返す（facade）。
-    pub async fn list_completed_runs(&self) -> Vec<crate::workflow::run::WorkflowRunSummary> {
-        self.run_store.list_completed().await
-    }
-
-    /// worktree_path に紐づく active / terminal WorkflowRun summary 一覧を返す（facade）。
-    pub async fn list_runs_for_worktree(
+    /// [05] read-only API: optional な status / worktree filter を適用した
+    /// run summary 一覧を返す（facade）。
+    pub async fn list_runs(
         &self,
-        worktree_path: &str,
+        filter: crate::workflow::run::RunListFilter,
     ) -> Vec<crate::workflow::run::WorkflowRunSummary> {
-        self.run_store.list_for_worktree(worktree_path).await
+        self.run_store.list_runs(filter).await
+    }
+
+    /// テスト専用 facade: active な run 一覧を取得する。
+    /// production 経路は `list_runs(RunListFilter { status: Some(Active), .. })` を使う。
+    #[cfg(test)]
+    pub async fn list_active_runs(&self) -> Vec<crate::workflow::run::WorkflowRunSummary> {
+        self.run_store
+            .list_runs(crate::workflow::run::RunListFilter {
+                status: Some(crate::workflow::run::RunStatusFilter::Active),
+                worktree_path: None,
+            })
+            .await
+    }
+
+    /// テスト専用 facade: terminal な run 一覧を取得する。
+    #[cfg(test)]
+    pub async fn list_completed_runs(&self) -> Vec<crate::workflow::run::WorkflowRunSummary> {
+        self.run_store
+            .list_runs(crate::workflow::run::RunListFilter {
+                status: Some(crate::workflow::run::RunStatusFilter::Terminal),
+                worktree_path: None,
+            })
+            .await
+    }
+
+    /// [05] read-only API: 単一 run の summary を取得する（facade）。
+    /// active map → terminal metadata file の順で lookup する。
+    pub async fn get_run(&self, run_id: &str) -> Option<crate::workflow::run::WorkflowRunSummary> {
+        self.run_store.get_run(run_id).await
     }
 
     /// Run Store の永続化ディレクトリを設定する（アプリ起動時の setup から呼ぶ）。
@@ -1689,25 +1709,48 @@ impl WorkflowEngine {
         Ok(run_id)
     }
 
-    /// [04] Command / Event Boundary: 全 typed command の単一入口。
+    /// [05] adapter-facing 拒否境界: 外部 adapter（Tauri command / CLI / agent path）
+    /// 向けの単一入口。internal-only な `CompleteNode` / `FailNode` を外部 caller から
+    /// 組み立てて到達した場合は内部不整合として `Err` に変換する（spec [05] internal
+    /// command の非公開境界）。internal variant 受理境界は `dispatch` 側に集約。
     ///
-    /// UI / Tauri command / 内部呼び出し元は、本メソッドだけを通じて engine state を
-    /// 変化させる。各 variant は既存 handler（`start_workflow` / `abort_workflow_by_run_id`
-    /// / `handle_approval`）に委譲する。`StartRun` の `worktree_path` は注入された
-    /// `ManagedWorktreeResolver` で正規化し、engine core は AppConfig / Git worktree 列挙を
-    /// 直接知らない。
-    pub async fn dispatch<R: tauri::Runtime>(
+    /// engine 内部経路は `dispatch` を直接呼ぶ。本 wrapper は adapter からの外部入力
+    /// だけが通る非公開境界専用とする。
+    pub async fn dispatch_external<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         handles: &Arc<Mutex<AgentProcessMap>>,
         command: WorkflowCommand,
     ) -> Result<WorkflowCommandResult, WorkflowEngineError> {
-        self.dispatch_core(app, session_store, handles, command)
-            .await
+        if matches!(
+            command,
+            WorkflowCommand::CompleteNode { .. } | WorkflowCommand::FailNode { .. }
+        ) {
+            let run_id = match &command {
+                WorkflowCommand::CompleteNode { run_id, .. }
+                | WorkflowCommand::FailNode { run_id, .. } => run_id.clone(),
+                _ => unreachable!(),
+            };
+            return Err(WorkflowEngineError::ValidationError(format!(
+                "internal-only WorkflowCommand variant reached public dispatch for run {run_id}"
+            )));
+        }
+        self.dispatch(app, session_store, handles, command).await
     }
 
-    async fn dispatch_core<R: tauri::Runtime>(
+    /// [04] / [05] Command / Event Boundary: typed command の単一発火点。
+    ///
+    /// `WorkflowEngine::dispatch` は外部 4 variant (`StartRun` / `AbortRun` /
+    /// `ApproveNode` / `RejectNode`) と internal 2 variant (`CompleteNode` /
+    /// `FailNode`) を同一の typed command handler で処理する。internal node 完了 /
+    /// 失敗の event 発行点もここに集約される（spec [05] L22-24, L145, L186）。
+    ///
+    /// 外部 adapter（Tauri command / CLI / agent path）は `dispatch_external` 経由で
+    /// internal variant を拒否してから本関数に委譲する。engine 内部からは内部経路の
+    /// 発火点として `dispatch` を直接呼び、internal variant も含めた typed command
+    /// を受理する。
+    pub async fn dispatch<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
@@ -1819,6 +1862,295 @@ impl WorkflowEngine {
                 .await?;
                 Ok(WorkflowCommandResult::Accepted)
             }
+            // [05] internal-only variant の commit handler。public `dispatch` 経由では
+            // 事前に拒否されるが、`dispatch_core` を engine 内部から typed command 経由で
+            // 呼び出した場合に到達する（spec [05]: dispatch を内部 node 完了 / 失敗の
+            // 発火点とし、event 発行点を typed command 経路に集約）。state mutation +
+            // event commit は `dispatch_internal_node_command` に委譲し、commit 失敗時は
+            // engine state を一括復元する rollback 境界に揃える。
+            command @ WorkflowCommand::CompleteNode { .. }
+            | command @ WorkflowCommand::FailNode { .. } => {
+                self.commit_internal_node_command(app, session_store, command)
+                    .await?;
+                Ok(WorkflowCommandResult::Accepted)
+            }
+        }
+    }
+
+    /// [05] `WorkflowCommand::CompleteNode` / `FailNode` 用の commit 境界。
+    ///
+    /// `dispatch` から呼ばれる engine 内部の typed command handler であり、外部
+    /// adapter からは `dispatch_external` の拒否境界で到達不能。state mutation +
+    /// `WorkflowEvent::NodeCompleted` / `NodeFailed` 発行を
+    /// `dispatch_internal_node_command` に集約し、append 失敗 / Run Store sync 失敗 /
+    /// ChatSession persist 失敗のいずれでも `commit_required_events` 経由で engine
+    /// state と Run Store snapshot を `snapshot_before` で一括復元する（spec [05]
+    /// commit_required_events 基盤の rollback 可能な共通 commit 境界 / silent error
+    /// 禁止）。
+    async fn commit_internal_node_command<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        command: WorkflowCommand,
+    ) -> Result<(), WorkflowEngineError> {
+        let run_id = match &command {
+            WorkflowCommand::CompleteNode { run_id, .. }
+            | WorkflowCommand::FailNode { run_id, .. } => run_id.clone(),
+            _ => {
+                return Err(WorkflowEngineError::ValidationError(
+                    "commit_internal_node_command received non-internal variant".to_string(),
+                ));
+            }
+        };
+
+        // lock + snapshot + mutation を atomic に実行: dispatch_internal_node_command の
+        // state mutation は snapshot 上に適用され、event を返した時点で engine.executions
+        // の対象 exec にも反映する。
+        let (chat_session_id, mutated_snapshot, exec_snapshot_before, event) = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs
+                .get_mut(&run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.clone()))?;
+            let exec_snapshot_before = exec.clone();
+            let mut snapshot = exec.to_workflow_state();
+            let event =
+                Self::dispatch_internal_node_command(&mut snapshot, command).inspect_err(|_e| {
+                    // commit 失敗: engine state は未変更（snapshot のみ mutate）。
+                    *exec = exec_snapshot_before.clone();
+                })?;
+            // snapshot の state / updated_at を live exec に書き戻す。
+            exec.state = snapshot.state.clone();
+            exec.updated_at = snapshot.updated_at;
+            let chat_session_id = exec.chat_session_id.clone();
+            (chat_session_id, snapshot, exec_snapshot_before, event)
+        };
+
+        // [05] commit_required_events 基盤の共通 commit 境界:
+        // RunStore sync → ChatSession persist → event log append の順序と
+        // rollback 方針を一箇所に集約する。いずれかの失敗時は engine state と
+        // Run Store snapshot を `exec_snapshot_before` で一括復元する。
+        let run_store_snapshot_before = self.run_store.active_run_snapshot(&run_id).await;
+        self.commit_required_events(
+            app,
+            session_store,
+            RequiredEventCommit {
+                run_id: &run_id,
+                chat_session_id: &chat_session_id,
+                snapshot_for_commit: &mutated_snapshot,
+                snapshot_before: exec_snapshot_before,
+                run_store_snapshot_before,
+                required_events: vec![event],
+                append_error_context: "internal node command event append failed",
+            },
+        )
+        .await
+    }
+
+    /// [05] internal dispatch path: engine 内部の node 完了 / 失敗 typed command の
+    /// 単一 commit 関数。`WorkflowCommand::CompleteNode` / `FailNode` を受け取り、
+    /// 対応する state mutation を snapshot に適用したうえで
+    /// `WorkflowEvent::NodeCompleted` / `NodeFailed` を返す（spec [05]: 発行点が
+    /// typed command の経路に集約される / state mutation と event 発行を同一 commit
+    /// 境界に集約）。
+    ///
+    /// 入力型は `WorkflowCommand` だが、internal variant 以外（外部 4 variant）が
+    /// 流入した場合は `ValidationError` を返す。外部 adapter からの組み立て経路は
+    /// 提供せず、`pub(crate)` で配置することで internal-only な commit 境界を担保する
+    /// （spec [05] internal command の非公開境界）。
+    ///
+    /// state mutation の責務は以下のとおり本関数に集約される:
+    ///
+    /// - `CompleteNode`: 上流コードが構築した `step_history` 末尾 entry が当該 command の
+    ///   effect（node_name / timestamp / result / session_id / token_usage /
+    ///   structured_output / run_index）と一致することを検証し、不一致時は
+    ///   `ValidationError` を返す。あわせて command の run_id / workflow_name が
+    ///   snapshot.execution_id / workflow_name と一致することも検証する（spec [05]
+    ///   commit 境界: snapshot が command effect を含むことの確証 / payload を
+    ///   snapshot と整合検証する厳格化）。
+    /// - `FailNode`: command の run_id / workflow_name / node_name を snapshot と
+    ///   照合した上で、snapshot.state が `Failed { .. }` でなければ
+    ///   `Failed { reason }` に遷移させ、updated_at を反映する。
+    pub(crate) fn dispatch_internal_node_command(
+        snapshot: &mut WorkflowState,
+        command: WorkflowCommand,
+    ) -> Result<WorkflowEvent, WorkflowEngineError> {
+        Self::apply_internal_node_command_state_mutation(snapshot, &command)?;
+        Self::map_internal_node_command_to_event(command)
+    }
+
+    /// [05] internal command → state mutation の commit。`dispatch_internal_node_command`
+    /// 内部からのみ呼ばれる。
+    ///
+    /// - `CompleteNode`: 上流の `make_step_history_entry` 経由で push 済みの step_history
+    ///   末尾 entry が当該 command の全 effect 列と一致するかを検証する。さらに command
+    ///   の run_id / workflow_name を snapshot の execution_id / workflow_name と
+    ///   照合する。不一致時は `ValidationError` を返し、command と snapshot の同期境界
+    ///   が崩れたことを呼出側に伝える（spec [05] commit 境界: snapshot mutation と
+    ///   event 発行を同一 commit に集約 / 二重適用は不可 / payload を snapshot と
+    ///   照合）。
+    /// - `FailNode`: command の run_id / workflow_name / node_name を snapshot と
+    ///   照合した上で、snapshot.state が `Failed { .. }` でなければ
+    ///   `Failed { reason }` に遷移させ、updated_at を反映する。既に Failed の場合は
+    ///   idempotent な no-op。
+    fn apply_internal_node_command_state_mutation(
+        snapshot: &mut WorkflowState,
+        command: &WorkflowCommand,
+    ) -> Result<(), WorkflowEngineError> {
+        match command {
+            WorkflowCommand::CompleteNode {
+                run_id,
+                workflow_name,
+                node_name,
+                result,
+                session_id,
+                token_usage,
+                structured_output,
+                run_index,
+                timestamp,
+            } => {
+                if run_id != &snapshot.execution_id {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode run_id mismatch: command='{run_id}', snapshot='{}'",
+                        snapshot.execution_id
+                    )));
+                }
+                if workflow_name != &snapshot.workflow_name {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode workflow_name mismatch: command='{workflow_name}', snapshot='{}'",
+                        snapshot.workflow_name
+                    )));
+                }
+                let Some(last_entry) = snapshot.step_history.last() else {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode for node '{node_name}' but snapshot.step_history is empty"
+                    )));
+                };
+                if last_entry.step_name != *node_name {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode node mismatch: command='{node_name}', snapshot last='{}'",
+                        last_entry.step_name
+                    )));
+                }
+                if (last_entry.completed_at - *timestamp).abs() > f64::EPSILON {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode timestamp mismatch for node '{node_name}': command={timestamp}, snapshot={}",
+                        last_entry.completed_at
+                    )));
+                }
+                if last_entry.result != *result {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode result mismatch for node '{node_name}'"
+                    )));
+                }
+                if last_entry.session_id != *session_id {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode session_id mismatch for node '{node_name}'"
+                    )));
+                }
+                if last_entry.token_usage != *token_usage {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode token_usage mismatch for node '{node_name}'"
+                    )));
+                }
+                if last_entry.structured_output != *structured_output {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode structured_output mismatch for node '{node_name}'"
+                    )));
+                }
+                if Some(last_entry.run_index) != *run_index {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "CompleteNode run_index mismatch for node '{node_name}': command={run_index:?}, snapshot={}",
+                        last_entry.run_index
+                    )));
+                }
+                Ok(())
+            }
+            WorkflowCommand::FailNode {
+                run_id,
+                workflow_name,
+                node_name,
+                reason,
+                timestamp,
+            } => {
+                if run_id != &snapshot.execution_id {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "FailNode run_id mismatch: command='{run_id}', snapshot='{}'",
+                        snapshot.execution_id
+                    )));
+                }
+                if workflow_name != &snapshot.workflow_name {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "FailNode workflow_name mismatch: command='{workflow_name}', snapshot='{}'",
+                        snapshot.workflow_name
+                    )));
+                }
+                if *node_name != snapshot.current_step_name {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "FailNode node_name mismatch: command='{node_name}', snapshot='{}'",
+                        snapshot.current_step_name
+                    )));
+                }
+                if !matches!(snapshot.state, WorkflowExecutionState::Failed { .. }) {
+                    snapshot.state = WorkflowExecutionState::Failed {
+                        reason: reason.clone(),
+                    };
+                    snapshot.updated_at = *timestamp;
+                }
+                Ok(())
+            }
+            _ => Err(WorkflowEngineError::ValidationError(
+                "dispatch_internal_node_command received non-internal variant".to_string(),
+            )),
+        }
+    }
+
+    /// [05] internal command → event 射影。
+    ///
+    /// `WorkflowCommand::CompleteNode` / `FailNode` から対応する
+    /// `WorkflowEvent::NodeCompleted` / `NodeFailed` を組み立てる純粋関数。emission
+    /// 経路は `dispatch_internal_node_command` を入口として用い、本関数を直接呼ぶ
+    /// 経路は持たない（spec [05]: 発行点が typed command の単一経路に集約される）。
+    fn map_internal_node_command_to_event(
+        command: WorkflowCommand,
+    ) -> Result<WorkflowEvent, WorkflowEngineError> {
+        match command {
+            WorkflowCommand::CompleteNode {
+                run_id,
+                workflow_name,
+                node_name,
+                result,
+                session_id,
+                token_usage,
+                structured_output,
+                run_index,
+                timestamp,
+            } => Ok(WorkflowEvent::NodeCompleted {
+                run_id,
+                workflow_name,
+                node_name,
+                result,
+                session_id,
+                token_usage,
+                structured_output,
+                run_index,
+                timestamp,
+            }),
+            WorkflowCommand::FailNode {
+                run_id,
+                workflow_name,
+                node_name,
+                reason,
+                timestamp,
+            } => Ok(WorkflowEvent::NodeFailed {
+                run_id,
+                workflow_name,
+                node_name,
+                reason,
+                timestamp,
+            }),
+            _ => Err(WorkflowEngineError::ValidationError(
+                "map_internal_node_command_to_event received non-internal variant".to_string(),
+            )),
         }
     }
 
@@ -1889,7 +2221,7 @@ impl WorkflowEngine {
         struct TurnCommit {
             outcome: StepOutcome,
             required_events: Vec<WorkflowEvent>,
-            rollback_snapshot: Option<(String, WorkflowExecution)>,
+            rollback_snapshot: (String, WorkflowExecution),
         }
 
         // 判定 + 状態変更を原子的に実行（AutoEvaluate以外）
@@ -1924,6 +2256,7 @@ impl WorkflowEngine {
                     if exec.is_terminal() {
                         return Ok(());
                     }
+                    let snapshot_before = exec.clone();
                     let entry = exec.make_step_history_entry(
                         Some(format!("error (exit_code: {})", exit_code)),
                         None,
@@ -1940,7 +2273,7 @@ impl WorkflowEngine {
                     Ok(TurnCommit {
                         outcome: StepOutcome::Persist(exec.to_workflow_state()),
                         required_events: Vec::new(),
-                        rollback_snapshot: None,
+                        rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
                 }
                 TurnCompleteAction::WaitApproval => {
@@ -1960,7 +2293,7 @@ impl WorkflowEngine {
                             node_name,
                             timestamp: exec.updated_at,
                         }],
-                        rollback_snapshot: Some((exec.id.clone(), snapshot_before)),
+                        rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
                 }
                 TurnCompleteAction::UnexpectedNodeType {
@@ -1970,6 +2303,7 @@ impl WorkflowEngine {
                     if exec.is_terminal() {
                         return Ok(());
                     }
+                    let snapshot_before = exec.clone();
                     let reason = format!(
                         "Workflow engine reached turn_complete for unexpected node type {:?} at step '{}' (this should have been rejected upstream)",
                         node_type, step_name
@@ -1981,7 +2315,7 @@ impl WorkflowEngine {
                     Ok(TurnCommit {
                         outcome: StepOutcome::Persist(exec.to_workflow_state()),
                         required_events: Vec::new(),
-                        rollback_snapshot: None,
+                        rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
                 }
                 TurnCompleteAction::AutoEvaluate { rules, step_name } => Err((rules, step_name)),
@@ -1991,6 +2325,7 @@ impl WorkflowEngine {
 
         match action_or_outcome {
             Ok(commit) => {
+                let (_, snapshot_before) = commit.rollback_snapshot.clone();
                 if commit.required_events.is_empty() {
                     self.execute_outcome(
                         app,
@@ -1999,6 +2334,7 @@ impl WorkflowEngine {
                         &worktree_path,
                         &chat_session_id,
                         commit.outcome,
+                        snapshot_before,
                     )
                     .await
                 } else {
@@ -2010,7 +2346,7 @@ impl WorkflowEngine {
                         &chat_session_id,
                         commit.outcome,
                         commit.required_events,
-                        commit.rollback_snapshot,
+                        Some(commit.rollback_snapshot),
                     )
                     .await
                 }
@@ -2292,7 +2628,7 @@ impl WorkflowEngine {
         // 一括復元する。部分 rollback helper は使わない。
         let (
             chat_session_id,
-            outcome,
+            mut outcome,
             exec_snapshot_before,
             workflow_name_for_event,
             node_name_for_event,
@@ -2355,7 +2691,30 @@ impl WorkflowEngine {
             comment: event_comment,
             timestamp: approval_timestamp,
         };
-        let commit_events = Self::required_events_for_approval_commit(approval_event, &outcome);
+        // [05] silent error の禁止: required event 組立中に
+        // `dispatch_internal_node_command` の ValidationError 等が発生した場合は
+        // approval commit 境界として失敗扱いし、snapshot_before で engine state /
+        // Run Store / ChatSession を一括復元してから Err を返す。
+        let commit_events =
+            match Self::required_events_for_approval_commit(approval_event, &mut outcome) {
+                Ok(events) => events,
+                Err(e) => {
+                    let _ = self
+                        .rollback_command_mutation(
+                            app,
+                            session_store,
+                            CommandMutationRollback {
+                                run_id,
+                                chat_session_id: &chat_session_id,
+                                snapshot_before: exec_snapshot_before,
+                                run_store_snapshot_before,
+                                context: "approval required event build failed",
+                            },
+                        )
+                        .await;
+                    return Err(e);
+                }
+            };
         self.commit_required_events(
             app,
             session_store,
@@ -2677,11 +3036,15 @@ impl WorkflowEngine {
                             return Ok(());
                         } else {
                             // リトライ上限超過 → ワークフロー全体をFailed
-                            let (chat_session_id, snapshot, running_ids) = {
+                            // [05] commit 境界: terminal event は pre-commit batch で
+                            // append し、append 失敗時は engine state を mutation 直前
+                            // snapshot で一括復元する（post-persist warn 廃止）。
+                            let (chat_session_id, snapshot, running_ids, exec_snapshot_before) = {
                                 let mut execs = self.executions.lock().await;
                                 let exec = execs.get_mut(run_id).ok_or_else(|| {
                                     WorkflowEngineError::ExecutionNotFound(run_id.to_string())
                                 })?;
+                                let exec_snapshot_before = exec.clone();
                                 let chat_session_id = exec.chat_session_id.clone();
                                 let running_ids: Vec<String> = exec
                                     .parallel_run
@@ -2705,8 +3068,26 @@ impl WorkflowEngine {
                                     };
                                 exec.parallel_run = None;
                                 exec.updated_at = current_timestamp();
-                                (chat_session_id, exec.to_workflow_state(), running_ids)
+                                (
+                                    chat_session_id,
+                                    exec.to_workflow_state(),
+                                    running_ids,
+                                    exec_snapshot_before,
+                                )
                             };
+
+                            // [05] pre-commit: terminal event を先に append。失敗時は
+                            // engine state を snapshot_before で一括復元し Err を返す。
+                            if let Err(e) = self.write_terminal_log(app, &snapshot) {
+                                let mut execs = self.executions.lock().await;
+                                if let Some(exec) = execs.get_mut(run_id) {
+                                    *exec = exec_snapshot_before;
+                                }
+                                return Err(WorkflowEngineError::SessionStore(format!(
+                                    "contract failure terminal event append failed: {e}"
+                                )));
+                            }
+
                             if let Err(e) =
                                 self.sync_run_store_from_snapshot(run_id, &snapshot).await
                             {
@@ -2743,7 +3124,6 @@ impl WorkflowEngine {
                             persist_result?;
                             self.broadcast_state(app, worktree_path, snapshot.clone())
                                 .await;
-                            self.write_terminal_log(app, &snapshot);
                             self.cleanup_session_workflow_refs_by_run_id(&snapshot.execution_id)
                                 .await;
                             return Ok(());
@@ -2766,7 +3146,7 @@ impl WorkflowEngine {
         .await;
 
         // ロック内: 子ステップの状態更新 + 全完了チェック
-        let (chat_session_id, all_completed, outcome_opt) = {
+        let (chat_session_id, all_completed, outcome_opt, exec_snapshot_before) = {
             let mut execs = self.executions.lock().await;
             let exec = execs
                 .get_mut(run_id)
@@ -2777,6 +3157,10 @@ impl WorkflowEngine {
             }
 
             let chat_session_id = exec.chat_session_id.clone();
+            // [05] commit 境界: 子ステップ失敗 → workflow 全体 Failed の terminal event は
+            // pre-commit batch で append し、失敗時は engine state を snapshot_before で
+            // 一括復元する（post-persist warn 廃止）。snapshot は mutation 前にここで取得する。
+            let exec_snapshot_before = exec.clone();
             let Some(pr) = exec.parallel_run.as_mut() else {
                 return Ok(());
             };
@@ -2823,6 +3207,18 @@ impl WorkflowEngine {
                 let snapshot = exec.to_workflow_state();
                 drop(execs);
 
+                // [05] pre-commit: terminal event を先に append。失敗時は engine state
+                // を snapshot_before で一括復元し Err を返す。
+                if let Err(e) = self.write_terminal_log(app, &snapshot) {
+                    let mut execs = self.executions.lock().await;
+                    if let Some(exec) = execs.get_mut(run_id) {
+                        *exec = exec_snapshot_before;
+                    }
+                    return Err(WorkflowEngineError::SessionStore(format!(
+                        "parallel child failure terminal event append failed: {e}"
+                    )));
+                }
+
                 if let Err(e) = self.sync_run_store_from_snapshot(run_id, &snapshot).await {
                     self.rollback_execution_projection_after_run_store_sync_failure(
                         run_id, &snapshot,
@@ -2848,7 +3244,6 @@ impl WorkflowEngine {
                 persist_result?;
                 self.broadcast_state(app, worktree_path, snapshot.clone())
                     .await;
-                self.write_terminal_log(app, &snapshot);
                 self.cleanup_session_workflow_refs_by_run_id(&snapshot.execution_id)
                     .await;
                 return Ok(());
@@ -2908,7 +3303,12 @@ impl WorkflowEngine {
                 // まだ未完了の子がある → ブロードキャストのみ
                 exec.updated_at = current_timestamp();
                 let snapshot = exec.to_workflow_state();
-                (chat_session_id, false, Some(StepOutcome::Persist(snapshot)))
+                (
+                    chat_session_id,
+                    false,
+                    Some(StepOutcome::Persist(snapshot)),
+                    exec_snapshot_before,
+                )
             } else {
                 // 全完了 → 親ブロック名でstep_outputsに集約登録 + aggregate評価 + 遷移
                 let aggregate = pr.aggregate.clone();
@@ -3062,7 +3462,7 @@ impl WorkflowEngine {
 
                     Self::apply_advance(exec)
                 };
-                (chat_session_id, true, Some(outcome))
+                (chat_session_id, true, Some(outcome), exec_snapshot_before)
             }
         };
 
@@ -3075,6 +3475,7 @@ impl WorkflowEngine {
                     worktree_path,
                     &chat_session_id,
                     outcome,
+                    exec_snapshot_before,
                 )
                 .await?;
             } else {
@@ -3346,13 +3747,17 @@ impl WorkflowEngine {
                 }
                 // retry不可またはsession_idなし → Failed遷移
                 {
-                    let (chat_session_id, snapshot) = {
+                    let (chat_session_id, snapshot, snapshot_before, run_id) = {
                         let mut execs = self.executions.lock().await;
                         let exec =
                             find_by_worktree_mut(&mut execs, worktree_path).ok_or_else(|| {
                                 WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
                             })?;
                         let chat_session_id = exec.chat_session_id.clone();
+                        // [05] commit 境界: terminal event を required append にするため、
+                        // mutation 前の snapshot を捕捉して rollback target に揃える。
+                        let snapshot_before = exec.clone();
+                        let run_id = exec.id.clone();
                         let entry = exec.make_step_history_entry(
                             Some("contract_violation".to_string()),
                             None,
@@ -3374,22 +3779,59 @@ impl WorkflowEngine {
                             reason: fail_reason,
                         };
                         exec.updated_at = current_timestamp();
-                        (chat_session_id, exec.to_workflow_state())
-                    };
-                    let completed_step_session_ids = Self::completed_step_session_ids(&snapshot);
-                    let snapshot = self
-                        .persist_release_and_broadcast(
-                            app,
-                            session_store,
-                            handles,
-                            worktree_path,
-                            &chat_session_id,
-                            snapshot,
-                            &completed_step_session_ids,
+                        (
+                            chat_session_id,
+                            exec.to_workflow_state(),
+                            snapshot_before,
+                            run_id,
                         )
-                        .await?;
-                    self.write_terminal_log(app, &snapshot);
-                    self.cleanup_session_workflow_refs_by_run_id(&snapshot.execution_id)
+                    };
+
+                    // [05] commit_required_events 基盤の共通 commit 境界に統合:
+                    // terminal event 列 (NodeFailed + RunFailed) を required event として
+                    // append し、失敗時は engine state と Run Store snapshot を
+                    // snapshot_before で一括復元する（spec [05] atomic mutation 境界 /
+                    // best-effort warn 廃止）。
+                    let mut terminal_snapshot = snapshot.clone();
+                    let required_events =
+                        match Self::terminal_events_for_snapshot(&mut terminal_snapshot) {
+                            Ok(events) => events,
+                            Err(e) => {
+                                // event 構築失敗時は engine state を snapshot_before に復元する。
+                                let mut execs = self.executions.lock().await;
+                                if let Some(exec) = execs.get_mut(&run_id) {
+                                    *exec = snapshot_before;
+                                }
+                                return Err(e);
+                            }
+                        };
+                    let completed_step_session_ids = Self::completed_step_session_ids(&snapshot);
+                    let run_store_snapshot_before =
+                        self.run_store.active_run_snapshot(&run_id).await;
+                    self.commit_required_events(
+                        app,
+                        session_store,
+                        RequiredEventCommit {
+                            run_id: &run_id,
+                            chat_session_id: &chat_session_id,
+                            snapshot_for_commit: &snapshot,
+                            snapshot_before,
+                            run_store_snapshot_before,
+                            required_events,
+                            append_error_context: "contract violation terminal event append failed",
+                        },
+                    )
+                    .await?;
+                    self.release_completed_step_sessions(
+                        app,
+                        session_store,
+                        handles,
+                        &completed_step_session_ids,
+                    )
+                    .await;
+                    // terminal 系副作用: cleanup + broadcast。terminal event は append 済みのため
+                    // finalize_after_commit 側では write_terminal_events=false で二重 append を避ける。
+                    self.finalize_after_commit(app, &snapshot, worktree_path, false)
                         .await;
                     Ok(ContractCheckResult::Failed)
                 }
@@ -3751,7 +4193,7 @@ impl WorkflowEngine {
         target: ExecutionStateTarget,
         new_state: WorkflowExecutionState,
     ) -> Result<(), WorkflowEngineError> {
-        let (chat_session_id, snapshot, run_id, worktree_path, previous_state) = {
+        let (chat_session_id, snapshot, run_id, worktree_path, snapshot_before) = {
             let mut execs = self.executions.lock().await;
             let exec = match &target {
                 ExecutionStateTarget::Worktree(wt) => find_by_worktree_mut(&mut execs, wt)
@@ -3761,7 +4203,7 @@ impl WorkflowEngine {
             if exec.is_terminal() {
                 return Ok(());
             }
-            let previous_state = exec.state.clone();
+            let snapshot_before = exec.clone();
             exec.state = new_state;
             exec.updated_at = current_timestamp();
             (
@@ -3769,35 +4211,10 @@ impl WorkflowEngine {
                 exec.to_workflow_state(),
                 exec.id.clone(),
                 exec.worktree_path.clone(),
-                previous_state,
+                snapshot_before,
             )
         };
 
-        // sync 失敗時に engine 側の state を previous に巻き戻す helper
-        // （Spec issues-1011 finding 10: engine terminal / Run Store active のスキュー禁止）。
-        let rollback_engine_state =
-            |run_id_for_rollback: String, previous: WorkflowExecutionState| async move {
-                let mut execs = self.executions.lock().await;
-                if let Some(exec) = execs.get_mut(&run_id_for_rollback) {
-                    exec.state = previous;
-                    exec.updated_at = current_timestamp();
-                }
-            };
-
-        // Spec issues-1011 finding 5: transaction 境界の再構成。
-        // 旧実装は persist_state → release → sync_run_store の順で、sync 失敗時に
-        // ChatSession に terminal snapshot を保存済みのまま engine state を rollback すると
-        // (ChatSession=terminal, engine=active, RunStore=active) の不整合が残った。
-        // 新実装では Run Store sync を「最初の外部観測可能な永続化」とする:
-        //   1. sync_run_store_from_snapshot（terminal も active も同じく Run Store 経由）
-        //      失敗時: engine state を rollback。ChatSession には何も書いていない。
-        //   2. persist_state（ChatSession）
-        //      失敗時: ChatSession 未更新、engine + Run Store は新 status のまま。
-        //      ChatSession は次回読み込み時に Run Store / engine snapshot から再導出可能
-        //      （Run Store が active 集合と metadata の権威）。
-        //   3. cleanup / log / broadcast を最後に実行。
-        // これにより「sync 成功前に外部観測可能な永続化・broadcast・cleanup を確定しない」
-        // 境界が成立する。
         let is_terminal = matches!(
             snapshot.state,
             WorkflowExecutionState::Completed
@@ -3805,15 +4222,84 @@ impl WorkflowEngine {
                 | WorkflowExecutionState::Aborted
         );
 
-        // Step 1: Run Store sync (権威)
+        // [05] terminal 経路は commit_required_events 基盤の共通 commit 境界に統合する。
+        // terminal events (NodeCompleted（Completed のみ）+ RunCompleted / NodeFailed+RunFailed)
+        // を required event 列として集約し、RunStore sync → ChatSession persist → event log
+        // append の順序で commit する。いずれかが失敗した場合は engine state と Run Store snapshot
+        // を snapshot_before で一括復元する（spec [05] atomic mutation 境界 / best-effort warn 廃止）。
+        // Aborted は AbortRun command handler 側で別途 commit されるため本経路では event 集合に含めない。
+        if is_terminal && !matches!(snapshot.state, WorkflowExecutionState::Aborted) {
+            let mut terminal_snapshot = snapshot.clone();
+            let mut required_events = Vec::new();
+            if matches!(snapshot.state, WorkflowExecutionState::Completed) {
+                match Self::last_step_completed_event_for_snapshot(&mut terminal_snapshot) {
+                    Ok(Some(ev)) => required_events.push(ev),
+                    Ok(None) => {}
+                    Err(e) => {
+                        let mut execs = self.executions.lock().await;
+                        if let Some(exec) = execs.get_mut(&run_id) {
+                            *exec = snapshot_before;
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+            match Self::terminal_events_for_snapshot(&mut terminal_snapshot) {
+                Ok(events) => required_events.extend(events),
+                Err(e) => {
+                    let mut execs = self.executions.lock().await;
+                    if let Some(exec) = execs.get_mut(&run_id) {
+                        *exec = snapshot_before;
+                    }
+                    return Err(e);
+                }
+            }
+            let run_store_snapshot_before = self.run_store.active_run_snapshot(&run_id).await;
+            self.commit_required_events(
+                app,
+                session_store,
+                RequiredEventCommit {
+                    run_id: &run_id,
+                    chat_session_id: &chat_session_id,
+                    snapshot_for_commit: &snapshot,
+                    snapshot_before,
+                    run_store_snapshot_before,
+                    required_events,
+                    append_error_context: "set_execution_state terminal event append failed",
+                },
+            )
+            .await?;
+
+            // terminal 副作用: step session release + refs cleanup + broadcast。
+            let terminal_session_ids = Self::terminal_step_session_ids(&snapshot);
+            self.release_completed_step_sessions(
+                app,
+                session_store,
+                handles,
+                &terminal_session_ids,
+            )
+            .await;
+            self.cleanup_session_workflow_refs_by_run_id(&run_id).await;
+            self.broadcast_state(app, &worktree_path, snapshot.clone())
+                .await;
+            return Ok(());
+        }
+
+        // 非 terminal / Aborted 経路: required event が無いため従来の sync→persist 順で commit する。
+        // Aborted は AbortRun command handler 側で event を別途 append 済み。
+        let rollback_engine_state =
+            |run_id_for_rollback: String, previous_snapshot: WorkflowExecution| async move {
+                let mut execs = self.executions.lock().await;
+                if let Some(exec) = execs.get_mut(&run_id_for_rollback) {
+                    *exec = previous_snapshot;
+                }
+            };
+
         if let Err(e) = self.sync_run_store_from_snapshot(&run_id, &snapshot).await {
-            rollback_engine_state(run_id.clone(), previous_state).await;
+            rollback_engine_state(run_id.clone(), snapshot_before).await;
             return Err(e);
         }
 
-        // Step 2: ChatSession persist。失敗時は engine + Run Store が新 status のまま残るが、
-        // ChatSession の workflow_state は次回読み込み時に Run Store / engine snapshot から
-        // 再導出可能なので、致命的な不整合にはならない。warn ログを残して呼出側に Err を伝える。
         let persist_result = self
             .persist_state(app, session_store, &chat_session_id, snapshot.clone())
             .await;
@@ -3831,7 +4317,6 @@ impl WorkflowEngine {
             None
         };
 
-        // Step 3: terminal の場合は step session の release / 終了ログ / refs cleanup。
         if is_terminal {
             let terminal_session_ids = Self::terminal_step_session_ids(&snapshot);
             self.release_completed_step_sessions(
@@ -3841,11 +4326,6 @@ impl WorkflowEngine {
                 &terminal_session_ids,
             )
             .await;
-            if matches!(snapshot.state, WorkflowExecutionState::Completed) {
-                self.write_last_step_completed_log(app, &snapshot);
-            }
-            self.write_terminal_log(app, &snapshot);
-            // Spec issues-1011 finding 1: refs cleanup は run_id 主語に統一する。
             self.cleanup_session_workflow_refs_by_run_id(&run_id).await;
         }
         self.broadcast_state(app, &worktree_path, snapshot.clone())
@@ -4085,11 +4565,12 @@ impl WorkflowEngine {
         };
 
         // 判定 + 状態変更 + 履歴記録を原子的に実行
-        let (chat_session_id, outcome) = {
+        let (chat_session_id, outcome, snapshot_before) = {
             let mut execs = self.executions.lock().await;
             let exec = find_by_worktree_mut(&mut execs, worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let chat_session_id = exec.chat_session_id.clone();
+            let snapshot_before = exec.clone();
 
             let outcome = match rule_match {
                 None => {
@@ -4127,7 +4608,7 @@ impl WorkflowEngine {
                     StepOutcome::Persist(exec.to_workflow_state())
                 }
             };
-            (chat_session_id, outcome)
+            (chat_session_id, outcome, snapshot_before)
         };
 
         self.execute_outcome(
@@ -4137,6 +4618,7 @@ impl WorkflowEngine {
             worktree_path,
             &chat_session_id,
             outcome,
+            snapshot_before,
         )
         .await
     }
@@ -5201,9 +5683,13 @@ impl WorkflowEngine {
         if is_terminal {
             if write_terminal_events {
                 if matches!(snapshot.state, WorkflowExecutionState::Completed) {
-                    self.write_last_step_completed_log(app, snapshot);
+                    if let Err(e) = self.write_last_step_completed_log(app, snapshot) {
+                        log::warn!("Failed to append NodeCompleted workflow event: {e}");
+                    }
                 }
-                self.write_terminal_log(app, snapshot);
+                if let Err(e) = self.write_terminal_log(app, snapshot) {
+                    log::warn!("Failed to append terminal workflow events: {e}");
+                }
             }
             self.cleanup_session_workflow_refs_by_run_id(&run_id).await;
         }
@@ -5372,12 +5858,18 @@ impl WorkflowEngine {
 
     /// ロック外でStepOutcomeに応じた副作用（永続化・ブロードキャスト・AgentSession起動）を実行する。
     ///
-    /// 本 helper は non-command 経路（NodeCompleted / NodeFailed 等）から呼ばれ、
-    /// `persist_release_and_broadcast` で snapshot を永続化したうえで、variant 別の
-    /// post-commit 副作用を `dispatch_step_outcome_side_effects` 経由で実行する。
-    /// 4 command（StartRun / AbortRun / Approve / Reject）経路の handler は required
-    /// event append を commit point として通過してから同じ
-    /// `dispatch_step_outcome_side_effects` を呼ぶ。
+    /// 本 helper は non-command 経路（NodeCompleted / NodeFailed 等）から呼ばれる。
+    ///
+    /// [05] commit 境界: spec [04] commit_required_events を基盤に、StepOutcome から
+    /// `NodeCompleted` / `NodeFailed` / `RunCompleted` / `RunFailed` の必須 event を
+    /// 組み立て、RunStore sync → ChatSession persist → event log append の順で commit
+    /// する。いずれかの phase で失敗した場合は engine state と Run Store snapshot を
+    /// `snapshot_before` で一括復元することで、event log と engine state / RunStore /
+    /// ChatSession の分離を防ぐ（spec [05]: state mutation と event log の分離を防ぐ
+    /// rollback 境界 / atomic mutation 境界）。
+    ///
+    /// 必須 event が空の場合は従来通り `sync_persist_release` のみを実行する。
+    #[allow(clippy::too_many_arguments)]
     async fn execute_outcome<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -5386,19 +5878,68 @@ impl WorkflowEngine {
         worktree_path: &str,
         chat_session_id: &str,
         outcome: StepOutcome,
+        snapshot_before: WorkflowExecution,
     ) -> Result<(), WorkflowEngineError> {
         let completed_step_session_ids = Self::completed_step_session_ids_for_outcome(&outcome);
         let snapshot_for_commit = Self::outcome_snapshot(&outcome).clone();
-        self.persist_release_and_broadcast(
-            app,
-            session_store,
-            handles,
-            worktree_path,
-            chat_session_id,
-            snapshot_for_commit,
-            &completed_step_session_ids,
-        )
-        .await?;
+        let run_id = snapshot_for_commit.execution_id.clone();
+
+        // [05] pre-commit phase: 必須 event の生成。`dispatch_internal_node_command` の
+        // ValidationError は engine state を snapshot_before で復元して伝播する
+        // （spec [05] silent error 禁止）。
+        let pre_commit_events = match Self::pre_commit_required_events_for_outcome(&outcome) {
+            Ok(events) => events,
+            Err(e) => {
+                let mut execs = self.executions.lock().await;
+                if let Some(exec) = execs.get_mut(&run_id) {
+                    *exec = snapshot_before;
+                }
+                return Err(e);
+            }
+        };
+
+        if !pre_commit_events.is_empty() {
+            // [05] commit_required_events 基盤: 順序と rollback 方針を一箇所に集約。
+            // 失敗時は engine state と Run Store snapshot を一括復元する。
+            let run_store_snapshot_before = self.run_store.active_run_snapshot(&run_id).await;
+            self.commit_required_events(
+                app,
+                session_store,
+                RequiredEventCommit {
+                    run_id: &run_id,
+                    chat_session_id,
+                    snapshot_for_commit: &snapshot_for_commit,
+                    snapshot_before,
+                    run_store_snapshot_before,
+                    required_events: pre_commit_events,
+                    append_error_context: "execute_outcome required event append failed",
+                },
+            )
+            .await?;
+            self.release_completed_step_sessions(
+                app,
+                session_store,
+                handles,
+                &completed_step_session_ids,
+            )
+            .await;
+        } else {
+            // 必須 event 無し: 従来通り sync_persist_release のみ。
+            self.sync_persist_release(
+                app,
+                session_store,
+                handles,
+                chat_session_id,
+                &snapshot_for_commit,
+                &completed_step_session_ids,
+            )
+            .await?;
+        }
+
+        // terminal / NodeCompleted は append 済みのため finalize_after_commit には
+        // write_terminal_events=false を渡し二重 append を避ける（commit 境界の単一性）。
+        self.finalize_after_commit(app, &snapshot_for_commit, worktree_path, false)
+            .await;
         self.dispatch_step_outcome_side_effects(
             app,
             session_store,
@@ -5406,9 +5947,53 @@ impl WorkflowEngine {
             worktree_path,
             chat_session_id,
             outcome,
-            OutcomeCommitMode::EmitProgressEvents,
+            OutcomeCommitMode::ProgressEventsAlreadyCommitted,
         )
         .await
+    }
+
+    /// [05] StepOutcome から persist 前に append すべき必須 event を組み立てる
+    /// 純粋関数。`execute_outcome` の pre-commit phase でのみ呼ばれる。
+    ///
+    /// `Persist`:
+    /// terminal（Completed / Failed）の場合 NodeCompleted（Completed のみ）+ terminal
+    /// events（RunCompleted / NodeFailed+RunFailed）を返す。Aborted は `AbortRun`
+    /// command 経路で別途 append されるため本関数では扱わない。
+    ///
+    /// `TransitionAndStart` / `ReduceAndTransition` / `StartParallel`:
+    /// 直前の step 完了に対応する NodeCompleted を返す。NodeStarted は best-effort
+    /// write_log 側で扱う（spec scope: required append は NodeCompleted / 終了系のみ）。
+    fn pre_commit_required_events_for_outcome(
+        outcome: &StepOutcome,
+    ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
+        let mut events = Vec::new();
+        let mut snapshot = Self::outcome_snapshot(outcome).clone();
+        match outcome {
+            StepOutcome::Persist(s) => {
+                let is_terminal = matches!(
+                    s.state,
+                    WorkflowExecutionState::Completed | WorkflowExecutionState::Failed { .. }
+                );
+                if is_terminal {
+                    if matches!(s.state, WorkflowExecutionState::Completed) {
+                        if let Some(ev) =
+                            Self::last_step_completed_event_for_snapshot(&mut snapshot)?
+                        {
+                            events.push(ev);
+                        }
+                    }
+                    events.extend(Self::terminal_events_for_snapshot(&mut snapshot)?);
+                }
+            }
+            StepOutcome::TransitionAndStart(_)
+            | StepOutcome::ReduceAndTransition(_)
+            | StepOutcome::StartParallel(_) => {
+                if let Some(ev) = Self::last_step_completed_event_for_snapshot(&mut snapshot)? {
+                    events.push(ev);
+                }
+            }
+        }
+        Ok(events)
     }
 
     /// [04] post-commit variant work（共通 side-effect helper）。
@@ -5455,7 +6040,11 @@ impl WorkflowEngine {
             }
             StepOutcome::TransitionAndStart(snapshot) => {
                 if commit_mode.should_emit_progress_events() {
-                    self.write_last_step_completed_log(app, &snapshot);
+                    if let Err(e) = self.write_last_step_completed_log(app, &snapshot) {
+                        return Err(WorkflowEngineError::SessionStore(format!(
+                            "TransitionAndStart pre-commit NodeCompleted append failed: {e}"
+                        )));
+                    }
                 }
                 let exec_count = snapshot
                     .step_execution_counts
@@ -5506,7 +6095,11 @@ impl WorkflowEngine {
             }
             StepOutcome::ReduceAndTransition(snapshot) => {
                 if commit_mode.should_emit_progress_events() {
-                    self.write_last_step_completed_log(app, &snapshot);
+                    if let Err(e) = self.write_last_step_completed_log(app, &snapshot) {
+                        return Err(WorkflowEngineError::SessionStore(format!(
+                            "ReduceAndTransition pre-commit NodeCompleted append failed: {e}"
+                        )));
+                    }
                 }
 
                 let (collect_config_clone, reduce_result, step_rules) = {
@@ -5523,12 +6116,13 @@ impl WorkflowEngine {
                     (collect, result, step.transition_rules.clone())
                 };
 
-                let (next_outcome, log_step_name, log_exec_id, log_wf_name) = {
+                let (next_outcome, log_step_name, log_exec_id, log_wf_name, snapshot_before) = {
                     let mut execs = self.executions.lock().await;
                     let exec =
                         find_by_worktree_mut(&mut execs, worktree_path).ok_or_else(|| {
                             WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
                         })?;
+                    let snapshot_before = exec.clone();
 
                     let entry = exec.make_step_history_entry(
                         reduce_result.result.clone(),
@@ -5558,7 +6152,7 @@ impl WorkflowEngine {
                     } else {
                         Self::apply_advance(exec)
                     };
-                    (outcome, step_name, exec_id, wf_name)
+                    (outcome, step_name, exec_id, wf_name, snapshot_before)
                 };
 
                 let collected_entries: Vec<CollectedOutputEntry> = collect_config_clone
@@ -5597,12 +6191,17 @@ impl WorkflowEngine {
                     worktree_path,
                     chat_session_id,
                     next_outcome,
+                    snapshot_before,
                 ))
                 .await
             }
             StepOutcome::StartParallel(snapshot) => {
                 if commit_mode.should_emit_progress_events() {
-                    self.write_last_step_completed_log(app, &snapshot);
+                    if let Err(e) = self.write_last_step_completed_log(app, &snapshot) {
+                        return Err(WorkflowEngineError::SessionStore(format!(
+                            "StartParallel pre-commit NodeCompleted append failed: {e}"
+                        )));
+                    }
                 }
                 if let Err(e) = self
                     .start_parallel_children(
@@ -6010,48 +6609,79 @@ impl WorkflowEngine {
         .await;
     }
 
-    /// 終了状態（Completed/Failed）のログを書き込む。
+    /// 終了状態（Completed/Failed）のログを書き込む required append helper。
     /// StepCompletedログは呼び出し元で書き込み済みのため、ここでは書かない。
     ///
     /// `Aborted` 状態の `RunAborted` event は本 issue [04] の典型 typed command
     /// `AbortRun` に対応する事実列であり、command handler 側で `write_log_required`
     /// を経由して必須 append + snapshot 一括復元の atomic 境界に乗せる。本ヘルパーは
-    /// best-effort であり、`AbortRun` の rollback 経路を担保できないため Aborted は
-    /// ここで書かない（重複 append 防止）。
+    /// `AbortRun` の rollback 経路を担保できないため Aborted はここで書かない（重複
+    /// append 防止）。
+    ///
+    /// [05] event 発行点の集約: terminal events（NodeFailed / RunCompleted / RunFailed）は
+    /// `dispatch_internal_node_command` 経由で生成し、`write_log_required_batch` で必須
+    /// append 経路に乗せる。append 失敗時は `Err` を返し、呼出側で state mutation
+    /// rollback / persist スキップに乗せる（spec [05]: best-effort warn を廃止し
+    /// commit 境界に揃える）。
     fn write_terminal_log<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         snapshot: &WorkflowState,
-    ) {
-        for event in Self::terminal_events_for_snapshot(snapshot) {
-            self.write_log(app, event);
+    ) -> Result<(), String> {
+        let mut local = snapshot.clone();
+        let events =
+            Self::terminal_events_for_snapshot(&mut local).map_err(|e| format!("{e:?}"))?;
+        if events.is_empty() {
+            return Ok(());
         }
+        self.write_log_required_batch(app, &events)
     }
 
-    /// 最後のステップのStepCompletedログを書き込む。
+    /// 最後のステップの NodeCompleted ログを書き込む required append helper。
+    /// [05] event 発行点の集約: `dispatch_internal_node_command` 経由で生成した
+    /// `NodeCompleted` を `write_log_required` で必須 append 経路に乗せる。
+    /// append 失敗時は `Err` を返し、呼出側で commit 境界に乗せる（spec [05]:
+    /// best-effort warn を廃止）。
     fn write_last_step_completed_log<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         snapshot: &WorkflowState,
-    ) {
-        if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot) {
-            self.write_log(app, event);
+    ) -> Result<(), String> {
+        let mut local = snapshot.clone();
+        match Self::last_step_completed_event_for_snapshot(&mut local) {
+            Ok(Some(event)) => self.write_log_required(app, event),
+            Ok(None) => Ok(()),
+            Err(e) => Err(format!("{e:?}")),
         }
     }
 
-    fn last_step_completed_event_for_snapshot(snapshot: &WorkflowState) -> Option<WorkflowEvent> {
-        let last_entry = snapshot.step_history.last()?;
-        Some(WorkflowEvent::NodeCompleted {
+    /// [05] internal command boundary: NodeCompleted event の発行点を typed command
+    /// 経路に揃える。snapshot から `WorkflowCommand::CompleteNode` を組み立て、
+    /// `dispatch_internal_node_command` 経由で (state mutation + event) を atomic
+    /// commit する（Complete の mutation は上流 push 完了点と一致することの検証）。
+    ///
+    /// `Ok(None)` は step_history 空（NodeCompleted 該当なし）の合法な経路。
+    /// `dispatch_internal_node_command` の `ValidationError` は `.ok()` で握り潰さず
+    /// `Err` として呼出側に伝播し、commit 境界の判断材料を奪わないようにする
+    /// （spec [05] silent error の禁止）。
+    fn last_step_completed_event_for_snapshot(
+        snapshot: &mut WorkflowState,
+    ) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
+        let Some(last_entry) = snapshot.step_history.last().cloned() else {
+            return Ok(None);
+        };
+        let command = WorkflowCommand::CompleteNode {
             run_id: snapshot.execution_id.clone(),
             workflow_name: snapshot.workflow_name.clone(),
-            node_name: last_entry.step_name.clone(),
-            result: last_entry.result.clone(),
-            session_id: last_entry.session_id.clone(),
-            token_usage: last_entry.token_usage.clone(),
-            structured_output: last_entry.structured_output.clone(),
+            node_name: last_entry.step_name,
+            result: last_entry.result,
+            session_id: last_entry.session_id,
+            token_usage: last_entry.token_usage,
+            structured_output: last_entry.structured_output,
             run_index: Some(last_entry.run_index),
             timestamp: last_entry.completed_at,
-        })
+        };
+        Self::dispatch_internal_node_command(snapshot, command).map(Some)
     }
 
     fn node_started_event_for_snapshot(snapshot: &WorkflowState) -> WorkflowEvent {
@@ -6089,48 +6719,66 @@ impl WorkflowEngine {
         })
     }
 
-    fn terminal_events_for_snapshot(snapshot: &WorkflowState) -> Vec<WorkflowEvent> {
+    /// [05] internal command boundary: terminal event 列の発行点を typed command 経路に
+    /// 揃える。`Failed` の場合は `FailNode` typed command を組み立てて
+    /// `dispatch_internal_node_command` で state mutation + NodeFailed event を atomic
+    /// に commit し、その後 RunFailed を追記する。`dispatch_internal_node_command` の
+    /// `ValidationError` は `.ok()` で握り潰さず `Err` として呼出側に伝播する
+    /// （spec [05] silent error の禁止）。
+    fn terminal_events_for_snapshot(
+        snapshot: &mut WorkflowState,
+    ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
         match &snapshot.state {
-            WorkflowExecutionState::Completed => vec![WorkflowEvent::RunCompleted {
+            WorkflowExecutionState::Completed => Ok(vec![WorkflowEvent::RunCompleted {
                 run_id: snapshot.execution_id.clone(),
                 workflow_name: snapshot.workflow_name.clone(),
                 total_token_usage: snapshot.total_token_usage.clone(),
                 timestamp: snapshot.updated_at,
-            }],
-            WorkflowExecutionState::Failed { reason } => vec![
-                WorkflowEvent::NodeFailed {
-                    run_id: snapshot.execution_id.clone(),
-                    workflow_name: snapshot.workflow_name.clone(),
-                    node_name: snapshot.current_step_name.clone(),
+            }]),
+            WorkflowExecutionState::Failed { reason } => {
+                let run_id = snapshot.execution_id.clone();
+                let workflow_name = snapshot.workflow_name.clone();
+                let node_name = snapshot.current_step_name.clone();
+                let reason = reason.clone();
+                let timestamp = snapshot.updated_at;
+                let fail_command = WorkflowCommand::FailNode {
+                    run_id: run_id.clone(),
+                    workflow_name: workflow_name.clone(),
+                    node_name,
                     reason: reason.clone(),
-                    timestamp: snapshot.updated_at,
-                },
-                WorkflowEvent::RunFailed {
-                    run_id: snapshot.execution_id.clone(),
-                    workflow_name: snapshot.workflow_name.clone(),
-                    reason: reason.clone(),
-                    timestamp: snapshot.updated_at,
-                },
-            ],
-            _ => Vec::new(),
+                    timestamp,
+                };
+                let node_failed = Self::dispatch_internal_node_command(snapshot, fail_command)?;
+                Ok(vec![
+                    node_failed,
+                    WorkflowEvent::RunFailed {
+                        run_id,
+                        workflow_name,
+                        reason,
+                        timestamp,
+                    },
+                ])
+            }
+            _ => Ok(Vec::new()),
         }
     }
 
     fn required_events_for_approval_commit(
         approval_event: WorkflowEvent,
-        outcome: &StepOutcome,
-    ) -> Vec<WorkflowEvent> {
+        outcome: &mut StepOutcome,
+    ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
         let mut events = vec![approval_event];
         match outcome {
             StepOutcome::Persist(snapshot) => {
-                if matches!(
+                let is_terminal = matches!(
                     snapshot.state,
                     WorkflowExecutionState::Completed | WorkflowExecutionState::Failed { .. }
-                ) {
-                    if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot) {
+                );
+                if is_terminal {
+                    if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot)? {
                         events.push(event);
                     }
-                    events.extend(Self::terminal_events_for_snapshot(snapshot));
+                    events.extend(Self::terminal_events_for_snapshot(snapshot)?);
                 } else if matches!(snapshot.state, WorkflowExecutionState::Aborted) {
                     events.push(WorkflowEvent::RunAborted {
                         run_id: snapshot.execution_id.clone(),
@@ -6140,25 +6788,23 @@ impl WorkflowEngine {
                 }
             }
             StepOutcome::TransitionAndStart(snapshot) => {
-                if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot) {
+                if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot)? {
                     events.push(event);
                 }
                 events.push(Self::node_started_event_for_snapshot(snapshot));
             }
-            StepOutcome::ReduceAndTransition(snapshot) | StepOutcome::StartParallel(snapshot) => {
-                if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot) {
+            StepOutcome::ReduceAndTransition(snapshot) => {
+                if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot)? {
                     events.push(event);
                 }
-                match outcome {
-                    StepOutcome::ReduceAndTransition(_) => {
-                        events.push(Self::node_started_event_for_snapshot(snapshot));
-                    }
-                    StepOutcome::StartParallel(_) => {
-                        if let Some(event) = Self::parallel_started_event_for_snapshot(snapshot) {
-                            events.push(event);
-                        }
-                    }
-                    _ => {}
+                events.push(Self::node_started_event_for_snapshot(snapshot));
+            }
+            StepOutcome::StartParallel(snapshot) => {
+                if let Some(event) = Self::last_step_completed_event_for_snapshot(snapshot)? {
+                    events.push(event);
+                }
+                if let Some(event) = Self::parallel_started_event_for_snapshot(snapshot) {
+                    events.push(event);
                 }
             }
         }
@@ -6169,7 +6815,7 @@ impl WorkflowEngine {
         for event in &mut events {
             Self::set_workflow_event_timestamp(event, commit_timestamp);
         }
-        events
+        Ok(events)
     }
 
     fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
@@ -6302,6 +6948,42 @@ impl WorkflowEngine {
             expected_execution_id,
             expected_step_name,
             output_text,
+        )
+        .await
+    }
+
+    /// [05] Test-only: 既に `Failed` state に遷移した snapshot に対して
+    /// `execute_outcome(StepOutcome::Persist(snapshot))` を実行する production 経路の
+    /// ショートカット。pre-commit append 失敗時に RunStore / state が persist されない
+    /// ことを検証するために用いる（spec [05] commit 境界の継承）。
+    #[cfg(test)]
+    async fn execute_outcome_persist_failed_for_test<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        handles: &Arc<Mutex<AgentProcessMap>>,
+        worktree_path: &str,
+        chat_session_id: &str,
+        snapshot: WorkflowState,
+    ) -> Result<(), WorkflowEngineError> {
+        // テスト helper の snapshot_before は engine.executions の現在状態を採用する。
+        // production 経路では call site が mutation 前に capture するが、本 helper は
+        // 既に mutated snapshot を直接渡すための短絡として、現在状態を rollback target
+        // 扱いにする（pre-commit 失敗時の挙動を観測する用途のため）。
+        let snapshot_before = {
+            let execs = self.executions.lock().await;
+            execs.get(&snapshot.execution_id).cloned().ok_or_else(|| {
+                WorkflowEngineError::ExecutionNotFound(snapshot.execution_id.clone())
+            })?
+        };
+        self.execute_outcome(
+            app,
+            session_store,
+            handles,
+            worktree_path,
+            chat_session_id,
+            StepOutcome::Persist(snapshot),
+            snapshot_before,
         )
         .await
     }
@@ -14125,6 +14807,828 @@ mod dispatch_boundary_tests {
             restored.workflow_variables, before_variables,
             "workflow_variables 全体が mutation 前と等価"
         );
+    }
+
+    /// Spec [05] adapter-facing 拒否境界: `WorkflowCommand::CompleteNode` /
+    /// `FailNode` は engine 内部の node 完了 / 失敗遷移を typed 化した internal-only
+    /// variant であり、外部 adapter（Tauri command / CLI / agent path）から組み立てる
+    /// 経路は提供しない。adapter 入口の `dispatch_external` から外部 caller が組み立てて
+    /// 到達した場合は内部不整合として `Err` に変換することを境界仕様として確認する。
+    /// engine 内部の commit 経路は `dispatch` を直接呼ぶ（次の
+    /// `dispatch_commits_internal_*` テスト参照）。
+    #[tokio::test]
+    async fn workflow_command_internal_variants_are_rejected_by_dispatch_external() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let (session_store, handles) = make_dispatch_deps();
+        let internal_complete = WorkflowCommand::CompleteNode {
+            run_id: "00000000-0000-0000-0000-000000000600".to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: "step-1".to_string(),
+            result: None,
+            session_id: None,
+            token_usage: None,
+            structured_output: None,
+            run_index: None,
+            timestamp: 0.0,
+        };
+        let result = engine
+            .dispatch_external(app.handle(), &session_store, &handles, internal_complete)
+            .await;
+        assert!(
+            matches!(result, Err(WorkflowEngineError::ValidationError(_))),
+            "dispatch_external must reject CompleteNode as internal-only; got {result:?}"
+        );
+
+        let internal_fail = WorkflowCommand::FailNode {
+            run_id: "00000000-0000-0000-0000-000000000601".to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: "step-1".to_string(),
+            reason: "boom".to_string(),
+            timestamp: 0.0,
+        };
+        let result = engine
+            .dispatch_external(app.handle(), &session_store, &handles, internal_fail)
+            .await;
+        assert!(
+            matches!(result, Err(WorkflowEngineError::ValidationError(_))),
+            "dispatch_external must reject FailNode as internal-only; got {result:?}"
+        );
+    }
+
+    fn dispatch_internal_test_snapshot(run_id: &str, workflow_name: &str) -> WorkflowState {
+        WorkflowState {
+            execution_id: run_id.to_string(),
+            workflow_name: workflow_name.to_string(),
+            chat_session_id: None,
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            current_step_name: "node-1".to_string(),
+            current_session_id: None,
+            total_steps: 1,
+            step_history: vec![],
+            step_execution_counts: HashMap::new(),
+            workflow_definition: crate::workflow::schema::Workflow {
+                name: workflow_name.to_string(),
+                description: String::new(),
+                builtin: false,
+                nodes: vec![],
+            },
+            total_token_usage: TokenUsage::default(),
+            step_states: HashMap::new(),
+            step_outputs: HashMap::new(),
+            active_parallel_steps: vec![],
+            workflow_variables: HashMap::new(),
+            approval_operations: None,
+            started_at: 0.0,
+            updated_at: 0.0,
+        }
+    }
+
+    /// Spec [05]: `dispatch_internal_node_command` は `InternalNodeCommand` を受け取り、
+    /// 対応する state mutation を snapshot に適用したうえで event を返す
+    /// atomic commit 関数として機能する（spec [05]: 発行点が typed command 経路に
+    /// 集約 / state mutation と event 発行を同一 commit 境界に集約）。
+    #[test]
+    fn dispatch_internal_node_command_projects_complete_and_fail_commands() {
+        // Complete は snapshot.step_history 末尾 entry と command effect の整合を
+        // 検証する（commit 関数: 上流 push との同期境界）。
+        let mut snapshot =
+            dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000602", "wf");
+        snapshot.step_history.push(StepHistoryEntry {
+            step_name: "node-1".to_string(),
+            completed_at: 100.0,
+            result: Some("ok".to_string()),
+            session_id: Some("sess-1".to_string()),
+            token_usage: None,
+            structured_output: None,
+            run_index: 1,
+            child_outputs: None,
+        });
+        let complete = WorkflowCommand::CompleteNode {
+            run_id: "00000000-0000-0000-0000-000000000602".to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: "node-1".to_string(),
+            result: Some("ok".to_string()),
+            session_id: Some("sess-1".to_string()),
+            token_usage: None,
+            structured_output: None,
+            run_index: Some(1),
+            timestamp: 100.0,
+        };
+        match WorkflowEngine::dispatch_internal_node_command(&mut snapshot, complete) {
+            Ok(WorkflowEvent::NodeCompleted {
+                run_id,
+                node_name,
+                result,
+                timestamp,
+                ..
+            }) => {
+                assert_eq!(run_id, "00000000-0000-0000-0000-000000000602");
+                assert_eq!(node_name, "node-1");
+                assert_eq!(result.as_deref(), Some("ok"));
+                assert_eq!(timestamp, 100.0);
+            }
+            other => panic!("expected NodeCompleted, got {other:?}"),
+        }
+
+        let mut fail_snapshot =
+            dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000603", "wf");
+        let fail = WorkflowCommand::FailNode {
+            run_id: "00000000-0000-0000-0000-000000000603".to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: "node-1".to_string(),
+            reason: "boom".to_string(),
+            timestamp: 200.0,
+        };
+        match WorkflowEngine::dispatch_internal_node_command(&mut fail_snapshot, fail) {
+            Ok(WorkflowEvent::NodeFailed {
+                run_id,
+                node_name,
+                reason,
+                timestamp,
+                ..
+            }) => {
+                assert_eq!(run_id, "00000000-0000-0000-0000-000000000603");
+                assert_eq!(node_name, "node-1");
+                assert_eq!(reason, "boom");
+                assert_eq!(timestamp, 200.0);
+            }
+            other => panic!("expected NodeFailed, got {other:?}"),
+        }
+        // state mutation: Fail 受領後 snapshot.state は Failed { reason } に遷移し、
+        // updated_at は command の timestamp と一致する。
+        assert!(matches!(
+            fail_snapshot.state,
+            WorkflowExecutionState::Failed { ref reason } if reason == "boom"
+        ));
+        assert_eq!(fail_snapshot.updated_at, 200.0);
+
+        // Complete で snapshot の step_history 末尾と node_name が不一致な場合、
+        // commit 関数は ValidationError を返す（spec [05] commit 境界: snapshot が
+        // command effect を含まないことの検出）。
+        let mut mismatched =
+            dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000604", "wf");
+        let mismatched_cmd = WorkflowCommand::CompleteNode {
+            run_id: "00000000-0000-0000-0000-000000000604".to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: "node-1".to_string(),
+            result: None,
+            session_id: None,
+            token_usage: None,
+            structured_output: None,
+            run_index: None,
+            timestamp: 100.0,
+        };
+        assert!(matches!(
+            WorkflowEngine::dispatch_internal_node_command(&mut mismatched, mismatched_cmd),
+            Err(WorkflowEngineError::ValidationError(_))
+        ));
+    }
+
+    /// Spec [05] commit 境界（snapshot と command effect の整合検証）の table-driven 網羅。
+    /// `CompleteNode` の全 effect 列（run_id / workflow_name / node_name / result /
+    /// session_id / token_usage / structured_output / run_index / timestamp）について、
+    /// snapshot 側で 1 個ずつ意図的に mismatch を作成し、`dispatch_internal_node_command`
+    /// が `ValidationError` を返すことを境界仕様として担保する（policy 指示）。
+    #[test]
+    fn dispatch_internal_complete_node_validates_all_effect_fields() {
+        fn base_snapshot() -> WorkflowState {
+            let mut s =
+                dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000620", "table-wf");
+            s.step_history.push(StepHistoryEntry {
+                step_name: "node-1".to_string(),
+                completed_at: 100.0,
+                result: Some("ok".to_string()),
+                session_id: Some("sess-1".to_string()),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                }),
+                structured_output: Some(serde_json::json!({"k":"v"})),
+                run_index: 1,
+                child_outputs: None,
+            });
+            s
+        }
+        fn base_command() -> WorkflowCommand {
+            WorkflowCommand::CompleteNode {
+                run_id: "00000000-0000-0000-0000-000000000620".to_string(),
+                workflow_name: "table-wf".to_string(),
+                node_name: "node-1".to_string(),
+                result: Some("ok".to_string()),
+                session_id: Some("sess-1".to_string()),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                }),
+                structured_output: Some(serde_json::json!({"k":"v"})),
+                run_index: Some(1),
+                timestamp: 100.0,
+            }
+        }
+
+        // baseline は受理される（all fields match）。
+        let mut s = base_snapshot();
+        assert!(WorkflowEngine::dispatch_internal_node_command(&mut s, base_command()).is_ok());
+
+        // 各 field を 1 個ずつ意図的に乖離させて ValidationError を確認する。
+        type CompleteNodeMutator = Box<dyn Fn(WorkflowCommand) -> WorkflowCommand>;
+        let mutators: Vec<(&str, CompleteNodeMutator)> = vec![
+            (
+                "run_id",
+                Box::new(|_cmd| {
+                    let mut c = base_command();
+                    if let WorkflowCommand::CompleteNode {
+                        run_id: ref mut r, ..
+                    } = c
+                    {
+                        *r = "00000000-0000-0000-0000-000000000999".to_string();
+                    }
+                    c
+                }),
+            ),
+            (
+                "workflow_name",
+                Box::new(|_cmd| {
+                    let mut c = base_command();
+                    if let WorkflowCommand::CompleteNode {
+                        workflow_name: ref mut w,
+                        ..
+                    } = c
+                    {
+                        *w = "other-wf".to_string();
+                    }
+                    c
+                }),
+            ),
+            (
+                "node_name",
+                Box::new(|_cmd| {
+                    let mut c = base_command();
+                    if let WorkflowCommand::CompleteNode {
+                        node_name: ref mut n,
+                        ..
+                    } = c
+                    {
+                        *n = "node-X".to_string();
+                    }
+                    c
+                }),
+            ),
+            (
+                "result",
+                Box::new(|_cmd| {
+                    let mut c = base_command();
+                    if let WorkflowCommand::CompleteNode {
+                        result: ref mut r, ..
+                    } = c
+                    {
+                        *r = Some("DIFFERENT".to_string());
+                    }
+                    c
+                }),
+            ),
+            (
+                "session_id",
+                Box::new(|_cmd| {
+                    let mut c = base_command();
+                    if let WorkflowCommand::CompleteNode {
+                        session_id: ref mut s,
+                        ..
+                    } = c
+                    {
+                        *s = Some("sess-X".to_string());
+                    }
+                    c
+                }),
+            ),
+            (
+                "token_usage",
+                Box::new(|_cmd| {
+                    let mut c = base_command();
+                    if let WorkflowCommand::CompleteNode {
+                        token_usage: ref mut t,
+                        ..
+                    } = c
+                    {
+                        *t = Some(TokenUsage {
+                            input_tokens: 999,
+                            output_tokens: 999,
+                        });
+                    }
+                    c
+                }),
+            ),
+            (
+                "structured_output",
+                Box::new(|_cmd| {
+                    let mut c = base_command();
+                    if let WorkflowCommand::CompleteNode {
+                        structured_output: ref mut so,
+                        ..
+                    } = c
+                    {
+                        *so = Some(serde_json::json!({"k":"other"}));
+                    }
+                    c
+                }),
+            ),
+            (
+                "run_index",
+                Box::new(|_cmd| {
+                    let mut c = base_command();
+                    if let WorkflowCommand::CompleteNode {
+                        run_index: ref mut r,
+                        ..
+                    } = c
+                    {
+                        *r = Some(99);
+                    }
+                    c
+                }),
+            ),
+            (
+                "timestamp",
+                Box::new(|_cmd| {
+                    let mut c = base_command();
+                    if let WorkflowCommand::CompleteNode {
+                        timestamp: ref mut t,
+                        ..
+                    } = c
+                    {
+                        *t = 999.0;
+                    }
+                    c
+                }),
+            ),
+        ];
+
+        for (label, mutate) in mutators {
+            let mut snapshot = base_snapshot();
+            let cmd = mutate(base_command());
+            let result = WorkflowEngine::dispatch_internal_node_command(&mut snapshot, cmd);
+            assert!(
+                matches!(result, Err(WorkflowEngineError::ValidationError(_))),
+                "CompleteNode {label} mismatch must return ValidationError, got: {result:?}"
+            );
+        }
+    }
+
+    /// Spec [05] commit 境界: `FailNode` の整合検証も run_id / workflow_name / node_name の
+    /// 各次元で snapshot との mismatch を ValidationError として検出することを担保する。
+    #[test]
+    fn dispatch_internal_fail_node_validates_all_effect_fields() {
+        fn base_snapshot() -> WorkflowState {
+            let mut s =
+                dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000621", "fail-wf");
+            s.current_step_name = "node-1".to_string();
+            s
+        }
+        fn base_command() -> WorkflowCommand {
+            WorkflowCommand::FailNode {
+                run_id: "00000000-0000-0000-0000-000000000621".to_string(),
+                workflow_name: "fail-wf".to_string(),
+                node_name: "node-1".to_string(),
+                reason: "boom".to_string(),
+                timestamp: 200.0,
+            }
+        }
+
+        // baseline は受理される。
+        let mut s = base_snapshot();
+        assert!(WorkflowEngine::dispatch_internal_node_command(&mut s, base_command()).is_ok());
+
+        // run_id mismatch
+        let mut s = base_snapshot();
+        let mut bad = base_command();
+        if let WorkflowCommand::FailNode {
+            run_id: ref mut r, ..
+        } = bad
+        {
+            *r = "00000000-0000-0000-0000-000000000999".to_string();
+        }
+        assert!(matches!(
+            WorkflowEngine::dispatch_internal_node_command(&mut s, bad),
+            Err(WorkflowEngineError::ValidationError(_))
+        ));
+
+        // workflow_name mismatch
+        let mut s = base_snapshot();
+        let mut bad = base_command();
+        if let WorkflowCommand::FailNode {
+            workflow_name: ref mut w,
+            ..
+        } = bad
+        {
+            *w = "other-wf".to_string();
+        }
+        assert!(matches!(
+            WorkflowEngine::dispatch_internal_node_command(&mut s, bad),
+            Err(WorkflowEngineError::ValidationError(_))
+        ));
+
+        // node_name mismatch
+        let mut s = base_snapshot();
+        let mut bad = base_command();
+        if let WorkflowCommand::FailNode {
+            node_name: ref mut n,
+            ..
+        } = bad
+        {
+            *n = "node-X".to_string();
+        }
+        assert!(matches!(
+            WorkflowEngine::dispatch_internal_node_command(&mut s, bad),
+            Err(WorkflowEngineError::ValidationError(_))
+        ));
+    }
+
+    /// Spec [05] Rule: node が失敗したときの状態遷移が run に反映され、node 失敗の事実が
+    /// event log に記録される。engine の実 production 経路 (`set_execution_state` →
+    /// `sync_run_store_from_snapshot` + `write_terminal_log` 一連) を通過して、
+    /// (1) RunStore の status が Failed terminal に同期される、
+    /// (2) NDJSON event log に NodeFailed + RunFailed が追記される、
+    /// の双方が成立することを直接検証する（spec L122-130）。
+    #[tokio::test]
+    async fn engine_set_execution_state_failed_drives_run_state_and_node_failed_event_log() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let worktree_path = "/wt/engine-node-failure";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let workflow = make_rejectable_approval_workflow();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 1; // node-1 = "fix"
+        exec.chat_session_id = parent.id;
+        exec.current_session_id = None;
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        // 実 production 経路: set_execution_state → Failed への遷移を engine 経由で実施。
+        // write_terminal_log + sync_run_store_from_snapshot がこの経路の中で連続して
+        // 実行されることを境界仕様として担保する。
+        engine
+            .set_execution_state(
+                app.handle(),
+                &session_store,
+                &handles,
+                worktree_path,
+                WorkflowExecutionState::Failed {
+                    reason: "node failure".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // (1) engine.executions の state は Failed に遷移している。
+        {
+            let execs = engine.executions.lock().await;
+            let exec = execs
+                .get(&run_id)
+                .expect("execution must remain after Failed");
+            assert!(matches!(
+                exec.state,
+                WorkflowExecutionState::Failed { ref reason } if reason == "node failure"
+            ));
+        }
+
+        // (2) RunStore の status も Failed terminal に同期される。
+        let run = engine
+            .run_store
+            .get_run(&run_id)
+            .await
+            .expect("RunStore must reflect the run");
+        assert!(
+            run.status.is_terminal(),
+            "RunStore status must be terminal, got {:?}",
+            run.status
+        );
+        assert_eq!(run.error_reason.as_deref(), Some("node failure"));
+
+        // (3) NDJSON event log に NodeFailed + RunFailed が連続 append される。
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        let node_failed = events
+            .iter()
+            .find(|e| matches!(e, WorkflowEvent::NodeFailed { .. }));
+        let run_failed = events
+            .iter()
+            .find(|e| matches!(e, WorkflowEvent::RunFailed { .. }));
+        assert!(
+            node_failed.is_some(),
+            "NodeFailed event must be appended via engine dispatch path; got: {events:?}"
+        );
+        assert!(
+            run_failed.is_some(),
+            "RunFailed event must follow NodeFailed; got: {events:?}"
+        );
+    }
+
+    /// Spec [05] commit 境界: production 経路 `execute_outcome` の pre-commit phase で
+    /// `write_log_required_batch` が失敗した場合、`sync_run_store_from_snapshot` /
+    /// `persist_state` は実行されず、RunStore は active のまま / NDJSON 上にも terminal
+    /// event が残らないことを直接検証する（spec [05]: state mutation と event log の
+    /// 分離を防ぐ rollback 境界）。
+    ///
+    /// 障害シミュレーション: workflow_logs ディレクトリパスに通常ファイルを置くと、
+    /// `WorkflowEventLog::append_batch` 内の `create_dir_all` が失敗し、batch append が
+    /// `Err` を返す。
+    #[tokio::test]
+    async fn execute_outcome_pre_commit_append_failure_keeps_run_store_active() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let worktree_path = "/wt/append-failure";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+
+        let workflow = make_rejectable_approval_workflow();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 1; // node "fix"
+        exec.chat_session_id = parent.id.clone();
+        exec.current_session_id = None;
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        // workflow_logs ディレクトリを通常ファイルで塞いで append を恒常失敗させる。
+        let log_dir = data_dir.join("workflow_logs");
+        if log_dir.exists() {
+            std::fs::remove_dir_all(&log_dir).unwrap();
+        }
+        std::fs::write(&log_dir, b"block").unwrap();
+
+        // snapshot を Failed terminal に遷移させ、execute_outcome に persist 経路で渡す。
+        let mut snapshot = {
+            let execs = engine.executions.lock().await;
+            execs.get(&run_id).unwrap().to_workflow_state()
+        };
+        snapshot.state = WorkflowExecutionState::Failed {
+            reason: "node failure".to_string(),
+        };
+        snapshot.updated_at = 9999.0;
+
+        let result = engine
+            .execute_outcome_persist_failed_for_test(
+                app.handle(),
+                &session_store,
+                &handles,
+                worktree_path,
+                &parent.id,
+                snapshot,
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "execute_outcome must return Err when pre-commit append fails: {result:?}"
+        );
+
+        // RunStore は active のまま（terminal に sync されていない）。
+        let stored = engine
+            .run_store
+            .get_run(&run_id)
+            .await
+            .expect("RunStore must still hold the run");
+        assert!(
+            !stored.status.is_terminal(),
+            "RunStore status must NOT be terminal when event log append fails; got {:?}",
+            stored.status
+        );
+        assert!(
+            stored.error_reason.is_none(),
+            "RunStore error_reason must remain unset when event log append fails"
+        );
+
+        // workflow_logs ディレクトリを復旧して NDJSON が空であることを確認する。
+        std::fs::remove_file(&log_dir).unwrap();
+        std::fs::create_dir_all(&log_dir).unwrap();
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(
+            events.is_empty(),
+            "NDJSON event log must be empty when pre-commit append fails; got {events:?}"
+        );
+    }
+
+    /// Spec [05]: engine 内部の typed command 経路として、`WorkflowEngine::dispatch`
+    /// 経由で `WorkflowCommand::FailNode` を流すと `WorkflowEvent::NodeFailed` が
+    /// event log に commit され、engine.executions の state も Failed に遷移することを
+    /// 境界仕様として担保する（spec L22-24, L144-146: dispatch を内部 node 失敗の発火点へ
+    /// 集約）。adapter-facing 拒否境界は `dispatch_external` 側に分離されており、
+    /// engine 内部経路は `dispatch` が internal variant を受理する。
+    #[tokio::test]
+    async fn dispatch_commits_internal_fail_node_via_typed_command() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let worktree_path = "/wt/dispatch-internal-fail";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let workflow = make_rejectable_approval_workflow();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 1;
+        exec.chat_session_id = parent.id;
+        exec.current_session_id = None;
+        let workflow_name = exec.workflow.name.clone();
+        let node_name = exec.workflow.nodes[exec.current_step_index].name.clone();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let cmd = WorkflowCommand::FailNode {
+            run_id: run_id.clone(),
+            workflow_name: workflow_name.clone(),
+            node_name: node_name.clone(),
+            reason: "internal node failure".to_string(),
+            timestamp: 9999.0,
+        };
+        let result = engine
+            .dispatch(app.handle(), &session_store, &handles, cmd)
+            .await
+            .expect("dispatch must accept internal FailNode and commit");
+        assert!(matches!(result, WorkflowCommandResult::Accepted));
+
+        // engine.executions の state が Failed に遷移している。
+        {
+            let execs = engine.executions.lock().await;
+            let exec = execs.get(&run_id).expect("exec must remain");
+            assert!(matches!(
+                exec.state,
+                WorkflowExecutionState::Failed { ref reason } if reason == "internal node failure"
+            ));
+        }
+
+        // event log には NodeFailed が append されている。
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        let node_failed = events
+            .iter()
+            .find(|e| matches!(e, WorkflowEvent::NodeFailed { .. }));
+        assert!(
+            node_failed.is_some(),
+            "dispatch must append NodeFailed via typed command path; got: {events:?}"
+        );
+    }
+
+    /// Spec [05]: engine 内部の typed command 経路として、`WorkflowEngine::dispatch`
+    /// 経由で `WorkflowCommand::CompleteNode` を流すと `WorkflowEvent::NodeCompleted` が
+    /// event log に commit され、上流が push 済みの step_history 末尾 entry と整合する
+    /// snapshot で受理されることを境界仕様として担保する（spec L22-24: NodeCompleted の
+    /// 発行点が typed command 経路に集約される）。
+    #[tokio::test]
+    async fn dispatch_commits_internal_complete_node_via_typed_command() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps();
+
+        let worktree_path = "/wt/dispatch-internal-complete";
+        let parent = create_parent_session(&app, &session_store, worktree_path);
+        let workflow = make_rejectable_approval_workflow();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 1; // node "fix"
+        exec.chat_session_id = parent.id;
+        exec.current_session_id = None;
+        // CompleteNode は dispatch_internal_node_command の整合検証で step_history 末尾と
+        // command effect の一致を要求するため、対応する entry を事前に push する。
+        let node_name = exec.workflow.nodes[exec.current_step_index].name.clone();
+        let workflow_name = exec.workflow.name.clone();
+        exec.step_history
+            .push(crate::workflow::state::StepHistoryEntry {
+                step_name: node_name.clone(),
+                completed_at: 8888.0,
+                result: Some("done".to_string()),
+                session_id: Some("sess-x".to_string()),
+                token_usage: None,
+                structured_output: None,
+                run_index: 1,
+                child_outputs: None,
+            });
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        let cmd = WorkflowCommand::CompleteNode {
+            run_id: run_id.clone(),
+            workflow_name: workflow_name.clone(),
+            node_name: node_name.clone(),
+            result: Some("done".to_string()),
+            session_id: Some("sess-x".to_string()),
+            token_usage: None,
+            structured_output: None,
+            run_index: Some(1),
+            timestamp: 8888.0,
+        };
+        let result = engine
+            .dispatch(app.handle(), &session_store, &handles, cmd)
+            .await
+            .expect("dispatch must accept internal CompleteNode and commit");
+        assert!(matches!(result, WorkflowCommandResult::Accepted));
+
+        // event log に NodeCompleted が required append されている。
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        let node_completed = events
+            .iter()
+            .find(|e| matches!(e, WorkflowEvent::NodeCompleted { .. }));
+        assert!(
+            node_completed.is_some(),
+            "dispatch must append NodeCompleted via typed command path; got: {events:?}"
+        );
+
+        // engine.executions は state を維持（CompleteNode は state 遷移を起こさない）。
+        let execs = engine.executions.lock().await;
+        let exec = execs.get(&run_id).expect("exec must remain");
+        assert!(matches!(exec.state, WorkflowExecutionState::Running));
+    }
+
+    /// Spec [05] Rule: snapshot に Failed state が反映済みの場合、`write_terminal_log` の
+    /// 単体経路 (`terminal_events_for_snapshot` → `write_log_required_batch`) が
+    /// `NodeFailed` + `RunFailed` を順序通り append することを直接検証する（commit 境界の単位テスト）。
+    #[test]
+    fn write_terminal_log_emits_node_failed_followed_by_run_failed_for_failed_snapshot() {
+        let app = make_dispatch_app();
+        let engine = WorkflowEngine::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        let run_id = "00000000-0000-0000-0000-000000000605".to_string();
+
+        let snapshot = WorkflowState {
+            execution_id: run_id.clone(),
+            workflow_name: "fail-wf".to_string(),
+            chat_session_id: None,
+            state: WorkflowExecutionState::Failed {
+                reason: "node boom".to_string(),
+            },
+            current_step_index: 0,
+            current_step_name: "step-1".to_string(),
+            current_session_id: None,
+            total_steps: 1,
+            step_history: vec![],
+            step_execution_counts: HashMap::new(),
+            workflow_definition: crate::workflow::schema::Workflow {
+                name: "fail-wf".to_string(),
+                description: String::new(),
+                builtin: false,
+                nodes: vec![],
+            },
+            total_token_usage: TokenUsage::default(),
+            step_states: HashMap::new(),
+            step_outputs: HashMap::new(),
+            active_parallel_steps: vec![],
+            workflow_variables: HashMap::new(),
+            approval_operations: None,
+            started_at: 900.0,
+            updated_at: 1000.0,
+        };
+
+        engine
+            .write_terminal_log(app.handle(), &snapshot)
+            .expect("write_terminal_log must succeed");
+
+        let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "terminal log must contain NodeFailed + RunFailed; got {events:?}"
+        );
+        match &events[0] {
+            WorkflowEvent::NodeFailed {
+                run_id: ev_run_id,
+                workflow_name,
+                node_name,
+                reason,
+                ..
+            } => {
+                assert_eq!(ev_run_id, &run_id);
+                assert_eq!(workflow_name, "fail-wf");
+                assert_eq!(node_name, "step-1");
+                assert_eq!(reason, "node boom");
+            }
+            other => panic!("expected NodeFailed first, got {other:?}"),
+        }
+        match &events[1] {
+            WorkflowEvent::RunFailed {
+                run_id: ev_run_id,
+                workflow_name,
+                reason,
+                ..
+            } => {
+                assert_eq!(ev_run_id, &run_id);
+                assert_eq!(workflow_name, "fail-wf");
+                assert_eq!(reason, "node boom");
+            }
+            other => panic!("expected RunFailed second, got {other:?}"),
+        }
     }
 
     /// Spec [04]: `WorkflowCommand::ApproveNode` の comment は `ApprovalResolved.comment` に

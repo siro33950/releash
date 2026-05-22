@@ -346,6 +346,31 @@ pub fn generate_token() -> String {
         .collect()
 }
 
+/// 読み取り専用の config ローダ。
+///
+/// 設定ファイルが存在する場合のみ parse して返す。`load_or_create_config` と異なり
+/// token 自動生成や `write_config` の副作用を持たず、観測専用 caller（CLI 等）が
+/// hidden write を発生させないことを境界仕様として担保する（spec [05]
+/// read-only と mutating の分離原則）。
+///
+/// 設定不在は `Ok(None)` として返す。parse / 読み取り失敗は原因付きで `Err` を返し、
+/// caller が「設定読み取り失敗」を「managed worktree でない」と取り違えないようにする。
+pub fn read_config_if_exists(path: &Path) -> Result<Option<ReleashConfig>, String> {
+    // `try_exists()` を使うことで、metadata 取得失敗（権限不足・I/O エラー等）を
+    // 「設定不在」と取り違えずに `Err` として呼出側に伝える。`exists()` は metadata
+    // error を false に潰すため、CLI の InvalidInput 誤分類につながる
+    // （spec [05] read-only と mutating の分離 / read 失敗は原因付き Err）。
+    match path.try_exists() {
+        Ok(true) => {}
+        Ok(false) => return Ok(None),
+        Err(e) => return Err(format!("設定ファイル存在確認失敗: {e}")),
+    }
+    let content = fs::read_to_string(path).map_err(|e| format!("設定ファイル読み込み失敗: {e}"))?;
+    let config = toml::from_str::<ReleashConfig>(&content)
+        .map_err(|e| format!("設定ファイルのパース失敗: {e}"))?;
+    Ok(Some(config))
+}
+
 pub fn load_or_create_config(path: &Path) -> Result<ReleashConfig, String> {
     let mut config = if path.exists() {
         let content =

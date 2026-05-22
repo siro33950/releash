@@ -3,6 +3,7 @@ mod agent_message_dispatcher;
 mod agent_sdk;
 mod agent_status;
 mod backends;
+pub mod cli;
 mod config;
 mod diff_comment_sender;
 mod diff_comment_store;
@@ -561,11 +562,10 @@ pub fn run() {
             workflow::commands::approve_workflow_step,
             workflow::commands::send_workflow_approval_chat_message,
             workflow::commands::open_workflow_step_tab,
-            workflow::commands::get_workflow_execution_log,
-            workflow::commands::get_workflow_execution_state,
-            workflow::commands::list_active_workflow_runs,
-            workflow::commands::list_completed_workflow_runs,
-            workflow::commands::list_workflow_runs_for_worktree,
+            workflow::commands::list_workflow_runs,
+            workflow::commands::get_workflow_run,
+            workflow::commands::get_workflow_run_log,
+            workflow::commands::get_workflow_run_state,
             workflow::commands::resolve_active_run_by_worktree,
             workflow::commands::resolve_worktree_by_run,
             workflow::commands::list_facets,

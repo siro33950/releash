@@ -11,13 +11,26 @@ fn configured_repo_paths(config: &ReleashConfig) -> Vec<String> {
     paths
 }
 
+/// [05] API / CLI 共有 helper: `worktree_path` filter input を OS レベルで canonicalize し、
+/// 末尾 `/` を除去した正規化済み文字列を返す。AppConfig 非依存で、相対パス / symlink
+/// 経由でも同じ物理パスに対して同一の filter 値を生成することで、API / CLI の
+/// 観測結果が分岐しないようにする（spec [05] API / CLI の意味的等価性境界）。
+pub(crate) fn normalize_worktree_filter_path(worktree_path: &str) -> Result<String, String> {
+    let canonical = PathBuf::from(worktree_path)
+        .canonicalize()
+        .map_err(|e| format!("invalid worktree_path: {e}"))?;
+    canonical
+        .to_str()
+        .map(|p| p.trim_end_matches('/').to_string())
+        .ok_or_else(|| "worktree_path has invalid encoding".to_string())
+}
+
 pub(crate) fn canonicalize_managed_worktree_path_inner(
     repo_paths: Vec<String>,
     worktree_path: String,
 ) -> Result<String, String> {
-    let requested = PathBuf::from(&worktree_path)
-        .canonicalize()
-        .map_err(|e| format!("invalid worktree_path: {e}"))?;
+    let requested_normalized = normalize_worktree_filter_path(&worktree_path)?;
+    let requested = PathBuf::from(&requested_normalized);
     for repo_path in repo_paths {
         let Ok(repo_path) = PathBuf::from(&repo_path).canonicalize() else {
             continue;
@@ -34,10 +47,7 @@ pub(crate) fn canonicalize_managed_worktree_path_inner(
                 continue;
             };
             if candidate == requested {
-                return requested
-                    .to_str()
-                    .map(|p| p.trim_end_matches('/').to_string())
-                    .ok_or_else(|| "worktree_path has invalid encoding".to_string());
+                return Ok(requested_normalized);
             }
         }
     }
