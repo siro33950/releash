@@ -1,22 +1,25 @@
-//! [05] `releash workflow ...` CLI 入口。
+//! [05] / [06] `releash workflow ...` CLI 入口。
 //!
-//! engine と IPC せず、`workflow_runs/` 配下と `workflows/` YAML / builtin を file-direct
-//! で読む（spec [05] アーキテクチャ概要: Archon 事例に倣う file-direct 構成）。
-//! 同じ projection helper（`event_projection::reconstruct_state_from_events`）を Tauri
-//! command と共有することで API / CLI の意味的等価性境界を担保する。
-//!
-//! 本モジュールは read-only 観測経路に閉じ、state mutation を起動する経路は持たない
-//! （mutating CLI は [06] / structured output 提出 CLI は [08] へ振り分け済み）。
+//! read-only 観測経路は engine と IPC せず、`workflow_runs/` 配下と `workflows/`
+//! YAML / builtin を file-direct で読む（spec [05] アーキテクチャ概要）。
+//! mutating CLI (`approve` / `reject` / `abort`) も engine と直接 IPC せず、pending
+//! command file を enqueue するところまでを CLI の責務に閉じる（spec [06] CLI 完了
+//! 基準境界）。
 
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
+use crate::agent_status::current_timestamp;
 use crate::config::read_config_if_exists;
 use crate::protocol::WorkflowStateView;
+use crate::workflow::command_input::{
+    validate_optional_comment_text, validate_reject_reason_text, CommandInputError,
+};
 use crate::workflow::event::WorkflowEvent;
 use crate::workflow::event_projection::reconstruct_state_from_events;
 use crate::workflow::log::WorkflowEventLog;
+use crate::workflow::pending_command::{CliRequestPayload, PendingCommand, PendingCommandStore};
 use crate::workflow::run::{
     iter_valid_run_metadata, project_runs_to_summaries, running_workflow_names_from_metadata,
     RunListFilter, RunStatusFilter, WorkflowRunSummary,
@@ -80,6 +83,34 @@ enum WorkflowSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// [06] approval node を承認する。CLI は pending command を file 仲介で
+    /// 書き出すまでで完了し、engine への到達は稼働中アプリの watcher が担う
+    /// （spec [06] CLI 完了基準境界）。
+    Approve {
+        run_id: String,
+        /// 対象 node を限定する。省略時は engine が現在の承認待ち node を解決する。
+        #[arg(long)]
+        node: Option<String>,
+        /// 任意の承認コメント。`ApprovalResolved.comment` に伝播する。
+        #[arg(long)]
+        comment: Option<String>,
+    },
+    /// [06] approval node を却下する。`--reason` 必須。
+    Reject {
+        run_id: String,
+        #[arg(long)]
+        node: Option<String>,
+        /// 却下理由（必須）。`WorkflowEvent` に平文で永続化される。
+        #[arg(long)]
+        reason: String,
+    },
+    /// [06] 進行中の workflow run を中止する。`--node` 指定時は当該 node に対する
+    /// abort、未指定時は run 全体への abort として engine が処理する。
+    Abort {
+        run_id: String,
+        #[arg(long)]
+        node: Option<String>,
+    },
 }
 
 /// CLI のエントリーポイント。`std::process::exit` 用の終了コードを返す。
@@ -117,6 +148,52 @@ pub fn run() -> i32 {
             },
             WorkflowSubcommand::Logs { run_id, json } => match resolve() {
                 Ok(data_dir) => cmd_logs(&data_dir, &run_id, json),
+                Err(e) => Err(e),
+            },
+            WorkflowSubcommand::Approve {
+                run_id,
+                node,
+                comment,
+            } => match resolve() {
+                Ok(data_dir) => {
+                    match validate_optional_cli_text_len(comment.as_deref(), "--comment") {
+                        Ok(()) => cmd_enqueue_pending(
+                            &data_dir,
+                            &run_id,
+                            CliRequestPayload::Approve {
+                                node_name: node,
+                                comment,
+                            },
+                        ),
+                        Err(e) => Err(e),
+                    }
+                }
+                Err(e) => Err(e),
+            },
+            WorkflowSubcommand::Reject {
+                run_id,
+                node,
+                reason,
+            } => match resolve() {
+                Ok(data_dir) => match validate_reject_reason(&reason) {
+                    Ok(()) => cmd_enqueue_pending(
+                        &data_dir,
+                        &run_id,
+                        CliRequestPayload::Reject {
+                            node_name: node,
+                            reason,
+                        },
+                    ),
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            },
+            WorkflowSubcommand::Abort { run_id, node } => match resolve() {
+                Ok(data_dir) => cmd_enqueue_pending(
+                    &data_dir,
+                    &run_id,
+                    CliRequestPayload::Abort { node_name: node },
+                ),
                 Err(e) => Err(e),
             },
         },
@@ -275,6 +352,79 @@ fn cmd_status(data_dir: &Path, run_id: &str, json: bool) -> Result<(), CliError>
     Ok(())
 }
 
+/// [06] CLI mutating 経路の pending command 投入。
+///
+/// spec [06] Rule:「CLI の完了基準は『受理キュー投入』までで統一する」に従い、
+/// 本関数は pending command file の atomic 書き出しが完了した時点で `Ok(())`
+/// を返す。engine への到達 / 認可結果は CLI 側で待たない（spec [06] CLI 完了
+/// 基準境界）。
+fn cmd_enqueue_pending(
+    data_dir: &Path,
+    run_id: &str,
+    payload: CliRequestPayload,
+) -> Result<(), CliError> {
+    let output = enqueue_pending_command(data_dir, run_id, payload)?;
+    println!("{}", output.format_stdout_line());
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingEnqueueOutput {
+    run_id: String,
+    request_id: String,
+    path: String,
+}
+
+impl PendingEnqueueOutput {
+    fn format_stdout_line(&self) -> String {
+        format!(
+            "queued: run_id={} request_id={} ({})",
+            self.run_id, self.request_id, self.path
+        )
+    }
+}
+
+fn enqueue_pending_command(
+    data_dir: &Path,
+    run_id: &str,
+    payload: CliRequestPayload,
+) -> Result<PendingEnqueueOutput, CliError> {
+    validate_run_id(run_id)?;
+    let store = PendingCommandStore::new(data_dir);
+    let command = PendingCommand::new(run_id.to_string(), payload, current_timestamp());
+    let path = store
+        .write_pending(&command)
+        .map_err(|e| CliError::Other(format!("Failed to enqueue pending command: {e}")))?;
+    Ok(PendingEnqueueOutput {
+        run_id: command.run_id,
+        request_id: command.id,
+        path: path.display().to_string(),
+    })
+}
+
+/// `--reason` 必須化境界（spec [06] 振る舞い定義 Rule: 却下要求には却下理由が伴う）。
+/// `clap` で `--reason` を必須化済みだが、空白のみの入力は CLI 入口で拒否する。
+///
+/// 文字数上限 / 空白判定はドメイン pure helper（`command_input::validate_reject_reason_text`）
+/// に集約し、CLI 層は `CliError::InvalidInput` への map に閉じる（review R2-01）。
+fn validate_reject_reason(reason: &str) -> Result<(), CliError> {
+    validate_reject_reason_text(reason, "--reason").map_err(command_input_error_to_cli_error)
+}
+
+/// 任意の自由記述テキスト（例: `--comment`）の長さを CLI 入口で検証する。
+///
+/// 文字数上限はドメイン pure helper に集約（review R2-01）。
+fn validate_optional_cli_text_len(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<(), CliError> {
+    validate_optional_comment_text(value, label).map_err(command_input_error_to_cli_error)
+}
+
+fn command_input_error_to_cli_error(err: CommandInputError) -> CliError {
+    CliError::InvalidInput(err.to_string())
+}
+
 /// 指定 run の event log。
 fn cmd_logs(data_dir: &Path, run_id: &str, json: bool) -> Result<(), CliError> {
     validate_run_id(run_id)?;
@@ -419,6 +569,7 @@ fn format_event(event: &WorkflowEvent) -> String {
         WorkflowEvent::ParallelChildCompleted { .. } => "ParallelChildCompleted",
         WorkflowEvent::ParallelCompleted { .. } => "ParallelCompleted",
         WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
+        WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
     };
     match serde_json::to_string(event) {
         Ok(json) => format!("{kind} {json}"),
@@ -429,6 +580,7 @@ fn format_event(event: &WorkflowEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workflow::command_input::MAX_APPROVAL_COMMENT_CHARS;
     use crate::workflow::run::{RunStatus, TriggerSource, WorkflowRun};
     use std::fs;
     use tempfile::TempDir;
@@ -1044,24 +1196,147 @@ mod tests {
         }
     }
 
-    /// [05] mutating 用 subcommand 非存在: mutating CLI（[06] へ振り分け済み）
-    /// の subcommand 名は parser 段階で reject される。run / approve / reject / abort /
-    /// output 等の動詞が現状 CLI に出現しないことを境界仕様として担保する。
+    /// [06] scope の境界: 本 issue では user decision 系 3 command
+    /// （approve / reject / abort）の CLI 入口のみを公開する。新規 run 起動
+    /// （`run`）／ structured output 提出（`output` / `submit`）は別 issue に
+    /// 切り出し済みのため、parser 段階で reject される境界を担保する。
     #[test]
-    fn cli_does_not_expose_mutating_subcommands() {
+    fn cli_does_not_expose_out_of_scope_subcommands() {
         for argv in [
             vec!["releash", "workflow", "run"],
-            vec!["releash", "workflow", "approve"],
-            vec!["releash", "workflow", "reject"],
-            vec!["releash", "workflow", "abort"],
             vec!["releash", "workflow", "output"],
             vec!["releash", "workflow", "submit"],
         ] {
             assert!(
                 Cli::try_parse_from(&argv).is_err(),
-                "parser must reject mutating subcommand: {argv:?}"
+                "parser must reject out-of-scope subcommand: {argv:?}"
             );
         }
+    }
+
+    /// [06] CLI 公開入口の parse 境界: `releash workflow {approve,reject,abort}`
+    /// の typed subcommand が clap で parse できることを parser-level で担保する
+    /// （I/O は発生させない）。`reject` の `--reason` は必須。
+    #[test]
+    fn cli_mutating_subcommands_parse_via_clap() {
+        let run_id = "550e8400-e29b-41d4-a716-446655440000";
+        for argv in [
+            vec!["releash", "workflow", "approve", run_id],
+            vec!["releash", "workflow", "approve", run_id, "--node", "review"],
+            vec![
+                "releash",
+                "workflow",
+                "approve",
+                run_id,
+                "--comment",
+                "LGTM",
+            ],
+            vec!["releash", "workflow", "reject", run_id, "--reason", "no"],
+            vec![
+                "releash", "workflow", "reject", run_id, "--node", "review", "--reason", "no",
+            ],
+            vec!["releash", "workflow", "abort", run_id],
+            vec!["releash", "workflow", "abort", run_id, "--node", "review"],
+        ] {
+            assert!(
+                Cli::try_parse_from(&argv).is_ok(),
+                "parser must accept mutating subcommand: {argv:?}"
+            );
+        }
+    }
+
+    /// [06] 振る舞い定義 Rule: 却下要求には却下理由が伴う。
+    /// CLI 入口で `--reason` が省略された reject は parser 段階で reject される。
+    #[test]
+    fn cli_reject_requires_reason_argument() {
+        let run_id = "550e8400-e29b-41d4-a716-446655440000";
+        let argv = vec!["releash", "workflow", "reject", run_id];
+        assert!(
+            Cli::try_parse_from(&argv).is_err(),
+            "reject without --reason must be rejected by parser"
+        );
+    }
+
+    /// [06] 振る舞い定義 Rule: 却下要求には却下理由が伴う。空白のみの reason は
+    /// CLI 入口で InvalidInput として弾く（engine 側 validate_approval_decision
+    /// にも同じ境界がある）。
+    #[test]
+    fn validate_reject_reason_rejects_whitespace_only() {
+        assert!(validate_reject_reason("   ").is_err());
+        assert!(validate_reject_reason("").is_err());
+        assert!(validate_reject_reason("not empty").is_ok());
+    }
+
+    #[test]
+    fn cli_mutation_free_text_rejects_oversized_values() {
+        let oversized = "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1);
+        assert!(validate_reject_reason(&oversized).is_err());
+        assert!(validate_optional_cli_text_len(Some(&oversized), "--comment").is_err());
+        assert!(validate_optional_cli_text_len(Some("ok"), "--comment").is_ok());
+    }
+
+    /// [06] CLI 完了基準境界: `cmd_enqueue_pending` は受理キュー投入
+    /// （pending file の書き出し）まで完了した時点で `Ok(())` を返す。engine への
+    /// 到達結果は CLI 側で待たない（spec [06] CLI 完了基準境界）。書き出された
+    /// pending file は `PendingCommandStore` 経由で取り出せる。
+    #[test]
+    fn cmd_enqueue_pending_writes_pending_file_for_approve() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(81);
+        let payload = CliRequestPayload::Approve {
+            node_name: Some("review".to_string()),
+            comment: Some("LGTM".to_string()),
+        };
+        let output = enqueue_pending_command(tmp.path(), &run_id, payload.clone()).unwrap();
+        let stdout = output.format_stdout_line();
+        assert!(stdout.starts_with(&format!("queued: run_id={run_id} request_id=")));
+        assert!(stdout.contains("/workflow_pending/pending/"));
+        let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].command.run_id, run_id);
+        assert_eq!(entries[0].command.payload, payload);
+    }
+
+    #[test]
+    fn cmd_enqueue_pending_writes_pending_file_for_reject_with_reason_and_node() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(82);
+        let payload = CliRequestPayload::Reject {
+            node_name: Some("review".to_string()),
+            reason: "needs changes".to_string(),
+        };
+
+        let output = enqueue_pending_command(tmp.path(), &run_id, payload.clone()).unwrap();
+
+        assert_eq!(output.run_id, run_id);
+        let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].command.payload, payload);
+    }
+
+    #[test]
+    fn cmd_enqueue_pending_writes_pending_file_for_abort_with_node() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(83);
+        let payload = CliRequestPayload::Abort {
+            node_name: Some("review".to_string()),
+        };
+
+        let output = enqueue_pending_command(tmp.path(), &run_id, payload.clone()).unwrap();
+
+        assert_eq!(output.run_id, run_id);
+        let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].command.payload, payload);
+    }
+
+    /// [06] CLI 入力の信頼境界: `cmd_enqueue_pending` は run_id の UUID 形式を弾く。
+    #[test]
+    fn cmd_enqueue_pending_rejects_non_uuid_run_id() {
+        let tmp = TempDir::new().unwrap();
+        let payload = CliRequestPayload::Abort { node_name: None };
+        let err = enqueue_pending_command(tmp.path(), "not-a-uuid", payload).unwrap_err();
+        assert!(matches!(err, CliError::InvalidInput(_)));
     }
 
     /// [05] CLI 入力の信頼境界: managed worktree でない入力は

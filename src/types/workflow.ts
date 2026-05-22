@@ -283,6 +283,15 @@ export type WorkflowEvent =
 			timestamp: number;
 	  }
 	| {
+			event: "cli_mutation_requested";
+			run_id: string;
+			workflow_name: string;
+			request_id: string;
+			request: CliMutationRequestRecord;
+			requested_at: number;
+			timestamp: number;
+	  }
+	| {
 			event: "output_collected";
 			run_id: string;
 			workflow_name: string;
@@ -340,6 +349,22 @@ export type WorkflowEvent =
 			parent_node_name: string;
 			aggregate_result: string;
 			timestamp: number;
+	  };
+
+export type CliMutationRequestRecord =
+	| {
+			kind: "approve";
+			node_name?: string | null;
+			comment?: string | null;
+	  }
+	| {
+			kind: "reject";
+			node_name?: string | null;
+			reason: string;
+	  }
+	| {
+			kind: "abort";
+			node_name?: string | null;
 	  };
 
 export interface CollectedOutputEntry {

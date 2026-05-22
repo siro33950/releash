@@ -310,6 +310,10 @@ pub(crate) fn reconstruct_state_from_events(
             WorkflowEvent::ContractRepairRequested { timestamp, .. } => {
                 updated_at = *timestamp;
             }
+            WorkflowEvent::CliMutationRequested { .. } => {
+                // [06] CLI mutation 要求の事実は append-only な観測情報のみで、
+                // engine domain state には影響しない。
+            }
         }
     }
 
@@ -538,5 +542,43 @@ mod tests {
             state.active_parallel_steps.is_empty(),
             "RunAborted では active_parallel_steps は空"
         );
+    }
+
+    /// [06] CLI 経由 mutation 要求の事実は append-only な観測情報であり、engine
+    /// domain state には影響しない（spec [06] 観測経路境界 / 既存 `ApprovalResolved`
+    /// / `RunAborted` が実 state 変化の事実を担う境界を温存する）。projection 上で
+    /// domain state / updated_at が変化しないことを境界として担保する。
+    #[test]
+    fn projection_treats_cli_mutation_requested_as_observation_only() {
+        use crate::workflow::event::CliMutationRequestRecord;
+        let snapshot = workflow_with_nodes("wf", vec!["plan", "review"]);
+        let events = vec![
+            run_started("exec-cli", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-cli".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::CliMutationRequested {
+                run_id: "exec-cli".to_string(),
+                workflow_name: "wf".to_string(),
+                request_id: "00000000-0000-0000-0000-000000000601".to_string(),
+                request: CliMutationRequestRecord::Approve {
+                    node_name: Some("plan".to_string()),
+                    comment: Some("LGTM".to_string()),
+                },
+                requested_at: 1500.0,
+                timestamp: 1500.0,
+            },
+        ];
+        let state = reconstruct_state_from_events("exec-cli", &events)
+            .unwrap()
+            .unwrap();
+        // NodeStarted → Running が維持されている（CliMutationRequested で state は遷移しない）。
+        assert_eq!(state.state, WorkflowExecutionState::Running);
+        assert_eq!(state.current_step_name, "plan");
+        assert_eq!(state.updated_at, 1001.0);
     }
 }

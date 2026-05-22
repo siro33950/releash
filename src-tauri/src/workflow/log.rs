@@ -65,6 +65,7 @@ impl WorkflowEventLog {
             return Ok(());
         }
         let run_id = events[0].run_id().to_string();
+        validate_log_run_id(&run_id)?;
         for event in &events[1..] {
             if event.run_id() != run_id {
                 return Err(format!(
@@ -130,6 +131,7 @@ impl WorkflowEventLog {
 
     /// 指定された run_id の NDJSON ログを読み込み、イベント一覧を返す。
     pub fn read_log(&self, run_id: &str) -> Result<Vec<WorkflowEvent>, String> {
+        validate_log_run_id(run_id)?;
         let path = self.log_path(run_id);
         if !path.exists() {
             return Ok(vec![]);
@@ -189,6 +191,13 @@ impl WorkflowEventLog {
         }
         Ok(ids)
     }
+}
+
+fn validate_log_run_id(run_id: &str) -> Result<(), String> {
+    if uuid::Uuid::parse_str(run_id).is_ok() {
+        return Ok(());
+    }
+    Err("workflow log run_id must be UUID".to_string())
 }
 
 #[cfg(test)]
@@ -261,17 +270,21 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
         fs::create_dir_all(&log.log_dir).unwrap();
-        let legacy_path = log.log_path("legacy-steps");
+        let legacy_path = log.log_path("00000000-0000-0000-0000-000000000901");
         fs::write(
             &legacy_path,
-            r#"{"event":"run_started","run_id":"legacy-steps","workflow_name":"old","workflow_file_stem":"old","worktree_path":"/repo","workflow_definition":{"name":"old","description":"","builtin":false,"steps":[{"name":"x","mode":"auto","instruction":"x"}]},"timestamp":1000.0}"#,
+            r#"{"event":"run_started","run_id":"00000000-0000-0000-0000-000000000901","workflow_name":"old","workflow_file_stem":"old","worktree_path":"/repo","workflow_definition":{"name":"old","description":"","builtin":false,"steps":[{"name":"x","mode":"auto","instruction":"x"}]},"timestamp":1000.0}"#,
         )
         .unwrap();
         // read_log は parse 失敗を返す（旧 shape は復元対象外）
-        assert!(log.read_log("legacy-steps").is_err());
+        assert!(log
+            .read_log("00000000-0000-0000-0000-000000000901")
+            .is_err());
         // listing も除外（listing は parse 失敗 line をスキップする）
         let ids = log.list_run_ids_for_worktree("/repo").unwrap();
-        assert!(!ids.iter().any(|i| i == "legacy-steps"));
+        assert!(!ids
+            .iter()
+            .any(|i| i == "00000000-0000-0000-0000-000000000901"));
     }
 
     /// 旧 NDJSON が listing から除外されること（read_log 失敗 ⇒ list_run_ids_for_worktree でも対象外）。
@@ -290,7 +303,7 @@ mod tests {
 
         // 新 NDJSON も同じ worktree で書き込む
         log.append(&WorkflowEvent::RunStarted {
-            run_id: "new-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000902".to_string(),
             workflow_name: "new".to_string(),
             workflow_file_stem: "new".to_string(),
             worktree_path: "/repo".to_string(),
@@ -304,7 +317,9 @@ mod tests {
             !ids.iter().any(|i| i == "legacy"),
             "旧 NDJSON は listing 対象から除外される"
         );
-        assert!(ids.iter().any(|i| i == "new-1"));
+        assert!(ids
+            .iter()
+            .any(|i| i == "00000000-0000-0000-0000-000000000902"));
     }
 
     /// [04] atomic batch append: 複数 event を 1 回の write でまとめて append すれば、
@@ -354,7 +369,7 @@ mod tests {
         let log = WorkflowEventLog::new(tmp.path());
         let events = vec![
             WorkflowEvent::ApprovalResolved {
-                run_id: "run-a".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000903".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "review".to_string(),
                 decision: ApprovalDecisionRecord::Approve,
@@ -362,7 +377,7 @@ mod tests {
                 timestamp: 1.0,
             },
             WorkflowEvent::RunAborted {
-                run_id: "run-b".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000904".to_string(),
                 workflow_name: "wf".to_string(),
                 timestamp: 2.0,
             },
@@ -373,8 +388,14 @@ mod tests {
             "異 run_id 混在は uniform run_id エラーで拒否される: {err}"
         );
         // どちらの run_id の NDJSON も生成されていない
-        assert!(log.read_log("run-a").unwrap().is_empty());
-        assert!(log.read_log("run-b").unwrap().is_empty());
+        assert!(log
+            .read_log("00000000-0000-0000-0000-000000000903")
+            .unwrap()
+            .is_empty());
+        assert!(log
+            .read_log("00000000-0000-0000-0000-000000000904")
+            .unwrap()
+            .is_empty());
     }
 
     /// [04] atomic batch append: 空入力は no-op として Ok を返す（NDJSON は生成されない）。
@@ -383,7 +404,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
         log.append_batch(&[]).expect("empty input is no-op Ok");
-        assert!(log.read_log("any").unwrap().is_empty());
+        assert!(log
+            .read_log("00000000-0000-0000-0000-000000000905")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -392,7 +416,7 @@ mod tests {
         let log = WorkflowEventLog::new(tmp.path());
 
         let event1 = WorkflowEvent::RunStarted {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -400,14 +424,14 @@ mod tests {
             timestamp: 1000.0,
         };
         let event2 = WorkflowEvent::NodeStarted {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "plan".to_string(),
             execution_count: 1,
             timestamp: 1001.0,
         };
         let event3 = WorkflowEvent::NodeCompleted {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "plan".to_string(),
             result: Some("done".to_string()),
@@ -425,7 +449,9 @@ mod tests {
         log.append(&event2).unwrap();
         log.append(&event3).unwrap();
 
-        let events = log.read_log("exec-1").unwrap();
+        let events = log
+            .read_log("00000000-0000-0000-0000-000000000906")
+            .unwrap();
         assert_eq!(events.len(), 3);
     }
 
@@ -433,7 +459,9 @@ mod tests {
     fn read_nonexistent_log_returns_empty() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
-        let events = log.read_log("nonexistent").unwrap();
+        let events = log
+            .read_log("00000000-0000-0000-0000-000000000916")
+            .unwrap();
         assert!(events.is_empty());
     }
 
@@ -451,7 +479,7 @@ mod tests {
         let log = WorkflowEventLog::new(tmp.path());
 
         log.append(&WorkflowEvent::RunStarted {
-            run_id: "exec-a".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000908".to_string(),
             workflow_name: "wf-a".to_string(),
             workflow_file_stem: "wf-a".to_string(),
             worktree_path: "/repo-1".to_string(),
@@ -460,7 +488,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::RunStarted {
-            run_id: "exec-b".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000909".to_string(),
             workflow_name: "wf-b".to_string(),
             workflow_file_stem: "wf-b".to_string(),
             worktree_path: "/repo-2".to_string(),
@@ -469,7 +497,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::RunStarted {
-            run_id: "exec-c".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000910".to_string(),
             workflow_name: "wf-c".to_string(),
             workflow_file_stem: "wf-c".to_string(),
             worktree_path: "/repo-1".to_string(),
@@ -480,10 +508,16 @@ mod tests {
 
         let mut ids = log.list_run_ids_for_worktree("/repo-1").unwrap();
         ids.sort();
-        assert_eq!(ids, vec!["exec-a", "exec-c"]);
+        assert_eq!(
+            ids,
+            vec![
+                "00000000-0000-0000-0000-000000000908",
+                "00000000-0000-0000-0000-000000000910"
+            ]
+        );
 
         let ids2 = log.list_run_ids_for_worktree("/repo-2").unwrap();
-        assert_eq!(ids2, vec!["exec-b"]);
+        assert_eq!(ids2, vec!["00000000-0000-0000-0000-000000000909"]);
 
         let ids3 = log.list_run_ids_for_worktree("/other").unwrap();
         assert!(ids3.is_empty());
@@ -493,7 +527,7 @@ mod tests {
     fn event_serde_all_variants() {
         let events = vec![
             WorkflowEvent::RunStarted {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: "/repo".to_string(),
@@ -501,14 +535,14 @@ mod tests {
                 timestamp: 1.0,
             },
             WorkflowEvent::NodeStarted {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "s1".to_string(),
                 execution_count: 1,
                 timestamp: 2.0,
             },
             WorkflowEvent::NodeCompleted {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "s1".to_string(),
                 result: None,
@@ -519,20 +553,20 @@ mod tests {
                 timestamp: 3.0,
             },
             WorkflowEvent::NodeFailed {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "s1".to_string(),
                 reason: "error".to_string(),
                 timestamp: 4.0,
             },
             WorkflowEvent::ApprovalRequested {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "s1".to_string(),
                 timestamp: 4.5,
             },
             WorkflowEvent::ApprovalResolved {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "s1".to_string(),
                 decision: ApprovalDecisionRecord::Approve,
@@ -540,7 +574,7 @@ mod tests {
                 timestamp: 4.7,
             },
             WorkflowEvent::RunCompleted {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 total_token_usage: TokenUsage {
                     input_tokens: 100,
@@ -549,18 +583,18 @@ mod tests {
                 timestamp: 5.0,
             },
             WorkflowEvent::RunFailed {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 reason: "failed".to_string(),
                 timestamp: 6.0,
             },
             WorkflowEvent::RunAborted {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 timestamp: 7.0,
             },
             WorkflowEvent::OutputCollected {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "collect".to_string(),
                 node_outputs: vec![CollectedOutputEntry {
@@ -574,14 +608,14 @@ mod tests {
                 timestamp: 8.0,
             },
             WorkflowEvent::ParallelStarted {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 child_node_names: vec!["arch-review".to_string(), "security-review".to_string()],
                 timestamp: 9.0,
             },
             WorkflowEvent::ParallelChildStarted {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 child_node_name: "arch-review".to_string(),
@@ -590,7 +624,7 @@ mod tests {
                 timestamp: 10.0,
             },
             WorkflowEvent::ParallelChildCompleted {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 child_node_name: "arch-review".to_string(),
@@ -605,14 +639,14 @@ mod tests {
                 timestamp: 11.0,
             },
             WorkflowEvent::ParallelCompleted {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 aggregate_result: "then".to_string(),
                 timestamp: 12.0,
             },
             WorkflowEvent::ContractRepairRequested {
-                run_id: "e1".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
                 node_name: "s1".to_string(),
                 attempt: 1,
@@ -678,7 +712,8 @@ mod tests {
     fn reconstruct_state_empty_log() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
-        let result = reconstruct_state_via_log(&log, "nonexistent").unwrap();
+        let result =
+            reconstruct_state_via_log(&log, "00000000-0000-0000-0000-000000000916").unwrap();
         assert!(result.is_none());
     }
 
@@ -689,7 +724,7 @@ mod tests {
         let wf = make_test_workflow();
 
         log.append(&WorkflowEvent::RunStarted {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -698,7 +733,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeStarted {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "plan".to_string(),
             execution_count: 1,
@@ -706,7 +741,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeCompleted {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "plan".to_string(),
             result: Some("done".to_string()),
@@ -721,7 +756,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeStarted {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "implement".to_string(),
             execution_count: 1,
@@ -729,7 +764,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeCompleted {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "implement".to_string(),
             result: None,
@@ -741,7 +776,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::OutputCollected {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "collect".to_string(),
             node_outputs: vec![CollectedOutputEntry {
@@ -756,7 +791,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::RunCompleted {
-            run_id: "exec-1".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
             total_token_usage: TokenUsage {
                 input_tokens: 200,
@@ -766,8 +801,10 @@ mod tests {
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-1").unwrap().unwrap();
-        assert_eq!(state.execution_id, "exec-1");
+        let state = reconstruct_state_via_log(&log, "00000000-0000-0000-0000-000000000906")
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.execution_id, "00000000-0000-0000-0000-000000000906");
         assert_eq!(state.state, WorkflowExecutionState::Completed);
         assert_eq!(state.step_history.len(), 2);
         assert_eq!(
@@ -803,7 +840,7 @@ mod tests {
         let wf = make_test_workflow();
 
         log.append(&WorkflowEvent::RunStarted {
-            run_id: "exec-2".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000907".to_string(),
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -812,7 +849,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeStarted {
-            run_id: "exec-2".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000907".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "plan".to_string(),
             execution_count: 1,
@@ -820,7 +857,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeFailed {
-            run_id: "exec-2".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000907".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "plan".to_string(),
             reason: "exit code 1".to_string(),
@@ -828,14 +865,16 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::RunFailed {
-            run_id: "exec-2".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000907".to_string(),
             workflow_name: "test-wf".to_string(),
             reason: "step failed".to_string(),
             timestamp: 2003.0,
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-2").unwrap().unwrap();
+        let state = reconstruct_state_via_log(&log, "00000000-0000-0000-0000-000000000907")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             state.state,
             WorkflowExecutionState::Failed {
@@ -888,7 +927,7 @@ mod tests {
 
         let events = vec![
             WorkflowEvent::RunStarted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 workflow_file_stem: "parallel-wf".to_string(),
                 worktree_path: "/repo".to_string(),
@@ -896,14 +935,14 @@ mod tests {
                 timestamp: 1000.0,
             },
             WorkflowEvent::NodeStarted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 node_name: "plan".to_string(),
                 execution_count: 1,
                 timestamp: 1001.0,
             },
             WorkflowEvent::NodeCompleted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 node_name: "plan".to_string(),
                 result: Some("done".to_string()),
@@ -917,14 +956,14 @@ mod tests {
                 timestamp: 1002.0,
             },
             WorkflowEvent::ParallelStarted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 child_node_names: vec!["arch-review".to_string(), "security-review".to_string()],
                 timestamp: 1003.0,
             },
             WorkflowEvent::ParallelChildStarted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 child_node_name: "arch-review".to_string(),
@@ -933,7 +972,7 @@ mod tests {
                 timestamp: 1004.0,
             },
             WorkflowEvent::ParallelChildStarted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 child_node_name: "security-review".to_string(),
@@ -942,7 +981,7 @@ mod tests {
                 timestamp: 1004.0,
             },
             WorkflowEvent::ParallelChildCompleted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 child_node_name: "arch-review".to_string(),
@@ -957,7 +996,7 @@ mod tests {
                 timestamp: 1005.0,
             },
             WorkflowEvent::ParallelChildCompleted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 child_node_name: "security-review".to_string(),
@@ -972,7 +1011,7 @@ mod tests {
                 timestamp: 1006.0,
             },
             WorkflowEvent::ParallelCompleted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 parent_node_name: "parallel-review".to_string(),
                 aggregate_result: "then".to_string(),
@@ -980,7 +1019,7 @@ mod tests {
             },
             // engine.rsのwrite_last_step_completed_logが親ステップのNodeCompletedを出力
             WorkflowEvent::NodeCompleted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 node_name: "parallel-review".to_string(),
                 result: Some("then".to_string()),
@@ -994,7 +1033,7 @@ mod tests {
                 timestamp: 1007.0,
             },
             WorkflowEvent::RunCompleted {
-                run_id: "exec-p".to_string(),
+                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
                 workflow_name: "parallel-wf".to_string(),
                 total_token_usage: TokenUsage {
                     input_tokens: 450,
@@ -1008,7 +1047,9 @@ mod tests {
             log.append(event).unwrap();
         }
 
-        let state = reconstruct_state_via_log(&log, "exec-p").unwrap().unwrap();
+        let state = reconstruct_state_via_log(&log, "00000000-0000-0000-0000-000000000912")
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             state.step_history.len(),
@@ -1038,7 +1079,7 @@ mod tests {
         let wf = make_test_workflow();
 
         log.append(&WorkflowEvent::RunStarted {
-            run_id: "exec-r".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000913".to_string(),
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -1047,7 +1088,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeStarted {
-            run_id: "exec-r".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000913".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "review".to_string(),
             execution_count: 1,
@@ -1055,7 +1096,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeCompleted {
-            run_id: "exec-r".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000913".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "review".to_string(),
             result: Some("reject".to_string()),
@@ -1070,7 +1111,9 @@ mod tests {
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-r").unwrap().unwrap();
+        let state = reconstruct_state_via_log(&log, "00000000-0000-0000-0000-000000000913")
+            .unwrap()
+            .unwrap();
 
         assert_eq!(state.step_history.len(), 1);
         assert_eq!(state.step_history[0].step_name, "review");
@@ -1091,7 +1134,7 @@ mod tests {
         let wf = make_test_workflow();
 
         log.append(&WorkflowEvent::RunStarted {
-            run_id: "exec-ap".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000914".to_string(),
             workflow_name: "test-wf".to_string(),
             workflow_file_stem: "test-wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -1100,7 +1143,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeStarted {
-            run_id: "exec-ap".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000914".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "review".to_string(),
             execution_count: 1,
@@ -1108,14 +1151,16 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::ApprovalRequested {
-            run_id: "exec-ap".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000914".to_string(),
             workflow_name: "test-wf".to_string(),
             node_name: "review".to_string(),
             timestamp: 1002.0,
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-ap").unwrap().unwrap();
+        let state = reconstruct_state_via_log(&log, "00000000-0000-0000-0000-000000000914")
+            .unwrap()
+            .unwrap();
         assert_eq!(state.state, WorkflowExecutionState::WaitingApproval);
         assert_eq!(state.current_step_name, "review");
         // workflow.nodes は plan/implement/review の順なので review の index は 2。
@@ -1155,7 +1200,7 @@ mod tests {
         };
 
         log.append(&WorkflowEvent::RunStarted {
-            run_id: "exec-an".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
             workflow_file_stem: "approval-then-next".to_string(),
             worktree_path: "/repo".to_string(),
@@ -1164,7 +1209,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeStarted {
-            run_id: "exec-an".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
             node_name: "review".to_string(),
             execution_count: 1,
@@ -1172,14 +1217,14 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::ApprovalRequested {
-            run_id: "exec-an".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
             node_name: "review".to_string(),
             timestamp: 2002.0,
         })
         .unwrap();
         log.append(&WorkflowEvent::ApprovalResolved {
-            run_id: "exec-an".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
             node_name: "review".to_string(),
             decision: ApprovalDecisionRecord::Approve,
@@ -1188,7 +1233,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeCompleted {
-            run_id: "exec-an".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
             node_name: "review".to_string(),
             result: Some("approve".to_string()),
@@ -1200,7 +1245,7 @@ mod tests {
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeStarted {
-            run_id: "exec-an".to_string(),
+            run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
             node_name: "ship".to_string(),
             execution_count: 1,
@@ -1208,7 +1253,9 @@ mod tests {
         })
         .unwrap();
 
-        let state = reconstruct_state_via_log(&log, "exec-an").unwrap().unwrap();
+        let state = reconstruct_state_via_log(&log, "00000000-0000-0000-0000-000000000915")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             state.state,
             WorkflowExecutionState::Running,
