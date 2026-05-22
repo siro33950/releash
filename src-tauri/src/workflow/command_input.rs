@@ -60,6 +60,17 @@ pub(crate) fn validate_reject_reason_text(
     value: &str,
     label: &'static str,
 ) -> Result<(), CommandInputError> {
+    validate_required_comment_text(value, label)
+}
+
+/// 必須自由記述テキスト（approval chat instruction 等）を検証する。
+///
+/// trim 後非空 + `MAX_APPROVAL_COMMENT_CHARS` 文字以下なら OK。reject reason
+/// と同じ「必須テキスト」境界を共有する用途向け。
+pub(crate) fn validate_required_comment_text(
+    value: &str,
+    label: &'static str,
+) -> Result<(), CommandInputError> {
     if value.trim().is_empty() {
         return Err(CommandInputError::Empty { label });
     }
@@ -153,6 +164,53 @@ mod tests {
             err,
             CommandInputError::TooLong {
                 label: "Reject comment",
+                limit: MAX_APPROVAL_COMMENT_CHARS,
+            }
+        );
+    }
+
+    #[test]
+    fn validate_required_comment_text_accepts_normal_input() {
+        assert!(
+            validate_required_comment_text("Please proceed", "approval chat instruction").is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_required_comment_text_rejects_empty_string() {
+        let err = validate_required_comment_text("", "approval chat instruction").unwrap_err();
+        assert_eq!(
+            err,
+            CommandInputError::Empty {
+                label: "approval chat instruction"
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "approval chat instruction must not be empty"
+        );
+    }
+
+    #[test]
+    fn validate_required_comment_text_rejects_whitespace_only() {
+        let err =
+            validate_required_comment_text("   \n\t ", "approval chat instruction").unwrap_err();
+        assert_eq!(
+            err,
+            CommandInputError::Empty {
+                label: "approval chat instruction"
+            }
+        );
+    }
+
+    #[test]
+    fn validate_required_comment_text_rejects_over_max_length() {
+        let over = "a".repeat(MAX_APPROVAL_COMMENT_CHARS + 1);
+        let err = validate_required_comment_text(&over, "approval chat instruction").unwrap_err();
+        assert_eq!(
+            err,
+            CommandInputError::TooLong {
+                label: "approval chat instruction",
                 limit: MAX_APPROVAL_COMMENT_CHARS,
             }
         );

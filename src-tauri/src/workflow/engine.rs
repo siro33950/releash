@@ -15,7 +15,8 @@ use crate::permission::PermissionMode;
 use crate::session::{ChatSession, SessionStore};
 use crate::workflow::command::{WorkflowCommand, WorkflowCommandResult};
 use crate::workflow::command_input::{
-    validate_optional_comment_text, validate_reject_reason_text, CommandInputError,
+    validate_optional_comment_text, validate_reject_reason_text, validate_required_comment_text,
+    CommandInputError,
 };
 use crate::workflow::contract::{
     build_repair_prompt, extract_workflow_output, validate_contract, ContractValidationResult,
@@ -4329,7 +4330,7 @@ impl WorkflowEngine {
                 "Workflow is not waiting for approval".to_string(),
             ));
         }
-        validate_optional_comment_text(Some(content), "approval chat instruction")
+        validate_required_comment_text(content, "approval chat instruction")
             .map_err(command_input_error_to_engine_error)?;
         Ok(())
     }
@@ -11567,6 +11568,39 @@ mod tests {
             .validate_approval_chat_instruction("other-session", &"x".repeat(9000))
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_approval_chat_instruction_rejects_empty_or_whitespace_only_content() {
+        let engine = WorkflowEngine::new_for_test();
+        let mut exec = make_approval_exec(WorkflowExecutionState::WaitingApproval, vec![]);
+        exec.current_session_id = Some("step-session".to_string());
+        let run_id = exec.id.clone();
+        {
+            let mut execs = engine.executions.lock().await;
+            execs.insert(run_id.clone(), exec);
+        }
+        {
+            let mut refs = engine.session_workflow_refs.lock().await;
+            refs.insert(
+                "step-session".to_string(),
+                SessionWorkflowRef {
+                    run_id: run_id.clone(),
+                    kind: SessionRefKind::Step,
+                },
+            );
+        }
+
+        for content in ["", "   ", "\n\t \r\n"] {
+            let err = engine
+                .validate_approval_chat_instruction("step-session", content)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().starts_with("validation_error:"),
+                "expected validation_error for content={content:?}, got: {err}"
+            );
+        }
     }
 
     #[tokio::test]

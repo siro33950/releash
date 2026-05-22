@@ -385,7 +385,7 @@ mod tests {
     /// NDJSON serialize 結果に出現する（マスキング・短縮されない）。
     #[test]
     fn cli_mutation_requested_reason_and_comment_appear_in_serialized_json_verbatim() {
-        let event = WorkflowEvent::CliMutationRequested {
+        let reject = WorkflowEvent::CliMutationRequested {
             run_id: "00000000-0000-0000-0000-000000000403".to_string(),
             workflow_name: "wf".to_string(),
             request_id: "00000000-0000-0000-0000-000000000503".to_string(),
@@ -396,8 +396,22 @@ mod tests {
             requested_at: 100.0,
             timestamp: 101.0,
         };
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("free-form reject reason"));
+        let reject_json = serde_json::to_string(&reject).unwrap();
+        assert!(reject_json.contains("free-form reject reason"));
+
+        let approve = WorkflowEvent::CliMutationRequested {
+            run_id: "00000000-0000-0000-0000-000000000404".to_string(),
+            workflow_name: "wf".to_string(),
+            request_id: "00000000-0000-0000-0000-000000000504".to_string(),
+            request: CliMutationRequestRecord::Approve {
+                node_name: None,
+                comment: Some("free-form approve comment".to_string()),
+            },
+            requested_at: 102.0,
+            timestamp: 103.0,
+        };
+        let approve_json = serde_json::to_string(&approve).unwrap();
+        assert!(approve_json.contains("free-form approve comment"));
     }
 
     /// `WorkflowEvent::run_id()` がすべての variant で primary key を露出する。
