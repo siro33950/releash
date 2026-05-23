@@ -6,12 +6,15 @@ import {
 	WorkflowPanel,
 	type WorkflowStepSelection,
 } from "@/components/panels/WorkflowPanel";
+import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
 	closeSession as closeSessionApi,
 	openWorkflowStepTab,
 } from "@/hooks/useSessionStore";
 import { useWorkflowState } from "@/hooks/useWorkflowState";
+import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
+import type { AgentState } from "@/types/protocol";
 import type { PermissionMode } from "@/types/session";
 import type { WorkflowState } from "@/types/workflow";
 import { WorkflowStepDetail } from "./WorkflowStepDetail";
@@ -39,6 +42,17 @@ export function WorkflowView({
 	permissionMode = "readonly",
 }: WorkflowViewProps) {
 	const { workflowState } = useWorkflowState(worktreePath);
+
+	// Step タブの状態アイコン用: AgentChatPanel と同じく Rust 中央管理から取得した
+	// SessionStatus を sessionId -> AgentState の Map に整形する。
+	const worktreeSessionStatuses = useWorktreeSessionStatuses(worktreePath);
+	const sessionAgentStates = useMemo(() => {
+		const map = new Map<string, AgentState>();
+		for (const [sessionId, status] of worktreeSessionStatuses) {
+			map.set(sessionId, status.agent_state);
+		}
+		return map;
+	}, [worktreeSessionStatuses]);
 
 	const [openTabs, setOpenTabs] = useState<WorkflowStepSelection[]>([]);
 	const [activeTabKey, setActiveTabKey] = useState<string | null>(null);
@@ -211,6 +225,7 @@ export function WorkflowView({
 											activeTabKey={activeTabKey}
 											onSelectTab={handleSelectTab}
 											onCloseTab={handleCloseTab}
+											sessionAgentStates={sessionAgentStates}
 										/>
 										<div className="flex flex-1 flex-col min-h-0 overflow-hidden">
 											{showChat && activeSessionId ? (
@@ -359,6 +374,14 @@ interface WorkflowStepTabBarProps {
 	activeTabKey: string | null;
 	onSelectTab: (key: string) => void;
 	onCloseTab: (key: string) => void;
+	/**
+	 * sessionId → AgentState の Map。
+	 * AgentChatPanel のタブと同じく、各 step タブの左端に状態アイコンを描画するために使う。
+	 * sessionId を持たない tab（bash / parallel parent / 未紐付け completed）では
+	 * Map に該当 entry が存在せず、AgentStateIcon は state=undefined の
+	 * グレーフォールバック表示になる。
+	 */
+	sessionAgentStates: Map<string, AgentState>;
 }
 
 function WorkflowStepTabBar({
@@ -366,6 +389,7 @@ function WorkflowStepTabBar({
 	activeTabKey,
 	onSelectTab,
 	onCloseTab,
+	sessionAgentStates,
 }: WorkflowStepTabBarProps) {
 	return (
 		<Tabs
@@ -381,9 +405,13 @@ function WorkflowStepTabBar({
 					{openTabs.map((tab) => {
 						const key = stepTabKey(tab);
 						const label = tab.stepName || "step";
+						const agentState = tab.sessionId
+							? sessionAgentStates.get(tab.sessionId)
+							: undefined;
 						return (
 							<TabsTrigger key={key} value={key} asChild>
 								<div className="gap-2">
+									<AgentStateIcon state={agentState} />
 									<span className="truncate max-w-[140px]">{label}</span>
 									<button
 										type="button"

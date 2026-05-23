@@ -640,6 +640,80 @@ describe("WorkflowView", () => {
 			});
 		});
 
+		it("renders an AgentStateIcon for each step tab based on SessionStatus", async () => {
+			// AgentChatPanel と同じく、各 Step タブの左端に Rust 中央管理
+			// (AgentStatusCenter) 由来の AgentState アイコンを描画する。
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			mockAgentChatContext({
+				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
+			});
+
+			// list_session_statuses が chat-session-1 を agent_state="running" で返す。
+			mockInvoke.mockReset();
+			mockInvoke.mockImplementation(async (cmd: string) => {
+				if (cmd === "list_session_statuses") {
+					return [
+						{
+							chat_session_id: "chat-session-1",
+							worktree_id: "/repo",
+							worktree_path: "/repo",
+							pty_id: null,
+							agent_state: "running",
+							turn_phase: "streaming",
+							session_state: "active",
+							pending_permission: false,
+							last_activity_at: 1.0,
+							workflow_step: "step-1",
+							workflow_execution_state: "running",
+						},
+					];
+				}
+				return [];
+			});
+
+			render(<WorkflowView worktreePath="/repo" />);
+
+			const openButtons = await screen.findAllByLabelText("Open tab");
+			fireEvent.click(openButtons[0]);
+
+			const tabList = await screen.findByTestId("workflow-step-tab-list");
+			await waitFor(() => {
+				// running アイコン（title="running"）が tab bar 内に描画されている。
+				const icon = tabList.querySelector('[title="running"]');
+				expect(icon).not.toBeNull();
+			});
+		});
+
+		it("renders a stateless AgentStateIcon when no SessionStatus is available for the tab", async () => {
+			// list_session_statuses が当該 sessionId を返さない場合、
+			// sessionAgentStates.get(tab.sessionId) は undefined となり
+			// AgentStateIcon は state=undefined のグレーフォールバック（title 無し）になる。
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			mockAgentChatContext({
+				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
+			});
+			mockInvoke.mockReset();
+			mockInvoke.mockResolvedValue([]); // SessionStatus 無し
+
+			render(<WorkflowView worktreePath="/repo" />);
+
+			const openButtons = await screen.findAllByLabelText("Open tab");
+			fireEvent.click(openButtons[0]);
+
+			const tabList = await screen.findByTestId("workflow-step-tab-list");
+			// 色付きアイコン（title="running" 等の AgentState 由来）は出ない。
+			await waitFor(() => {
+				expect(tabList.querySelector('[title="running"]')).toBeNull();
+				expect(tabList.querySelector('[title="done"]')).toBeNull();
+				expect(tabList.querySelector('[title="waiting"]')).toBeNull();
+				expect(tabList.querySelector('[title="error"]')).toBeNull();
+			});
+		});
+
 		it("clears all tabs when the workflow run identity changes", async () => {
 			useWorkflowStateMock.mockReturnValue({
 				workflowState: multiStepWorkflowFixture(),
