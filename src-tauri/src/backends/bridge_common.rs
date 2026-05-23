@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -361,14 +361,110 @@ fn validate_session_id_for_path(chat_session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// On-disk representation of a PID file (v1).
+///
+/// Records the bridge process group, plus identification of the Releash app
+/// instance that owns it. `cleanup_orphan_processes` uses `owner_app_pid` and
+/// `owner_start_time` to distinguish "left over from a previous crash of this
+/// app instance" from "currently owned by another live Releash instance" — the
+/// latter must not be touched (issue #1024).
+#[cfg(unix)]
+#[derive(Serialize, Deserialize)]
+struct PidFileV1 {
+    version: u32,
+    pgid: i32,
+    owner_app_pid: u32,
+    /// Platform-specific start time of `owner_app_pid`. Used to detect PID
+    /// reuse: if the recorded `owner_app_pid` is alive but its start time
+    /// differs from the recorded value, the PID was recycled and the file is
+    /// stale.
+    owner_start_time: u64,
+}
+
+/// Linux: read field 22 (`starttime`) of `/proc/{pid}/stat`. Value is the
+/// process start time expressed in clock ticks since system boot — stable
+/// across queries for the same process.
+#[cfg(all(unix, target_os = "linux"))]
+fn get_process_start_time(pid: u32) -> Result<u64, String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map_err(|e| format!("Failed to read /proc/{pid}/stat: {e}"))?;
+    // The `comm` field (field 2) can contain spaces and parens; the last ')'
+    // marks its end. Fields after are space-separated.
+    let rparen = stat
+        .rfind(')')
+        .ok_or_else(|| format!("Malformed /proc/{pid}/stat: missing ')'"))?;
+    let after = stat[rparen + 1..].trim();
+    let fields: Vec<&str> = after.split_whitespace().collect();
+    // After ')' the next field is `state` (field 3). `starttime` is field 22,
+    // so the index into `fields` is 22 - 3 = 19.
+    let starttime = fields
+        .get(19)
+        .ok_or_else(|| format!("/proc/{pid}/stat missing starttime field"))?;
+    starttime
+        .parse::<u64>()
+        .map_err(|e| format!("Failed to parse starttime in /proc/{pid}/stat: {e}"))
+}
+
+/// macOS: query `proc_bsdinfo` via `proc_pidinfo(pid, PROC_PIDTBSDINFO, ...)`
+/// and combine `pbi_start_tvsec`/`pbi_start_tvusec` into microseconds since
+/// epoch. The value is fixed for the lifetime of the process.
+#[cfg(all(unix, target_os = "macos"))]
+fn get_process_start_time(pid: u32) -> Result<u64, String> {
+    use std::mem::MaybeUninit;
+    let mut info: MaybeUninit<libc::proc_bsdinfo> = MaybeUninit::uninit();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let ret = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr() as *mut libc::c_void,
+            size,
+        )
+    };
+    if ret <= 0 {
+        return Err(format!(
+            "proc_pidinfo(PROC_PIDTBSDINFO) failed for {pid}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if ret < size {
+        return Err(format!(
+            "proc_pidinfo(PROC_PIDTBSDINFO) returned {ret} bytes, expected {size}"
+        ));
+    }
+    let info = unsafe { info.assume_init() };
+    Ok(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+}
+
+/// Unsupported Unix flavor: return an error. Callers treat this as "owner
+/// identity unverifiable" and conservatively skip cleanup of unfamiliar files.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn get_process_start_time(_pid: u32) -> Result<u64, String> {
+    Err("Unsupported platform for process start_time lookup".to_string())
+}
+
 #[cfg(unix)]
 fn save_pgid(app_data_dir: &Path, chat_session_id: &str, pgid: u32) -> Result<(), String> {
     validate_session_id_for_path(chat_session_id)?;
     let dir = pids_dir(app_data_dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create pids dir: {e}"))?;
+    let owner_app_pid = std::process::id();
+    let owner_start_time = get_process_start_time(owner_app_pid)?;
+    let payload = PidFileV1 {
+        version: 1,
+        pgid: pgid as i32,
+        owner_app_pid,
+        owner_start_time,
+    };
+    let json = serde_json::to_string(&payload)
+        .map_err(|e| format!("Failed to serialize PID file: {e}"))?;
     let file = dir.join(format!("{chat_session_id}.pid"));
-    std::fs::write(&file, pgid.to_string())
-        .map_err(|e| format!("Failed to write pid file: {e}"))?;
+    // Atomic write: tmp + rename. Avoids leaving a half-written file readable
+    // by a concurrent cleanup pass.
+    let tmp = dir.join(format!("{chat_session_id}.pid.tmp"));
+    std::fs::write(&tmp, json).map_err(|e| format!("Failed to write pid file: {e}"))?;
+    std::fs::rename(&tmp, &file).map_err(|e| format!("Failed to rename pid file: {e}"))?;
     Ok(())
 }
 
@@ -391,38 +487,93 @@ pub fn cleanup_orphan_processes(app_data_dir: &Path) {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "pid") {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                if let Ok(pgid) = contents.trim().parse::<i32>() {
-                    if pgid <= 1 {
-                        log::warn!("Invalid PGID {pgid} in {}, removing file", path.display());
-                        let _ = std::fs::remove_file(&path);
-                        continue;
-                    }
-                    // Check if the process group is still alive
-                    let alive = unsafe { libc::killpg(pgid, 0) } == 0;
-                    if alive {
-                        log::info!(
-                            "Cleaning up orphan process group {pgid} from {}",
-                            path.display()
-                        );
-                        unsafe {
-                            libc::killpg(pgid, libc::SIGTERM);
-                        }
-                        // Give processes time to exit, then force kill
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                        let still_alive = unsafe { libc::killpg(pgid, 0) } == 0;
-                        if still_alive {
-                            log::warn!("Orphan process group {pgid} did not exit, sending SIGKILL");
-                            unsafe {
-                                libc::killpg(pgid, libc::SIGKILL);
-                            }
-                        }
-                    }
+        if path.extension().is_none_or(|ext| ext != "pid") {
+            continue;
+        }
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Failed to read PID file {}: {e}", path.display());
+                continue;
+            }
+        };
+
+        let parsed: PidFileV1 = match serde_json::from_str::<PidFileV1>(contents.trim()) {
+            Ok(p) => p,
+            Err(_) => {
+                // Legacy or unknown format. Conservatively skip — touching it
+                // could destroy a live owner's bookkeeping (issue #1024).
+                log::warn!(
+                    "PID file {} is not in PidFileV1 format; skipping cleanup",
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        if parsed.pgid <= 1 {
+            log::warn!(
+                "Invalid PGID {} in {}, removing file",
+                parsed.pgid,
+                path.display()
+            );
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+
+        // Determine whether the recorded owner is still our own previous run
+        // (cleanup OK) or a *different* live Releash instance (must skip).
+        let owner_pid_i32 = parsed.owner_app_pid as i32;
+        let owner_alive = owner_pid_i32 > 1 && unsafe { libc::kill(owner_pid_i32, 0) } == 0;
+        if owner_alive {
+            match get_process_start_time(parsed.owner_app_pid) {
+                Ok(current_start_time) if current_start_time == parsed.owner_start_time => {
+                    log::info!(
+                        "PID file {} is owned by live instance (pid={}); skipping cleanup",
+                        path.display(),
+                        parsed.owner_app_pid
+                    );
+                    continue;
+                }
+                Ok(_) => {
+                    log::info!(
+                        "PID file {} owner pid {} appears to have been reused; proceeding with cleanup",
+                        path.display(),
+                        parsed.owner_app_pid
+                    );
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Failed to read start_time for owner pid {} of {}: {e}; proceeding with cleanup",
+                        parsed.owner_app_pid,
+                        path.display()
+                    );
                 }
             }
-            let _ = std::fs::remove_file(&path);
         }
+
+        // Orphan: owner is dead, or PID was reused, or start_time unverifiable.
+        let pgid = parsed.pgid;
+        let alive = unsafe { libc::killpg(pgid, 0) } == 0;
+        if alive {
+            log::info!(
+                "Cleaning up orphan process group {pgid} from {}",
+                path.display()
+            );
+            unsafe {
+                libc::killpg(pgid, libc::SIGTERM);
+            }
+            // Give processes time to exit, then force kill
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let still_alive = unsafe { libc::killpg(pgid, 0) } == 0;
+            if still_alive {
+                log::warn!("Orphan process group {pgid} did not exit, sending SIGKILL");
+                unsafe {
+                    libc::killpg(pgid, libc::SIGKILL);
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
 
@@ -9088,6 +9239,16 @@ mod tests {
         use super::*;
         use std::os::unix::process::CommandExt as _;
 
+        /// PID belonging to a process guaranteed not to exist. PIDs on Linux
+        /// and macOS are capped well below this value, so `kill(pid, 0)` will
+        /// always return ESRCH.
+        const DEAD_OWNER_PID: u32 = 999_999_999;
+
+        /// Helper: serialize a PidFileV1 payload to the given path.
+        fn write_pid_file_v1(path: &Path, payload: &PidFileV1) {
+            std::fs::write(path, serde_json::to_string(payload).unwrap()).unwrap();
+        }
+
         #[test]
         fn save_and_remove_pgid() {
             let tmp = tempfile::tempdir().unwrap();
@@ -9098,10 +9259,33 @@ mod tests {
             let pid_file = pids_dir(app_data_dir).join("session-1.pid");
             assert!(pid_file.exists());
             let contents = std::fs::read_to_string(&pid_file).unwrap();
-            assert_eq!(contents, "12345");
+            let parsed: PidFileV1 = serde_json::from_str(&contents).unwrap();
+            assert_eq!(parsed.version, 1);
+            assert_eq!(parsed.pgid, 12345);
+            assert_eq!(parsed.owner_app_pid, std::process::id());
 
             remove_pgid(app_data_dir, "session-1");
             assert!(!pid_file.exists());
+        }
+
+        #[test]
+        fn save_pgid_writes_owner_app_pid_and_start_time() {
+            // issue #1024: PID files must identify their owning Releash
+            // instance so cleanup can distinguish self-orphans from files
+            // belonging to a different live instance.
+            let tmp = tempfile::tempdir().unwrap();
+            save_pgid(tmp.path(), "owner-test", 42_424).unwrap();
+            let contents =
+                std::fs::read_to_string(pids_dir(tmp.path()).join("owner-test.pid")).unwrap();
+            let parsed: PidFileV1 = serde_json::from_str(&contents).unwrap();
+            assert_eq!(parsed.owner_app_pid, std::process::id());
+            assert!(
+                parsed.owner_start_time > 0,
+                "owner_start_time should be populated on supported platforms"
+            );
+            // The recorded start_time must match what we can read back now.
+            let live_start = get_process_start_time(std::process::id()).unwrap();
+            assert_eq!(parsed.owner_start_time, live_start);
         }
 
         #[test]
@@ -9122,9 +9306,18 @@ mod tests {
             let dir = pids_dir(app_data_dir);
             std::fs::create_dir_all(&dir).unwrap();
 
-            // Write a PID file with a PGID that doesn't exist (use a very high number)
+            // Owner pid is guaranteed dead → cleanup proceeds and removes the
+            // file even though the pgid itself doesn't refer to a live group.
             let pid_file = dir.join("stale-session.pid");
-            std::fs::write(&pid_file, "999999999").unwrap();
+            write_pid_file_v1(
+                &pid_file,
+                &PidFileV1 {
+                    version: 1,
+                    pgid: 999_999_999,
+                    owner_app_pid: DEAD_OWNER_PID,
+                    owner_start_time: 0,
+                },
+            );
             assert!(pid_file.exists());
 
             cleanup_orphan_processes(app_data_dir);
@@ -9254,17 +9447,11 @@ mod tests {
             );
         }
 
-        #[test]
-        fn cleanup_orphan_processes_kills_alive_process_group() {
+        /// Spawn `sleep 999` in its own process group (setsid). Returns the
+        /// `Child` and the pgid (== child PID after setsid).
+        fn spawn_setsid_sleep() -> (std::process::Child, libc::pid_t) {
             use std::process::Command;
-
-            let tmp = tempfile::tempdir().unwrap();
-            let app_data_dir = tmp.path();
-            let dir = pids_dir(app_data_dir);
-            std::fs::create_dir_all(&dir).unwrap();
-
-            // Spawn a process in a new process group via setsid()
-            let mut child = unsafe {
+            let child = unsafe {
                 Command::new("sleep")
                     .arg("999")
                     .stdout(std::process::Stdio::null())
@@ -9278,14 +9465,32 @@ mod tests {
                     .spawn()
                     .unwrap()
             };
-
             let pgid = child.id() as libc::pid_t;
+            (child, pgid)
+        }
 
-            // Write a PID file for this process group
+        #[test]
+        fn cleanup_orphan_processes_kills_alive_process_group() {
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let (mut child, pgid) = spawn_setsid_sleep();
+
+            // Owner is a dead PID, so cleanup treats this as a self-orphan and
+            // must terminate the bridge group + delete the file.
             let pid_file = dir.join("alive-session.pid");
-            std::fs::write(&pid_file, pgid.to_string()).unwrap();
+            write_pid_file_v1(
+                &pid_file,
+                &PidFileV1 {
+                    version: 1,
+                    pgid,
+                    owner_app_pid: DEAD_OWNER_PID,
+                    owner_start_time: 0,
+                },
+            );
 
-            // Verify process is alive
             assert_eq!(
                 unsafe { libc::killpg(pgid, 0) },
                 0,
@@ -9299,15 +9504,114 @@ mod tests {
             // wait() the child becomes a zombie and killpg(pgid, 0) still returns 0.
             let _ = child.wait();
 
-            // Verify process group is terminated
             let still_alive = unsafe { libc::killpg(pgid, 0) };
             assert_ne!(
                 still_alive, 0,
                 "process group should be terminated after cleanup"
             );
-
-            // PID file should be removed
             assert!(!pid_file.exists());
+        }
+
+        #[test]
+        fn cleanup_skips_pid_file_owned_by_live_other_instance() {
+            // issue #1024: A PID file whose owner_app_pid points at a live
+            // process with matching start_time belongs to a different,
+            // currently-running Releash instance. Cleanup must not touch it.
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            // Stand-in for "another Releash instance": use the current test
+            // process itself as the owner — it is alive and its start_time
+            // matches what get_process_start_time returns.
+            let owner_pid = std::process::id();
+            let owner_start_time = get_process_start_time(owner_pid).unwrap();
+
+            // Stand-in for the bridge process group owned by that instance.
+            let (mut bridge, pgid) = spawn_setsid_sleep();
+
+            let pid_file = dir.join("foreign.pid");
+            write_pid_file_v1(
+                &pid_file,
+                &PidFileV1 {
+                    version: 1,
+                    pgid,
+                    owner_app_pid: owner_pid,
+                    owner_start_time,
+                },
+            );
+
+            cleanup_orphan_processes(app_data_dir);
+
+            assert!(
+                pid_file.exists(),
+                "PID file owned by a live instance must be left in place"
+            );
+            assert_eq!(
+                unsafe { libc::killpg(pgid, 0) },
+                0,
+                "bridge process group of a live instance must not be killed"
+            );
+
+            // Tear down the helper process so it doesn't outlive the test run.
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+            let _ = bridge.wait();
+        }
+
+        #[test]
+        fn cleanup_kills_when_owner_pid_was_reused() {
+            // owner_app_pid is alive (we point it at ourselves) but the
+            // recorded owner_start_time disagrees with reality → PID has been
+            // reused. The file is stale and must be cleaned up.
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let (mut child, pgid) = spawn_setsid_sleep();
+
+            let pid_file = dir.join("reused.pid");
+            write_pid_file_v1(
+                &pid_file,
+                &PidFileV1 {
+                    version: 1,
+                    pgid,
+                    owner_app_pid: std::process::id(),
+                    owner_start_time: 0, // definitely != real start_time
+                },
+            );
+
+            cleanup_orphan_processes(app_data_dir);
+            let _ = child.wait();
+
+            assert!(!pid_file.exists());
+            assert_ne!(
+                unsafe { libc::killpg(pgid, 0) },
+                0,
+                "stale-owner bridge group should be terminated"
+            );
+        }
+
+        #[test]
+        fn cleanup_skips_legacy_numeric_pid_files() {
+            // Files written by older builds had no owner info, so cleanup
+            // cannot prove the owner is dead. They must be left in place
+            // (conservative) — they get either overwritten on next save or
+            // cleaned up manually by the developer.
+            let tmp = tempfile::tempdir().unwrap();
+            let app_data_dir = tmp.path();
+            let dir = pids_dir(app_data_dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let pid_file = dir.join("legacy.pid");
+            std::fs::write(&pid_file, "999999999").unwrap();
+
+            cleanup_orphan_processes(app_data_dir);
+
+            assert!(pid_file.exists());
         }
 
         #[test]
@@ -9317,13 +9621,20 @@ mod tests {
             let dir = pids_dir(app_data_dir);
             std::fs::create_dir_all(&dir).unwrap();
 
-            // Write a PID file with pgid=0 (dangerous: would target caller's group)
+            // pgid=0 would target the caller's own group — must be rejected.
             let pid_file = dir.join("bad-zero.pid");
-            std::fs::write(&pid_file, "0").unwrap();
+            write_pid_file_v1(
+                &pid_file,
+                &PidFileV1 {
+                    version: 1,
+                    pgid: 0,
+                    owner_app_pid: DEAD_OWNER_PID,
+                    owner_start_time: 0,
+                },
+            );
 
             cleanup_orphan_processes(app_data_dir);
 
-            // PID file should be removed without calling killpg(0, ...)
             assert!(!pid_file.exists());
         }
 
@@ -9334,13 +9645,20 @@ mod tests {
             let dir = pids_dir(app_data_dir);
             std::fs::create_dir_all(&dir).unwrap();
 
-            // Write a PID file with pgid=1 (init process)
+            // pgid=1 (init) — must be rejected.
             let pid_file = dir.join("bad-one.pid");
-            std::fs::write(&pid_file, "1").unwrap();
+            write_pid_file_v1(
+                &pid_file,
+                &PidFileV1 {
+                    version: 1,
+                    pgid: 1,
+                    owner_app_pid: DEAD_OWNER_PID,
+                    owner_start_time: 0,
+                },
+            );
 
             cleanup_orphan_processes(app_data_dir);
 
-            // PID file should be removed without calling killpg(1, ...)
             assert!(!pid_file.exists());
         }
 
@@ -9352,7 +9670,15 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
 
             let pid_file = dir.join("bad-negative.pid");
-            std::fs::write(&pid_file, "-1").unwrap();
+            write_pid_file_v1(
+                &pid_file,
+                &PidFileV1 {
+                    version: 1,
+                    pgid: -1,
+                    owner_app_pid: DEAD_OWNER_PID,
+                    owner_start_time: 0,
+                },
+            );
 
             cleanup_orphan_processes(app_data_dir);
 
