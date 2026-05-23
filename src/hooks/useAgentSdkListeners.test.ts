@@ -158,10 +158,11 @@ describe("useAgentSdkListeners cancelled flag", () => {
 });
 
 describe("agent-streaming-updated event", () => {
-	it("dispatches SET_STREAMING_MESSAGE when agent-streaming-updated is received", () => {
+	it("dispatches SET_STREAMING_MESSAGE when agent-streaming-updated is received for a viewable session", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -174,7 +175,7 @@ describe("agent-streaming-updated event", () => {
 			{ type: "tool_use", tool: "Read", input: { file_path: "/a" }, id: "t1" },
 		];
 
-		cb?.({
+		await cb?.({
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "msg-001",
@@ -188,6 +189,33 @@ describe("agent-streaming-updated event", () => {
 			messageId: "msg-001",
 			parts,
 		});
+	});
+
+	it("skips SET_STREAMING_MESSAGE when the session is not viewable", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		clearViewable(refs);
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-streaming-updated");
+		expect(cb).toBeDefined();
+
+		await cb?.({
+			payload: {
+				chat_session_id: "session-hidden",
+				message_id: "msg-001",
+				parts: [{ type: "text", content: "noop" }],
+			},
+		});
+
+		const calls = (refs.dispatch as Mock).mock.calls.map(
+			(call) => (call[0] as { type: string }).type,
+		);
+		expect(calls).not.toContain("SET_STREAMING_MESSAGE");
+		expect(calls).not.toContain("UPSERT_SESSION");
 	});
 });
 

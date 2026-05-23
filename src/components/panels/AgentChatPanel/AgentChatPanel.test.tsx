@@ -432,7 +432,9 @@ describe("AgentChatPanel session tabs", () => {
 				registerDropZone={mockRegisterDropZone}
 			/>,
 		);
-		fireEvent.click(screen.getByText("Fix bug"));
+		// Radix Tabs.Trigger は onMouseDown で value を確定する仕様。
+		// fireEvent.click では Radix の Trigger ハンドラが発火しないため mouseDown を使う。
+		fireEvent.mouseDown(screen.getByText("Fix bug"));
 		expect(selectSession).toHaveBeenCalledWith("s2");
 	});
 });

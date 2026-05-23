@@ -123,10 +123,13 @@ export function AgentChatPanel({
 
 			// orderedSessions 全体の order に対しては、tab bar に並ばない session を
 			// 既存位置に保ったまま、free chat session 部分だけを並べ替える。
-			const hiddenIds = orderedSessions
-				.map((s) => s.id)
-				.filter((id) => !currentOrder.includes(id));
-			reorderSessions([...newOrder, ...hiddenIds]);
+			// hidden を末尾に集約すると interleaved な配置（workflow step session が
+			// free chat session の間に挟まる順序）が崩れるため、元の位置を保持する。
+			let freeIndex = 0;
+			const nextOrder = orderedSessions.map((s) =>
+				currentOrder.includes(s.id) ? newOrder[freeIndex++] : s.id,
+			);
+			reorderSessions(nextOrder);
 		},
 		[displayedSessions, orderedSessions, reorderSessions],
 	);
@@ -162,7 +165,6 @@ export function AgentChatPanel({
 						{displayedSessions.map((session) => (
 							<TabsTrigger key={session.id} value={session.id} asChild>
 								{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}
-								{/* biome-ignore lint/a11y/useKeyWithClickEvents: TabsTrigger がキーボード操作を処理 */}
 								<div
 									className="gap-2"
 									draggable={displayedSessions.length > 1}
@@ -170,7 +172,6 @@ export function AgentChatPanel({
 									onDragOver={handleDragOver}
 									onDrop={(e) => handleDrop(e, session.id)}
 									onDragEnd={handleDragEnd}
-									onClick={() => handleTabClick(session.id)}
 								>
 									<AgentStateIcon state={sessionAgentStates.get(session.id)} />
 									<span className="truncate max-w-[120px]">

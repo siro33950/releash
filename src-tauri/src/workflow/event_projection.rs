@@ -709,22 +709,22 @@ pub(crate) fn compute_step_detail(
                 .copied()
                 .unwrap_or(0)
         });
+    // spec issues-1023: timing は (step_name, run_index) 厳密一致のみとし、別 run の
+    // timestamp を拾わない。history_entry が Some の場合 resolved_run_index は
+    // entry.run_index と一致するため、history detail でも別 run の timing を引かない。
     let timing = timings
         .iter()
-        .find(|t| t.step_name == node_name && t.run_index == resolved_run_index)
-        .or_else(|| timings.iter().find(|t| t.step_name == node_name));
+        .find(|t| t.step_name == node_name && t.run_index == resolved_run_index);
 
     if let Some(entry) = history_entry {
-        let state_str = state
-            .step_states
-            .get(node_name)
-            .cloned()
-            .unwrap_or_else(|| "completed".to_string());
+        // history detail は実行回 (run_index) 単位の表示。state.step_states は
+        // step_name 単位の最新状態しか保持しないため、過去 run を開いた際に
+        // 最新 run の state で上書きされないよう entry.state を使う。
         return Some(WorkflowStepDetailView {
             step_name: node_name.to_string(),
             node_type: node_type_str.unwrap_or("unknown").to_string(),
             run_index: entry.run_index,
-            state: state_str,
+            state: entry.state.clone(),
             session_id: entry.session_id.clone(),
             result: entry.result.clone(),
             structured_output: entry.structured_output.clone(),
@@ -1008,10 +1008,16 @@ pub(crate) fn reconstruct_state_from_events(
                 // 通常 step 経路では projection 上 `current_session_id` は
                 // 追えないため、entry の session_id は None になる（ライブ
                 // engine 経路では engine 側で session_id を入れる）。
-                let already_in_history = step_history
-                    .last()
-                    .is_some_and(|e| e.step_name == current_step_name);
-                let current_started = step_execution_counts.contains_key(&current_step_name);
+                // spec issues-1023: 同名 step の retry を中断したケース（例:
+                // `plan#1` 完了 → `plan#2` 開始 → RunAborted）でも aborted entry を
+                // 残せるよう、step_name に加えて run_index も比較する。step_name のみ
+                // 比較すると `plan#1` の完了 entry に当たって `plan#2` の aborted
+                // entry の追加がスキップされ、session log への到達経路が失われる。
+                let current_run_index = step_execution_counts.get(&current_step_name).copied();
+                let already_in_history = step_history.last().is_some_and(|e| {
+                    e.step_name == current_step_name && Some(e.run_index) == current_run_index
+                });
+                let current_started = current_run_index.is_some();
 
                 if !active_parallel_steps.is_empty() {
                     let parent_run_index = step_execution_counts

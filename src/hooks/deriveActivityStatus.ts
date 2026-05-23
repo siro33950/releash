@@ -26,8 +26,12 @@ export function deriveActivityStatus(
 			const tool = (
 				lastPart as { tool: string; input?: Record<string, unknown> }
 			).tool;
-			const filePath = (lastPart as { input?: Record<string, unknown> }).input
-				?.file_path as string | undefined;
+			// input.file_path は外部 SDK 由来の Record<string, unknown> の値で、
+			// 実行時に文字列である保証がないため、型ガードを通してから扱う。
+			const rawFilePath = (lastPart as { input?: Record<string, unknown> })
+				.input?.file_path;
+			const filePath =
+				typeof rawFilePath === "string" ? rawFilePath : undefined;
 			const fileName = filePath?.split("/").pop();
 			switch (tool) {
 				case "Read":

@@ -267,11 +267,18 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			async (event) => {
 				const { chat_session_id, message_id, parts } = event.payload;
 
+				// viewable でない session の streaming 更新は他のハンドラと同様にスキップ。
+				// SET_STREAMING_MESSAGE のみガード外にあると非表示 session の streaming が
+				// sessionsById に反映される非対称が生じるため、ここで早期 return する。
+				if (!isViewable(chat_session_id, viewableRegistry)) {
+					return;
+				}
+
 				// Cache miss: SET_STREAMING_MESSAGE は session.messages 内に message_id が
 				// 存在しない場合 no-op になる。viewable な session で message_id が
 				// 未確認の場合は getSession で fetch → UPSERT_SESSION で sessionsById を
 				// 更新し、後続の SET_STREAMING_MESSAGE が反映できる状態に揃える。
-				if (!refreshInFlight && isViewable(chat_session_id, viewableRegistry)) {
+				if (!refreshInFlight) {
 					refreshInFlight = true;
 					try {
 						const response = await getSession(chat_session_id);

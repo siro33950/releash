@@ -520,7 +520,17 @@ export function useAgentChat(
 
 	const setPermissionMode = useCallback(
 		(sessionId: string | null, mode: PermissionMode) => {
-			dispatch({ type: "SET_PERMISSION_MODE", mode });
+			// state.permissionMode は store 全体に 1 つしか存在しないグローバル値。
+			// 非表示 (non-viewable) の session からの呼び出しで UI 表示用の
+			// permissionMode が上書きされるのを防ぐため、SDK event listener 側で
+			// SET_PERMISSION_MODE を viewableRegistry でガードしているのと同様に、
+			// UI 起点でも viewable な session の操作のみ dispatch する。
+			// sessionId が null の場合は session 非依存の global default 設定として扱う。
+			const isViewable =
+				sessionId === null || viewableIdsRef.current.has(sessionId);
+			if (isViewable) {
+				dispatch({ type: "SET_PERMISSION_MODE", mode });
+			}
 			// Persist to Rust and sync to Bridge
 			if (sessionId) {
 				invoke("set_agent_permission_mode", {
