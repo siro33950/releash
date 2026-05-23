@@ -342,4 +342,186 @@ describe("WorkflowSidebarPanel", () => {
 		// 起動経路を残すため kicker を表示する。
 		expect(screen.queryByLabelText("New workflow")).not.toBeNull();
 	});
+
+	describe("tab bar", () => {
+		function multiStepWorkflowFixture(): WorkflowState {
+			return workflowStateFixture({
+				currentStepIndex: 2,
+				currentStepName: "step-3",
+				currentSessionId: "chat-session-3",
+				totalSteps: 3,
+				stepExecutionCounts: { "step-1": 1, "step-2": 1, "step-3": 1 },
+				stepStates: {
+					"step-1": "completed",
+					"step-2": "completed",
+					"step-3": "running",
+				},
+				stepHistory: [
+					{
+						stepName: "step-1",
+						completedAt: 1500,
+						result: "ok",
+						sessionId: "chat-session-1",
+						runIndex: 1,
+					},
+					{
+						stepName: "step-2",
+						completedAt: 1600,
+						result: "ok",
+						sessionId: "chat-session-2",
+						runIndex: 1,
+					},
+				],
+				workflowDefinition: {
+					name: "wf",
+					description: "",
+					builtin: false,
+					nodes: [
+						{ name: "step-1", type: "agent", instruction: "a", rules: [] },
+						{ name: "step-2", type: "agent", instruction: "b", rules: [] },
+						{ name: "step-3", type: "agent", instruction: "c", rules: [] },
+					],
+				},
+			});
+		}
+
+		it("opens a tab on timeline click and loads the corresponding step session", async () => {
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			const loadStepSession = vi.fn().mockResolvedValue(undefined);
+			mockAgentChatContext({
+				loadStepSession,
+				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
+			});
+
+			render(<WorkflowSidebarPanel worktreePath="/repo" />);
+
+			// 初期: タブバーは出ない。
+			expect(screen.queryByTestId("workflow-step-tab-list")).toBeNull();
+
+			const openButtons = await screen.findAllByLabelText("Open tab");
+			fireEvent.click(openButtons[0]);
+
+			// タブバーが現れ、1 件のタブが表示される。
+			const tabList = await screen.findByTestId("workflow-step-tab-list");
+			expect(tabList).toBeInTheDocument();
+			await waitFor(() => {
+				expect(loadStepSession).toHaveBeenCalledWith(
+					expect.stringMatching(/^chat-session-/),
+				);
+			});
+		});
+
+		it("accumulates multiple tabs when different steps are selected", async () => {
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			mockAgentChatContext({
+				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
+			});
+
+			render(<WorkflowSidebarPanel worktreePath="/repo" />);
+
+			const openButtons = await screen.findAllByLabelText("Open tab");
+			expect(openButtons.length).toBeGreaterThanOrEqual(2);
+			fireEvent.click(openButtons[0]);
+			fireEvent.click(openButtons[1]);
+
+			// 2 つのタブが両方残っていること（"Close <label>" aria-label を 2 つ持つ）。
+			const closeButtons = await screen.findAllByLabelText(/^Close tab /);
+			expect(closeButtons.length).toBeGreaterThanOrEqual(2);
+		});
+
+		it("switches active tab when clicking another tab in the tab bar", async () => {
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			mockAgentChatContext({
+				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
+			});
+
+			render(<WorkflowSidebarPanel worktreePath="/repo" />);
+
+			const openButtons = await screen.findAllByLabelText("Open tab");
+			fireEvent.click(openButtons[0]);
+			fireEvent.click(openButtons[1]);
+
+			// 2 番目のタブが active state になっている。
+			const tabList = await screen.findByTestId("workflow-step-tab-list");
+			const getTabs = () =>
+				tabList.querySelectorAll('[data-slot="tabs-trigger"]');
+			await waitFor(() => {
+				expect(getTabs()[1].getAttribute("data-state")).toBe("active");
+			});
+
+			// 最初のタブのラベルをクリック → そちらが active になる。
+			// Radix Tabs は pointerdown / mousedown 経由でも値変更を発火する。
+			const firstTab = getTabs()[0] as HTMLElement;
+			fireEvent.pointerDown(firstTab, { button: 0 });
+			fireEvent.mouseDown(firstTab, { button: 0 });
+			fireEvent.click(firstTab);
+			await waitFor(() => {
+				expect(getTabs()[0].getAttribute("data-state")).toBe("active");
+				expect(getTabs()[1].getAttribute("data-state")).toBe("inactive");
+			});
+		});
+
+		it("closes a tab when its X button is clicked and returns to placeholder when all tabs are closed", async () => {
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			const clearStepSession = vi.fn();
+			mockAgentChatContext({
+				clearStepSession,
+				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
+			});
+
+			render(<WorkflowSidebarPanel worktreePath="/repo" />);
+
+			const openButtons = await screen.findAllByLabelText("Open tab");
+			fireEvent.click(openButtons[0]);
+
+			// 1 タブ開いてから × をクリック。
+			const closeBtn = await screen.findByLabelText(/^Close tab /);
+			fireEvent.click(closeBtn);
+
+			// タブバーは消え、初期プレースホルダに戻る。
+			await waitFor(() => {
+				expect(screen.queryByTestId("workflow-step-tab-list")).toBeNull();
+			});
+			expect(
+				screen.getByText(/Select a node in the workflow/i),
+			).toBeInTheDocument();
+		});
+
+		it("clears all tabs when the workflow run identity changes", async () => {
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			mockAgentChatContext({
+				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
+			});
+
+			const { rerender } = render(
+				<WorkflowSidebarPanel worktreePath="/repo" />,
+			);
+
+			const openButtons = await screen.findAllByLabelText("Open tab");
+			fireEvent.click(openButtons[0]);
+			expect(
+				await screen.findByTestId("workflow-step-tab-list"),
+			).toBeInTheDocument();
+
+			// run を切替（executionId が変わる）。
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: workflowStateFixture({ executionId: "exec-2" }),
+			});
+			rerender(<WorkflowSidebarPanel worktreePath="/repo" />);
+
+			await waitFor(() => {
+				expect(screen.queryByTestId("workflow-step-tab-list")).toBeNull();
+			});
+		});
+	});
 });

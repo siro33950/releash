@@ -23,10 +23,11 @@ interface WorkflowPanelProps {
 	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
 	/**
-	 * spec issues-1023: Workflow panel 内で transcript を表示中の step session id。
-	 * 親の WorkflowSidebarPanel が保持する選択状態を子の trace 表示に伝播する。
+	 * spec issues-1023: Workflow panel 内の tab bar に開かれている step session id 一覧。
+	 * trace 上の Eye/EyeOff トグルの "open" 状態が tab bar と完全に一致するよう、
+	 * 単一値ではなく開かれている全 session id の配列で受ける。
 	 */
-	selectedStepSessionId?: string | null;
+	openStepSessionIds?: string[] | null;
 	/**
 	 * spec issues-1023: selectedStep は session を持たない step を含めた現在選択
 	 * 状態（stepName + runIndex）を表す。trace 上で非 session step も選択可能。
@@ -45,7 +46,7 @@ export function WorkflowPanel({
 	permissionMode = "readonly",
 	onSessionClick,
 	onCloseSession,
-	selectedStepSessionId,
+	openStepSessionIds,
 	selectedStep,
 	showNewWorkflowButton = true,
 }: WorkflowPanelProps) {
@@ -229,7 +230,7 @@ export function WorkflowPanel({
 						worktreePath={worktreePath}
 						onSessionClick={onSessionClick}
 						onCloseSession={onCloseSession}
-						selectedStepSessionId={selectedStepSessionId}
+						openStepSessionIds={openStepSessionIds}
 						selectedStep={selectedStep}
 					/>
 				</TabsContent>
@@ -246,7 +247,7 @@ export function WorkflowPanel({
 						worktreePath={worktreePath}
 						onSessionClick={onSessionClick}
 						onCloseSession={onCloseSession}
-						selectedStepSessionId={selectedStepSessionId}
+						openStepSessionIds={openStepSessionIds}
 						selectedStep={selectedStep}
 					/>
 				</TabsContent>
@@ -393,14 +394,14 @@ function ExecutionView({
 	worktreePath,
 	onSessionClick,
 	onCloseSession,
-	selectedStepSessionId,
+	openStepSessionIds,
 	selectedStep,
 }: {
 	executionId: string;
 	worktreePath: string;
 	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
-	selectedStepSessionId?: string | null;
+	openStepSessionIds?: string[] | null;
 	selectedStep?: { stepName: string; runIndex?: number } | null;
 }) {
 	const [historyState, setHistoryState] = useState<WorkflowState | null>(null);
@@ -497,7 +498,7 @@ function ExecutionView({
 					events={events}
 					onSessionClick={onSessionClick}
 					onCloseSession={onCloseSession}
-					selectedStepSessionId={selectedStepSessionId}
+					openStepSessionIds={openStepSessionIds}
 					selectedStep={selectedStep}
 				/>
 			</div>
@@ -510,14 +511,14 @@ function WorkflowActivePanel({
 	worktreePath,
 	onSessionClick,
 	onCloseSession,
-	selectedStepSessionId,
+	openStepSessionIds,
 	selectedStep,
 }: {
 	workflowState: WorkflowState;
 	worktreePath: string;
 	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
-	selectedStepSessionId?: string | null;
+	openStepSessionIds?: string[] | null;
 	selectedStep?: { stepName: string; runIndex?: number } | null;
 }) {
 	const isRunning =
@@ -592,7 +593,7 @@ function WorkflowActivePanel({
 					events={activeEvents}
 					onSessionClick={onSessionClick}
 					onCloseSession={onCloseSession}
-					selectedStepSessionId={selectedStepSessionId}
+					openStepSessionIds={openStepSessionIds}
 					selectedStep={selectedStep}
 					approvalAction={{
 						worktreePath,

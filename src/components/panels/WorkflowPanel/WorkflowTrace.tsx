@@ -59,11 +59,12 @@ interface WorkflowTraceProps {
 	/** 選択中 step の transcript 表示を閉じる経路（旧 chat tab を閉じる相当） */
 	onCloseSession?: (sessionId: string) => void;
 	/**
-	 * Workflow panel 内で transcript を表示中の step session id。
+	 * spec issues-1023: Workflow panel 内で開いている step session id 一覧。
 	 * 指定された場合、Eye 切替の "open" 表示はこちらを正規の状態とする
 	 * （旧 `runtimeStates[sessionId].tabOpen` の chat-tab ベース判定を上書き）。
+	 * 配列に含まれる session id を持つ step は全て Eye（tab open）状態になる。
 	 */
-	selectedStepSessionId?: string | null;
+	openStepSessionIds?: string[] | null;
 	/**
 	 * spec issues-1023: timeline 上のどの step（runIndex 込み）が現在選択中か。
 	 * sessionId を持たない step（bash / approval / parallel parent / sessionId 無し
@@ -84,11 +85,11 @@ export function WorkflowTrace({
 	events = [],
 	onSessionClick,
 	onCloseSession,
-	selectedStepSessionId,
+	openStepSessionIds,
 	selectedStep,
 	approvalAction,
 }: WorkflowTraceProps) {
-	const traceItems = buildTraceItems(workflowState, selectedStepSessionId);
+	const traceItems = buildTraceItems(workflowState, openStepSessionIds);
 	const autoFollowVersion = buildAutoFollowVersion(workflowState, events);
 	const { scrollRef, handleScroll } = useAutoFollowScroll(autoFollowVersion);
 	const runId = workflowState.executionId;
@@ -238,20 +239,20 @@ type TraceParallelStepState = ParallelStepState & {
 function runtimeFor(
 	workflowState: WorkflowState,
 	sessionId?: string,
-	selectedStepSessionId?: string | null,
+	openStepSessionIds?: string[] | null,
 ) {
 	if (!sessionId) return { runtimeActive: false, tabOpen: false };
 	const base = workflowState.runtimeStates?.[sessionId] ?? {
 		runtimeActive: false,
 		tabOpen: false,
 	};
-	// spec issues-1023: Workflow panel 内 transcript 経路に移行後は、selected step
-	// が "open" の真実源（chat tab open は廃止）。selectedStepSessionId が
+	// spec issues-1023: Workflow panel 内 tab bar に開かれている session id 一覧が
+	// "open" の真実源（chat tab open は廃止）。openStepSessionIds が
 	// undefined のときのみ旧来の runtimeStates 由来の表示にフォールバックする。
-	if (selectedStepSessionId !== undefined) {
+	if (openStepSessionIds !== undefined) {
 		return {
 			runtimeActive: base.runtimeActive,
-			tabOpen: selectedStepSessionId === sessionId,
+			tabOpen: !!openStepSessionIds?.includes(sessionId),
 		};
 	}
 	return base;
@@ -259,7 +260,7 @@ function runtimeFor(
 
 function buildTraceItems(
 	workflowState: WorkflowState,
-	selectedStepSessionId?: string | null,
+	openStepSessionIds?: string[] | null,
 ): TraceItem[] {
 	const stepsByName = new Map(
 		workflowState.workflowDefinition.nodes.map((step) => [step.name, step]),
@@ -281,7 +282,7 @@ function buildTraceItems(
 						const runtime = runtimeFor(
 							workflowState,
 							childSnapshot.sessionId,
-							selectedStepSessionId,
+							openStepSessionIds,
 						);
 						return {
 							stepName: child.name,
@@ -301,7 +302,7 @@ function buildTraceItems(
 					const runtime = runtimeFor(
 						workflowState,
 						childOutput?.sessionId,
-						selectedStepSessionId,
+						openStepSessionIds,
 					);
 					return {
 						stepName: child.name,
@@ -331,7 +332,7 @@ function buildTraceItems(
 		const runtime = runtimeFor(
 			workflowState,
 			entry.sessionId,
-			selectedStepSessionId,
+			openStepSessionIds,
 		);
 		return {
 			kind: "completed",
@@ -375,7 +376,7 @@ function buildTraceItems(
 					const runtime = runtimeFor(
 						workflowState,
 						step.sessionId,
-						selectedStepSessionId,
+						openStepSessionIds,
 					);
 					return {
 						...step,
@@ -400,7 +401,7 @@ function buildTraceItems(
 			const runtime = runtimeFor(
 				workflowState,
 				workflowState.currentSessionId,
-				selectedStepSessionId,
+				openStepSessionIds,
 			);
 			items.push({
 				kind: "current",
