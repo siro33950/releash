@@ -21,11 +21,12 @@ export function AgentChatProvider({
 }: AgentChatProviderProps) {
 	// approval-chat の run_id 解決は AgentChatPanel 個別の責務ではなく、
 	// 現 worktree の workflow state から導出されるグローバルな観測。Provider 側で
-	// 一度だけ解決し、useAgentChat に注入する。
+	// 一度だけ解決し、useAgentChat に注入する。parent ChatSession 機構は撤去済み
+	// であり、approval chat の宛先は step session (`currentSessionId`) のみ。
 	const { workflowState } = useWorkflowState(worktreePath);
 	const workflowApprovalChatSessionId =
 		workflowState?.state.type === "waiting_approval"
-			? (workflowState.currentSessionId ?? workflowState.chatSessionId)
+			? (workflowState.currentSessionId ?? null)
 			: null;
 	const workflowApprovalRunId =
 		workflowState?.state.type === "waiting_approval"
@@ -47,10 +48,9 @@ export function AgentChatProvider({
 	const workflowStateUpdatedAt = workflowState?.updatedAt;
 
 	useEffect(() => {
-		const workflowSessionIds = [
-			workflowState?.chatSessionId,
-			workflowState?.currentSessionId,
-		].filter((id): id is string => Boolean(id));
+		const workflowSessionIds = [workflowState?.currentSessionId].filter(
+			(id): id is string => Boolean(id),
+		);
 
 		if (
 			workflowSessionIds.some(
@@ -60,7 +60,6 @@ export function AgentChatProvider({
 			refreshSessions();
 		}
 	}, [
-		workflowState?.chatSessionId,
 		workflowState?.currentSessionId,
 		knownWorkflowSessionIds,
 		refreshSessions,

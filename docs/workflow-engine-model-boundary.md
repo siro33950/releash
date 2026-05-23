@@ -73,8 +73,12 @@ workflow template を 1 回起動した実行インスタンスを識別する�
 - `task`: 実行起動時に渡された task 表現（自由テキスト相当）。
 - `status`: 実行のライフサイクル状態（pending / running / awaiting_approval / completed / failed / aborted など）。最終的な状態語彙は [03] / [04] で確定する。
 - `worktree_path`: 実行が紐づく worktree。互換 wrapper 経由の lookup の起点でもある。
-- `chat_session_id`: 実行と紐づく main agent session（存在する場合）。
 - `current_node_name`: 現在処理中（または直近停止した）NodeDefinition の名前。
+
+  なお `chat_session_id`（main agent narrator session 紐付け）は [16] Main Agent Mediation 着手時に
+  改めて命名・追加するフィールドとして本マイルストーン群では保持しない。engine が起動時に独自の
+  「親 ChatSession」を作って `WorkflowState` の永続化先として流用する経路は撤去済みであり、
+  WorkflowRun は ChatSession 抽象と独立に識別される。
 - `trigger_source`: 起動経路（UI / CLI / remote / agent など）。
 - `started_at` / `updated_at` / `completed_at`: 状態遷移を辿れる時刻情報。
 - `error_reason`: failure / abort 時の理由。

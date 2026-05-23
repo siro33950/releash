@@ -10,8 +10,6 @@ use crate::workflow::schema::Workflow;
 pub struct WorkflowState {
     pub execution_id: String,
     pub workflow_name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub chat_session_id: Option<String>,
     pub state: WorkflowExecutionState,
     pub current_step_index: usize,
     pub current_step_name: String,

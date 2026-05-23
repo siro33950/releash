@@ -1127,7 +1127,6 @@ pub(crate) fn reconstruct_state_from_events(
     Ok(Some(WorkflowState {
         execution_id: run_id.to_string(),
         workflow_name,
-        chat_session_id: None,
         state: exec_state,
         current_step_index,
         current_step_name,

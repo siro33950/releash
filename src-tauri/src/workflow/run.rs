@@ -101,8 +101,6 @@ pub struct WorkflowRun {
     pub status: RunStatus,
     pub worktree_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chat_session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_node_name: Option<String>,
     pub trigger_source: TriggerSource,
     pub started_at: f64,
@@ -673,20 +671,6 @@ impl RunStore {
         Ok(())
     }
 
-    /// parent ChatSession 作成後に、予約済み active run へ session id を反映する。
-    pub async fn attach_chat_session(
-        &self,
-        run_id: &str,
-        chat_session_id: String,
-        updated_at: f64,
-    ) -> Result<(), RunStoreError> {
-        self.update_active(run_id, |run| {
-            run.chat_session_id = Some(chat_session_id);
-            run.updated_at = updated_at;
-        })
-        .await
-    }
-
     /// engine の active snapshot から Run Store の active projection を同期する。
     pub async fn sync_active_projection(
         &self,
@@ -1087,7 +1071,6 @@ mod tests {
             task: Some("do thing".to_string()),
             status,
             worktree_path: worktree.to_string(),
-            chat_session_id: Some("sess-1".to_string()),
             current_node_name: Some("node-1".to_string()),
             trigger_source: TriggerSource::DesktopUi,
             started_at,

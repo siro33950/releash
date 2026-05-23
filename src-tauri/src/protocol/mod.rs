@@ -342,10 +342,9 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 workflow_state: crate::protocol::WorkflowStateView::from_parts(
                     crate::workflow_state_presenter::workflow_state_to_view(
-                        crate::session::WorkflowState {
+                        crate::workflow::state::WorkflowState {
                             execution_id: "exec-1".to_string(),
                             workflow_name: "test".to_string(),
-                            chat_session_id: Some("chat-1".to_string()),
                             state: crate::workflow::state::WorkflowExecutionState::Running,
                             current_step_index: 0,
                             current_step_name: "step1".to_string(),

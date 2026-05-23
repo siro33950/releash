@@ -4616,7 +4616,6 @@ mod tests {
             agent_session_id: Some("sdk-resume-id".to_string()),
             permission_mode: "edit".to_string(),
             selected_model: Some("sonnet".to_string()),
-            workflow_state: None,
             backend_id: Some("mock".to_string()),
             workflow_step_session: true,
         }
@@ -6223,48 +6222,14 @@ mod tests {
         session_store
             .save_session(data_dir.path(), &step_session)
             .unwrap();
-        let mut parent_session = create_session_internal(
+        let parent_session = create_session_internal(
             &session_store,
             data_dir.path(),
             &worktree_path,
             Some("mock".to_string()),
         )
         .unwrap();
-        parent_session.workflow_state = Some(crate::workflow::state::WorkflowState {
-            execution_id: "exec-1".to_string(),
-            workflow_name: "wf".to_string(),
-            chat_session_id: Some(parent_session.id.clone()),
-            state: WorkflowExecutionState::Completed,
-            current_step_index: 0,
-            current_step_name: "done".to_string(),
-            current_session_id: None,
-            total_steps: 1,
-            step_history: vec![crate::workflow::state::StepHistoryEntry {
-                step_name: "done".to_string(),
-                completed_at: 1.0,
-                result: Some("ok".to_string()),
-                session_id: Some(step_session.id.clone()),
-                token_usage: None,
-                structured_output: None,
-                run_index: 1,
-                child_outputs: None,
-            }],
-            step_execution_counts: HashMap::new(),
-            workflow_definition: crate::workflow::schema::Workflow {
-                name: "wf".to_string(),
-                description: String::new(),
-                builtin: false,
-                nodes: vec![],
-            },
-            total_token_usage: crate::workflow::state::TokenUsage::default(),
-            step_states: HashMap::new(),
-            step_outputs: HashMap::new(),
-            active_parallel_steps: vec![],
-            workflow_variables: HashMap::new(),
-            approval_operations: None,
-            started_at: 1.0,
-            updated_at: 1.0,
-        });
+
         session_store
             .save_session(data_dir.path(), &parent_session)
             .unwrap();
@@ -6304,7 +6269,6 @@ mod tests {
         crate::workflow::state::WorkflowState {
             execution_id: "exec-runtime".to_string(),
             workflow_name: "wf".to_string(),
-            chat_session_id: Some("parent".to_string()),
             state: WorkflowExecutionState::Running,
             current_step_index: 0,
             current_step_name: "step".to_string(),
@@ -6941,7 +6905,6 @@ mod tests {
         let before = engine
             .insert_test_approval_execution(
                 &worktree_path,
-                &session.id,
                 &session.id,
                 WorkflowExecutionState::WaitingApproval,
             )
@@ -9077,7 +9040,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: permission.to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: Some("mock".to_string()),
             workflow_step_session: false,
         }
@@ -10602,7 +10564,6 @@ mod tests {
             agent_session_id,
             permission_mode: "acceptEdits".to_string(),
             selected_model,
-            workflow_state: None,
             backend_id: Some(backend_id.to_string()),
             workflow_step_session: false,
         }

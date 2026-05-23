@@ -35,8 +35,6 @@ impl WorkflowStateView {
 pub struct WorkflowStateFieldsView {
     pub execution_id: String,
     pub workflow_name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub chat_session_id: Option<String>,
     pub state: WorkflowExecutionStateView,
     pub current_step_index: usize,
     pub current_step_name: String,
@@ -297,7 +295,6 @@ mod tests {
         WorkflowStateFieldsView {
             execution_id: "exec-1".to_string(),
             workflow_name: "wf".to_string(),
-            chat_session_id: Some("parent".to_string()),
             state: WorkflowExecutionStateView::Running,
             current_step_index: 0,
             current_step_name: "step".to_string(),

@@ -44,7 +44,6 @@ pub fn workflow_state_to_view(state: WorkflowState) -> protocol::WorkflowStateFi
     protocol::WorkflowStateFieldsView {
         execution_id: state.execution_id,
         workflow_name: state.workflow_name,
-        chat_session_id: state.chat_session_id,
         state: workflow_execution_state_to_view(state.state),
         current_step_index: state.current_step_index,
         current_step_name: state.current_step_name,
@@ -291,7 +290,6 @@ mod tests {
         WorkflowState {
             execution_id: "exec-1".to_string(),
             workflow_name: "wf".to_string(),
-            chat_session_id: Some("parent".to_string()),
             state: WorkflowExecutionState::Running,
             current_step_index: 1,
             current_step_name: "current".to_string(),

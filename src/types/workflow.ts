@@ -158,7 +158,6 @@ export interface WorkflowStepRuntimeState {
 export interface WorkflowState {
 	executionId: string;
 	workflowName: string;
-	chatSessionId?: string;
 	state: WorkflowExecutionState;
 	currentStepIndex: number;
 	currentStepName: string;

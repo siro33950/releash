@@ -1192,22 +1192,6 @@ mod tests {
         data_dir
     }
 
-    fn create_adapter_parent_session(
-        app: &AdapterTestApp,
-        session_store: &SessionStore,
-        worktree_path: &str,
-    ) -> crate::session::ChatSession {
-        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
-        crate::session::create_session_internal_with_permission(
-            session_store,
-            &data_dir,
-            worktree_path,
-            None,
-            PermissionMode::Edit,
-        )
-        .unwrap()
-    }
-
     fn read_adapter_events(data_dir: &Path, run_id: &str) -> Vec<WorkflowEvent> {
         WorkflowEventLog::new(data_dir).read_log(run_id).unwrap()
     }
@@ -1385,15 +1369,12 @@ mod tests {
         let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
         let (adapter_store, adapter_handles) = make_adapter_deps();
         let adapter_run_id = uuid::Uuid::new_v4().to_string();
-        let adapter_parent =
-            create_adapter_parent_session(&adapter_app, &adapter_store, "/wt/adapter-abort");
         adapter_engine
             .seed_active_execution_for_test(
                 adapter_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::Running,
                 "/wt/adapter-abort".to_string(),
-                adapter_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1403,15 +1384,12 @@ mod tests {
         let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
         let (direct_store, direct_handles) = make_adapter_deps();
         let direct_run_id = uuid::Uuid::new_v4().to_string();
-        let direct_parent =
-            create_adapter_parent_session(&direct_app, &direct_store, "/wt/direct-abort");
         direct_engine
             .seed_active_execution_for_test(
                 direct_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::Running,
                 "/wt/direct-abort".to_string(),
-                direct_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1478,15 +1456,12 @@ mod tests {
         let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
         let (adapter_store, adapter_handles) = make_adapter_deps();
         let adapter_run_id = uuid::Uuid::new_v4().to_string();
-        let adapter_parent =
-            create_adapter_parent_session(&adapter_app, &adapter_store, "/wt/adapter-approve");
         adapter_engine
             .seed_active_execution_for_test(
                 adapter_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/adapter-approve".to_string(),
-                adapter_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1496,15 +1471,12 @@ mod tests {
         let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
         let (direct_store, direct_handles) = make_adapter_deps();
         let direct_run_id = uuid::Uuid::new_v4().to_string();
-        let direct_parent =
-            create_adapter_parent_session(&direct_app, &direct_store, "/wt/direct-approve");
         direct_engine
             .seed_active_execution_for_test(
                 direct_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/direct-approve".to_string(),
-                direct_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1570,15 +1542,12 @@ mod tests {
         let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
         let (adapter_store, adapter_handles) = make_adapter_deps();
         let adapter_run_id = uuid::Uuid::new_v4().to_string();
-        let adapter_parent =
-            create_adapter_parent_session(&adapter_app, &adapter_store, "/wt/adapter-reject");
         adapter_engine
             .seed_active_execution_for_test(
                 adapter_run_id.clone(),
                 rejectable_adapter_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/adapter-reject".to_string(),
-                adapter_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1588,15 +1557,12 @@ mod tests {
         let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
         let (direct_store, direct_handles) = make_adapter_deps();
         let direct_run_id = uuid::Uuid::new_v4().to_string();
-        let direct_parent =
-            create_adapter_parent_session(&direct_app, &direct_store, "/wt/direct-reject");
         direct_engine
             .seed_active_execution_for_test(
                 direct_run_id.clone(),
                 rejectable_adapter_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/direct-reject".to_string(),
-                direct_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1657,18 +1623,12 @@ mod tests {
         let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
         let (adapter_store, adapter_handles) = make_adapter_deps();
         let adapter_run_id = uuid::Uuid::new_v4().to_string();
-        let adapter_parent = create_adapter_parent_session(
-            &adapter_app,
-            &adapter_store,
-            "/wt/adapter-approval-abort",
-        );
         adapter_engine
             .seed_active_execution_for_test(
                 adapter_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/adapter-approval-abort".to_string(),
-                adapter_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1678,15 +1638,12 @@ mod tests {
         let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
         let (direct_store, direct_handles) = make_adapter_deps();
         let direct_run_id = uuid::Uuid::new_v4().to_string();
-        let direct_parent =
-            create_adapter_parent_session(&direct_app, &direct_store, "/wt/direct-approval-abort");
         direct_engine
             .seed_active_execution_for_test(
                 direct_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/direct-approval-abort".to_string(),
-                direct_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1759,14 +1716,12 @@ mod tests {
         let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
         let (ui_store, ui_handles) = make_adapter_deps();
         let ui_run_id = uuid::Uuid::new_v4().to_string();
-        let ui_parent = create_adapter_parent_session(&ui_app, &ui_store, "/wt/ui-approve-parity");
         ui_engine
             .seed_active_execution_for_test(
                 ui_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/ui-approve-parity".to_string(),
-                ui_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1776,15 +1731,12 @@ mod tests {
         let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
         let (cli_store, cli_handles) = make_adapter_deps();
         let cli_run_id = uuid::Uuid::new_v4().to_string();
-        let cli_parent =
-            create_adapter_parent_session(&cli_app, &cli_store, "/wt/cli-approve-parity");
         cli_engine
             .seed_active_execution_for_test(
                 cli_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/cli-approve-parity".to_string(),
-                cli_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1844,14 +1796,12 @@ mod tests {
         let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
         let (ui_store, ui_handles) = make_adapter_deps();
         let ui_run_id = uuid::Uuid::new_v4().to_string();
-        let ui_parent = create_adapter_parent_session(&ui_app, &ui_store, "/wt/ui-reject-parity");
         ui_engine
             .seed_active_execution_for_test(
                 ui_run_id.clone(),
                 rejectable_adapter_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/ui-reject-parity".to_string(),
-                ui_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1861,15 +1811,12 @@ mod tests {
         let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
         let (cli_store, cli_handles) = make_adapter_deps();
         let cli_run_id = uuid::Uuid::new_v4().to_string();
-        let cli_parent =
-            create_adapter_parent_session(&cli_app, &cli_store, "/wt/cli-reject-parity");
         cli_engine
             .seed_active_execution_for_test(
                 cli_run_id.clone(),
                 rejectable_adapter_workflow(),
                 WorkflowExecutionState::WaitingApproval,
                 "/wt/cli-reject-parity".to_string(),
-                cli_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1929,14 +1876,12 @@ mod tests {
         let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
         let (ui_store, ui_handles) = make_adapter_deps();
         let ui_run_id = uuid::Uuid::new_v4().to_string();
-        let ui_parent = create_adapter_parent_session(&ui_app, &ui_store, "/wt/ui-abort-parity");
         ui_engine
             .seed_active_execution_for_test(
                 ui_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::Running,
                 "/wt/ui-abort-parity".to_string(),
-                ui_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -1946,15 +1891,12 @@ mod tests {
         let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
         let (cli_store, cli_handles) = make_adapter_deps();
         let cli_run_id = uuid::Uuid::new_v4().to_string();
-        let cli_parent =
-            create_adapter_parent_session(&cli_app, &cli_store, "/wt/cli-abort-parity");
         cli_engine
             .seed_active_execution_for_test(
                 cli_run_id.clone(),
                 approval_only_workflow(),
                 WorkflowExecutionState::Running,
                 "/wt/cli-abort-parity".to_string(),
-                cli_parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -2990,7 +2932,6 @@ mod tests {
             task: None,
             status,
             worktree_path: worktree.to_string(),
-            chat_session_id: None,
             current_node_name: None,
             trigger_source: TriggerSource::DesktopUi,
             started_at,

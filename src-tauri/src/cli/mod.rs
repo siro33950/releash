@@ -592,7 +592,6 @@ mod tests {
             task: None,
             status,
             worktree_path: worktree.to_string(),
-            chat_session_id: None,
             current_node_name: None,
             trigger_source: TriggerSource::Cli,
             started_at,
@@ -918,7 +917,6 @@ mod tests {
                 task: None,
                 status: RunStatus::Running,
                 worktree_path: "/wt/list".to_string(),
-                chat_session_id: None,
                 current_node_name: None,
                 trigger_source: TriggerSource::Cli,
                 started_at: 500.0,
@@ -982,7 +980,6 @@ mod tests {
                 workflow,
                 WorkflowExecutionState::Running,
                 "/wt/engine-cli-list".to_string(),
-                "sess-1".to_string(),
                 TriggerSource::Cli,
             )
             .await;
@@ -1077,7 +1074,6 @@ mod tests {
                 task: None,
                 status: RunStatus::Running,
                 worktree_path: "/wt/inner".to_string(),
-                chat_session_id: None,
                 current_node_name: None,
                 trigger_source: TriggerSource::Cli,
                 started_at: 700.0,

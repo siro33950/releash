@@ -760,7 +760,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
         }

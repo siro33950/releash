@@ -114,7 +114,6 @@ workflow_name
 task
 status
 worktree_path
-chat_session_id
 current_node_name
 trigger_source
 started_at
@@ -124,6 +123,12 @@ error_reason
 ```
 
 初期実装では、既存の `WorkflowState.execution_id` を `run_id` として扱える。
+
+`chat_session_id`（main agent narrator session 紐付け）は [16] Main Agent Mediation 着手時に
+改めて命名・追加するフィールドとして本マイルストーン群では保持しない。engine が起動時に独自の
+「親 ChatSession」を作って `WorkflowState` の永続化先として流用する経路は撤去済みであり、
+WorkflowRun は ChatSession 抽象と独立に識別される（永続化は NDJSON event log + Run Store
+metadata で完結し、現在状態は in-memory `WorkflowExecution` で派生キャッシュする）。
 
 ### Node Execution
 

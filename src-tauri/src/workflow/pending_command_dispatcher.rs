@@ -313,38 +313,18 @@ mod tests {
         }
     }
 
-    fn create_parent_session(
-        app: &DispatchTestApp,
-        session_store: &crate::session::SessionStore,
-        worktree_path: &str,
-    ) -> crate::session::ChatSession {
-        let data_dir = dispatch_data_dir(app.handle());
-        crate::session::create_session_internal_with_permission(
-            session_store,
-            &data_dir,
-            worktree_path,
-            None,
-            crate::permission::PermissionMode::Edit,
-        )
-        .unwrap()
-    }
-
     async fn seed_waiting_approval(
-        app: &DispatchTestApp,
         engine: &WorkflowEngine,
-        session_store: &crate::session::SessionStore,
         run_id: &str,
         worktree_path: &str,
         workflow: Workflow,
     ) {
-        let parent = create_parent_session(app, session_store, worktree_path);
         engine
             .seed_active_execution_for_test(
                 run_id.to_string(),
                 workflow,
                 WorkflowExecutionState::WaitingApproval,
                 worktree_path.to_string(),
-                parent.id,
                 TriggerSource::DesktopUi,
             )
             .await;
@@ -396,9 +376,7 @@ mod tests {
         let (session_store, handles) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
         seed_waiting_approval(
-            &app,
             &engine,
-            &session_store,
             &run_id,
             "/wt/pending-dispatcher-approve",
             make_approval_only_workflow(),
@@ -450,9 +428,7 @@ mod tests {
         let (session_store, handles) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
         seed_waiting_approval(
-            &app,
             &engine,
-            &session_store,
             &run_id,
             "/wt/pending-dispatcher-final-reject",
             make_approval_only_workflow(),
@@ -519,9 +495,7 @@ mod tests {
         let (session_store, handles) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
         seed_waiting_approval(
-            &app,
             &engine,
-            &session_store,
             &run_id,
             "/wt/pending-dispatcher-retryable",
             make_approval_only_workflow(),
@@ -565,9 +539,7 @@ mod tests {
         let (session_store, handles) = make_dispatch_deps();
         let run_id = uuid::Uuid::new_v4().to_string();
         seed_waiting_approval(
-            &app,
             &engine,
-            &session_store,
             &run_id,
             "/wt/pending-dispatcher-reject-secret",
             make_rejectable_approval_workflow(),

@@ -593,7 +593,6 @@ describe("WorkflowTrace", () => {
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState({
-					chatSessionId: "parent-session",
 					currentStepName: "",
 					state: { type: "completed" },
 					stepStates: { plan: "completed", review: "pending", fix: "pending" },

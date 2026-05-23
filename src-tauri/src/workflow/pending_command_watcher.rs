@@ -259,19 +259,10 @@ mod tests {
         let session_store = Arc::new(SessionStore::default());
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let run_id = uuid::Uuid::new_v4().to_string();
-        let parent_session = crate::session::create_session_internal_with_permission(
-            &session_store,
-            data_dir.path(),
-            "/wt/pending-pickup-production-path",
-            None,
-            crate::permission::PermissionMode::Edit,
-        )
-        .unwrap();
         engine
             .insert_test_running_execution_for_pending_pickup(
                 &run_id,
                 "/wt/pending-pickup-production-path",
-                &parent_session.id,
             )
             .await;
         let app = make_managed_app(
@@ -321,19 +312,10 @@ mod tests {
         let session_store = Arc::new(SessionStore::default());
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let run_id = uuid::Uuid::new_v4().to_string();
-        let parent_session = crate::session::create_session_internal_with_permission(
-            &session_store,
-            data_dir.path(),
-            "/wt/pending-watcher-file-event",
-            None,
-            crate::permission::PermissionMode::Edit,
-        )
-        .unwrap();
         engine
             .insert_test_running_execution_for_pending_pickup(
                 &run_id,
                 "/wt/pending-watcher-file-event",
-                &parent_session.id,
             )
             .await;
         let app = make_managed_app(
@@ -389,19 +371,10 @@ mod tests {
         let session_store = Arc::new(SessionStore::default());
         let handles = Arc::new(Mutex::new(AgentProcessMap::new()));
         let run_id = uuid::Uuid::new_v4().to_string();
-        let parent_session = crate::session::create_session_internal_with_permission(
-            &session_store,
-            data_dir.path(),
-            "/wt/pending-watcher-initial-scan",
-            None,
-            crate::permission::PermissionMode::Edit,
-        )
-        .unwrap();
         engine
             .insert_test_running_execution_for_pending_pickup(
                 &run_id,
                 "/wt/pending-watcher-initial-scan",
-                &parent_session.id,
             )
             .await;
         let app = make_managed_app(
