@@ -89,12 +89,30 @@ function chatSessionFixture(overrides: Partial<ChatSession> = {}): ChatSession {
 }
 
 function mockAgentChatContext(overrides: Record<string, unknown> = {}) {
+	// テスト側が `viewedStepSession` という名前で渡してきた session を `sessionsById`
+	// 経由で参照可能にする互換 layer（旧 API 経路の test を最小書き換えで残すため）。
+	const explicitSessions =
+		(overrides.sessionsById as Record<string, { id: string }>) ?? {};
+	const legacyStepSession = (overrides.viewedStepSession ?? null) as {
+		id: string;
+	} | null;
+	const sessionsById: Record<string, unknown> = { ...explicitSessions };
+	if (legacyStepSession) {
+		sessionsById[legacyStepSession.id] = legacyStepSession;
+	}
+	// `loadStepSession` という旧 API 名で test が spy を渡してきた場合は loadSession に
+	// 振り替える。loadSession の戻り値仕様差（ChatSession | null）も吸収する。
+	const loadSession =
+		(overrides.loadSession as ((id: string) => Promise<unknown>) | undefined) ??
+		(overrides.loadStepSession as
+			| ((id: string) => Promise<unknown>)
+			| undefined) ??
+		vi.fn().mockResolvedValue(null);
 	useAgentChatContextMock.mockReturnValue({
 		sessions: [],
 		orderedSessions: [],
 		closedSessions: [],
 		activeSession: null,
-		viewedStepSession: null,
 		isStreaming: false,
 		activityStatus: null,
 		error: null,
@@ -117,13 +135,18 @@ function mockAgentChatContext(overrides: Record<string, unknown> = {}) {
 		backends: [],
 		selectedBackendId: null,
 		setBackend: vi.fn(),
-		loadStepSession: vi.fn().mockResolvedValue(undefined),
-		clearStepSession: vi.fn(),
-		viewedStepSessionStreaming: false,
-		viewedStepSessionActivityStatus: null,
+		loadSession,
+		getSessionById: vi.fn(
+			(id: string | null | undefined) =>
+				(id != null && sessionsById[id]) || null,
+		),
+		registerViewableSession: vi.fn().mockReturnValue(() => {}),
 		getSessionTurnPhase: vi.fn().mockReturnValue("idle"),
 		getSessionSelectedModel: vi.fn().mockReturnValue(null),
 		...overrides,
+		// sessionsById / viewedStepSession の上書きは互換 layer 内で吸収済みのため除く
+		viewedStepSession: undefined,
+		sessionsById: undefined,
 	});
 }
 

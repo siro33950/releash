@@ -70,13 +70,32 @@ const mockRegisterDropZone = vi.fn(
 function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 	const sessions = (overrides.sessions ?? []) as Array<{ id: string }>;
 	const orderedSessions = overrides.orderedSessions ?? sessions;
+	const activeSession = (overrides.activeSession ?? null) as {
+		id: string;
+	} | null;
+	const sessionsById = activeSession
+		? { [activeSession.id]: activeSession }
+		: {};
+	// 旧 API の `isStreaming` フラグを BoundSessionChat 内部の派生
+	// `getSessionTurnPhase` に橋渡しする。テストが `isStreaming: true` を渡したら、
+	// active session の turnPhase を "streaming" として返す mock を立てる。
+	const isStreaming = overrides.isStreaming === true;
+	const explicitTurnPhase = overrides.getSessionTurnPhase as
+		| ((id: string) => string)
+		| undefined;
+	const getSessionTurnPhase = explicitTurnPhase
+		? vi.fn(explicitTurnPhase)
+		: vi.fn((id: string) =>
+				activeSession && id === activeSession.id && isStreaming
+					? "streaming"
+					: "idle",
+			);
 	useAgentChatMock.mockReturnValue({
 		sessions,
 		orderedSessions,
 		closedSessions: [],
-		activeSession: null,
-		viewedStepSession: null,
-		isStreaming: false,
+		activeSession,
+		isStreaming,
 		activityStatus: null,
 		error: null,
 		pendingPermission: null,
@@ -99,11 +118,13 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		backends: [],
 		selectedBackendId: null,
 		setBackend: vi.fn(),
-		loadStepSession: vi.fn().mockResolvedValue(undefined),
-		clearStepSession: vi.fn(),
-		viewedStepSessionStreaming: false,
-		viewedStepSessionActivityStatus: null,
-		getSessionTurnPhase: vi.fn().mockReturnValue("idle"),
+		loadSession: vi.fn().mockResolvedValue(null),
+		getSessionById: vi.fn(
+			(id: string | null | undefined) =>
+				(id != null && sessionsById[id]) || null,
+		),
+		registerViewableSession: vi.fn().mockReturnValue(() => {}),
+		getSessionTurnPhase,
 		getSessionSelectedModel: vi.fn().mockReturnValue(null),
 		...overrides,
 	});

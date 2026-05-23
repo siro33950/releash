@@ -1,10 +1,35 @@
 import { renderHook } from "@testing-library/react";
 import { describe, expect, it, type Mock, vi } from "vitest";
-import type { AgentSdkListenerRefs } from "./useAgentSdkListeners";
+import type {
+	AgentSdkListenerRefs,
+	ViewableSessionRegistry,
+} from "./useAgentSdkListeners";
 
 type ListenCallback = (event: { payload: unknown }) => void;
 type UnlistenFn = Mock;
-type TestRefs = Omit<AgentSdkListenerRefs, "dispatch"> & { dispatch: Mock };
+
+/** Test-friendly registry: tests can mutate the viewable id set directly. */
+interface TestViewableRegistry extends ViewableSessionRegistry {
+	viewableIds: Set<string>;
+}
+
+type TestRefs = Omit<AgentSdkListenerRefs, "dispatch" | "viewableRegistry"> & {
+	dispatch: Mock;
+	viewableRegistry: TestViewableRegistry;
+};
+
+/**
+ * 旧 `activeSessionRef.current = { id }` 経路の互換 shim。テスト本文は
+ * `setViewable(refs, "id")` で SDK listener が「現在 panel が表示中」と判断する
+ * session id 集合を操作する。
+ */
+function setViewable(refs: TestRefs, ...ids: string[]): void {
+	refs.viewableRegistry.viewableIds = new Set(ids);
+}
+
+function clearViewable(refs: TestRefs): void {
+	refs.viewableRegistry.viewableIds = new Set();
+}
 
 let listenResolvers: Array<{
 	resolve: (fn: UnlistenFn) => void;
@@ -42,10 +67,21 @@ vi.mock("./useSessionStore", async (importOriginal) => {
 const { useAgentSdkListeners } = await import("./useAgentSdkListeners");
 
 function makeRefs(): TestRefs {
+	const registry: TestViewableRegistry = {
+		viewableIds: new Set<string>(),
+		register: function (sessionId: string) {
+			this.viewableIds.add(sessionId);
+			return () => {
+				this.viewableIds.delete(sessionId);
+			};
+		},
+		getIds: function () {
+			return new Set(this.viewableIds);
+		},
+	};
 	return {
 		dispatch: vi.fn(),
-		activeSessionRef: { current: null },
-		viewedStepSessionRef: { current: null },
+		viewableRegistry: registry,
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
 	};
 }
@@ -186,14 +222,7 @@ describe("agent-session-state-changed event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = {
-			id: "session-1",
-			worktreePath: "/repo",
-			state: "idle",
-			messages: [{ id: "msg-002", role: "agent", parts: [] }],
-			createdAt: Date.now(),
-			agentSessionId: null,
-		} as never;
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 
@@ -270,14 +299,7 @@ describe("agent-session-state-changed event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = {
-			id: "session-1",
-			worktreePath: "/repo",
-			state: "idle",
-			messages: [{ id: "msg-002", role: "agent", parts: [] }],
-			createdAt: Date.now(),
-			agentSessionId: null,
-		} as never;
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 
@@ -309,7 +331,7 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = { id: "session-1" } as never;
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -334,7 +356,7 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = { id: "session-2" } as never;
+		setViewable(refs, "session-2");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -385,7 +407,7 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = { id: "session-1" } as never;
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -422,7 +444,7 @@ describe("SET_PERMISSION_MODE from agent-permission-mode-changed event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = { id: "session-1" } as never;
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -621,7 +643,7 @@ describe("result error display", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = { id: "session-1" } as never;
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -764,7 +786,7 @@ describe("agent-pending-message-consumed event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = { id: "session-1" } as never;
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -799,7 +821,7 @@ describe("agent-pending-message-consumed event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = { id: "session-2" } as never;
+		setViewable(refs, "session-2");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -830,7 +852,7 @@ describe("agent-models-updated event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = { id: "session-1" } as never;
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -863,7 +885,7 @@ describe("agent-models-updated event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = { id: "session-2" } as never;
+		setViewable(refs, "session-2");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -952,10 +974,7 @@ describe("agent-backend-models-updated event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = {
-			id: "session-1",
-			backendId: "claude",
-		} as never;
+		setViewable(refs, "session-1");
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());
@@ -981,7 +1000,7 @@ describe("agent-backend-models-updated event", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
 		const refs = makeRefs();
-		refs.activeSessionRef.current = null;
+		clearViewable(refs);
 
 		renderHook(() => useAgentSdkListeners(refs));
 		for (const { resolve } of listenResolvers) resolve(vi.fn());

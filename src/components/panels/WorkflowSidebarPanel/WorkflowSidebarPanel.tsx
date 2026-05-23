@@ -1,13 +1,12 @@
 import { X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
-import { ChatSessionView } from "@/components/panels/AgentChatPanel";
+import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
 import {
 	WorkflowPanel,
 	type WorkflowStepSelection,
 } from "@/components/panels/WorkflowPanel";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useAgentChatContext } from "@/contexts/AgentChatContext";
 import { useWorkflowState } from "@/hooks/useWorkflowState";
 import type { PermissionMode } from "@/types/session";
 import { WorkflowStepDetail } from "./WorkflowStepDetail";
@@ -23,42 +22,18 @@ interface WorkflowSidebarPanelProps {
  * レイアウト：
  *   left  = WorkflowPanel（timeline 全体）
  *   right = 上下 split：
- *           上 = Tab bar + ChatSessionView（選択中タブの agent step session）
+ *           上 = Tab bar + BoundSessionChat（選択中タブの agent step session）
  *           下 = WorkflowStepDetail（選択中タブの step 詳細）
  *
- * - 現 worktree に紐づく workflow run の active / history を 1 つの panel 内で観測。
- * - timeline 上で step を選ぶと右ペインにタブとして蓄積され、ユーザーは任意の step を
- *   同時に開いて切り替えながら inspect できる。session を持たない step（bash 等）も
- *   タブ化され、chat 部分は "No agent conversation" プレースホルダになる。
- * - approval / reject / abort などの state 変化は既存 Tauri command 経路に委ねる。
- *
- * 観測対象は現 worktree に紐づく run に限定する（engine 側の認可境界に依拠）。
- * 本コンポーネント自体は表示用整形・ローカル選択状態（開いているタブとアクティブ
- * タブ）の保持に閉じ、事実列・state 復元・approval 可否判定など run の意味解釈は
- * 一切持たない。
+ * chat 本文と MessageInput は {@link BoundSessionChat} に委譲し、AgentChatPanel と
+ * 同一実装を共有する（issue #1023 「タブ含めて同じ UI で session フィルタだけが違う」設計）。
+ * 本 panel 固有の責務は「タブ列管理 + WorkflowPanel との session id 受け渡し」のみ。
  */
 export function WorkflowSidebarPanel({
 	worktreePath,
 	permissionMode = "readonly",
 }: WorkflowSidebarPanelProps) {
 	const { workflowState } = useWorkflowState(worktreePath);
-	const {
-		viewedStepSession,
-		viewedStepSessionStreaming,
-		viewedStepSessionActivityStatus,
-		error,
-		loadStepSession,
-		clearStepSession,
-		sendMessage,
-		interrupt,
-		setPermissionMode,
-		respondPermission,
-		setModel,
-		setBackend,
-		availableModels,
-		backends,
-		getSessionSelectedModel,
-	} = useAgentChatContext();
 
 	const [openTabs, setOpenTabs] = useState<WorkflowStepSelection[]>([]);
 	const [activeTabKey, setActiveTabKey] = useState<string | null>(null);
@@ -127,81 +102,8 @@ export function WorkflowSidebarPanel({
 		[openTabs, handleCloseTab],
 	);
 
-	// アクティブタブの session 本文を取得・反映する。session を持たないタブの場合は
-	// viewedStepSession をクリア。
 	const activeSessionId = activeTab?.sessionId ?? null;
-	useEffect(() => {
-		if (activeSessionId) {
-			loadStepSession(activeSessionId).catch((e) =>
-				console.warn("[WorkflowSidebarPanel] loadStepSession failed", e),
-			);
-		} else {
-			clearStepSession();
-		}
-	}, [activeSessionId, loadStepSession, clearStepSession]);
-
-	// session-explicit handlers を viewedStepSession の id にバインドして
-	// ChatSessionView に渡す。
-	const stepSessionId = viewedStepSession?.id ?? null;
-	const handleStepSend = useCallback(
-		(
-			content: string,
-			images?: Parameters<typeof sendMessage>[2],
-			mentions?: Parameters<typeof sendMessage>[3],
-		) => {
-			if (!stepSessionId) return Promise.resolve();
-			return sendMessage(stepSessionId, content, images, mentions);
-		},
-		[stepSessionId, sendMessage],
-	);
-	const handleStepInterrupt = useCallback(() => {
-		if (stepSessionId) interrupt(stepSessionId);
-	}, [stepSessionId, interrupt]);
-	const handleStepPermissionModeChange = useCallback(
-		(mode: Parameters<typeof setPermissionMode>[1]) => {
-			setPermissionMode(stepSessionId, mode);
-		},
-		[stepSessionId, setPermissionMode],
-	);
-	const handleStepModelChange = useCallback(
-		(modelId: string | null) => {
-			if (stepSessionId) setModel(stepSessionId, modelId);
-		},
-		[stepSessionId, setModel],
-	);
-	const handleStepBackendChange = useCallback(
-		(backendId: string | null) => setBackend(stepSessionId, backendId),
-		[stepSessionId, setBackend],
-	);
-	const handleStepRespondPermission = useCallback(
-		(
-			requestId: string,
-			allow: boolean,
-			updatedInput?: Record<string, unknown>,
-		) => {
-			if (!stepSessionId) return;
-			respondPermission(stepSessionId, requestId, allow, updatedInput);
-		},
-		[stepSessionId, respondPermission],
-	);
-
-	const stepSessionPermissionMode = viewedStepSession?.permissionMode ?? "edit";
-	const stepSessionSelectedModel = stepSessionId
-		? getSessionSelectedModel(stepSessionId)
-		: null;
-	const stepSessionBackendId = viewedStepSession?.backendId ?? null;
-	const stepCanChangeBackend =
-		!!viewedStepSession &&
-		viewedStepSession.messages.length === 0 &&
-		!viewedStepSession.agentSessionId &&
-		!viewedStepSessionStreaming;
-
 	const showChat = activeTab !== null && activeTab.sessionId != null;
-	// step に session が紐づいているかだけでゲートする。nodeType は engine 側で
-	// 追加・変更され得るため、UI 側で type 列挙すると新 type 追加時に破綻する。
-	// approval step も current step session（被承認 agent step の session）を
-	// 引き継いでおり、approval chat 経由で対話できる（engine の
-	// validate_approval_chat_instruction / send_workflow_approval_chat_message 経路）。
 
 	return (
 		<div
@@ -247,30 +149,10 @@ export function WorkflowSidebarPanel({
 											onCloseTab={handleCloseTab}
 										/>
 										<div className="flex-1 overflow-hidden">
-											{showChat && viewedStepSession ? (
-												<ChatSessionView
-													key={viewedStepSession.id}
-													session={viewedStepSession}
-													isStreaming={viewedStepSessionStreaming}
-													activityStatus={viewedStepSessionActivityStatus}
-													error={error}
-													permissionMode={stepSessionPermissionMode}
-													availableModels={availableModels}
-													selectedModel={stepSessionSelectedModel}
-													backends={backends}
-													selectedBackendId={stepSessionBackendId}
-													canChangeBackend={stepCanChangeBackend}
+											{showChat && activeSessionId ? (
+												<BoundSessionChat
+													sessionId={activeSessionId}
 													worktreePath={worktreePath}
-													onSend={handleStepSend}
-													onInterrupt={handleStepInterrupt}
-													onPermissionModeChange={
-														handleStepPermissionModeChange
-													}
-													onModelChange={handleStepModelChange}
-													onBackendChange={handleStepBackendChange}
-													onRespondPermission={handleStepRespondPermission}
-													// drop zone は WorkflowSidebarPanel 専用に登録しない。
-													// 画像 drop は AgentChatPanel 側に閉じる（spec 範囲外の追加機能を増やさない）。
 												/>
 											) : showChat ? (
 												<div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">

@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { AgentState } from "@/types/protocol";
 import type {
 	BackendInfo,
-	ChatMessage,
 	ChatSession,
 	ImageAttachment,
 	MentionReference,
@@ -16,7 +15,12 @@ import {
 	type AgentChatAction,
 	INITIAL_STATE,
 	reducer,
+	selectActiveSession,
 } from "./agentChatReducer";
+import {
+	type ActivityStatus,
+	deriveActivityStatus,
+} from "./deriveActivityStatus";
 import { useAgentSdkListeners } from "./useAgentSdkListeners";
 import {
 	closeSession as closeSessionApi,
@@ -33,29 +37,34 @@ import {
 } from "./useSessionStore";
 import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
 
-export type ActivityStatus = { label: string } | null;
+export type { ActivityStatus } from "./deriveActivityStatus";
+
 type RefreshSessionsOptions = { reconcileActiveSession?: boolean };
+
+/**
+ * SDK listener gating のために「現在 UI 上で表示中の session id 集合」を購読する registry。
+ * 各 panel が表示開始時に register、unmount/離脱時に cleanup を呼ぶ。listener は本 set に
+ * 含まれる session に対してのみ ADD_MESSAGE / SET_STREAMING_MESSAGE 等を dispatch する。
+ */
+interface ViewableSessionRegistry {
+	register: (sessionId: string) => () => void;
+	getIds: () => Set<string>;
+}
 
 export interface UseAgentChatResult {
 	sessions: SessionSummary[];
 	orderedSessions: SessionSummary[];
 	closedSessions: SessionSummary[];
 	activeSession: ChatSession | null;
-	/**
-	 * spec issues-1023: Workflow panel から観測中の workflow step session（最新本文）。
-	 * activeSession とは独立に保持し、streaming / state 変化は engine 由来の事実列を
-	 * 反映する。`loadStepSession` で読み込み、`clearStepSession` でクリアする。
-	 */
-	viewedStepSession: ChatSession | null;
 	isStreaming: boolean;
 	activityStatus: ActivityStatus;
 	error: string | null;
 	permissionMode: PermissionMode;
 	sessionAgentStates: Map<string, AgentState>;
 	/**
-	 * spec issues-1023: 送信先 session を明示する API。AgentChatPanel は active session
-	 * の id を、WorkflowSidebarPanel は viewedStepSession の id を渡す。
-	 * `sessionId === null` は「新規 session を作成して送る」を表す（既存挙動）。
+	 * 送信先 session を明示する API。`sessionId === null` は「新規 session を作成して送る」を
+	 * 表す。送信応答の `response.session` は内部で `UPSERT_SESSION` され、各 panel は
+	 * `getSessionById(id)` 経由で最新内容を観測する。
 	 */
 	sendMessage: (
 		sessionId: string | null,
@@ -87,18 +96,17 @@ export interface UseAgentChatResult {
 	selectedBackendId: string | null;
 	setBackend: (sessionId: string | null, backendId: string | null) => void;
 	/**
-	 * spec issues-1023: 指定 session の最新 ChatSession を取得して viewedStepSession に
-	 * 反映する。Workflow panel が選択中 step の chat view を表示するために使う。
+	 * 任意 sessionId から最新の ChatSession を取得して sessionsById に upsert する。
+	 * 各 panel が「自分が見たい step session を読み込む」用途で利用する。
+	 * 内部状態の単一の正典は `sessionsById` であり、本関数の戻り値は upsert 後の
+	 * snapshot（成功時）。
 	 */
-	loadStepSession: (sessionId: string) => Promise<void>;
-	clearStepSession: () => void;
-	/** spec issues-1023: viewedStepSession 用の per-session 派生（streaming / activity）。*/
-	viewedStepSessionStreaming: boolean;
-	viewedStepSessionActivityStatus: ActivityStatus;
-	/**
-	 * spec issues-1023: per-session lookup。pendingPermissions / turnPhases を index する
-	 * 既存 reducer state を共通の引き当て経路として公開する。
-	 */
+	loadSession: (sessionId: string) => Promise<ChatSession | null>;
+	/** sessionsById から指定 session を取得する selector。*/
+	getSessionById: (sessionId: string | null | undefined) => ChatSession | null;
+	/** SDK イベント反映の gating 用に、現在 panel で表示している session を登録する。*/
+	registerViewableSession: (sessionId: string) => () => void;
+	/** per-session lookup（既存）。*/
 	getSessionTurnPhase: (sessionId: string) => TurnPhase;
 	getSessionSelectedModel: (sessionId: string) => string | null;
 }
@@ -150,71 +158,6 @@ function dispatchSessionMeta(
 	});
 }
 
-function deriveActivityStatus(
-	messages: ChatMessage[] | undefined,
-	turnPhase: TurnPhase,
-): ActivityStatus {
-	if (turnPhase === "idle") return null;
-	if (!messages || messages.length === 0) return null;
-	const lastMsg = messages[messages.length - 1];
-	if (lastMsg.role !== "agent") return null;
-	if (lastMsg.parts.length === 0) return { label: "Thinking..." };
-
-	const lastPart = lastMsg.parts[lastMsg.parts.length - 1];
-	switch (lastPart.type) {
-		case "thinking":
-			return { label: "Thinking..." };
-		case "text":
-			return { label: "Writing..." };
-		case "tool_use": {
-			const tool = (
-				lastPart as { tool: string; input?: Record<string, unknown> }
-			).tool;
-			const filePath = (lastPart as { input?: Record<string, unknown> }).input
-				?.file_path as string | undefined;
-			const fileName = filePath?.split("/").pop();
-			switch (tool) {
-				case "Read":
-					return {
-						label: fileName ? `Reading ${fileName}` : "Reading file...",
-					};
-				case "Write":
-					return {
-						label: fileName ? `Writing ${fileName}` : "Writing file...",
-					};
-				case "Edit":
-					return {
-						label: fileName ? `Editing ${fileName}` : "Editing file...",
-					};
-				case "Bash":
-					return { label: "Running command..." };
-				case "Grep":
-					return { label: "Searching..." };
-				case "Glob":
-					return { label: "Finding files..." };
-				case "Task":
-					return { label: "Running background task..." };
-				case "WebFetch":
-					return { label: "Fetching web content..." };
-				case "WebSearch":
-					return { label: "Searching the web..." };
-				default:
-					return { label: `Using ${tool}...` };
-			}
-		}
-		case "tool_result":
-			return { label: "Processing result..." };
-		case "permission":
-			return { label: "Waiting for permission..." };
-		case "task_status":
-			return { label: "Running background task..." };
-		case "error":
-			return null;
-		default:
-			return { label: "Working..." };
-	}
-}
-
 export function useAgentChat(
 	worktreePath: string,
 	workflowApprovalChatSessionId: string | null = null,
@@ -229,10 +172,13 @@ export function useAgentChat(
 	workflowApprovalChatSessionIdRef.current = workflowApprovalChatSessionId;
 	const workflowApprovalRunIdRef = useRef(workflowApprovalRunId);
 	workflowApprovalRunIdRef.current = workflowApprovalRunId;
-	const activeSessionRef = useRef(state.activeSession);
-	activeSessionRef.current = state.activeSession;
-	const viewedStepSessionRef = useRef(state.viewedStepSession);
-	viewedStepSessionRef.current = state.viewedStepSession;
+
+	const activeSession = selectActiveSession(state);
+
+	const activeSessionIdRef = useRef(state.activeSessionId);
+	activeSessionIdRef.current = state.activeSessionId;
+	const sessionsByIdRef = useRef(state.sessionsById);
+	sessionsByIdRef.current = state.sessionsById;
 	const sessionsRef = useRef(state.sessions);
 	sessionsRef.current = state.sessions;
 	const permissionModeRef = useRef(state.permissionMode);
@@ -242,11 +188,34 @@ export function useAgentChat(
 	const selectedBackendIdRef = useRef(state.selectedBackendId);
 	selectedBackendIdRef.current = state.selectedBackendId;
 
+	// SDK listener gating: 表示中の session id 集合を管理する registry。
+	// 各 panel が register したものは getIds() で参照される（listener が更新を gate する）。
+	const viewableIdsRef = useRef<Map<string, number>>(new Map());
+	const viewableRegistry = useMemo<ViewableSessionRegistry>(
+		() => ({
+			register: (sessionId: string) => {
+				const map = viewableIdsRef.current;
+				map.set(sessionId, (map.get(sessionId) ?? 0) + 1);
+				return () => {
+					const m = viewableIdsRef.current;
+					const next = (m.get(sessionId) ?? 0) - 1;
+					if (next <= 0) {
+						m.delete(sessionId);
+					} else {
+						m.set(sessionId, next);
+					}
+				};
+			},
+			getIds: () => new Set(viewableIdsRef.current.keys()),
+		}),
+		[],
+	);
+
 	const refreshSessions = useCallback(
 		async (options: RefreshSessionsOptions = {}): Promise<SessionSummary[]> => {
 			try {
 				const previousSessions = sessionsRef.current;
-				const previousActiveSessionId = activeSessionRef.current?.id ?? null;
+				const previousActiveSessionId = activeSessionIdRef.current;
 				const sessions = await listSessions(worktreePathRef.current);
 				dispatch({ type: "SET_SESSIONS", sessions });
 				if (
@@ -274,17 +243,20 @@ export function useAgentChat(
 							: null;
 					if (nextSession) {
 						const response = await getSession(nextSession.id);
-						if (activeSessionRef.current?.id === previousActiveSessionId) {
-							dispatch({
-								type: "SET_ACTIVE_SESSION",
-								session: response?.session ?? null,
-							});
+						if (activeSessionIdRef.current === previousActiveSessionId) {
 							if (response) {
+								dispatch({ type: "UPSERT_SESSION", session: response.session });
+								dispatch({
+									type: "SET_ACTIVE_SESSION_ID",
+									sessionId: response.session.id,
+								});
 								dispatchSessionMeta(dispatch, nextSession.id, response);
+							} else {
+								dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 							}
 						}
-					} else if (activeSessionRef.current?.id === previousActiveSessionId) {
-						dispatch({ type: "SET_ACTIVE_SESSION", session: null });
+					} else if (activeSessionIdRef.current === previousActiveSessionId) {
+						dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 					}
 				}
 				return sessions;
@@ -315,10 +287,14 @@ export function useAgentChat(
 		try {
 			const response = await getSession(sessionId);
 			if (response) {
-				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
+				dispatch({ type: "UPSERT_SESSION", session: response.session });
+				dispatch({
+					type: "SET_ACTIVE_SESSION_ID",
+					sessionId: response.session.id,
+				});
 				dispatchSessionMeta(dispatch, sessionId, response);
 			} else {
-				dispatch({ type: "SET_ACTIVE_SESSION", session: null });
+				dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 			}
 		} catch (e) {
 			dispatch({
@@ -328,29 +304,26 @@ export function useAgentChat(
 		}
 	}, []);
 
-	const loadStepSession = useCallback(async (sessionId: string) => {
-		try {
-			const response = await getSession(sessionId);
-			if (response) {
+	const loadSession = useCallback(
+		async (sessionId: string): Promise<ChatSession | null> => {
+			try {
+				const response = await getSession(sessionId);
+				if (response) {
+					dispatch({ type: "UPSERT_SESSION", session: response.session });
+					dispatchSessionMeta(dispatch, sessionId, response);
+					return response.session;
+				}
+				return null;
+			} catch (e) {
 				dispatch({
-					type: "SET_VIEWED_STEP_SESSION",
-					session: response.session,
+					type: "SET_ERROR",
+					error: `session の読み込みに失敗: ${e}`,
 				});
-				dispatchSessionMeta(dispatch, sessionId, response);
-			} else {
-				dispatch({ type: "SET_VIEWED_STEP_SESSION", session: null });
+				return null;
 			}
-		} catch (e) {
-			dispatch({
-				type: "SET_ERROR",
-				error: `step session の読み込みに失敗: ${e}`,
-			});
-		}
-	}, []);
-
-	const clearStepSession = useCallback(() => {
-		dispatch({ type: "SET_VIEWED_STEP_SESSION", session: null });
-	}, []);
+		},
+		[],
+	);
 
 	const interrupt = useCallback((sessionId: string) => {
 		if (!sessionId) return;
@@ -397,26 +370,14 @@ export function useAgentChat(
 								mentions,
 							);
 				const responseSessionId = response.session.id;
-				// Only update if the user hasn't switched to a different session during await
-				const currentActiveId = activeSessionRef.current?.id ?? null;
-				if (
-					currentActiveId === sessionId ||
-					currentActiveId === responseSessionId
-				) {
+				dispatch({ type: "UPSERT_SESSION", session: response.session });
+				// 新規作成 session の場合、active を切り替える（既存 sessionId 指定で送った場合は
+				// active を変更しない — Workflow panel から step session に送ったときに Main の
+				// active を上書きしないため）。
+				if (sessionId === null) {
 					dispatch({
-						type: "SET_ACTIVE_SESSION",
-						session: response.session,
-					});
-				}
-				// spec issues-1023: viewedStepSession が同 session を見ているなら本文も更新
-				const currentViewedId = viewedStepSessionRef.current?.id ?? null;
-				if (
-					currentViewedId === sessionId ||
-					currentViewedId === responseSessionId
-				) {
-					dispatch({
-						type: "SET_VIEWED_STEP_SESSION",
-						session: response.session,
+						type: "SET_ACTIVE_SESSION_ID",
+						sessionId: responseSessionId,
 					});
 				}
 				dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
@@ -439,7 +400,7 @@ export function useAgentChat(
 
 				dispatch({ type: "CLEANUP_SESSION", sessionId });
 
-				const isActive = activeSessionRef.current?.id === sessionId;
+				const isActive = activeSessionIdRef.current === sessionId;
 				if (isActive) {
 					// spec issues-1023: 閉じた後の active 候補も free chat に閉じる。
 					const remaining = sessions.filter(
@@ -451,18 +412,18 @@ export function useAgentChat(
 							: null;
 					if (nextSession) {
 						const response = await getSession(nextSession.id);
-						dispatch({
-							type: "SET_ACTIVE_SESSION",
-							session: response?.session ?? null,
-						});
 						if (response) {
+							dispatch({ type: "UPSERT_SESSION", session: response.session });
+							dispatch({
+								type: "SET_ACTIVE_SESSION_ID",
+								sessionId: response.session.id,
+							});
 							dispatchSessionMeta(dispatch, nextSession.id, response);
+						} else {
+							dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 						}
 					} else {
-						dispatch({
-							type: "SET_ACTIVE_SESSION",
-							session: null,
-						});
+						dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 					}
 				}
 
@@ -485,11 +446,12 @@ export function useAgentChat(
 				const restoreResult = await restoreSessionApi(sessionId);
 				restoredWorkflowStep = restoreResult.restoredWorkflowStep === true;
 				const response = await getSession(sessionId);
-				dispatch({
-					type: "SET_ACTIVE_SESSION",
-					session: response?.session ?? null,
-				});
 				if (response) {
+					dispatch({ type: "UPSERT_SESSION", session: response.session });
+					dispatch({
+						type: "SET_ACTIVE_SESSION_ID",
+						sessionId: response.session.id,
+					});
 					dispatchSessionMeta(dispatch, sessionId, response);
 					if (
 						!restoredWorkflowStep &&
@@ -502,6 +464,8 @@ export function useAgentChat(
 							response.session.permissionMode,
 						);
 					}
+				} else {
+					dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 				}
 				await refreshSessions();
 				await refreshClosedSessions();
@@ -517,8 +481,11 @@ export function useAgentChat(
 
 	const createNewSession = useCallback(async () => {
 		try {
+			const activeSessionSnapshot = activeSessionIdRef.current
+				? sessionsByIdRef.current[activeSessionIdRef.current]
+				: undefined;
 			const backendId =
-				activeSessionRef.current?.backendId ?? selectedBackendIdRef.current;
+				activeSessionSnapshot?.backendId ?? selectedBackendIdRef.current;
 			const session = await createSession(
 				worktreePathRef.current,
 				permissionModeRef.current,
@@ -526,7 +493,11 @@ export function useAgentChat(
 			);
 			const response = await getSession(session.id);
 			const activeSession = response?.session ?? session;
-			dispatch({ type: "SET_ACTIVE_SESSION", session: activeSession });
+			dispatch({ type: "UPSERT_SESSION", session: activeSession });
+			dispatch({
+				type: "SET_ACTIVE_SESSION_ID",
+				sessionId: activeSession.id,
+			});
 			dispatch({
 				type: "SET_PERMISSION_MODE",
 				mode: activeSession.permissionMode,
@@ -620,7 +591,10 @@ export function useAgentChat(
 			}
 			// 既存 session の backend 変更は active session 経由の従来制約（メッセージ 0 件かつ
 			// agent 未起動かつ非ストリーミング）を満たす場合のみ受理する。
-			const activeSession = activeSessionRef.current;
+			const activeId = activeSessionIdRef.current;
+			const activeSession = activeId
+				? (sessionsByIdRef.current[activeId] ?? null)
+				: null;
 			if (
 				!backendId ||
 				!activeSession ||
@@ -632,8 +606,8 @@ export function useAgentChat(
 			}
 			setSessionBackend(sessionId, backendId)
 				.then((response) => {
-					if (activeSessionRef.current?.id === sessionId) {
-						dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
+					if (activeSessionIdRef.current === sessionId) {
+						dispatch({ type: "UPSERT_SESSION", session: response.session });
 						dispatchSessionMeta(dispatch, sessionId, response);
 					}
 				})
@@ -649,10 +623,18 @@ export function useAgentChat(
 
 	useAgentSdkListeners({
 		dispatch,
-		activeSessionRef,
-		viewedStepSessionRef,
+		viewableRegistry,
 		refreshSessions,
 	});
+
+	// activeSession は Main panel が表示している session として実質 viewable。
+	// BoundSessionChat も独自に register するが、Main panel 経由でない経路（テスト等）
+	// でも listener gating が機能するように、本 hook 側でも自動登録する。
+	useEffect(() => {
+		if (!state.activeSessionId) return;
+		const cleanup = viewableRegistry.register(state.activeSessionId);
+		return cleanup;
+	}, [state.activeSessionId, viewableRegistry]);
 
 	const fetchBackends = useCallback(async () => {
 		try {
@@ -673,8 +655,12 @@ export function useAgentChat(
 			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
 			if (response.activeSession) {
 				dispatch({
-					type: "SET_ACTIVE_SESSION",
+					type: "UPSERT_SESSION",
 					session: response.activeSession.session,
+				});
+				dispatch({
+					type: "SET_ACTIVE_SESSION_ID",
+					sessionId: response.activeSession.session.id,
 				});
 				dispatchSessionMeta(
 					dispatch,
@@ -701,8 +687,7 @@ export function useAgentChat(
 	useEffect(() => {
 		if (prevWorktreePathRef.current !== worktreePath) {
 			prevWorktreePathRef.current = worktreePath;
-			dispatch({ type: "SET_ACTIVE_SESSION", session: null });
-			dispatch({ type: "SET_VIEWED_STEP_SESSION", session: null });
+			dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 			dispatch({ type: "SET_PERMISSION_MODE", mode: "edit" });
 			initSessions();
 			refreshClosedSessions();
@@ -710,15 +695,9 @@ export function useAgentChat(
 	}, [worktreePath, initSessions, refreshClosedSessions]);
 
 	const activeTurnPhase: TurnPhase =
-		state.turnPhases[state.activeSession?.id ?? ""] ?? "idle";
+		state.turnPhases[state.activeSessionId ?? ""] ?? "idle";
 	const isStreaming =
 		activeTurnPhase === "streaming" || activeTurnPhase === "waiting_permission";
-
-	const viewedStepTurnPhase: TurnPhase =
-		state.turnPhases[state.viewedStepSession?.id ?? ""] ?? "idle";
-	const viewedStepSessionStreaming =
-		viewedStepTurnPhase === "streaming" ||
-		viewedStepTurnPhase === "waiting_permission";
 
 	const orderedSessions = useMemo(() => {
 		const sessionMap = new Map(state.sessions.map((s) => [s.id, s]));
@@ -739,17 +718,8 @@ export function useAgentChat(
 	}, [worktreeSessionStatuses]);
 
 	const activityStatus = useMemo(
-		() => deriveActivityStatus(state.activeSession?.messages, activeTurnPhase),
-		[state.activeSession?.messages, activeTurnPhase],
-	);
-
-	const viewedStepSessionActivityStatus = useMemo(
-		() =>
-			deriveActivityStatus(
-				state.viewedStepSession?.messages,
-				viewedStepTurnPhase,
-			),
-		[state.viewedStepSession?.messages, viewedStepTurnPhase],
+		() => deriveActivityStatus(activeSession?.messages, activeTurnPhase),
+		[activeSession?.messages, activeTurnPhase],
 	);
 
 	const turnPhasesState = state.turnPhases;
@@ -763,14 +733,27 @@ export function useAgentChat(
 		[sessionModelsState],
 	);
 
+	const sessionsByIdState = state.sessionsById;
+	const getSessionById = useCallback(
+		(sessionId: string | null | undefined): ChatSession | null => {
+			if (!sessionId) return null;
+			return sessionsByIdState[sessionId] ?? null;
+		},
+		[sessionsByIdState],
+	);
+
+	const registerViewableSession = useCallback(
+		(sessionId: string) => viewableRegistry.register(sessionId),
+		[viewableRegistry],
+	);
+
 	const selectedModel =
-		state.sessionModels[state.activeSession?.id ?? ""] ?? null;
+		state.sessionModels[state.activeSessionId ?? ""] ?? null;
 	return {
 		sessions: state.sessions,
 		orderedSessions,
 		closedSessions: state.closedSessions,
-		activeSession: state.activeSession,
-		viewedStepSession: state.viewedStepSession,
+		activeSession,
 		isStreaming,
 		activityStatus,
 		error: state.error,
@@ -791,14 +774,13 @@ export function useAgentChat(
 		selectedModel,
 		setModel,
 		backends: state.backends,
-		selectedBackendId: state.activeSession
-			? (state.activeSession?.backendId ?? state.selectedBackendId)
+		selectedBackendId: activeSession
+			? (activeSession.backendId ?? state.selectedBackendId)
 			: state.selectedBackendId,
 		setBackend,
-		loadStepSession,
-		clearStepSession,
-		viewedStepSessionStreaming,
-		viewedStepSessionActivityStatus,
+		loadSession,
+		getSessionById,
+		registerViewableSession,
 		getSessionTurnPhase,
 		getSessionSelectedModel,
 	};

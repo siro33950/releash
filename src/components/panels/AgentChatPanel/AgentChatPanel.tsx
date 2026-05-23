@@ -11,7 +11,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
 import type { MentionReference } from "@/types/session";
-import { ChatSessionView } from "./ChatSessionView";
+import { BoundSessionChat } from "./BoundSessionChat";
 
 interface AgentChatPanelProps {
 	worktreePath: string;
@@ -25,6 +25,12 @@ interface AgentChatPanelProps {
 	>;
 }
 
+/**
+ * spec issues-1023: 自由対話 chat の panel。タブバーは AgentChatPanel 固有の
+ * drag&drop 並べ替え・history popover・新規作成ボタンを持つ。chat 本文と
+ * MessageInput は {@link BoundSessionChat} に委譲され、WorkflowSidebarPanel と
+ * 同一実装を共有する（issue #1023 「タブ含めて同じ UI で session フィルタだけが違う」設計）。
+ */
 export function AgentChatPanel({
 	worktreePath,
 	registerDropZone,
@@ -34,27 +40,13 @@ export function AgentChatPanel({
 		orderedSessions,
 		closedSessions,
 		activeSession,
-		isStreaming,
-		activityStatus,
-		error,
-		permissionMode,
 		sessionAgentStates,
-		sendMessage,
-		interrupt,
 		selectSession,
 		closeSession,
 		restoreSession,
 		createNewSession,
 		reorderSessions,
-		setPermissionMode,
-		respondPermission,
 		refreshClosedSessions,
-		availableModels,
-		selectedModel,
-		setModel,
-		backends,
-		selectedBackendId,
-		setBackend,
 	} = useAgentChatContext();
 
 	// spec issues-1023: workflow step として起動された chat session は
@@ -73,6 +65,7 @@ export function AgentChatPanel({
 	// AgentChatPanel 本文では表示しない（Workflow panel 側 transcript の二重表示防止）。
 	const displayedActiveSession =
 		activeSession && !activeSession.workflowStepSession ? activeSession : null;
+	const activeSessionId = displayedActiveSession?.id ?? null;
 
 	const [historyOpen, setHistoryOpen] = useState(false);
 	const draggedSessionIdRef = useRef<string | null>(null);
@@ -151,58 +144,11 @@ export function AgentChatPanel({
 		[selectSession],
 	);
 
-	const canChangeBackend =
-		!!displayedActiveSession &&
-		displayedActiveSession.messages.length === 0 &&
-		!displayedActiveSession.agentSessionId &&
-		!isStreaming;
-
-	// spec issues-1023: ChatSessionView は session-explicit な handler を要求するため、
-	// active session の id にバインドした薄いラッパで渡す。
-	const activeSessionId = displayedActiveSession?.id ?? null;
-	const handleSend = useCallback(
-		(
-			content: string,
-			images?: Parameters<typeof sendMessage>[2],
-			mentions?: Parameters<typeof sendMessage>[3],
-		) => sendMessage(activeSessionId, content, images, mentions),
-		[activeSessionId, sendMessage],
-	);
-	const handleInterrupt = useCallback(() => {
-		if (activeSessionId) interrupt(activeSessionId);
-	}, [activeSessionId, interrupt]);
-	const handlePermissionModeChange = useCallback(
-		(mode: Parameters<typeof setPermissionMode>[1]) =>
-			setPermissionMode(activeSessionId, mode),
-		[activeSessionId, setPermissionMode],
-	);
-	const handleModelChange = useCallback(
-		(modelId: string | null) => {
-			if (activeSessionId) setModel(activeSessionId, modelId);
-		},
-		[activeSessionId, setModel],
-	);
-	const handleBackendChange = useCallback(
-		(backendId: string | null) => setBackend(activeSessionId, backendId),
-		[activeSessionId, setBackend],
-	);
-	const handleRespondPermission = useCallback(
-		(
-			requestId: string,
-			allow: boolean,
-			updatedInput?: Record<string, unknown>,
-		) => {
-			if (!activeSessionId) return;
-			respondPermission(activeSessionId, requestId, allow, updatedInput);
-		},
-		[activeSessionId, respondPermission],
-	);
-
 	return (
 		<div data-testid="agent-chat-panel" className="flex flex-col h-full">
 			<Tabs
-				value={activeSession?.id ?? ""}
-				onValueChange={selectSession}
+				value={activeSessionId ?? ""}
+				onValueChange={handleTabClick}
 				className="flex flex-col h-full gap-0"
 			>
 				<div
@@ -291,28 +237,14 @@ export function AgentChatPanel({
 						</PopoverContent>
 					</Popover>
 				</div>
-				{displayedActiveSession ? (
-					<ChatSessionView
-						session={displayedActiveSession}
-						isStreaming={isStreaming}
-						activityStatus={activityStatus}
-						error={error}
-						permissionMode={permissionMode}
-						availableModels={availableModels}
-						selectedModel={selectedModel}
-						backends={backends}
-						selectedBackendId={selectedBackendId}
-						canChangeBackend={canChangeBackend}
+				{activeSessionId ? (
+					<BoundSessionChat
+						sessionId={activeSessionId}
 						worktreePath={worktreePath}
-						onSend={handleSend}
-						onInterrupt={handleInterrupt}
-						onPermissionModeChange={handlePermissionModeChange}
-						onModelChange={handleModelChange}
-						onBackendChange={handleBackendChange}
-						onRespondPermission={handleRespondPermission}
 						registerDropZone={registerDropZone}
 						dropZoneName="agent"
 						sendMessageRef={sendMessageRef}
+						skipInitialLoad
 					/>
 				) : (
 					<div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">

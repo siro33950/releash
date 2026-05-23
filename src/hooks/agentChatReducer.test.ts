@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { BackendInfo, ChatMessage, ChatSession } from "@/types/session";
 import type { AgentChatState } from "./agentChatReducer";
-import { INITIAL_STATE, reducer } from "./agentChatReducer";
+import {
+	INITIAL_STATE,
+	reducer,
+	selectActiveSession,
+	selectSessionFromState,
+} from "./agentChatReducer";
 
 function makeSession(overrides?: Partial<ChatSession>): ChatSession {
 	return {
@@ -32,8 +37,8 @@ describe("agentChatReducer", () => {
 			sessions: [],
 			sessionOrder: [],
 			closedSessions: [],
-			activeSession: null,
-			viewedStepSession: null,
+			sessionsById: {},
+			activeSessionId: null,
 			turnPhases: {},
 			error: null,
 			permissionMode: "edit" as const,
@@ -183,39 +188,68 @@ describe("agentChatReducer", () => {
 		});
 	});
 
-	describe("SET_ACTIVE_SESSION", () => {
-		it("sets active session and clears error", () => {
+	describe("UPSERT_SESSION + SET_ACTIVE_SESSION_ID", () => {
+		it("UPSERT_SESSION stores session in sessionsById", () => {
+			const session = makeSession();
+			const next = reducer(INITIAL_STATE, {
+				type: "UPSERT_SESSION",
+				session,
+			});
+			expect(next.sessionsById[session.id]).toBe(session);
+			expect(next.error).toBeNull();
+		});
+
+		it("UPSERT_SESSION clears error", () => {
 			const stateWithError: AgentChatState = {
 				...INITIAL_STATE,
 				error: "some error",
 			};
 			const session = makeSession();
 			const next = reducer(stateWithError, {
-				type: "SET_ACTIVE_SESSION",
+				type: "UPSERT_SESSION",
 				session,
 			});
-			expect(next.activeSession).toBe(session);
 			expect(next.error).toBeNull();
 		});
 
-		it("sets active session to null", () => {
-			const stateWithSession: AgentChatState = {
-				...INITIAL_STATE,
-				activeSession: makeSession(),
-			};
-			const next = reducer(stateWithSession, {
-				type: "SET_ACTIVE_SESSION",
-				session: null,
+		it("SET_ACTIVE_SESSION_ID resolves active session from sessionsById", () => {
+			const session = makeSession();
+			const upserted = reducer(INITIAL_STATE, {
+				type: "UPSERT_SESSION",
+				session,
 			});
-			expect(next.activeSession).toBeNull();
+			const next = reducer(upserted, {
+				type: "SET_ACTIVE_SESSION_ID",
+				sessionId: session.id,
+			});
+			expect(next.activeSessionId).toBe(session.id);
+			expect(selectActiveSession(next)).toBe(session);
+		});
+
+		it("SET_ACTIVE_SESSION_ID null clears the active selection", () => {
+			const session = makeSession();
+			const upserted = reducer(INITIAL_STATE, {
+				type: "UPSERT_SESSION",
+				session,
+			});
+			const withActive = reducer(upserted, {
+				type: "SET_ACTIVE_SESSION_ID",
+				sessionId: session.id,
+			});
+			const next = reducer(withActive, {
+				type: "SET_ACTIVE_SESSION_ID",
+				sessionId: null,
+			});
+			expect(next.activeSessionId).toBeNull();
+			expect(selectActiveSession(next)).toBeNull();
 		});
 	});
 
 	describe("ADD_MESSAGE", () => {
-		it("appends message to active session when sessionId matches", () => {
+		it("appends message to session in sessionsById when sessionId matches", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession({ id: "s1" }),
+				sessionsById: { s1: makeSession({ id: "s1" }) },
 			};
 			const msg = makeMessage();
 			const next = reducer(state, {
@@ -223,11 +257,11 @@ describe("agentChatReducer", () => {
 				sessionId: "s1",
 				message: msg,
 			});
-			expect(next.activeSession?.messages).toHaveLength(1);
-			expect(next.activeSession?.messages[0]).toBe(msg);
+			expect(next.sessionsById.s1.messages).toHaveLength(1);
+			expect(next.sessionsById.s1.messages[0]).toBe(msg);
 		});
 
-		it("does nothing when no active or viewed session matches", () => {
+		it("does nothing when session is not in sessionsById", () => {
 			const msg = makeMessage();
 			const next = reducer(INITIAL_STATE, {
 				type: "ADD_MESSAGE",
@@ -237,10 +271,10 @@ describe("agentChatReducer", () => {
 			expect(next).toBe(INITIAL_STATE);
 		});
 
-		it("appends to viewedStepSession when its id matches", () => {
+		it("appends to step session in sessionsById when its id matches", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				viewedStepSession: makeSession({ id: "step-1" }),
+				sessionsById: { "step-1": makeSession({ id: "step-1" }) },
 			};
 			const msg = makeMessage();
 			const next = reducer(state, {
@@ -248,8 +282,8 @@ describe("agentChatReducer", () => {
 				sessionId: "step-1",
 				message: msg,
 			});
-			expect(next.viewedStepSession?.messages).toHaveLength(1);
-			expect(next.viewedStepSession?.messages[0]).toBe(msg);
+			expect(next.sessionsById["step-1"].messages).toHaveLength(1);
+			expect(next.sessionsById["step-1"].messages[0]).toBe(msg);
 		});
 	});
 
@@ -314,17 +348,17 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("UPDATE_SESSION_STATE", () => {
-		it("updates active session state when sessionId matches", () => {
+		it("updates session state in sessionsById when sessionId matches", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession({ id: "s1", state: "active" }),
+				sessionsById: { s1: makeSession({ id: "s1", state: "active" }) },
 			};
 			const next = reducer(state, {
 				type: "UPDATE_SESSION_STATE",
 				sessionId: "s1",
 				state: "done",
 			});
-			expect(next.activeSession?.state).toBe("done");
+			expect(next.sessionsById.s1.state).toBe("done");
 		});
 
 		it("does nothing when no session matches", () => {
@@ -336,17 +370,19 @@ describe("agentChatReducer", () => {
 			expect(next).toBe(INITIAL_STATE);
 		});
 
-		it("updates viewedStepSession state when its id matches", () => {
+		it("updates step session state in sessionsById when its id matches", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				viewedStepSession: makeSession({ id: "step-1", state: "active" }),
+				sessionsById: {
+					"step-1": makeSession({ id: "step-1", state: "active" }),
+				},
 			};
 			const next = reducer(state, {
 				type: "UPDATE_SESSION_STATE",
 				sessionId: "step-1",
 				state: "done",
 			});
-			expect(next.viewedStepSession?.state).toBe("done");
+			expect(next.sessionsById["step-1"].state).toBe("done");
 		});
 	});
 
@@ -437,7 +473,7 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("SET_STREAMING_MESSAGE", () => {
-		it("replaces existing parts with the cumulative payload in active session", () => {
+		it("replaces existing parts with the cumulative payload in sessionsById", () => {
 			// Rust sends the full cumulative `streaming_parts` on every flush, so the
 			// reducer replaces the message's parts wholesale. A redelivery (same or
 			// extended cumulative payload) must converge without double-application.
@@ -448,7 +484,7 @@ describe("agentChatReducer", () => {
 			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession({ id: "s1", messages: [msg] }),
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
 			};
 			const cumulativeParts = [
 				{ type: "text" as const, content: "old updated" },
@@ -460,7 +496,7 @@ describe("agentChatReducer", () => {
 				messageId: "m1",
 				parts: cumulativeParts,
 			});
-			expect(next.activeSession?.messages[0].parts).toEqual(cumulativeParts);
+			expect(next.sessionsById.s1.messages[0].parts).toEqual(cumulativeParts);
 		});
 
 		it("converges on re-delivery of the same cumulative payload", () => {
@@ -471,7 +507,7 @@ describe("agentChatReducer", () => {
 			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession({ id: "s1", messages: [msg] }),
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
 			};
 			const cumulative = [{ type: "text" as const, content: "old updated" }];
 			const once = reducer(state, {
@@ -486,10 +522,10 @@ describe("agentChatReducer", () => {
 				messageId: "m1",
 				parts: cumulative,
 			});
-			expect(twice.activeSession?.messages[0].parts).toEqual(cumulative);
+			expect(twice.sessionsById.s1.messages[0].parts).toEqual(cumulative);
 		});
 
-		it("does nothing when activeSession is null", () => {
+		it("does nothing when target session is missing from sessionsById", () => {
 			const next = reducer(INITIAL_STATE, {
 				type: "SET_STREAMING_MESSAGE",
 				sessionId: "s1",
@@ -499,7 +535,7 @@ describe("agentChatReducer", () => {
 			expect(next).toBe(INITIAL_STATE);
 		});
 
-		it("does nothing when sessionId does not match activeSession", () => {
+		it("does nothing when sessionId does not match any session in store", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
@@ -507,7 +543,7 @@ describe("agentChatReducer", () => {
 			});
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession({ id: "s1", messages: [msg] }),
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
 			};
 			const next = reducer(state, {
 				type: "SET_STREAMING_MESSAGE",
@@ -522,7 +558,7 @@ describe("agentChatReducer", () => {
 			const msg = makeMessage({ id: "m1", role: "agent" });
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession({ id: "s1", messages: [msg] }),
+				sessionsById: { s1: makeSession({ id: "s1", messages: [msg] }) },
 			};
 			const next = reducer(state, {
 				type: "SET_STREAMING_MESSAGE",
@@ -531,6 +567,32 @@ describe("agentChatReducer", () => {
 				parts: [{ type: "text", content: "hello" }],
 			});
 			expect(next).toBe(state);
+		});
+	});
+
+	describe("selectors", () => {
+		it("selectSessionFromState returns null when sessionsById has no entry", () => {
+			expect(selectSessionFromState(INITIAL_STATE, "missing")).toBeNull();
+			expect(selectSessionFromState(INITIAL_STATE, null)).toBeNull();
+		});
+
+		it("selectSessionFromState returns the session from sessionsById", () => {
+			const session = makeSession();
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { [session.id]: session },
+			};
+			expect(selectSessionFromState(state, session.id)).toBe(session);
+		});
+
+		it("selectActiveSession resolves via activeSessionId", () => {
+			const session = makeSession({ id: "active" });
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: { [session.id]: session },
+				activeSessionId: session.id,
+			};
+			expect(selectActiveSession(state)).toBe(session);
 		});
 	});
 
