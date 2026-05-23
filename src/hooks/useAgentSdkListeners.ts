@@ -73,7 +73,23 @@ interface BackendModelsUpdated {
 export interface AgentSdkListenerRefs {
 	dispatch: Dispatch<AgentChatAction>;
 	activeSessionRef: MutableRefObject<ChatSession | null>;
+	/**
+	 * spec issues-1023: Workflow panel 表示中の step session。SDK イベントは
+	 * activeSession に閉じず、当該 session の本文/state にも反映するためのフック。
+	 */
+	viewedStepSessionRef: MutableRefObject<ChatSession | null>;
 	refreshSessions: () => Promise<unknown>;
+}
+
+function matchesViewable(
+	sessionId: string,
+	activeSessionRef: MutableRefObject<ChatSession | null>,
+	viewedStepSessionRef: MutableRefObject<ChatSession | null>,
+): boolean {
+	return (
+		activeSessionRef.current?.id === sessionId ||
+		viewedStepSessionRef.current?.id === sessionId
+	);
 }
 
 function handleSupportedCommands(msg: SdkMessage): void {
@@ -121,6 +137,7 @@ function handleSystemMessage(
 	chatSessionId: string | undefined,
 	dispatch: Dispatch<AgentChatAction>,
 	activeSessionRef: MutableRefObject<ChatSession | null>,
+	viewedStepSessionRef: MutableRefObject<ChatSession | null>,
 ): void {
 	if (msg.type !== "system" || !chatSessionId) return;
 	// task subtypes are handled by Rust accumulation
@@ -131,8 +148,9 @@ function handleSystemMessage(
 		subtype === "task_progress"
 	)
 		return;
-	// Skip dispatching for non-active sessions (Rust persists these)
-	if (activeSessionRef.current?.id !== chatSessionId) return;
+	// Skip dispatching for sessions not currently shown (Rust persists these)
+	if (!matchesViewable(chatSessionId, activeSessionRef, viewedStepSessionRef))
+		return;
 	const text =
 		typeof msg.message === "string"
 			? msg.message
@@ -142,6 +160,7 @@ function handleSystemMessage(
 	if (text) {
 		dispatch({
 			type: "ADD_MESSAGE",
+			sessionId: chatSessionId,
 			message: {
 				id: `system-${Date.now()}`,
 				role: "system",
@@ -157,10 +176,11 @@ function handleResultErrors(
 	chatSessionId: string | undefined,
 	dispatch: Dispatch<AgentChatAction>,
 	activeSessionRef: MutableRefObject<ChatSession | null>,
+	viewedStepSessionRef: MutableRefObject<ChatSession | null>,
 ): void {
 	if (msg.type !== "result" || !chatSessionId) return;
-	// Skip dispatching for non-active sessions (Rust persists these)
-	if (activeSessionRef.current?.id !== chatSessionId) return;
+	if (!matchesViewable(chatSessionId, activeSessionRef, viewedStepSessionRef))
+		return;
 	const resultMsg = msg as {
 		type: "result";
 		errors?: string[];
@@ -168,6 +188,7 @@ function handleResultErrors(
 	if (resultMsg.errors && resultMsg.errors.length > 0) {
 		dispatch({
 			type: "ADD_MESSAGE",
+			sessionId: chatSessionId,
 			message: {
 				id: `system-error-${Date.now()}`,
 				role: "agent",
@@ -179,7 +200,8 @@ function handleResultErrors(
 }
 
 export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
-	const { dispatch, activeSessionRef, refreshSessions } = refs;
+	const { dispatch, activeSessionRef, viewedStepSessionRef, refreshSessions } =
+		refs;
 
 	// Listen to SDK messages for meta events (permissions, commands, system messages)
 	useEffect(() => {
@@ -192,8 +214,20 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 
 			handleSupportedCommands(msg);
 			handlePermissionRequest(msg, chatSessionId, dispatch);
-			handleSystemMessage(msg, chatSessionId, dispatch, activeSessionRef);
-			handleResultErrors(msg, chatSessionId, dispatch, activeSessionRef);
+			handleSystemMessage(
+				msg,
+				chatSessionId,
+				dispatch,
+				activeSessionRef,
+				viewedStepSessionRef,
+			);
+			handleResultErrors(
+				msg,
+				chatSessionId,
+				dispatch,
+				activeSessionRef,
+				viewedStepSessionRef,
+			);
 		}).then((fn) => {
 			if (cancelled) {
 				fn();
@@ -206,7 +240,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, activeSessionRef]);
+	}, [dispatch, activeSessionRef, viewedStepSessionRef]);
 
 	// Listen to agent-permission-mode-changed from Rust backend
 	useEffect(() => {
@@ -275,6 +309,26 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					}
 				}
 
+				// spec issues-1023: viewedStepSession についても message cache miss を
+				// 同様に補完する。activeSession と独立に streaming を観測するため。
+				const stepSession = viewedStepSessionRef.current;
+				if (
+					stepSession?.id === chat_session_id &&
+					!stepSession.messages.some((m) => m.id === message_id)
+				) {
+					const response = await getSession(chat_session_id);
+					if (
+						response &&
+						!cancelled &&
+						viewedStepSessionRef.current?.id === chat_session_id
+					) {
+						dispatch({
+							type: "SET_VIEWED_STEP_SESSION",
+							session: response.session,
+						});
+					}
+				}
+
 				dispatch({
 					type: "SET_STREAMING_MESSAGE",
 					sessionId: chat_session_id,
@@ -294,7 +348,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, activeSessionRef]);
+	}, [dispatch, activeSessionRef, viewedStepSessionRef]);
 
 	// Listen to agent-session-state-changed (unified state event from Rust)
 	useEffect(() => {
@@ -318,10 +372,19 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					request: null,
 				});
 
-				const session = activeSessionRef.current;
 				const newState: SessionState = exit_code === 0 ? "idle" : "error";
-				if (session && session.id === chat_session_id) {
-					dispatch({ type: "UPDATE_SESSION_STATE", state: newState });
+				if (
+					matchesViewable(
+						chat_session_id,
+						activeSessionRef,
+						viewedStepSessionRef,
+					)
+				) {
+					dispatch({
+						type: "UPDATE_SESSION_STATE",
+						sessionId: chat_session_id,
+						state: newState,
+					});
 				}
 
 				updateSessionState(chat_session_id, newState).catch((e) =>
@@ -344,7 +407,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, activeSessionRef, refreshSessions]);
+	}, [dispatch, activeSessionRef, viewedStepSessionRef, refreshSessions]);
 
 	// Listen to agent-pending-message-consumed (Rust auto-consumed pending message after turn_complete)
 	useEffect(() => {
@@ -355,9 +418,17 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			"agent-pending-message-consumed",
 			(event) => {
 				const { chat_session_id, agent_message } = event.payload;
-				if (activeSessionRef.current?.id !== chat_session_id) return;
+				if (
+					!matchesViewable(
+						chat_session_id,
+						activeSessionRef,
+						viewedStepSessionRef,
+					)
+				)
+					return;
 				dispatch({
 					type: "ADD_MESSAGE",
+					sessionId: chat_session_id,
 					message: {
 						id: agent_message.id,
 						role: agent_message.role,
@@ -378,7 +449,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [dispatch, activeSessionRef]);
+	}, [dispatch, activeSessionRef, viewedStepSessionRef]);
 
 	// Listen to agent-models-updated (session 単位の更新) from Rust backend
 	useEffect(() => {

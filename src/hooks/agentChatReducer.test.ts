@@ -33,6 +33,7 @@ describe("agentChatReducer", () => {
 			sessionOrder: [],
 			closedSessions: [],
 			activeSession: null,
+			viewedStepSession: null,
 			turnPhases: {},
 			error: null,
 			permissionMode: "edit" as const,
@@ -211,24 +212,44 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("ADD_MESSAGE", () => {
-		it("appends message to active session", () => {
+		it("appends message to active session when sessionId matches", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession(),
+				activeSession: makeSession({ id: "s1" }),
 			};
 			const msg = makeMessage();
-			const next = reducer(state, { type: "ADD_MESSAGE", message: msg });
+			const next = reducer(state, {
+				type: "ADD_MESSAGE",
+				sessionId: "s1",
+				message: msg,
+			});
 			expect(next.activeSession?.messages).toHaveLength(1);
 			expect(next.activeSession?.messages[0]).toBe(msg);
 		});
 
-		it("does nothing when no active session", () => {
+		it("does nothing when no active or viewed session matches", () => {
 			const msg = makeMessage();
 			const next = reducer(INITIAL_STATE, {
 				type: "ADD_MESSAGE",
+				sessionId: "s1",
 				message: msg,
 			});
 			expect(next).toBe(INITIAL_STATE);
+		});
+
+		it("appends to viewedStepSession when its id matches", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				viewedStepSession: makeSession({ id: "step-1" }),
+			};
+			const msg = makeMessage();
+			const next = reducer(state, {
+				type: "ADD_MESSAGE",
+				sessionId: "step-1",
+				message: msg,
+			});
+			expect(next.viewedStepSession?.messages).toHaveLength(1);
+			expect(next.viewedStepSession?.messages[0]).toBe(msg);
 		});
 	});
 
@@ -293,24 +314,39 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("UPDATE_SESSION_STATE", () => {
-		it("updates active session state", () => {
+		it("updates active session state when sessionId matches", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				activeSession: makeSession({ state: "active" }),
+				activeSession: makeSession({ id: "s1", state: "active" }),
 			};
 			const next = reducer(state, {
 				type: "UPDATE_SESSION_STATE",
+				sessionId: "s1",
 				state: "done",
 			});
 			expect(next.activeSession?.state).toBe("done");
 		});
 
-		it("does nothing when no active session", () => {
+		it("does nothing when no session matches", () => {
 			const next = reducer(INITIAL_STATE, {
 				type: "UPDATE_SESSION_STATE",
+				sessionId: "s1",
 				state: "done",
 			});
 			expect(next).toBe(INITIAL_STATE);
+		});
+
+		it("updates viewedStepSession state when its id matches", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				viewedStepSession: makeSession({ id: "step-1", state: "active" }),
+			};
+			const next = reducer(state, {
+				type: "UPDATE_SESSION_STATE",
+				sessionId: "step-1",
+				state: "done",
+			});
+			expect(next.viewedStepSession?.state).toBe("done");
 		});
 	});
 

@@ -16,6 +16,13 @@ export interface AgentChatState {
 	sessionOrder: string[];
 	closedSessions: SessionSummary[];
 	activeSession: ChatSession | null;
+	/**
+	 * spec issues-1023: Workflow panel から「現在表示中の workflow step session」を
+	 * activeSession とは独立に観測するための ChatSession slot。tab bar からは見えない
+	 * workflow step session の本文・streaming 反映を保持する。free chat 側の
+	 * activeSession には影響しない。
+	 */
+	viewedStepSession: ChatSession | null;
 	turnPhases: Record<string, TurnPhase>;
 	error: string | null;
 	permissionMode: PermissionMode;
@@ -31,14 +38,19 @@ export type AgentChatAction =
 	| { type: "SET_SESSIONS"; sessions: SessionSummary[] }
 	| { type: "SET_CLOSED_SESSIONS"; sessions: SessionSummary[] }
 	| { type: "SET_ACTIVE_SESSION"; session: ChatSession | null }
-	| { type: "ADD_MESSAGE"; message: ChatMessage }
+	| { type: "SET_VIEWED_STEP_SESSION"; session: ChatSession | null }
+	| { type: "ADD_MESSAGE"; sessionId: string; message: ChatMessage }
 	| {
 			type: "SET_TURN_PHASE";
 			sessionId: string;
 			turnPhase: TurnPhase;
 	  }
 	| { type: "SET_ERROR"; error: string | null }
-	| { type: "UPDATE_SESSION_STATE"; state: SessionState }
+	| {
+			type: "UPDATE_SESSION_STATE";
+			sessionId: string;
+			state: SessionState;
+	  }
 	| { type: "SET_PERMISSION_MODE"; mode: PermissionMode }
 	| {
 			type: "SET_PENDING_PERMISSION";
@@ -72,23 +84,29 @@ export type AgentChatAction =
 // re-deliveries (e.g. when one transport channel previously failed) collapse
 // to a single state update with no double-application risk.
 
-function updateMessageInSession(
-	state: AgentChatState,
+function applyMessageUpdate(
+	session: ChatSession,
 	messageId: string,
 	updater: (msg: ChatMessage) => ChatMessage,
-): AgentChatState {
-	if (!state.activeSession) return state;
-	const msgs = state.activeSession.messages;
+): ChatSession | null {
+	const msgs = session.messages;
 	const lastIdx = msgs.length - 1;
 	// Streaming target is almost always the last message — check it first
 	const idx =
 		lastIdx >= 0 && msgs[lastIdx].id === messageId
 			? lastIdx
 			: msgs.findIndex((m) => m.id === messageId);
-	if (idx === -1) return state;
+	if (idx === -1) return null;
 	const messages = msgs.slice();
 	messages[idx] = updater(msgs[idx]);
-	return { ...state, activeSession: { ...state.activeSession, messages } };
+	return { ...session, messages };
+}
+
+function appendMessage(
+	session: ChatSession,
+	message: ChatMessage,
+): ChatSession {
+	return { ...session, messages: [...session.messages, message] };
 }
 
 function displayBackendId(state: AgentChatState): string | null {
@@ -148,15 +166,26 @@ export function reducer(
 			return { ...state, closedSessions: action.sessions };
 		case "SET_ACTIVE_SESSION":
 			return { ...state, activeSession: action.session, error: null };
+		case "SET_VIEWED_STEP_SESSION":
+			return { ...state, viewedStepSession: action.session };
 		case "ADD_MESSAGE": {
-			if (!state.activeSession) return state;
-			return {
-				...state,
-				activeSession: {
-					...state.activeSession,
-					messages: [...state.activeSession.messages, action.message],
-				},
-			};
+			let next = state;
+			if (state.activeSession?.id === action.sessionId) {
+				next = {
+					...next,
+					activeSession: appendMessage(state.activeSession, action.message),
+				};
+			}
+			if (state.viewedStepSession?.id === action.sessionId) {
+				next = {
+					...next,
+					viewedStepSession: appendMessage(
+						state.viewedStepSession,
+						action.message,
+					),
+				};
+			}
+			return next;
 		}
 		case "SET_TURN_PHASE":
 			return {
@@ -169,11 +198,23 @@ export function reducer(
 		case "SET_ERROR":
 			return { ...state, error: action.error };
 		case "UPDATE_SESSION_STATE": {
-			if (!state.activeSession) return state;
-			return {
-				...state,
-				activeSession: { ...state.activeSession, state: action.state },
-			};
+			let next = state;
+			if (state.activeSession?.id === action.sessionId) {
+				next = {
+					...next,
+					activeSession: { ...state.activeSession, state: action.state },
+				};
+			}
+			if (state.viewedStepSession?.id === action.sessionId) {
+				next = {
+					...next,
+					viewedStepSession: {
+						...state.viewedStepSession,
+						state: action.state,
+					},
+				};
+			}
+			return next;
 		}
 		case "SET_PERMISSION_MODE":
 			return { ...state, permissionMode: action.mode };
@@ -193,12 +234,24 @@ export function reducer(
 		case "REORDER_SESSIONS":
 			return { ...state, sessionOrder: action.sessionOrder };
 		case "SET_STREAMING_MESSAGE": {
-			if (!state.activeSession || state.activeSession.id !== action.sessionId)
-				return state;
-			return updateMessageInSession(state, action.messageId, (m) => ({
-				...m,
-				parts: action.parts,
-			}));
+			let next = state;
+			if (state.activeSession?.id === action.sessionId) {
+				const updated = applyMessageUpdate(
+					state.activeSession,
+					action.messageId,
+					(m) => ({ ...m, parts: action.parts }),
+				);
+				if (updated) next = { ...next, activeSession: updated };
+			}
+			if (state.viewedStepSession?.id === action.sessionId) {
+				const updated = applyMessageUpdate(
+					state.viewedStepSession,
+					action.messageId,
+					(m) => ({ ...m, parts: action.parts }),
+				);
+				if (updated) next = { ...next, viewedStepSession: updated };
+			}
+			return next;
 		}
 		case "SET_AVAILABLE_MODELS": {
 			const backendId = action.backendId ?? displayBackendId(state);
@@ -226,6 +279,10 @@ export function reducer(
 				turnPhases: restTurnPhases,
 				pendingPermissions: restPendingPermissions,
 				sessionModels: restSessionModels,
+				viewedStepSession:
+					state.viewedStepSession?.id === action.sessionId
+						? null
+						: state.viewedStepSession,
 			};
 		}
 		case "SET_BACKENDS": {
@@ -278,6 +335,7 @@ export const INITIAL_STATE: AgentChatState = {
 	sessionOrder: [],
 	closedSessions: [],
 	activeSession: null,
+	viewedStepSession: null,
 	turnPhases: {},
 	error: null,
 	permissionMode: "edit",

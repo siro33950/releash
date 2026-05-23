@@ -6,11 +6,811 @@
 
 use std::collections::HashMap;
 
-use crate::workflow::event::WorkflowEvent;
+use serde::{Deserialize, Serialize};
+
+use crate::workflow::event::{
+    ApprovalDecisionRecord, CliMutationRequestRecord, CollectedOutputEntry,
+    TokenUsage as EventTokenUsage, WorkflowEvent,
+};
+use crate::workflow::schema::{NodeType, Workflow};
 use crate::workflow::state::{
     ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
     WorkflowState,
 };
+
+/// 秒単位の f64 タイムスタンプ（engine 内 `current_timestamp()` 由来）を
+/// frontend 表示用のミリ秒単位に変換するための係数。
+const SECONDS_TO_MS: f64 = 1000.0;
+
+#[inline]
+fn seconds_to_ms(value: f64) -> f64 {
+    value * SECONDS_TO_MS
+}
+
+/// spec issues-1023: event 列から (step_name, run_index) ごとの started/completed/duration を
+/// 集約する純粋関数。engine 側 event projection の責務として、所要時間計算と
+/// 単位変換（秒 → ミリ秒）を担う（frontend は表示用フォーマットのみ）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStepTimingView {
+    pub step_name: String,
+    pub run_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
+}
+
+pub(crate) fn compute_step_timings(events: &[WorkflowEvent]) -> Vec<WorkflowStepTimingView> {
+    // (step_name, run_index) -> (started_at, completed_at) 秒単位。
+    let mut buckets: HashMap<(String, u32), (Option<f64>, Option<f64>)> = HashMap::new();
+    let mut last_started_idx: HashMap<String, u32> = HashMap::new();
+    let mut order: Vec<(String, u32)> = Vec::new();
+
+    for event in events {
+        match event {
+            WorkflowEvent::NodeStarted {
+                node_name,
+                execution_count,
+                timestamp,
+                ..
+            } => {
+                let key = (node_name.clone(), *execution_count);
+                last_started_idx.insert(node_name.clone(), *execution_count);
+                let entry = buckets.entry(key.clone()).or_insert((None, None));
+                if entry.0.is_none() {
+                    entry.0 = Some(*timestamp);
+                    order.push(key);
+                }
+            }
+            WorkflowEvent::NodeCompleted {
+                node_name,
+                run_index,
+                timestamp,
+                ..
+            } => {
+                let idx = run_index
+                    .or_else(|| last_started_idx.get(node_name).copied())
+                    .unwrap_or(0);
+                let key = (node_name.clone(), idx);
+                let entry = buckets.entry(key.clone()).or_insert((None, None));
+                entry.1 = Some(*timestamp);
+                if !order.contains(&key) {
+                    order.push(key);
+                }
+            }
+            WorkflowEvent::ParallelChildStarted {
+                child_node_name,
+                execution_count,
+                timestamp,
+                ..
+            } => {
+                let key = (child_node_name.clone(), *execution_count);
+                let entry = buckets.entry(key.clone()).or_insert((None, None));
+                if entry.0.is_none() {
+                    entry.0 = Some(*timestamp);
+                    order.push(key);
+                }
+            }
+            WorkflowEvent::ParallelChildCompleted {
+                child_node_name,
+                run_index,
+                timestamp,
+                ..
+            } => {
+                let key = (child_node_name.clone(), *run_index);
+                let entry = buckets.entry(key.clone()).or_insert((None, None));
+                entry.1 = Some(*timestamp);
+                if !order.contains(&key) {
+                    order.push(key);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    order
+        .into_iter()
+        .map(|key| {
+            let (started_at, completed_at) = buckets.remove(&key).unwrap_or((None, None));
+            let duration = match (started_at, completed_at) {
+                (Some(s), Some(c)) if c >= s => Some(c - s),
+                _ => None,
+            };
+            WorkflowStepTimingView {
+                step_name: key.0,
+                run_index: key.1,
+                started_at_ms: started_at.map(seconds_to_ms),
+                completed_at_ms: completed_at.map(seconds_to_ms),
+                duration_ms: duration.map(seconds_to_ms),
+            }
+        })
+        .collect()
+}
+
+/// spec issues-1023: frontend へ返す event 列の view 型。
+///
+/// `WorkflowEvent` (domain) は engine 内の正本で timestamp が秒単位 f64。
+/// frontend / 観測経路では ms 単位に揃えたいが、同じ `WorkflowEvent` 型のまま
+/// 単位を変えると単一の `timestamp` フィールドが「秒 / ms」の二重意味を持ち、
+/// 経路間の混乱・取り違えが生まれる。本 view 型は「ms 単位の timestamp」を
+/// 型名・フィールド名（`timestamp_ms` / `requested_at_ms`）で明示し、秒/ms の
+/// 二重意味を構造的に排除する。serialize 結果は camelCase（`timestampMs` 等）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "event")]
+pub enum WorkflowEventView {
+    RunStarted {
+        run_id: String,
+        workflow_name: String,
+        workflow_file_stem: String,
+        worktree_path: String,
+        workflow_definition: Workflow,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    NodeStarted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        execution_count: u32,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    NodeCompleted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_usage: Option<EventTokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        structured_output: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        run_index: Option<u32>,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    NodeFailed {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        reason: String,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    ApprovalRequested {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    ApprovalResolved {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        decision: ApprovalDecisionRecord,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        comment: Option<String>,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    RunCompleted {
+        run_id: String,
+        workflow_name: String,
+        total_token_usage: TokenUsage,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    RunFailed {
+        run_id: String,
+        workflow_name: String,
+        reason: String,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    RunAborted {
+        run_id: String,
+        workflow_name: String,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    OutputCollected {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        node_outputs: Vec<CollectedOutputEntry>,
+        reduce_strategy: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reduce_result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reduce_structured_output: Option<serde_json::Value>,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    ContractRepairRequested {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        attempt: u32,
+        violation_reason: String,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    ParallelStarted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        child_node_names: Vec<String>,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    ParallelChildStarted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        child_node_name: String,
+        session_id: String,
+        execution_count: u32,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    ParallelChildCompleted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        child_node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token_usage: Option<EventTokenUsage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        structured_output: Option<serde_json::Value>,
+        run_index: u32,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    ParallelCompleted {
+        run_id: String,
+        workflow_name: String,
+        parent_node_name: String,
+        aggregate_result: String,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    CliMutationRequested {
+        run_id: String,
+        workflow_name: String,
+        request_id: String,
+        request: CliMutationRequestRecord,
+        #[serde(rename = "requestedAtMs")]
+        requested_at_ms: f64,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+}
+
+impl From<WorkflowEvent> for WorkflowEventView {
+    fn from(event: WorkflowEvent) -> Self {
+        match event {
+            WorkflowEvent::RunStarted {
+                run_id,
+                workflow_name,
+                workflow_file_stem,
+                worktree_path,
+                workflow_definition,
+                timestamp,
+            } => WorkflowEventView::RunStarted {
+                run_id,
+                workflow_name,
+                workflow_file_stem,
+                worktree_path,
+                workflow_definition,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::NodeStarted {
+                run_id,
+                workflow_name,
+                node_name,
+                execution_count,
+                timestamp,
+            } => WorkflowEventView::NodeStarted {
+                run_id,
+                workflow_name,
+                node_name,
+                execution_count,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id,
+                workflow_name,
+                node_name,
+                result,
+                session_id,
+                token_usage,
+                structured_output,
+                run_index,
+                timestamp,
+            } => WorkflowEventView::NodeCompleted {
+                run_id,
+                workflow_name,
+                node_name,
+                result,
+                session_id,
+                token_usage,
+                structured_output,
+                run_index,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::NodeFailed {
+                run_id,
+                workflow_name,
+                node_name,
+                reason,
+                timestamp,
+            } => WorkflowEventView::NodeFailed {
+                run_id,
+                workflow_name,
+                node_name,
+                reason,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::ApprovalRequested {
+                run_id,
+                workflow_name,
+                node_name,
+                timestamp,
+            } => WorkflowEventView::ApprovalRequested {
+                run_id,
+                workflow_name,
+                node_name,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::ApprovalResolved {
+                run_id,
+                workflow_name,
+                node_name,
+                decision,
+                comment,
+                timestamp,
+            } => WorkflowEventView::ApprovalResolved {
+                run_id,
+                workflow_name,
+                node_name,
+                decision,
+                comment,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::RunCompleted {
+                run_id,
+                workflow_name,
+                total_token_usage,
+                timestamp,
+            } => WorkflowEventView::RunCompleted {
+                run_id,
+                workflow_name,
+                total_token_usage,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::RunFailed {
+                run_id,
+                workflow_name,
+                reason,
+                timestamp,
+            } => WorkflowEventView::RunFailed {
+                run_id,
+                workflow_name,
+                reason,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::RunAborted {
+                run_id,
+                workflow_name,
+                timestamp,
+            } => WorkflowEventView::RunAborted {
+                run_id,
+                workflow_name,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::OutputCollected {
+                run_id,
+                workflow_name,
+                node_name,
+                node_outputs,
+                reduce_strategy,
+                reduce_result,
+                reduce_structured_output,
+                timestamp,
+            } => WorkflowEventView::OutputCollected {
+                run_id,
+                workflow_name,
+                node_name,
+                node_outputs,
+                reduce_strategy,
+                reduce_result,
+                reduce_structured_output,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::ContractRepairRequested {
+                run_id,
+                workflow_name,
+                node_name,
+                attempt,
+                violation_reason,
+                timestamp,
+            } => WorkflowEventView::ContractRepairRequested {
+                run_id,
+                workflow_name,
+                node_name,
+                attempt,
+                violation_reason,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::ParallelStarted {
+                run_id,
+                workflow_name,
+                parent_node_name,
+                child_node_names,
+                timestamp,
+            } => WorkflowEventView::ParallelStarted {
+                run_id,
+                workflow_name,
+                parent_node_name,
+                child_node_names,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::ParallelChildStarted {
+                run_id,
+                workflow_name,
+                parent_node_name,
+                child_node_name,
+                session_id,
+                execution_count,
+                timestamp,
+            } => WorkflowEventView::ParallelChildStarted {
+                run_id,
+                workflow_name,
+                parent_node_name,
+                child_node_name,
+                session_id,
+                execution_count,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::ParallelChildCompleted {
+                run_id,
+                workflow_name,
+                parent_node_name,
+                child_node_name,
+                result,
+                session_id,
+                token_usage,
+                structured_output,
+                run_index,
+                timestamp,
+            } => WorkflowEventView::ParallelChildCompleted {
+                run_id,
+                workflow_name,
+                parent_node_name,
+                child_node_name,
+                result,
+                session_id,
+                token_usage,
+                structured_output,
+                run_index,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::ParallelCompleted {
+                run_id,
+                workflow_name,
+                parent_node_name,
+                aggregate_result,
+                timestamp,
+            } => WorkflowEventView::ParallelCompleted {
+                run_id,
+                workflow_name,
+                parent_node_name,
+                aggregate_result,
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::CliMutationRequested {
+                run_id,
+                workflow_name,
+                request_id,
+                request,
+                requested_at,
+                timestamp,
+            } => WorkflowEventView::CliMutationRequested {
+                run_id,
+                workflow_name,
+                request_id,
+                request,
+                requested_at_ms: seconds_to_ms(requested_at),
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+        }
+    }
+}
+
+/// spec issues-1023: event log を frontend に返す境界。秒単位の domain `WorkflowEvent`
+/// を ms 単位の `WorkflowEventView` に変換する。
+pub(crate) fn events_with_ms_timestamps(events: Vec<WorkflowEvent>) -> Vec<WorkflowEventView> {
+    events.into_iter().map(WorkflowEventView::from).collect()
+}
+
+/// spec issues-1023: timeline 上で選択した step（node 実行）の入出力・遷移結果・
+/// 所要時間を 1 つの View にまとめた projection。frontend は `WorkflowState` を
+/// 再走査せず、`worktree_path + run_id + node_name + run_index` を渡すだけで
+/// この型を受け取る境界。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStepDetailView {
+    pub step_name: String,
+    pub node_type: String,
+    pub run_index: u32,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_output: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<EventTokenUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
+    /// 入力 facts: node 定義に静的に含まれる instruction と、当該 step に対する
+    /// 直前 step（parallel parent / 直前 step_history entry）の structured_output。
+    pub input: WorkflowStepInputView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStepInputView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub knowledge: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_contract: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub input_contracts: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_step_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_step_structured_output: Option<serde_json::Value>,
+}
+
+fn node_type_label(t: NodeType) -> &'static str {
+    match t {
+        NodeType::Agent => "agent",
+        NodeType::Bash => "bash",
+        NodeType::Approval => "approval",
+        NodeType::Parallel => "parallel",
+    }
+}
+
+fn node_input_from_definition(
+    workflow: &Workflow,
+    node_name: &str,
+) -> (Option<&'static str>, WorkflowStepInputView) {
+    // top-level node
+    if let Some(node) = workflow.nodes.iter().find(|n| n.name == node_name) {
+        let mut view = WorkflowStepInputView {
+            instruction: node.instruction.clone(),
+            policy: node.policy.clone(),
+            knowledge: node.knowledge.clone(),
+            output_contract: node.output_contract.clone(),
+            input_contracts: node.input_contracts.clone().unwrap_or_default(),
+            ..WorkflowStepInputView::default()
+        };
+        // 直前 top-level node の出力を input として参照する境界。
+        if let Some(idx) = workflow.nodes.iter().position(|n| n.name == node_name) {
+            if idx > 0 {
+                view.previous_step_name = Some(workflow.nodes[idx - 1].name.clone());
+            }
+        }
+        return (Some(node_type_label(node.node_type)), view);
+    }
+    // parallel child node
+    for parent in &workflow.nodes {
+        if let Some(children) = &parent.parallel_children {
+            if let Some(child) = children.iter().find(|c| c.name == node_name) {
+                let view = WorkflowStepInputView {
+                    instruction: child.instruction.clone(),
+                    policy: child.policy.clone(),
+                    knowledge: child.knowledge.clone(),
+                    output_contract: child.output_contract.clone(),
+                    input_contracts: child.input_contracts.clone().unwrap_or_default(),
+                    previous_step_name: Some(parent.name.clone()),
+                    ..WorkflowStepInputView::default()
+                };
+                return (Some(node_type_label(child.node_type)), view);
+            }
+        }
+    }
+    (None, WorkflowStepInputView::default())
+}
+
+/// `WorkflowState` 再構築結果と event 列を組み合わせて、選択 step の詳細 View を
+/// 返す。`run_index` が None の場合は履歴中の最新エントリ（最大 run_index）に解決する。
+/// 該当 step が見つからない場合は `None` を返す。
+pub(crate) fn compute_step_detail(
+    state: &WorkflowState,
+    events: &[WorkflowEvent],
+    node_name: &str,
+    run_index: Option<u32>,
+) -> Option<WorkflowStepDetailView> {
+    let (node_type_str, mut input_view) =
+        node_input_from_definition(&state.workflow_definition, node_name);
+
+    // history (top-level / parallel parent) から探す。
+    // spec issues-1023: run_index が Some の場合は厳密一致のみ許可する。loop / retry
+    // 経路で別 run_index の履歴へフォールバックすると、別実行回の detail が返り、
+    // 選択 step の事実列が汚染されるため、不一致なら history_entry は None を返す。
+    let mut history_match = state
+        .step_history
+        .iter()
+        .filter(|e| e.step_name == node_name)
+        .collect::<Vec<_>>();
+    history_match.sort_by_key(|e| e.run_index);
+    let history_entry = match run_index {
+        Some(ri) => history_match.iter().find(|e| e.run_index == ri).copied(),
+        None => history_match.last().copied(),
+    };
+
+    // spec issues-1023: 直前 step の structured_output は、選択した history_entry の
+    // 位置「以前」に発生した previous_step_name の最新履歴を引き当てる。
+    // step_history は chronological 順なので、選択 entry の index より前で
+    // previous_step_name に一致する最新の entry を探す。選択中 step が未到達
+    // （history_entry が None）の場合は previous_step_name の最新を引く。
+    if let Some(prev_name) = input_view.previous_step_name.clone() {
+        let cutoff_idx = history_entry.and_then(|entry| {
+            state
+                .step_history
+                .iter()
+                .position(|h| std::ptr::eq(h, entry))
+        });
+        let prev_entry = match cutoff_idx {
+            Some(idx) => state.step_history[..idx]
+                .iter()
+                .rev()
+                .find(|h| h.step_name == prev_name),
+            None => state
+                .step_history
+                .iter()
+                .rev()
+                .find(|h| h.step_name == prev_name),
+        };
+        if let Some(prev) = prev_entry {
+            input_view.previous_step_structured_output = prev.structured_output.clone();
+        }
+    }
+
+    // parallel child の結果は parent の childOutputs か step_outputs 経由で取れる。
+    let timings = compute_step_timings(events);
+    let resolved_run_index = run_index
+        .or_else(|| history_entry.map(|h| h.run_index))
+        .unwrap_or_else(|| {
+            state
+                .step_execution_counts
+                .get(node_name)
+                .copied()
+                .unwrap_or(0)
+        });
+    let timing = timings
+        .iter()
+        .find(|t| t.step_name == node_name && t.run_index == resolved_run_index)
+        .or_else(|| timings.iter().find(|t| t.step_name == node_name));
+
+    if let Some(entry) = history_entry {
+        let state_str = state
+            .step_states
+            .get(node_name)
+            .cloned()
+            .unwrap_or_else(|| "completed".to_string());
+        return Some(WorkflowStepDetailView {
+            step_name: node_name.to_string(),
+            node_type: node_type_str.unwrap_or("unknown").to_string(),
+            run_index: entry.run_index,
+            state: state_str,
+            session_id: entry.session_id.clone(),
+            result: entry.result.clone(),
+            structured_output: entry.structured_output.clone(),
+            token_usage: entry.token_usage.clone(),
+            started_at_ms: timing.and_then(|t| t.started_at_ms),
+            completed_at_ms: timing
+                .and_then(|t| t.completed_at_ms)
+                .or(Some(seconds_to_ms(entry.completed_at))),
+            duration_ms: timing.and_then(|t| t.duration_ms),
+            input: input_view,
+        });
+    }
+
+    // parallel child（active）
+    for ps in &state.active_parallel_steps {
+        if ps.step_name == node_name && (run_index.is_none() || run_index == Some(ps.run_index)) {
+            return Some(WorkflowStepDetailView {
+                step_name: node_name.to_string(),
+                node_type: node_type_str.unwrap_or("unknown").to_string(),
+                run_index: ps.run_index,
+                state: ps.state.clone(),
+                session_id: ps.session_id.clone(),
+                result: ps.result.clone(),
+                structured_output: ps.structured_output.clone(),
+                token_usage: None,
+                started_at_ms: timing.and_then(|t| t.started_at_ms),
+                completed_at_ms: timing
+                    .and_then(|t| t.completed_at_ms)
+                    .or(ps.completed_at.map(seconds_to_ms)),
+                duration_ms: timing.and_then(|t| t.duration_ms),
+                input: input_view,
+            });
+        }
+    }
+
+    // current step（running / waiting_approval）
+    if state.current_step_name == node_name {
+        let output = state.step_outputs.get(node_name);
+        let state_str = state
+            .step_states
+            .get(node_name)
+            .cloned()
+            .unwrap_or_else(|| state.state.as_str().to_string());
+        return Some(WorkflowStepDetailView {
+            step_name: node_name.to_string(),
+            node_type: node_type_str.unwrap_or("unknown").to_string(),
+            run_index: state
+                .step_execution_counts
+                .get(node_name)
+                .copied()
+                .unwrap_or(0),
+            state: state_str,
+            session_id: state.current_session_id.clone(),
+            result: output.and_then(|o| o.result.clone()),
+            structured_output: output.and_then(|o| o.structured_output.clone()),
+            token_usage: output.and_then(|o| o.token_usage.clone()),
+            started_at_ms: timing.and_then(|t| t.started_at_ms),
+            completed_at_ms: timing.and_then(|t| t.completed_at_ms),
+            duration_ms: timing.and_then(|t| t.duration_ms),
+            input: input_view,
+        });
+    }
+
+    // 上記いずれにも該当しない既知 node は pending 扱い（input のみ返す）。
+    if node_type_str.is_some() {
+        return Some(WorkflowStepDetailView {
+            step_name: node_name.to_string(),
+            node_type: node_type_str.unwrap_or("unknown").to_string(),
+            run_index: 0,
+            state: state
+                .step_states
+                .get(node_name)
+                .cloned()
+                .unwrap_or_else(|| "pending".to_string()),
+            session_id: None,
+            result: None,
+            structured_output: None,
+            token_usage: None,
+            started_at_ms: None,
+            completed_at_ms: None,
+            duration_ms: None,
+            input: input_view,
+        });
+    }
+    None
+}
 
 /// イベント列からWorkflowStateを再構築する。
 ///
@@ -580,5 +1380,218 @@ mod tests {
         assert_eq!(state.state, WorkflowExecutionState::Running);
         assert_eq!(state.current_step_name, "plan");
         assert_eq!(state.updated_at, 1001.0);
+    }
+
+    /// spec issues-1023: event timestamp は engine 内 `current_timestamp()` 由来の
+    /// 秒単位 f64。`compute_step_timings` は per-step duration を集計しつつ ms へ
+    /// 正規化する境界（frontend は表示用フォーマットに留まる）。
+    #[test]
+    fn compute_step_timings_pairs_node_started_and_node_completed() {
+        let events = vec![
+            WorkflowEvent::NodeStarted {
+                run_id: "r".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 1000.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: "r".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                result: Some("LGTM".to_string()),
+                session_id: Some("s1".to_string()),
+                token_usage: None,
+                structured_output: None,
+                run_index: Some(1),
+                timestamp: 1750.0,
+            },
+        ];
+        let timings = compute_step_timings(&events);
+        assert_eq!(timings.len(), 1);
+        let t = &timings[0];
+        assert_eq!(t.step_name, "plan");
+        assert_eq!(t.run_index, 1);
+        // 秒 → ミリ秒へ正規化された値が返る境界。
+        assert_eq!(t.started_at_ms, Some(1_000_000.0));
+        assert_eq!(t.completed_at_ms, Some(1_750_000.0));
+        assert_eq!(t.duration_ms, Some(750_000.0));
+    }
+
+    #[test]
+    fn compute_step_timings_handles_parallel_children() {
+        let events = vec![
+            WorkflowEvent::ParallelChildStarted {
+                run_id: "r".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parent".to_string(),
+                child_node_name: "child-a".to_string(),
+                session_id: "s-a".to_string(),
+                execution_count: 1,
+                timestamp: 100.0,
+            },
+            WorkflowEvent::ParallelChildCompleted {
+                run_id: "r".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parent".to_string(),
+                child_node_name: "child-a".to_string(),
+                result: None,
+                session_id: "s-a".to_string(),
+                token_usage: None,
+                structured_output: None,
+                run_index: 1,
+                timestamp: 300.0,
+            },
+        ];
+        let timings = compute_step_timings(&events);
+        assert_eq!(timings.len(), 1);
+        assert_eq!(timings[0].step_name, "child-a");
+        assert_eq!(timings[0].duration_ms, Some(200_000.0));
+    }
+
+    #[test]
+    fn compute_step_timings_leaves_duration_none_when_started_missing() {
+        let events = vec![WorkflowEvent::NodeCompleted {
+            run_id: "r".to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: "plan".to_string(),
+            result: None,
+            session_id: None,
+            token_usage: None,
+            structured_output: None,
+            run_index: Some(1),
+            timestamp: 200.0,
+        }];
+        let timings = compute_step_timings(&events);
+        assert_eq!(timings.len(), 1);
+        assert!(timings[0].started_at_ms.is_none());
+        assert!(timings[0].duration_ms.is_none());
+    }
+
+    /// spec issues-1023: `events_with_ms_timestamps` は event 列をそのままの順序で
+    /// 返しつつ、すべての timestamp フィールドを秒 → ミリ秒に正規化する。
+    #[test]
+    fn events_with_ms_timestamps_converts_seconds_to_ms() {
+        let snapshot = workflow_with_nodes("wf", vec!["plan"]);
+        let events = vec![
+            run_started("exec-ms", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-ms".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 1.5,
+            },
+        ];
+        let converted = events_with_ms_timestamps(events);
+        assert_eq!(converted.len(), 2);
+        if let WorkflowEventView::RunStarted { timestamp_ms, .. } = &converted[0] {
+            assert_eq!(*timestamp_ms, 1_000_000.0);
+        } else {
+            panic!("first event must remain RunStarted");
+        }
+        if let WorkflowEventView::NodeStarted { timestamp_ms, .. } = &converted[1] {
+            assert_eq!(*timestamp_ms, 1500.0);
+        } else {
+            panic!("second event must remain NodeStarted");
+        }
+    }
+
+    /// spec issues-1023: `compute_step_detail` は `(node_name, run_index)` を主語に
+    /// step の入出力・遷移結果・所要時間を返す。node 定義から input facts を引き、
+    /// history entry から output facts を引く。timestamps は ms 正規化される。
+    #[test]
+    fn compute_step_detail_returns_completed_step_with_input_and_output() {
+        let mut workflow = workflow_with_nodes("wf", vec!["plan", "review"]);
+        workflow.nodes[1].instruction = Some("review the diff".to_string());
+        let snapshot = workflow.clone();
+        let events = vec![
+            run_started("exec-detail", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-detail".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 1100.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: "exec-detail".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                result: Some("ok".to_string()),
+                session_id: Some("plan-session".to_string()),
+                token_usage: None,
+                structured_output: Some(serde_json::json!({"summary": "diff is ok"})),
+                run_index: Some(1),
+                timestamp: 1200.0,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-detail".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                timestamp: 1300.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: "exec-detail".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                result: Some("LGTM".to_string()),
+                session_id: Some("review-session".to_string()),
+                token_usage: None,
+                structured_output: Some(serde_json::json!({"verdict": "LGTM"})),
+                run_index: Some(1),
+                timestamp: 1500.0,
+            },
+        ];
+        let state = reconstruct_state_from_events("exec-detail", &events)
+            .unwrap()
+            .unwrap();
+        let detail = compute_step_detail(&state, &events, "review", Some(1)).unwrap();
+        assert_eq!(detail.step_name, "review");
+        assert_eq!(detail.node_type, "agent");
+        assert_eq!(detail.run_index, 1);
+        assert_eq!(detail.result.as_deref(), Some("LGTM"));
+        assert_eq!(detail.session_id.as_deref(), Some("review-session"));
+        assert_eq!(detail.started_at_ms, Some(1_300_000.0));
+        assert_eq!(detail.completed_at_ms, Some(1_500_000.0));
+        assert_eq!(detail.duration_ms, Some(200_000.0));
+        assert_eq!(detail.input.instruction.as_deref(), Some("review the diff"));
+        assert_eq!(detail.input.previous_step_name.as_deref(), Some("plan"));
+        assert_eq!(
+            detail.input.previous_step_structured_output,
+            Some(serde_json::json!({"summary": "diff is ok"}))
+        );
+        assert_eq!(
+            detail.structured_output,
+            Some(serde_json::json!({"verdict": "LGTM"}))
+        );
+    }
+
+    /// spec issues-1023: 未到達の pending node でも node 定義から引いた input facts を
+    /// 返し、frontend が timeline 上で選択した瞬間に static な情報を表示できる。
+    #[test]
+    fn compute_step_detail_returns_input_for_pending_step() {
+        let mut workflow = workflow_with_nodes("wf", vec!["plan", "review"]);
+        workflow.nodes[1].instruction = Some("review later".to_string());
+        let snapshot = workflow.clone();
+        let events = vec![
+            run_started("exec-pending", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-pending".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 1.0,
+            },
+        ];
+        let state = reconstruct_state_from_events("exec-pending", &events)
+            .unwrap()
+            .unwrap();
+        let detail = compute_step_detail(&state, &events, "review", None).unwrap();
+        assert_eq!(detail.step_name, "review");
+        assert_eq!(detail.state, "pending");
+        assert!(detail.result.is_none());
+        assert_eq!(detail.input.instruction.as_deref(), Some("review later"));
     }
 }

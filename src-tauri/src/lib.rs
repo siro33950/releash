@@ -581,6 +581,7 @@ pub fn run() {
             workflow::commands::get_workflow_run,
             workflow::commands::get_workflow_run_log,
             workflow::commands::get_workflow_run_state,
+            workflow::commands::get_workflow_step_detail,
             workflow::commands::resolve_active_run_by_worktree,
             workflow::commands::resolve_worktree_by_run,
             workflow::commands::list_facets,

@@ -45,6 +45,7 @@ function makeRefs(): TestRefs {
 	return {
 		dispatch: vi.fn(),
 		activeSessionRef: { current: null },
+		viewedStepSessionRef: { current: null },
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
 	};
 }
@@ -218,6 +219,7 @@ describe("agent-session-state-changed event", () => {
 		});
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "UPDATE_SESSION_STATE",
+			sessionId: "session-1",
 			state: "idle",
 		});
 	});
@@ -783,6 +785,7 @@ describe("agent-pending-message-consumed event", () => {
 
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "ADD_MESSAGE",
+			sessionId: "session-1",
 			message: {
 				id: "msg-agent-001",
 				role: "agent",

@@ -2,7 +2,6 @@ use super::builtin;
 use super::command::{WorkflowCommand, WorkflowCommandResult};
 use super::diagnostics;
 use super::engine::WorkflowEngine;
-use super::event::WorkflowEvent;
 use super::facet::{self, FacetKind};
 use super::log::WorkflowEventLog;
 use super::run::{RunListFilter, RunStatusFilter, WorkflowRunSummary};
@@ -706,17 +705,27 @@ pub async fn get_workflow_run(
     authorize_run_for_caller(engine.inner(), config.inner(), &run_id).await
 }
 
+/// spec issues-1023: 永続化 event の timestamp は engine 内 `current_timestamp()`
+/// 由来の秒単位 f64 だが、frontend 表示用に projection 境界で ms 単位の
+/// `WorkflowEventView` に変換する。view 型分離で「秒 / ms」の二重意味を排除する。
+pub use super::event_projection::WorkflowEventView;
+
 /// [05] read-only API: 指定 run の event log を返す。
 /// `workflow_logs/{run_id}.ndjson` を engine 一次 owner の log source として読む。
 /// 該当 run なし、または認可不一致は `None`（spec [05] L104-108 / L182）。
+///
+/// spec issues-1023 L132/L150: 観測 invoke は caller の現 worktree path を必須引数
+/// として受け取り、`canonicalize_managed_worktree_path` + run metadata の
+/// `worktree_path` 一致を二重に検証してから event log を返す。
 #[tauri::command]
 pub async fn get_workflow_run_log(
     app: tauri::AppHandle,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
+    worktree_path: String,
     run_id: String,
-) -> Result<Option<Vec<WorkflowEvent>>, String> {
-    get_workflow_run_log_inner(&app, engine.inner(), config.inner(), run_id).await
+) -> Result<Option<Vec<WorkflowEventView>>, String> {
+    get_workflow_run_log_inner(&app, engine.inner(), config.inner(), worktree_path, run_id).await
 }
 
 /// [05] generic 入口: テストで MockRuntime AppHandle を渡せるように runtime を generic 化する
@@ -725,13 +734,17 @@ async fn get_workflow_run_log_inner<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     engine: &Arc<WorkflowEngine>,
     config: &Arc<AppConfig>,
+    worktree_path: String,
     run_id: String,
-) -> Result<Option<Vec<WorkflowEvent>>, String> {
+) -> Result<Option<Vec<WorkflowEventView>>, String> {
     validate_run_id(&run_id)?;
-    if authorize_run_for_caller(engine, config, &run_id)
-        .await?
-        .is_none()
-    {
+    let canonical =
+        super::worktree::canonicalize_managed_worktree_path(config.clone(), worktree_path).await?;
+    let summary = match authorize_run_for_caller(engine, config, &run_id).await? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    if summary.worktree_path != canonical {
         return Ok(None);
     }
     let data_dir = resolve_data_dir(app)?;
@@ -739,7 +752,9 @@ async fn get_workflow_run_log_inner<R: tauri::Runtime>(
     let events = tokio::task::spawn_blocking(move || event_log.read_log(&run_id))
         .await
         .map_err(|e| format!("task join error: {e}"))??;
-    Ok(Some(events))
+    Ok(Some(super::event_projection::events_with_ms_timestamps(
+        events,
+    )))
 }
 
 /// [05] read-only API: 指定 run の現在 state を返す。
@@ -752,14 +767,19 @@ async fn get_workflow_run_log_inner<R: tauri::Runtime>(
 /// 通じて UI に届ける）。
 ///
 /// 認可不一致は `None`（spec [05] L104-108 / L182）。
+///
+/// spec issues-1023 L132/L150: 観測 invoke は caller の現 worktree path を必須引数
+/// として受け取り、`canonicalize_managed_worktree_path` + run metadata の
+/// `worktree_path` 一致を二重に検証してから state を返す。
 #[tauri::command]
 pub async fn get_workflow_run_state(
     app: tauri::AppHandle,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
     config: tauri::State<'_, Arc<AppConfig>>,
+    worktree_path: String,
     run_id: String,
 ) -> Result<Option<WorkflowStateView>, String> {
-    get_workflow_run_state_inner(&app, engine.inner(), config.inner(), run_id).await
+    get_workflow_run_state_inner(&app, engine.inner(), config.inner(), worktree_path, run_id).await
 }
 
 /// [05] generic 入口: テストで MockRuntime AppHandle を渡せるように runtime を generic 化する
@@ -768,13 +788,17 @@ async fn get_workflow_run_state_inner<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     engine: &Arc<WorkflowEngine>,
     config: &Arc<AppConfig>,
+    worktree_path: String,
     run_id: String,
 ) -> Result<Option<WorkflowStateView>, String> {
     validate_run_id(&run_id)?;
-    if authorize_run_for_caller(engine, config, &run_id)
-        .await?
-        .is_none()
-    {
+    let canonical =
+        super::worktree::canonicalize_managed_worktree_path(config.clone(), worktree_path).await?;
+    let summary = match authorize_run_for_caller(engine, config, &run_id).await? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    if summary.worktree_path != canonical {
         return Ok(None);
     }
     let data_dir = resolve_data_dir(app)?;
@@ -792,6 +816,69 @@ async fn get_workflow_run_state_inner<R: tauri::Runtime>(
             std::collections::HashMap::new(),
         )
     }))
+}
+
+/// spec issues-1023: 選択 step の入出力・遷移結果・所要時間を 1 つの View で返す
+/// 観測用 API。frontend で `WorkflowState` を再走査する代わりに、`worktree_path` /
+/// `run_id` / `node_name` / `run_index` を渡してこの View を受け取る境界。
+pub use super::event_projection::WorkflowStepDetailView;
+
+#[tauri::command]
+pub async fn get_workflow_step_detail(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    worktree_path: String,
+    run_id: String,
+    node_name: String,
+    run_index: Option<u32>,
+) -> Result<Option<WorkflowStepDetailView>, String> {
+    get_workflow_step_detail_inner(
+        &app,
+        engine.inner(),
+        config.inner(),
+        worktree_path,
+        run_id,
+        node_name,
+        run_index,
+    )
+    .await
+}
+
+async fn get_workflow_step_detail_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    engine: &Arc<WorkflowEngine>,
+    config: &Arc<AppConfig>,
+    worktree_path: String,
+    run_id: String,
+    node_name: String,
+    run_index: Option<u32>,
+) -> Result<Option<WorkflowStepDetailView>, String> {
+    validate_run_id(&run_id)?;
+    let canonical =
+        super::worktree::canonicalize_managed_worktree_path(config.clone(), worktree_path).await?;
+    let summary = match authorize_run_for_caller(engine, config, &run_id).await? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    if summary.worktree_path != canonical {
+        return Ok(None);
+    }
+    let data_dir = resolve_data_dir(app)?;
+    let detail = tokio::task::spawn_blocking(move || {
+        let event_log = WorkflowEventLog::new(&data_dir);
+        let events = event_log.read_log(&run_id)?;
+        let Some(state) = super::event_projection::reconstruct_state_from_events(&run_id, &events)?
+        else {
+            return Ok::<Option<WorkflowStepDetailView>, String>(None);
+        };
+        Ok(super::event_projection::compute_step_detail(
+            &state, &events, &node_name, run_index,
+        ))
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))??;
+    Ok(detail)
 }
 
 // ---- ファセットCRUDコマンド ----
@@ -3231,23 +3318,33 @@ mod tests {
             "unauthorized run summary must not be observable"
         );
 
+        // unauthorized worktree_path は canonicalize 段階で Err として弾かれる。
         let config_state = app.state::<Arc<AppConfig>>();
-        let log = get_workflow_run_log_inner(app.handle(), &engine, &config_state, run_id.clone())
-            .await
-            .expect("get_workflow_run_log must succeed");
+        let log = get_workflow_run_log_inner(
+            app.handle(),
+            &engine,
+            &config_state,
+            unauthorized_wt.to_string(),
+            run_id.clone(),
+        )
+        .await;
         assert!(
-            log.is_none(),
-            "unauthorized run event log must not be observable"
+            log.is_err(),
+            "unauthorized worktree_path must be rejected by event log invoke"
         );
 
         let config_state = app.state::<Arc<AppConfig>>();
-        let state =
-            get_workflow_run_state_inner(app.handle(), &engine, &config_state, run_id.clone())
-                .await
-                .expect("get_workflow_run_state must succeed");
+        let state = get_workflow_run_state_inner(
+            app.handle(),
+            &engine,
+            &config_state,
+            unauthorized_wt.to_string(),
+            run_id.clone(),
+        )
+        .await;
         assert!(
-            state.is_none(),
-            "unauthorized run state must not be observable"
+            state.is_err(),
+            "unauthorized worktree_path must be rejected by state invoke"
         );
     }
 
@@ -3281,19 +3378,32 @@ mod tests {
             .unwrap();
 
         let config_state = app.state::<Arc<AppConfig>>();
-        let events =
-            get_workflow_run_log_inner(app.handle(), &engine, &config_state, run_id.clone())
-                .await
-                .expect("get_workflow_run_log must succeed")
-                .expect("run must be found");
+        let events = get_workflow_run_log_inner(
+            app.handle(),
+            &engine,
+            &config_state,
+            worktree_path.clone(),
+            run_id.clone(),
+        )
+        .await
+        .expect("get_workflow_run_log must succeed")
+        .expect("run must be found");
         assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], WorkflowEvent::RunStarted { .. }));
+        match &events[0] {
+            super::WorkflowEventView::RunStarted { timestamp_ms, .. } => {
+                // spec issues-1023: 永続化された秒単位 timestamp は API 境界で ms 単位の
+                // view 型へ変換されて返る（`timestamp_ms` フィールドで単位を明示）。
+                assert_eq!(*timestamp_ms, 400_000.0);
+            }
+            _ => panic!("first event must be RunStarted"),
+        }
 
         let config_state = app.state::<Arc<AppConfig>>();
         let missing = get_workflow_run_log_inner(
             app.handle(),
             &engine,
             &config_state,
+            worktree_path.clone(),
             read_only_test_uuid(98),
         )
         .await
@@ -3327,11 +3437,16 @@ mod tests {
             .unwrap();
 
         let config_state = app.state::<Arc<AppConfig>>();
-        let view =
-            get_workflow_run_state_inner(app.handle(), &engine, &config_state, run_id.clone())
-                .await
-                .expect("get_workflow_run_state must succeed")
-                .expect("state must be available");
+        let view = get_workflow_run_state_inner(
+            app.handle(),
+            &engine,
+            &config_state,
+            worktree_path.clone(),
+            run_id.clone(),
+        )
+        .await
+        .expect("get_workflow_run_state must succeed")
+        .expect("state must be available");
         assert_eq!(view.state.execution_id, run_id);
         assert!(
             view.runtime_states.is_empty(),
@@ -3344,10 +3459,106 @@ mod tests {
             app.handle(),
             &engine,
             &config_state,
+            worktree_path.clone(),
             read_only_test_uuid(97),
         )
         .await
         .expect("unknown run must Ok(None)");
         assert!(missing.is_none());
+    }
+
+    /// spec issues-1023 L132/L150: `get_workflow_step_detail_inner` の worktree
+    /// 認可境界。現 worktree と一致する run の detail は Some、別 worktree（managed
+    /// 集合外）からの invoke は canonicalize 段階で Err として弾かれる。
+    #[tokio::test]
+    async fn get_workflow_step_detail_enforces_current_worktree_authorization() {
+        let (app, engine, data_dir, worktree_path, _r, _w) =
+            make_read_only_app_with_managed_worktree();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+
+        let run_id = read_only_test_uuid(82);
+        write_read_only_run(
+            &data_dir,
+            &make_read_only_run(&run_id, "wf", &worktree_path, RunStatus::Completed, 100.0),
+        );
+        let event_log = WorkflowEventLog::new(&data_dir);
+        let snapshot = Workflow {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            nodes: vec![crate::workflow::schema::NodeDefinition {
+                name: "plan".to_string(),
+                node_type: crate::workflow::schema::NodeType::Agent,
+                instruction: Some("plan it".to_string()),
+                ..crate::workflow::schema::NodeDefinition::default()
+            }],
+        };
+        event_log
+            .append(&WorkflowEvent::RunStarted {
+                run_id: run_id.clone(),
+                workflow_name: "wf".to_string(),
+                workflow_file_stem: "wf".to_string(),
+                worktree_path: worktree_path.clone(),
+                workflow_definition: snapshot,
+                timestamp: 100.0,
+            })
+            .unwrap();
+        event_log
+            .append(&WorkflowEvent::NodeStarted {
+                run_id: run_id.clone(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 101.0,
+            })
+            .unwrap();
+        event_log
+            .append(&WorkflowEvent::NodeCompleted {
+                run_id: run_id.clone(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                result: Some("done".to_string()),
+                session_id: None,
+                token_usage: None,
+                structured_output: None,
+                run_index: Some(1),
+                timestamp: 102.0,
+            })
+            .unwrap();
+
+        let config_state = app.state::<Arc<AppConfig>>().inner().clone();
+
+        // 現 worktree からの invoke は detail を返す
+        let ok = get_workflow_step_detail_inner(
+            app.handle(),
+            &engine,
+            &config_state,
+            worktree_path.clone(),
+            run_id.clone(),
+            "plan".to_string(),
+            Some(1),
+        )
+        .await
+        .expect("detail invoke must succeed");
+        let detail = ok.expect("detail must be observable for matching worktree");
+        assert_eq!(detail.step_name, "plan");
+        assert_eq!(detail.run_index, 1);
+
+        // 別 worktree（managed 集合外）からの invoke は canonicalize 段階で Err
+        let outside = tempfile::TempDir::new().unwrap();
+        let result = get_workflow_step_detail_inner(
+            app.handle(),
+            &engine,
+            &config_state,
+            outside.path().to_string_lossy().to_string(),
+            run_id.clone(),
+            "plan".to_string(),
+            Some(1),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "detail invoke from unauthorized worktree must be rejected"
+        );
     }
 }

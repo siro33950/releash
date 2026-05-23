@@ -2813,6 +2813,13 @@ fn can_change_session_backend(session: &ChatSession) -> bool {
     session.messages.is_empty() && session.agent_session_id.is_none()
 }
 
+/// spec issues-1023: 初期 active 候補は workflow step として起動された session を
+/// 除外し、free chat（`workflow_step_session == false`）の先頭を採用する。free chat が
+/// 1 件もない場合は active 候補無し（`None`）で、UI は空状態を描く。
+fn pick_initial_active_session_candidate(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    sessions.iter().find(|s| !s.workflow_step_session)
+}
+
 fn should_start_agent_process_for_summary(session: &SessionSummary) -> bool {
     !session.workflow_step_session
         && (session.message_count > 0 || session.agent_session_id.is_some())
@@ -4182,15 +4189,22 @@ pub async fn init_agent_sessions(
             }
         }
 
-        // Get first session as active
-        let active = get_session_internal(
-            session_store.inner(),
-            handles.inner(),
-            Some(registry.inner()),
-            &app,
-            &sessions[0].id,
-        )
-        .await?;
+        // spec issues-1023: workflow step として起動された chat session は free chat
+        // tab bar 上に同格に並ばないため、初期 active session 候補からも除外する。
+        // 候補が無い場合は active_session を None で返し、UI は空状態を描く。
+        let active_candidate = pick_initial_active_session_candidate(&sessions);
+        let active = if let Some(candidate) = active_candidate {
+            get_session_internal(
+                session_store.inner(),
+                handles.inner(),
+                Some(registry.inner()),
+                &app,
+                &candidate.id,
+            )
+            .await?
+        } else {
+            None
+        };
 
         Ok(InitSessionsResponse {
             sessions,
@@ -7131,6 +7145,50 @@ mod tests {
         session.message_count = 0;
         session.agent_session_id = Some("sdk-session".to_string());
         assert!(should_start_agent_process_for_summary(&session));
+    }
+
+    /// spec issues-1023: workflow step として起動された chat session は free chat
+    /// tab bar 上に同格に並ばないため、`init_agent_sessions` の active 候補からも
+    /// 除外される。本テストは候補選択 helper を 3 シナリオで検証する:
+    /// - 先頭が workflow step でも active にならない（free chat があればそれが active）
+    /// - 全てが workflow step の場合は active は None
+    /// - 通常 chat のみのときは先頭が active になる
+    #[test]
+    fn pick_initial_active_session_candidate_excludes_workflow_step_sessions() {
+        fn make(id: &str, workflow_step: bool) -> SessionSummary {
+            SessionSummary {
+                id: id.to_string(),
+                worktree_path: "/repo".to_string(),
+                state: crate::session::SessionState::Idle,
+                created_at: 1.0,
+                updated_at: 1.0,
+                first_message: String::new(),
+                message_count: 0,
+                agent_session_id: None,
+                permission_mode: "edit".to_string(),
+                backend_id: Some("claude".to_string()),
+                workflow_step_session: workflow_step,
+            }
+        }
+
+        // 先頭が workflow step だが後ろに free chat がある: free chat が active になる
+        let sessions = vec![make("step-1", true), make("chat-1", false)];
+        let picked = pick_initial_active_session_candidate(&sessions);
+        assert_eq!(picked.map(|s| s.id.as_str()), Some("chat-1"));
+
+        // 全て workflow step: active 候補 None
+        let only_steps = vec![make("step-1", true), make("step-2", true)];
+        assert!(pick_initial_active_session_candidate(&only_steps).is_none());
+
+        // 通常 chat のみ: 先頭が active
+        let only_chats = vec![make("chat-1", false), make("chat-2", false)];
+        assert_eq!(
+            pick_initial_active_session_candidate(&only_chats).map(|s| s.id.as_str()),
+            Some("chat-1")
+        );
+
+        // 空: None
+        assert!(pick_initial_active_session_candidate(&[]).is_none());
     }
 
     #[test]

@@ -129,7 +129,6 @@ describe("useAgentChat", () => {
 		const sessionStore = await import("./useSessionStore");
 		vi.mocked(sessionStore.sendAgentMessage).mockClear();
 		vi.mocked(sessionStore.sendWorkflowApprovalChatMessage).mockClear();
-		vi.mocked(sessionStore.openWorkflowStepTab).mockClear();
 		vi.mocked(sessionStore.initAgentSessions).mockClear();
 		vi.mocked(sessionStore.restoreSession).mockResolvedValue({
 			restoredWorkflowStep: false,
@@ -157,7 +156,10 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -180,7 +182,11 @@ describe("useAgentChat", () => {
 
 		const images = [{ data: "aGVsbG8=", mediaType: "image/png" }];
 		await act(async () => {
-			await result.current.sendMessage("check this", images);
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"check this",
+				images,
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -204,6 +210,7 @@ describe("useAgentChat", () => {
 		const mentions = [{ filePath: "src/main.rs", startLine: 10, endLine: 20 }];
 		await act(async () => {
 			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
 				"check @src/main.rs:L10-L20",
 				undefined,
 				mentions,
@@ -230,7 +237,11 @@ describe("useAgentChat", () => {
 
 		const images = [{ data: "aGVsbG8=", mediaType: "image/png" }];
 		await act(async () => {
-			await result.current.sendMessage("", images);
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"",
+				images,
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -252,7 +263,10 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -274,11 +288,17 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		act(() => {
-			result.current.setBackend("codex");
+			result.current.setBackend(
+				result.current.activeSession?.id ?? null,
+				"codex",
+			);
 		});
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -305,7 +325,10 @@ describe("useAgentChat", () => {
 		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
 
 		await act(async () => {
-			await result.current.sendMessage("adjust policy");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"adjust policy",
+			);
 		});
 
 		expect(sessionStore.sendWorkflowApprovalChatMessage).toHaveBeenCalledWith(
@@ -356,7 +379,10 @@ describe("useAgentChat", () => {
 
 		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
 		await act(async () => {
-			await result.current.sendMessage("continue");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"continue",
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -379,57 +405,16 @@ describe("useAgentChat", () => {
 
 		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
 		await act(async () => {
-			await result.current.sendMessage("continue parent");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"continue parent",
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
 			"s1",
 			"/repo",
 			"continue parent",
-			"edit",
-			null,
-			undefined,
-			undefined,
-		);
-	});
-
-	it("keeps reopened workflow step messaging tied to the opened execution id", async () => {
-		const { renderHook, act, waitFor } = await import("@testing-library/react");
-		const { useAgentChat } = await import("./useAgentChat");
-		const sessionStore = await import("./useSessionStore");
-
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
-			session: {
-				id: "old-step",
-				worktreePath: "/repo",
-				messages: [],
-				state: "idle",
-				createdAt: 1000,
-				updatedAt: 1000,
-				permissionMode: "edit",
-			},
-			turnPhase: "idle",
-			selectedModel: null,
-			availableModels: [],
-		});
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
-
-		await act(async () => {
-			await result.current.openWorkflowStepSession("old-step");
-		});
-		await waitFor(() =>
-			expect(result.current.activeSession?.id).toBe("old-step"),
-		);
-		vi.mocked(sessionStore.sendAgentMessage).mockClear();
-		await act(async () => {
-			await result.current.sendMessage("continue old step");
-		});
-
-		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
-			"old-step",
-			"/repo",
-			"continue old step",
 			"edit",
 			null,
 			undefined,
@@ -445,12 +430,19 @@ describe("useAgentChat", () => {
 
 		// Create active session first
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 		mockInvoke.mockClear();
 
 		act(() => {
-			result.current.respondPermission("req-001", true);
+			result.current.respondPermission(
+				result.current.activeSession?.id ?? "",
+				"req-001",
+				true,
+			);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("respond_agent_permission", {
@@ -469,12 +461,19 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 		mockInvoke.mockClear();
 
 		act(() => {
-			result.current.respondPermission("req-002", false);
+			result.current.respondPermission(
+				result.current.activeSession?.id ?? "",
+				"req-002",
+				false,
+			);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("respond_agent_permission", {
@@ -494,7 +493,10 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		// sendAgentMessage is called with null chatSessionId (Rust creates session)
@@ -517,13 +519,19 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
-			await result.current.sendMessage("first");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"first",
+			);
 		});
 
 		vi.mocked(sessionStore.sendAgentMessage).mockClear();
 
 		await act(async () => {
-			await result.current.sendMessage("second");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"second",
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -545,12 +553,15 @@ describe("useAgentChat", () => {
 
 		// Create active session first
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 		mockInvoke.mockClear();
 
 		act(() => {
-			result.current.interrupt();
+			result.current.interrupt(result.current.activeSession?.id ?? "");
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("interrupt_agent_query", {
@@ -704,11 +715,17 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		act(() => {
-			result.current.setPermissionMode("readonly");
+			result.current.setPermissionMode(
+				result.current.activeSession?.id ?? null,
+				"readonly",
+			);
 		});
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -730,12 +747,18 @@ describe("useAgentChat", () => {
 
 		// Create active session first
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 		mockInvoke.mockClear();
 
 		act(() => {
-			result.current.setPermissionMode("full" as never);
+			result.current.setPermissionMode(
+				result.current.activeSession?.id ?? null,
+				"full" as never,
+			);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("set_agent_permission_mode", {
@@ -752,12 +775,18 @@ describe("useAgentChat", () => {
 
 		// Create active session first
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 		mockInvoke.mockClear();
 
 		act(() => {
-			result.current.setModel("claude-4");
+			result.current.setModel(
+				result.current.activeSession?.id ?? "",
+				"claude-4",
+			);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
@@ -774,12 +803,15 @@ describe("useAgentChat", () => {
 
 		// Create active session first
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 		mockInvoke.mockClear();
 
 		act(() => {
-			result.current.setModel(null);
+			result.current.setModel(result.current.activeSession?.id ?? "", null);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
@@ -797,14 +829,20 @@ describe("useAgentChat", () => {
 
 		// Create active session via first message
 		await act(async () => {
-			await result.current.sendMessage("first");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"first",
+			);
 		});
 		mockInvoke.mockClear();
 		vi.mocked(sessionStore.sendAgentMessage).mockClear();
 
 		// Select model
 		act(() => {
-			result.current.setModel("claude-4");
+			result.current.setModel(
+				result.current.activeSession?.id ?? "",
+				"claude-4",
+			);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
@@ -814,7 +852,10 @@ describe("useAgentChat", () => {
 
 		// Send second message — model sync is handled by Rust's start_agent_turn
 		await act(async () => {
-			await result.current.sendMessage("second");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"second",
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -835,12 +876,19 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 		mockInvoke.mockClear();
 
 		act(() => {
-			result.current.respondPermission("req-exitplan-001", true);
+			result.current.respondPermission(
+				result.current.activeSession?.id ?? "",
+				"req-exitplan-001",
+				true,
+			);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("respond_agent_permission", {
@@ -859,7 +907,10 @@ describe("useAgentChat", () => {
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 		mockInvoke.mockClear();
 
@@ -871,7 +922,12 @@ describe("useAgentChat", () => {
 		};
 
 		act(() => {
-			result.current.respondPermission("req-003", true, updatedInput);
+			result.current.respondPermission(
+				result.current.activeSession?.id ?? "",
+				"req-003",
+				true,
+				updatedInput,
+			);
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("respond_agent_permission", {
@@ -1067,7 +1123,7 @@ describe("useAgentChat", () => {
 		mockInvoke.mockClear();
 
 		await act(async () => {
-			result.current.setModel("sonnet");
+			result.current.setModel(result.current.activeSession?.id ?? "", "sonnet");
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
@@ -1121,12 +1177,15 @@ describe("useAgentChat", () => {
 			await result.current.createNewSession();
 		});
 		act(() => {
-			result.current.setModel("sonnet");
+			result.current.setModel(result.current.activeSession?.id ?? "", "sonnet");
 		});
 		vi.mocked(sessionStore.sendAgentMessage).mockClear();
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
@@ -1158,7 +1217,10 @@ describe("useAgentChat", () => {
 
 		// Select a backend
 		act(() => {
-			result.current.setBackend("claude");
+			result.current.setBackend(
+				result.current.activeSession?.id ?? null,
+				"claude",
+			);
 		});
 
 		const newSession = {
@@ -1224,7 +1286,10 @@ describe("useAgentChat", () => {
 		});
 
 		act(() => {
-			result.current.setBackend("claude");
+			result.current.setBackend(
+				result.current.activeSession?.id ?? null,
+				"claude",
+			);
 		});
 
 		expect(result.current.selectedBackendId).toBe("codex");
@@ -1278,7 +1343,10 @@ describe("useAgentChat", () => {
 		} as never);
 
 		await act(async () => {
-			result.current.setBackend("codex");
+			result.current.setBackend(
+				result.current.activeSession?.id ?? null,
+				"codex",
+			);
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
 
@@ -1323,7 +1391,10 @@ describe("useAgentChat", () => {
 
 		// Send a message to create s1 as active session
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		const activeSession = result.current.activeSession;
@@ -1361,7 +1432,10 @@ describe("useAgentChat", () => {
 
 		// Send message to create s1 as active
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		// Populate sessions with s1 and s2
@@ -1662,99 +1736,6 @@ describe("useAgentChat", () => {
 		);
 	});
 
-	it("openWorkflowStepSession opens the workflow step tab before loading the session", async () => {
-		const { renderHook, act } = await import("@testing-library/react");
-		const { useAgentChat } = await import("./useAgentChat");
-		const sessionStore = await import("./useSessionStore");
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
-		await act(async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
-		});
-
-		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
-			session: {
-				id: "workflow-step-session",
-				worktreePath: "/repo",
-				messages: [],
-				state: "idle",
-				createdAt: 500,
-				updatedAt: 500,
-				permissionMode: "edit",
-			},
-			turnPhase: "idle",
-			selectedModel: null,
-			availableModels: [],
-		} as never);
-
-		await act(async () => {
-			await result.current.openWorkflowStepSession("workflow-step-session");
-		});
-
-		expect(sessionStore.openWorkflowStepTab).toHaveBeenCalledWith(
-			"workflow-step-session",
-		);
-		expect(result.current.activeSession?.id).toBe("workflow-step-session");
-	});
-
-	it("sends and closes opened workflow step sessions without frontend execution context lookup", async () => {
-		const { renderHook, act } = await import("@testing-library/react");
-		const { useAgentChat } = await import("./useAgentChat");
-		const sessionStore = await import("./useSessionStore");
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
-		await act(async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
-		});
-
-		vi.mocked(sessionStore.getSession).mockResolvedValue({
-			session: {
-				id: "workflow-step-session",
-				worktreePath: "/repo",
-				messages: [],
-				state: "idle",
-				createdAt: 500,
-				updatedAt: 500,
-				permissionMode: "edit",
-			},
-			turnPhase: "idle",
-			selectedModel: null,
-			availableModels: [],
-		} as never);
-
-		await act(async () => {
-			await result.current.openWorkflowStepSession("workflow-step-session");
-		});
-		vi.mocked(sessionStore.sendAgentMessage).mockClear();
-		vi.mocked(sessionStore.closeSession).mockClear();
-		mockInvoke.mockClear();
-
-		await act(async () => {
-			await result.current.sendMessage("continue");
-		});
-
-		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
-			"workflow-step-session",
-			"/repo",
-			"continue",
-			"edit",
-			null,
-			undefined,
-			undefined,
-		);
-		await act(async () => {
-			await result.current.closeSession("workflow-step-session");
-		});
-
-		expect(sessionStore.closeSession).toHaveBeenCalledWith(
-			"workflow-step-session",
-		);
-		expect(mockInvoke).not.toHaveBeenCalledWith(
-			"close_agent_session",
-			expect.anything(),
-		);
-	});
-
 	it("restoreSession sets error on failure", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
@@ -1996,7 +1977,10 @@ describe("permissionMode per-session persistence", () => {
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
 		// First send a message to create session
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 		act(() => {
 			permCb?.({
@@ -2035,7 +2019,10 @@ describe("permissionMode per-session persistence", () => {
 
 		// Send a message to create an active session (s1)
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		// Set mode to "plan" via Rust event
@@ -2075,7 +2062,10 @@ describe("permissionMode per-session persistence", () => {
 
 		// Send a message to create an active session (s1)
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		// Set mode to "full" via Rust event
@@ -2115,7 +2105,10 @@ describe("permissionMode per-session persistence", () => {
 
 		// Send a message to create an active session (s1)
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		// Set mode to "readonly" via Rust event
@@ -2157,7 +2150,10 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 
 		// Send a message to create an active session (s1)
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		const permCb = listenCallbacks.get("agent-permission-mode-changed");
@@ -2185,7 +2181,10 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 
 		// Send a message to create an active session (s1)
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		expect(result.current.permissionMode).toBe("edit");
@@ -2225,12 +2224,18 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 
 		// Send a message to create an active session (s1)
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		// User selects full
 		act(() => {
-			result.current.setPermissionMode("full");
+			result.current.setPermissionMode(
+				result.current.activeSession?.id ?? null,
+				"full",
+			);
 		});
 		expect(result.current.permissionMode).toBe("full");
 
@@ -2295,7 +2300,10 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 		const { result, unmount } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		// Unmount (simulates Worktree switch)
@@ -2372,7 +2380,10 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 
 		// Send a message
 		await act(async () => {
-			await result.current.sendMessage("hello");
+			await result.current.sendMessage(
+				result.current.activeSession?.id ?? null,
+				"hello",
+			);
 		});
 
 		// Unmount

@@ -1,13 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
 import { History, X } from "lucide-react";
-import React, {
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-} from "react";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import type React from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { AgentStateIcon } from "@/components/ui/agent-state-icon";
 import {
 	Popover,
@@ -15,222 +8,10 @@ import {
 	PopoverTrigger,
 } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useAgentChat } from "@/hooks/useAgentChat";
+import { useAgentChatContext } from "@/contexts/AgentChatContext";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
-import { loadSlashCommands } from "@/hooks/useSlashCommands";
-import { useWorkflowState } from "@/hooks/useWorkflowState";
-import type {
-	ChatMessage,
-	ImageAttachment,
-	ImagePart,
-	MentionReference,
-	MessagePart,
-} from "@/types/session";
-import { getTextContent } from "@/types/session";
-import {
-	ActivityItem,
-	CollapsibleError,
-	TaskToolActivity,
-	ToolActivity,
-} from "./ActivityLog";
-import type { MessageInputHandle } from "./MessageInput";
-import { MessageInput } from "./MessageInput";
-import { MODES } from "./ModeSelector";
-import { PermissionDialog } from "./PermissionDialog";
-import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
-import { StreamMessage } from "./StreamMessage";
-import { buildToolPairings, type TaskGroup } from "./toolPairing";
-import { WorkflowPanel } from "./WorkflowPanel";
-
-type SystemNotificationPart = Extract<
-	MessagePart,
-	{ type: "system_notification" }
->;
-
-function SystemNotificationItem({ part }: { part: SystemNotificationPart }) {
-	const isInProgress = part.status === "in_progress";
-	return (
-		<div className="px-5 py-0.5 text-xs text-muted-foreground">
-			<span className={isInProgress ? "animate-pulse" : ""}>
-				{isInProgress ? "⏳ " : part.status === "error" ? "❌ " : "✓ "}
-				{part.label}
-			</span>
-			{part.detail && <span className="ml-1 opacity-70">({part.detail})</span>}
-		</div>
-	);
-}
-
-interface AgentMessagePartsProps {
-	msg: ChatMessage;
-	isLastAgentStreaming: boolean;
-	worktreePath: string;
-	respondPermission: (
-		id: string,
-		allow: boolean,
-		updatedInput?: Record<string, unknown>,
-	) => void;
-}
-
-const AgentMessageParts = React.memo(function AgentMessageParts({
-	msg,
-	isLastAgentStreaming,
-	worktreePath,
-	respondPermission,
-}: AgentMessagePartsProps) {
-	const { pairedResults, skippedResultIndices, taskGroups, taskChildIndices } =
-		useMemo(() => buildToolPairings(msg.parts), [msg.parts]);
-
-	const {
-		backgroundCompletionMap,
-		runningBackgroundTasks,
-		backgroundToolUseIndices,
-	} = useMemo(() => {
-		const completionMap = new Map<number, TaskGroup>();
-		const running: TaskGroup[] = [];
-		const bgIndices = new Set<number>();
-
-		for (const [idx, group] of taskGroups) {
-			if (!group.isBackground) continue;
-			bgIndices.add(idx);
-			if (group.isCompleted && group.completionStatusIndex !== undefined) {
-				completionMap.set(group.completionStatusIndex, group);
-			} else if (!group.isCompleted) {
-				running.push(group);
-			}
-		}
-
-		return {
-			backgroundCompletionMap: completionMap,
-			runningBackgroundTasks: running,
-			backgroundToolUseIndices: bgIndices,
-		};
-	}, [taskGroups]);
-
-	return (
-		<>
-			{/* biome-ignore lint/suspicious/useIterableCallbackReturn: switch is exhaustive for MessagePart */}
-			{msg.parts.map((part, i) => {
-				const key = `${msg.id}-p${i}`;
-
-				// バックグラウンドタスクのtool_use位置はスキップ（最下部 or completion位置で表示）
-				if (backgroundToolUseIndices.has(i)) return null;
-
-				// 完了バックグラウンドタスク: completion status位置に表示
-				// NOTE: taskChildIndices.has(i) より前に判定（completionStatusIndexはtaskChildIndicesに含まれるため）
-				{
-					const bgCompletedGroup = backgroundCompletionMap.get(i);
-					if (bgCompletedGroup) {
-						return (
-							<div key={key} className="px-5 py-0.5 text-xs">
-								<TaskToolActivity
-									group={bgCompletedGroup}
-									parts={msg.parts}
-									pairedResults={pairedResults}
-									isStreaming={isLastAgentStreaming}
-									basePath={worktreePath}
-								/>
-							</div>
-						);
-					}
-				}
-
-				if (taskChildIndices.has(i) || part.type === "task_status") return null;
-
-				// フォアグラウンドタスク（既存動作）
-				{
-					const taskGroup = taskGroups.get(i);
-					if (taskGroup) {
-						return (
-							<div key={key} className="px-5 py-0.5 text-xs">
-								<TaskToolActivity
-									group={taskGroup}
-									parts={msg.parts}
-									pairedResults={pairedResults}
-									isStreaming={isLastAgentStreaming}
-									basePath={worktreePath}
-								/>
-							</div>
-						);
-					}
-				}
-
-				switch (part.type) {
-					case "thinking":
-						return null;
-					case "text":
-						return (
-							// biome-ignore lint/a11y/useValidAriaRole: role is a component prop, not an ARIA role
-							<StreamMessage key={key} content={part.content} role="agent" />
-						);
-					case "error":
-						return (
-							<div key={key} className="px-5 py-0.5 text-xs">
-								<CollapsibleError content={part.content} />
-							</div>
-						);
-					case "tool_use": {
-						const pairedResult = pairedResults.get(i);
-						const isExecuting = isLastAgentStreaming && !pairedResult;
-						return (
-							<div key={key} className="px-5 py-0.5 text-xs">
-								<ToolActivity
-									entry={part}
-									result={pairedResult}
-									index={i}
-									isExecuting={isExecuting}
-									basePath={worktreePath}
-								/>
-							</div>
-						);
-					}
-					case "tool_result": {
-						if (skippedResultIndices.has(i)) return null;
-						return (
-							<div key={key} className="px-5 py-0.5 text-xs">
-								<ActivityItem entry={part} index={i} />
-							</div>
-						);
-					}
-					case "permission":
-						return (
-							<PermissionDialog
-								key={key}
-								request={part.request}
-								status={part.status}
-								resolvedAnswers={part.answers}
-								onAllow={(id) => respondPermission(id, true)}
-								onDeny={(id) => respondPermission(id, false)}
-								onAnswer={(id, answers) =>
-									respondPermission(id, true, {
-										...part.request.input,
-										answers,
-									})
-								}
-							/>
-						);
-					case "system_notification":
-						return <SystemNotificationItem key={key} part={part} />;
-					case "image":
-						return null;
-				}
-			})}
-			{runningBackgroundTasks.map((group) => (
-				<div
-					key={`${msg.id}-bg-${group.toolUseId}`}
-					className="px-5 py-0.5 text-xs"
-				>
-					<TaskToolActivity
-						group={group}
-						parts={msg.parts}
-						pairedResults={pairedResults}
-						isStreaming={isLastAgentStreaming}
-						basePath={worktreePath}
-					/>
-				</div>
-			))}
-		</>
-	);
-});
+import type { MentionReference } from "@/types/session";
+import { ChatSessionView } from "./ChatSessionView";
 
 interface AgentChatPanelProps {
 	worktreePath: string;
@@ -249,19 +30,7 @@ export function AgentChatPanel({
 	registerDropZone,
 	sendMessageRef,
 }: AgentChatPanelProps) {
-	const { workflowState } = useWorkflowState(worktreePath);
-	const workflowApprovalChatSessionId =
-		workflowState?.state.type === "waiting_approval"
-			? (workflowState.currentSessionId ?? workflowState.chatSessionId)
-			: null;
-	// Spec issues-1011 line 121: approval 操作系 API は run_id 主語のため、
-	// useAgentChat にも run_id を渡して send_workflow_approval_chat_message を run_id で呼ぶ。
-	const workflowApprovalRunId =
-		workflowState?.state.type === "waiting_approval"
-			? (workflowState.executionId ?? null)
-			: null;
 	const {
-		sessions,
 		orderedSessions,
 		closedSessions,
 		activeSession,
@@ -273,14 +42,12 @@ export function AgentChatPanel({
 		sendMessage,
 		interrupt,
 		selectSession,
-		openWorkflowStepSession,
 		closeSession,
 		restoreSession,
 		createNewSession,
 		reorderSessions,
 		setPermissionMode,
 		respondPermission,
-		refreshSessions,
 		refreshClosedSessions,
 		availableModels,
 		selectedModel,
@@ -288,180 +55,28 @@ export function AgentChatPanel({
 		backends,
 		selectedBackendId,
 		setBackend,
-	} = useAgentChat(
-		worktreePath,
-		workflowApprovalChatSessionId,
-		workflowApprovalRunId,
+	} = useAgentChatContext();
+
+	// spec issues-1023: workflow step として起動された chat session は
+	// 自由対話 chat tab と同格に tab bar 上に並べない。観測経路は Workflow panel の
+	// step conversation transcript 側に切り出されている。
+	const displayedSessions = useMemo(
+		() => orderedSessions.filter((s) => !s.workflowStepSession),
+		[orderedSessions],
 	);
-	const knownWorkflowSessionIds = useMemo(() => {
-		return new Set(sessions.map((session) => session.id));
-	}, [sessions]);
-	const workflowStateUpdatedAt = workflowState?.updatedAt;
+	const displayedClosedSessions = useMemo(
+		() => closedSessions.filter((s) => !s.workflowStepSession),
+		[closedSessions],
+	);
 
-	useEffect(() => {
-		const workflowSessionIds = [
-			workflowState?.chatSessionId,
-			workflowState?.currentSessionId,
-		].filter((id): id is string => Boolean(id));
-
-		if (
-			workflowSessionIds.some(
-				(sessionId) => !knownWorkflowSessionIds.has(sessionId),
-			)
-		) {
-			refreshSessions();
-		}
-	}, [
-		workflowState?.chatSessionId,
-		workflowState?.currentSessionId,
-		knownWorkflowSessionIds,
-		refreshSessions,
-	]);
-
-	useEffect(() => {
-		if (workflowStateUpdatedAt == null) return;
-		refreshSessions({ reconcileActiveSession: true });
-		refreshClosedSessions();
-	}, [workflowStateUpdatedAt, refreshSessions, refreshClosedSessions]);
-
-	// Expose sendMessage to parent via ref (without images parameter)
-	useEffect(() => {
-		if (sendMessageRef) {
-			sendMessageRef.current = (
-				content: string,
-				mentions?: MentionReference[],
-			) => sendMessage(content, undefined, mentions);
-		}
-		return () => {
-			if (sendMessageRef) {
-				sendMessageRef.current = null;
-			}
-		};
-	}, [sendMessage, sendMessageRef]);
+	// spec issues-1023: 万一 activeSession が workflow step session の状態でも
+	// AgentChatPanel 本文では表示しない（Workflow panel 側 transcript の二重表示防止）。
+	const displayedActiveSession =
+		activeSession && !activeSession.workflowStepSession ? activeSession : null;
 
 	const [historyOpen, setHistoryOpen] = useState(false);
 	const draggedSessionIdRef = useRef<string | null>(null);
 	const isDraggingRef = useRef(false);
-
-	const messageInputRef = useRef<MessageInputHandle>(null);
-	const [isFileDragOver, setIsFileDragOver] = useState(false);
-	const isFileDragOverRef = useRef(false);
-
-	const scrollRef = useRef<HTMLDivElement>(null);
-	const scrollAnchorRef = useRef<HTMLDivElement>(null);
-	const lastMessageCount = useRef(0);
-	const isNearBottomRef = useRef(true);
-
-	// Load slash commands from filesystem on mount
-	useEffect(() => {
-		loadSlashCommands(worktreePath).catch((e) =>
-			console.error("Failed to load slash commands:", e),
-		);
-	}, [worktreePath]);
-
-	// Register agent drop zone for native file drop (image attachment)
-	const agentDropZoneRef = useRef<HTMLDivElement>(null);
-	const handleAgentDrop = useCallback(async (paths: string[]) => {
-		isFileDragOverRef.current = false;
-		setIsFileDragOver(false);
-		try {
-			const attachments = await invoke<ImageAttachment[]>(
-				"prepare_image_attachments_from_paths",
-				{ paths },
-			);
-			if (attachments.length > 0) {
-				messageInputRef.current?.addImageAttachments(attachments);
-			}
-		} catch (e) {
-			console.error("Failed to process dropped images:", e);
-		}
-	}, []);
-	useEffect(() => {
-		const el = agentDropZoneRef.current;
-		if (el) {
-			registerDropZone("agent", el, handleAgentDrop);
-		}
-		return () => {
-			registerDropZone("agent", null);
-		};
-	}, [registerDropZone, handleAgentDrop]);
-
-	const handleFileDragOver = useCallback((e: React.DragEvent) => {
-		if (e.dataTransfer.types.includes("Files")) {
-			e.preventDefault();
-			e.dataTransfer.dropEffect = "copy";
-			isFileDragOverRef.current = true;
-			setIsFileDragOver(true);
-		}
-	}, []);
-
-	const handleFileDragLeave = useCallback((e: React.DragEvent) => {
-		if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-			isFileDragOverRef.current = false;
-			setIsFileDragOver(false);
-		}
-	}, []);
-
-	// Track scroll position via onScroll handler
-	const handleScroll = useCallback(() => {
-		const el = scrollRef.current;
-		if (!el) return;
-		isNearBottomRef.current =
-			el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-	}, []);
-
-	// Derive streaming content tracking values
-	const agentMessages = activeSession?.messages.filter(
-		(m) => m.role === "agent",
-	);
-	const lastAgentMsg = agentMessages?.[agentMessages.length - 1];
-	const lastAgentPartsLen = lastAgentMsg?.parts.length ?? 0;
-	const lastAgentContent = getTextContent(lastAgentMsg?.parts ?? []).length;
-
-	const msgs = activeSession?.messages;
-	const lastMsg = msgs?.[msgs.length - 1];
-	const shimmerLineCount = useMemo(() => {
-		if (!isStreaming || lastMsg?.role !== "agent") return 0;
-		if (lastMsg.parts.length === 0) return 3;
-		const lastPart = lastMsg.parts[lastMsg.parts.length - 1];
-		switch (lastPart.type) {
-			case "thinking":
-			case "tool_use":
-			case "tool_result":
-			case "task_status":
-			case "system_notification":
-				return 2;
-			case "text":
-				return 1;
-			default:
-				return 0;
-		}
-	}, [isStreaming, lastMsg]);
-
-	// Auto-scroll: anchor-based approach
-	// biome-ignore lint/correctness/useExhaustiveDependencies: lastAgentContent/lastAgentPartsLen/shimmerLineCount triggers scroll on content growth
-	useEffect(() => {
-		const count = activeSession?.messages.length ?? 0;
-		if (count > lastMessageCount.current) {
-			// New message added → force scroll
-			scrollAnchorRef.current?.scrollIntoView({ behavior: "instant" });
-		} else if (isNearBottomRef.current) {
-			// Content update → follow if near bottom
-			scrollAnchorRef.current?.scrollIntoView({ behavior: "instant" });
-		}
-		lastMessageCount.current = count;
-	}, [
-		activeSession?.messages.length,
-		lastAgentContent,
-		lastAgentPartsLen,
-		shimmerLineCount,
-	]);
-
-	const cycleMode = useCallback(() => {
-		const currentIndex = MODES.findIndex((m) => m.value === permissionMode);
-		const nextIndex = (currentIndex + 1) % MODES.length;
-		setPermissionMode(MODES[nextIndex].value);
-	}, [permissionMode, setPermissionMode]);
 
 	const handleHistoryOpen = useCallback(
 		(open: boolean) => {
@@ -502,7 +117,9 @@ export function AgentChatPanel({
 			const draggedId = draggedSessionIdRef.current;
 			if (!draggedId || draggedId === targetId) return;
 
-			const currentOrder = orderedSessions.map((s) => s.id);
+			// 並べ替えは tab bar 上に存在する free chat session 列に対してのみ意味がある。
+			// workflow step session は tab bar に並ばないため、その index を参照しない。
+			const currentOrder = displayedSessions.map((s) => s.id);
 			const fromIndex = currentOrder.indexOf(draggedId);
 			const toIndex = currentOrder.indexOf(targetId);
 			if (fromIndex === -1 || toIndex === -1) return;
@@ -510,9 +127,15 @@ export function AgentChatPanel({
 			const newOrder = [...currentOrder];
 			newOrder.splice(fromIndex, 1);
 			newOrder.splice(toIndex, 0, draggedId);
-			reorderSessions(newOrder);
+
+			// orderedSessions 全体の order に対しては、tab bar に並ばない session を
+			// 既存位置に保ったまま、free chat session 部分だけを並べ替える。
+			const hiddenIds = orderedSessions
+				.map((s) => s.id)
+				.filter((id) => !currentOrder.includes(id));
+			reorderSessions([...newOrder, ...hiddenIds]);
 		},
-		[orderedSessions, reorderSessions],
+		[displayedSessions, orderedSessions, reorderSessions],
 	);
 
 	const handleDragEnd = useCallback(() => {
@@ -527,217 +150,176 @@ export function AgentChatPanel({
 		},
 		[selectSession],
 	);
+
 	const canChangeBackend =
-		!!activeSession &&
-		activeSession.messages.length === 0 &&
-		!activeSession.agentSessionId &&
+		!!displayedActiveSession &&
+		displayedActiveSession.messages.length === 0 &&
+		!displayedActiveSession.agentSessionId &&
 		!isStreaming;
+
+	// spec issues-1023: ChatSessionView は session-explicit な handler を要求するため、
+	// active session の id にバインドした薄いラッパで渡す。
+	const activeSessionId = displayedActiveSession?.id ?? null;
+	const handleSend = useCallback(
+		(
+			content: string,
+			images?: Parameters<typeof sendMessage>[2],
+			mentions?: Parameters<typeof sendMessage>[3],
+		) => sendMessage(activeSessionId, content, images, mentions),
+		[activeSessionId, sendMessage],
+	);
+	const handleInterrupt = useCallback(() => {
+		if (activeSessionId) interrupt(activeSessionId);
+	}, [activeSessionId, interrupt]);
+	const handlePermissionModeChange = useCallback(
+		(mode: Parameters<typeof setPermissionMode>[1]) =>
+			setPermissionMode(activeSessionId, mode),
+		[activeSessionId, setPermissionMode],
+	);
+	const handleModelChange = useCallback(
+		(modelId: string | null) => {
+			if (activeSessionId) setModel(activeSessionId, modelId);
+		},
+		[activeSessionId, setModel],
+	);
+	const handleBackendChange = useCallback(
+		(backendId: string | null) => setBackend(activeSessionId, backendId),
+		[activeSessionId, setBackend],
+	);
+	const handleRespondPermission = useCallback(
+		(
+			requestId: string,
+			allow: boolean,
+			updatedInput?: Record<string, unknown>,
+		) => {
+			if (!activeSessionId) return;
+			respondPermission(activeSessionId, requestId, allow, updatedInput);
+		},
+		[activeSessionId, respondPermission],
+	);
 
 	return (
 		<div data-testid="agent-chat-panel" className="flex flex-col h-full">
-			<Group orientation="horizontal" className="flex-1 min-h-0">
-				<Panel defaultSize="60%" minSize="30%">
-					<Tabs
-						value={activeSession?.id ?? ""}
-						onValueChange={selectSession}
-						className="flex flex-col h-full gap-0"
+			<Tabs
+				value={activeSession?.id ?? ""}
+				onValueChange={selectSession}
+				className="flex flex-col h-full gap-0"
+			>
+				<div
+					data-tauri-drag-region
+					className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background border-b"
+				>
+					<TabsList
+						data-testid="session-tab-list"
+						className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
 					>
-						<div
-							data-tauri-drag-region
-							className="flex items-center gap-2 shrink-0 px-2 pt-2 bg-background border-b"
-						>
-							<TabsList
-								data-testid="session-tab-list"
-								className="w-auto max-w-full overflow-x-auto overflow-y-hidden justify-start [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
-							>
-								{orderedSessions.map((session) => (
-									<TabsTrigger key={session.id} value={session.id} asChild>
-										{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}
-										{/* biome-ignore lint/a11y/useKeyWithClickEvents: TabsTrigger がキーボード操作を処理 */}
-										<div
-											className="gap-2"
-											draggable={sessions.length > 1}
-											onDragStart={(e) => handleDragStart(e, session.id)}
-											onDragOver={handleDragOver}
-											onDrop={(e) => handleDrop(e, session.id)}
-											onDragEnd={handleDragEnd}
-											onClick={() => handleTabClick(session.id)}
+						{displayedSessions.map((session) => (
+							<TabsTrigger key={session.id} value={session.id} asChild>
+								{/* biome-ignore lint/a11y/noStaticElementInteractions: TabsTrigger asChild が role を付与 */}
+								{/* biome-ignore lint/a11y/useKeyWithClickEvents: TabsTrigger がキーボード操作を処理 */}
+								<div
+									className="gap-2"
+									draggable={displayedSessions.length > 1}
+									onDragStart={(e) => handleDragStart(e, session.id)}
+									onDragOver={handleDragOver}
+									onDrop={(e) => handleDrop(e, session.id)}
+									onDragEnd={handleDragEnd}
+									onClick={() => handleTabClick(session.id)}
+								>
+									<AgentStateIcon state={sessionAgentStates.get(session.id)} />
+									<span className="truncate max-w-[120px]">
+										{session.firstMessage || "New session"}
+									</span>
+									{displayedSessions.length > 1 && (
+										<button
+											type="button"
+											onPointerDown={(e) => e.stopPropagation()}
+											onMouseDown={(e) => e.stopPropagation()}
+											onClick={(e) => {
+												e.stopPropagation();
+												closeSession(session.id);
+											}}
+											className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
+											aria-label={`Close ${session.firstMessage || "New session"}`}
 										>
-											<AgentStateIcon
-												state={sessionAgentStates.get(session.id)}
-											/>
-											<span className="truncate max-w-[120px]">
-												{session.firstMessage || "New session"}
-											</span>
-											{sessions.length > 1 && (
-												<button
-													type="button"
-													onPointerDown={(e) => e.stopPropagation()}
-													onMouseDown={(e) => e.stopPropagation()}
-													onClick={(e) => {
-														e.stopPropagation();
-														closeSession(session.id);
-													}}
-													className="p-0.5 rounded hover:bg-muted-foreground/20 transition-colors shrink-0"
-													aria-label={`Close ${session.firstMessage || "New session"}`}
-												>
-													<X className="size-3.5" />
-												</button>
-											)}
-										</div>
-									</TabsTrigger>
-								))}
-							</TabsList>
-							<div data-tauri-drag-region className="flex-1" />
+											<X className="size-3.5" />
+										</button>
+									)}
+								</div>
+							</TabsTrigger>
+						))}
+					</TabsList>
+					<div data-tauri-drag-region className="flex-1" />
+					<button
+						type="button"
+						onClick={() => createNewSession()}
+						aria-label="New session"
+						className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
+					>
+						+
+					</button>
+					<Popover open={historyOpen} onOpenChange={handleHistoryOpen}>
+						<PopoverTrigger asChild>
 							<button
 								type="button"
-								onClick={() => createNewSession()}
-								aria-label="New session"
-								className="px-2 h-full text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
+								aria-label="Session history"
+								className="p-1 rounded hover:bg-muted-foreground/20 transition-colors shrink-0 ml-auto"
 							>
-								+
+								<History className="size-3.5" />
 							</button>
-							<Popover open={historyOpen} onOpenChange={handleHistoryOpen}>
-								<PopoverTrigger asChild>
-									<button
-										type="button"
-										aria-label="Session history"
-										className="p-1 rounded hover:bg-muted-foreground/20 transition-colors shrink-0 ml-auto"
-									>
-										<History className="size-3.5" />
-									</button>
-								</PopoverTrigger>
-								<PopoverContent align="end" className="w-64 p-0">
-									{closedSessions.length > 0 ? (
-										<ul className="max-h-60 overflow-y-auto">
-											{closedSessions.map((session) => (
-												<li key={session.id}>
-													<button
-														type="button"
-														className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors truncate"
-														onClick={() => handleRestore(session.id)}
-													>
-														{session.firstMessage || "New session"}
-													</button>
-												</li>
-											))}
-										</ul>
-									) : (
-										<p className="px-3 py-4 text-sm text-muted-foreground text-center">
-											No closed sessions
-										</p>
-									)}
-								</PopoverContent>
-							</Popover>
-						</div>
-						{/* biome-ignore lint/a11y/noStaticElementInteractions: native file drop target */}
-						<div
-							ref={agentDropZoneRef}
-							className="flex flex-col flex-1 min-h-0 relative"
-							onDragOver={handleFileDragOver}
-							onDragLeave={handleFileDragLeave}
-						>
-							{isFileDragOver && (
-								<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none z-10">
-									<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
-										Drop image to attach
-									</span>
-								</div>
+						</PopoverTrigger>
+						<PopoverContent align="end" className="w-64 p-0">
+							{displayedClosedSessions.length > 0 ? (
+								<ul className="max-h-60 overflow-y-auto">
+									{displayedClosedSessions.map((session) => (
+										<li key={session.id}>
+											<button
+												type="button"
+												className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors truncate"
+												onClick={() => handleRestore(session.id)}
+											>
+												{session.firstMessage || "New session"}
+											</button>
+										</li>
+									))}
+								</ul>
+							) : (
+								<p className="px-3 py-4 text-sm text-muted-foreground text-center">
+									No closed sessions
+								</p>
 							)}
-							<div
-								ref={scrollRef}
-								onScroll={handleScroll}
-								className="flex-1 min-h-0 overflow-auto select-text"
-							>
-								{activeSession && (
-									<div className="py-2">
-										{activeSession.messages.map((msg, idx) => {
-											if (msg.role !== "agent") {
-												const textContent = getTextContent(msg.parts);
-												const imageParts = msg.parts.filter(
-													(p): p is ImagePart => p.type === "image",
-												);
-												return (
-													<div key={msg.id}>
-														<StreamMessage
-															content={textContent}
-															role={msg.role}
-															images={
-																imageParts.length > 0 ? imageParts : undefined
-															}
-															mentions={msg.mentions}
-														/>
-													</div>
-												);
-											}
-
-											const isLastMsg =
-												idx === activeSession.messages.length - 1;
-											const isLastAgentStreaming = isStreaming && isLastMsg;
-
-											return (
-												<div key={msg.id}>
-													<AgentMessageParts
-														msg={msg}
-														isLastAgentStreaming={isLastAgentStreaming}
-														worktreePath={worktreePath}
-														respondPermission={respondPermission}
-													/>
-												</div>
-											);
-										})}
-										{shimmerLineCount > 0 && (
-											<ShimmerPlaceholder lines={shimmerLineCount} />
-										)}
-										<div ref={scrollAnchorRef} />
-									</div>
-								)}
-							</div>
-							<div className="shrink-0">
-								{activityStatus && (
-									<div className="px-4 pb-1 text-xs text-muted-foreground animate-pulse truncate">
-										{activityStatus.label}
-									</div>
-								)}
-								{error && (
-									<div className="px-2 pb-2">
-										<div className="bg-destructive/10 text-destructive rounded-lg px-3 py-2 text-sm">
-											{error}
-										</div>
-									</div>
-								)}
-								<MessageInput
-									ref={messageInputRef}
-									onSend={sendMessage}
-									onInterrupt={interrupt}
-									isStreaming={isStreaming}
-									onCycleMode={cycleMode}
-									mode={permissionMode}
-									onModeChange={setPermissionMode}
-									models={availableModels}
-									currentModelId={selectedModel}
-									onModelChange={setModel}
-									backends={backends}
-									currentBackendId={selectedBackendId}
-									onBackendChange={setBackend}
-									backendDisabled={!canChangeBackend}
-									worktreePath={worktreePath}
-								/>
-							</div>
-						</div>
-					</Tabs>
-				</Panel>
-				<Separator className="w-px bg-border" />
-				<Panel defaultSize="40%" minSize="20%">
-					<WorkflowPanel
-						workflowState={workflowState ?? null}
-						worktreePath={worktreePath}
+						</PopoverContent>
+					</Popover>
+				</div>
+				{displayedActiveSession ? (
+					<ChatSessionView
+						session={displayedActiveSession}
+						isStreaming={isStreaming}
+						activityStatus={activityStatus}
+						error={error}
 						permissionMode={permissionMode}
-						onSessionClick={openWorkflowStepSession}
-						onCloseSession={closeSession}
+						availableModels={availableModels}
+						selectedModel={selectedModel}
+						backends={backends}
+						selectedBackendId={selectedBackendId}
+						canChangeBackend={canChangeBackend}
+						worktreePath={worktreePath}
+						onSend={handleSend}
+						onInterrupt={handleInterrupt}
+						onPermissionModeChange={handlePermissionModeChange}
+						onModelChange={handleModelChange}
+						onBackendChange={handleBackendChange}
+						onRespondPermission={handleRespondPermission}
+						registerDropZone={registerDropZone}
+						dropZoneName="agent"
+						sendMessageRef={sendMessageRef}
 					/>
-				</Panel>
-			</Group>
+				) : (
+					<div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+						No chat selected
+					</div>
+				)}
+			</Tabs>
 		</div>
 	);
 }

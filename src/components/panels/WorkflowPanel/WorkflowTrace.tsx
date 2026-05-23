@@ -16,6 +16,7 @@ import {
 import { useLayoutEffect, useRef, useState } from "react";
 import { useStepApprovalAction } from "@/hooks/useStepApprovalAction";
 import type {
+	CliMutationRequestRecord,
 	JsonValue,
 	NodeDefinition,
 	ParallelStepState,
@@ -25,13 +26,48 @@ import type {
 } from "@/types/workflow";
 import { workflowStateClasses } from "./workflowStateStyles";
 
+/**
+ * spec issues-1023: timeline 上で step を選択した時に親へ伝える metadata。
+ * `WorkflowState` の内部形状を再走査せずに済むよう、Trace 側が知っている
+ * `stepName` / `nodeType` / `runIndex` / `runId`（observation 経路を Rust 側
+ * StepDetailView 取得に閉じるためのキー）を一緒に渡す。
+ *
+ * `sessionId` は agent step 等で transcript が読める場合のみ設定される。
+ * sessionId が無い step（bash / approval / parallel parent / 未紐付け completed）
+ * も timeline 上から選択可能で、その場合は detail のみが表示される。
+ */
+export interface WorkflowStepSelection {
+	runId: string;
+	sessionId?: string;
+	stepName: string;
+	nodeType: "agent" | "bash" | "approval" | "parallel" | "unknown";
+	runIndex?: number;
+}
+
 interface WorkflowTraceProps {
 	workflowState: WorkflowState;
 	events?: WorkflowEvent[];
-	/** tab が閉じている step session を開く / 既に開いていればフォーカスする */
-	onSessionClick?: (sessionId: string) => void;
-	/** tab が開いている step session を閉じる */
+	/**
+	 * step session の選択操作。
+	 * spec issues-1023 以降は「Workflow panel 内で transcript を読む step を選ぶ」
+	 * 経路として用いる（旧 chat tab を開く責務は本コンポーネントから取り除かれている）。
+	 */
+	onSessionClick?: (selection: WorkflowStepSelection) => void;
+	/** 選択中 step の transcript 表示を閉じる経路（旧 chat tab を閉じる相当） */
 	onCloseSession?: (sessionId: string) => void;
+	/**
+	 * Workflow panel 内で transcript を表示中の step session id。
+	 * 指定された場合、Eye 切替の "open" 表示はこちらを正規の状態とする
+	 * （旧 `runtimeStates[sessionId].tabOpen` の chat-tab ベース判定を上書き）。
+	 */
+	selectedStepSessionId?: string | null;
+	/**
+	 * spec issues-1023: timeline 上のどの step（runIndex 込み）が現在選択中か。
+	 * sessionId を持たない step（bash / approval / parallel parent / sessionId 無し
+	 * completed）でも timeline から選択 → detail 表示できるよう、selection キーは
+	 * stepName + runIndex を持つ。
+	 */
+	selectedStep?: { stepName: string; runIndex?: number } | null;
 	approvalAction?: WorkflowApprovalActionContext;
 }
 
@@ -45,11 +81,14 @@ export function WorkflowTrace({
 	events = [],
 	onSessionClick,
 	onCloseSession,
+	selectedStepSessionId,
+	selectedStep,
 	approvalAction,
 }: WorkflowTraceProps) {
-	const traceItems = buildTraceItems(workflowState);
+	const traceItems = buildTraceItems(workflowState, selectedStepSessionId);
 	const autoFollowVersion = buildAutoFollowVersion(workflowState, events);
 	const { scrollRef, handleScroll } = useAutoFollowScroll(autoFollowVersion);
+	const runId = workflowState.executionId;
 
 	return (
 		<div
@@ -66,8 +105,10 @@ export function WorkflowTrace({
 							item={item}
 							isLast={index === traceItems.length - 1}
 							workflowState={workflowState}
+							runId={runId}
 							onSessionClick={onSessionClick}
 							onCloseSession={onCloseSession}
+							selectedStep={selectedStep ?? null}
 							approvalAction={approvalAction}
 						/>
 					))}
@@ -118,7 +159,7 @@ function buildAutoFollowVersion(
 		.map((entry) => `${entry.stepName}:${entry.completedAt}`)
 		.join("|");
 	const eventVersion = events
-		.map((event) => `${event.event}:${event.timestamp}`)
+		.map((event) => `${event.event}:${event.timestampMs}`)
 		.join("|");
 
 	return [
@@ -191,17 +232,32 @@ type TraceParallelStepState = ParallelStepState & {
 	tabOpen: boolean;
 };
 
-function runtimeFor(workflowState: WorkflowState, sessionId?: string) {
+function runtimeFor(
+	workflowState: WorkflowState,
+	sessionId?: string,
+	selectedStepSessionId?: string | null,
+) {
 	if (!sessionId) return { runtimeActive: false, tabOpen: false };
-	return (
-		workflowState.runtimeStates?.[sessionId] ?? {
-			runtimeActive: false,
-			tabOpen: false,
-		}
-	);
+	const base = workflowState.runtimeStates?.[sessionId] ?? {
+		runtimeActive: false,
+		tabOpen: false,
+	};
+	// spec issues-1023: Workflow panel 内 transcript 経路に移行後は、selected step
+	// が "open" の真実源（chat tab open は廃止）。selectedStepSessionId が
+	// undefined のときのみ旧来の runtimeStates 由来の表示にフォールバックする。
+	if (selectedStepSessionId !== undefined) {
+		return {
+			runtimeActive: base.runtimeActive,
+			tabOpen: selectedStepSessionId === sessionId,
+		};
+	}
+	return base;
 }
 
-function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
+function buildTraceItems(
+	workflowState: WorkflowState,
+	selectedStepSessionId?: string | null,
+): TraceItem[] {
 	const stepsByName = new Map(
 		workflowState.workflowDefinition.nodes.map((step) => [step.name, step]),
 	);
@@ -219,7 +275,11 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 						(co) => co.stepName === child.name,
 					);
 					if (childSnapshot) {
-						const runtime = runtimeFor(workflowState, childSnapshot.sessionId);
+						const runtime = runtimeFor(
+							workflowState,
+							childSnapshot.sessionId,
+							selectedStepSessionId,
+						);
 						return {
 							stepName: child.name,
 							state: "completed" as const,
@@ -235,7 +295,11 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 					}
 					// フォールバック: グローバルstepOutputsを参照
 					const childOutput = workflowState.stepOutputs[child.name];
-					const runtime = runtimeFor(workflowState, childOutput?.sessionId);
+					const runtime = runtimeFor(
+						workflowState,
+						childOutput?.sessionId,
+						selectedStepSessionId,
+					);
 					return {
 						stepName: child.name,
 						state: childOutput ? "completed" : "pending",
@@ -261,7 +325,11 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 			};
 		}
 
-		const runtime = runtimeFor(workflowState, entry.sessionId);
+		const runtime = runtimeFor(
+			workflowState,
+			entry.sessionId,
+			selectedStepSessionId,
+		);
 		return {
 			kind: "completed",
 			step,
@@ -301,7 +369,11 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 		) {
 			const childSteps: TraceParallelStepState[] = activeParallel.map(
 				(step) => {
-					const runtime = runtimeFor(workflowState, step.sessionId);
+					const runtime = runtimeFor(
+						workflowState,
+						step.sessionId,
+						selectedStepSessionId,
+					);
 					return {
 						...step,
 						runtimeActive: runtime.runtimeActive,
@@ -322,7 +394,11 @@ function buildTraceItems(workflowState: WorkflowState): TraceItem[] {
 				state: hasFailed ? "failed" : allFinished ? "completed" : "running",
 			});
 		} else {
-			const runtime = runtimeFor(workflowState, workflowState.currentSessionId);
+			const runtime = runtimeFor(
+				workflowState,
+				workflowState.currentSessionId,
+				selectedStepSessionId,
+			);
 			items.push({
 				kind: "current",
 				step: currentStep,
@@ -353,15 +429,19 @@ function TraceItemRow({
 	item,
 	isLast,
 	workflowState,
+	runId,
 	onSessionClick,
 	onCloseSession,
+	selectedStep,
 	approvalAction,
 }: {
 	item: TraceItem;
 	isLast: boolean;
 	workflowState: WorkflowState;
-	onSessionClick?: (sessionId: string) => void;
+	runId: string;
+	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
+	selectedStep: { stepName: string; runIndex?: number } | null;
 	approvalAction?: WorkflowApprovalActionContext;
 }) {
 	if (item.kind === "parallel") {
@@ -369,8 +449,10 @@ function TraceItemRow({
 			<ParallelBlockRow
 				item={item}
 				isLast={isLast}
+				runId={runId}
 				onSessionClick={onSessionClick}
 				onCloseSession={onCloseSession}
+				selectedStep={selectedStep}
 			/>
 		);
 	}
@@ -384,6 +466,24 @@ function TraceItemRow({
 			? approvalAction
 			: undefined;
 	const canReject = workflowState.approvalOperations?.canReject === true;
+	const runIndex =
+		item.kind === "completed" ? item.entry.runIndex : item.occurrence;
+	const nodeType: WorkflowStepSelection["nodeType"] =
+		item.step?.type ?? "unknown";
+	const handleSelectRow = onSessionClick
+		? () =>
+				onSessionClick({
+					runId,
+					sessionId: item.sessionId,
+					stepName: item.stepName,
+					nodeType,
+					runIndex,
+				})
+		: undefined;
+	const isSelected =
+		selectedStep != null &&
+		selectedStep.stepName === item.stepName &&
+		(selectedStep.runIndex === undefined || selectedStep.runIndex === runIndex);
 
 	return (
 		<div className="grid grid-cols-[24px_1fr] gap-2">
@@ -397,22 +497,42 @@ function TraceItemRow({
 			</div>
 			<div
 				data-testid={`trace-item-${item.stepName}-${item.occurrence}`}
-				className={`mb-2 overflow-hidden rounded-md border px-3 py-2 ${
+				className={`mb-2 overflow-hidden rounded-md border px-3 py-2 transition-colors ${
 					item.kind === "current"
 						? "border-primary/60 bg-primary/5"
-						: "border-border"
+						: isSelected
+							? "border-primary/40 bg-primary/5"
+							: "border-border hover:bg-muted/30"
 				}`}
 			>
-				<div className="flex min-w-0 flex-wrap items-center gap-2">
-					<span className="min-w-0 flex-1 text-sm font-medium truncate">
-						{item.stepName}
-					</span>
-					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-						{stepMode}
-					</span>
-				</div>
+				{handleSelectRow ? (
+					<button
+						type="button"
+						data-testid={`select-step-${item.stepName}-${item.occurrence}`}
+						aria-label={`Select step ${item.stepName}`}
+						onClick={handleSelectRow}
+						className="flex w-full min-w-0 flex-wrap items-center gap-2 text-left"
+					>
+						<span className="min-w-0 flex-1 text-sm font-medium truncate">
+							{item.stepName}
+						</span>
+						<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+							{stepMode}
+						</span>
+					</button>
+				) : (
+					<div className="flex min-w-0 flex-wrap items-center gap-2">
+						<span className="min-w-0 flex-1 text-sm font-medium truncate">
+							{item.stepName}
+						</span>
+						<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+							{stepMode}
+						</span>
+					</div>
+				)}
 				<TraceItemSummary
 					item={item}
+					runId={runId}
 					onSessionClick={onSessionClick}
 					onCloseSession={onCloseSession}
 				/>
@@ -524,13 +644,17 @@ function StepApprovalActions({
 function ParallelBlockRow({
 	item,
 	isLast,
+	runId,
 	onSessionClick,
 	onCloseSession,
+	selectedStep,
 }: {
 	item: Extract<TraceItem, { kind: "parallel" }>;
 	isLast: boolean;
-	onSessionClick?: (sessionId: string) => void;
+	runId: string;
+	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
+	selectedStep: { stepName: string; runIndex?: number } | null;
 }) {
 	const completedCount = item.childSteps.filter(
 		(cs) => cs.state === "completed",
@@ -539,6 +663,24 @@ function ParallelBlockRow({
 	const tokenTotal = item.entry?.tokenUsage
 		? item.entry.tokenUsage.inputTokens + item.entry.tokenUsage.outputTokens
 		: null;
+
+	// spec issues-1023: parallel parent header からも step detail を選択できるよう
+	// onSessionClick / selectedStep を受け取る。parent 自体は session を持たないため
+	// nodeType=parallel / sessionId 無し で WorkflowStepSelection を発火する。
+	const isParentSelected =
+		selectedStep != null &&
+		selectedStep.stepName === item.stepName &&
+		(selectedStep.runIndex === undefined ||
+			selectedStep.runIndex === item.occurrence);
+	const handleSelectParent = onSessionClick
+		? () =>
+				onSessionClick({
+					runId,
+					stepName: item.stepName,
+					nodeType: "parallel",
+					runIndex: item.occurrence,
+				})
+		: undefined;
 
 	return (
 		<div className="grid grid-cols-[24px_1fr] gap-2">
@@ -557,18 +699,38 @@ function ParallelBlockRow({
 						? "border-primary/60 bg-primary/5"
 						: item.state === "failed"
 							? "border-red-500/30 bg-red-500/5"
-							: "border-border"
+							: isParentSelected
+								? "border-primary/40 bg-primary/5"
+								: "border-border"
 				}`}
 			>
-				<div className="flex min-w-0 flex-wrap items-center gap-2">
-					<GitBranch className="size-3.5 text-muted-foreground" />
-					<span className="min-w-0 flex-1 text-sm font-medium truncate">
-						{item.stepName}
-					</span>
-					<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-						parallel
-					</span>
-				</div>
+				{handleSelectParent ? (
+					<button
+						type="button"
+						data-testid={`select-step-${item.stepName}-${item.occurrence}`}
+						aria-label={`Select step ${item.stepName}`}
+						onClick={handleSelectParent}
+						className="flex w-full min-w-0 flex-wrap items-center gap-2 text-left"
+					>
+						<GitBranch className="size-3.5 text-muted-foreground" />
+						<span className="min-w-0 flex-1 text-sm font-medium truncate">
+							{item.stepName}
+						</span>
+						<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+							parallel
+						</span>
+					</button>
+				) : (
+					<div className="flex min-w-0 flex-wrap items-center gap-2">
+						<GitBranch className="size-3.5 text-muted-foreground" />
+						<span className="min-w-0 flex-1 text-sm font-medium truncate">
+							{item.stepName}
+						</span>
+						<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+							parallel
+						</span>
+					</div>
+				)}
 				<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
 					<span>
 						{completedCount}/{totalCount} completed
@@ -578,14 +740,22 @@ function ParallelBlockRow({
 					)}
 				</div>
 				<div className="mt-2 flex flex-col gap-1 pl-2 border-l-2 border-border">
-					{item.childSteps.map((child) => (
-						<ParallelChildRow
-							key={`${child.stepName}-${child.runIndex}`}
-							child={child}
-							onSessionClick={onSessionClick}
-							onCloseSession={onCloseSession}
-						/>
-					))}
+					{item.childSteps.map((child) => {
+						const childNodeType =
+							item.step?.parallel_children?.find(
+								(c) => c.name === child.stepName,
+							)?.type ?? "agent";
+						return (
+							<ParallelChildRow
+								key={`${child.stepName}-${child.runIndex}`}
+								child={child}
+								nodeType={childNodeType}
+								runId={runId}
+								onSessionClick={onSessionClick}
+								onCloseSession={onCloseSession}
+							/>
+						);
+					})}
 				</div>
 				{item.entry?.structuredOutput && (
 					<div className="mt-2">
@@ -599,11 +769,15 @@ function ParallelBlockRow({
 
 function ParallelChildRow({
 	child,
+	nodeType,
+	runId,
 	onSessionClick,
 	onCloseSession,
 }: {
 	child: TraceParallelStepState;
-	onSessionClick?: (sessionId: string) => void;
+	nodeType: WorkflowStepSelection["nodeType"];
+	runId: string;
+	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
 }) {
 	const so = child.structuredOutput;
@@ -611,6 +785,17 @@ function ParallelChildRow({
 		so != null && typeof so === "object" && !Array.isArray(so)
 			? ((so as Record<string, unknown>).verdict as string | undefined)
 			: undefined;
+	const sessionId = child.sessionId;
+	const handleSelect = onSessionClick
+		? () =>
+				onSessionClick({
+					runId,
+					sessionId,
+					stepName: child.stepName,
+					nodeType,
+					runIndex: child.runIndex,
+				})
+		: undefined;
 	return (
 		<div
 			data-testid={`trace-child-item-${child.stepName}-${child.runIndex + 1}`}
@@ -622,21 +807,44 @@ function ParallelChildRow({
 				>
 					<StateIcon state={child.state} />
 				</div>
-				<span className="min-w-0 flex-1 truncate font-medium">
-					{child.stepName}
-				</span>
+				{handleSelect ? (
+					<button
+						type="button"
+						aria-label={`Select step ${child.stepName}`}
+						onClick={handleSelect}
+						className="min-w-0 flex-1 truncate text-left font-medium"
+					>
+						{child.stepName}
+					</button>
+				) : (
+					<span className="min-w-0 flex-1 truncate font-medium">
+						{child.stepName}
+					</span>
+				)}
 				{verdict && <VerdictBadge verdict={verdict} />}
 				{!verdict && child.result && (
 					<span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
 						{child.result}
 					</span>
 				)}
-				{child.sessionId && (
+				{sessionId && (
 					<SessionToggleButton
-						sessionId={child.sessionId}
 						tabOpen={child.tabOpen}
-						onOpen={onSessionClick}
-						onClose={onCloseSession}
+						onOpen={
+							onSessionClick
+								? () =>
+										onSessionClick({
+											runId,
+											sessionId,
+											stepName: child.stepName,
+											nodeType,
+											runIndex: child.runIndex,
+										})
+								: undefined
+						}
+						onClose={
+							onCloseSession ? () => onCloseSession(sessionId) : undefined
+						}
 					/>
 				)}
 			</div>
@@ -658,15 +866,13 @@ function ParallelChildRow({
  * `is_agent_step_runtime_busy` を見て runtime は残し tab だけ閉じる扱いになる。
  */
 function SessionToggleButton({
-	sessionId,
 	tabOpen,
 	onOpen,
 	onClose,
 }: {
-	sessionId: string;
 	tabOpen?: boolean;
-	onOpen?: (sessionId: string) => void;
-	onClose?: (sessionId: string) => void;
+	onOpen?: () => void;
+	onClose?: () => void;
 }) {
 	const isOpen = tabOpen === true;
 	const handler = isOpen ? onClose : onOpen;
@@ -679,7 +885,7 @@ function SessionToggleButton({
 			aria-label={label}
 			title={label}
 			className="shrink-0 text-muted-foreground hover:text-foreground"
-			onClick={() => handler(sessionId)}
+			onClick={() => handler()}
 		>
 			<Icon className="size-3.5" />
 		</button>
@@ -697,13 +903,19 @@ function StateIcon({ state }: { state: string }) {
 
 function TraceItemSummary({
 	item,
+	runId,
 	onSessionClick,
 	onCloseSession,
 }: {
 	item: Exclude<TraceItem, { kind: "parallel" }>;
-	onSessionClick?: (sessionId: string) => void;
+	runId: string;
+	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
 }) {
+	const nodeType: WorkflowStepSelection["nodeType"] =
+		item.step?.type ?? "unknown";
+	const runIndex =
+		item.kind === "completed" ? item.entry.runIndex : item.occurrence;
 	if (item.kind === "completed") {
 		const tokenTotal = item.entry.tokenUsage
 			? item.entry.tokenUsage.inputTokens + item.entry.tokenUsage.outputTokens
@@ -734,10 +946,24 @@ function TraceItemSummary({
 						)}
 						{item.sessionId && (
 							<SessionToggleButton
-								sessionId={item.sessionId}
 								tabOpen={item.tabOpen}
-								onOpen={onSessionClick}
-								onClose={onCloseSession}
+								onOpen={
+									onSessionClick
+										? () =>
+												onSessionClick({
+													runId,
+													sessionId: item.sessionId as string,
+													stepName: item.stepName,
+													nodeType,
+													runIndex,
+												})
+										: undefined
+								}
+								onClose={
+									onCloseSession
+										? () => onCloseSession(item.sessionId as string)
+										: undefined
+								}
 							/>
 						)}
 					</div>
@@ -750,6 +976,7 @@ function TraceItemSummary({
 	}
 
 	if (item.sessionId) {
+		const sessionId = item.sessionId;
 		return (
 			<div className="mt-1 flex items-center gap-2 text-xs">
 				<span
@@ -768,10 +995,20 @@ function TraceItemSummary({
 							: "Running"}
 				</span>
 				<SessionToggleButton
-					sessionId={item.sessionId}
 					tabOpen={item.tabOpen}
-					onOpen={onSessionClick}
-					onClose={onCloseSession}
+					onOpen={
+						onSessionClick
+							? () =>
+									onSessionClick({
+										runId,
+										sessionId,
+										stepName: item.stepName,
+										nodeType,
+										runIndex,
+									})
+							: undefined
+					}
+					onClose={onCloseSession ? () => onCloseSession(sessionId) : undefined}
 				/>
 			</div>
 		);
@@ -856,23 +1093,86 @@ function EventTrace({ events }: { events: WorkflowEvent[] }) {
 			</div>
 			<div className="max-h-32 overflow-auto px-3 py-1">
 				{events.map((event) => {
-					const nodeName = "node_name" in event ? event.node_name : undefined;
+					const subject = describeEventSubject(event);
 					return (
 						<div
-							key={`${event.event}-${nodeName ?? ""}-${event.timestamp}`}
-							className="py-0.5 text-xs text-muted-foreground"
+							key={`${event.event}-${subject ?? ""}-${event.timestampMs}`}
+							className="flex items-baseline gap-2 py-0.5 text-xs text-muted-foreground"
 						>
-							<span className="font-mono">{event.event}</span>
-							{nodeName && <span className="ml-1">({nodeName})</span>}
-							{event.event === "contract_repair_requested" && (
-								<span className="ml-1 text-yellow-600 dark:text-yellow-400">
-									retry #{event.attempt}: {event.violation_reason}
-								</span>
-							)}
+							<span
+								className="shrink-0 font-mono tabular-nums opacity-70"
+								title={new Date(event.timestampMs).toISOString()}
+							>
+								{formatEventTimestamp(event.timestampMs)}
+							</span>
+							<span className="min-w-0">
+								<span className="font-mono">{event.event}</span>
+								{subject && <span className="ml-1">({subject})</span>}
+								{event.event === "contract_repair_requested" && (
+									<span className="ml-1 text-yellow-600 dark:text-yellow-400">
+										retry #{event.attempt}: {event.violation_reason}
+									</span>
+								)}
+								{event.event === "cli_mutation_requested" && (
+									<span className="ml-1 text-blue-600 dark:text-blue-400">
+										{describeCliMutationRequest(event.request)}
+									</span>
+								)}
+							</span>
 						</div>
 					);
 				})}
 			</div>
 		</div>
 	);
+}
+
+/**
+ * spec issues-1023: event timeline 行で「どの node に紐づく事実か」を一目で観測
+ * できるよう、event の種別に応じて主語 node の表示文字列を引き当てる。parallel 系
+ * event は parent_node_name / child_node_name を併記する。
+ */
+function describeEventSubject(event: WorkflowEvent): string | undefined {
+	switch (event.event) {
+		case "parallel_started":
+		case "parallel_completed":
+			return event.parent_node_name;
+		case "parallel_child_started":
+		case "parallel_child_completed":
+			return `${event.parent_node_name} → ${event.child_node_name}`;
+		case "cli_mutation_requested":
+			return event.request.node_name ?? undefined;
+		default:
+			return "node_name" in event ? event.node_name : undefined;
+	}
+}
+
+/**
+ * spec issues-1023 L13: cli_mutation_requested event の request payload
+ * （approve / reject / abort + 自由記述）を観測者が経路非依存に読めるよう、
+ * timeline 上に表示する短い summary 文字列を返す。
+ */
+function describeCliMutationRequest(request: CliMutationRequestRecord): string {
+	switch (request.kind) {
+		case "approve":
+			return request.comment ? `approve: ${request.comment}` : "approve";
+		case "reject":
+			return `reject: ${request.reason}`;
+		case "abort":
+			return "abort";
+	}
+}
+
+/**
+ * spec issues-1023: event timeline 上で「いつ」事実が起きたかを観測するために
+ * timestamp を `HH:MM:SS` 形式で表示する。秒未満は noisy なので削る。
+ * 集約・整序は engine 側で済んでおり、本関数は表示用フォーマットのみを担う。
+ */
+function formatEventTimestamp(timestamp: number): string {
+	const d = new Date(timestamp);
+	if (Number.isNaN(d.getTime())) return "";
+	const hh = String(d.getHours()).padStart(2, "0");
+	const mm = String(d.getMinutes()).padStart(2, "0");
+	const ss = String(d.getSeconds()).padStart(2, "0");
+	return `${hh}:${mm}:${ss}`;
 }

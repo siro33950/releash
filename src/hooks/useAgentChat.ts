@@ -26,7 +26,6 @@ import {
 	listAgentBackends,
 	listClosedSessions,
 	listSessions,
-	openWorkflowStepTab,
 	restoreSession as restoreSessionApi,
 	sendAgentMessage,
 	sendWorkflowApprovalChatMessage,
@@ -42,19 +41,30 @@ export interface UseAgentChatResult {
 	orderedSessions: SessionSummary[];
 	closedSessions: SessionSummary[];
 	activeSession: ChatSession | null;
+	/**
+	 * spec issues-1023: Workflow panel から観測中の workflow step session（最新本文）。
+	 * activeSession とは独立に保持し、streaming / state 変化は engine 由来の事実列を
+	 * 反映する。`loadStepSession` で読み込み、`clearStepSession` でクリアする。
+	 */
+	viewedStepSession: ChatSession | null;
 	isStreaming: boolean;
 	activityStatus: ActivityStatus;
 	error: string | null;
 	permissionMode: PermissionMode;
 	sessionAgentStates: Map<string, AgentState>;
+	/**
+	 * spec issues-1023: 送信先 session を明示する API。AgentChatPanel は active session
+	 * の id を、WorkflowSidebarPanel は viewedStepSession の id を渡す。
+	 * `sessionId === null` は「新規 session を作成して送る」を表す（既存挙動）。
+	 */
 	sendMessage: (
+		sessionId: string | null,
 		content: string,
 		images?: ImageAttachment[],
 		mentions?: MentionReference[],
 	) => Promise<void>;
-	interrupt: () => void;
+	interrupt: (sessionId: string) => void;
 	selectSession: (sessionId: string) => Promise<void>;
-	openWorkflowStepSession: (sessionId: string) => Promise<void>;
 	refreshSessions: (
 		options?: RefreshSessionsOptions,
 	) => Promise<SessionSummary[] | undefined>;
@@ -63,18 +73,34 @@ export interface UseAgentChatResult {
 	restoreSession: (sessionId: string) => Promise<void>;
 	createNewSession: () => Promise<void>;
 	reorderSessions: (sessionOrder: string[]) => void;
-	setPermissionMode: (mode: PermissionMode) => void;
+	setPermissionMode: (sessionId: string | null, mode: PermissionMode) => void;
 	respondPermission: (
+		sessionId: string,
 		requestId: string,
 		allow: boolean,
 		updatedInput?: Record<string, unknown>,
 	) => void;
 	availableModels: ModelInfo[];
 	selectedModel: string | null;
-	setModel: (modelId: string | null) => void;
+	setModel: (sessionId: string, modelId: string | null) => void;
 	backends: BackendInfo[];
 	selectedBackendId: string | null;
-	setBackend: (backendId: string | null) => void;
+	setBackend: (sessionId: string | null, backendId: string | null) => void;
+	/**
+	 * spec issues-1023: 指定 session の最新 ChatSession を取得して viewedStepSession に
+	 * 反映する。Workflow panel が選択中 step の chat view を表示するために使う。
+	 */
+	loadStepSession: (sessionId: string) => Promise<void>;
+	clearStepSession: () => void;
+	/** spec issues-1023: viewedStepSession 用の per-session 派生（streaming / activity）。*/
+	viewedStepSessionStreaming: boolean;
+	viewedStepSessionActivityStatus: ActivityStatus;
+	/**
+	 * spec issues-1023: per-session lookup。pendingPermissions / turnPhases を index する
+	 * 既存 reducer state を共通の引き当て経路として公開する。
+	 */
+	getSessionTurnPhase: (sessionId: string) => TurnPhase;
+	getSessionSelectedModel: (sessionId: string) => string | null;
 }
 
 function startAgentProcess(
@@ -205,6 +231,8 @@ export function useAgentChat(
 	workflowApprovalRunIdRef.current = workflowApprovalRunId;
 	const activeSessionRef = useRef(state.activeSession);
 	activeSessionRef.current = state.activeSession;
+	const viewedStepSessionRef = useRef(state.viewedStepSession);
+	viewedStepSessionRef.current = state.viewedStepSession;
 	const sessionsRef = useRef(state.sessions);
 	sessionsRef.current = state.sessions;
 	const permissionModeRef = useRef(state.permissionMode);
@@ -229,10 +257,19 @@ export function useAgentChat(
 					const previousIndex = previousSessions.findIndex(
 						(session) => session.id === previousActiveSessionId,
 					);
+					// spec issues-1023: free chat tab bar に並ばない workflow step session は
+					// 自由対話の active 候補としても選ばない（chat panel の本文を
+					// workflow step transcript で乗っ取らない）。
+					const freeChatSessions = sessions.filter(
+						(session) => !session.workflowStepSession,
+					);
 					const nextSession =
-						sessions.length > 0
-							? sessions[
-									Math.min(Math.max(previousIndex, 0), sessions.length - 1)
+						freeChatSessions.length > 0
+							? freeChatSessions[
+									Math.min(
+										Math.max(previousIndex, 0),
+										freeChatSessions.length - 1,
+									)
 								]
 							: null;
 					if (nextSession) {
@@ -274,40 +311,48 @@ export function useAgentChat(
 		}
 	}, []);
 
-	const selectSession = useCallback(
-		async (sessionId: string, isWorkflowStep?: boolean) => {
-			try {
-				if (isWorkflowStep) {
-					await openWorkflowStepTab(sessionId);
-					await refreshSessions();
-					await refreshClosedSessions();
-				}
-				const response = await getSession(sessionId);
-				if (response) {
-					dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
-					dispatchSessionMeta(dispatch, sessionId, response);
-				} else {
-					dispatch({ type: "SET_ACTIVE_SESSION", session: null });
-				}
-			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッションの読み込みに失敗: ${e}`,
-				});
+	const selectSession = useCallback(async (sessionId: string) => {
+		try {
+			const response = await getSession(sessionId);
+			if (response) {
+				dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
+				dispatchSessionMeta(dispatch, sessionId, response);
+			} else {
+				dispatch({ type: "SET_ACTIVE_SESSION", session: null });
 			}
-		},
-		[refreshSessions, refreshClosedSessions],
-	);
+		} catch (e) {
+			dispatch({
+				type: "SET_ERROR",
+				error: `セッションの読み込みに失敗: ${e}`,
+			});
+		}
+	}, []);
 
-	const openWorkflowStepSession = useCallback(
-		async (sessionId: string) => {
-			await selectSession(sessionId, true);
-		},
-		[selectSession],
-	);
+	const loadStepSession = useCallback(async (sessionId: string) => {
+		try {
+			const response = await getSession(sessionId);
+			if (response) {
+				dispatch({
+					type: "SET_VIEWED_STEP_SESSION",
+					session: response.session,
+				});
+				dispatchSessionMeta(dispatch, sessionId, response);
+			} else {
+				dispatch({ type: "SET_VIEWED_STEP_SESSION", session: null });
+			}
+		} catch (e) {
+			dispatch({
+				type: "SET_ERROR",
+				error: `step session の読み込みに失敗: ${e}`,
+			});
+		}
+	}, []);
 
-	const interrupt = useCallback(() => {
-		const sessionId = activeSessionRef.current?.id;
+	const clearStepSession = useCallback(() => {
+		dispatch({ type: "SET_VIEWED_STEP_SESSION", session: null });
+	}, []);
+
+	const interrupt = useCallback((sessionId: string) => {
 		if (!sessionId) return;
 		invoke("interrupt_agent_query", { chatSessionId: sessionId }).catch((e) => {
 			console.error("Failed to interrupt agent query:", e);
@@ -316,6 +361,7 @@ export function useAgentChat(
 
 	const sendMessage = useCallback(
 		async (
+			sessionId: string | null,
 			content: string,
 			images?: ImageAttachment[],
 			mentions?: MentionReference[],
@@ -324,7 +370,6 @@ export function useAgentChat(
 			if (!trimmed && (!images || images.length === 0)) return;
 
 			try {
-				const sessionId = activeSessionRef.current?.id ?? null;
 				const wPath = worktreePathRef.current;
 				const pm = permissionModeRef.current;
 				const backendId = sessionId ? null : selectedBackendIdRef.current;
@@ -351,14 +396,26 @@ export function useAgentChat(
 								images,
 								mentions,
 							);
+				const responseSessionId = response.session.id;
 				// Only update if the user hasn't switched to a different session during await
-				const currentSessionId = activeSessionRef.current?.id ?? null;
+				const currentActiveId = activeSessionRef.current?.id ?? null;
 				if (
-					currentSessionId === sessionId ||
-					currentSessionId === response.session.id
+					currentActiveId === sessionId ||
+					currentActiveId === responseSessionId
 				) {
 					dispatch({
 						type: "SET_ACTIVE_SESSION",
+						session: response.session,
+					});
+				}
+				// spec issues-1023: viewedStepSession が同 session を見ているなら本文も更新
+				const currentViewedId = viewedStepSessionRef.current?.id ?? null;
+				if (
+					currentViewedId === sessionId ||
+					currentViewedId === responseSessionId
+				) {
+					dispatch({
+						type: "SET_VIEWED_STEP_SESSION",
 						session: response.session,
 					});
 				}
@@ -384,7 +441,10 @@ export function useAgentChat(
 
 				const isActive = activeSessionRef.current?.id === sessionId;
 				if (isActive) {
-					const remaining = sessions.filter((s) => s.id !== sessionId);
+					// spec issues-1023: 閉じた後の active 候補も free chat に閉じる。
+					const remaining = sessions.filter(
+						(s) => s.id !== sessionId && !s.workflowStepSession,
+					);
 					const nextSession =
 						remaining.length > 0
 							? remaining[Math.min(idx, remaining.length - 1)]
@@ -487,27 +547,29 @@ export function useAgentChat(
 		dispatch({ type: "REORDER_SESSIONS", sessionOrder });
 	}, []);
 
-	const setPermissionMode = useCallback((mode: PermissionMode) => {
-		dispatch({ type: "SET_PERMISSION_MODE", mode });
-		// Persist to Rust and sync to Bridge
-		const sessionId = activeSessionRef.current?.id;
-		if (sessionId) {
-			invoke("set_agent_permission_mode", {
-				chatSessionId: sessionId,
-				permissionMode: mode,
-			}).catch((e) => {
-				console.error("Failed to set agent permission mode:", e);
-			});
-		}
-	}, []);
+	const setPermissionMode = useCallback(
+		(sessionId: string | null, mode: PermissionMode) => {
+			dispatch({ type: "SET_PERMISSION_MODE", mode });
+			// Persist to Rust and sync to Bridge
+			if (sessionId) {
+				invoke("set_agent_permission_mode", {
+					chatSessionId: sessionId,
+					permissionMode: mode,
+				}).catch((e) => {
+					console.error("Failed to set agent permission mode:", e);
+				});
+			}
+		},
+		[],
+	);
 
 	const respondPermission = useCallback(
 		(
+			sessionId: string,
 			requestId: string,
 			allow: boolean,
 			updatedInput?: Record<string, unknown>,
 		) => {
-			const sessionId = activeSessionRef.current?.id;
 			if (!sessionId) return;
 			invoke("respond_agent_permission", {
 				chatSessionId: sessionId,
@@ -531,58 +593,64 @@ export function useAgentChat(
 		[],
 	);
 
-	const setModel = useCallback((modelId: string | null) => {
-		const sessionId = activeSessionRef.current?.id;
+	const setModel = useCallback((sessionId: string, modelId: string | null) => {
 		if (!sessionId) return;
 		invoke("set_agent_model", {
 			chatSessionId: sessionId,
 			modelId,
 		})
 			.then(() => {
-				if (activeSessionRef.current?.id === sessionId) {
-					dispatch({
-						type: "SET_SESSION_MODEL",
-						sessionId,
-						modelId,
-					});
-				}
+				dispatch({
+					type: "SET_SESSION_MODEL",
+					sessionId,
+					modelId,
+				});
 			})
 			.catch((e) => {
 				console.error("Failed to set agent model:", e);
 			});
 	}, []);
 
-	const setBackend = useCallback((backendId: string | null) => {
-		const activeSession = activeSessionRef.current;
-		if (!activeSession) {
-			dispatch({ type: "SET_SELECTED_BACKEND", backendId });
-			return;
-		}
-		if (
-			!backendId ||
-			activeSession.messages.length > 0 ||
-			activeSession.agentSessionId
-		) {
-			return;
-		}
-		setSessionBackend(activeSession.id, backendId)
-			.then((response) => {
-				if (activeSessionRef.current?.id === activeSession.id) {
-					dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
-					dispatchSessionMeta(dispatch, activeSession.id, response);
-				}
-			})
-			.catch((e) => {
-				dispatch({
-					type: "SET_ERROR",
-					error: `Agent の変更に失敗: ${e}`,
+	const setBackend = useCallback(
+		(sessionId: string | null, backendId: string | null) => {
+			// sessionId === null は「新規 session 用の backend 既定」を保存する経路。
+			if (!sessionId) {
+				dispatch({ type: "SET_SELECTED_BACKEND", backendId });
+				return;
+			}
+			// 既存 session の backend 変更は active session 経由の従来制約（メッセージ 0 件かつ
+			// agent 未起動かつ非ストリーミング）を満たす場合のみ受理する。
+			const activeSession = activeSessionRef.current;
+			if (
+				!backendId ||
+				!activeSession ||
+				activeSession.id !== sessionId ||
+				activeSession.messages.length > 0 ||
+				activeSession.agentSessionId
+			) {
+				return;
+			}
+			setSessionBackend(sessionId, backendId)
+				.then((response) => {
+					if (activeSessionRef.current?.id === sessionId) {
+						dispatch({ type: "SET_ACTIVE_SESSION", session: response.session });
+						dispatchSessionMeta(dispatch, sessionId, response);
+					}
+				})
+				.catch((e) => {
+					dispatch({
+						type: "SET_ERROR",
+						error: `Agent の変更に失敗: ${e}`,
+					});
 				});
-			});
-	}, []);
+		},
+		[],
+	);
 
 	useAgentSdkListeners({
 		dispatch,
 		activeSessionRef,
+		viewedStepSessionRef,
 		refreshSessions,
 	});
 
@@ -634,6 +702,7 @@ export function useAgentChat(
 		if (prevWorktreePathRef.current !== worktreePath) {
 			prevWorktreePathRef.current = worktreePath;
 			dispatch({ type: "SET_ACTIVE_SESSION", session: null });
+			dispatch({ type: "SET_VIEWED_STEP_SESSION", session: null });
 			dispatch({ type: "SET_PERMISSION_MODE", mode: "edit" });
 			initSessions();
 			refreshClosedSessions();
@@ -644,6 +713,12 @@ export function useAgentChat(
 		state.turnPhases[state.activeSession?.id ?? ""] ?? "idle";
 	const isStreaming =
 		activeTurnPhase === "streaming" || activeTurnPhase === "waiting_permission";
+
+	const viewedStepTurnPhase: TurnPhase =
+		state.turnPhases[state.viewedStepSession?.id ?? ""] ?? "idle";
+	const viewedStepSessionStreaming =
+		viewedStepTurnPhase === "streaming" ||
+		viewedStepTurnPhase === "waiting_permission";
 
 	const orderedSessions = useMemo(() => {
 		const sessionMap = new Map(state.sessions.map((s) => [s.id, s]));
@@ -668,6 +743,26 @@ export function useAgentChat(
 		[state.activeSession?.messages, activeTurnPhase],
 	);
 
+	const viewedStepSessionActivityStatus = useMemo(
+		() =>
+			deriveActivityStatus(
+				state.viewedStepSession?.messages,
+				viewedStepTurnPhase,
+			),
+		[state.viewedStepSession?.messages, viewedStepTurnPhase],
+	);
+
+	const turnPhasesState = state.turnPhases;
+	const sessionModelsState = state.sessionModels;
+	const getSessionTurnPhase = useCallback(
+		(sessionId: string): TurnPhase => turnPhasesState[sessionId] ?? "idle",
+		[turnPhasesState],
+	);
+	const getSessionSelectedModel = useCallback(
+		(sessionId: string): string | null => sessionModelsState[sessionId] ?? null,
+		[sessionModelsState],
+	);
+
 	const selectedModel =
 		state.sessionModels[state.activeSession?.id ?? ""] ?? null;
 	return {
@@ -675,6 +770,7 @@ export function useAgentChat(
 		orderedSessions,
 		closedSessions: state.closedSessions,
 		activeSession: state.activeSession,
+		viewedStepSession: state.viewedStepSession,
 		isStreaming,
 		activityStatus,
 		error: state.error,
@@ -683,7 +779,6 @@ export function useAgentChat(
 		sendMessage,
 		interrupt,
 		selectSession,
-		openWorkflowStepSession,
 		refreshSessions,
 		refreshClosedSessions,
 		closeSession: closeSessionFn,
@@ -700,5 +795,11 @@ export function useAgentChat(
 			? (state.activeSession?.backendId ?? state.selectedBackendId)
 			: state.selectedBackendId,
 		setBackend,
+		loadStepSession,
+		clearStepSession,
+		viewedStepSessionStreaming,
+		viewedStepSessionActivityStatus,
+		getSessionTurnPhase,
+		getSessionSelectedModel,
 	};
 }
