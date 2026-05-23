@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
 import {
@@ -7,8 +7,13 @@ import {
 	type WorkflowStepSelection,
 } from "@/components/panels/WorkflowPanel";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+	closeSession as closeSessionApi,
+	openWorkflowStepTab,
+} from "@/hooks/useSessionStore";
 import { useWorkflowState } from "@/hooks/useWorkflowState";
 import type { PermissionMode } from "@/types/session";
+import type { WorkflowState } from "@/types/workflow";
 import { WorkflowStepDetail } from "./WorkflowStepDetail";
 
 interface WorkflowViewProps {
@@ -63,12 +68,22 @@ export function WorkflowView({
 		[openTabs],
 	);
 
+	// spec issues-1023 後続改善: タブの open/close の真実源は Rust 側 lifecycle
+	// (`runtime_states[sid].tab_open`) に集約する。step 開始時に Rust が
+	// `mark_step_tab_open` で true を立て、step 完了時に `close_step_tab` で false に
+	// 倒すため、その状態を `openTabs` へ同期するだけで「開始で Show / 完了で Hide」
+	// の自動挙動が得られる。手動操作は楽観的にローカル state を更新しつつ、Rust
+	// commands (`open_workflow_step_tab` / `close_session`) を呼んで真実源を更新する。
 	const handleSelectStepSession = useCallback((next: WorkflowStepSelection) => {
 		const key = stepTabKey(next);
 		setOpenTabs((prev) =>
 			prev.some((tab) => stepTabKey(tab) === key) ? prev : [...prev, next],
 		);
 		setActiveTabKey(key);
+		// Rust 側 tab_open=true を立てる。失敗時は次回 workflowState 同期で整合する。
+		if (next.sessionId) {
+			void openWorkflowStepTab(next.sessionId).catch(() => {});
+		}
 	}, []);
 
 	const handleSelectTab = useCallback((key: string) => {
@@ -77,6 +92,7 @@ export function WorkflowView({
 
 	const handleCloseTab = useCallback(
 		(key: string) => {
+			const target = openTabs.find((tab) => stepTabKey(tab) === key);
 			setOpenTabs((prev) => {
 				const idx = prev.findIndex((tab) => stepTabKey(tab) === key);
 				if (idx === -1) return prev;
@@ -88,8 +104,13 @@ export function WorkflowView({
 				}
 				return next;
 			});
+			// Rust 側 tab_open=false を立てる。`close_session` は workflow step session に
+			// 対しては tab を閉じるだけで session 履歴は破壊しない（session_commands.rs:24-44）。
+			if (target?.sessionId) {
+				void closeSessionApi(target.sessionId).catch(() => {});
+			}
 		},
-		[activeTabKey],
+		[activeTabKey, openTabs],
 	);
 
 	// WorkflowPanel（timeline）側からの "session を閉じる" 要求は sessionId 主語で
@@ -101,6 +122,49 @@ export function WorkflowView({
 		},
 		[openTabs, handleCloseTab],
 	);
+
+	// Rust 由来の `runtimeStates[sid].tab_open` を `openTabs` に同期する。
+	// - tab_open=true で openTabs に無い sessionId → タブを自動追加（= 開始で Show）
+	// - tab_open=false に変化した sessionId が openTabs に有る → 自動除去（= 完了で Hide）
+	// sessionId を持たないタブ（bash / parallel parent / 未紐付け completed）は Rust
+	// lifecycle 対象外なので、フロント useState 管理のまま保持する。
+	useEffect(() => {
+		if (!workflowState?.runtimeStates) return;
+		const runtimeStates = workflowState.runtimeStates;
+		setOpenTabs((prev) => {
+			const filtered = prev.filter((tab) => {
+				if (!tab.sessionId) return true;
+				const rs = runtimeStates[tab.sessionId];
+				if (rs && rs.tabOpen === false) return false;
+				return true;
+			});
+			const existingIds = new Set(
+				filtered
+					.map((t) => t.sessionId)
+					.filter((id): id is string => id != null),
+			);
+			const additions: WorkflowStepSelection[] = [];
+			for (const [sid, rs] of Object.entries(runtimeStates)) {
+				if (!rs.tabOpen) continue;
+				if (existingIds.has(sid)) continue;
+				const sel = resolveStepSelection(workflowState, sid);
+				if (sel) additions.push(sel);
+			}
+			if (filtered.length === prev.length && additions.length === 0) {
+				return prev;
+			}
+			return [...filtered, ...additions];
+		});
+	}, [workflowState]);
+
+	// 自動 close で activeTab が openTabs から消えた場合のフォールバック。
+	// （手動 close は handleCloseTab 内で隣接タブに移すため、ここは自動経路用の保険）
+	useEffect(() => {
+		if (!activeTabKey) return;
+		if (openTabs.some((t) => stepTabKey(t) === activeTabKey)) return;
+		const last = openTabs[openTabs.length - 1];
+		setActiveTabKey(last ? stepTabKey(last) : null);
+	}, [openTabs, activeTabKey]);
 
 	const activeSessionId = activeTab?.sessionId ?? null;
 	const showChat = activeTab !== null && activeTab.sessionId != null;
@@ -198,6 +262,96 @@ export function WorkflowView({
  */
 function stepTabKey(sel: WorkflowStepSelection): string {
 	return sel.sessionId ?? `step:${sel.stepName}#${sel.runIndex ?? 0}`;
+}
+
+/**
+ * Rust 由来の `runtimeStates` から「自動 Show」対象として現れた sessionId を、
+ * timeline 上の step メタ（stepName / nodeType / runIndex）に解決して
+ * `WorkflowStepSelection` を構築する。解決経路は次の優先順：
+ *   1. current step (`currentSessionId`)
+ *   2. active parallel children (`activeParallelSteps`)
+ *   3. step history（top-level entry / parallel child snapshot の順）
+ * いずれの経路でも見つからない場合は `null` を返す（同期 effect 側で skip）。
+ */
+function resolveStepSelection(
+	workflowState: WorkflowState,
+	sessionId: string,
+): WorkflowStepSelection | null {
+	const runId = workflowState.executionId;
+	const nodesByName = new Map(
+		workflowState.workflowDefinition.nodes.map((n) => [n.name, n]),
+	);
+
+	if (
+		workflowState.currentSessionId === sessionId &&
+		workflowState.currentStepName
+	) {
+		const stepName = workflowState.currentStepName;
+		const node = nodesByName.get(stepName);
+		const runIndex = workflowState.stepExecutionCounts[stepName] ?? 1;
+		return {
+			runId,
+			sessionId,
+			stepName,
+			nodeType: (node?.type ?? "unknown") as WorkflowStepSelection["nodeType"],
+			runIndex,
+		};
+	}
+
+	if (workflowState.activeParallelSteps) {
+		for (const ps of workflowState.activeParallelSteps) {
+			if (ps.sessionId !== sessionId) continue;
+			let nodeType: WorkflowStepSelection["nodeType"] = "agent";
+			for (const parent of workflowState.workflowDefinition.nodes) {
+				const child = parent.parallel_children?.find(
+					(c) => c.name === ps.stepName,
+				);
+				if (child) {
+					nodeType = child.type;
+					break;
+				}
+			}
+			return {
+				runId,
+				sessionId,
+				stepName: ps.stepName,
+				nodeType,
+				runIndex: ps.runIndex,
+			};
+		}
+	}
+
+	for (const entry of workflowState.stepHistory) {
+		if (entry.sessionId === sessionId) {
+			const node = nodesByName.get(entry.stepName);
+			return {
+				runId,
+				sessionId,
+				stepName: entry.stepName,
+				nodeType: (node?.type ??
+					"unknown") as WorkflowStepSelection["nodeType"],
+				runIndex: entry.runIndex,
+			};
+		}
+		if (entry.childOutputs) {
+			const parentNode = nodesByName.get(entry.stepName);
+			for (const co of entry.childOutputs) {
+				if (co.sessionId !== sessionId) continue;
+				const child = parentNode?.parallel_children?.find(
+					(c) => c.name === co.stepName,
+				);
+				return {
+					runId,
+					sessionId,
+					stepName: co.stepName,
+					nodeType: child?.type ?? "agent",
+					runIndex: co.runIndex,
+				};
+			}
+		}
+	}
+
+	return null;
 }
 
 interface WorkflowStepTabBarProps {

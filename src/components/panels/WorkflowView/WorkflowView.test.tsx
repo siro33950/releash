@@ -518,6 +518,128 @@ describe("WorkflowView", () => {
 			).toBeInTheDocument();
 		});
 
+		it("auto-opens a tab when Rust runtimeStates.tabOpen flips to true", async () => {
+			// Rust 側 lifecycle が step 開始時に `tab_open=true` を立てる経路を模擬。
+			// 初期は runtimeStates 無し → タブバーは出ない。
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			mockAgentChatContext({
+				viewedStepSession: chatSessionFixture({ id: "chat-session-3" }),
+			});
+
+			const { rerender } = render(<WorkflowView worktreePath="/repo" />);
+			expect(screen.queryByTestId("workflow-step-tab-list")).toBeNull();
+
+			// Rust が tab_open=true を立てた状態の workflowState を流し込む。
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: {
+					...multiStepWorkflowFixture(),
+					runtimeStates: {
+						"chat-session-3": { runtimeActive: true, tabOpen: true },
+					},
+					updatedAt: 3000,
+				},
+			});
+			rerender(<WorkflowView worktreePath="/repo" />);
+
+			// タブが自動で出現する（= 開始で Show）。
+			await waitFor(() => {
+				expect(
+					screen.getByTestId("workflow-step-tab-list"),
+				).toBeInTheDocument();
+			});
+		});
+
+		it("auto-closes a tab when Rust runtimeStates.tabOpen flips to false", async () => {
+			// 開始時タブが出ている状態から、Rust が step 完了で tab_open=false を立てる
+			// 経路を模擬する（= 完了で Hide）。
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: {
+					...multiStepWorkflowFixture(),
+					runtimeStates: {
+						"chat-session-3": { runtimeActive: true, tabOpen: true },
+					},
+				},
+			});
+			mockAgentChatContext({
+				viewedStepSession: chatSessionFixture({ id: "chat-session-3" }),
+			});
+
+			const { rerender } = render(<WorkflowView worktreePath="/repo" />);
+			expect(
+				await screen.findByTestId("workflow-step-tab-list"),
+			).toBeInTheDocument();
+
+			// Rust 側で step 完了 → tab_open=false。
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: {
+					...multiStepWorkflowFixture(),
+					runtimeStates: {
+						"chat-session-3": { runtimeActive: false, tabOpen: false },
+					},
+					updatedAt: 4000,
+				},
+			});
+			rerender(<WorkflowView worktreePath="/repo" />);
+
+			// タブが自動で消える。
+			await waitFor(() => {
+				expect(screen.queryByTestId("workflow-step-tab-list")).toBeNull();
+			});
+		});
+
+		it("invokes open_workflow_step_tab when user manually opens a step tab", async () => {
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			mockAgentChatContext({
+				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
+			});
+			mockInvoke.mockReset();
+			mockInvoke.mockResolvedValue([]);
+
+			render(<WorkflowView worktreePath="/repo" />);
+
+			const openButtons = await screen.findAllByLabelText("Open tab");
+			fireEvent.click(openButtons[0]);
+
+			await waitFor(() => {
+				const calls = mockInvoke.mock.calls.filter(
+					(c) => c[0] === "open_workflow_step_tab",
+				);
+				expect(calls.length).toBeGreaterThanOrEqual(1);
+				expect(calls[0][1]).toEqual({ chatSessionId: "chat-session-1" });
+			});
+		});
+
+		it("invokes close_session when user manually closes a step tab", async () => {
+			useWorkflowStateMock.mockReturnValue({
+				workflowState: multiStepWorkflowFixture(),
+			});
+			mockAgentChatContext({
+				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
+			});
+			mockInvoke.mockReset();
+			mockInvoke.mockResolvedValue([]);
+
+			render(<WorkflowView worktreePath="/repo" />);
+
+			const openButtons = await screen.findAllByLabelText("Open tab");
+			fireEvent.click(openButtons[0]);
+
+			const closeBtn = await screen.findByLabelText(/^Close tab /);
+			fireEvent.click(closeBtn);
+
+			await waitFor(() => {
+				const calls = mockInvoke.mock.calls.filter(
+					(c) => c[0] === "close_session",
+				);
+				expect(calls.length).toBeGreaterThanOrEqual(1);
+				expect(calls[0][1]).toEqual({ sessionId: "chat-session-1" });
+			});
+		});
+
 		it("clears all tabs when the workflow run identity changes", async () => {
 			useWorkflowStateMock.mockReturnValue({
 				workflowState: multiStepWorkflowFixture(),
