@@ -450,7 +450,10 @@ fn save_pgid(app_data_dir: &Path, chat_session_id: &str, pgid: u32) -> Result<()
     let dir = pids_dir(app_data_dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create pids dir: {e}"))?;
     let owner_app_pid = std::process::id();
-    let owner_start_time = get_process_start_time(owner_app_pid)?;
+    // start_time が取得できないプラットフォーム/失敗時は 0 を保存する。
+    // cleanup 側では 0 を「未検証」として扱い、live owner なら保守的に skip する
+    // （bridge spawn そのものを失敗させない: issue #1024）。
+    let owner_start_time = get_process_start_time(owner_app_pid).unwrap_or(0);
     let payload = PidFileV1 {
         version: 1,
         pgid: pgid as i32,
@@ -543,11 +546,15 @@ pub fn cleanup_orphan_processes(app_data_dir: &Path) {
                     );
                 }
                 Err(e) => {
+                    // live owner だが start_time を検証できない: 保守的に skip
+                    // する（unsupported プラットフォームや一時的 I/O 失敗で他
+                    // インスタンスの bridge を誤殺しないため: issue #1024）。
                     log::warn!(
-                        "Failed to read start_time for owner pid {} of {}: {e}; proceeding with cleanup",
+                        "Failed to read start_time for owner pid {} of {}: {e}; skipping cleanup",
                         parsed.owner_app_pid,
                         path.display()
                     );
+                    continue;
                 }
             }
         }
