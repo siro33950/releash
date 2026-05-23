@@ -269,6 +269,71 @@ describe("WorkflowSidebarPanel", () => {
 		expect(screen.getByTestId("message-input")).toBeInTheDocument();
 	});
 
+	it("renders ChatSessionView when an approval step that owns a session is selected", async () => {
+		// approval step は被承認 agent step の current_session_id を引き継ぎ、
+		// approval chat 経由で対話できる（engine: validate_approval_chat_instruction /
+		// send_workflow_approval_chat_message）。WorkflowSidebarPanel は nodeType を
+		// 見ず session 有無だけで ChatUI を出すこと。
+		useWorkflowStateMock.mockReturnValue({
+			workflowState: workflowStateFixture({
+				state: { type: "waiting_approval" },
+				currentSessionId: "approval-session-1",
+				workflowDefinition: {
+					name: "wf",
+					description: "",
+					builtin: false,
+					nodes: [
+						{ name: "step-1", type: "approval", instruction: "i", rules: [] },
+					],
+				},
+				stepStates: { "step-1": "waiting_approval" },
+			}),
+		});
+		useWorkflowStepDetailMock.mockReturnValue({
+			detail: {
+				stepName: "step-1",
+				nodeType: "approval",
+				runIndex: 1,
+				state: "waiting_approval",
+				sessionId: "approval-session-1",
+				input: { instruction: "approve please" },
+				startedAtMs: 1_700_000_000_000,
+			},
+			isLoading: false,
+			error: null,
+		});
+		const loadStepSession = vi.fn().mockResolvedValue(undefined);
+		mockAgentChatContext({
+			loadStepSession,
+			viewedStepSession: chatSessionFixture({
+				id: "approval-session-1",
+				messages: [
+					{
+						id: "m1",
+						role: "agent",
+						parts: [{ type: "text", content: "ready for approval" }],
+						timestamp: 0,
+					},
+				],
+			}),
+		});
+
+		render(<WorkflowSidebarPanel worktreePath="/repo" />);
+
+		const openButtons = await screen.findAllByLabelText("Open tab");
+		fireEvent.click(openButtons[0]);
+
+		await waitFor(() => {
+			expect(loadStepSession).toHaveBeenCalledWith("approval-session-1");
+		});
+		await waitFor(() => {
+			expect(screen.getByTestId("workflow-step-detail")).toBeInTheDocument();
+		});
+		// ChatUI（composer + step session 本文）が approval でも描画される
+		expect(screen.getByTestId("message-input")).toBeInTheDocument();
+		expect(screen.getByText("ready for approval")).toBeInTheDocument();
+	});
+
 	it("renders NewWorkflowButton kicker so the user can start a workflow", () => {
 		useWorkflowStateMock.mockReturnValue({
 			workflowState: workflowStateFixture(),

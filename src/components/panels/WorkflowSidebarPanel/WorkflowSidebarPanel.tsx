@@ -80,10 +80,12 @@ export function WorkflowSidebarPanel({
 	const selectedStepKey = selection
 		? { stepName: selection.stepName, runIndex: selection.runIndex }
 		: null;
-	const showChat =
-		selection !== null &&
-		selection.nodeType === "agent" &&
-		selection.sessionId != null;
+	// step に session が紐づいているかだけでゲートする。nodeType は engine 側で
+	// 追加・変更され得るため、UI 側で type 列挙すると新 type 追加時に破綻する。
+	// approval step も current step session（被承認 agent step の session）を
+	// 引き継いでおり、approval chat 経由で対話できる（engine の
+	// validate_approval_chat_instruction / send_workflow_approval_chat_message 経路）。
+	const showChat = selection !== null && selection.sessionId != null;
 	const showDetail = selection !== null;
 
 	// 選択中 step session の本文を取得・反映する。step 選択が変わるか、agent でなくなる

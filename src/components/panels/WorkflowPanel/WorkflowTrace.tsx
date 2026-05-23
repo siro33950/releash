@@ -32,9 +32,12 @@ import { workflowStateClasses } from "./workflowStateStyles";
  * `stepName` / `nodeType` / `runIndex` / `runId`（observation 経路を Rust 側
  * StepDetailView 取得に閉じるためのキー）を一緒に渡す。
  *
- * `sessionId` は agent step 等で transcript が読める場合のみ設定される。
- * sessionId が無い step（bash / approval / parallel parent / 未紐付け completed）
- * も timeline 上から選択可能で、その場合は detail のみが表示される。
+ * `sessionId` は step に chat session が紐づいている場合のみ設定される。
+ * agent step は当該 step の chat session、approval step は被承認の agent step
+ * の chat session（engine の current_session_id）が引き継がれ、いずれも
+ * Workflow panel 内 ChatSessionView から閲覧・対話できる。
+ * sessionId が無い step（bash / parallel parent / 未紐付け completed）も
+ * timeline 上から選択可能で、その場合は detail のみが表示される。
  */
 export interface WorkflowStepSelection {
 	runId: string;
