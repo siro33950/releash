@@ -697,6 +697,94 @@ impl WorkflowExecution {
             .collect()
     }
 
+    /// spec issues-1023: 中断された通常 step の `step_history` entry を作る。
+    ///
+    /// 既存 `make_step_history_entry` の副作用（`current_session_id` reset /
+    /// `contract_retry_count` reset）を**起こさない**点が違い。`abort_workflow_by_run_id`
+    /// は post-commit で interrupt_agent や cleanup を行うため、reset 系は
+    /// `finalize_terminal_transition_after_required_append` 経路に任せる。
+    ///
+    /// session_id を entry にコピーすることで、`step_history` 由来の
+    /// session log 到達経路（runtime_view::collect_step_session_ids）を復活させる。
+    fn make_aborted_history_entry(&mut self, timestamp: f64) -> StepHistoryEntry {
+        let step_name = self.workflow.nodes[self.current_step_index].name.clone();
+        let run_index = self
+            .step_execution_counts
+            .get(&step_name)
+            .copied()
+            .unwrap_or(1);
+        // 中断時点までに累積した token_usage は entry に残す。
+        // current_step_token_usage 自体は take してクリアする
+        // （post-commit 経路で参照されないため）。
+        let token_usage = Some(std::mem::take(&mut self.current_step_token_usage));
+        StepHistoryEntry {
+            step_name,
+            completed_at: timestamp,
+            result: None,
+            session_id: self.current_session_id.clone(),
+            token_usage,
+            structured_output: None,
+            run_index,
+            child_outputs: None,
+            state: "aborted".to_string(),
+        }
+    }
+
+    /// spec issues-1023: 中断された parallel parent step の `step_history` entry を作る。
+    ///
+    /// `parallel_run.children` 全件を `child_outputs` に snapshot する。
+    /// 完了済み child（`ParallelChildState::Completed`）は `state="completed"`、
+    /// それ以外（Running / Failed / Interrupted）は `state="aborted"` として記録し、
+    /// session_id は child runtime / step_outputs から維持する（session log 到達経路維持）。
+    ///
+    /// 呼出し側は本関数で entry を組み立てた後、`self.parallel_run = None;` を明示
+    /// セットすること（`build_active_parallel_steps()` 経由の二重表示を防ぐ）。
+    fn make_aborted_parallel_history_entry(&self, timestamp: f64) -> Option<StepHistoryEntry> {
+        let pr = self.parallel_run.as_ref()?;
+        let parent_run_index = self
+            .step_execution_counts
+            .get(&pr.parent_step_name)
+            .copied()
+            .unwrap_or(1);
+        let child_snapshots: Vec<crate::workflow::state::ChildOutputSnapshot> = pr
+            .children
+            .iter()
+            .map(|child| {
+                let snapshot_state = if matches!(child.state, ParallelChildState::Completed) {
+                    "completed"
+                } else {
+                    "aborted"
+                };
+                let child_so = self.step_outputs.get(&child.step_name);
+                crate::workflow::state::ChildOutputSnapshot {
+                    step_name: child.step_name.clone(),
+                    session_id: child_so
+                        .and_then(|o| o.session_id.clone())
+                        .or_else(|| Some(child.session_id.clone())),
+                    result: child_so
+                        .and_then(|o| o.result.clone())
+                        .or(child.result.clone()),
+                    run_index: child.run_index,
+                    completed_at: child_so.map(|o| o.completed_at).unwrap_or(timestamp),
+                    structured_output: child_so.and_then(|o| o.structured_output.clone()),
+                    output_contract: child_so.and_then(|o| o.output_contract.clone()),
+                    state: snapshot_state.to_string(),
+                }
+            })
+            .collect();
+        Some(StepHistoryEntry {
+            step_name: pr.parent_step_name.clone(),
+            completed_at: timestamp,
+            result: None,
+            session_id: None,
+            token_usage: None,
+            structured_output: None,
+            run_index: parent_run_index,
+            child_outputs: Some(child_snapshots),
+            state: "aborted".to_string(),
+        })
+    }
+
     /// 現在のステップの完了履歴エントリを生成し、トークン使用量をリセットする。
     fn make_step_history_entry(
         &mut self,
@@ -739,6 +827,7 @@ impl WorkflowExecution {
             structured_output,
             run_index,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         };
         self.current_session_id = None;
         self.contract_retry_count = 0;
@@ -2928,6 +3017,29 @@ impl WorkflowEngine {
             }
             let snapshot_before = exec.clone();
             let workflow_name = exec.workflow.name.clone();
+
+            // spec issues-1023: state を Aborted にする前に、中断時の current step /
+            // parallel children を `step_history` に "aborted" entry として記録する。
+            // これにより UI 側は既存 history 描画経路 + session_id を使って中断 step の
+            // session log にアクセスできるようになる。`exec.parallel_run = None` を
+            // 明示クリアして `to_workflow_state()` 経由の二重表示を防ぐ。
+            if exec.parallel_run.is_some() {
+                if let Some(entry) = exec.make_aborted_parallel_history_entry(timestamp) {
+                    exec.step_history.push(entry);
+                }
+                exec.parallel_run = None;
+            } else {
+                let current_step_name = exec.workflow.nodes[exec.current_step_index].name.clone();
+                let already_in_history = exec
+                    .step_history
+                    .last()
+                    .is_some_and(|e| e.step_name == current_step_name);
+                if !already_in_history {
+                    let entry = exec.make_aborted_history_entry(timestamp);
+                    exec.step_history.push(entry);
+                }
+            }
+
             exec.state = WorkflowExecutionState::Aborted;
             exec.updated_at = timestamp;
             let snapshot_state = exec.to_workflow_state();
@@ -3443,6 +3555,7 @@ impl WorkflowEngine {
                                 .unwrap_or_else(current_timestamp),
                             structured_output: child_so.and_then(|o| o.structured_output.clone()),
                             output_contract: child_so.and_then(|o| o.output_contract.clone()),
+                            state: crate::workflow::state::default_step_entry_state(),
                         }
                     })
                     .collect();
@@ -3517,6 +3630,7 @@ impl WorkflowEngine {
 
                         run_index: parent_run_index,
                         child_outputs: Some(child_snapshots.clone()),
+                        state: crate::workflow::state::default_step_entry_state(),
                     };
                     exec.current_step_token_usage = TokenUsage::default();
                     exec.current_session_id = None;
@@ -3548,6 +3662,7 @@ impl WorkflowEngine {
 
                         run_index: parent_run_index,
                         child_outputs: Some(child_snapshots),
+                        state: crate::workflow::state::default_step_entry_state(),
                     };
                     exec.current_step_token_usage = TokenUsage::default();
                     exec.current_session_id = None;
@@ -7445,6 +7560,7 @@ mod tests {
             structured_output: None,
             run_index: 1,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         });
 
         let persist = StepOutcome::Persist(snapshot.clone());
@@ -7478,6 +7594,7 @@ mod tests {
             structured_output: None,
             run_index: 1,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         });
         snapshot.state = WorkflowExecutionState::Aborted;
 
@@ -7559,6 +7676,7 @@ mod tests {
                     completed_at: 1.0,
                     structured_output: None,
                     output_contract: None,
+                    state: crate::workflow::state::default_step_entry_state(),
                 },
                 crate::workflow::state::ChildOutputSnapshot {
                     step_name: "review-b".to_string(),
@@ -7568,8 +7686,10 @@ mod tests {
                     completed_at: 1.0,
                     structured_output: None,
                     output_contract: None,
+                    state: crate::workflow::state::default_step_entry_state(),
                 },
             ]),
+            state: crate::workflow::state::default_step_entry_state(),
         });
 
         assert_eq!(
@@ -8162,6 +8282,7 @@ mod tests {
 
                 run_index: 0,
                 child_outputs: None,
+                state: crate::workflow::state::default_step_entry_state(),
             }],
             started_at: 1000.0,
             updated_at: 1001.0,
@@ -8710,6 +8831,7 @@ mod tests {
 
                 run_index: 0,
                 child_outputs: None,
+                state: crate::workflow::state::default_step_entry_state(),
             },
             StepHistoryEntry {
                 step_name: "implement".to_string(),
@@ -8721,6 +8843,7 @@ mod tests {
 
                 run_index: 0,
                 child_outputs: None,
+                state: crate::workflow::state::default_step_entry_state(),
             },
         ];
         let ws = exec.to_workflow_state();
@@ -8746,6 +8869,7 @@ mod tests {
 
             run_index: 0,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         }];
         let ws = exec.to_workflow_state();
         assert_eq!(ws.step_states["plan"], "completed");
@@ -8768,6 +8892,7 @@ mod tests {
 
             run_index: 0,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         }];
         let ws = exec.to_workflow_state();
         assert_eq!(ws.step_states["plan"], "completed");
@@ -8810,6 +8935,7 @@ mod tests {
 
             run_index: 0,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         }];
         let wv = HashMap::new();
         let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history, &wv);
@@ -8902,6 +9028,7 @@ mod tests {
 
             run_index: 0,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         }];
         let wv = HashMap::new();
         let result = WorkflowEngine::inject_step_outputs("Do B", &step, &outputs, &history, &wv);
@@ -9022,6 +9149,7 @@ mod tests {
             structured_output: None,
             run_index: 1,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         }];
 
         let result = WorkflowEngine::inject_step_outputs(
@@ -9850,6 +9978,7 @@ mod tests {
 
             run_index: 0,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         }];
 
         let (sys, prompt) = WorkflowEngine::build_step_prompt(
@@ -11257,6 +11386,7 @@ mod tests {
             })),
             run_index: 1,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         });
         exec.step_outputs.insert(
             "implementation_fix_policy".to_string(),
@@ -11317,6 +11447,7 @@ mod tests {
             })),
             run_index: 1,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         });
         exec.step_outputs.insert(
             "implementation_fix_policy".to_string(),
@@ -14842,6 +14973,7 @@ mod dispatch_boundary_tests {
             structured_output: None,
             run_index: 1,
             child_outputs: None,
+            state: crate::workflow::state::default_step_entry_state(),
         });
         let complete = WorkflowCommand::CompleteNode {
             run_id: "00000000-0000-0000-0000-000000000602".to_string(),
@@ -14946,6 +15078,7 @@ mod dispatch_boundary_tests {
                 structured_output: Some(serde_json::json!({"k":"v"})),
                 run_index: 1,
                 child_outputs: None,
+                state: crate::workflow::state::default_step_entry_state(),
             });
             s
         }
@@ -15445,6 +15578,7 @@ mod dispatch_boundary_tests {
                 structured_output: None,
                 run_index: 1,
                 child_outputs: None,
+                state: crate::workflow::state::default_step_entry_state(),
             });
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
 
@@ -16074,7 +16208,9 @@ mod dispatch_boundary_tests {
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/dispatch-abort";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
-        exec.current_session_id = None;
+        // spec issues-1023: session log 到達経路の維持を検証するため、
+        // current_session_id を入れた状態で abort する。
+        exec.current_session_id = Some("aborted-step-session".to_string());
         exec.state = WorkflowExecutionState::Running;
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
 
@@ -16092,13 +16228,120 @@ mod dispatch_boundary_tests {
             .unwrap();
 
         assert_eq!(result, WorkflowCommandResult::Accepted);
+        let execs = engine.executions.lock().await;
+        let aborted_exec = execs.get(&run_id).unwrap();
+        assert_eq!(aborted_exec.state, WorkflowExecutionState::Aborted);
+
+        // spec issues-1023: 中断された current step が `state="aborted"` entry として
+        // step_history に積まれ、session_id が引き継がれていることを検証する。
+        // これにより history タブ経由でも session log に到達できる。
+        let aborted_entries: Vec<&StepHistoryEntry> = aborted_exec
+            .step_history
+            .iter()
+            .filter(|e| e.state == "aborted")
+            .collect();
         assert_eq!(
-            engine.executions.lock().await.get(&run_id).unwrap().state,
-            WorkflowExecutionState::Aborted
+            aborted_entries.len(),
+            1,
+            "current step が 1 件 aborted entry として記録される"
         );
+        assert_eq!(
+            aborted_entries[0].session_id.as_deref(),
+            Some("aborted-step-session"),
+            "session_id が step_history に引き継がれ session log に到達可能"
+        );
+        drop(execs);
+
         assert!(read_dispatch_events(&app, &run_id)
             .iter()
             .any(|event| matches!(event, WorkflowEvent::RunAborted { .. })));
+    }
+
+    /// spec issues-1023: `make_aborted_parallel_history_entry` の単体検証。
+    /// parallel ブロック中断時に parent step を 1 entry として、children を
+    /// `child_outputs` に snapshot し、完了済み child は "completed"、それ以外は
+    /// "aborted" 状態で記録される。session_id は全 child で残されることを担保する。
+    #[test]
+    fn make_aborted_parallel_history_entry_snapshots_mixed_child_states() {
+        let workflow = Workflow {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "parallel-review".to_string(),
+                node_type: NodeType::Parallel,
+                parallel_children: Some(vec![]),
+                ..Default::default()
+            }],
+        };
+        let exec = WorkflowExecution {
+            id: "exec-abort-parallel".to_string(),
+            workflow,
+            state: WorkflowExecutionState::Running,
+            current_step_index: 0,
+            step_execution_counts: HashMap::from([("parallel-review".to_string(), 1)]),
+            step_history: Vec::new(),
+            worktree_path: "/wt".to_string(),
+            started_at: 0.0,
+            updated_at: 0.0,
+            current_session_id: None,
+            current_step_token_usage: TokenUsage::default(),
+            step_outputs: HashMap::new(),
+            task: None,
+            parallel_run: Some(ParallelRunState {
+                parent_step_name: "parallel-review".to_string(),
+                aggregate: None,
+                children: vec![
+                    ParallelChildRun {
+                        step_name: "child-a".to_string(),
+                        session_id: "session-a".to_string(),
+                        state: ParallelChildState::Completed,
+                        result: Some("LGTM".to_string()),
+                        structured_output: None,
+                        output_contract: None,
+                        token_usage: TokenUsage::default(),
+                        run_index: 1,
+                        contract_retry_count: 0,
+                    },
+                    ParallelChildRun {
+                        step_name: "child-b".to_string(),
+                        session_id: "session-b".to_string(),
+                        state: ParallelChildState::Running,
+                        result: None,
+                        structured_output: None,
+                        output_contract: None,
+                        token_usage: TokenUsage::default(),
+                        run_index: 1,
+                        contract_retry_count: 0,
+                    },
+                ],
+            }),
+            workflow_variables: HashMap::new(),
+            workflow_defaults: WorkflowDefaults {
+                backend_id: None,
+                permission_mode: "edit".to_string(),
+            },
+            contract_retry_count: 0,
+        };
+
+        let entry = exec
+            .make_aborted_parallel_history_entry(123.0)
+            .expect("parallel_run が Some なら entry が返る");
+        assert_eq!(entry.step_name, "parallel-review");
+        assert_eq!(entry.state, "aborted");
+        assert_eq!(entry.completed_at, 123.0);
+        let children = entry.child_outputs.expect("child_outputs が Some");
+        assert_eq!(children.len(), 2);
+        let child_a = children.iter().find(|c| c.step_name == "child-a").unwrap();
+        assert_eq!(child_a.state, "completed");
+        assert_eq!(child_a.session_id.as_deref(), Some("session-a"));
+        let child_b = children.iter().find(|c| c.step_name == "child-b").unwrap();
+        assert_eq!(child_b.state, "aborted");
+        assert_eq!(
+            child_b.session_id.as_deref(),
+            Some("session-b"),
+            "未完了 child でも session_id が child_outputs に残る"
+        );
     }
 
     /// Spec [06] テスト境界: node 限定 AbortRun は現在 node を照合した上で run abort として

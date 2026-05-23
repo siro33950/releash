@@ -918,6 +918,7 @@ pub(crate) fn reconstruct_state_from_events(
                     structured_output: structured_output.clone(),
                     run_index: ri,
                     child_outputs: None,
+                    state: crate::workflow::state::default_step_entry_state(),
                 });
                 if structured_output.is_some() {
                     step_outputs.insert(
@@ -999,6 +1000,74 @@ pub(crate) fn reconstruct_state_from_events(
             }
             WorkflowEvent::RunAborted { timestamp, .. } => {
                 exec_state = WorkflowExecutionState::Aborted;
+
+                // spec issues-1023: 中断時に走っていた current step / parallel
+                // children を `step_history` に "aborted" 状態として記録する。
+                // session log への到達経路（child の session_id）を残すために
+                // active_parallel_steps の snapshot を child_outputs に転写する。
+                // 通常 step 経路では projection 上 `current_session_id` は
+                // 追えないため、entry の session_id は None になる（ライブ
+                // engine 経路では engine 側で session_id を入れる）。
+                let already_in_history = step_history
+                    .last()
+                    .is_some_and(|e| e.step_name == current_step_name);
+                let current_started = step_execution_counts.contains_key(&current_step_name);
+
+                if !active_parallel_steps.is_empty() {
+                    let parent_run_index = step_execution_counts
+                        .get(&current_step_name)
+                        .copied()
+                        .unwrap_or(0);
+                    let child_snapshots: Vec<crate::workflow::state::ChildOutputSnapshot> =
+                        active_parallel_steps
+                            .iter()
+                            .map(|child| {
+                                let snapshot_state = if child.state == "completed" {
+                                    "completed"
+                                } else {
+                                    "aborted"
+                                };
+                                crate::workflow::state::ChildOutputSnapshot {
+                                    step_name: child.step_name.clone(),
+                                    session_id: child.session_id.clone(),
+                                    result: child.result.clone(),
+                                    run_index: child.run_index,
+                                    completed_at: child.completed_at.unwrap_or(*timestamp),
+                                    structured_output: child.structured_output.clone(),
+                                    output_contract: child.output_contract.clone(),
+                                    state: snapshot_state.to_string(),
+                                }
+                            })
+                            .collect();
+                    step_history.push(StepHistoryEntry {
+                        step_name: current_step_name.clone(),
+                        completed_at: *timestamp,
+                        result: None,
+                        session_id: None,
+                        token_usage: None,
+                        structured_output: None,
+                        run_index: parent_run_index,
+                        child_outputs: Some(child_snapshots),
+                        state: "aborted".to_string(),
+                    });
+                } else if current_started && !already_in_history && !current_step_name.is_empty() {
+                    let run_index = step_execution_counts
+                        .get(&current_step_name)
+                        .copied()
+                        .unwrap_or(0);
+                    step_history.push(StepHistoryEntry {
+                        step_name: current_step_name.clone(),
+                        completed_at: *timestamp,
+                        result: None,
+                        session_id: None,
+                        token_usage: None,
+                        structured_output: None,
+                        run_index,
+                        child_outputs: None,
+                        state: "aborted".to_string(),
+                    });
+                }
+
                 active_parallel_steps.clear();
                 updated_at = *timestamp;
             }
@@ -1314,12 +1383,24 @@ mod tests {
         );
     }
 
-    /// `ParallelStarted` 後に `RunAborted` で終端しても、`active_parallel_steps` は空になる。
+    /// `ParallelStarted` 後に `RunAborted` で終端した場合、`active_parallel_steps` は
+    /// 空になり、parent step が "aborted" entry として step_history に積まれる。
+    /// 未完了 child は child_outputs に "aborted" 状態で snapshot される。
+    ///
+    /// spec issues-1023: 中断時に走っていた parallel children も step_history に
+    /// 集約することで、UI から session log への到達経路を保ち続ける。
     #[test]
     fn projection_clears_active_parallel_steps_on_run_aborted() {
         let snapshot = workflow_with_nodes("wf", vec!["parallel-review"]);
         let events = vec![
             run_started("exec-pa", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-pa".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "parallel-review".to_string(),
+                execution_count: 1,
+                timestamp: 1.0,
+            },
             WorkflowEvent::ParallelStarted {
                 run_id: "exec-pa".to_string(),
                 workflow_name: "wf".to_string(),
@@ -1340,6 +1421,145 @@ mod tests {
         assert!(
             state.active_parallel_steps.is_empty(),
             "RunAborted では active_parallel_steps は空"
+        );
+        assert_eq!(
+            state.step_history.len(),
+            1,
+            "RunAborted で parent entry が 1 件積まれる"
+        );
+        let parent = &state.step_history[0];
+        assert_eq!(parent.step_name, "parallel-review");
+        assert_eq!(parent.state, "aborted");
+        let children = parent
+            .child_outputs
+            .as_ref()
+            .expect("aborted parallel parent は child_outputs を持つ");
+        assert_eq!(children.len(), 2, "全 child が snapshot される");
+        for child in children {
+            assert_eq!(
+                child.state, "aborted",
+                "未完了 child は aborted として snapshot される"
+            );
+        }
+    }
+
+    /// spec issues-1023: 通常 step が走っている最中に `RunAborted` で終端した場合、
+    /// 当該 step が `state="aborted"` の entry として step_history に積まれる。
+    /// projection 経路では `current_session_id` を追えないため session_id は None。
+    #[test]
+    fn projection_records_aborted_entry_for_current_step_on_run_aborted() {
+        let snapshot = workflow_with_nodes("wf", vec!["plan"]);
+        let events = vec![
+            run_started("exec-abort-current", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-abort-current".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "plan".to_string(),
+                execution_count: 1,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::RunAborted {
+                run_id: "exec-abort-current".to_string(),
+                workflow_name: "wf".to_string(),
+                timestamp: 2.0,
+            },
+        ];
+        let state = reconstruct_state_from_events("exec-abort-current", &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.state, WorkflowExecutionState::Aborted);
+        assert_eq!(state.step_history.len(), 1);
+        let entry = &state.step_history[0];
+        assert_eq!(entry.step_name, "plan");
+        assert_eq!(entry.state, "aborted");
+        assert_eq!(entry.session_id, None);
+        assert_eq!(entry.run_index, 1);
+        assert!(entry.child_outputs.is_none());
+    }
+
+    /// spec issues-1023: parallel ブロック実行中に一部 child が完了し、残りが
+    /// 未完了のまま `RunAborted` が来ると、parent entry の child_outputs は
+    /// 完了 child を "completed"、未完了 child を "aborted" として snapshot する。
+    #[test]
+    fn projection_records_aborted_parallel_with_mixed_child_states() {
+        let snapshot = workflow_with_nodes("wf", vec!["parallel-review"]);
+        let events = vec![
+            run_started("exec-mixed", snapshot),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-mixed".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "parallel-review".to_string(),
+                execution_count: 1,
+                timestamp: 1.0,
+            },
+            WorkflowEvent::ParallelStarted {
+                run_id: "exec-mixed".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_names: vec!["a".to_string(), "b".to_string()],
+                timestamp: 1.0,
+            },
+            WorkflowEvent::ParallelChildStarted {
+                run_id: "exec-mixed".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "a".to_string(),
+                session_id: "session-a".to_string(),
+                execution_count: 1,
+                timestamp: 1.1,
+            },
+            WorkflowEvent::ParallelChildStarted {
+                run_id: "exec-mixed".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "b".to_string(),
+                session_id: "session-b".to_string(),
+                execution_count: 1,
+                timestamp: 1.1,
+            },
+            WorkflowEvent::ParallelChildCompleted {
+                run_id: "exec-mixed".to_string(),
+                workflow_name: "wf".to_string(),
+                parent_node_name: "parallel-review".to_string(),
+                child_node_name: "a".to_string(),
+                session_id: "session-a".to_string(),
+                run_index: 1,
+                result: Some("LGTM".to_string()),
+                token_usage: None,
+                structured_output: None,
+                timestamp: 1.5,
+            },
+            WorkflowEvent::RunAborted {
+                run_id: "exec-mixed".to_string(),
+                workflow_name: "wf".to_string(),
+                timestamp: 2.0,
+            },
+        ];
+        let state = reconstruct_state_from_events("exec-mixed", &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.state, WorkflowExecutionState::Aborted);
+        assert_eq!(state.step_history.len(), 1);
+        let parent = &state.step_history[0];
+        assert_eq!(parent.state, "aborted");
+        let children = parent.child_outputs.as_ref().unwrap();
+        assert_eq!(children.len(), 2);
+        let child_a = children.iter().find(|c| c.step_name == "a").unwrap();
+        let child_b = children.iter().find(|c| c.step_name == "b").unwrap();
+        assert_eq!(
+            child_a.state, "completed",
+            "ParallelChildCompleted 済み child は completed のまま snapshot"
+        );
+        assert_eq!(
+            child_a.session_id.as_deref(),
+            Some("session-a"),
+            "完了済み child の session_id が child_outputs に残る"
+        );
+        assert_eq!(child_b.state, "aborted", "未完了 child は aborted snapshot");
+        assert_eq!(
+            child_b.session_id.as_deref(),
+            Some("session-b"),
+            "未完了 child でも ParallelChildStarted で得た session_id が残る"
         );
     }
 

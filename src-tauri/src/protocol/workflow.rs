@@ -227,6 +227,9 @@ pub struct StepHistoryEntryView {
     pub run_index: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub child_outputs: Option<Vec<ChildOutputSnapshotView>>,
+    /// step entry の終端状態。`"completed"`（既定）/ `"aborted"`。
+    #[serde(default = "crate::workflow::state::default_step_entry_state")]
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +244,9 @@ pub struct ChildOutputSnapshotView {
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_contract: Option<String>,
+    /// child snapshot の終端状態。`"completed"`（既定）/ `"aborted"`。
+    #[serde(default = "crate::workflow::state::default_step_entry_state")]
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

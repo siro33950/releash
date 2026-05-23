@@ -798,6 +798,7 @@ mod tests {
                 structured_output: None,
                 run_index: 1,
                 child_outputs: None,
+                state: crate::workflow::state::default_step_entry_state(),
             }],
             step_execution_counts: HashMap::new(),
             workflow_definition: Workflow {

@@ -13,6 +13,13 @@ export interface TokenUsage {
 	outputTokens: number;
 }
 
+/**
+ * spec issues-1023: step / child の終端状態。
+ * `"completed"` が既定（旧 ndjson 互換）。`"aborted"` は `RunAborted` で
+ * 中断された step / parallel child を表現する。
+ */
+export type StepEntryState = "completed" | "aborted";
+
 export interface ChildOutputSnapshot {
 	stepName: string;
 	sessionId?: string;
@@ -21,6 +28,8 @@ export interface ChildOutputSnapshot {
 	completedAt: number;
 	structuredOutput?: JsonValue;
 	outputContract?: string;
+	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
+	state?: StepEntryState;
 }
 
 export interface StepHistoryEntry {
@@ -32,6 +41,8 @@ export interface StepHistoryEntry {
 	structuredOutput?: JsonValue;
 	runIndex?: number;
 	childOutputs?: ChildOutputSnapshot[];
+	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
+	state?: StepEntryState;
 }
 
 export type WorkflowExecutionState =

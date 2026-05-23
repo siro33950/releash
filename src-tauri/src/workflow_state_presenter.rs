@@ -232,6 +232,7 @@ fn step_history_entry_to_view(
         child_outputs: entry
             .child_outputs
             .map(|children| children.into_iter().map(child_output_to_view).collect()),
+        state: entry.state,
     }
 }
 
@@ -246,6 +247,7 @@ fn child_output_to_view(
         completed_at: output.completed_at,
         structured_output: output.structured_output,
         output_contract: output.output_contract,
+        state: output.state,
     }
 }
 
@@ -311,7 +313,9 @@ mod tests {
                     completed_at: 2.0,
                     structured_output: None,
                     output_contract: None,
+                    state: crate::workflow::state::default_step_entry_state(),
                 }]),
+                state: crate::workflow::state::default_step_entry_state(),
             }],
             step_execution_counts: HashMap::new(),
             workflow_definition: Workflow {

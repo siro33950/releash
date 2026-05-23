@@ -1682,4 +1682,145 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("(review)")).toBeInTheDocument();
 		expect(screen.getByText("reject: needs more tests")).toBeInTheDocument();
 	});
+
+	// spec issues-1023: 中断された run でも、step_history 経由で aborted entry が
+	// 描画され、session_id を持つ entry からは SessionToggleButton 経由で session log
+	// に到達できる。ghost エントリは追加されない（二重表示防止）。
+	describe("aborted workflow renders aborted step entries from history", () => {
+		it("renders an aborted history entry with a session toggle for log access", () => {
+			const onSessionClick = vi.fn();
+			render(
+				<WorkflowTrace
+					workflowState={makeWorkflowState({
+						state: { type: "aborted" },
+						currentStepName: "plan",
+						currentStepIndex: 0,
+						stepHistory: [
+							{
+								stepName: "plan",
+								completedAt: 1500,
+								result: null,
+								sessionId: "aborted-plan-session",
+								state: "aborted",
+							},
+						],
+						stepStates: {
+							plan: "aborted",
+							review: "pending",
+							fix: "pending",
+						},
+					})}
+					onSessionClick={onSessionClick}
+				/>,
+			);
+
+			const row = screen.getByTestId("trace-item-plan-1");
+			expect(row).toBeInTheDocument();
+			// SessionToggleButton（aria-label="Open tab"）は session log への到達経路。
+			const toggle = within(row).getByRole("button", { name: "Open tab" });
+			fireEvent.click(toggle);
+			expect(onSessionClick).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionId: "aborted-plan-session",
+					stepName: "plan",
+				}),
+			);
+		});
+
+		it("does not add a ghost entry for the current step when run is aborted", () => {
+			render(
+				<WorkflowTrace
+					workflowState={makeWorkflowState({
+						state: { type: "aborted" },
+						currentStepName: "plan",
+						currentStepIndex: 0,
+						stepHistory: [
+							{
+								stepName: "plan",
+								completedAt: 1500,
+								result: null,
+								sessionId: "aborted-plan-session",
+								state: "aborted",
+							},
+						],
+						stepStates: { plan: "aborted", review: "pending", fix: "pending" },
+					})}
+				/>,
+			);
+			// history 経由で 1 行のみ。ghost 経路で追加 push されないこと（二重表示防止）。
+			expect(screen.getAllByTestId(/^trace-item-plan-/)).toHaveLength(1);
+		});
+
+		it("renders aborted parallel parent with per-child snapshot state", () => {
+			render(
+				<WorkflowTrace
+					workflowState={makeWorkflowState({
+						state: { type: "aborted" },
+						currentStepName: "parallel-review",
+						currentStepIndex: 0,
+						totalSteps: 2,
+						workflowDefinition: {
+							name: "test-workflow",
+							description: "test",
+							builtin: false,
+							nodes: [
+								{
+									name: "parallel-review",
+									type: "parallel",
+									rules: [],
+									parallel_children: [
+										{ name: "child-a", type: "agent" },
+										{ name: "child-b", type: "agent" },
+									],
+								},
+								{
+									name: "report",
+									type: "agent",
+									instruction: "report",
+									rules: [],
+								},
+							],
+						},
+						stepStates: { "parallel-review": "aborted", report: "pending" },
+						stepHistory: [
+							{
+								stepName: "parallel-review",
+								completedAt: 1500,
+								result: null,
+								state: "aborted",
+								childOutputs: [
+									{
+										stepName: "child-a",
+										sessionId: "session-a",
+										result: "LGTM",
+										runIndex: 1,
+										completedAt: 1200,
+										state: "completed",
+									},
+									{
+										stepName: "child-b",
+										sessionId: "session-b",
+										result: undefined,
+										runIndex: 1,
+										completedAt: 1500,
+										state: "aborted",
+									},
+								],
+							},
+						],
+					})}
+				/>,
+			);
+
+			expect(
+				screen.getByTestId("trace-item-parallel-review-1"),
+			).toBeInTheDocument();
+			expect(
+				screen.getByTestId("trace-child-item-child-a-2"),
+			).toBeInTheDocument();
+			expect(
+				screen.getByTestId("trace-child-item-child-b-2"),
+			).toBeInTheDocument();
+		});
+	});
 });

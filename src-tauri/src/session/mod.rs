@@ -1467,6 +1467,7 @@ mod tests {
 
                     run_index: 0,
                     child_outputs: None,
+                    state: crate::workflow::state::default_step_entry_state(),
                 },
                 StepHistoryEntry {
                     step_name: "implement".to_string(),
@@ -1481,6 +1482,7 @@ mod tests {
 
                     run_index: 0,
                     child_outputs: None,
+                    state: crate::workflow::state::default_step_entry_state(),
                 },
             ],
             step_execution_counts: std::collections::HashMap::new(),

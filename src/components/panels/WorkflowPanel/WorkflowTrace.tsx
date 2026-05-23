@@ -209,7 +209,8 @@ type TraceItem =
 			sessionId?: string;
 			runtimeActive: boolean;
 			tabOpen: boolean;
-			state: "completed";
+			// spec issues-1023: 中断された step も step_history 経由でこの kind に乗る。
+			state: "completed" | "aborted";
 	  }
 	| {
 			kind: "current";
@@ -227,7 +228,8 @@ type TraceItem =
 			stepName: string;
 			occurrence: number;
 			childSteps: TraceParallelStepState[];
-			state: "running" | "completed" | "failed";
+			// spec issues-1023: parallel 親が中断された場合も history 経由で "aborted"。
+			state: "running" | "completed" | "failed" | "aborted";
 			entry?: StepHistoryEntry;
 	  };
 
@@ -270,6 +272,11 @@ function buildTraceItems(
 		const occurrence = (seenCounts.get(entry.stepName) ?? 0) + 1;
 		seenCounts.set(entry.stepName, occurrence);
 		const step = stepsByName.get(entry.stepName);
+		// spec issues-1023: バックエンドから state="aborted" が来た場合、history
+		// entry を「中断された step」として描画する（state field 未指定の旧バックエンドは
+		// "completed" にフォールバック）。
+		const entryState: "completed" | "aborted" =
+			entry.state === "aborted" ? "aborted" : "completed";
 
 		if (step?.parallel_children && step.parallel_children.length > 0) {
 			const childSteps: TraceParallelStepState[] = step.parallel_children.map(
@@ -284,9 +291,13 @@ function buildTraceItems(
 							childSnapshot.sessionId,
 							openStepSessionIds,
 						);
+						// spec issues-1023: snapshot.state="aborted" を尊重し、
+						// 中断された child を区別して描画する。
+						const childState: ParallelStepState["state"] =
+							childSnapshot.state === "aborted" ? "aborted" : "completed";
 						return {
 							stepName: child.name,
-							state: "completed" as const,
+							state: childState,
 							sessionId: childSnapshot.sessionId,
 							result: childSnapshot.result,
 							runIndex: childSnapshot.runIndex,
@@ -324,7 +335,7 @@ function buildTraceItems(
 				stepName: entry.stepName,
 				occurrence,
 				childSteps,
-				state: "completed" as const,
+				state: entryState,
 				entry,
 			};
 		}
@@ -343,7 +354,7 @@ function buildTraceItems(
 			sessionId: entry.sessionId,
 			runtimeActive: runtime.runtimeActive,
 			tabOpen: runtime.tabOpen,
-			state: "completed",
+			state: entryState,
 		};
 	});
 
