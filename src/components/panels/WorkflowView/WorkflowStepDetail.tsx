@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import type { WorkflowStepSelection } from "@/components/panels/WorkflowPanel";
 import {
 	useWorkflowStepDetail,
@@ -9,7 +9,8 @@ import {
 interface WorkflowStepDetailProps {
 	selection: WorkflowStepSelection;
 	worktreePath: string;
-	onClose: () => void;
+	onToggleCollapse?: () => void;
+	collapsed?: boolean;
 }
 
 /**
@@ -23,7 +24,8 @@ interface WorkflowStepDetailProps {
 export function WorkflowStepDetail({
 	selection,
 	worktreePath,
-	onClose,
+	onToggleCollapse,
+	collapsed,
 }: WorkflowStepDetailProps) {
 	const { detail, isLoading, error } = useWorkflowStepDetail({
 		worktreePath,
@@ -33,7 +35,23 @@ export function WorkflowStepDetail({
 	});
 
 	return (
-		<div className="flex shrink-0 flex-col overflow-hidden">
+		<div className="flex h-full flex-col overflow-hidden">
+			<div className="flex items-center gap-2 shrink-0 px-0 pt-0 bg-background border-y border-border">
+				{onToggleCollapse && (
+					<button
+						type="button"
+						onClick={onToggleCollapse}
+						className="shrink-0 p-1 ml-2 text-muted-foreground hover:text-foreground transition-colors"
+						aria-label={collapsed ? "Expand panel" : "Collapse panel"}
+					>
+						{collapsed ? (
+							<ChevronUp className="size-3.5" />
+						) : (
+							<ChevronDown className="size-3.5" />
+						)}
+					</button>
+				)}
+			</div>
 			<div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
 				<div className="min-w-0 flex-1">
 					<div className="truncate text-xs text-muted-foreground">
@@ -46,18 +64,10 @@ export function WorkflowStepDetail({
 				<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
 					{detail?.nodeType ?? selection.nodeType}
 				</span>
-				<button
-					type="button"
-					onClick={onClose}
-					aria-label="Close step detail"
-					className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted-foreground/20 hover:text-foreground"
-				>
-					<X className="size-3.5" />
-				</button>
 			</div>
 			<div
 				data-testid="workflow-step-detail"
-				className="flex flex-col gap-1 px-3 py-2 text-xs"
+				className="flex flex-1 flex-col gap-1 overflow-auto px-3 py-2 text-xs"
 			>
 				{error && (
 					<div

@@ -153,7 +153,7 @@ function WorktreeContent({
 	return (
 		<AgentChatProvider worktreePath={rootPath}>
 			{/* Center */}
-			<Panel id="center" minSize="30%">
+			<Panel id="center" defaultSize="50%" minSize="30%">
 				<div className="h-full relative overflow-hidden flex flex-col">
 					<ViewToolbar
 						leftPanels={leftPanels}
@@ -179,7 +179,7 @@ function WorktreeContent({
 			<Panel
 				id="right"
 				panelRef={rightPanelRef}
-				defaultSize={280}
+				defaultSize="50%"
 				minSize={280}
 				collapsible
 				collapsedSize="0%"
@@ -219,8 +219,9 @@ function WorktreeContent({
 							<Panel
 								id="right-bottom"
 								panelRef={rightBottomRef}
-								defaultSize="40%"
+								defaultSize={300}
 								minSize="20%"
+								groupResizeBehavior="preserve-pixel-size"
 								collapsible
 								collapsedSize={31}
 								onResize={(size) =>
@@ -403,6 +404,7 @@ export function MainLayout({
 					panelRef={leftNavRef}
 					defaultSize={230}
 					minSize={230}
+					groupResizeBehavior="preserve-pixel-size"
 					collapsible
 					collapsedSize="0%"
 					onResize={handleLeftNavResize}

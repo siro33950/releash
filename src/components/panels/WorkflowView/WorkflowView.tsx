@@ -1,6 +1,11 @@
 import { X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	Group,
+	Panel,
+	type PanelImperativeHandle,
+	Separator,
+} from "react-resizable-panels";
 import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
 import {
 	WorkflowPanel,
@@ -183,42 +188,47 @@ export function WorkflowView({
 	const activeSessionId = activeTab?.sessionId ?? null;
 	const showChat = activeTab !== null && activeTab.sessionId != null;
 
+	const stepDetailPanelRef = useRef<PanelImperativeHandle>(null);
+	const [stepDetailCollapsed, setStepDetailCollapsed] = useState(true);
+	const handleToggleStepDetail = useCallback(() => {
+		const panel = stepDetailPanelRef.current;
+		if (!panel) return;
+		panel.isCollapsed() ? panel.expand() : panel.collapse();
+	}, []);
+
+	// 初回マウント時（openTabs が 0 → 非空になったタイミング）に
+	// step-detail を折り畳んだ状態で表示する。
+	// 全タブを閉じて panel が unmount された後の再マウントでも、初期状態を再適用する。
+	const stepDetailInitialCollapseRef = useRef(false);
+	useEffect(() => {
+		if (openTabs.length === 0) {
+			stepDetailInitialCollapseRef.current = false;
+			return;
+		}
+		if (stepDetailInitialCollapseRef.current) return;
+		const panel = stepDetailPanelRef.current;
+		if (!panel) return;
+		stepDetailInitialCollapseRef.current = true;
+		requestAnimationFrame(() => {
+			panel.collapse();
+		});
+	}, [openTabs.length]);
+
 	return (
 		<div
 			data-testid="workflow-sidebar-panel"
 			className="flex h-full flex-col overflow-hidden"
 		>
 			<Group orientation="horizontal">
-				<Panel id="workflow-trace" defaultSize="60%" minSize="20%">
-					<div className="h-full overflow-hidden">
-						<WorkflowPanel
-							workflowState={workflowState ?? null}
-							worktreePath={worktreePath}
-							permissionMode={permissionMode}
-							onSessionClick={handleSelectStepSession}
-							onCloseSession={handleCloseSessionFromTimeline}
-							openStepSessionIds={openStepSessionIds}
-							selectedStep={
-								activeTab
-									? {
-											stepName: activeTab.stepName,
-											runIndex: activeTab.runIndex,
-										}
-									: null
-							}
-						/>
-					</div>
-				</Panel>
-				<Separator />
-				<Panel id="workflow-step-right" defaultSize="40%" minSize="20%">
-					<div className="flex h-full flex-col overflow-hidden border-l border-border">
+				<Panel id="workflow-step-right" minSize="20%">
+					<div className="flex h-full flex-col overflow-hidden">
 						{openTabs.length === 0 ? (
 							<div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
 								Select a node in the workflow to see its details.
 							</div>
 						) : (
 							<Group orientation="vertical">
-								<Panel id="workflow-step-chat" defaultSize="60%" minSize="20%">
+								<Panel id="workflow-step-chat" minSize="20%">
 									<div className="flex h-full flex-col overflow-hidden">
 										<WorkflowStepTabBar
 											openTabs={openTabs}
@@ -248,21 +258,55 @@ export function WorkflowView({
 								<Separator />
 								<Panel
 									id="workflow-step-detail"
-									defaultSize="40%"
-									minSize="15%"
+									panelRef={stepDetailPanelRef}
+									defaultSize={300}
+									minSize="20%"
+									groupResizeBehavior="preserve-pixel-size"
+									collapsible
+									collapsedSize={31}
+									onResize={(size) =>
+										setStepDetailCollapsed(size.inPixels <= 31)
+									}
 								>
-									<div className="h-full overflow-auto border-t border-border">
+									<div className="flex h-full flex-col overflow-hidden border-t border-border">
 										{activeTab && (
 											<WorkflowStepDetail
 												selection={activeTab}
 												worktreePath={worktreePath}
-												onClose={() => handleCloseTab(stepTabKey(activeTab))}
+												onToggleCollapse={handleToggleStepDetail}
+												collapsed={stepDetailCollapsed}
 											/>
 										)}
 									</div>
 								</Panel>
 							</Group>
 						)}
+					</div>
+				</Panel>
+				<Separator />
+				<Panel
+					id="workflow-trace"
+					defaultSize={300}
+					minSize="20%"
+					groupResizeBehavior="preserve-pixel-size"
+				>
+					<div className="h-full overflow-hidden border-l border-border">
+						<WorkflowPanel
+							workflowState={workflowState ?? null}
+							worktreePath={worktreePath}
+							permissionMode={permissionMode}
+							onSessionClick={handleSelectStepSession}
+							onCloseSession={handleCloseSessionFromTimeline}
+							openStepSessionIds={openStepSessionIds}
+							selectedStep={
+								activeTab
+									? {
+											stepName: activeTab.stepName,
+											runIndex: activeTab.runIndex,
+										}
+									: null
+							}
+						/>
 					</div>
 				</Panel>
 			</Group>
