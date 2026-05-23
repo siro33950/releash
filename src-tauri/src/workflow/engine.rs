@@ -1287,6 +1287,43 @@ impl WorkflowEngine {
         self.run_store.set_data_dir(dir).await;
     }
 
+    /// 起動時 recovery: 前回プロセスが terminal event を書かないまま終了した run（metadata の
+    /// status が non-terminal なまま残った run）を、Aborted へ強制遷移させる。
+    /// 既存 `event_projection` の `RunAborted → Aborted` 判定をそのまま機能させるため、
+    /// `<data_dir>/workflow_logs/<run_id>.ndjson` 末尾に `RunAborted` event を append し、
+    /// `workflow_runs/<run_id>.json` の status を Aborted に更新する。
+    ///
+    /// 本メソッドは `set_run_store_data_dir` 直後（in-memory `executions` map が空の状態）に
+    /// 1 度だけ呼ばれる前提。append / persist が個別に失敗しても起動自体は止めない（warn
+    /// のみ）。metadata の更新失敗時は次回起動で再試行される（idempotent）。
+    pub async fn recover_orphan_runs<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
+        let orphans = self.run_store.list_non_terminal_metadata().await;
+        if orphans.is_empty() {
+            return;
+        }
+        let timestamp = current_timestamp();
+        for run in orphans {
+            let run_id = run.run_id.clone();
+            let event = WorkflowEvent::RunAborted {
+                run_id: run_id.clone(),
+                workflow_name: run.workflow_name.clone(),
+                timestamp,
+            };
+            if let Err(e) = self.write_log_required(app, event) {
+                log::warn!("recover_orphan_runs: append RunAborted failed for {run_id}: {e}");
+                // metadata 更新は次回起動で再試行するため、ここで skip する。
+                continue;
+            }
+            if let Err(e) = self
+                .run_store
+                .force_complete_orphan_to_aborted(run, timestamp, None)
+                .await
+            {
+                log::warn!("recover_orphan_runs: persist metadata failed for {run_id}: {e}");
+            }
+        }
+    }
+
     /// ステップの model 値から対応するバックエンドIDを解決する。
     /// 形式検証（`ModelId`）と登録判定（`resolve_backend_for_model`）を
     /// 一括で行い、`set_agent_model_internal` と同一の受け入れ基準を適用する。
@@ -16849,5 +16886,132 @@ mod dispatch_boundary_tests {
             restored.updated_at, mutated_timestamp,
             "pre-commit で書いた updated_at も一括復元される"
         );
+    }
+
+    /// 起動時 recovery: 前回起動中に terminal event が書かれないまま終了した run について、
+    /// `recover_orphan_runs` が NDJSON 末尾に `RunAborted` を append し、metadata 上の
+    /// status を Aborted に書き換える。reconstruction 経路が Aborted を返すようになる。
+    #[tokio::test]
+    async fn recover_orphan_runs_marks_non_terminal_metadata_as_aborted() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+
+        // 前回プロセスの状態を模擬: workflow_runs/<id>.json に Running、event log に RunStarted のみ。
+        let prev_store = std::sync::Arc::new(crate::workflow::run::RunStore::new());
+        prev_store.set_data_dir(data_dir.clone()).await;
+        let orphan_id = uuid::Uuid::new_v4().to_string();
+        prev_store
+            .register_active(WorkflowRun {
+                run_id: orphan_id.clone(),
+                workflow_name: "wf".to_string(),
+                task: None,
+                status: RunStatus::Running,
+                worktree_path: "/wt/a".to_string(),
+                current_node_name: Some("plan".to_string()),
+                trigger_source: TriggerSource::DesktopUi,
+                started_at: 100.0,
+                updated_at: 100.0,
+                completed_at: None,
+                error_reason: None,
+            })
+            .await
+            .unwrap();
+        let log = WorkflowEventLog::new(&data_dir);
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: orphan_id.clone(),
+            workflow_name: "wf".to_string(),
+            workflow_file_stem: "wf".to_string(),
+            worktree_path: "/wt/a".to_string(),
+            workflow_definition: Workflow {
+                name: "wf".to_string(),
+                description: String::new(),
+                builtin: false,
+                nodes: vec![NodeDefinition {
+                    name: "plan".to_string(),
+                    node_type: NodeType::Agent,
+                    instruction: Some("plan".to_string()),
+                    ..NodeDefinition::default()
+                }],
+            },
+            timestamp: 100.0,
+        })
+        .unwrap();
+
+        // 起動直後を模擬した engine (空の in-memory state + 同じ data_dir)。
+        let engine = std::sync::Arc::new(WorkflowEngine::new_for_test());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        engine.recover_orphan_runs(app.handle()).await;
+
+        // metadata が Aborted に書き換わっている（status / completed_at が更新される）。
+        let summary = engine
+            .run_store
+            .get_run(&orphan_id)
+            .await
+            .expect("metadata must remain after recovery");
+        assert_eq!(summary.status, RunStatus::Aborted);
+        assert!(summary.completed_at.is_some());
+        assert!(summary.error_reason.is_none());
+
+        // 末尾 event が RunAborted。projection も Aborted を返すようになる。
+        let events = read_dispatch_events(&app, &orphan_id);
+        assert!(
+            matches!(events.last(), Some(WorkflowEvent::RunAborted { .. })),
+            "log の末尾は RunAborted: {:?}",
+            events.last()
+        );
+        let projected =
+            crate::workflow::event_projection::reconstruct_state_from_events(&orphan_id, &events)
+                .unwrap()
+                .unwrap();
+        assert_eq!(projected.state, WorkflowExecutionState::Aborted);
+    }
+
+    /// 起動時 recovery: 既に terminal な metadata は変更されない（idempotent）。
+    /// recovery 二回目以降は append も persist も走らない。
+    #[tokio::test]
+    async fn recover_orphan_runs_is_idempotent_for_already_terminal_runs() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+
+        let prev_store = std::sync::Arc::new(crate::workflow::run::RunStore::new());
+        prev_store.set_data_dir(data_dir.clone()).await;
+        let done_id = uuid::Uuid::new_v4().to_string();
+        prev_store
+            .register_active(WorkflowRun {
+                run_id: done_id.clone(),
+                workflow_name: "wf".to_string(),
+                task: None,
+                status: RunStatus::Running,
+                worktree_path: "/wt/b".to_string(),
+                current_node_name: Some("plan".to_string()),
+                trigger_source: TriggerSource::DesktopUi,
+                started_at: 100.0,
+                updated_at: 100.0,
+                completed_at: None,
+                error_reason: None,
+            })
+            .await
+            .unwrap();
+        prev_store
+            .complete_run(&done_id, TerminalRunStatus::Completed, 150.0, None)
+            .await
+            .unwrap();
+
+        let engine = std::sync::Arc::new(WorkflowEngine::new_for_test());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let events_before = read_dispatch_events(&app, &done_id);
+        engine.recover_orphan_runs(app.handle()).await;
+        let events_after = read_dispatch_events(&app, &done_id);
+        assert_eq!(
+            events_before.len(),
+            events_after.len(),
+            "terminal な run には event を append しない"
+        );
+        let summary = engine
+            .run_store
+            .get_run(&done_id)
+            .await
+            .expect("metadata must remain");
+        assert_eq!(summary.status, RunStatus::Completed);
     }
 }

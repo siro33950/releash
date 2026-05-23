@@ -263,8 +263,15 @@ pub fn run() {
             let pending_data_dir = app.path().app_data_dir().ok();
             if let Some(data_dir) = pending_data_dir.clone() {
                 let engine_for_init = workflow_engine.clone();
+                let app_handle_for_init = app.handle().clone();
                 tauri::async_runtime::block_on(async move {
                     engine_for_init.set_run_store_data_dir(data_dir).await;
+                    // 前回起動中に terminal event が書かれないまま終了した run を Aborted に
+                    // 強制遷移させる。in-memory `executions` map が空のこのタイミングで 1 度だけ
+                    // 走らせる（NDJSON 末尾の RunAborted append + metadata 更新）。
+                    engine_for_init
+                        .recover_orphan_runs(&app_handle_for_init)
+                        .await;
                 });
             }
             app.manage(workflow_engine);
