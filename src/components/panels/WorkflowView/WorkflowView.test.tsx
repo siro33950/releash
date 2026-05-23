@@ -36,7 +36,7 @@ vi.mock("@/hooks/useWorkflowStepDetail", () => ({
 	}) => useWorkflowStepDetailMock(input),
 }));
 
-// spec issues-1023: WorkflowSidebarPanel は useAgentChatContext から
+// spec issues-1023: WorkflowView は useAgentChatContext から
 // viewedStepSession を引いて ChatSessionView を描画する。
 const useAgentChatContextMock = vi.fn();
 vi.mock("@/contexts/AgentChatContext", () => ({
@@ -44,7 +44,7 @@ vi.mock("@/contexts/AgentChatContext", () => ({
 	AgentChatProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-const { WorkflowSidebarPanel } = await import("./WorkflowSidebarPanel");
+const { WorkflowView } = await import("./WorkflowView");
 
 function workflowStateFixture(
 	overrides: Partial<WorkflowState> = {},
@@ -150,7 +150,7 @@ function mockAgentChatContext(overrides: Record<string, unknown> = {}) {
 	});
 }
 
-describe("WorkflowSidebarPanel", () => {
+describe("WorkflowView", () => {
 	beforeEach(() => {
 		mockInvoke.mockReset();
 		mockInvoke.mockResolvedValue([]);
@@ -177,7 +177,7 @@ describe("WorkflowSidebarPanel", () => {
 
 	it("mounts even when workflow run is absent (history-only / empty state)", () => {
 		useWorkflowStateMock.mockReturnValue({ workflowState: null });
-		render(<WorkflowSidebarPanel worktreePath="/repo" />);
+		render(<WorkflowView worktreePath="/repo" />);
 		expect(screen.getByTestId("workflow-sidebar-panel")).toBeInTheDocument();
 	});
 
@@ -200,7 +200,7 @@ describe("WorkflowSidebarPanel", () => {
 			}),
 		});
 
-		render(<WorkflowSidebarPanel worktreePath="/repo" />);
+		render(<WorkflowView worktreePath="/repo" />);
 
 		// 初期表示では detail / chat pane は出ない
 		expect(screen.queryByTestId("workflow-step-detail")).toBeNull();
@@ -268,7 +268,7 @@ describe("WorkflowSidebarPanel", () => {
 			}),
 		});
 
-		render(<WorkflowSidebarPanel worktreePath="/repo" />);
+		render(<WorkflowView worktreePath="/repo" />);
 
 		const openButtons = await screen.findAllByLabelText("Open tab");
 		fireEvent.click(openButtons[0]);
@@ -295,7 +295,7 @@ describe("WorkflowSidebarPanel", () => {
 	it("renders ChatSessionView when an approval step that owns a session is selected", async () => {
 		// approval step は被承認 agent step の current_session_id を引き継ぎ、
 		// approval chat 経由で対話できる（engine: validate_approval_chat_instruction /
-		// send_workflow_approval_chat_message）。WorkflowSidebarPanel は nodeType を
+		// send_workflow_approval_chat_message）。WorkflowView は nodeType を
 		// 見ず session 有無だけで ChatUI を出すこと。
 		useWorkflowStateMock.mockReturnValue({
 			workflowState: workflowStateFixture({
@@ -341,7 +341,7 @@ describe("WorkflowSidebarPanel", () => {
 			}),
 		});
 
-		render(<WorkflowSidebarPanel worktreePath="/repo" />);
+		render(<WorkflowView worktreePath="/repo" />);
 
 		const openButtons = await screen.findAllByLabelText("Open tab");
 		fireEvent.click(openButtons[0]);
@@ -361,7 +361,7 @@ describe("WorkflowSidebarPanel", () => {
 		useWorkflowStateMock.mockReturnValue({
 			workflowState: workflowStateFixture(),
 		});
-		render(<WorkflowSidebarPanel worktreePath="/repo" />);
+		render(<WorkflowView worktreePath="/repo" />);
 		// 起動経路を残すため kicker を表示する。
 		expect(screen.queryByLabelText("New workflow")).not.toBeNull();
 	});
@@ -418,7 +418,7 @@ describe("WorkflowSidebarPanel", () => {
 				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
 			});
 
-			render(<WorkflowSidebarPanel worktreePath="/repo" />);
+			render(<WorkflowView worktreePath="/repo" />);
 
 			// 初期: タブバーは出ない。
 			expect(screen.queryByTestId("workflow-step-tab-list")).toBeNull();
@@ -444,7 +444,7 @@ describe("WorkflowSidebarPanel", () => {
 				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
 			});
 
-			render(<WorkflowSidebarPanel worktreePath="/repo" />);
+			render(<WorkflowView worktreePath="/repo" />);
 
 			const openButtons = await screen.findAllByLabelText("Open tab");
 			expect(openButtons.length).toBeGreaterThanOrEqual(2);
@@ -464,7 +464,7 @@ describe("WorkflowSidebarPanel", () => {
 				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
 			});
 
-			render(<WorkflowSidebarPanel worktreePath="/repo" />);
+			render(<WorkflowView worktreePath="/repo" />);
 
 			const openButtons = await screen.findAllByLabelText("Open tab");
 			fireEvent.click(openButtons[0]);
@@ -500,7 +500,7 @@ describe("WorkflowSidebarPanel", () => {
 				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
 			});
 
-			render(<WorkflowSidebarPanel worktreePath="/repo" />);
+			render(<WorkflowView worktreePath="/repo" />);
 
 			const openButtons = await screen.findAllByLabelText("Open tab");
 			fireEvent.click(openButtons[0]);
@@ -526,9 +526,7 @@ describe("WorkflowSidebarPanel", () => {
 				viewedStepSession: chatSessionFixture({ id: "chat-session-1" }),
 			});
 
-			const { rerender } = render(
-				<WorkflowSidebarPanel worktreePath="/repo" />,
-			);
+			const { rerender } = render(<WorkflowView worktreePath="/repo" />);
 
 			const openButtons = await screen.findAllByLabelText("Open tab");
 			fireEvent.click(openButtons[0]);
@@ -540,7 +538,7 @@ describe("WorkflowSidebarPanel", () => {
 			useWorkflowStateMock.mockReturnValue({
 				workflowState: workflowStateFixture({ executionId: "exec-2" }),
 			});
-			rerender(<WorkflowSidebarPanel worktreePath="/repo" />);
+			rerender(<WorkflowView worktreePath="/repo" />);
 
 			await waitFor(() => {
 				expect(screen.queryByTestId("workflow-step-tab-list")).toBeNull();

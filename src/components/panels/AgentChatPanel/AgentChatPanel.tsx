@@ -28,7 +28,7 @@ interface AgentChatPanelProps {
 /**
  * spec issues-1023: 自由対話 chat の panel。タブバーは AgentChatPanel 固有の
  * drag&drop 並べ替え・history popover・新規作成ボタンを持つ。chat 本文と
- * MessageInput は {@link BoundSessionChat} に委譲され、WorkflowSidebarPanel と
+ * MessageInput は {@link BoundSessionChat} に委譲され、WorkflowView と
  * 同一実装を共有する（issue #1023 「タブ含めて同じ UI で session フィルタだけが違う」設計）。
  */
 export function AgentChatPanel({

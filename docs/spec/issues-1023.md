@@ -6,9 +6,9 @@
 
 **種別**: 新機能
 
-**ゴール**: workflow run を chat tab 群から独立した第一級の UI モデルとして扱える「Workflow panel / Command Center」を右パネル側に確立し、利用者が多数の chat session を切り替えることなく、現 worktree に紐づく workflow run の active 状態・履歴・経緯・step ごとの詳細・step での対話内容を一箇所で inspect できるようにする。具体的には以下が満たされること。
+**ゴール**: workflow run を chat tab 群から独立した第一級の UI モデルとして扱える「Workflow panel / Command Center」を中央エリア側に確立し、利用者が多数の chat session を切り替えることなく、現 worktree に紐づく workflow run の active 状態・履歴・経緯・step ごとの詳細・step での対話内容を一箇所で inspect できるようにする。具体的には以下が満たされること。
 
-- 右パネルに Review / Workflow の表示モード切替が存在し、利用者は Workflow モードへ切り替えると、現 worktree に紐づく workflow run の状況をこの一つのパネルで把握できる。
+- 中央エリアに AgentChat / Workflow の表示モード切替が存在し、利用者は Workflow モードへ切り替えると、現 worktree に紐づく workflow run の状況をこの一つのパネルで把握できる。
 - Workflow panel に active run と run history が表示され、利用者は現 worktree で進行中の run と過去 run の両方を、別画面に遷移せずに一覧できる。
 - run event の timeline が表示され、利用者は当該 run が「いつ / どの node で / どんな事実が起きたか」を時系列で観測できる。timeline は read-only 観測経路（[05]）で確立された `WorkflowEvent` 列の事実を主語として表示し、CLI 経由 mutation 要求の事実（[06] で追加された typed event）も含めて経路非依存に観測できる。
 - step detail view が表示され、利用者は timeline 上の任意の step（node 実行）を選択して、その step の入出力・遷移結果・所要時間などの詳細を確認できる。
@@ -27,9 +27,9 @@
 - workflow map / DAG 表示（plan doc により後回し）。
 - 他 worktree の run の横断ダッシュボード化。
 - pending command store / watcher / 「CLI 要求の事実」typed event の責務拡張（いずれも [06] の責務範囲に閉じる）。
-- Remote セッション側（`src/remote/`）への Workflow panel 移植。本 issue はデスクトップアプリの右パネルに閉じる。
+- Remote セッション側（`src/remote/`）への Workflow panel 移植。本 issue はデスクトップアプリの中央エリアに閉じる。
 
-**現状温存**: 既存の自由対話 chat tab（workflow step として起動されたものではない通常 chat）の表示・操作経路は本 issue では破壊しない。既存 UI approval / abort 経路（`approve_workflow_step` / `abort_workflow` Tauri command と、それを呼ぶ既存フロントエンド経路）も破壊しない。本 issue は Workflow panel から approval を発行する際の到達先として既存 Tauri command を再利用する。Source Control / Review panel など右パネルの既存表示モードは温存され、Workflow モードはそれらと同格の切替先として追加される。本 issue は既存 event log / agent chat session ストアに既に保存されている内容を Workflow panel に表示するのみであり、step の入出力・agent step の対話履歴について新規の保存先・新規のログ出力・新規の露出経路（外部送信・追加永続化等）を追加しない。
+**現状温存**: 既存の自由対話 chat tab（workflow step として起動されたものではない通常 chat）の表示・操作経路は本 issue では破壊しない。既存 UI approval / abort 経路（`approve_workflow_step` / `abort_workflow` Tauri command と、それを呼ぶ既存フロントエンド経路）も破壊しない。本 issue は Workflow panel から approval を発行する際の到達先として既存 Tauri command を再利用する。Source Control / Review panel など右パネルの既存表示モードは温存され、Workflow モードは中央エリア上で AgentChat と並列の切替先として追加される。本 issue は既存 event log / agent chat session ストアに既に保存されている内容を Workflow panel に表示するのみであり、step の入出力・agent step の対話履歴について新規の保存先・新規のログ出力・新規の露出経路（外部送信・追加永続化等）を追加しない。
 
 **背景**: マイルストーン [02]–[06] により、workflow engine 側では `run_id` を主語に state 観測・state 変化を扱う土台が完成した。
 
@@ -49,17 +49,17 @@
 - マイルストーン [06] Mutating CLI 完了済み（[issues-1019](./issues-1019.md)）。CLI 経路と UI 経路が `dispatch_external` で合流する境界が確立されており、Workflow panel から発行する approval / reject / abort も既存 Tauri command 経由で同じ engine 入口に到達できる。
 - マイルストーン [04] Command / Event Boundary 完了済み（[issues-1013](./issues-1013.md)）。`WorkflowCommand` typed 入口と `WorkflowEvent` 語彙、`WorkflowEngine::dispatch_external` 単一入口、認可・冪等性・stale target 判定が engine 内に閉じている。
 - マイルストーン [03] Run Store / Run ID 完了済み（[issues-1011](./issues-1011.md)）。`run_id` を一次キーとする run metadata / event log の永続化基盤が成立済み。
-- 既存右パネル（`src/components/panels/ReviewPanel.tsx` 等）と既存 chat tab 機構（`AgentChatPanel/`）はそのままの構造で存在し、Workflow モードは「右パネル内の表示モード切替」として既存と並列に追加できる。
+- 既存右パネル（`src/components/panels/ReviewPanel.tsx` 等）と既存 chat tab 機構（`AgentChatPanel/`）はそのままの構造で存在し、Workflow モードは「中央エリア（ViewToolbar）の表示モード切替」として既存 AgentChat と並列に追加できる。
 
 ## 振る舞い定義
 
 ```gherkin
 Feature: Workflow Panel / Command Center
 
-  Rule: 利用者は右パネルから Workflow 観測モードへ切り替えられる
+  Rule: 利用者は中央エリアから Workflow 観測モードへ切り替えられる
     Scenario: 利用者が Workflow モードを選ぶ
       Given 利用者が現 worktree を開いている
-      When 利用者が右パネルの表示モードを Workflow に切り替える
+      When 利用者が中央エリアの表示モードを Workflow に切り替える
       Then 現 worktree に紐づく workflow run の状況が一つのパネル内に表示される
 
   Rule: 利用者は現 worktree の workflow run を別画面に遷移せず一覧できる
@@ -115,17 +115,17 @@ Feature: Workflow Panel / Command Center
 
 ### 責務配置
 
-- 右パネル Layout 層（`src/screens/MainLayout.tsx` / `src/components/layout/RightPanelHeader.tsx` 等）: 右パネル内に Workflow 表示モードを既存 Review / Source Control 等と並列の切替先として登録する責務を持つ / Workflow モード内の表示構造（timeline・step detail・chat view の同居レイアウト等）の決定はここで持たない。AgentChatProvider で AgentChatPanel と WorkflowSidebarPanel を同じ AgentChat state にひもづける責務を持つ。
-- Workflow panel フロントエンド層（`src/components/panels/WorkflowSidebarPanel/` 配下と `src/components/panels/WorkflowPanel/` 配下）: 現 worktree に紐づく run 一覧・選択中 run の timeline・選択中 step の詳細・選択中 agent step の chat session（composer 付き）を「invoke 結果の表示用整形」として描画する責務を持つ / 事実列の整序・所要時間計算・approval 可否判定・stale 判定など run の意味解釈は一切持たない。
-- 共有 chat view（`src/components/panels/AgentChatPanel/ChatSessionView.tsx`）: 単一 ChatSession に対する message stream + composer を描画する presentational コンポーネント。AgentChatPanel と WorkflowSidebarPanel の双方から再利用される。session 取得・state 更新・送信ロジックは持たず、props で受け取った session / handler を表示するだけ。
-- フロントエンド Hooks / State 層（`src/hooks/useAgentChat.ts` ＋ `src/contexts/AgentChatContext.tsx`）: 現 worktree の AgentChat 全体 state（sessions / activeSession / viewedStepSession / streaming / activity / send / interrupt / permission / model / backend / per-session lookup）を MainLayout レベルで一度だけ生成し、AgentChatProvider 経由で AgentChatPanel と WorkflowSidebarPanel へ供給する。step session の本文反映は `loadStepSession(sessionId)` 経由で `viewedStepSession` slot に書き込み、send/interrupt 等は sessionId-explicit な API で操作する。バックエンドからの View 型を加工して別ドメインモデルへ再構築する責務は持たない。
+- 中央エリア Layout 層（`src/screens/MainLayout.tsx` / `src/components/layout/ViewToolbar.tsx` 等）: 中央エリア上部の ViewToolbar 上に Workflow 表示モードを既存 AgentChat と並列の切替先として登録する責務を持つ / Workflow モード内の表示構造（timeline・step detail・chat view の同居レイアウト等）の決定はここで持たない。AgentChatProvider で AgentChatPanel と WorkflowView を同じ AgentChat state にひもづける責務を持つ。
+- Workflow panel フロントエンド層（`src/components/panels/WorkflowView/` 配下と `src/components/panels/WorkflowPanel/` 配下）: 現 worktree に紐づく run 一覧・選択中 run の timeline・選択中 step の詳細・選択中 agent step の chat session（composer 付き）を「invoke 結果の表示用整形」として描画する責務を持つ / 事実列の整序・所要時間計算・approval 可否判定・stale 判定など run の意味解釈は一切持たない。
+- 共有 chat view（`src/components/panels/AgentChatPanel/ChatSessionView.tsx`）: 単一 ChatSession に対する message stream + composer を描画する presentational コンポーネント。AgentChatPanel と WorkflowView の双方から再利用される。session 取得・state 更新・送信ロジックは持たず、props で受け取った session / handler を表示するだけ。
+- フロントエンド Hooks / State 層（`src/hooks/useAgentChat.ts` ＋ `src/contexts/AgentChatContext.tsx`）: 現 worktree の AgentChat 全体 state（sessions / activeSession / viewedStepSession / streaming / activity / send / interrupt / permission / model / backend / per-session lookup）を MainLayout レベルで一度だけ生成し、AgentChatProvider 経由で AgentChatPanel と WorkflowView へ供給する。step session の本文反映は `loadStepSession(sessionId)` 経由で `viewedStepSession` slot に書き込み、send/interrupt 等は sessionId-explicit な API で操作する。バックエンドからの View 型を加工して別ドメインモデルへ再構築する責務は持たない。
 - Tauri command 層（`src-tauri/src/workflow/commands.rs` 等）: [05] で確立した read-only 経路（`get_workflow_state` / `list_workflow_runs` / `get_workflow_execution_log` 等）と [04] / [06] で確立した mutating 経路（`approve_workflow_step` / `reject_workflow_step` / `abort_workflow`）と既存 chat session 取得経路（`get_session`）を Workflow panel の到達先として再利用する責務を持つ / UI 専用の新 file-direct 経路や engine bypass 経路を追加しない。step session の transcript 取得には新 Tauri command を追加せず、既存 session 取得経路に閉じる。
 - Workflow engine（Rust）層（`src-tauri/src/workflow/` 配下）: `dispatch_external` の単一入口・`WorkflowEvent` 列の永続化・`event_projection::reconstruct_state_from_events` による state 復元・worktree 単位の認可境界をそのまま提供する責務を持つ / 本 issue では engine 内部に新しいビジネスルール（新 command / 新 event / 新 state）を導入しない。
 - Agent chat session 層（既存 `AgentChatPanel` / セッションストア）: agent step に紐づく chat session の transcript を保持・提供する責務を持つ（既存責務を据え置く） / workflow step として起動された chat session を tab bar 上に自由対話 chat tab と同格に列挙する責務は失う（tab bar 側で除外し、Workflow panel の chat view 経路を正規閲覧/操作経路とする）。
 
 ### データ/通信フロー
 
-- 表示モード切替: 利用者操作 → 右パネル header → MainLayout の右パネルモード状態 → Workflow panel コンポーネントが現 worktree path を prop として受けてマウント。
+- 表示モード切替: 利用者操作 → 中央 ViewToolbar の mode toggle → MainLayout の centerMode 状態 → Workflow panel コンポーネント（WorkflowView）が現 worktree path を prop として受けてマウント。
 - run 一覧表示: Workflow panel マウント → 現 worktree 向け hook → `list_workflow_runs(worktree_path)` invoke → engine が worktree 認可境界で filter した run metadata 列を返す → UI 描画。
 - timeline / step detail 表示: 利用者が run を選択 → `get_workflow_execution_log(run_id)` invoke → engine が `WorkflowEvent` 列と `reconstruct_state_from_events` 由来の復元 state を返す → UI は事実列と step 状態を時系列・選択中 step 詳細としてそのまま描画。step の入出力・所要時間等のメタ情報は `get_workflow_step_detail` invoke で取得する。
 - step conversation 表示: 利用者が agent step を選択 → 復元 state / run metadata 内の `chat_session_id` を引き当て → AgentChatProvider 経由で共有された useAgentChat の `loadStepSession(sessionId)` を呼ぶ → 既存 `get_session` Tauri command で当該 session の完全 ChatSession を取得 → reducer の `viewedStepSession` slot に格納 → Workflow panel 内の ChatSessionView が描画。tab bar は開かず、AgentChatPanel 本体の表示にも影響しない（同じ session を二重表示しない）。送信は `sendMessage(stepSessionId, content, ...)`、interrupt / permission 応答 / モデル変更等も sessionId-explicit な API で実行され、engine 側の認可境界はすべて既存経路を通る。
@@ -135,9 +135,9 @@ Feature: Workflow Panel / Command Center
 ### 状態Owner
 
 - 現 worktree path: フロントエンド MainLayout / useWorktreeState（既存）。Workflow panel はこれを prop / context として受け取るだけで自身では保持しない。
-- 右パネルの現在表示モード（Review / Workflow 等）: フロントエンド MainLayout（右パネル状態）。
+- 中央エリアの現在表示モード（Agent / Workflow）: フロントエンド MainLayout（centerMode 状態、永続化しない）。
 - 観測対象 run の選択・観測対象 step の選択・スクロール位置等の UI ローカル状態: Workflow panel コンポーネント内の React state。
-- AgentChat 全体 state（sessions / activeSession / viewedStepSession / turnPhases / sessionAgentStates / streaming 中の messages 等）: AgentChatProvider にホストされた `useAgentChat` の reducer state。MainLayout 配下の AgentChatPanel と WorkflowSidebarPanel が Context 経由で共有する。
+- AgentChat 全体 state（sessions / activeSession / viewedStepSession / turnPhases / sessionAgentStates / streaming 中の messages 等）: AgentChatProvider にホストされた `useAgentChat` の reducer state。MainLayout 配下の AgentChatPanel と WorkflowView が Context 経由で共有する。
 - workflow run の事実列（`WorkflowEvent` 履歴） / run metadata / 復元 state: workflow engine（Rust 側 run store + event log）。フロントエンドは購読のみで mutate しない。
 - approval / reject / abort 等 run progression: workflow engine（`dispatch_external` 経路のみで遷移）。UI は要求の発行元であり、結果は engine 由来の事実列を介してのみ観測する。
 - agent step に紐づく chat session の本文: 既存 agent chat session ストア（Rust 側）。Workflow panel は既存 `get_session` 取得経路を借りて `viewedStepSession` に投影するのみで、専用 transcript ストアや専用取得 Tauri command を持たない。

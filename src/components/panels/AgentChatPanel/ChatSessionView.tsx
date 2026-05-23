@@ -270,7 +270,7 @@ export interface ChatSessionViewProps {
 }
 
 /**
- * spec issues-1023: AgentChatPanel と WorkflowSidebarPanel の双方から再利用される
+ * spec issues-1023: AgentChatPanel と WorkflowView の双方から再利用される
  * 単一 session 用の chat view。message stream + activity status + error + MessageInput
  * までを内包する。tab bar / session 切替 UI は本コンポーネントは持たない（親側責務）。
  */

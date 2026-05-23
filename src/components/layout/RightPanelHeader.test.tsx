@@ -70,47 +70,12 @@ describe("RightPanelHeader", () => {
 		expect(header).toBeInTheDocument();
 	});
 
-	// spec issues-1023: 右パネル上半分の Review / Workflow 表示モード切替が
-	// 並列の選択肢として常時 1 つ active 表示される。
-	it("renders mode switch when mode and onModeChange are provided", () => {
-		const onModeChange = vi.fn();
-		render(
-			<TooltipProvider>
-				<RightPanelHeader
-					panels={createPanels()}
-					mode="review"
-					onModeChange={onModeChange}
-				/>
-			</TooltipProvider>,
-		);
-		expect(screen.getByLabelText("Review mode")).toHaveAttribute(
-			"aria-pressed",
-			"true",
-		);
-		expect(screen.getByLabelText("Workflow mode")).toHaveAttribute(
-			"aria-pressed",
-			"false",
-		);
-	});
-
-	it("calls onModeChange when switching to Workflow", async () => {
-		const user = userEvent.setup();
-		const onModeChange = vi.fn();
-		render(
-			<TooltipProvider>
-				<RightPanelHeader
-					panels={createPanels()}
-					mode="review"
-					onModeChange={onModeChange}
-				/>
-			</TooltipProvider>,
-		);
-		await user.click(screen.getByLabelText("Workflow mode"));
-		expect(onModeChange).toHaveBeenCalledWith("workflow");
-	});
-
-	it("does not render mode switch when mode props are omitted", () => {
+	// spec issues-1023: 右パネル上半分は Review 専用に戻り、表示モード切替は
+	// 中央エリアの ViewToolbar に移動した。
+	it("does not render any mode switch UI", () => {
 		renderHeader(createPanels());
+		expect(screen.queryByLabelText("Review mode")).toBeNull();
+		expect(screen.queryByLabelText("Workflow mode")).toBeNull();
 		expect(screen.queryByTestId("right-panel-mode-switch")).toBeNull();
 	});
 });

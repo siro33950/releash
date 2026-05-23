@@ -9,16 +9,17 @@ import {
 } from "react-resizable-panels";
 import { BranchSelector } from "@/components/layout/BranchSelector";
 
+import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
 import {
-	RightPanelHeader,
-	type RightPanelMode,
-} from "@/components/layout/RightPanelHeader";
-import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
+	type CenterMode,
+	type TogglePanel,
+	ViewToolbar,
+} from "@/components/layout/ViewToolbar";
 import { AgentChatPanel } from "@/components/panels/AgentChatPanel";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
 import { SettingsModal } from "@/components/panels/SettingsModal";
-import { WorkflowSidebarPanel } from "@/components/panels/WorkflowSidebarPanel";
+import { WorkflowView } from "@/components/panels/WorkflowView";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
@@ -58,8 +59,8 @@ function WorktreeContent({
 	leftPanels,
 	branchSelector,
 	togglePanels,
-	rightPanelMode,
-	onRightPanelModeChange,
+	centerMode,
+	onCenterModeChange,
 	initialWorkspaceState,
 	internalStateMapRef,
 	baseBranch,
@@ -72,8 +73,8 @@ function WorktreeContent({
 	leftPanels?: TogglePanel[];
 	branchSelector: React.ReactNode;
 	togglePanels: TogglePanel[];
-	rightPanelMode: RightPanelMode;
-	onRightPanelModeChange: (mode: RightPanelMode) => void;
+	centerMode: CenterMode;
+	onCenterModeChange: (mode: CenterMode) => void;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef: React.MutableRefObject<
 		Map<string, InternalWorktreeState>
@@ -154,13 +155,22 @@ function WorktreeContent({
 			{/* Center */}
 			<Panel id="center" minSize="30%">
 				<div className="h-full relative overflow-hidden flex flex-col">
-					<ViewToolbar leftPanels={leftPanels} rightSlot={branchSelector} />
+					<ViewToolbar
+						leftPanels={leftPanels}
+						rightSlot={branchSelector}
+						mode={centerMode}
+						onModeChange={onCenterModeChange}
+					/>
 					<div className="flex-1 overflow-hidden">
-						<AgentChatPanel
-							worktreePath={rootPath}
-							registerDropZone={s.registerDropZone}
-							sendMessageRef={sendAgentMessageRef}
-						/>
+						{centerMode === "workflow" ? (
+							<WorkflowView worktreePath={rootPath} />
+						) : (
+							<AgentChatPanel
+								worktreePath={rootPath}
+								registerDropZone={s.registerDropZone}
+								sendMessageRef={sendAgentMessageRef}
+							/>
+						)}
 					</div>
 				</div>
 			</Panel>
@@ -176,11 +186,7 @@ function WorktreeContent({
 				onResize={onRightResize}
 			>
 				<div className="flex flex-col h-full border-l border-border">
-					<RightPanelHeader
-						panels={togglePanels}
-						mode={rightPanelMode}
-						onModeChange={onRightPanelModeChange}
-					/>
+					<RightPanelHeader panels={togglePanels} />
 					<div className="flex-1 overflow-hidden">
 						<Group orientation="vertical">
 							<Panel
@@ -195,22 +201,18 @@ function WorktreeContent({
 								}
 							>
 								<div className="h-full overflow-hidden">
-									{rightPanelMode === "workflow" ? (
-										<WorkflowSidebarPanel worktreePath={rootPath} />
-									) : (
-										<ReviewPanel
-											rootPath={rootPath}
-											baseBranch={baseBranch}
-											defaultDiffBase={settings.defaultDiffBase}
-											defaultDiffMode={settings.defaultDiffMode}
-											diffOnlyMode={s.diffOnlyMode}
-											onDiffOnlyModeChange={s.setDiffOnlyMode}
-											navigateToFile={navigateToFile}
-											onSendToAgent={handleSendToAgent}
-											initialSelectedFile={s.selectedDiffFile}
-											onSelectedFileChange={s.setSelectedDiffFile}
-										/>
-									)}
+									<ReviewPanel
+										rootPath={rootPath}
+										baseBranch={baseBranch}
+										defaultDiffBase={settings.defaultDiffBase}
+										defaultDiffMode={settings.defaultDiffMode}
+										diffOnlyMode={s.diffOnlyMode}
+										onDiffOnlyModeChange={s.setDiffOnlyMode}
+										navigateToFile={navigateToFile}
+										onSendToAgent={handleSendToAgent}
+										initialSelectedFile={s.selectedDiffFile}
+										onSelectedFileChange={s.setSelectedDiffFile}
+									/>
 								</div>
 							</Panel>
 							<Separator />
@@ -288,11 +290,10 @@ export function MainLayout({
 
 	const [leftNavVisible, setLeftNavVisible] = useState(true);
 	const [rightVisible, setRightVisible] = useState(true);
-	// spec issues-1023: 右パネル上半分の表示モード。Review / Workflow を並列に切り替える。
-	// 初期値は既存挙動と同じく Review。worktree 切替は本 layout 側 key で
-	// 別ツリーになるため、本 state は MainLayout のライフサイクルに紐づける。
-	const [rightPanelMode, setRightPanelMode] =
-		useState<RightPanelMode>("review");
+	// spec issues-1023: 中央エリアの表示モード。Agent / Workflow を並列に切り替える。
+	// 初期値は Agent。worktree 切替は本 layout 側 key で別ツリーになるため、
+	// 本 state は MainLayout のライフサイクルに紐づける（永続化はしない）。
+	const [centerMode, setCenterMode] = useState<CenterMode>("agent");
 
 	// --- Workspace state persistence ---
 	const { internalStateMapRef, getInitialState, stateReady } =
@@ -450,8 +451,8 @@ export function MainLayout({
 								leftPanels={leftNavVisible ? undefined : [leftToggle]}
 								branchSelector={rightSlotContent}
 								togglePanels={togglePanels}
-								rightPanelMode={rightPanelMode}
-								onRightPanelModeChange={setRightPanelMode}
+								centerMode={centerMode}
+								onCenterModeChange={setCenterMode}
 								initialWorkspaceState={getInitialState(selectedRootPath)}
 								internalStateMapRef={internalStateMapRef}
 								baseBranch={baseBranch}

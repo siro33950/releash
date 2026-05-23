@@ -11,13 +11,13 @@ import { useWorkflowState } from "@/hooks/useWorkflowState";
 import type { PermissionMode } from "@/types/session";
 import { WorkflowStepDetail } from "./WorkflowStepDetail";
 
-interface WorkflowSidebarPanelProps {
+interface WorkflowViewProps {
 	worktreePath: string;
 	permissionMode?: PermissionMode;
 }
 
 /**
- * spec issues-1023: 右パネルの Workflow モードに対応するトップレベル panel。
+ * spec issues-1023: 中央エリアの Workflow モードに対応するトップレベル panel。
  *
  * レイアウト：
  *   left  = WorkflowPanel（timeline 全体）
@@ -29,10 +29,10 @@ interface WorkflowSidebarPanelProps {
  * 同一実装を共有する（issue #1023 「タブ含めて同じ UI で session フィルタだけが違う」設計）。
  * 本 panel 固有の責務は「タブ列管理 + WorkflowPanel との session id 受け渡し」のみ。
  */
-export function WorkflowSidebarPanel({
+export function WorkflowView({
 	worktreePath,
 	permissionMode = "readonly",
-}: WorkflowSidebarPanelProps) {
+}: WorkflowViewProps) {
 	const { workflowState } = useWorkflowState(worktreePath);
 
 	const [openTabs, setOpenTabs] = useState<WorkflowStepSelection[]>([]);

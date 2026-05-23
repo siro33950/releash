@@ -4,7 +4,7 @@ import { useWorkflowState } from "@/hooks/useWorkflowState";
 
 /**
  * spec issues-1023: `useAgentChat` を MainLayout レベルに引き上げ、AgentChatPanel と
- * WorkflowSidebarPanel が同一の reducer state（session store / streaming / activity）を
+ * WorkflowView が同一の reducer state（session store / streaming / activity）を
  * Context 経由で共有するための provider。両 panel で別々に `useAgentChat` を呼び出すと
  * useReducer state が分離して破綻するため、必ず本 provider でラップして使う。
  */

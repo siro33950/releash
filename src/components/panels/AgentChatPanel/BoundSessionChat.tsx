@@ -33,7 +33,7 @@ interface BoundSessionChatProps {
 
 /**
  * 「指定 sessionId に対する完全な chat UI（message stream + MessageInput + handlers）」を
- * 提供する component。AgentChatPanel と WorkflowSidebarPanel の両方から、sessionId だけを
+ * 提供する component。AgentChatPanel と WorkflowView の両方から、sessionId だけを
  * 渡すと chat 部分は共通実装になる、というのが本 component の責務境界。
  *
  * 内部処理:
