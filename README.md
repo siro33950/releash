@@ -1,116 +1,88 @@
-<p align="center"><img src="src-tauri/icons/icon.png" alt="Releash" width="120" /></p>
-
 # Releash
 
-**Unleash your AI agent. Take the leash back from anywhere.**
+**AIに任せきりでは、意図通りの実装は実現しない。AIエージェントのリードを取り戻すためのデスクトップアプリ。**
 
-A desktop app to manage multiple AI coding agents running in parallel — Kanban board, diff review, terminal, and remote access in one place.
+## なぜReleashか
 
-<p align="center"><img src="docs/assets/hero.png" alt="Releash screenshot" width="800" /></p>
+Claude Code に「このバグ直して」と頼めば、それなりに動くコードは返ってくる。だが、それが意図通りか・考慮漏れがないかは別問題だ。最終的にあなたがdiffを読み、考慮漏れを指摘し、テストを書かせ、修正を促すことになる。AIエージェントの登場で「コードを書く時間」は減ったが、「**意図と実装をすり合わせる時間**」はむしろ増えている。
 
-## Why Releash?
+その時間の中で発生するもの：
 
-Running multiple CLI agents in parallel is easy — open a few terminals and go. The hard part is managing them. Which branch is still in progress? Which agent finished? Which one has a PR open? Which worktree is ready to merge?
+- diffから得た気づきを、毎回チャットに長文で書き起こす
+- 同じレビュー観点を毎回口頭で繰り返す（テストは？エラー処理は？仕様充足は？）
+- 並行する複数タスクの進行状況・停止地点を見失う
+- 承認した内容の記録が残らない
+- Agentの「実装した」「テスト通った」は、実態と一致するとは限らない
 
-Releash integrates worktrees, agents, and Git status into a single management layer. **A Kanban board shows all your parallel tasks — each backed by a worktree with its own terminal, editor, and source control. Manage them from your desktop, or from your phone.**
+Releashは、**AIに任せきりだとこぼれ落ちるこれらの摩擦をデスクトップアプリ側で吸収する**ことで、意図通りの実装に到達するまでの時間を短くする。
 
-1. **Organize** tasks on the Kanban board — each card is a worktree with its own agent
-2. **Track** agent status in real time — running, waiting, done
-3. **Check in** from your phone — scan a QR code, see everything
-4. **Review** diffs, leave comments, send feedback to agents
-5. **Ship** — stage, commit, push, all without switching tools
+## Releashが提供するもの
 
-No cloud, no IDE lock-in. Releash runs on your machine, watches Git, and works with any CLI agent that writes files.
+### 1. Diffにコメント → AIに直接渡る
 
-## Features
+シンタックスハイライト付きdiffビューア（gutter / inline / split）の任意の行にコメントを記す。送信操作により `@path:Lstart-Lend` 形式に構造化され、AIセッションへ届く。AIは指摘対象を正確に把握する。送信済みコメントは記録され、画像 / Markdown の差分も専用ビューアで扱える。
 
-### Kanban for parallel agents
+### 2. AIエージェントの作業をワークフローとして定義する
 
-Each worktree is a card on a Kanban board — Todo, In Progress, Review (PR open), Done (merged). See all your agents and their tasks at a glance. Click a card to jump into the worktree with the editor, terminal, and source control ready to go. PR detection uses the [GitHub CLI](https://cli.github.com/) (`gh`) to automatically move cards to Review and Done columns.
+ワークフローをYAMLで宣言することで、AIの振る舞いを構成する。順序・並列・反復・承認ゲートを組み合わせ、AIに実行させる手順を定義する。構造はあなたが定め、AIは各ステップの中身を埋める。
 
-<p align="center"><img src="docs/assets/kanban.png" alt="Kanban board" width="600" /></p>
+Releash自身の開発に使用しているワークフローをビルトインで同梱している。
 
-### Agent status tracking
+### 3. Worktree単位でセッション・Diff・ターミナル・承認状態が連動する
 
-Know whether your agent is running, waiting for input, or done. Get notified via webhook (compatible with Slack Incoming Webhooks) when it needs your attention.
+複数タスクの並行進行は、各タスクをworktreeに分けて行う。Releashでのworktree切替に連動し、AIセッション・Diff・ターミナル・コメント・承認状態がすべて切り替わる。
 
-Agent state detection connects through [Claude Code Hooks](https://docs.anthropic.com/en/docs/claude-code/hooks). Other agents are fully supported for file editing, diff review, and Git workflows — they just won't report granular run states.
+### 4. 進行と状態を画面で常に把握できる
 
-### Monitor and operate from your phone
+各AIセッションの状態（待機中 / 動作中 / 許可待ち）はリアルタイムに表示される。ワークフロー実行中は Timeline / Step detail / Step conversation を Workflow パネルで観測できる。許可待ちは Slack / Discord 互換 Webhook で通知可能（`Always` / `WhenInactive` の抑制制御）。
 
-Scan a QR code to open Releash in your phone's browser. Check agent status, browse diffs, stage files, operate the terminal, leave review comments — all without being at your desk.
+## 機能一覧
 
-- Works on the same LAN out of the box
-- Auto-detects VPN interfaces (Tailscale, WireGuard, ZeroTier) for access outside your local network
-- All traffic is authenticated with HMAC-SHA256 challenge-response — no cloud relay, everything stays on your network
+| 領域 | 内容 |
+|---|---|
+| Diffレビュー | gutter / inline / split ビュー、Shikiハイライト、インラインコメント、画像 / Markdown 専用ビューア |
+| コメント → AI送信 | 構造化送信（`@path:L1-L10` + 抜粋）、送信履歴の記録 |
+| Workflow Engine | `agent` / `approval` / `parallel` ノード、cycle guard、output contract（自動修正prompt）、aggregate（all_match / any_match）、transition rules、input/output contract |
+| Workflow Panel | Run history、Active run、Timeline、Step detail、Step conversation transcript |
+| Workflow CLI | `list` / `runs` / `status` / `logs` / `approve` / `reject` / `abort` |
+| Worktree管理 | worktree作成 / 削除 / 切替、worktree毎にセッション・Diff・ターミナル・承認状態を保持 |
+| Agent対応 | Claude（Anthropic Claude Agent SDK）/ Codex、状態を待機中 / 動作中 / 許可待ちでリアルタイム表示 |
+| ターミナル | portable-pty による真のPTY、bash / zsh / fish のシェル統合でコマンド完了検出 |
+| 通知 | Slack / Discord 互換 Webhook、`Always` / `WhenInactive` で抑制制御 |
+| Git | branch / commit / status / diff / stage / worktree / log、`gh` 経由でPR / Issue取得 |
 
-<p align="center"><img src="docs/assets/remote-ui.png" alt="Remote Web UI" width="600" /></p>
+## Roadmap
 
-### Precision diff review
-
-Three view modes — gutter (compact), inline, and split (side-by-side). Image diffs show before/after side by side. Stage exactly the lines you want with hunk-level and group-level staging. Leave inline comments on any line and send them to the agent in one click.
-
-<p align="center"><img src="docs/assets/diff-review.png" alt="Diff review" width="600" /></p>
-
-### Full Git workflow
-
-Stage, unstage, commit, and push without leaving the app. Partial staging at the hunk level. Branch management with worktree support.
-
-### Project-wide search
-
-Regex-powered file search across the entire project. Results are grouped by file with match highlighting — click to jump straight into the editor.
-
-### Built-in terminal
-
-A real PTY terminal, not a toy. Shell integration (Bash, Zsh) detects when commands finish. Review comments are sent directly as text input, so it works with any agent — no plugins or integrations required.
+- **複数AIによる相互レビュー** — 複数のAIが独立にdiffをレビューし、互いの指摘を議論・合意形成してから人間に渡す。指摘ノイズを減らし、人間の判断負荷を下げる
+- **コード構造情報のAIへの提供** — エディタ機能を持たず、定義・参照などの構造情報をAIに渡してレビュー精度を上げる
+- **モバイル向けネイティブアプリ** — スマホからworktreeの状況確認・承認操作・許可待ち応答を行う専用アプリ
 
 ## Getting Started
 
-**Platforms:** macOS (Linux and Windows are not yet supported)
+**対応プラットフォーム**: macOS（Linux / Windows は未対応）
 
-Download the latest installer from the [Releases page](https://github.com/siro33950/releash/releases/latest).
+最新のインストーラは [Releases ページ](https://github.com/siro33950/releash/releases/latest) から取得する。
 
-**Optional:** [GitHub CLI](https://cli.github.com/) (`gh`) — enables PR detection for Kanban board
+任意: [GitHub CLI](https://cli.github.com/)（`gh`）— PR / Issue 取得に使う場合
 
-### Build from source
+### ソースからビルド
 
-**Prerequisites:** [Node.js](https://nodejs.org/) (v18+), [pnpm](https://pnpm.io/), [Rust](https://www.rust-lang.org/tools/install), [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)
+前提: [Node.js](https://nodejs.org/)（v18+）, [pnpm](https://pnpm.io/), [Rust](https://www.rust-lang.org/tools/install), [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 ```sh
 pnpm install
 pnpm tauri dev
 ```
 
-## How It Works
-
-```text
-Create worktrees for each task
-        ↓
-Launch agents in their terminals
-        ↓
-Agents edit files — Releash watches Git for changes
-        ↓
-Kanban board tracks status: Todo → In Progress → Review → Done
-        ↓
-Check in from desktop or phone — review diffs, leave comments
-        ↓
-Comments go straight to the agent as terminal input
-        ↓
-Stage, commit, push — done
-```
-
-Releash doesn't parse agent output or depend on any specific agent's API. It watches the filesystem and reads Git. That's why it works with Claude Code, Aider, Cline, or any tool that writes files. (Real-time agent state tracking requires [Claude Code Hooks](https://docs.anthropic.com/en/docs/claude-code/hooks); other agents get full Git and terminal support without run-state detection.)
-
-## Tech Stack
+## 技術スタック
 
 | Layer | Technology |
-|-------|-----------|
-| Desktop | [Tauri 2](https://v2.tauri.app/) (Rust) |
-| Frontend | React 19, Monaco Editor, xterm.js |
-| Git | git2 crate |
-| Remote | WebSocket server, QR code auth, HMAC-SHA256 |
-| Terminal | portable-pty |
+|---|---|
+| Desktop shell | Tauri 2 (Rust) |
+| Backend | Rust（git2 / tokio / clap） |
+| Frontend | React 19 + TypeScript + TailwindCSS 4 + Shiki |
+| Terminal | portable-pty + bash / zsh / fish シェル統合 |
 
-## License
+## ライセンス
 
 MIT OR Apache-2.0
