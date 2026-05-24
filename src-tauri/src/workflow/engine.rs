@@ -17463,4 +17463,352 @@ mod dispatch_boundary_tests {
             .expect("metadata must remain");
         assert_eq!(summary.status, RunStatus::Completed);
     }
+
+    // ---- [08] handle_submit_output: 単一トランザクション境界 ----
+
+    fn make_submit_output_workflow() -> Workflow {
+        Workflow {
+            name: "submit-wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "review".to_string(),
+                node_type: NodeType::Agent,
+                output_contract: Some("review-verdict".to_string()),
+                ..NodeDefinition::default()
+            }],
+        }
+    }
+
+    fn read_submit_output_events(
+        app: &DispatchTestApp,
+        run_id: &str,
+    ) -> Vec<WorkflowEvent> {
+        let data_dir = crate::session::resolve_data_dir(app.handle()).expect("data_dir");
+        WorkflowEventLog::new(&data_dir)
+            .read_log(run_id)
+            .unwrap_or_default()
+    }
+
+    async fn step_output_for(
+        engine: &WorkflowEngine,
+        run_id: &str,
+        step_name: &str,
+    ) -> Option<StepOutput> {
+        engine
+            .executions
+            .lock()
+            .await
+            .get(run_id)
+            .and_then(|exec| exec.step_outputs.get(step_name).cloned())
+    }
+
+    /// [08] 振る舞い定義 Rule 1（適合する場合）: contract に適合する構造化出力は
+    /// step output として確定し、後続 step から参照可能になり、事実履歴に記録される。
+    #[tokio::test]
+    async fn submit_output_persists_step_output_and_appends_event_when_contract_satisfied() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                "/wt/submit-ok".to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        engine
+            .dispatch_submit_output_with_context(
+                app.handle(),
+                &run_id,
+                "review".to_string(),
+                "review-verdict".to_string(),
+                serde_json::json!({"verdict": "LGTM"}),
+                Some("req-1".to_string()),
+                Some(800.0),
+            )
+            .await
+            .unwrap();
+
+        // step_outputs slot に書き込まれている
+        let step_output = step_output_for(&engine, &run_id, "review")
+            .await
+            .expect("step_outputs must be updated");
+        assert_eq!(
+            step_output.output_contract.as_deref(),
+            Some("review-verdict")
+        );
+        assert_eq!(
+            step_output.structured_output.as_ref().unwrap()["verdict"],
+            "LGTM"
+        );
+
+        // OutputSubmitted event が追記されている
+        let events = read_submit_output_events(&app, &run_id);
+        let submitted = events
+            .iter()
+            .find_map(|e| match e {
+                WorkflowEvent::OutputSubmitted {
+                    node_name,
+                    contract,
+                    structured_output,
+                    request_id,
+                    submitted_at,
+                    ..
+                } if node_name == "review" => Some((
+                    contract.clone(),
+                    structured_output.clone(),
+                    request_id.clone(),
+                    *submitted_at,
+                )),
+                _ => None,
+            })
+            .expect("OutputSubmitted event must be appended");
+        assert_eq!(submitted.0, "review-verdict");
+        assert_eq!(submitted.1["verdict"], "LGTM");
+        assert_eq!(submitted.2.as_deref(), Some("req-1"));
+        assert_eq!(submitted.3, Some(800.0));
+    }
+
+    /// [08] 振る舞い定義 Rule 1（適合しない場合）: contract 不適合の入力は拒否され、
+    /// step_outputs / workflow_variables / 事実履歴のいずれも変化しない。
+    #[tokio::test]
+    async fn submit_output_rejects_invalid_contract_without_side_effects() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                "/wt/submit-invalid".to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let err = engine
+            .dispatch_submit_output_with_context(
+                app.handle(),
+                &run_id,
+                "review".to_string(),
+                "review-verdict".to_string(),
+                serde_json::json!({"verdict": "MAYBE"}),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+
+        // step_outputs は更新されない
+        assert!(step_output_for(&engine, &run_id, "review").await.is_none());
+        // OutputSubmitted event も書かれない
+        let events = read_submit_output_events(&app, &run_id);
+        assert!(events
+            .iter()
+            .all(|e| !matches!(e, WorkflowEvent::OutputSubmitted { .. })));
+    }
+
+    /// [08] 振る舞い定義 Rule 1: 不在 step に対する提出は副作用なしで拒否される。
+    #[tokio::test]
+    async fn submit_output_rejects_unknown_step_without_side_effects() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                "/wt/submit-unknown".to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let err = engine
+            .dispatch_submit_output_with_context(
+                app.handle(),
+                &run_id,
+                "ghost-step".to_string(),
+                "review-verdict".to_string(),
+                serde_json::json!({"verdict": "LGTM"}),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+        let events = read_submit_output_events(&app, &run_id);
+        assert!(events
+            .iter()
+            .all(|e| !matches!(e, WorkflowEvent::OutputSubmitted { .. })));
+    }
+
+    /// [08] 振る舞い定義 Rule 1: 不在 run （UUID 未登録）に対する提出は ExecutionNotFound で拒否。
+    #[tokio::test]
+    async fn submit_output_rejects_unknown_run() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+
+        let err = engine
+            .dispatch_submit_output_with_context(
+                app.handle(),
+                &run_id,
+                "review".to_string(),
+                "review-verdict".to_string(),
+                serde_json::json!({"verdict": "LGTM"}),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, WorkflowEngineError::ExecutionNotFound(_)));
+    }
+
+    /// [08] caller の `--type` と engine の expected contract が一致しない場合は拒否され、
+    /// 副作用は発生しない。
+    #[tokio::test]
+    async fn submit_output_rejects_contract_type_mismatch() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                "/wt/submit-mismatch".to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        let err = engine
+            .dispatch_submit_output_with_context(
+                app.handle(),
+                &run_id,
+                "review".to_string(),
+                "fix-result".to_string(),
+                serde_json::json!({"status": "FIXED"}),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
+        assert!(step_output_for(&engine, &run_id, "review").await.is_none());
+    }
+
+    /// [08] 振る舞い定義 Rule 3: 提出済み output は後続 step から
+    /// `pass_output_from` 経路で経路非依存に参照できる。step_outputs に
+    /// 書き込まれた entry が contract 由来の `output_contract` を保持することを担保する。
+    #[tokio::test]
+    async fn submit_output_step_output_carries_contract_for_downstream_reference() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_submit_output_workflow(),
+                WorkflowExecutionState::Running,
+                "/wt/submit-downstream".to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        engine
+            .dispatch_submit_output_with_context(
+                app.handle(),
+                &run_id,
+                "review".to_string(),
+                "review-verdict".to_string(),
+                serde_json::json!({"verdict": "LGTM"}),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let step_output = step_output_for(&engine, &run_id, "review")
+            .await
+            .expect("step_outputs slot must be populated");
+        assert_eq!(
+            step_output.output_contract.as_deref(),
+            Some("review-verdict")
+        );
+        // structured_output が後続経路に渡る shape で保持される
+        assert!(step_output.structured_output.is_some());
+    }
+
+    /// [08] spec-file-path contract が submit された場合、workflow_variables に
+    /// `spec_file_path` が反映される（extract_contract_variables の合流）。
+    #[tokio::test]
+    async fn submit_output_applies_contract_variables_for_spec_file_path() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = crate::session::resolve_data_dir(app.handle()).unwrap();
+        engine.set_run_store_data_dir(data_dir).await;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let workflow = Workflow {
+            name: "spec-wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "plan".to_string(),
+                node_type: NodeType::Agent,
+                output_contract: Some("spec-file-path".to_string()),
+                ..NodeDefinition::default()
+            }],
+        };
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                workflow,
+                WorkflowExecutionState::Running,
+                "/wt/submit-spec".to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        engine
+            .dispatch_submit_output_with_context(
+                app.handle(),
+                &run_id,
+                "plan".to_string(),
+                "spec-file-path".to_string(),
+                serde_json::json!({"spec_file_path": "docs/spec/issues-1029.md"}),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let vars = engine
+            .executions
+            .lock()
+            .await
+            .get(&run_id)
+            .map(|exec| exec.workflow_variables.clone())
+            .unwrap();
+        assert_eq!(
+            vars.get("spec_file_path").map(|s| s.as_str()),
+            Some("docs/spec/issues-1029.md")
+        );
+    }
 }

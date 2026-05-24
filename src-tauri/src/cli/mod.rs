@@ -111,6 +111,46 @@ enum WorkflowSubcommand {
         #[arg(long)]
         node: Option<String>,
     },
+    /// [08] step に対する構造化出力の typed CLI 入口。`submit` / `validate` / `get`
+    /// を持つ。submit のみ pending command 経由で engine に届ける（spec [08]）。
+    Output {
+        #[command(subcommand)]
+        command: OutputSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum OutputSubcommand {
+    /// step の `output_contract` に従う構造化出力を提出する。
+    /// `--json` と `--file` は相互排他であり、いずれか必須。
+    Submit {
+        run_id: String,
+        #[arg(long, value_name = "STEP_NAME")]
+        step: String,
+        #[arg(long = "type", value_name = "CONTRACT")]
+        contract: String,
+        #[arg(long, conflicts_with = "file", value_name = "JSON")]
+        json: Option<String>,
+        #[arg(long, conflicts_with = "json", value_name = "PATH")]
+        file: Option<PathBuf>,
+    },
+    /// 構造化出力の `output_contract` 適合性を副作用なしで確認する。
+    /// engine state / event log は変化しない。
+    Validate {
+        run_id: String,
+        #[arg(long, value_name = "STEP_NAME")]
+        step: String,
+        #[arg(long, value_name = "PATH")]
+        file: PathBuf,
+    },
+    /// 提出済みの構造化出力を取得する。未提出時は決定論的に「未提出」を返す。
+    Get {
+        run_id: String,
+        #[arg(long, value_name = "STEP_NAME")]
+        step: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// CLI のエントリーポイント。`std::process::exit` 用の終了コードを返す。
@@ -194,6 +234,26 @@ pub fn run() -> i32 {
                     &run_id,
                     CliRequestPayload::Abort { node_name: node },
                 ),
+                Err(e) => Err(e),
+            },
+            WorkflowSubcommand::Output { command } => match resolve() {
+                Ok(data_dir) => match command {
+                    OutputSubcommand::Submit {
+                        run_id,
+                        step,
+                        contract,
+                        json,
+                        file,
+                    } => cmd_output_submit(&data_dir, &run_id, &step, &contract, json, file),
+                    OutputSubcommand::Validate {
+                        run_id,
+                        step,
+                        file,
+                    } => cmd_output_validate(&data_dir, &run_id, &step, &file),
+                    OutputSubcommand::Get { run_id, step, json } => {
+                        cmd_output_get(&data_dir, &run_id, &step, json)
+                    }
+                },
                 Err(e) => Err(e),
             },
         },
@@ -423,6 +483,254 @@ fn validate_optional_cli_text_len(
 
 fn command_input_error_to_cli_error(err: CommandInputError) -> CliError {
     CliError::InvalidInput(err.to_string())
+}
+
+/// [08] `releash workflow output submit`: 構造化出力を pending command として書き出す。
+/// engine 到達は稼働中アプリの watcher が担う（spec [08] CLI 完了基準境界）。
+fn cmd_output_submit(
+    data_dir: &Path,
+    run_id: &str,
+    step: &str,
+    contract: &str,
+    json_arg: Option<String>,
+    file_arg: Option<PathBuf>,
+) -> Result<(), CliError> {
+    validate_run_id(run_id)?;
+    validate_step_argument(step)?;
+    validate_contract_argument(contract)?;
+    let raw_json = read_submit_input_json(json_arg, file_arg)?;
+    let structured_output: serde_json::Value = serde_json::from_str(&raw_json)
+        .map_err(|e| CliError::InvalidInput(format!("Failed to parse JSON: {e}")))?;
+    let output = enqueue_pending_command(
+        data_dir,
+        run_id,
+        CliRequestPayload::SubmitOutput {
+            step_name: step.to_string(),
+            contract: contract.to_string(),
+            structured_output,
+        },
+    )?;
+    println!("{}", output.format_stdout_line());
+    Ok(())
+}
+
+/// [08] `releash workflow output validate`: contract 適合性のみを確認する。
+/// pending file / event log / state のいずれにも触れない（spec [08] 振る舞い定義 Rule 2）。
+fn cmd_output_validate(
+    data_dir: &Path,
+    run_id: &str,
+    step: &str,
+    file: &Path,
+) -> Result<(), CliError> {
+    validate_run_id(run_id)?;
+    validate_step_argument(step)?;
+    let contract = resolve_step_output_contract_via_log(data_dir, run_id, step)?;
+    let raw_json = std::fs::read_to_string(file)
+        .map_err(|e| CliError::InvalidInput(format!("Failed to read file {:?}: {e}", file)))?;
+    let value: serde_json::Value = serde_json::from_str(&raw_json)
+        .map_err(|e| CliError::InvalidInput(format!("Failed to parse JSON: {e}")))?;
+    match crate::workflow::contract::validate_contract_value(&contract, value) {
+        crate::workflow::contract::ContractValidationResult::Valid { .. } => {
+            println!("ok: contract '{contract}' is satisfied");
+            Ok(())
+        }
+        crate::workflow::contract::ContractValidationResult::Invalid(violation) => {
+            Err(CliError::InvalidInput(format!(
+                "contract violation ({}): {}",
+                violation.reason, violation.details
+            )))
+        }
+    }
+}
+
+/// [08] `releash workflow output get`: 提出済みの構造化出力と付随メタを取得する。
+/// 未提出の場合は決定論的に「未提出」を返す（spec [08] 振る舞い定義 Rule 3）。
+fn cmd_output_get(data_dir: &Path, run_id: &str, step: &str, json: bool) -> Result<(), CliError> {
+    validate_run_id(run_id)?;
+    validate_step_argument(step)?;
+    if get_run_summary_file_direct(data_dir, run_id).is_none() {
+        return Err(CliError::NotFound(format!(
+            "Workflow run not found: {run_id}"
+        )));
+    }
+    let events = read_log(data_dir, run_id)?;
+    let view = build_output_get_view(events, step);
+    if json {
+        let text = serde_json::to_string_pretty(&view)
+            .map_err(|e| format!("serialize output: {e}"))?;
+        println!("{text}");
+    } else {
+        match &view {
+            OutputGetView::Submitted {
+                contract,
+                structured_output,
+                submitted_at,
+                request_id,
+                timestamp,
+            } => {
+                println!("submitted: step={step} contract={contract}");
+                if let Some(sa) = submitted_at {
+                    println!("submitted_at: {sa}");
+                }
+                if let Some(rid) = request_id {
+                    println!("request_id: {rid}");
+                }
+                println!("timestamp: {timestamp}");
+                println!(
+                    "structured_output:\n{}",
+                    serde_json::to_string_pretty(structured_output)
+                        .map_err(|e| format!("serialize structured_output: {e}"))?
+                );
+            }
+            OutputGetView::NotSubmitted => {
+                println!("not_submitted: step={step}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_step_argument(step: &str) -> Result<(), CliError> {
+    if step.trim().is_empty() {
+        return Err(CliError::InvalidInput(
+            "--step must not be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_contract_argument(contract: &str) -> Result<(), CliError> {
+    if contract.trim().is_empty() {
+        return Err(CliError::InvalidInput(
+            "--type must not be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn read_submit_input_json(
+    json_arg: Option<String>,
+    file_arg: Option<PathBuf>,
+) -> Result<String, CliError> {
+    match (json_arg, file_arg) {
+        (Some(_), Some(_)) => Err(CliError::InvalidInput(
+            "--json and --file are mutually exclusive".to_string(),
+        )),
+        (Some(raw), None) => Ok(raw),
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            .map_err(|e| CliError::InvalidInput(format!("Failed to read file {:?}: {e}", path))),
+        (None, None) => Err(CliError::InvalidInput(
+            "either --json or --file is required".to_string(),
+        )),
+    }
+}
+
+/// event log の `RunStarted` から workflow definition を取り出し、step の
+/// `output_contract` を解決する。
+fn resolve_step_output_contract_via_log(
+    data_dir: &Path,
+    run_id: &str,
+    step: &str,
+) -> Result<String, CliError> {
+    let events = read_log(data_dir, run_id)?;
+    let workflow = events
+        .iter()
+        .find_map(|e| match e {
+            WorkflowEvent::RunStarted {
+                workflow_definition,
+                ..
+            } => Some(workflow_definition.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| CliError::NotFound(format!("Workflow run not found: {run_id}")))?;
+    for node in &workflow.nodes {
+        if node.name == step {
+            return node
+                .output_contract
+                .clone()
+                .filter(|c| !c.trim().is_empty())
+                .ok_or_else(|| {
+                    CliError::InvalidInput(format!(
+                        "step '{step}' has no output_contract in workflow '{}'",
+                        workflow.name
+                    ))
+                });
+        }
+        if let Some(children) = &node.parallel_children {
+            for child in children {
+                if child.name == step {
+                    return child
+                        .output_contract
+                        .clone()
+                        .filter(|c| !c.trim().is_empty())
+                        .ok_or_else(|| {
+                            CliError::InvalidInput(format!(
+                                "step '{step}' has no output_contract in workflow '{}'",
+                                workflow.name
+                            ))
+                        });
+                }
+            }
+        }
+    }
+    Err(CliError::InvalidInput(format!(
+        "step '{step}' not found in workflow '{}'",
+        workflow.name
+    )))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum OutputGetView {
+    Submitted {
+        contract: String,
+        structured_output: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        submitted_at: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        timestamp: f64,
+    },
+    NotSubmitted,
+}
+
+fn build_output_get_view(events: Vec<WorkflowEvent>, step: &str) -> OutputGetView {
+    // 最新 (= 最後尾) の OutputSubmitted を採用する。
+    let mut latest: Option<(String, serde_json::Value, Option<f64>, Option<String>, f64)> = None;
+    for event in events {
+        if let WorkflowEvent::OutputSubmitted {
+            node_name,
+            contract,
+            structured_output,
+            submitted_at,
+            request_id,
+            timestamp,
+            ..
+        } = event
+        {
+            if node_name == step {
+                latest = Some((
+                    contract,
+                    structured_output,
+                    submitted_at,
+                    request_id,
+                    timestamp,
+                ));
+            }
+        }
+    }
+    match latest {
+        Some((contract, structured_output, submitted_at, request_id, timestamp)) => {
+            OutputGetView::Submitted {
+                contract,
+                structured_output,
+                submitted_at,
+                request_id,
+                timestamp,
+            }
+        }
+        None => OutputGetView::NotSubmitted,
+    }
 }
 
 /// 指定 run の event log。
@@ -1193,21 +1501,383 @@ mod tests {
         }
     }
 
-    /// [06] scope の境界: 本 issue では user decision 系 3 command
-    /// （approve / reject / abort）の CLI 入口のみを公開する。新規 run 起動
-    /// （`run`）／ structured output 提出（`output` / `submit`）は別 issue に
-    /// 切り出し済みのため、parser 段階で reject される境界を担保する。
+    /// 本 issue ([08]) で `output` サブコマンド群を新規公開した後も、新規 run 起動
+    /// （`run`）と top-level `submit` は別 issue 範囲のため parser 段階で reject される
+    /// 境界を担保する。`output` 単独（subcommand 未指定）も clap が reject する。
     #[test]
     fn cli_does_not_expose_out_of_scope_subcommands() {
         for argv in [
             vec!["releash", "workflow", "run"],
-            vec!["releash", "workflow", "output"],
             vec!["releash", "workflow", "submit"],
+            vec!["releash", "workflow", "output"],
         ] {
             assert!(
                 Cli::try_parse_from(&argv).is_err(),
                 "parser must reject out-of-scope subcommand: {argv:?}"
             );
+        }
+    }
+
+    /// [08] CLI 公開入口の parse 境界: `releash workflow output {submit,validate,get}`
+    /// の typed subcommand が clap で parse できる。I/O は発生させない。
+    #[test]
+    fn cli_workflow_output_subcommands_parse_via_clap() {
+        let run_id = "550e8400-e29b-41d4-a716-446655440000";
+        for argv in [
+            vec![
+                "releash",
+                "workflow",
+                "output",
+                "submit",
+                run_id,
+                "--step",
+                "review",
+                "--type",
+                "review-verdict",
+                "--json",
+                "{\"verdict\":\"LGTM\"}",
+            ],
+            vec![
+                "releash",
+                "workflow",
+                "output",
+                "submit",
+                run_id,
+                "--step",
+                "review",
+                "--type",
+                "review-verdict",
+                "--file",
+                "out.json",
+            ],
+            vec![
+                "releash",
+                "workflow",
+                "output",
+                "validate",
+                run_id,
+                "--step",
+                "review",
+                "--file",
+                "out.json",
+            ],
+            vec![
+                "releash",
+                "workflow",
+                "output",
+                "get",
+                run_id,
+                "--step",
+                "review",
+            ],
+            vec![
+                "releash",
+                "workflow",
+                "output",
+                "get",
+                run_id,
+                "--step",
+                "review",
+                "--json",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(&argv).is_ok(),
+                "parser must accept workflow output subcommand: {argv:?}"
+            );
+        }
+    }
+
+    /// [08] CLI 入力境界: `submit` の `--json` と `--file` は相互排他。両方指定された
+    /// 場合は parser が reject する。
+    #[test]
+    fn cli_workflow_output_submit_rejects_both_json_and_file() {
+        let run_id = "550e8400-e29b-41d4-a716-446655440000";
+        let argv = vec![
+            "releash",
+            "workflow",
+            "output",
+            "submit",
+            run_id,
+            "--step",
+            "review",
+            "--type",
+            "review-verdict",
+            "--json",
+            "{}",
+            "--file",
+            "out.json",
+        ];
+        assert!(Cli::try_parse_from(&argv).is_err());
+    }
+
+    /// [08] CLI 完了基準境界: `submit` は受理キュー投入（pending file の書き出し）まで
+    /// 完了した時点で `Ok(())` を返す。書き出された pending entry は
+    /// `PendingCommandPayload::SubmitOutput` shape を持ち、`run_id` と `step` /
+    /// `contract` / structured_output が永続化される（spec [08] CLI 完了基準）。
+    #[test]
+    fn cmd_output_submit_writes_pending_file_with_typed_payload() {
+        use crate::workflow::pending_command::PendingCommandPayload;
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(91);
+        let json = "{\"verdict\":\"LGTM\"}";
+        cmd_output_submit(
+            tmp.path(),
+            &run_id,
+            "review",
+            "review-verdict",
+            Some(json.to_string()),
+            None,
+        )
+        .unwrap();
+        let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
+        assert_eq!(entries.len(), 1);
+        match &entries[0].command.payload {
+            PendingCommandPayload::SubmitOutput {
+                step_name,
+                contract,
+                structured_output,
+            } => {
+                assert_eq!(step_name, "review");
+                assert_eq!(contract, "review-verdict");
+                assert_eq!(structured_output["verdict"], "LGTM");
+            }
+            other => panic!("expected SubmitOutput payload, got: {other:?}"),
+        }
+    }
+
+    /// [08] CLI 完了基準境界: `--file` 入力でも pending file が書き出される。
+    #[test]
+    fn cmd_output_submit_writes_pending_file_from_file_arg() {
+        use crate::workflow::pending_command::PendingCommandPayload;
+        let tmp = TempDir::new().unwrap();
+        let input_file = tmp.path().join("input.json");
+        std::fs::write(&input_file, b"{\"verdict\":\"LGTM\"}").unwrap();
+        let run_id = test_uuid(92);
+        cmd_output_submit(
+            tmp.path(),
+            &run_id,
+            "review",
+            "review-verdict",
+            None,
+            Some(input_file),
+        )
+        .unwrap();
+        let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            entries[0].command.payload,
+            PendingCommandPayload::SubmitOutput { .. }
+        ));
+    }
+
+    /// [08] CLI 入力境界: `--json` も `--file` も指定されない場合は関数レベルで reject。
+    #[test]
+    fn cmd_output_submit_rejects_missing_json_and_file() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(93);
+        let err = cmd_output_submit(tmp.path(), &run_id, "review", "review-verdict", None, None)
+            .unwrap_err();
+        assert!(matches!(err, CliError::InvalidInput(_)));
+    }
+
+    /// [08] CLI 入力境界: `--json` に invalid JSON が渡されたら InvalidInput を返す。
+    #[test]
+    fn cmd_output_submit_rejects_invalid_json() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(94);
+        let err = cmd_output_submit(
+            tmp.path(),
+            &run_id,
+            "review",
+            "review-verdict",
+            Some("{not json}".to_string()),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CliError::InvalidInput(_)));
+    }
+
+    /// [08] 振る舞い定義 Rule 2: validate は pure validator を呼び、副作用を起こさない。
+    /// pending dir / event log のいずれも変化しない。
+    #[test]
+    fn cmd_output_validate_returns_ok_for_contract_compliant_input() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(95);
+        // RunStarted event に workflow definition を埋め込む
+        let yaml = crate::workflow::schema::Workflow {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            nodes: vec![crate::workflow::schema::NodeDefinition {
+                name: "review".to_string(),
+                node_type: crate::workflow::schema::NodeType::Agent,
+                output_contract: Some("review-verdict".to_string()),
+                ..Default::default()
+            }],
+        };
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/validate", RunStatus::Running, 100.0),
+        );
+        let log = WorkflowEventLog::new(tmp.path());
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: run_id.clone(),
+            workflow_name: "wf".to_string(),
+            workflow_file_stem: "wf".to_string(),
+            worktree_path: "/wt/validate".to_string(),
+            workflow_definition: yaml,
+            timestamp: 100.0,
+        })
+        .unwrap();
+        let input_file = tmp.path().join("input.json");
+        std::fs::write(&input_file, b"{\"verdict\":\"LGTM\"}").unwrap();
+
+        cmd_output_validate(tmp.path(), &run_id, "review", &input_file).unwrap();
+
+        // 副作用なし: pending dir に何も書き込まれていない
+        assert!(PendingCommandStore::new(tmp.path())
+            .list_pending()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn cmd_output_validate_returns_err_for_invalid_contract_input() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(96);
+        let workflow = crate::workflow::schema::Workflow {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            nodes: vec![crate::workflow::schema::NodeDefinition {
+                name: "review".to_string(),
+                node_type: crate::workflow::schema::NodeType::Agent,
+                output_contract: Some("review-verdict".to_string()),
+                ..Default::default()
+            }],
+        };
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/validate-fail", RunStatus::Running, 100.0),
+        );
+        let log = WorkflowEventLog::new(tmp.path());
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: run_id.clone(),
+            workflow_name: "wf".to_string(),
+            workflow_file_stem: "wf".to_string(),
+            worktree_path: "/wt/validate-fail".to_string(),
+            workflow_definition: workflow,
+            timestamp: 100.0,
+        })
+        .unwrap();
+        let input_file = tmp.path().join("input.json");
+        std::fs::write(&input_file, b"{\"verdict\":\"MAYBE\"}").unwrap();
+
+        let err = cmd_output_validate(tmp.path(), &run_id, "review", &input_file).unwrap_err();
+        assert!(matches!(err, CliError::InvalidInput(_)));
+    }
+
+    /// [08] 振る舞い定義 Rule 3: `get` は提出済み output と付随メタを返す。
+    /// 同 step に対する複数 OutputSubmitted のうち最後のものを採用する。
+    #[test]
+    fn cmd_output_get_returns_submitted_when_event_present() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(97);
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/get", RunStatus::Running, 100.0),
+        );
+        let log = WorkflowEventLog::new(tmp.path());
+        log.append(&run_started_event(&run_id, "wf", "/wt/get")).unwrap();
+        log.append(&WorkflowEvent::OutputSubmitted {
+            run_id: run_id.clone(),
+            workflow_name: "wf".to_string(),
+            node_name: "review".to_string(),
+            contract: "review-verdict".to_string(),
+            structured_output: serde_json::json!({"verdict": "LGTM"}),
+            request_id: Some("req-1".to_string()),
+            submitted_at: Some(150.0),
+            timestamp: 200.0,
+        })
+        .unwrap();
+
+        let view = build_output_get_view(
+            log.read_log(&run_id).unwrap(),
+            "review",
+        );
+        assert!(matches!(
+            view,
+            OutputGetView::Submitted {
+                ref contract,
+                submitted_at: Some(150.0),
+                timestamp: 200.0,
+                ..
+            } if contract == "review-verdict"
+        ));
+    }
+
+    /// [08] 振る舞い定義 Rule 3: 未提出 step は `NotSubmitted` を返す。
+    #[test]
+    fn cmd_output_get_returns_not_submitted_when_no_event() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(98);
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/get-empty", RunStatus::Running, 100.0),
+        );
+        let log = WorkflowEventLog::new(tmp.path());
+        log.append(&run_started_event(&run_id, "wf", "/wt/get-empty"))
+            .unwrap();
+
+        let view = build_output_get_view(log.read_log(&run_id).unwrap(), "review");
+        assert!(matches!(view, OutputGetView::NotSubmitted));
+    }
+
+    /// [08] 振る舞い定義 Rule 3: 同 step に対し複数の OutputSubmitted が記録された場合、
+    /// 最後 (= 最新) の event を採用する。
+    #[test]
+    fn cmd_output_get_returns_latest_event_when_multiple_submitted() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(99);
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/get-latest", RunStatus::Running, 100.0),
+        );
+        let log = WorkflowEventLog::new(tmp.path());
+        log.append(&run_started_event(&run_id, "wf", "/wt/get-latest"))
+            .unwrap();
+        log.append(&WorkflowEvent::OutputSubmitted {
+            run_id: run_id.clone(),
+            workflow_name: "wf".to_string(),
+            node_name: "review".to_string(),
+            contract: "review-verdict".to_string(),
+            structured_output: serde_json::json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error", "message": "bug"}]}),
+            request_id: None,
+            submitted_at: None,
+            timestamp: 110.0,
+        })
+        .unwrap();
+        log.append(&WorkflowEvent::OutputSubmitted {
+            run_id: run_id.clone(),
+            workflow_name: "wf".to_string(),
+            node_name: "review".to_string(),
+            contract: "review-verdict".to_string(),
+            structured_output: serde_json::json!({"verdict": "LGTM"}),
+            request_id: None,
+            submitted_at: None,
+            timestamp: 120.0,
+        })
+        .unwrap();
+
+        let view = build_output_get_view(log.read_log(&run_id).unwrap(), "review");
+        match view {
+            OutputGetView::Submitted {
+                structured_output, ..
+            } => {
+                assert_eq!(structured_output["verdict"], "LGTM");
+            }
+            other => panic!("expected Submitted, got: {other:?}"),
         }
     }
 

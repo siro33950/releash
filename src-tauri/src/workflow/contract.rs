@@ -1000,6 +1000,55 @@ Some text after"#;
 
     // ---- R4-01: output_text None → NoBlock validation ----
 
+    /// [08] `validate_contract_value` は ExtractionResult を経由せず JSON value を直接
+    /// 受ける pure validator として CLI / engine の双方から再利用される。
+    #[test]
+    fn validate_contract_value_accepts_compliant_review_verdict() {
+        match validate_contract_value("review-verdict", json!({"verdict": "LGTM"})) {
+            ContractValidationResult::Valid {
+                result,
+                structured_output,
+            } => {
+                assert_eq!(result, Some("LGTM".to_string()));
+                assert_eq!(structured_output["verdict"], "LGTM");
+            }
+            other => panic!("expected Valid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_invalid_review_verdict() {
+        match validate_contract_value("review-verdict", json!({"verdict": "MAYBE"})) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_verdict");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_passes_through_unknown_contract_type() {
+        match validate_contract_value("custom-thing", json!({"anything": "goes"})) {
+            ContractValidationResult::Valid { result, .. } => {
+                assert_eq!(result, None);
+            }
+            other => panic!("expected Valid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_spec_file_path_traversal() {
+        match validate_contract_value(
+            "spec-file-path",
+            json!({"spec_file_path": "docs/../../etc/passwd"}),
+        ) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_path");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
     #[test]
     fn no_block_extraction_triggers_retry_flow() {
         // engine.rsでoutput_text: Noneの場合、ExtractionResult::NoBlockとしてvalidate_contractに渡される

@@ -359,6 +359,38 @@ mod tests {
         }
     }
 
+    fn make_submit_output_workflow() -> Workflow {
+        Workflow {
+            name: "boundary-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "review".to_string(),
+                node_type: NodeType::Agent,
+                instruction: Some("review".to_string()),
+                output_contract: Some("review-verdict".to_string()),
+                ..NodeDefinition::default()
+            }],
+        }
+    }
+
+    async fn seed_running_agent(
+        engine: &WorkflowEngine,
+        run_id: &str,
+        worktree_path: &str,
+        workflow: Workflow,
+    ) {
+        engine
+            .seed_active_execution_for_test(
+                run_id.to_string(),
+                workflow,
+                crate::workflow::state::WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::Cli,
+            )
+            .await;
+    }
+
     fn make_rejectable_approval_workflow() -> Workflow {
         Workflow {
             name: "boundary-wf".to_string(),
@@ -654,5 +686,105 @@ mod tests {
             })
             .expect("CliMutationRequested reject reason must be recorded");
         assert_eq!(cli_reason, raw_reason);
+    }
+
+    /// [08] CLI pending 経由の SubmitOutput が engine の handle_submit_output
+    /// に合流し、`OutputSubmitted` event が caller の `request_id` と `submitted_at`
+    /// を保持する形で append される（spec [08] CLI 経路と in-process 経路の合流境界）。
+    #[tokio::test]
+    async fn dispatch_pending_submit_output_appends_event_with_caller_metadata() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir).await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        seed_running_agent(
+            &engine,
+            &run_id,
+            "/wt/pending-dispatcher-submit",
+            make_submit_output_workflow(),
+        )
+        .await;
+
+        let pending = PendingCommand::new(
+            run_id.clone(),
+            CliRequestPayload::SubmitOutput {
+                step_name: "review".to_string(),
+                contract: "review-verdict".to_string(),
+                structured_output: serde_json::json!({"verdict": "LGTM"}),
+            },
+            950.5,
+        );
+        let pending_id = pending.id.clone();
+
+        let result =
+            dispatch_pending_command(app.handle(), &engine, &session_store, &handles, pending)
+                .await;
+        assert_eq!(result, PendingCommandDispatchOutcome::Accepted);
+
+        let events = read_dispatch_events(&app, &run_id);
+        let submitted = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::OutputSubmitted {
+                    node_name,
+                    contract,
+                    request_id,
+                    submitted_at,
+                    ..
+                } if node_name == "review" => Some((
+                    contract.clone(),
+                    request_id.clone(),
+                    *submitted_at,
+                )),
+                _ => None,
+            })
+            .expect("OutputSubmitted event must be appended via dispatcher");
+        assert_eq!(submitted.0, "review-verdict");
+        assert_eq!(submitted.1.as_deref(), Some(pending_id.as_str()));
+        assert_eq!(submitted.2, Some(950.5));
+    }
+
+    /// [08] CLI pending 経由の SubmitOutput が contract 不適合の場合、event は残らず、
+    /// dispatcher は `RejectedFinal` を返す（spec [08] 振る舞い定義 Rule 1 適合しない場合）。
+    #[tokio::test]
+    async fn dispatch_pending_submit_output_rejects_invalid_contract() {
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir).await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        seed_running_agent(
+            &engine,
+            &run_id,
+            "/wt/pending-dispatcher-submit-invalid",
+            make_submit_output_workflow(),
+        )
+        .await;
+
+        let pending = PendingCommand::new(
+            run_id.clone(),
+            CliRequestPayload::SubmitOutput {
+                step_name: "review".to_string(),
+                contract: "review-verdict".to_string(),
+                structured_output: serde_json::json!({"verdict": "MAYBE"}),
+            },
+            960.0,
+        );
+
+        let result =
+            dispatch_pending_command(app.handle(), &engine, &session_store, &handles, pending)
+                .await;
+        assert!(matches!(
+            result,
+            PendingCommandDispatchOutcome::RejectedFinal(_)
+        ));
+
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::OutputSubmitted { .. })));
     }
 }

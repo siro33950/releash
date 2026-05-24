@@ -921,6 +921,131 @@ pub async fn delete_facet(kind: String, key: String) -> Result<(), String> {
         .map_err(|e| format!("task join error: {e}"))?
 }
 
+// ---- [08] Workflow output 提出 / 検証 / 参照 ----
+
+/// [08] Tauri command 経路: step に対する構造化出力を typed 提出する。
+///
+/// in-process caller (UI / Remote / 外部 Tauri caller) は `engine.dispatch_external`
+/// を経由して、CLI 経路と同一の `handle_submit_output` に合流する（spec [08] L169
+/// CLI 経路と in-process 経路は `dispatch_external` で合流）。worktree-scoped 認可
+/// 境界（spec [08] が依拠する [05] 観測経路の認可境界）を通過しない caller には
+/// 「該当 run なし」と同表現で拒否を返し、存在情報を漏らさない。
+#[tauri::command]
+pub async fn workflow_submit_output(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    run_id: String,
+    step_name: String,
+    contract: String,
+    structured_output: serde_json::Value,
+) -> Result<(), String> {
+    validate_run_id(&run_id)?;
+    if authorize_run_for_caller(engine.inner(), config.inner(), &run_id)
+        .await?
+        .is_none()
+    {
+        return Err(format!("Workflow run not found: {run_id}"));
+    }
+    let command = WorkflowCommand::SubmitOutput {
+        run_id: run_id.clone(),
+        step_name,
+        contract,
+        structured_output,
+    };
+    engine
+        .dispatch_external(&app, session_store.inner(), handles.inner(), command)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// [08] structured output の contract 適合性のみを副作用なしで判定する Tauri command。
+/// `submit` と異なり engine state / event log には触れない（spec [08] 振る舞い定義 Rule 2）。
+#[tauri::command]
+pub fn workflow_validate_output(
+    contract: String,
+    structured_output: serde_json::Value,
+) -> WorkflowValidateOutputResponse {
+    match crate::workflow::contract::validate_contract_value(&contract, structured_output) {
+        crate::workflow::contract::ContractValidationResult::Valid { .. } => {
+            WorkflowValidateOutputResponse::Valid
+        }
+        crate::workflow::contract::ContractValidationResult::Invalid(violation) => {
+            WorkflowValidateOutputResponse::Invalid {
+                reason: violation.reason,
+                details: violation.details,
+            }
+        }
+    }
+}
+
+/// [08] 提出済みの構造化出力を取得する Tauri command。未提出の場合は決定論的に
+/// `NotSubmitted` を返す（spec [08] 振る舞い定義 Rule 3）。
+#[tauri::command]
+pub async fn workflow_get_output(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    run_id: String,
+    step_name: String,
+) -> Result<WorkflowGetOutputResponse, String> {
+    validate_run_id(&run_id)?;
+    if authorize_run_for_caller(engine.inner(), config.inner(), &run_id)
+        .await?
+        .is_none()
+    {
+        return Err(format!("Workflow run not found: {run_id}"));
+    }
+    let data_dir = resolve_data_dir(&app).map_err(|e| e.to_string())?;
+    let events = WorkflowEventLog::new(&data_dir)
+        .read_log(&run_id)
+        .map_err(|e| e.to_string())?;
+    let latest = events.into_iter().rev().find_map(|event| match event {
+        crate::workflow::event::WorkflowEvent::OutputSubmitted {
+            node_name,
+            contract,
+            structured_output,
+            submitted_at,
+            request_id,
+            timestamp,
+            ..
+        } if node_name == step_name => Some(WorkflowGetOutputResponse::Submitted {
+            contract,
+            structured_output,
+            submitted_at,
+            request_id,
+            timestamp,
+        }),
+        _ => None,
+    });
+    Ok(latest.unwrap_or(WorkflowGetOutputResponse::NotSubmitted))
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkflowValidateOutputResponse {
+    Valid,
+    Invalid { reason: String, details: String },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkflowGetOutputResponse {
+    Submitted {
+        contract: String,
+        structured_output: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        submitted_at: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        timestamp: f64,
+    },
+    NotSubmitted,
+}
+
 // ---- 新規コマンド ----
 
 #[tauri::command]
