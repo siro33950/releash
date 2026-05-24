@@ -1,12 +1,87 @@
+//! [08] contract validator。
+//!
+//! 旧来「`<workflow_output>` ブロックを agent 自由文から抽出して contract を判定する」
+//! prose 抽出経路は本 issue で完全廃止された（spec [08] L137 / Rule 4 構造化出力の
+//! 確定経路は明示的提出のみに統一）。本モジュールは CLI / Tauri 経由の
+//! `SubmitOutput` から呼ばれる pure validator (`validate_contract_value`) を唯一の
+//! 検証入口として提供する。
+
 use serde_json::Value;
 
-/// `<workflow_output>` ブロックの抽出結果。
-#[derive(Debug, Clone)]
-pub enum ExtractionResult {
-    Found { type_name: String, json: Value },
-    NoBlock,
-    MultipleBlocks,
-    InvalidJson(String),
+use crate::workflow::event::WorkflowEvent;
+use crate::workflow::schema::Workflow;
+
+/// [08] event 列から step の `output_contract` を解決する際の決定論的エラー。
+///
+/// CLI / Tauri 経路は本エラーをそれぞれ自層の表現（`CliError::NotFound /
+/// InvalidInput` や `String`）に map するだけで、event log → workflow definition →
+/// contract resolution の経路自体を共有する（spec [08] アーキテクチャ概要:
+/// contract resolution は engine と CLI 双方から再利用される pure 関数）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContractLookupError {
+    /// 当該 run の `RunStarted` event が存在しない（run 不在 / 認可外）。
+    RunNotFound,
+    /// step が `output_contract` を持たない（あるいは空文字）。
+    NoOutputContract { workflow_name: String, step: String },
+}
+
+/// [08] event 列の `RunStarted` から workflow definition を取り出し、step の
+/// `output_contract` を解決する pure helper。
+///
+/// CLI `workflow output validate / submit` の事前検証と Tauri `workflow_validate_output`
+/// が完全に同一ロジックで contract type を引いていたため共通化する（spec [08]
+/// アーキテクチャ概要: CLI と engine の双方から再利用される pure 関数）。
+pub fn resolve_step_output_contract_from_events(
+    events: &[WorkflowEvent],
+    step: &str,
+) -> Result<String, ContractLookupError> {
+    let workflow = events
+        .iter()
+        .find_map(|e| match e {
+            WorkflowEvent::RunStarted {
+                workflow_definition,
+                ..
+            } => Some(workflow_definition.clone()),
+            _ => None,
+        })
+        .ok_or(ContractLookupError::RunNotFound)?;
+    lookup_step_output_contract(&workflow, step).ok_or_else(|| {
+        ContractLookupError::NoOutputContract {
+            workflow_name: workflow.name,
+            step: step.to_string(),
+        }
+    })
+}
+
+/// [08] workflow definition から `step_name` の `output_contract` を解決する pure helper。
+///
+/// top-level node / parallel child の両方を探索し、`output_contract` が空文字 /
+/// 未設定の step は「提出対象として妥当でない」として `None` を返す。
+///
+/// engine の `WorkflowCommand::SubmitOutput` handler と CLI `workflow output submit /
+/// validate` の双方から再利用される pure 関数として contract モジュールに置く
+/// （spec [08] アーキテクチャ概要: contract resolution は engine と CLI 双方から
+/// 再利用される pure 関数。CLI 層が engine internals に依存しないようにする境界）。
+pub fn lookup_step_output_contract(workflow: &Workflow, step_name: &str) -> Option<String> {
+    for node in &workflow.nodes {
+        if node.name == step_name {
+            return node
+                .output_contract
+                .clone()
+                .filter(|c| !c.trim().is_empty());
+        }
+        if let Some(children) = &node.parallel_children {
+            for child in children {
+                if child.name == step_name {
+                    return child
+                        .output_contract
+                        .clone()
+                        .filter(|c| !c.trim().is_empty());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// contract検証結果。
@@ -25,115 +100,15 @@ pub struct ContractViolation {
     pub details: String,
 }
 
-/// LLMがコードフェンスで囲むパターン（```json ... ``` や ``` ... ```）を除去する。
-fn strip_code_fences(s: &str) -> &str {
-    let trimmed = s.trim();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        // ```json\n...\n``` → skip language tag line
-        let body = if let Some(newline_pos) = rest.find('\n') {
-            &rest[newline_pos + 1..]
-        } else {
-            rest
-        };
-        body.strip_suffix("```").unwrap_or(body).trim()
-    } else {
-        trimmed
-    }
-}
-
-/// assistant responseからXMLブロック `<workflow_output type="...">{ JSON }</workflow_output>` を抽出する。
-pub fn extract_workflow_output(text: &str) -> ExtractionResult {
-    let open_tag = "<workflow_output";
-    let close_tag = "</workflow_output>";
-
-    let mut found: Vec<(String, &str)> = Vec::new();
-    let mut search_start = 0;
-
-    while let Some(tag_start) = text[search_start..].find(open_tag) {
-        let abs_tag_start = search_start + tag_start;
-        let after_tag = &text[abs_tag_start + open_tag.len()..];
-
-        // `>` を見つけてcontent開始位置を確定
-        if let Some(gt_pos) = after_tag.find('>') {
-            // 開きタグ内でのみtype属性を抽出（本文中のtype="..."を誤検出しないよう）
-            let header = &after_tag[..gt_pos];
-            let type_name = if let Some(type_start) = header.find("type=\"") {
-                let value_start = type_start + 6;
-                header[value_start..]
-                    .find('"')
-                    .map(|end| header[value_start..value_start + end].to_string())
-                    .unwrap_or_default()
-            } else if let Some(type_start) = header.find("type='") {
-                let value_start = type_start + 6;
-                header[value_start..]
-                    .find('\'')
-                    .map(|end| header[value_start..value_start + end].to_string())
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-            let content_start = abs_tag_start + open_tag.len() + gt_pos + 1;
-            if let Some(close_pos) = text[content_start..].find(close_tag) {
-                let content = text[content_start..content_start + close_pos].trim();
-                found.push((type_name, content));
-                search_start = content_start + close_pos + close_tag.len();
-            } else {
-                search_start = content_start;
-            }
-        } else {
-            search_start = abs_tag_start + open_tag.len();
-        }
-    }
-
-    match found.len() {
-        0 => ExtractionResult::NoBlock,
-        1 => {
-            let (type_name, content) = &found[0];
-            let stripped = strip_code_fences(content);
-            match serde_json::from_str::<Value>(stripped) {
-                Ok(json) => ExtractionResult::Found {
-                    type_name: type_name.clone(),
-                    json,
-                },
-                Err(e) => ExtractionResult::InvalidJson(e.to_string()),
-            }
-        }
-        _ => ExtractionResult::MultipleBlocks,
-    }
-}
-
-/// type照合 + contract-specific validation。
-pub fn validate_contract(
-    expected_type: &str,
-    extraction: ExtractionResult,
-) -> ContractValidationResult {
-    match extraction {
-        ExtractionResult::NoBlock => ContractValidationResult::Invalid(ContractViolation {
-            reason: "no_block".to_string(),
-            details: "No <workflow_output> block found in the response.".to_string(),
-        }),
-        ExtractionResult::MultipleBlocks => ContractValidationResult::Invalid(ContractViolation {
-            reason: "multiple_blocks".to_string(),
-            details: "Multiple <workflow_output> blocks found. Provide exactly one.".to_string(),
-        }),
-        ExtractionResult::InvalidJson(err) => {
-            ContractValidationResult::Invalid(ContractViolation {
-                reason: "invalid_json".to_string(),
-                details: format!("JSON parse error in <workflow_output>: {err}"),
-            })
-        }
-        ExtractionResult::Found { type_name, json } => {
-            if type_name != expected_type {
-                return ContractValidationResult::Invalid(ContractViolation {
-                    reason: "type_mismatch".to_string(),
-                    details: format!(
-                        "Expected type=\"{expected_type}\", got type=\"{type_name}\"."
-                    ),
-                });
-            }
-            validate_contract_specific(expected_type, json)
-        }
-    }
+/// [08] `validate_contract` の Value-only 入口。
+///
+/// CLI `workflow output submit` / `validate` および engine の
+/// `WorkflowCommand::SubmitOutput` handler から再利用される pure validator。
+/// caller は既に「contract type」と「JSON value」を typed 入力として持っているため
+/// prose 抽出を経由せず、`<workflow_output>` block の存在判定は行わない。
+/// type 名の照合は caller (CLI / engine) 側の責務に閉じる。
+pub fn validate_contract_value(contract_type: &str, value: Value) -> ContractValidationResult {
+    validate_contract_specific(contract_type, value)
 }
 
 /// contract typeごとのバリデーション。
@@ -269,86 +244,16 @@ fn validate_spec_file_path(json: Value) -> ContractValidationResult {
     }
 }
 
-/// contract violation時のrepair promptを生成する。
-/// `contract_definition` にファセットのmarkdown定義を渡すと、エージェントが正しい形式を把握できる。
-pub fn build_repair_prompt(
-    contract_type: &str,
-    violation: &ContractViolation,
-    contract_definition: Option<&str>,
-) -> String {
-    let definition_section = match contract_definition {
-        Some(def) => {
-            format!("\n\n--- Contract Definition ---\n{def}\n--- End Contract Definition ---")
-        }
-        None => String::new(),
-    };
-    format!(
-        "Your previous response did not satisfy the output contract \"{contract_type}\".\n\
-         Reason: {reason}\n\
-         Details: {details}\n\n\
-         Please provide your response again with a valid <workflow_output type=\"{contract_type}\"> block containing well-formed JSON.\n\
-         The output must satisfy all required fields for the \"{contract_type}\" contract.{definition_section}",
-        reason = violation.reason,
-        details = violation.details,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn extract_valid_block() {
-        let text = r#"Some text before
-<workflow_output type="review-verdict">
-{"verdict": "LGTM", "summary": "All good"}
-</workflow_output>
-Some text after"#;
-        match extract_workflow_output(text) {
-            ExtractionResult::Found { type_name, json } => {
-                assert_eq!(type_name, "review-verdict");
-                assert_eq!(json["verdict"], "LGTM");
-            }
-            other => panic!("Expected Found, got {:?}", other),
-        }
-    }
+    // ---- [08] validate_contract_value: pure validator (CLI / engine 共通入口) ----
 
     #[test]
-    fn extract_no_block() {
-        let text = "Just some regular text without any blocks";
-        assert!(matches!(
-            extract_workflow_output(text),
-            ExtractionResult::NoBlock
-        ));
-    }
-
-    #[test]
-    fn extract_multiple_blocks() {
-        let text = r#"<workflow_output type="a">{"x":1}</workflow_output>
-<workflow_output type="b">{"y":2}</workflow_output>"#;
-        assert!(matches!(
-            extract_workflow_output(text),
-            ExtractionResult::MultipleBlocks
-        ));
-    }
-
-    #[test]
-    fn extract_invalid_json() {
-        let text = r#"<workflow_output type="test">{not valid json}</workflow_output>"#;
-        assert!(matches!(
-            extract_workflow_output(text),
-            ExtractionResult::InvalidJson(_)
-        ));
-    }
-
-    #[test]
-    fn validate_review_verdict_lgtm() {
-        let extraction = ExtractionResult::Found {
-            type_name: "review-verdict".to_string(),
-            json: json!({"verdict": "LGTM"}),
-        };
-        match validate_contract("review-verdict", extraction) {
+    fn validate_contract_value_accepts_compliant_review_verdict_lgtm() {
+        match validate_contract_value("review-verdict", json!({"verdict": "LGTM"})) {
             ContractValidationResult::Valid {
                 result,
                 structured_output,
@@ -356,166 +261,190 @@ Some text after"#;
                 assert_eq!(result, Some("LGTM".to_string()));
                 assert_eq!(structured_output["verdict"], "LGTM");
             }
-            other => panic!("Expected Valid, got {:?}", other),
+            other => panic!("expected Valid, got {:?}", other),
         }
     }
 
     #[test]
-    fn validate_review_verdict_needs_fix() {
-        let extraction = ExtractionResult::Found {
-            type_name: "review-verdict".to_string(),
-            json: json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error", "message": "bug"}]}),
-        };
-        match validate_contract("review-verdict", extraction) {
+    fn validate_contract_value_accepts_compliant_review_verdict_needs_fix() {
+        match validate_contract_value(
+            "review-verdict",
+            json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error", "message": "bug"}]}),
+        ) {
             ContractValidationResult::Valid { result, .. } => {
                 assert_eq!(result, Some("NEEDS_FIX".to_string()));
             }
-            other => panic!("Expected Valid, got {:?}", other),
+            other => panic!("expected Valid, got {:?}", other),
         }
     }
 
     #[test]
-    fn validate_review_verdict_missing_field() {
-        let extraction = ExtractionResult::Found {
-            type_name: "review-verdict".to_string(),
-            json: json!({"summary": "looks ok"}),
-        };
-        assert!(matches!(
-            validate_contract("review-verdict", extraction),
-            ContractValidationResult::Invalid(_)
-        ));
-    }
-
-    #[test]
-    fn validate_type_mismatch() {
-        let extraction = ExtractionResult::Found {
-            type_name: "fix-result".to_string(),
-            json: json!({"status": "FIXED"}),
-        };
-        match validate_contract("review-verdict", extraction) {
+    fn validate_contract_value_rejects_review_verdict_missing_verdict() {
+        match validate_contract_value("review-verdict", json!({"summary": "looks ok"})) {
             ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "type_mismatch");
+                assert_eq!(v.reason, "missing_field");
             }
-            other => panic!("Expected Invalid, got {:?}", other),
+            other => panic!("expected Invalid, got {:?}", other),
         }
     }
 
     #[test]
-    fn validate_fix_result_valid() {
-        let extraction = ExtractionResult::Found {
-            type_name: "fix-result".to_string(),
-            json: json!({"status": "FIXED"}),
-        };
-        match validate_contract("fix-result", extraction) {
-            ContractValidationResult::Valid { result, .. } => {
-                assert_eq!(result, Some("FIXED".to_string()));
+    fn validate_contract_value_rejects_invalid_verdict() {
+        match validate_contract_value("review-verdict", json!({"verdict": "MAYBE"})) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_verdict");
             }
-            other => panic!("Expected Valid, got {:?}", other),
+            other => panic!("expected Invalid, got {:?}", other),
         }
     }
 
     #[test]
-    fn validate_spec_file_path_valid() {
-        let extraction = ExtractionResult::Found {
-            type_name: "spec-file-path".to_string(),
-            json: json!({"spec_file_path": "docs/spec/issues-898.md"}),
-        };
-        match validate_contract("spec-file-path", extraction) {
+    fn validate_contract_value_rejects_needs_fix_without_findings() {
+        match validate_contract_value("review-verdict", json!({"verdict": "NEEDS_FIX"})) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "missing_findings");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_needs_fix_with_empty_findings() {
+        match validate_contract_value(
+            "review-verdict",
+            json!({"verdict": "NEEDS_FIX", "findings": []}),
+        ) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "missing_findings");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_finding_missing_severity() {
+        match validate_contract_value(
+            "review-verdict",
+            json!({"verdict": "NEEDS_FIX", "findings": [{"message": "bug"}]}),
+        ) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_finding");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_finding_missing_message() {
+        match validate_contract_value(
+            "review-verdict",
+            json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error"}]}),
+        ) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_finding");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_accepts_fix_result_statuses() {
+        for status in &["FIXED", "PARTIAL", "BLOCKED"] {
+            match validate_contract_value("fix-result", json!({"status": status})) {
+                ContractValidationResult::Valid { result, .. } => {
+                    assert_eq!(result, Some(status.to_string()));
+                }
+                other => panic!("expected Valid for status {status}, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_invalid_fix_result_status() {
+        match validate_contract_value("fix-result", json!({"status": "DONE"})) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_status");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_missing_fix_result_status() {
+        match validate_contract_value("fix-result", json!({"summary": "done"})) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "missing_field");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_accepts_relative_spec_file_path() {
+        match validate_contract_value(
+            "spec-file-path",
+            json!({"spec_file_path": "docs/spec/issues-1029.md"}),
+        ) {
             ContractValidationResult::Valid { result, .. } => {
                 assert_eq!(result, None);
             }
-            other => panic!("Expected Valid, got {:?}", other),
+            other => panic!("expected Valid, got {:?}", other),
         }
     }
 
     #[test]
-    fn validate_approved_fix_policy_valid() {
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: json!({
-                "policy": "Fix only NEEDS_FIX findings.",
-                "review_step": "code_review_parallel"
-            }),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Valid { result, .. } => {
-                assert_eq!(result, Some("approved".to_string()));
+    fn validate_contract_value_rejects_absolute_spec_file_path() {
+        match validate_contract_value("spec-file-path", json!({"spec_file_path": "/etc/passwd"})) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_path");
             }
-            other => panic!("Expected Valid, got {:?}", other),
+            other => panic!("expected Invalid, got {:?}", other),
         }
     }
 
     #[test]
-    fn validate_approved_fix_policy_passes_through_arbitrary_fields() {
-        // ユーザーが指示書で定義した任意フィールドが下流にそのまま渡ること
+    fn validate_contract_value_rejects_spec_file_path_traversal() {
+        match validate_contract_value(
+            "spec-file-path",
+            json!({"spec_file_path": "docs/../../etc/passwd"}),
+        ) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_path");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_windows_drive_spec_file_path() {
+        for path in &["C:\\repo\\spec.md", "C:/repo/spec.md", "D:\\file.md"] {
+            match validate_contract_value("spec-file-path", json!({"spec_file_path": path})) {
+                ContractValidationResult::Invalid(v) => {
+                    assert_eq!(v.reason, "invalid_path", "path: {path}");
+                }
+                other => panic!("expected Invalid for path '{path}', got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_missing_spec_file_path_field() {
+        match validate_contract_value("spec-file-path", json!({"path": "some/path.md"})) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "missing_field");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_accepts_approved_fix_policy_with_arbitrary_fields() {
         let input = json!({
             "policy": "Fix only NEEDS_FIX findings.",
             "review_step": "code_review_parallel",
-            "secret_note": "user can put anything",
-            "extra_meta": {"nested": "value"}
+            "extra": {"nested": "value"}
         });
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: input.clone(),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Valid {
-                structured_output, ..
-            } => {
-                assert_eq!(structured_output, input);
-            }
-            other => panic!("Expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_passes_through_findings_array() {
-        // findings[] が保持されること（P1-P10 で合意した新スキーマの伝播確認）
-        let input = json!({
-            "policy": "Apply fixes based on reviewed findings.",
-            "review_step": "code_review_parallel",
-            "findings": [
-                {
-                    "severity": "error",
-                    "line": "src/foo.ts:42",
-                    "message": "Null check missing",
-                    "action": "fix",
-                    "rationale": "Required for safety"
-                },
-                {
-                    "severity": "warning",
-                    "message": "Style nit",
-                    "action": "skip",
-                    "rationale": "Out of scope"
-                }
-            ]
-        });
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: input.clone(),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
-            ContractValidationResult::Valid {
-                structured_output, ..
-            } => {
-                assert_eq!(structured_output, input);
-                assert_eq!(structured_output["findings"].as_array().unwrap().len(), 2);
-            }
-            other => panic!("Expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_approved_fix_policy_passes_through_without_required_fields() {
-        // policy / review_step が無くても Valid（フィールド検証撤廃）
-        let input = json!({
-            "custom_only": "no required fields"
-        });
-        let extraction = ExtractionResult::Found {
-            type_name: "approved-fix-policy".to_string(),
-            json: input.clone(),
-        };
-        match validate_contract("approved-fix-policy", extraction) {
+        match validate_contract_value("approved-fix-policy", input.clone()) {
             ContractValidationResult::Valid {
                 result,
                 structured_output,
@@ -523,485 +452,80 @@ Some text after"#;
                 assert_eq!(result, Some("approved".to_string()));
                 assert_eq!(structured_output, input);
             }
-            other => panic!("Expected Valid, got {:?}", other),
+            other => panic!("expected Valid, got {:?}", other),
         }
     }
 
     #[test]
-    fn validate_spec_file_path_missing() {
-        let extraction = ExtractionResult::Found {
-            type_name: "spec-file-path".to_string(),
-            json: json!({"path": "some/path.md"}),
-        };
-        assert!(matches!(
-            validate_contract("spec-file-path", extraction),
-            ContractValidationResult::Invalid(_)
-        ));
-    }
-
-    #[test]
-    fn validate_no_block() {
-        match validate_contract("review-verdict", ExtractionResult::NoBlock) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "no_block");
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_multiple_blocks() {
-        match validate_contract("review-verdict", ExtractionResult::MultipleBlocks) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "multiple_blocks");
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_invalid_json_error() {
-        match validate_contract(
-            "review-verdict",
-            ExtractionResult::InvalidJson("bad json".to_string()),
-        ) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_json");
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_unknown_contract_type_passes() {
-        let extraction = ExtractionResult::Found {
-            type_name: "custom-thing".to_string(),
-            json: json!({"anything": "goes"}),
-        };
-        match validate_contract("custom-thing", extraction) {
+    fn validate_contract_value_passes_through_unknown_contract_type() {
+        match validate_contract_value("custom-thing", json!({"anything": "goes"})) {
             ContractValidationResult::Valid { result, .. } => {
                 assert_eq!(result, None);
             }
-            other => panic!("Expected Valid, got {:?}", other),
+            other => panic!("expected Valid, got {:?}", other),
         }
     }
 
+    // ---- [08] resolve_step_output_contract_from_events: CLI / Tauri 共通の解決経路 ----
+
+    fn workflow_with_review_contract(contract: Option<&str>) -> Workflow {
+        use crate::workflow::schema::{NodeDefinition, NodeType};
+        Workflow {
+            name: "wf-resolve".to_string(),
+            description: "".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "review".to_string(),
+                node_type: NodeType::Agent,
+                instruction: Some("review".to_string()),
+                output_contract: contract.map(str::to_string),
+                ..NodeDefinition::default()
+            }],
+        }
+    }
+
+    fn run_started_event(workflow: Workflow) -> WorkflowEvent {
+        WorkflowEvent::RunStarted {
+            run_id: "run-1".to_string(),
+            workflow_name: workflow.name.clone(),
+            workflow_file_stem: workflow.name.clone(),
+            worktree_path: "/wt".to_string(),
+            workflow_definition: workflow,
+            timestamp: 1.0,
+        }
+    }
+
+    /// spec [08]: RunStarted から workflow_definition を引き、step の contract を解決する。
     #[test]
-    fn validate_review_verdict_needs_fix_no_findings() {
-        let extraction = ExtractionResult::Found {
-            type_name: "review-verdict".to_string(),
-            json: json!({"verdict": "NEEDS_FIX"}),
-        };
-        match validate_contract("review-verdict", extraction) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "missing_findings");
+    fn resolve_step_output_contract_from_events_resolves_compliant_contract() {
+        let events = vec![run_started_event(workflow_with_review_contract(Some(
+            "review-verdict",
+        )))];
+        let contract = resolve_step_output_contract_from_events(&events, "review")
+            .expect("contract should be resolved");
+        assert_eq!(contract, "review-verdict");
+    }
+
+    /// spec [08]: RunStarted event がない event 列は `RunNotFound`。
+    #[test]
+    fn resolve_step_output_contract_from_events_returns_run_not_found_without_run_started() {
+        let err = resolve_step_output_contract_from_events(&[], "review")
+            .expect_err("missing RunStarted should yield error");
+        assert_eq!(err, ContractLookupError::RunNotFound);
+    }
+
+    /// spec [08]: step に `output_contract` が無い場合は `NoOutputContract`。
+    #[test]
+    fn resolve_step_output_contract_from_events_returns_no_output_contract_when_unset() {
+        let events = vec![run_started_event(workflow_with_review_contract(None))];
+        let err = resolve_step_output_contract_from_events(&events, "review")
+            .expect_err("missing output_contract should yield error");
+        assert_eq!(
+            err,
+            ContractLookupError::NoOutputContract {
+                workflow_name: "wf-resolve".to_string(),
+                step: "review".to_string(),
             }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_review_verdict_needs_fix_empty_findings() {
-        let extraction = ExtractionResult::Found {
-            type_name: "review-verdict".to_string(),
-            json: json!({"verdict": "NEEDS_FIX", "findings": []}),
-        };
-        match validate_contract("review-verdict", extraction) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "missing_findings");
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_fix_result_partial() {
-        let extraction = ExtractionResult::Found {
-            type_name: "fix-result".to_string(),
-            json: json!({"status": "PARTIAL"}),
-        };
-        match validate_contract("fix-result", extraction) {
-            ContractValidationResult::Valid { result, .. } => {
-                assert_eq!(result, Some("PARTIAL".to_string()));
-            }
-            other => panic!("Expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_fix_result_blocked() {
-        let extraction = ExtractionResult::Found {
-            type_name: "fix-result".to_string(),
-            json: json!({"status": "BLOCKED"}),
-        };
-        match validate_contract("fix-result", extraction) {
-            ContractValidationResult::Valid { result, .. } => {
-                assert_eq!(result, Some("BLOCKED".to_string()));
-            }
-            other => panic!("Expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_fix_result_invalid_status() {
-        let extraction = ExtractionResult::Found {
-            type_name: "fix-result".to_string(),
-            json: json!({"status": "DONE"}),
-        };
-        match validate_contract("fix-result", extraction) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_status");
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn build_repair_prompt_contains_info() {
-        let violation = ContractViolation {
-            reason: "missing_field".to_string(),
-            details: "Missing \"verdict\" field.".to_string(),
-        };
-        let prompt = build_repair_prompt("review-verdict", &violation, None);
-        assert!(prompt.contains("review-verdict"));
-        assert!(prompt.contains("missing_field"));
-        assert!(prompt.contains("Missing \"verdict\" field."));
-        assert!(!prompt.contains("Contract Definition"));
-    }
-
-    #[test]
-    fn build_repair_prompt_includes_definition() {
-        let violation = ContractViolation {
-            reason: "no_block".to_string(),
-            details: "No <workflow_output> block found.".to_string(),
-        };
-        let definition = "You MUST include exactly one `<workflow_output>` block.\nFormat: ...";
-        let prompt = build_repair_prompt("review-verdict", &violation, Some(definition));
-        assert!(prompt.contains("review-verdict"));
-        assert!(prompt.contains("no_block"));
-        assert!(prompt.contains("Contract Definition"));
-        assert!(prompt.contains(definition));
-    }
-
-    // ---- R3-01: findings severity/message validation ----
-
-    #[test]
-    fn validate_review_verdict_needs_fix_finding_missing_severity() {
-        let extraction = ExtractionResult::Found {
-            type_name: "review-verdict".to_string(),
-            json: json!({"verdict": "NEEDS_FIX", "findings": [{"message": "bug"}]}),
-        };
-        match validate_contract("review-verdict", extraction) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_finding");
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_review_verdict_needs_fix_finding_missing_message() {
-        let extraction = ExtractionResult::Found {
-            type_name: "review-verdict".to_string(),
-            json: json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error"}]}),
-        };
-        match validate_contract("review-verdict", extraction) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_finding");
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_review_verdict_needs_fix_finding_empty_object() {
-        let extraction = ExtractionResult::Found {
-            type_name: "review-verdict".to_string(),
-            json: json!({"verdict": "NEEDS_FIX", "findings": [{}]}),
-        };
-        match validate_contract("review-verdict", extraction) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_finding");
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_review_verdict_needs_fix_valid_findings() {
-        let extraction = ExtractionResult::Found {
-            type_name: "review-verdict".to_string(),
-            json: json!({"verdict": "NEEDS_FIX", "findings": [
-                {"severity": "error", "message": "bug found"},
-                {"severity": "warning", "message": "style issue"}
-            ]}),
-        };
-        match validate_contract("review-verdict", extraction) {
-            ContractValidationResult::Valid { result, .. } => {
-                assert_eq!(result, Some("NEEDS_FIX".to_string()));
-            }
-            other => panic!("Expected Valid, got {:?}", other),
-        }
-    }
-
-    // ---- R5-01: spec-file-path path traversal prevention ----
-
-    #[test]
-    fn validate_spec_file_path_absolute_path_rejected() {
-        let extraction = ExtractionResult::Found {
-            type_name: "spec-file-path".to_string(),
-            json: json!({"spec_file_path": "/etc/passwd"}),
-        };
-        match validate_contract("spec-file-path", extraction) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_path");
-                assert!(v.details.contains("absolute"));
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_spec_file_path_traversal_rejected() {
-        let extraction = ExtractionResult::Found {
-            type_name: "spec-file-path".to_string(),
-            json: json!({"spec_file_path": "docs/../../../etc/passwd"}),
-        };
-        match validate_contract("spec-file-path", extraction) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_path");
-                assert!(v.details.contains(".."));
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_spec_file_path_backslash_absolute_rejected() {
-        let extraction = ExtractionResult::Found {
-            type_name: "spec-file-path".to_string(),
-            json: json!({"spec_file_path": "\\\\server\\share"}),
-        };
-        match validate_contract("spec-file-path", extraction) {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_path");
-            }
-            other => panic!("Expected Invalid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn validate_spec_file_path_windows_drive_letter_rejected() {
-        for path in &["C:\\repo\\spec.md", "C:/repo/spec.md", "D:\\file.md"] {
-            let extraction = ExtractionResult::Found {
-                type_name: "spec-file-path".to_string(),
-                json: json!({"spec_file_path": path}),
-            };
-            match validate_contract("spec-file-path", extraction) {
-                ContractValidationResult::Invalid(v) => {
-                    assert_eq!(v.reason, "invalid_path", "path: {path}");
-                    assert!(v.details.contains("absolute"), "path: {path}");
-                }
-                other => panic!("Expected Invalid for path '{path}', got {:?}", other),
-            }
-        }
-    }
-
-    #[test]
-    fn extract_type_attr_not_from_body() {
-        let text =
-            r#"<workflow_output>body has type="fake" here {"key":"value"}</workflow_output>"#;
-        match extract_workflow_output(text) {
-            ExtractionResult::InvalidJson(_) => {
-                // type="fake"がbodyから拾われていたら type_name="fake" になるが、
-                // 修正後は開きタグ内のみ走査するので type_name="" になる
-                // JSONパース失敗は別問題（body全体がJSONではない）
-            }
-            ExtractionResult::Found { type_name, .. } => {
-                assert_eq!(type_name, "", "type should be empty when only in body");
-            }
-            other => panic!("Expected Found or InvalidJson, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn extract_type_attr_only_from_opening_tag() {
-        let text = r#"<workflow_output type="review-verdict">{"verdict":"LGTM"}</workflow_output>"#;
-        match extract_workflow_output(text) {
-            ExtractionResult::Found { type_name, .. } => {
-                assert_eq!(type_name, "review-verdict");
-            }
-            other => panic!("Expected Found, got {:?}", other),
-        }
-    }
-
-    // ---- R4-02: contract retry flow (pure function tests) ----
-
-    #[test]
-    fn contract_retry_flow_no_block_then_valid() {
-        // 1st attempt: no block → Invalid
-        let text1 = "I reviewed the code and it looks good.";
-        let extraction1 = extract_workflow_output(text1);
-        let result1 = validate_contract("review-verdict", extraction1);
-        assert!(matches!(result1, ContractValidationResult::Invalid(_)));
-
-        // Build repair prompt from violation
-        if let ContractValidationResult::Invalid(v) = result1 {
-            assert_eq!(v.reason, "no_block");
-            let repair = build_repair_prompt("review-verdict", &v, None);
-            assert!(repair.contains("review-verdict"));
-            assert!(repair.contains("no_block"));
-        }
-
-        // 2nd attempt: valid → success
-        let text2 = r#"<workflow_output type="review-verdict">
-{"verdict": "LGTM"}
-</workflow_output>"#;
-        let extraction2 = extract_workflow_output(text2);
-        let result2 = validate_contract("review-verdict", extraction2);
-        match result2 {
-            ContractValidationResult::Valid { result, .. } => {
-                assert_eq!(result, Some("LGTM".to_string()));
-            }
-            other => panic!("Expected Valid, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn contract_retry_flow_type_mismatch_then_valid() {
-        // 1st attempt: wrong type
-        let text1 = r#"<workflow_output type="fix-result">
-{"status": "FIXED"}
-</workflow_output>"#;
-        let extraction1 = extract_workflow_output(text1);
-        let result1 = validate_contract("review-verdict", extraction1);
-        if let ContractValidationResult::Invalid(v) = &result1 {
-            assert_eq!(v.reason, "type_mismatch");
-            let repair = build_repair_prompt("review-verdict", v, None);
-            assert!(repair.contains("type_mismatch"));
-        } else {
-            panic!("Expected Invalid");
-        }
-
-        // 2nd attempt: correct type
-        let text2 = r#"<workflow_output type="review-verdict">
-{"verdict": "NEEDS_FIX", "findings": [{"severity": "error", "message": "bug"}]}
-</workflow_output>"#;
-        let extraction2 = extract_workflow_output(text2);
-        let result2 = validate_contract("review-verdict", extraction2);
-        assert!(matches!(result2, ContractValidationResult::Valid { .. }));
-    }
-
-    #[test]
-    fn contract_retry_flow_invalid_json_then_valid() {
-        let text1 = r#"<workflow_output type="review-verdict">{bad json}</workflow_output>"#;
-        let extraction1 = extract_workflow_output(text1);
-        let result1 = validate_contract("review-verdict", extraction1);
-        if let ContractValidationResult::Invalid(v) = &result1 {
-            assert_eq!(v.reason, "invalid_json");
-            let repair = build_repair_prompt("review-verdict", v, None);
-            assert!(repair.contains("invalid_json"));
-        } else {
-            panic!("Expected Invalid");
-        }
-    }
-
-    #[test]
-    fn contract_retry_flow_contract_specific_failure() {
-        // Missing verdict field
-        let text1 = r#"<workflow_output type="review-verdict">
-{"summary": "looks good"}
-</workflow_output>"#;
-        let extraction1 = extract_workflow_output(text1);
-        let result1 = validate_contract("review-verdict", extraction1);
-        if let ContractValidationResult::Invalid(v) = &result1 {
-            assert_eq!(v.reason, "missing_field");
-            let repair = build_repair_prompt("review-verdict", v, None);
-            assert!(repair.contains("missing_field"));
-            assert!(repair.contains("review-verdict"));
-        } else {
-            panic!("Expected Invalid");
-        }
-    }
-
-    #[test]
-    fn contract_retry_flow_multiple_blocks() {
-        let text = r#"<workflow_output type="review-verdict">{"verdict":"LGTM"}</workflow_output>
-<workflow_output type="review-verdict">{"verdict":"NEEDS_FIX","findings":[{"severity":"error","message":"x"}]}</workflow_output>"#;
-        let extraction = extract_workflow_output(text);
-        let result = validate_contract("review-verdict", extraction);
-        if let ContractValidationResult::Invalid(v) = &result {
-            assert_eq!(v.reason, "multiple_blocks");
-            let repair = build_repair_prompt("review-verdict", v, None);
-            assert!(repair.contains("multiple_blocks"));
-        } else {
-            panic!("Expected Invalid");
-        }
-    }
-
-    // ---- strip_code_fences ----
-
-    #[test]
-    fn strip_code_fences_json_block() {
-        let input = "```json\n{\"verdict\": \"LGTM\"}\n```";
-        assert_eq!(strip_code_fences(input), r#"{"verdict": "LGTM"}"#);
-    }
-
-    #[test]
-    fn strip_code_fences_no_language_tag() {
-        let input = "```\n{\"verdict\": \"LGTM\"}\n```";
-        assert_eq!(strip_code_fences(input), r#"{"verdict": "LGTM"}"#);
-    }
-
-    #[test]
-    fn strip_code_fences_plain_json() {
-        let input = r#"{"verdict": "LGTM"}"#;
-        assert_eq!(strip_code_fences(input), input);
-    }
-
-    #[test]
-    fn strip_code_fences_with_surrounding_whitespace() {
-        let input = "  \n```json\n{\"x\":1}\n```\n  ";
-        assert_eq!(strip_code_fences(input), r#"{"x":1}"#);
-    }
-
-    #[test]
-    fn strip_code_fences_no_closing_fence() {
-        let input = "```json\n{\"x\":1}";
-        assert_eq!(strip_code_fences(input), r#"{"x":1}"#);
-    }
-
-    #[test]
-    fn extract_with_code_fences_in_workflow_output() {
-        let text = r#"<workflow_output type="review-verdict">
-```json
-{"verdict": "LGTM", "summary": "All good"}
-```
-</workflow_output>"#;
-        match extract_workflow_output(text) {
-            ExtractionResult::Found { type_name, json } => {
-                assert_eq!(type_name, "review-verdict");
-                assert_eq!(json["verdict"], "LGTM");
-            }
-            other => panic!("Expected Found, got {:?}", other),
-        }
-    }
-
-    // ---- R4-01: output_text None → NoBlock validation ----
-
-    #[test]
-    fn no_block_extraction_triggers_retry_flow() {
-        // engine.rsでoutput_text: Noneの場合、ExtractionResult::NoBlockとしてvalidate_contractに渡される
-        let result = validate_contract("review-verdict", ExtractionResult::NoBlock);
-        match result {
-            ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "no_block");
-                // repair promptが生成できることを確認
-                let repair = build_repair_prompt("review-verdict", &v, None);
-                assert!(repair.contains("review-verdict"));
-                assert!(repair.contains("No <workflow_output> block found"));
-            }
-            other => panic!("Expected Invalid(no_block), got {:?}", other),
-        }
+        );
     }
 }

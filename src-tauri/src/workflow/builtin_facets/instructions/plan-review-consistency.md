@@ -36,3 +36,16 @@ Specの「要求 / 振る舞い定義 / アーキテクチャ概要」3セクシ
 
 - **LGTM**: 要求・振る舞い・アーキテクチャ概要の3セクション間で用語・対応関係に矛盾なし
 - **NEEDS_FIX**: 用語の不一致、要求と振る舞いの対応漏れ、振る舞いと責務配置の不整合あり
+
+## 構造化出力の提出
+
+判定（`review-verdict` Contract に従う JSON）は、step 完了時に `releash workflow output submit` で engine に提出する。
+
+```sh
+releash workflow output submit <run_id> \
+  --step <step_name> \
+  --type review-verdict \
+  --json '{"verdict":"LGTM"}'   # または NEEDS_FIX の場合は findings を含める
+```
+
+提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。

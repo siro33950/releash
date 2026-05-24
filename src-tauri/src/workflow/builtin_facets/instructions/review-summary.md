@@ -59,6 +59,6 @@
 
 ## 出力に関する制約
 
-- `<workflow_output>` ブロックは出力しない（structured output は不要）
+- structured output は不要（`releash workflow output submit` の呼び出しは行わない）
 - 推測で記入しない。確認できない項目は「未確認」と明記する
 - 自身のフォローアップ作業（追加修正等）は行わない（permission: readonly）

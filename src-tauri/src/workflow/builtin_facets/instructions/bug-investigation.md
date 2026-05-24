@@ -41,4 +41,13 @@
 
 ## 出力
 
-本 step の出力は `bug-investigation-result` Contract に準拠した `<workflow_output>` ブロックを 1 つだけ返す。具体的なフィールド仕様（`symptom` / `related_code` / `root_cause` / `fix_candidates` / `impact`）と必須条件は Contract に従う。
+本 step の構造化出力は `bug-investigation-result` Contract に準拠した JSON を `releash workflow output submit` で提出する。
+
+```sh
+releash workflow output submit <run_id> \
+  --step <step_name> \
+  --type bug-investigation-result \
+  --json '{...}'
+```
+
+具体的なフィールド仕様（`symptom` / `related_code` / `root_cause` / `fix_candidates` / `impact`）と必須条件は Contract に従う。提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。

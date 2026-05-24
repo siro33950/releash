@@ -66,6 +66,6 @@ Feature: [機能名]
 ```
 ```
 
-## 出力
+## 完了条件
 
-Specファイル更新後、specファイルパスを構造化出力として出力する。
+Specファイルの `## 振る舞い定義` セクションを追加または更新した状態で step を完了する。本 step には output contract が定義されておらず、前段 step（`plan_requirements`）の `spec-file-path` 出力が後続 step に引き継がれる。`releash workflow output submit` を呼ぶ必要はない。

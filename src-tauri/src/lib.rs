@@ -602,6 +602,9 @@ pub fn run() {
             workflow::commands::open_facet_in_editor,
             workflow::commands::render_facet_preview,
             workflow::commands::get_automation_config_dir,
+            workflow::commands::workflow_submit_output,
+            workflow::commands::workflow_validate_output,
+            workflow::commands::workflow_get_output,
             // Menu
             menu::set_menu_items_enabled,
         ])

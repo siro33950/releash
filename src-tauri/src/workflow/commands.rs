@@ -921,6 +921,184 @@ pub async fn delete_facet(kind: String, key: String) -> Result<(), String> {
         .map_err(|e| format!("task join error: {e}"))?
 }
 
+// ---- [08] Workflow output 提出 / 検証 / 参照 ----
+
+/// [08] `workflow output` 系 Tauri command の共通 authorize ヘルパー。
+///
+/// 3 ハンドラ（submit / validate / get）で「`validate_run_id` →
+/// `canonicalize_managed_worktree_path` → `authorize_run_for_caller` →
+/// `summary.worktree_path` 一致確認」を完全に同一フローで行うため、共通化する。
+/// 認可外 worktree / 不存在 run のいずれも `Workflow run not found` 同表現で
+/// 拒否し、存在情報を漏らさない（spec [08] L169 / L182）。
+async fn authorize_output_run_access(
+    engine: &Arc<WorkflowEngine>,
+    config: &Arc<AppConfig>,
+    worktree_path: String,
+    run_id: &str,
+) -> Result<(), String> {
+    validate_run_id(run_id)?;
+    let canonical =
+        super::worktree::canonicalize_managed_worktree_path(config.clone(), worktree_path).await?;
+    let summary = match authorize_run_for_caller(engine, config, run_id).await? {
+        Some(s) => s,
+        None => return Err(format!("Workflow run not found: {run_id}")),
+    };
+    if summary.worktree_path != canonical {
+        return Err(format!("Workflow run not found: {run_id}"));
+    }
+    Ok(())
+}
+
+/// [08] Tauri command 経路: step に対する構造化出力を typed 提出する。
+///
+/// in-process caller (UI / Remote / 外部 Tauri caller) は `engine.dispatch_external`
+/// を経由して、CLI 経路と同一の `handle_submit_output` に合流する（spec [08] L169
+/// CLI 経路と in-process 経路は `dispatch_external` で合流）。worktree-scoped 認可
+/// 境界（spec [08] が依拠する [05] 観測経路の認可境界）を通過しない caller には
+/// 「該当 run なし」と同表現で拒否を返し、存在情報を漏らさない。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn workflow_submit_output(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    session_store: tauri::State<'_, Arc<SessionStore>>,
+    handles: tauri::State<'_, Arc<Mutex<AgentProcessMap>>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    worktree_path: String,
+    run_id: String,
+    step_name: String,
+    contract: String,
+    structured_output: serde_json::Value,
+) -> Result<(), String> {
+    authorize_output_run_access(engine.inner(), config.inner(), worktree_path, &run_id).await?;
+    let command = WorkflowCommand::SubmitOutput {
+        run_id: run_id.clone(),
+        step_name,
+        contract,
+        structured_output,
+    };
+    engine
+        .dispatch_external(&app, session_store.inner(), handles.inner(), command)
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|result| match result {
+            WorkflowCommandResult::Accepted => Ok(()),
+            // dispatch routing が壊れていない限り `SubmitOutput` → `Accepted` のみが返るはず。
+            // ここに到達する場合は engine 内部不整合（spec [04] sentinel 禁止 / [08] CLI と
+            // in-process の合流境界）として明示的に Err にする。
+            WorkflowCommandResult::RunStarted { .. } => Err(
+                "workflow_submit_output received non-Accepted dispatch result; internal inconsistency"
+                    .to_string(),
+            ),
+        })
+}
+
+/// [08] structured output の contract 適合性のみを副作用なしで判定する Tauri command。
+/// `submit` と異なり engine state / event log には触れない（spec [08] 振る舞い定義 Rule 2）。
+///
+/// caller は run_id / step_name を主語に呼び出す。contract type は backend 側で
+/// event log の `RunStarted.workflow_definition` から解決する（spec [08] 要求:
+/// 「run_id と step_name を主語に CLI/API 経由で engine に提出できる」境界。
+/// caller 指定の contract 文字列を信用しない）。
+#[tauri::command]
+pub async fn workflow_validate_output(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    worktree_path: String,
+    run_id: String,
+    step_name: String,
+    structured_output: serde_json::Value,
+) -> Result<WorkflowValidateOutputResponse, String> {
+    authorize_output_run_access(engine.inner(), config.inner(), worktree_path, &run_id).await?;
+    let data_dir = resolve_data_dir(&app).map_err(|e| e.to_string())?;
+    let events = WorkflowEventLog::new(&data_dir)
+        .read_log(&run_id)
+        .map_err(|e| e.to_string())?;
+    let contract =
+        crate::workflow::contract::resolve_step_output_contract_from_events(&events, &step_name)
+            .map_err(|err| match err {
+                crate::workflow::contract::ContractLookupError::RunNotFound => {
+                    format!("Workflow run not found: {run_id}")
+                }
+                crate::workflow::contract::ContractLookupError::NoOutputContract {
+                    workflow_name,
+                    step,
+                } => {
+                    format!("step '{step}' has no output_contract in workflow '{workflow_name}'")
+                }
+            })?;
+    // [08] preflight と本 submit (`handle_submit_output`) で同一の前処理 + validation を
+    // 共有するため、masking + validate を集約した `preprocess_and_validate_output` を経由する。
+    // raw JSON のまま `validate_contract_value` を呼ぶと submit 側の redaction 後の値と
+    // 判定が食い違う構造になるため、ここでも secrets を収集して redaction 後に判定する。
+    Ok(
+        match WorkflowEngine::preprocess_and_validate_output(&app, &contract, structured_output) {
+            crate::workflow::contract::ContractValidationResult::Valid { .. } => {
+                WorkflowValidateOutputResponse::Valid
+            }
+            crate::workflow::contract::ContractValidationResult::Invalid(violation) => {
+                WorkflowValidateOutputResponse::Invalid {
+                    reason: violation.reason,
+                    details: violation.details,
+                }
+            }
+        },
+    )
+}
+
+/// [08] 提出済みの構造化出力を取得する Tauri command。未提出の場合は決定論的に
+/// `NotSubmitted` を返す（spec [08] 振る舞い定義 Rule 3）。
+#[tauri::command]
+pub async fn workflow_get_output(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, Arc<WorkflowEngine>>,
+    config: tauri::State<'_, Arc<AppConfig>>,
+    worktree_path: String,
+    run_id: String,
+    step_name: String,
+) -> Result<WorkflowGetOutputResponse, String> {
+    authorize_output_run_access(engine.inner(), config.inner(), worktree_path, &run_id).await?;
+    let data_dir = resolve_data_dir(&app).map_err(|e| e.to_string())?;
+    let events = WorkflowEventLog::new(&data_dir)
+        .read_log(&run_id)
+        .map_err(|e| e.to_string())?;
+    let response =
+        match crate::workflow::event_projection::latest_output_submitted_for(&events, &step_name) {
+            Some(snapshot) => WorkflowGetOutputResponse::Submitted {
+                contract: snapshot.contract,
+                structured_output: snapshot.structured_output,
+                submitted_at: snapshot.submitted_at,
+                request_id: snapshot.request_id,
+                timestamp: snapshot.timestamp,
+            },
+            None => WorkflowGetOutputResponse::NotSubmitted,
+        };
+    Ok(response)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkflowValidateOutputResponse {
+    Valid,
+    Invalid { reason: String, details: String },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkflowGetOutputResponse {
+    Submitted {
+        contract: String,
+        structured_output: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        submitted_at: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        timestamp: f64,
+    },
+    NotSubmitted,
+}
+
 // ---- 新規コマンド ----
 
 #[tauri::command]
@@ -1266,6 +1444,8 @@ mod tests {
                 WorkflowEvent::ParallelCompleted { .. } => "ParallelCompleted",
                 WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
                 WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
+                WorkflowEvent::OutputSubmitted { .. } => "OutputSubmitted",
+                WorkflowEvent::CliMutationRejected { .. } => "CliMutationRejected",
             })
             .collect()
     }

@@ -89,11 +89,15 @@ impl FacetKind {
 /// 出力 Contract の前置定型文を組み立てる。
 ///
 /// Contract facet 本文は純粋な JSON shape 仕様（フォーマット + フィールドルール）のみを
-/// 保持し、`<workflow_output>` エンベロープの要求は本 preamble に閉じる。これにより
-/// 同じ Contract 本文が input/output 双方で再利用可能になる（[02] Contract 双方向対称性）。
+/// 保持し、提出経路の指示は本 preamble に閉じる。Contract 本文は input/output 双方で
+/// 再利用される（[02] Contract 双方向対称性）。
+///
+/// structured output の確定経路は `releash workflow output submit` CLI（および同等の
+/// typed API）のみ。step agent の自由文に書かれた `<workflow_output>` 相当の表現は
+/// engine から観測されないため、必ず CLI 経由で提出する必要がある。
 pub fn output_contract_preamble(key: &str) -> String {
     format!(
-        "レスポンスには下記データ仕様の `<workflow_output type=\"{key}\">...</workflow_output>` ブロックを必ず1つだけ含めること。\n\nデータ仕様 (型: {key}):"
+        "step 完了時に下記データ仕様 (型: {key}) に従う JSON を `releash workflow output submit` で提出すること。\n\n```sh\nreleash workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n```\n\n`--json` の代わりに `--file <path>.json` も使える。提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。\n\nデータ仕様 (型: {key}):"
     )
 }
 
@@ -716,9 +720,10 @@ mod tests {
         let result = compose_facets(&node);
 
         let sys = result.system_prompt.expect("system_prompt should be set");
-        // 出力 Contract preamble はキーに応じて `<workflow_output type="plan-doc">` の
-        // 署名を含み、本文（plan-doc Contract body）も連結される
-        assert!(sys.contains("<workflow_output type=\"plan-doc\">"));
+        // 出力 Contract preamble は CLI 提出経路（[08]）を agent に指示し、
+        // 型ラベルと Contract 本文を含む
+        assert!(sys.contains("releash workflow output submit"));
+        assert!(sys.contains("--type plan-doc"));
         assert!(sys.contains("Output as markdown."));
         assert_eq!(result.user_message, "");
     }

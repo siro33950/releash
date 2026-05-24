@@ -20,25 +20,33 @@
 
    > この方針で承認しますか? 変更があれば指示してください。
 
-**このターンでは `<workflow_output>` ブロックを絶対に出力しない。**
+**このターンでは構造化出力は提出しない（`releash workflow output submit` を呼ばない）。**
 
 ### ターン2以降
 
 ユーザーの応答に応じて分岐する:
 
 - **承認された場合**（「OK」「承認」「approve」「いいよ」等）:
-  下記フォーマットの `<workflow_output>` ブロックを**1つだけ**出力する。前後に文章を付けない。
+  下記「承認後の出力」に従い `releash workflow output submit` で `approved-fix-policy` を提出する。
 
 - **修正指示があった場合**:
   指示に従って方針を更新し、再度ターン1の構成で人間向けに報告し直して承認を求める。
 
 - **却下（reject）された場合**:
-  `reject` の意図を1行で確認応答する（`<workflow_output>` は出力しない）。ワークフローエンジンが `match: reject` ルールで分岐する。
+  `reject` の意図を1行で確認応答する（構造化出力は提出しない）。ワークフローエンジンが `match: reject` ルールで分岐する。
 
 ## 承認後の出力
 
-ユーザーから承認を得た場合、`approved-fix-policy` Contract に従って `<workflow_output>` ブロックを 1 つだけ出力する。前後に文章を付けない。
+ユーザーから承認を得た場合、`approved-fix-policy` Contract に従う JSON を組み立て、当該 step 名と `run_id` を主語に `releash workflow output submit` を呼んで提出する。
+
+```sh
+releash workflow output submit <run_id> \
+  --step <step_name> \
+  --type approved-fix-policy \
+  --json '{"review_step":"code_review_parallel","findings":[...]}'
+```
 
 - `review_step` には `"code_review_parallel"` を指定する（本 policy が参照した一次入力の種別）
 - `findings` は人間に報告した内容と完全に一致させる
 - 追加項目（review にない「ついでに直す」など）も同じ配列に入れる
+- 提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する

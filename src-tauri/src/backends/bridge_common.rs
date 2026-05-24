@@ -29,9 +29,7 @@ use crate::session::{
     GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
 };
 
-pub(crate) use crate::backends::runtime_coordinator::{
-    acquire_session_runtime_lock, is_session_closing,
-};
+pub(crate) use crate::backends::runtime_coordinator::acquire_session_runtime_lock;
 
 pub const CLAUDE_BACKEND_ID: &str = "claude";
 pub const CODEX_BACKEND_ID: &str = "codex";
@@ -4460,33 +4458,6 @@ pub async fn prepare_image_attachments_from_paths(
     Ok(attachments)
 }
 
-/// ワークフローエンジンから呼ばれる内部版。
-/// AgentSessionを開始し、プロンプトを送信する。
-/// メッセージの追加(human + agent)とstart_agent_turnをまとめて行う。
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn start_agent_turn_internal<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
-    session_store: &Arc<SessionStore>,
-    chat_session_id: &str,
-    cwd: &str,
-    permission_mode: &str,
-    prompt: &str,
-) -> Result<(), String> {
-    wait_until_session_close_finished(chat_session_id).await;
-    let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
-    start_agent_turn_internal_locked(
-        app,
-        handles,
-        session_store,
-        chat_session_id,
-        cwd,
-        permission_mode,
-        prompt,
-    )
-    .await
-}
-
 /// Runtime lock acquired by the caller variant used by workflow step startup.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(
@@ -6879,7 +6850,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approval_chat_adjustment_send_path_keeps_session_and_updates_latest_output() {
+    async fn approval_chat_adjustment_send_path_keeps_session_state() {
         let worktree = tempfile::tempdir().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
         let engine = Arc::new(WorkflowEngine::new_for_test());
@@ -7026,19 +6997,13 @@ mod tests {
             .rev()
             .find(|msg| msg.role == MessageRole::Agent)
             .unwrap();
-        match crate::workflow::contract::validate_contract(
-            "approved-fix-policy",
-            crate::workflow::contract::extract_workflow_output(&latest_agent.content),
-        ) {
-            crate::workflow::contract::ContractValidationResult::Valid {
-                structured_output,
-                result,
-            } => {
-                assert_eq!(result.as_deref(), Some("approved"));
-                assert_eq!(structured_output["policy"], "Latest adjusted policy.");
-            }
-            other => panic!("expected latest assistant output to be valid policy, got {other:?}"),
-        }
+        // [08] このテストの責務は「send path で session が破壊されず維持されること」のみに限定する。
+        // typed structured output の contract 検証（typed な step_outputs 更新の保証）は
+        // SubmitOutput を経由する CLI/API 経路でしか発生しないため、本テストでは保証しない。
+        // contract 検証経路の回帰テストは `workflow::contract` の単体テスト群および
+        // `workflow::engine` の SubmitOutput 経路テストで別途カバーする。
+        // ここでは「session の最新 Agent メッセージが上書きされて存在すること」のみ確認する。
+        assert_eq!(latest_agent.id, agent.id);
 
         let removed_proc = handles.lock().await.remove(&session.id);
         if let Some(mut proc) = removed_proc {
