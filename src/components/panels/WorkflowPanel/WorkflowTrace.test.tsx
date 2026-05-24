@@ -551,7 +551,16 @@ describe("WorkflowTrace", () => {
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Open tab" }));
-		expect(onSessionClick).toHaveBeenCalledWith("session-1");
+		// spec issues-1023: 親には sessionId のみではなく runId / stepName /
+		// nodeType / runIndex を含む選択 metadata を渡す（WorkflowState の
+		// 再走査を避ける）。
+		expect(onSessionClick).toHaveBeenCalledWith({
+			runId: "exec-001",
+			sessionId: "session-1",
+			stepName: "plan",
+			nodeType: "agent",
+			runIndex: undefined,
+		});
 	});
 
 	it("calls onCloseSession when an open-tab toggle is clicked", () => {
@@ -584,7 +593,6 @@ describe("WorkflowTrace", () => {
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState({
-					chatSessionId: "parent-session",
 					currentStepName: "",
 					state: { type: "completed" },
 					stepStates: { plan: "completed", review: "pending", fix: "pending" },
@@ -615,10 +623,20 @@ describe("WorkflowTrace", () => {
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Open tab" }));
-		expect(onSessionClick).toHaveBeenCalledWith("session-current");
+		expect(onSessionClick).toHaveBeenCalledWith({
+			runId: "exec-001",
+			sessionId: "session-current",
+			stepName: "plan",
+			nodeType: "agent",
+			runIndex: 1,
+		});
 	});
 
 	it("renders event log entries when provided", () => {
+		// spec issues-1023: event timeline は「いつ / どの node / どんな事実」を
+		// 観測するための表現。timestamp は ms 単位（engine 側で正規化済み）として
+		// 渡され、表示用 HH:MM:SS と ISO title の双方が描画される。
+		const epochMs = Date.UTC(2024, 0, 2, 3, 4, 5);
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState()}
@@ -635,7 +653,7 @@ describe("WorkflowTrace", () => {
 							builtin: false,
 							nodes: [],
 						},
-						timestamp: 1000,
+						timestampMs: epochMs,
 					},
 					{
 						event: "node_started",
@@ -643,7 +661,7 @@ describe("WorkflowTrace", () => {
 						workflow_name: "test-workflow",
 						node_name: "plan",
 						execution_count: 1,
-						timestamp: 1001,
+						timestampMs: epochMs + 1000,
 					},
 				]}
 			/>,
@@ -652,6 +670,13 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText("run_started")).toBeInTheDocument();
 		expect(screen.getByText("node_started")).toBeInTheDocument();
 		expect(screen.getByText("(plan)")).toBeInTheDocument();
+		// 表示時刻（HH:MM:SS）と ISO title が描画されることを検証する。
+		const expectedHHMMSS = `${String(new Date(epochMs).getHours()).padStart(2, "0")}:${String(new Date(epochMs).getMinutes()).padStart(2, "0")}:${String(new Date(epochMs).getSeconds()).padStart(2, "0")}`;
+		expect(screen.getByText(expectedHHMMSS)).toBeInTheDocument();
+		expect(screen.getByText(expectedHHMMSS)).toHaveAttribute(
+			"title",
+			new Date(epochMs).toISOString(),
+		);
 	});
 
 	it("shows Structured Output toggle when stepHistory entry has structuredOutput", () => {
@@ -981,7 +1006,7 @@ describe("WorkflowTrace", () => {
 						workflow_name: "test-workflow",
 						node_name: "plan",
 						execution_count: 1,
-						timestamp: 1001,
+						timestampMs: 1001,
 					},
 					{
 						event: "contract_repair_requested",
@@ -990,7 +1015,7 @@ describe("WorkflowTrace", () => {
 						node_name: "plan",
 						attempt: 1,
 						violation_reason: "missing verdict field",
-						timestamp: 1002,
+						timestampMs: 1002,
 					},
 					{
 						event: "contract_repair_requested",
@@ -999,7 +1024,7 @@ describe("WorkflowTrace", () => {
 						node_name: "plan",
 						attempt: 2,
 						violation_reason: "invalid format",
-						timestamp: 1003,
+						timestampMs: 1003,
 					},
 				]}
 			/>,
@@ -1523,5 +1548,279 @@ describe("WorkflowTrace", () => {
 		expect(
 			screen.getAllByRole("button", { name: "Close tab" }).length,
 		).toBeGreaterThanOrEqual(2);
+	});
+
+	// spec issues-1023 L75-79: 利用者は timeline 上の任意の step の詳細を確認できる。
+	// L81-84: agent step のみ transcript が読める。bash / approval / sessionId 無し
+	// completed step でも timeline から選択され、step detail は開けるが transcript は
+	// 出ない（caller 側で nodeType / sessionId を見て transcript pane を分岐させる
+	// 想定）。本テストは選択経路（onSessionClick 発火）の存在を境界として担保する。
+	it("invokes onSessionClick for non-agent steps even when sessionId is absent", () => {
+		const onSessionClick = vi.fn();
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					state: { type: "completed" },
+					currentStepName: "",
+					stepHistory: [
+						{
+							stepName: "review",
+							completedAt: 1100,
+							result: "approve",
+							runIndex: 1,
+						},
+					],
+					stepStates: {
+						plan: "completed",
+						review: "completed",
+						fix: "pending",
+					},
+				})}
+				onSessionClick={onSessionClick}
+			/>,
+		);
+		fireEvent.click(screen.getByTestId("select-step-review-1"));
+		expect(onSessionClick).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "exec-001",
+				stepName: "review",
+				nodeType: "approval",
+				runIndex: 1,
+				sessionId: undefined,
+			}),
+		);
+	});
+
+	// spec issues-1023 L75-79: parallel parent step の詳細も timeline から選択できる。
+	// ParallelBlockRow の親 header を click すると、nodeType=parallel の
+	// WorkflowStepSelection が発火する。
+	it("invokes onSessionClick for parallel parent header with nodeType=parallel", () => {
+		const onSessionClick = vi.fn();
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState({
+					workflowDefinition: {
+						name: "test-workflow",
+						description: "",
+						builtin: false,
+						nodes: [
+							{
+								name: "parallel-review",
+								type: "parallel",
+								parallel_children: [
+									{
+										name: "arch-review",
+										type: "agent",
+										instruction: "arch",
+									},
+								],
+							},
+						],
+					},
+					state: { type: "completed" },
+					currentStepName: "",
+					stepHistory: [
+						{
+							stepName: "parallel-review",
+							completedAt: 1200,
+							result: null,
+							runIndex: 1,
+						},
+					],
+					stepStates: { "parallel-review": "completed" },
+				})}
+				onSessionClick={onSessionClick}
+			/>,
+		);
+		fireEvent.click(screen.getByTestId("select-step-parallel-review-1"));
+		expect(onSessionClick).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "exec-001",
+				stepName: "parallel-review",
+				nodeType: "parallel",
+			}),
+		);
+	});
+
+	// spec issues-1023 L13: parallel 系 event は parent/child node 名で観測でき、
+	// cli_mutation_requested event は request payload（kind + 自由記述）を経路非依存に
+	// 観測できる。EventTrace 行に該当要素が描画されることを境界として担保する。
+	it("renders parallel parent/child node names and cli_mutation_requested request details", () => {
+		render(
+			<WorkflowTrace
+				workflowState={makeWorkflowState()}
+				events={[
+					{
+						event: "parallel_child_started",
+						run_id: "exec-001",
+						workflow_name: "test-workflow",
+						parent_node_name: "parallel-review",
+						child_node_name: "arch-review",
+						session_id: "sess-a",
+						execution_count: 1,
+						timestampMs: 1_000_000,
+					},
+					{
+						event: "cli_mutation_requested",
+						run_id: "exec-001",
+						workflow_name: "test-workflow",
+						request_id: "req-1",
+						request: {
+							kind: "reject",
+							node_name: "review",
+							reason: "needs more tests",
+						},
+						requestedAtMs: 2_000_000,
+						timestampMs: 2_000_000,
+					},
+				]}
+			/>,
+		);
+		expect(
+			screen.getByText("(parallel-review → arch-review)"),
+		).toBeInTheDocument();
+		expect(screen.getByText("(review)")).toBeInTheDocument();
+		expect(screen.getByText("reject: needs more tests")).toBeInTheDocument();
+	});
+
+	// spec issues-1023: 中断された run でも、step_history 経由で aborted entry が
+	// 描画され、session_id を持つ entry からは SessionToggleButton 経由で session log
+	// に到達できる。ghost エントリは追加されない（二重表示防止）。
+	describe("aborted workflow renders aborted step entries from history", () => {
+		it("renders an aborted history entry with a session toggle for log access", () => {
+			const onSessionClick = vi.fn();
+			render(
+				<WorkflowTrace
+					workflowState={makeWorkflowState({
+						state: { type: "aborted" },
+						currentStepName: "plan",
+						currentStepIndex: 0,
+						stepHistory: [
+							{
+								stepName: "plan",
+								completedAt: 1500,
+								result: null,
+								sessionId: "aborted-plan-session",
+								state: "aborted",
+							},
+						],
+						stepStates: {
+							plan: "aborted",
+							review: "pending",
+							fix: "pending",
+						},
+					})}
+					onSessionClick={onSessionClick}
+				/>,
+			);
+
+			const row = screen.getByTestId("trace-item-plan-1");
+			expect(row).toBeInTheDocument();
+			// SessionToggleButton（aria-label="Open tab"）は session log への到達経路。
+			const toggle = within(row).getByRole("button", { name: "Open tab" });
+			fireEvent.click(toggle);
+			expect(onSessionClick).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionId: "aborted-plan-session",
+					stepName: "plan",
+				}),
+			);
+		});
+
+		it("does not add a ghost entry for the current step when run is aborted", () => {
+			render(
+				<WorkflowTrace
+					workflowState={makeWorkflowState({
+						state: { type: "aborted" },
+						currentStepName: "plan",
+						currentStepIndex: 0,
+						stepHistory: [
+							{
+								stepName: "plan",
+								completedAt: 1500,
+								result: null,
+								sessionId: "aborted-plan-session",
+								state: "aborted",
+							},
+						],
+						stepStates: { plan: "aborted", review: "pending", fix: "pending" },
+					})}
+				/>,
+			);
+			// history 経由で 1 行のみ。ghost 経路で追加 push されないこと（二重表示防止）。
+			expect(screen.getAllByTestId(/^trace-item-plan-/)).toHaveLength(1);
+		});
+
+		it("renders aborted parallel parent with per-child snapshot state", () => {
+			render(
+				<WorkflowTrace
+					workflowState={makeWorkflowState({
+						state: { type: "aborted" },
+						currentStepName: "parallel-review",
+						currentStepIndex: 0,
+						totalSteps: 2,
+						workflowDefinition: {
+							name: "test-workflow",
+							description: "test",
+							builtin: false,
+							nodes: [
+								{
+									name: "parallel-review",
+									type: "parallel",
+									rules: [],
+									parallel_children: [
+										{ name: "child-a", type: "agent" },
+										{ name: "child-b", type: "agent" },
+									],
+								},
+								{
+									name: "report",
+									type: "agent",
+									instruction: "report",
+									rules: [],
+								},
+							],
+						},
+						stepStates: { "parallel-review": "aborted", report: "pending" },
+						stepHistory: [
+							{
+								stepName: "parallel-review",
+								completedAt: 1500,
+								result: null,
+								state: "aborted",
+								childOutputs: [
+									{
+										stepName: "child-a",
+										sessionId: "session-a",
+										result: "LGTM",
+										runIndex: 1,
+										completedAt: 1200,
+										state: "completed",
+									},
+									{
+										stepName: "child-b",
+										sessionId: "session-b",
+										result: undefined,
+										runIndex: 1,
+										completedAt: 1500,
+										state: "aborted",
+									},
+								],
+							},
+						],
+					})}
+				/>,
+			);
+
+			expect(
+				screen.getByTestId("trace-item-parallel-review-1"),
+			).toBeInTheDocument();
+			expect(
+				screen.getByTestId("trace-child-item-child-a-2"),
+			).toBeInTheDocument();
+			expect(
+				screen.getByTestId("trace-child-item-child-b-2"),
+			).toBeInTheDocument();
+		});
 	});
 });

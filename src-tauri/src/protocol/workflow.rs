@@ -35,8 +35,6 @@ impl WorkflowStateView {
 pub struct WorkflowStateFieldsView {
     pub execution_id: String,
     pub workflow_name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub chat_session_id: Option<String>,
     pub state: WorkflowExecutionStateView,
     pub current_step_index: usize,
     pub current_step_name: String,
@@ -229,6 +227,9 @@ pub struct StepHistoryEntryView {
     pub run_index: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub child_outputs: Option<Vec<ChildOutputSnapshotView>>,
+    /// step entry の終端状態。`"completed"`（既定）/ `"aborted"`。
+    #[serde(default = "crate::workflow::state::default_step_entry_state")]
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +244,9 @@ pub struct ChildOutputSnapshotView {
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_contract: Option<String>,
+    /// child snapshot の終端状態。`"completed"`（既定）/ `"aborted"`。
+    #[serde(default = "crate::workflow::state::default_step_entry_state")]
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,7 +301,6 @@ mod tests {
         WorkflowStateFieldsView {
             execution_id: "exec-1".to_string(),
             workflow_name: "wf".to_string(),
-            chat_session_id: Some("parent".to_string()),
             state: WorkflowExecutionStateView::Running,
             current_step_index: 0,
             current_step_name: "step".to_string(),

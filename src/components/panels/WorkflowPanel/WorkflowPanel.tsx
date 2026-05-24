@@ -8,21 +8,36 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
+import { useWorkflowRunLog } from "@/hooks/useWorkflowRunLog";
 import type { PermissionMode } from "@/types/session";
-import type {
-	WorkflowEvent,
-	WorkflowRunSummary,
-	WorkflowState,
-} from "@/types/workflow";
+import type { WorkflowRunSummary, WorkflowState } from "@/types/workflow";
 import { WorkflowStatusSummary } from "./WorkflowStatusSummary";
-import { WorkflowTrace } from "./WorkflowTrace";
+import { type WorkflowStepSelection, WorkflowTrace } from "./WorkflowTrace";
+
+export type { WorkflowStepSelection } from "./WorkflowTrace";
 
 interface WorkflowPanelProps {
 	workflowState: WorkflowState | null;
 	worktreePath: string;
 	permissionMode?: PermissionMode;
-	onSessionClick?: (sessionId: string) => void;
+	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
+	/**
+	 * spec issues-1023: Workflow panel 内の tab bar に開かれている step session id 一覧。
+	 * trace 上の Eye/EyeOff トグルの "open" 状態が tab bar と完全に一致するよう、
+	 * 単一値ではなく開かれている全 session id の配列で受ける。
+	 */
+	openStepSessionIds?: string[] | null;
+	/**
+	 * spec issues-1023: selectedStep は session を持たない step を含めた現在選択
+	 * 状態（stepName + runIndex）を表す。trace 上で非 session step も選択可能。
+	 */
+	selectedStep?: { stepName: string; runIndex?: number } | null;
+	/**
+	 * spec issues-1023: 新規 run 起動 UI は本 issue のスコープ外（別 milestone）。
+	 * Workflow 観測 mode（右パネル）からは kicker を表示しない。
+	 */
+	showNewWorkflowButton?: boolean;
 }
 
 export function WorkflowPanel({
@@ -31,6 +46,9 @@ export function WorkflowPanel({
 	permissionMode = "readonly",
 	onSessionClick,
 	onCloseSession,
+	openStepSessionIds,
+	selectedStep,
+	showNewWorkflowButton = true,
 }: WorkflowPanelProps) {
 	const [executionIds, setExecutionIds] = useState<string[]>([]);
 	const [openPastIds, setOpenPastIds] = useState<string[]>([]);
@@ -41,7 +59,9 @@ export function WorkflowPanel({
 		invoke<WorkflowRunSummary[]>("list_workflow_runs", {
 			worktreePath,
 		})
-			.then((runs) => setExecutionIds(runs.map((r) => r.runId)))
+			.then((runs: WorkflowRunSummary[]) =>
+				setExecutionIds(runs.map((r) => r.runId)),
+			)
 			.catch((e) =>
 				console.warn("[WorkflowPanel] list workflow run summaries failed", e),
 			);
@@ -163,10 +183,12 @@ export function WorkflowPanel({
 					))}
 				</TabsList>
 				<div className="flex-1" />
-				<NewWorkflowButton
-					worktreePath={worktreePath}
-					permissionMode={permissionMode}
-				/>
+				{showNewWorkflowButton && (
+					<NewWorkflowButton
+						worktreePath={worktreePath}
+						permissionMode={permissionMode}
+					/>
+				)}
 				<Popover open={historyOpen} onOpenChange={setHistoryOpen}>
 					<PopoverTrigger asChild>
 						<button
@@ -208,6 +230,8 @@ export function WorkflowPanel({
 						worktreePath={worktreePath}
 						onSessionClick={onSessionClick}
 						onCloseSession={onCloseSession}
+						openStepSessionIds={openStepSessionIds}
+						selectedStep={selectedStep}
 					/>
 				</TabsContent>
 			)}
@@ -223,6 +247,8 @@ export function WorkflowPanel({
 						worktreePath={worktreePath}
 						onSessionClick={onSessionClick}
 						onCloseSession={onCloseSession}
+						openStepSessionIds={openStepSessionIds}
+						selectedStep={selectedStep}
 					/>
 				</TabsContent>
 			))}
@@ -368,40 +394,42 @@ function ExecutionView({
 	worktreePath,
 	onSessionClick,
 	onCloseSession,
+	openStepSessionIds,
+	selectedStep,
 }: {
 	executionId: string;
 	worktreePath: string;
-	onSessionClick?: (sessionId: string) => void;
+	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
+	openStepSessionIds?: string[] | null;
+	selectedStep?: { stepName: string; runIndex?: number } | null;
 }) {
 	const [historyState, setHistoryState] = useState<WorkflowState | null>(null);
-	const [events, setEvents] = useState<WorkflowEvent[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
 	const [loadError, setLoadError] = useState<string | null>(null);
+	const { events, error: logError } = useWorkflowRunLog(
+		worktreePath,
+		executionId,
+		executionId,
+	);
 
 	useEffect(() => {
 		let cancelled = false;
 		setHistoryState(null);
-		setEvents([]);
 		setLoadError(null);
 		setIsLoading(true);
 
-		Promise.all([
-			invoke<WorkflowState | null>("get_workflow_run_state", {
-				runId: executionId,
-			}),
-			invoke<WorkflowEvent[] | null>("get_workflow_run_log", {
-				runId: executionId,
-			}),
-		])
-			.then(([state, logEvents]) => {
+		invoke<WorkflowState | null>("get_workflow_run_state", {
+			worktreePath,
+			runId: executionId,
+		})
+			.then((state) => {
 				if (cancelled) return;
-				if (!state || !logEvents) {
+				if (!state) {
 					setLoadError("Failed to load execution history.");
 					return;
 				}
 				setHistoryState(state);
-				setEvents(logEvents);
 			})
 			.catch((e) => {
 				console.warn("[ExecutionView] get workflow execution data failed", e);
@@ -418,7 +446,12 @@ function ExecutionView({
 		return () => {
 			cancelled = true;
 		};
-	}, [executionId]);
+	}, [executionId, worktreePath]);
+
+	// spec issues-1023: event log fetch エラーも history 読み込み失敗として扱う。
+	useEffect(() => {
+		if (logError) setLoadError("Failed to load execution history.");
+	}, [logError]);
 
 	if (loadError) {
 		return (
@@ -465,6 +498,8 @@ function ExecutionView({
 					events={events}
 					onSessionClick={onSessionClick}
 					onCloseSession={onCloseSession}
+					openStepSessionIds={openStepSessionIds}
+					selectedStep={selectedStep}
 				/>
 			</div>
 		</div>
@@ -476,11 +511,15 @@ function WorkflowActivePanel({
 	worktreePath,
 	onSessionClick,
 	onCloseSession,
+	openStepSessionIds,
+	selectedStep,
 }: {
 	workflowState: WorkflowState;
 	worktreePath: string;
-	onSessionClick?: (sessionId: string) => void;
+	onSessionClick?: (selection: WorkflowStepSelection) => void;
 	onCloseSession?: (sessionId: string) => void;
+	openStepSessionIds?: string[] | null;
+	selectedStep?: { stepName: string; runIndex?: number } | null;
 }) {
 	const isRunning =
 		workflowState.state.type === "running" ||
@@ -495,6 +534,16 @@ function WorkflowActivePanel({
 		setPrevAbortIdentityKey(abortIdentityKey);
 		setAbortError(null);
 	}
+
+	// spec issues-1023: active run でも event timeline を表示するため、run_id を
+	// 主語に event log を取得する。updatedAt を refresh trigger にし、event 列の
+	// 追加に追従する。worktree 認可境界を観測 invoke で必ず通すため worktreePath も
+	// 明示する。
+	const { events: activeEvents } = useWorkflowRunLog(
+		worktreePath,
+		workflowState.executionId,
+		workflowState.updatedAt,
+	);
 
 	const handleAbort = useCallback(() => {
 		invoke("abort_workflow", { runId: workflowState.executionId })
@@ -541,8 +590,11 @@ function WorkflowActivePanel({
 				<WorkflowTrace
 					key={`current:${worktreePath}:${workflowState.executionId}`}
 					workflowState={workflowState}
+					events={activeEvents}
 					onSessionClick={onSessionClick}
 					onCloseSession={onCloseSession}
+					openStepSessionIds={openStepSessionIds}
+					selectedStep={selectedStep}
 					approvalAction={{
 						worktreePath,
 						executionId: workflowState.executionId,

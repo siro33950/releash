@@ -805,6 +805,47 @@ describe("WorkflowPanel", () => {
 		expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
 	});
 
+	// spec issues-1023: active run でも event timeline を表示するため、worktreePath +
+	// runId を渡して get_workflow_run_log を呼び、event log を描画する。
+	it("invokes get_workflow_run_log with worktreePath/runId for active run and renders event timeline", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "list_workflow_runs") {
+				return Promise.resolve(makeRunSummaries(["exec-001"], "/repo"));
+			}
+			if (cmd === "get_workflow_run_log") {
+				return Promise.resolve([
+					{
+						event: "node_started",
+						run_id: "exec-001",
+						workflow_name: "test-workflow",
+						node_name: "step-1",
+						execution_count: 1,
+						timestampMs: 1_001_000,
+					},
+				]);
+			}
+			return Promise.resolve(undefined);
+		});
+
+		render(
+			<WorkflowPanel
+				workflowState={makeWorkflowState()}
+				worktreePath="/repo"
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("get_workflow_run_log", {
+				worktreePath: "/repo",
+				runId: "exec-001",
+			});
+		});
+		await waitFor(() => {
+			expect(screen.getByText("Event log")).toBeInTheDocument();
+			expect(screen.getByText("node_started")).toBeInTheDocument();
+		});
+	});
+
 	it("shows an alert instead of Loading when past execution log fails to load", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "list_workflow_runs") {

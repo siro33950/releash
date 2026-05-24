@@ -190,7 +190,6 @@ mod tests {
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
             workflow_step_session: true,
         }
@@ -785,7 +784,6 @@ mod tests {
         WorkflowState {
             execution_id: "exec-1".to_string(),
             workflow_name: "wf".to_string(),
-            chat_session_id: Some("parent".to_string()),
             state: WorkflowExecutionState::Completed,
             current_step_index: 0,
             current_step_name: "done".to_string(),
@@ -800,6 +798,7 @@ mod tests {
                 structured_output: None,
                 run_index: 1,
                 child_outputs: None,
+                state: crate::workflow::state::default_step_entry_state(),
             }],
             step_execution_counts: HashMap::new(),
             workflow_definition: Workflow {

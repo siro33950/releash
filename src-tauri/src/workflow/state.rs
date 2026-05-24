@@ -10,8 +10,6 @@ use crate::workflow::schema::Workflow;
 pub struct WorkflowState {
     pub execution_id: String,
     pub workflow_name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub chat_session_id: Option<String>,
     pub state: WorkflowExecutionState,
     pub current_step_index: usize,
     pub current_step_name: String,
@@ -97,6 +95,16 @@ pub fn compute_step_states(
         .collect()
 }
 
+/// `StepHistoryEntry.state` / `ChildOutputSnapshot.state` の serde default。
+///
+/// 既存 ndjson event log には `state` フィールドが存在しないため、
+/// deserialize 時の欠落値は本関数で `"completed"` にフォールバックする。
+/// 新規 entry は engine / projection 側で `"completed"` または `"aborted"` を
+/// 明示セットする。
+pub fn default_step_entry_state() -> String {
+    "completed".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepHistoryEntry {
@@ -113,6 +121,10 @@ pub struct StepHistoryEntry {
     pub run_index: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub child_outputs: Option<Vec<ChildOutputSnapshot>>,
+    /// step entry の終端状態。`"completed"`（既定）/ `"aborted"`。
+    /// 旧 ndjson 互換のため deserialize 時は default で `"completed"` になる。
+    #[serde(default = "default_step_entry_state")]
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +139,9 @@ pub struct ChildOutputSnapshot {
     pub structured_output: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub output_contract: Option<String>,
+    /// child snapshot の終端状態。`"completed"`（既定）/ `"aborted"`。
+    #[serde(default = "default_step_entry_state")]
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

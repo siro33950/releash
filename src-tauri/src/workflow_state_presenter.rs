@@ -44,7 +44,6 @@ pub fn workflow_state_to_view(state: WorkflowState) -> protocol::WorkflowStateFi
     protocol::WorkflowStateFieldsView {
         execution_id: state.execution_id,
         workflow_name: state.workflow_name,
-        chat_session_id: state.chat_session_id,
         state: workflow_execution_state_to_view(state.state),
         current_step_index: state.current_step_index,
         current_step_name: state.current_step_name,
@@ -233,6 +232,7 @@ fn step_history_entry_to_view(
         child_outputs: entry
             .child_outputs
             .map(|children| children.into_iter().map(child_output_to_view).collect()),
+        state: entry.state,
     }
 }
 
@@ -247,6 +247,7 @@ fn child_output_to_view(
         completed_at: output.completed_at,
         structured_output: output.structured_output,
         output_contract: output.output_contract,
+        state: output.state,
     }
 }
 
@@ -291,7 +292,6 @@ mod tests {
         WorkflowState {
             execution_id: "exec-1".to_string(),
             workflow_name: "wf".to_string(),
-            chat_session_id: Some("parent".to_string()),
             state: WorkflowExecutionState::Running,
             current_step_index: 1,
             current_step_name: "current".to_string(),
@@ -313,7 +313,9 @@ mod tests {
                     completed_at: 2.0,
                     structured_output: None,
                     output_contract: None,
+                    state: crate::workflow::state::default_step_entry_state(),
                 }]),
+                state: crate::workflow::state::default_step_entry_state(),
             }],
             step_execution_counts: HashMap::new(),
             workflow_definition: Workflow {

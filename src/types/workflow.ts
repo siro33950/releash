@@ -13,6 +13,13 @@ export interface TokenUsage {
 	outputTokens: number;
 }
 
+/**
+ * spec issues-1023: step / child の終端状態。
+ * `"completed"` が既定（旧 ndjson 互換）。`"aborted"` は `RunAborted` で
+ * 中断された step / parallel child を表現する。
+ */
+export type StepEntryState = "completed" | "aborted";
+
 export interface ChildOutputSnapshot {
 	stepName: string;
 	sessionId?: string;
@@ -21,6 +28,8 @@ export interface ChildOutputSnapshot {
 	completedAt: number;
 	structuredOutput?: JsonValue;
 	outputContract?: string;
+	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
+	state?: StepEntryState;
 }
 
 export interface StepHistoryEntry {
@@ -32,6 +41,8 @@ export interface StepHistoryEntry {
 	structuredOutput?: JsonValue;
 	runIndex?: number;
 	childOutputs?: ChildOutputSnapshot[];
+	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
+	state?: StepEntryState;
 }
 
 export type WorkflowExecutionState =
@@ -158,7 +169,6 @@ export interface WorkflowStepRuntimeState {
 export interface WorkflowState {
 	executionId: string;
 	workflowName: string;
-	chatSessionId?: string;
 	state: WorkflowExecutionState;
 	currentStepIndex: number;
 	currentStepName: string;
@@ -203,11 +213,15 @@ export interface WorkflowStatePayload {
 	workflowState: WorkflowState;
 }
 
-/// [04] Command / Event Boundary: backend `WorkflowEvent` の TypeScript 表現。
+/// spec issues-1023: backend `WorkflowEventView` の TypeScript 表現。
+///
+/// engine 側 domain `WorkflowEvent.timestamp` は秒単位 f64 だが、frontend 観測経路は
+/// projection 境界で `WorkflowEventView` に変換される（`timestampMs` /
+/// `requestedAtMs` で単位を明示）。`WorkflowEvent` という型名はこの view 型を指す。
 ///
 /// NDJSON tag は snake_case（`run_started` / `node_started` 等）。`run_id` を主語とし、
-/// node 識別子は `node_name` で表す（旧 `execution_id` / `step_name` から完全置換）。
-/// 表示用フォーマット以外のロジックはここに追加しない（rust-first-logic 準拠）。
+/// node 識別子は `node_name` で表す。表示用フォーマット以外のロジックはここに追加しない
+/// （rust-first-logic 準拠）。
 export type WorkflowEvent =
 	| {
 			event: "run_started";
@@ -216,7 +230,7 @@ export type WorkflowEvent =
 			workflow_file_stem: string;
 			worktree_path: string;
 			workflow_definition: Workflow;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "node_started";
@@ -224,7 +238,7 @@ export type WorkflowEvent =
 			workflow_name: string;
 			node_name: string;
 			execution_count: number;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "node_completed";
@@ -236,7 +250,7 @@ export type WorkflowEvent =
 			token_usage?: TokenUsage;
 			structured_output?: JsonValue;
 			run_index?: number;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "node_failed";
@@ -244,14 +258,14 @@ export type WorkflowEvent =
 			workflow_name: string;
 			node_name: string;
 			reason: string;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "approval_requested";
 			run_id: string;
 			workflow_name: string;
 			node_name: string;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "approval_resolved";
@@ -260,27 +274,27 @@ export type WorkflowEvent =
 			node_name: string;
 			decision: "approve" | "reject" | "abort";
 			comment?: string;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "run_completed";
 			run_id: string;
 			workflow_name: string;
 			total_token_usage: TokenUsage;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "run_failed";
 			run_id: string;
 			workflow_name: string;
 			reason: string;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "run_aborted";
 			run_id: string;
 			workflow_name: string;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "cli_mutation_requested";
@@ -288,8 +302,8 @@ export type WorkflowEvent =
 			workflow_name: string;
 			request_id: string;
 			request: CliMutationRequestRecord;
-			requested_at: number;
-			timestamp: number;
+			requestedAtMs: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "output_collected";
@@ -300,7 +314,7 @@ export type WorkflowEvent =
 			reduce_strategy: string;
 			reduce_result?: string;
 			reduce_structured_output?: JsonValue;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "contract_repair_requested";
@@ -309,7 +323,7 @@ export type WorkflowEvent =
 			node_name: string;
 			attempt: number;
 			violation_reason: string;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "parallel_started";
@@ -317,7 +331,7 @@ export type WorkflowEvent =
 			workflow_name: string;
 			parent_node_name: string;
 			child_node_names: string[];
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "parallel_child_started";
@@ -327,7 +341,7 @@ export type WorkflowEvent =
 			child_node_name: string;
 			session_id: string;
 			execution_count: number;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "parallel_child_completed";
@@ -340,7 +354,7 @@ export type WorkflowEvent =
 			token_usage?: TokenUsage;
 			structured_output?: JsonValue;
 			run_index: number;
-			timestamp: number;
+			timestampMs: number;
 	  }
 	| {
 			event: "parallel_completed";
@@ -348,7 +362,7 @@ export type WorkflowEvent =
 			workflow_name: string;
 			parent_node_name: string;
 			aggregate_result: string;
-			timestamp: number;
+			timestampMs: number;
 	  };
 
 export type CliMutationRequestRecord =

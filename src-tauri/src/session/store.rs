@@ -156,21 +156,6 @@ impl SessionStore {
         Ok(())
     }
 
-    pub fn delete_session(&self, app_data_dir: &Path, session_id: &str) -> Result<(), String> {
-        self.ensure_loaded(app_data_dir)?;
-        let _lock = self.file_lock.lock();
-        let file = session_file(app_data_dir, session_id)?;
-        match std::fs::remove_file(&file) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("Failed to delete session file: {e}")),
-        }
-        let mut cache = self.cache.write();
-        cache.remove(session_id);
-        self.invalid_sessions.write().remove(session_id);
-        Ok(())
-    }
-
     fn persist_and_update_cache(
         &self,
         app_data_dir: &Path,
@@ -361,7 +346,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: None,
             workflow_step_session: false,
         }

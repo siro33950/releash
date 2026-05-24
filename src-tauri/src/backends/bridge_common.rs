@@ -2813,6 +2813,13 @@ fn can_change_session_backend(session: &ChatSession) -> bool {
     session.messages.is_empty() && session.agent_session_id.is_none()
 }
 
+/// spec issues-1023: 初期 active 候補は workflow step として起動された session を
+/// 除外し、free chat（`workflow_step_session == false`）の先頭を採用する。free chat が
+/// 1 件もない場合は active 候補無し（`None`）で、UI は空状態を描く。
+fn pick_initial_active_session_candidate(sessions: &[SessionSummary]) -> Option<&SessionSummary> {
+    sessions.iter().find(|s| !s.workflow_step_session)
+}
+
 fn should_start_agent_process_for_summary(session: &SessionSummary) -> bool {
     !session.workflow_step_session
         && (session.message_count > 0 || session.agent_session_id.is_some())
@@ -4182,15 +4189,22 @@ pub async fn init_agent_sessions(
             }
         }
 
-        // Get first session as active
-        let active = get_session_internal(
-            session_store.inner(),
-            handles.inner(),
-            Some(registry.inner()),
-            &app,
-            &sessions[0].id,
-        )
-        .await?;
+        // spec issues-1023: workflow step として起動された chat session は free chat
+        // tab bar 上に同格に並ばないため、初期 active session 候補からも除外する。
+        // 候補が無い場合は active_session を None で返し、UI は空状態を描く。
+        let active_candidate = pick_initial_active_session_candidate(&sessions);
+        let active = if let Some(candidate) = active_candidate {
+            get_session_internal(
+                session_store.inner(),
+                handles.inner(),
+                Some(registry.inner()),
+                &app,
+                &candidate.id,
+            )
+            .await?
+        } else {
+            None
+        };
 
         Ok(InitSessionsResponse {
             sessions,
@@ -4602,7 +4616,6 @@ mod tests {
             agent_session_id: Some("sdk-resume-id".to_string()),
             permission_mode: "edit".to_string(),
             selected_model: Some("sonnet".to_string()),
-            workflow_state: None,
             backend_id: Some("mock".to_string()),
             workflow_step_session: true,
         }
@@ -6209,48 +6222,14 @@ mod tests {
         session_store
             .save_session(data_dir.path(), &step_session)
             .unwrap();
-        let mut parent_session = create_session_internal(
+        let parent_session = create_session_internal(
             &session_store,
             data_dir.path(),
             &worktree_path,
             Some("mock".to_string()),
         )
         .unwrap();
-        parent_session.workflow_state = Some(crate::workflow::state::WorkflowState {
-            execution_id: "exec-1".to_string(),
-            workflow_name: "wf".to_string(),
-            chat_session_id: Some(parent_session.id.clone()),
-            state: WorkflowExecutionState::Completed,
-            current_step_index: 0,
-            current_step_name: "done".to_string(),
-            current_session_id: None,
-            total_steps: 1,
-            step_history: vec![crate::workflow::state::StepHistoryEntry {
-                step_name: "done".to_string(),
-                completed_at: 1.0,
-                result: Some("ok".to_string()),
-                session_id: Some(step_session.id.clone()),
-                token_usage: None,
-                structured_output: None,
-                run_index: 1,
-                child_outputs: None,
-            }],
-            step_execution_counts: HashMap::new(),
-            workflow_definition: crate::workflow::schema::Workflow {
-                name: "wf".to_string(),
-                description: String::new(),
-                builtin: false,
-                nodes: vec![],
-            },
-            total_token_usage: crate::workflow::state::TokenUsage::default(),
-            step_states: HashMap::new(),
-            step_outputs: HashMap::new(),
-            active_parallel_steps: vec![],
-            workflow_variables: HashMap::new(),
-            approval_operations: None,
-            started_at: 1.0,
-            updated_at: 1.0,
-        });
+
         session_store
             .save_session(data_dir.path(), &parent_session)
             .unwrap();
@@ -6290,7 +6269,6 @@ mod tests {
         crate::workflow::state::WorkflowState {
             execution_id: "exec-runtime".to_string(),
             workflow_name: "wf".to_string(),
-            chat_session_id: Some("parent".to_string()),
             state: WorkflowExecutionState::Running,
             current_step_index: 0,
             current_step_name: "step".to_string(),
@@ -6928,7 +6906,6 @@ mod tests {
             .insert_test_approval_execution(
                 &worktree_path,
                 &session.id,
-                &session.id,
                 WorkflowExecutionState::WaitingApproval,
             )
             .await;
@@ -7131,6 +7108,50 @@ mod tests {
         session.message_count = 0;
         session.agent_session_id = Some("sdk-session".to_string());
         assert!(should_start_agent_process_for_summary(&session));
+    }
+
+    /// spec issues-1023: workflow step として起動された chat session は free chat
+    /// tab bar 上に同格に並ばないため、`init_agent_sessions` の active 候補からも
+    /// 除外される。本テストは候補選択 helper を 3 シナリオで検証する:
+    /// - 先頭が workflow step でも active にならない（free chat があればそれが active）
+    /// - 全てが workflow step の場合は active は None
+    /// - 通常 chat のみのときは先頭が active になる
+    #[test]
+    fn pick_initial_active_session_candidate_excludes_workflow_step_sessions() {
+        fn make(id: &str, workflow_step: bool) -> SessionSummary {
+            SessionSummary {
+                id: id.to_string(),
+                worktree_path: "/repo".to_string(),
+                state: crate::session::SessionState::Idle,
+                created_at: 1.0,
+                updated_at: 1.0,
+                first_message: String::new(),
+                message_count: 0,
+                agent_session_id: None,
+                permission_mode: "edit".to_string(),
+                backend_id: Some("claude".to_string()),
+                workflow_step_session: workflow_step,
+            }
+        }
+
+        // 先頭が workflow step だが後ろに free chat がある: free chat が active になる
+        let sessions = vec![make("step-1", true), make("chat-1", false)];
+        let picked = pick_initial_active_session_candidate(&sessions);
+        assert_eq!(picked.map(|s| s.id.as_str()), Some("chat-1"));
+
+        // 全て workflow step: active 候補 None
+        let only_steps = vec![make("step-1", true), make("step-2", true)];
+        assert!(pick_initial_active_session_candidate(&only_steps).is_none());
+
+        // 通常 chat のみ: 先頭が active
+        let only_chats = vec![make("chat-1", false), make("chat-2", false)];
+        assert_eq!(
+            pick_initial_active_session_candidate(&only_chats).map(|s| s.id.as_str()),
+            Some("chat-1")
+        );
+
+        // 空: None
+        assert!(pick_initial_active_session_candidate(&[]).is_none());
     }
 
     #[test]
@@ -9019,7 +9040,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: permission.to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: Some("mock".to_string()),
             workflow_step_session: false,
         }
@@ -10544,7 +10564,6 @@ mod tests {
             agent_session_id,
             permission_mode: "acceptEdits".to_string(),
             selected_model,
-            workflow_state: None,
             backend_id: Some(backend_id.to_string()),
             workflow_step_session: false,
         }

@@ -101,8 +101,6 @@ pub struct WorkflowRun {
     pub status: RunStatus,
     pub worktree_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chat_session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_node_name: Option<String>,
     pub trigger_source: TriggerSource,
     pub started_at: f64,
@@ -673,20 +671,6 @@ impl RunStore {
         Ok(())
     }
 
-    /// parent ChatSession 作成後に、予約済み active run へ session id を反映する。
-    pub async fn attach_chat_session(
-        &self,
-        run_id: &str,
-        chat_session_id: String,
-        updated_at: f64,
-    ) -> Result<(), RunStoreError> {
-        self.update_active(run_id, |run| {
-            run.chat_session_id = Some(chat_session_id);
-            run.updated_at = updated_at;
-        })
-        .await
-    }
-
     /// engine の active snapshot から Run Store の active projection を同期する。
     pub async fn sync_active_projection(
         &self,
@@ -974,6 +958,51 @@ impl RunStore {
     pub async fn active_len(&self) -> usize {
         self.inner.lock().await.active.len()
     }
+
+    /// 起動時 recovery 用: disk 上 `workflow_runs/` 配下の non-terminal な metadata を列挙する。
+    /// 前回起動中に terminal event が記録されないまま終了した run を引き当てるための一次 source。
+    /// in-memory active map には依存しない（起動直後に呼ばれる前提）。
+    pub async fn list_non_terminal_metadata(&self) -> Vec<WorkflowRun> {
+        let Some(dir) = self.data_dir().await else {
+            return Vec::new();
+        };
+        let runs = tokio::task::spawn_blocking(move || iter_valid_run_metadata(&dir))
+            .await
+            .unwrap_or_else(|e| {
+                log::warn!("RunStore: failed to join non-terminal metadata listing task: {e}");
+                Vec::new()
+            });
+        runs.into_iter()
+            .filter(|run| !run.status.is_terminal())
+            .collect()
+    }
+
+    /// 起動時 recovery 用: 指定 run の metadata を Aborted に書き換えて永続化する。
+    /// `complete_run` と異なり in-memory active map には触れない（前回起動時の orphan は
+    /// 当該プロセスの active map に存在しないため）。idempotent: 既に terminal な metadata に
+    /// 対しても呼べるが、呼び出し側で `list_non_terminal_metadata` の結果のみを渡す想定。
+    pub async fn force_complete_orphan_to_aborted(
+        &self,
+        mut run: WorkflowRun,
+        completed_at: f64,
+        error_reason: Option<String>,
+    ) -> Result<(), RunStoreError> {
+        let run_id_for_err = run.run_id.clone();
+        let Some(store) = self.metadata_store().await? else {
+            return Ok(());
+        };
+        run.status = RunStatus::Aborted;
+        run.completed_at = Some(completed_at);
+        run.updated_at = completed_at;
+        run.error_reason = error_reason;
+        store
+            .persist(run)
+            .await
+            .map_err(|reason| RunStoreError::PersistFailed {
+                run_id: run_id_for_err,
+                reason,
+            })
+    }
 }
 
 async fn persist_metadata(dir: PathBuf, run: WorkflowRun) -> Result<(), String> {
@@ -1087,7 +1116,6 @@ mod tests {
             task: Some("do thing".to_string()),
             status,
             worktree_path: worktree.to_string(),
-            chat_session_id: Some("sess-1".to_string()),
             current_node_name: Some("node-1".to_string()),
             trigger_source: TriggerSource::DesktopUi,
             started_at,
@@ -2205,5 +2233,83 @@ mod tests {
             RunStatus::from(TerminalRunStatus::Aborted),
             RunStatus::Aborted
         );
+    }
+
+    /// 起動時 recovery: 前回プロセスが書き残した non-terminal metadata のみを列挙する。
+    /// terminal な metadata は混じらない。
+    #[tokio::test]
+    async fn list_non_terminal_metadata_returns_only_non_terminal_runs_from_disk() {
+        let tmp = TempDir::new().unwrap();
+        // 前回プロセスが残した状態を、独立した RunStore を経由して disk に書く。
+        {
+            let prev = RunStore::new_in_memory_for_tests();
+            prev.set_data_dir(tmp.path().to_path_buf()).await;
+            prev.register_active(make_run(&test_uuid(1), "/wt/a", RunStatus::Running, 100.0))
+                .await
+                .unwrap();
+            prev.register_active(make_run(
+                &test_uuid(2),
+                "/wt/b",
+                RunStatus::WaitingApproval,
+                101.0,
+            ))
+            .await
+            .unwrap();
+            prev.register_active(make_run(&test_uuid(3), "/wt/c", RunStatus::Running, 102.0))
+                .await
+                .unwrap();
+            prev.complete_run(&test_uuid(3), TerminalRunStatus::Completed, 103.0, None)
+                .await
+                .unwrap();
+        }
+
+        // 起動直後を模擬: 別 RunStore で同じ data_dir を見る（in-memory active は空）。
+        let store = RunStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let mut orphans = store.list_non_terminal_metadata().await;
+        orphans.sort_by(|a, b| a.run_id.cmp(&b.run_id));
+        let ids: Vec<&str> = orphans.iter().map(|r| r.run_id.as_str()).collect();
+        assert_eq!(ids, vec![test_uuid(1).as_str(), test_uuid(2).as_str()]);
+        assert!(orphans.iter().all(|r| !r.status.is_terminal()));
+    }
+
+    /// 起動時 recovery: `force_complete_orphan_to_aborted` が disk metadata を Aborted に
+    /// 書き換え、completed_at と error_reason を反映する。
+    #[tokio::test]
+    async fn force_complete_orphan_to_aborted_persists_aborted_status() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(7);
+        {
+            let prev = RunStore::new_in_memory_for_tests();
+            prev.set_data_dir(tmp.path().to_path_buf()).await;
+            prev.register_active(make_run(&run_id, "/wt/x", RunStatus::Running, 100.0))
+                .await
+                .unwrap();
+        }
+
+        let store = RunStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let orphan = store
+            .list_non_terminal_metadata()
+            .await
+            .into_iter()
+            .next()
+            .expect("orphan metadata must be present");
+        store
+            .force_complete_orphan_to_aborted(orphan, 200.0, None)
+            .await
+            .unwrap();
+
+        let persisted: WorkflowRun =
+            serde_json::from_str(&fs::read_to_string(run_file_path(tmp.path(), &run_id)).unwrap())
+                .unwrap();
+        assert_eq!(persisted.status, RunStatus::Aborted);
+        assert_eq!(persisted.completed_at, Some(200.0));
+        assert_eq!(persisted.updated_at, 200.0);
+        assert!(persisted.error_reason.is_none());
+
+        // recovery 完了後は list_non_terminal_metadata で再列挙されない（idempotent）。
+        let remaining = store.list_non_terminal_metadata().await;
+        assert!(remaining.is_empty(), "aborted run must not be re-listed");
     }
 }

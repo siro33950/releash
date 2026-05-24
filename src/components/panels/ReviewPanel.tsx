@@ -570,8 +570,9 @@ export function ReviewPanel({
 					<Panel
 						id="diff-files"
 						panelRef={diffFilesPanelRef}
-						defaultSize="30%"
-						minSize="15%"
+						defaultSize={250}
+						minSize={250}
+						groupResizeBehavior="preserve-pixel-size"
 						collapsible
 						onResize={(size) => setFileTreeCollapsed(size.asPercentage <= 0)}
 					>

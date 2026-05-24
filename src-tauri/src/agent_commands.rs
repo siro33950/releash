@@ -92,7 +92,6 @@ mod tests {
             agent_session_id: Some("sdk-session".to_string()),
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
             workflow_step_session,
         }
@@ -166,7 +165,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: Some(crate::agent_sdk::CLAUDE_BACKEND_ID.to_string()),
             workflow_step_session: false,
         };

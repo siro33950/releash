@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{Manager, State};
 
-pub use crate::workflow::state::WorkflowState;
 pub use open_tabs::OpenTabRegistry;
 pub use store::SessionStore;
 
@@ -183,8 +182,6 @@ pub struct ChatSession {
     pub permission_mode: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub selected_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub workflow_state: Option<WorkflowState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -449,7 +446,6 @@ fn build_new_session(
         agent_session_id: None,
         permission_mode: permission_mode.as_str().to_string(),
         selected_model,
-        workflow_state: None,
         backend_id,
         workflow_step_session,
     }
@@ -664,7 +660,9 @@ pub fn update_session_agent_info(
 mod tests {
     use super::*;
     use crate::workflow::schema::{NodeDefinition, NodeType, Workflow};
-    use crate::workflow::state::{StepHistoryEntry, TokenUsage, WorkflowExecutionState};
+    use crate::workflow::state::{
+        StepHistoryEntry, TokenUsage, WorkflowExecutionState, WorkflowState,
+    };
 
     #[test]
     fn chat_session_missing_permission_mode_rejected_on_deserialize() {
@@ -699,7 +697,6 @@ mod tests {
                 agent_session_id: None,
                 permission_mode: legacy.to_string(),
                 selected_model: None,
-                workflow_state: None,
                 backend_id: None,
                 workflow_step_session: false,
             };
@@ -732,7 +729,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: None,
             workflow_step_session: false,
         };
@@ -765,7 +761,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: None,
             workflow_step_session: false,
         };
@@ -797,7 +792,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: None,
             workflow_step_session: false,
         };
@@ -820,7 +814,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: None,
             workflow_step_session: false,
         };
@@ -846,7 +839,6 @@ mod tests {
             agent_session_id: Some("agent-session".to_string()),
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: None,
             workflow_step_session: true,
         };
@@ -984,7 +976,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: None,
             workflow_step_session: false,
         };
@@ -1015,7 +1006,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: Some("claude-opus-4-6".to_string()),
-            workflow_state: None,
             backend_id: None,
             workflow_step_session: false,
         };
@@ -1461,7 +1451,6 @@ mod tests {
         let state = WorkflowState {
             execution_id: "exec-1".to_string(),
             workflow_name: "review-cycle".to_string(),
-            chat_session_id: Some("chat-1".to_string()),
             state: WorkflowExecutionState::Running,
             current_step_index: 2,
             current_step_name: "review".to_string(),
@@ -1478,6 +1467,7 @@ mod tests {
 
                     run_index: 0,
                     child_outputs: None,
+                    state: crate::workflow::state::default_step_entry_state(),
                 },
                 StepHistoryEntry {
                     step_name: "implement".to_string(),
@@ -1492,6 +1482,7 @@ mod tests {
 
                     run_index: 0,
                     child_outputs: None,
+                    state: crate::workflow::state::default_step_entry_state(),
                 },
             ],
             step_execution_counts: std::collections::HashMap::new(),
@@ -1552,60 +1543,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn chat_session_with_workflow_state_roundtrip() {
-        let session = ChatSession {
-            id: "s1".to_string(),
-            worktree_path: "/repo".to_string(),
-            messages: vec![],
-            state: SessionState::Active,
-            created_at: 1000.0,
-            updated_at: 1001.0,
-            agent_session_id: None,
-            permission_mode: "edit".to_string(),
-            selected_model: None,
-            workflow_state: Some(WorkflowState {
-                execution_id: "exec-1".to_string(),
-                workflow_name: "test-wf".to_string(),
-                chat_session_id: Some("s1".to_string()),
-                state: WorkflowExecutionState::WaitingApproval,
-                current_step_index: 1,
-                current_step_name: "review".to_string(),
-                current_session_id: None,
-                total_steps: 3,
-                step_history: vec![StepHistoryEntry {
-                    step_name: "implement".to_string(),
-                    completed_at: 1000.5,
-                    result: None,
-                    session_id: None,
-                    token_usage: None,
-                    structured_output: None,
-
-                    run_index: 0,
-                    child_outputs: None,
-                }],
-                step_execution_counts: std::collections::HashMap::new(),
-                step_outputs: std::collections::HashMap::new(),
-                workflow_definition: make_test_workflow_for_session(),
-                total_token_usage: TokenUsage::default(),
-                step_states: std::collections::HashMap::new(),
-                active_parallel_steps: vec![],
-                workflow_variables: std::collections::HashMap::new(),
-                approval_operations: None,
-                started_at: 999.0,
-                updated_at: 1000.5,
-            }),
-            backend_id: None,
-            workflow_step_session: false,
-        };
-        let json = serde_json::to_string(&session).unwrap();
-        assert!(json.contains("workflowState"));
-        let back: ChatSession = serde_json::from_str(&json).unwrap();
-        let ws = back.workflow_state.unwrap();
-        assert_eq!(ws.execution_id, "exec-1");
-        assert_eq!(ws.state, WorkflowExecutionState::WaitingApproval);
-        assert_eq!(ws.step_history.len(), 1);
-    }
+    // 撤去済み: `chat_session_with_workflow_state_roundtrip` は ChatSession.workflow_state
+    // フィールド廃止により役目を終えた。WorkflowState の serde roundtrip は
+    // workflow/state.rs 側の単体テストで担保される。在庫 JSON の workflow_state は
+    // serde の unknown_field 既定挙動で silently 読み捨てられる（破棄前提）。
 
     /// [02] schema 境界: 旧表現（`workflowDefinition.steps`）を含む WorkflowState JSON は
     /// 新 `Workflow` schema（`nodes` 必須 + `deny_unknown_fields`）として deserialize に失敗する。
@@ -1639,9 +1580,11 @@ mod tests {
         );
     }
 
-    /// 旧表現を埋め込んだ `ChatSession.workflowState` JSON も同様に拒否される。
+    /// parent ChatSession 廃止後の在庫 JSON 互換性: 旧 `ChatSession.workflowState` フィールドを
+    /// 含む JSON は serde の unknown_fields 既定挙動で silently 読み捨てられ、deserialize は
+    /// 成功する（破棄前提でロスレスではないが、起動の阻害にならない）。
     #[test]
-    fn legacy_chat_session_with_old_workflow_state_fails_to_deserialize() {
+    fn legacy_chat_session_with_old_workflow_state_is_silently_ignored() {
         let json = r#"{
             "id": "s1",
             "worktreePath": "/repo",
@@ -1653,29 +1596,13 @@ mod tests {
             "workflowStepSession": false,
             "workflowState": {
                 "executionId": "exec-1",
-                "workflowName": "legacy",
-                "state": { "type": "running" },
-                "currentStepIndex": 0,
-                "currentStepName": "x",
-                "totalSteps": 1,
-                "stepHistory": [],
-                "stepExecutionCounts": {},
-                "workflowDefinition": {
-                    "name": "legacy",
-                    "description": "",
-                    "builtin": false,
-                    "steps": [{"name":"x","mode":"auto","instruction":"x"}]
-                },
-                "totalTokenUsage": { "inputTokens": 0, "outputTokens": 0 },
-                "stepStates": {},
-                "startedAt": 1.0,
-                "updatedAt": 1.0
+                "workflowName": "legacy"
             }
         }"#;
         let result: Result<ChatSession, _> = serde_json::from_str(json);
         assert!(
-            result.is_err(),
-            "旧 workflowDefinition.steps を含む ChatSession.workflowState は新 schema で deserialize 失敗する"
+            result.is_ok(),
+            "ChatSession.workflowState は撤去フィールド扱いで silently 読み捨てられる"
         );
     }
 
@@ -1889,7 +1816,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
         };
@@ -1920,7 +1846,6 @@ mod tests {
             agent_session_id: None,
             permission_mode: "edit".to_string(),
             selected_model: None,
-            workflow_state: None,
             backend_id: Some("claude".to_string()),
             workflow_step_session: false,
         };
@@ -1992,7 +1917,6 @@ mod tests {
                 agent_session_id: None,
                 permission_mode: "edit".to_string(),
                 selected_model: None,
-                workflow_state: None,
                 backend_id: backend_id.map(|s| s.to_string()),
                 workflow_step_session: false,
             }

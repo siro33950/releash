@@ -10,17 +10,23 @@ import {
 import { BranchSelector } from "@/components/layout/BranchSelector";
 
 import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
-import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
+import {
+	type CenterMode,
+	type TogglePanel,
+	ViewToolbar,
+} from "@/components/layout/ViewToolbar";
 import { AgentChatPanel } from "@/components/panels/AgentChatPanel";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
 import { SettingsModal } from "@/components/panels/SettingsModal";
+import { WorkflowView } from "@/components/panels/WorkflowView";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { AgentChatProvider } from "@/contexts/AgentChatContext";
 import { useBaseBranch } from "@/hooks/useBaseBranch";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
 import { useWorkspacePersistence } from "@/hooks/useWorkspacePersistence";
@@ -53,6 +59,8 @@ function WorktreeContent({
 	leftPanels,
 	branchSelector,
 	togglePanels,
+	centerMode,
+	onCenterModeChange,
 	initialWorkspaceState,
 	internalStateMapRef,
 	baseBranch,
@@ -65,6 +73,8 @@ function WorktreeContent({
 	leftPanels?: TogglePanel[];
 	branchSelector: React.ReactNode;
 	togglePanels: TogglePanel[];
+	centerMode: CenterMode;
+	onCenterModeChange: (mode: CenterMode) => void;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef: React.MutableRefObject<
 		Map<string, InternalWorktreeState>
@@ -141,17 +151,26 @@ function WorktreeContent({
 	});
 
 	return (
-		<>
+		<AgentChatProvider worktreePath={rootPath}>
 			{/* Center */}
-			<Panel id="center" minSize="30%">
+			<Panel id="center" defaultSize="50%" minSize="30%">
 				<div className="h-full relative overflow-hidden flex flex-col">
-					<ViewToolbar leftPanels={leftPanels} rightSlot={branchSelector} />
+					<ViewToolbar
+						leftPanels={leftPanels}
+						rightSlot={branchSelector}
+						mode={centerMode}
+						onModeChange={onCenterModeChange}
+					/>
 					<div className="flex-1 overflow-hidden">
-						<AgentChatPanel
-							worktreePath={rootPath}
-							registerDropZone={s.registerDropZone}
-							sendMessageRef={sendAgentMessageRef}
-						/>
+						{centerMode === "workflow" ? (
+							<WorkflowView worktreePath={rootPath} />
+						) : (
+							<AgentChatPanel
+								worktreePath={rootPath}
+								registerDropZone={s.registerDropZone}
+								sendMessageRef={sendAgentMessageRef}
+							/>
+						)}
 					</div>
 				</div>
 			</Panel>
@@ -160,7 +179,7 @@ function WorktreeContent({
 			<Panel
 				id="right"
 				panelRef={rightPanelRef}
-				defaultSize={280}
+				defaultSize="50%"
 				minSize={280}
 				collapsible
 				collapsedSize="0%"
@@ -200,8 +219,9 @@ function WorktreeContent({
 							<Panel
 								id="right-bottom"
 								panelRef={rightBottomRef}
-								defaultSize="40%"
+								defaultSize={300}
 								minSize="20%"
+								groupResizeBehavior="preserve-pixel-size"
 								collapsible
 								collapsedSize={31}
 								onResize={(size) =>
@@ -256,7 +276,7 @@ function WorktreeContent({
 				onSave={onSettingsSave}
 				repoPaths={[rootPath]}
 			/>
-		</>
+		</AgentChatProvider>
 	);
 }
 
@@ -271,6 +291,10 @@ export function MainLayout({
 
 	const [leftNavVisible, setLeftNavVisible] = useState(true);
 	const [rightVisible, setRightVisible] = useState(true);
+	// spec issues-1023: 中央エリアの表示モード。Agent / Workflow を並列に切り替える。
+	// 初期値は Agent。worktree 切替は本 layout 側 key で別ツリーになるため、
+	// 本 state は MainLayout のライフサイクルに紐づける（永続化はしない）。
+	const [centerMode, setCenterMode] = useState<CenterMode>("agent");
 
 	// --- Workspace state persistence ---
 	const { internalStateMapRef, getInitialState, stateReady } =
@@ -380,6 +404,7 @@ export function MainLayout({
 					panelRef={leftNavRef}
 					defaultSize={230}
 					minSize={230}
+					groupResizeBehavior="preserve-pixel-size"
 					collapsible
 					collapsedSize="0%"
 					onResize={handleLeftNavResize}
@@ -428,6 +453,8 @@ export function MainLayout({
 								leftPanels={leftNavVisible ? undefined : [leftToggle]}
 								branchSelector={rightSlotContent}
 								togglePanels={togglePanels}
+								centerMode={centerMode}
+								onCenterModeChange={setCenterMode}
 								initialWorkspaceState={getInitialState(selectedRootPath)}
 								internalStateMapRef={internalStateMapRef}
 								baseBranch={baseBranch}

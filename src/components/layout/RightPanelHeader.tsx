@@ -11,12 +11,17 @@ interface RightPanelHeaderProps {
 	panels: TogglePanel[];
 }
 
+/**
+ * spec issues-1023: 右パネル上部のヘッダー。右パネルは Review 専用。
+ * Workflow 表示は中央エリアの ViewToolbar 上で切り替える。
+ */
 export function RightPanelHeader({ panels }: RightPanelHeaderProps) {
 	return (
 		<div
 			data-tauri-drag-region
-			className="flex items-center justify-end h-[34px] px-[12px] border-b border-border bg-sidebar shrink-0 gap-0.5"
+			className="flex items-center h-[34px] px-[12px] border-b border-border bg-sidebar shrink-0 gap-0.5"
 		>
+			<div className="flex-1" />
 			{panels.map((panel) => (
 				<Tooltip key={panel.id}>
 					<TooltipTrigger asChild>

@@ -4,6 +4,7 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -35,8 +36,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const useAgentChatMock = vi.fn();
-vi.mock("@/hooks/useAgentChat", () => ({
-	useAgentChat: (...args: unknown[]) => useAgentChatMock(...args),
+// spec issues-1023: AgentChatPanel は useAgentChatContext を経由するため
+// Context module を直接 mock する。AgentChatProvider 自体は通さない。
+vi.mock("@/contexts/AgentChatContext", () => ({
+	useAgentChatContext: () => useAgentChatMock(),
+	AgentChatProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
 const useWorkflowStateMock = vi.fn().mockReturnValue({ workflowState: null });
@@ -66,12 +70,33 @@ const mockRegisterDropZone = vi.fn(
 function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 	const sessions = (overrides.sessions ?? []) as Array<{ id: string }>;
 	const orderedSessions = overrides.orderedSessions ?? sessions;
+	const activeSession = (overrides.activeSession ?? null) as {
+		id: string;
+	} | null;
+	const sessionsById = activeSession
+		? { [activeSession.id]: activeSession }
+		: {};
+	// 旧 API の `isStreaming` フラグを BoundSessionChat 内部の派生
+	// `getSessionTurnPhase` に橋渡しする。テストが `isStreaming: true` を渡したら、
+	// active session の turnPhase を "streaming" として返す mock を立てる。
+	const isStreaming = overrides.isStreaming === true;
+	const explicitTurnPhase = overrides.getSessionTurnPhase as
+		| ((id: string) => string)
+		| undefined;
+	const getSessionTurnPhase = explicitTurnPhase
+		? vi.fn(explicitTurnPhase)
+		: vi.fn((id: string) =>
+				activeSession && id === activeSession.id && isStreaming
+					? "streaming"
+					: "idle",
+			);
 	useAgentChatMock.mockReturnValue({
 		sessions,
 		orderedSessions,
 		closedSessions: [],
-		activeSession: null,
-		isStreaming: false,
+		activeSession,
+		isStreaming,
+		activityStatus: null,
 		error: null,
 		pendingPermission: null,
 		sessionAgentStates: new Map(),
@@ -93,6 +118,14 @@ function mockUseAgentChat(overrides: Record<string, unknown> = {}) {
 		backends: [],
 		selectedBackendId: null,
 		setBackend: vi.fn(),
+		loadSession: vi.fn().mockResolvedValue(null),
+		getSessionById: vi.fn(
+			(id: string | null | undefined) =>
+				(id != null && sessionsById[id]) || null,
+		),
+		registerViewableSession: vi.fn().mockReturnValue(() => {}),
+		getSessionTurnPhase,
+		getSessionSelectedModel: vi.fn().mockReturnValue(null),
 		...overrides,
 	});
 }
@@ -123,7 +156,17 @@ describe("AgentChatPanel", () => {
 	});
 
 	it("renders message input", () => {
-		mockUseAgentChat();
+		mockUseAgentChat({
+			activeSession: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+				permissionMode: "edit",
+			},
+		});
 		render(
 			<AgentChatPanel
 				worktreePath="/repo"
@@ -389,7 +432,9 @@ describe("AgentChatPanel session tabs", () => {
 				registerDropZone={mockRegisterDropZone}
 			/>,
 		);
-		fireEvent.click(screen.getByText("Fix bug"));
+		// Radix Tabs.Trigger は onMouseDown で value を確定する仕様。
+		// fireEvent.click では Radix の Trigger ハンドラが発火しないため mouseDown を使う。
+		fireEvent.mouseDown(screen.getByText("Fix bug"));
 		expect(selectSession).toHaveBeenCalledWith("s2");
 	});
 });
@@ -975,11 +1020,22 @@ describe("AgentChatPanel shimmer placeholder", () => {
 });
 
 describe("AgentChatPanel Shift+Tab mode cycle", () => {
+	const emptyActiveSession = {
+		id: "s1",
+		worktreePath: "/repo",
+		messages: [],
+		state: "idle" as const,
+		createdAt: 1000,
+		updatedAt: 1000,
+		permissionMode: "edit" as const,
+	};
+
 	it("cycles between the three abstract modes on Shift+Tab in textarea", () => {
 		const setPermissionMode = vi.fn();
 		mockUseAgentChat({
 			permissionMode: "edit",
 			setPermissionMode,
+			activeSession: emptyActiveSession,
 		});
 		render(
 			<AgentChatPanel
@@ -992,7 +1048,7 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
 		// readonly → edit → full → readonly (MODES order: readonly[0], edit[1], full[2])
 		// edit (index 1) → full (index 2)
-		expect(setPermissionMode).toHaveBeenCalledWith("full");
+		expect(setPermissionMode).toHaveBeenCalledWith("s1", "full");
 	});
 
 	it("uses the same cycle regardless of the selected backend", () => {
@@ -1001,6 +1057,7 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 			permissionMode: "readonly",
 			selectedBackendId: "codex",
 			setPermissionMode,
+			activeSession: emptyActiveSession,
 		});
 		render(
 			<AgentChatPanel
@@ -1012,7 +1069,7 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
 		// readonly (index 0) → edit (index 1)
-		expect(setPermissionMode).toHaveBeenCalledWith("edit");
+		expect(setPermissionMode).toHaveBeenCalledWith("s1", "edit");
 	});
 
 	it("wraps around from full back to readonly on Shift+Tab", () => {
@@ -1020,6 +1077,7 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 		mockUseAgentChat({
 			permissionMode: "full",
 			setPermissionMode,
+			activeSession: emptyActiveSession,
 		});
 		render(
 			<AgentChatPanel
@@ -1031,7 +1089,7 @@ describe("AgentChatPanel Shift+Tab mode cycle", () => {
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true });
 		// full (index 2) → readonly (index 0) via (currentIndex + 1) % MODES.length
-		expect(setPermissionMode).toHaveBeenCalledWith("readonly");
+		expect(setPermissionMode).toHaveBeenCalledWith("s1", "readonly");
 	});
 });
 
@@ -1393,8 +1451,18 @@ describe("AgentChatPanel session history", () => {
 });
 
 describe("AgentChatPanel image drag and drop", () => {
+	const emptyActiveSession = {
+		id: "s1",
+		worktreePath: "/repo",
+		messages: [],
+		state: "idle" as const,
+		createdAt: 1000,
+		updatedAt: 1000,
+		permissionMode: "edit" as const,
+	};
+
 	it("shows drop overlay on dragover with files and hides on dragleave", () => {
-		mockUseAgentChat();
+		mockUseAgentChat({ activeSession: emptyActiveSession });
 		render(
 			<AgentChatPanel
 				worktreePath="/repo"
@@ -1424,7 +1492,7 @@ describe("AgentChatPanel image drag and drop", () => {
 	});
 
 	it("calls prepare_image_attachments_from_paths on native file drop", async () => {
-		mockUseAgentChat();
+		mockUseAgentChat({ activeSession: emptyActiveSession });
 		mockInvoke.mockImplementation(async (cmd: string) => {
 			if (cmd === "prepare_image_attachments_from_paths") {
 				return [{ data: "aGVsbG8=", mediaType: "image/png" }];
@@ -1460,7 +1528,7 @@ describe("AgentChatPanel image drag and drop", () => {
 	});
 
 	it("does not show preview when dropped files are not images", async () => {
-		mockUseAgentChat();
+		mockUseAgentChat({ activeSession: emptyActiveSession });
 		mockInvoke.mockImplementation(async (cmd: string) => {
 			if (cmd === "prepare_image_attachments_from_paths") {
 				return [];
@@ -1493,92 +1561,48 @@ describe("AgentChatPanel image drag and drop", () => {
 });
 
 describe("AgentChatPanel workflow panel visibility", () => {
-	it("refreshes session tabs when workflow exposes a new step session", async () => {
-		const refreshSessions = vi.fn();
-		useWorkflowStateMock.mockReturnValue({
-			workflowState: {
-				executionId: "exec-001",
-				workflowName: "test-wf",
-				chatSessionId: "s1",
-				state: { type: "running" },
-				currentStepIndex: 0,
-				currentStepName: "step-1",
-				currentSessionId: "step-session-1",
-				totalSteps: 1,
-				stepHistory: [],
-				stepExecutionCounts: { "step-1": 1 },
-				workflowDefinition: {
-					name: "test-wf",
-					description: "",
-					builtin: false,
-					nodes: [{ name: "step-1", type: "agent", prompt: "p", rules: [] }],
-				},
-				totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
-				stepStates: {},
-				startedAt: 1000,
-				updatedAt: 2000,
-			},
-		});
-		mockUseAgentChat({
-			sessions: [{ id: "s1", label: "S1" }],
-			activeSession: { id: "s1", label: "S1", messages: [] },
-			refreshSessions,
-		});
+	// spec issues-1023: workflow state 変化を契機にした refreshSessions の発火は
+	// AgentChatProvider 側責務へ移った（context provider が useEffect で監視する）。
+	// AgentChatPanel 自身は context から渡された session 一覧を表示するだけなので、
+	// この特定の挙動は本 panel テストの対象外。Provider 側でカバーする。
 
-		render(
-			<AgentChatPanel
-				worktreePath="/test"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
+	// spec issues-1023: AgentChatPanel は WorkflowPanel をホストしない
+	// （右パネル側 Workflow モードに切り出された）。本パネルでの責務は free chat
+	// session の tab bar 表示と、workflow step session を tab bar から除外することのみ。
 
-		await waitFor(() => {
-			expect(refreshSessions).toHaveBeenCalled();
-		});
-	});
-
-	it("shows WorkflowPanel when workflowState is present", () => {
-		useWorkflowStateMock.mockReturnValue({
-			workflowState: {
-				executionId: "exec-001",
-				workflowName: "test-wf",
-				state: { type: "running" },
-				currentStepIndex: 0,
-				currentStepName: "step-1",
-				totalSteps: 1,
-				stepHistory: [],
-				stepExecutionCounts: {},
-				workflowDefinition: {
-					name: "test-wf",
-					description: "",
-					builtin: false,
-					nodes: [{ name: "step-1", type: "agent", prompt: "p", rules: [] }],
-				},
-				totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
-				stepStates: {},
-				startedAt: 1000,
-				updatedAt: 2000,
-			},
-		});
-		mockUseAgentChat({
-			sessions: [{ id: "s1", label: "S1" }],
-			activeSession: { id: "s1", label: "S1", messages: [] },
-		});
-		render(
-			<AgentChatPanel
-				worktreePath="/test"
-				registerDropZone={mockRegisterDropZone}
-			/>,
-		);
-		expect(screen.getByText("test-wf")).toBeInTheDocument();
-		expect(screen.getAllByText("running").length).toBeGreaterThan(0);
-	});
-
-	it("does not show WorkflowPanel when workflowState is null", () => {
+	it("excludes workflow step sessions from the chat tab bar", () => {
 		useWorkflowStateMock.mockReturnValue({ workflowState: null });
 		mockUseAgentChat({
-			sessions: [{ id: "s1", label: "S1" }],
-			activeSession: { id: "s1", label: "S1", messages: [] },
+			sessions: [
+				{
+					id: "free-1",
+					firstMessage: "Free chat",
+					messageCount: 1,
+					worktreePath: "/test",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+				},
+				{
+					id: "workflow-step-1",
+					firstMessage: "Workflow step",
+					messageCount: 1,
+					worktreePath: "/test",
+					state: "idle",
+					createdAt: 1000,
+					updatedAt: 1000,
+					workflowStepSession: true,
+				},
+			],
+			activeSession: {
+				id: "free-1",
+				worktreePath: "/test",
+				messages: [],
+				state: "idle",
+				createdAt: 1000,
+				updatedAt: 1000,
+				permissionMode: "edit",
+			},
 		});
 		render(
 			<AgentChatPanel
@@ -1586,6 +1610,8 @@ describe("AgentChatPanel workflow panel visibility", () => {
 				registerDropZone={mockRegisterDropZone}
 			/>,
 		);
-		expect(screen.queryByText("test-wf")).not.toBeInTheDocument();
+		const tabList = screen.getByTestId("session-tab-list");
+		expect(within(tabList).getByText("Free chat")).toBeInTheDocument();
+		expect(within(tabList).queryByText("Workflow step")).toBeNull();
 	});
 });

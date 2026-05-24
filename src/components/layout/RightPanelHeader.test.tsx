@@ -69,4 +69,13 @@ describe("RightPanelHeader", () => {
 		const header = container.querySelector("[data-tauri-drag-region]");
 		expect(header).toBeInTheDocument();
 	});
+
+	// spec issues-1023: 右パネル上半分は Review 専用に戻り、表示モード切替は
+	// 中央エリアの ViewToolbar に移動した。
+	it("does not render any mode switch UI", () => {
+		renderHeader(createPanels());
+		expect(screen.queryByLabelText("Review mode")).toBeNull();
+		expect(screen.queryByLabelText("Workflow mode")).toBeNull();
+		expect(screen.queryByTestId("right-panel-mode-switch")).toBeNull();
+	});
 });
