@@ -106,50 +106,58 @@ pub(crate) async fn dispatch_pending_command<R: tauri::Runtime>(
         ..
     } = pending;
 
-    // [08] SubmitOutput は CliMutationRequested 系の commit_context を経由せず、
-    // engine 側で OutputSubmitted event を直接 append する独立トランザクション。
-    if let PendingCommandPayload::SubmitOutput {
-        step_name,
-        contract,
-        structured_output,
-    } = payload
-    {
-        return dispatch_submit_output_pending(
-            app,
-            engine,
-            session_store,
-            &run_id,
-            id,
-            step_name,
-            contract,
-            structured_output,
-            requested_at,
+    let is_submit_output = matches!(&payload, PendingCommandPayload::SubmitOutput { .. });
+
+    // [08] CLI 提出経路と in-process 経路は dispatch_external で合流する。
+    // CLI pending の SubmitOutput は CliMutationRequested を伴わず OutputSubmitted 単体で
+    // 記録されるため commit_context は `SubmitOutput { request_id, submitted_at }` を運ぶ。
+    // 他の CLI mutation（Approve / Reject / Abort）は従来通り `CliPending` を運ぶ。
+    let (commit_context, request_id) = if is_submit_output {
+        // 5-3 修正: SubmitOutput の拒否時にも `CliMutationRejected` を補助履歴として
+        // 残せるよう、step_name と contract を commit_context に保持する。
+        let (step_name, contract) = match &payload {
+            PendingCommandPayload::SubmitOutput {
+                step_name,
+                contract,
+                ..
+            } => (step_name.clone(), contract.clone()),
+            _ => unreachable!("is_submit_output guard guarantees SubmitOutput variant"),
+        };
+        (
+            CommandCommitContext::submit_output(id.clone(), requested_at, step_name, contract),
+            id.clone(),
         )
-        .await;
-    }
-
-    let request = payload_to_cli_request(&payload);
-    let metadata = WorkflowMutationContext::new(
-        run_id.clone(),
-        WorkflowMutationSource::CliPendingCommand { request_id: id },
-        request,
-        requested_at,
-    );
-
+    } else {
+        let request = payload_to_cli_request(&payload);
+        let metadata = WorkflowMutationContext::new(
+            run_id.clone(),
+            WorkflowMutationSource::CliPendingCommand {
+                request_id: id.clone(),
+            },
+            request,
+            requested_at,
+        );
+        (CommandCommitContext::cli_pending(metadata), id.clone())
+    };
     let command = payload_to_workflow_command(payload, run_id.clone());
-    let request_id = metadata.request_id().to_string();
-    match engine.cli_mutation_already_recorded(app, &run_id, &request_id) {
+
+    let already_recorded = if is_submit_output {
+        engine.output_submitted_already_recorded(app, &run_id, &request_id)
+    } else {
+        engine.cli_mutation_already_recorded(app, &run_id, &request_id)
+    };
+    match already_recorded {
         Ok(true) => return PendingCommandDispatchOutcome::Accepted,
         Ok(false) => {}
         Err(e) => return classify_dispatch_error(e),
     }
-    let commit_context = CommandCommitContext::cli_pending(metadata);
 
     if let Err(e) = engine
         .ensure_execution_loaded_for_external(app, session_store, &run_id)
         .await
     {
-        return handle_rejected_dispatch(app, engine, e, commit_context).await;
+        return handle_rejected_dispatch(app, engine, e, commit_context, &run_id, is_submit_output)
+            .await;
     }
 
     match engine
@@ -166,42 +174,10 @@ pub(crate) async fn dispatch_pending_command<R: tauri::Runtime>(
         Ok(other) => PendingCommandDispatchOutcome::RejectedFinal(format!(
             "CLI mutation dispatch returned unexpected result: {other:?}"
         )),
-        Err(e) => handle_rejected_dispatch(app, engine, e, commit_context).await,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn dispatch_submit_output_pending<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    engine: &Arc<WorkflowEngine>,
-    session_store: &Arc<SessionStore>,
-    run_id: &str,
-    request_id: String,
-    step_name: String,
-    contract: String,
-    structured_output: serde_json::Value,
-    requested_at: f64,
-) -> PendingCommandDispatchOutcome {
-    if let Err(e) = engine
-        .ensure_execution_loaded_for_external(app, session_store, run_id)
-        .await
-    {
-        return classify_dispatch_error(e);
-    }
-    match engine
-        .dispatch_submit_output_with_context(
-            app,
-            run_id,
-            step_name,
-            contract,
-            structured_output,
-            Some(request_id),
-            Some(requested_at),
-        )
-        .await
-    {
-        Ok(()) => PendingCommandDispatchOutcome::Accepted,
-        Err(e) => classify_dispatch_error(e),
+        Err(e) => {
+            handle_rejected_dispatch(app, engine, e, commit_context, &run_id, is_submit_output)
+                .await
+        }
     }
 }
 
@@ -210,13 +186,43 @@ async fn handle_rejected_dispatch<R: tauri::Runtime>(
     engine: &WorkflowEngine,
     error: WorkflowEngineError,
     commit_context: CommandCommitContext,
+    run_id: &str,
+    is_submit_output: bool,
 ) -> PendingCommandDispatchOutcome {
     let reason = error.to_string();
-    if WorkflowEngine::should_commit_rejected_external_request(&error) {
+    let should_commit = WorkflowEngine::should_commit_rejected_external_request(&error);
+    // [06] spec [08] Rule 1 維持: SubmitOutput は accepted のメイン履歴
+    // （`OutputSubmitted` / `CliMutationRequested`）に拒否事実を残さない。
+    // 一方、それ以外の CLI mutation（Approve / Reject / Abort）は従来通り
+    // `CliMutationRequested` を記録する。
+    if !is_submit_output && should_commit {
         if let Err(record_error) = engine
-            .append_command_commit_context(app, commit_context)
+            .append_command_commit_context(app, commit_context.clone())
             .await
         {
+            return classify_dispatch_error(record_error);
+        }
+    }
+    // 5-3 / 5-4 修正: 全 mutation 種別について engine 判断による拒否事実を
+    // `CliMutationRejected` event として補助履歴に追記する。spec [08] Rule 1
+    // の意味は「accepted のメイン履歴に出ない」と再定義し、本 event は観測
+    // 経路用の補助履歴として並列に存在する。
+    if should_commit {
+        let append_result = if is_submit_output {
+            engine
+                .append_cli_mutation_rejected_for_submit_output(
+                    app,
+                    run_id,
+                    &commit_context,
+                    &error,
+                )
+                .await
+        } else {
+            engine
+                .append_cli_mutation_rejected(app, &commit_context, &error)
+                .await
+        };
+        if let Err(record_error) = append_result {
             return classify_dispatch_error(record_error);
         }
     }
@@ -253,7 +259,9 @@ fn payload_to_cli_request(payload: &PendingCommandPayload) -> CliMutationRequest
             node_name: node_name.clone(),
         },
         PendingCommandPayload::SubmitOutput { .. } => {
-            unreachable!("SubmitOutput payload must be routed via dispatch_submit_output_pending")
+            unreachable!(
+                "SubmitOutput payload must use CommandCommitContext::SubmitOutput, not CliMutationRequestRecord"
+            )
         }
     }
 }
@@ -744,6 +752,9 @@ mod tests {
 
     /// [08] CLI pending 経由の SubmitOutput が contract 不適合の場合、event は残らず、
     /// dispatcher は `RejectedFinal` を返す（spec [08] 振る舞い定義 Rule 1 適合しない場合）。
+    ///
+    /// 5-3 修正: `OutputSubmitted` / `CliMutationRequested` は引き続き残らないが、
+    /// 観測経路用の補助履歴として `CliMutationRejected` event が追記される。
     #[tokio::test]
     async fn dispatch_pending_submit_output_rejects_invalid_contract() {
         let app = make_dispatch_app();
@@ -769,6 +780,7 @@ mod tests {
             },
             960.0,
         );
+        let pending_id = pending.id.clone();
 
         let result =
             dispatch_pending_command(app.handle(), &engine, &session_store, &handles, pending)
@@ -779,8 +791,153 @@ mod tests {
         ));
 
         let events = read_dispatch_events(&app, &run_id);
+        // accepted のメイン履歴には出ない（spec [08] Rule 1 維持）。
         assert!(events
             .iter()
             .all(|event| !matches!(event, WorkflowEvent::OutputSubmitted { .. })));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::CliMutationRequested { .. })));
+        // 5-3 修正: 補助履歴として CliMutationRejected が追記される。
+        let rejected = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::CliMutationRejected {
+                    request,
+                    request_id,
+                    requested_at,
+                    ..
+                } => Some((request.clone(), request_id.clone(), *requested_at)),
+                _ => None,
+            })
+            .expect("CliMutationRejected event must be appended for rejected submit");
+        assert_eq!(rejected.1, pending_id);
+        assert!((rejected.2 - 960.0).abs() < f64::EPSILON);
+        match rejected.0 {
+            CliMutationRequestRecord::SubmitOutput {
+                step_name,
+                contract,
+            } => {
+                assert_eq!(step_name, "review");
+                assert_eq!(contract, "review-verdict");
+            }
+            other => panic!("expected SubmitOutput request record, got: {other:?}"),
+        }
+    }
+
+    /// 5-4 修正: reject rule の無い approval node への reject は engine 側で
+    /// `InvalidState` として拒否される。dispatcher は `CliMutationRequested`
+    /// （リクエスト受領事実）に加え、`CliMutationRejected{reason: no_reject_rule}`
+    /// を補助履歴として追記する。`ApprovalResolved` は記録されない。
+    #[tokio::test]
+    async fn dispatch_pending_reject_without_rule_records_cli_mutation_rejected() {
+        use crate::workflow::event::CliMutationRejectionReason;
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowEngine::new_for_test());
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir).await;
+        let (session_store, handles) = make_dispatch_deps();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        // reject rule を持たない approval-only workflow を使う。
+        seed_waiting_approval(
+            &engine,
+            &run_id,
+            "/wt/pending-dispatcher-reject-without-rule",
+            make_approval_only_workflow(),
+        )
+        .await;
+
+        let pending = PendingCommand::new(
+            run_id.clone(),
+            CliRequestPayload::Reject {
+                node_name: None,
+                reason: "engine 側に reject rule が無い node を拒否".to_string(),
+            },
+            970.0,
+        );
+
+        let result =
+            dispatch_pending_command(app.handle(), &engine, &session_store, &handles, pending)
+                .await;
+        assert!(matches!(
+            result,
+            PendingCommandDispatchOutcome::RejectedFinal(_)
+        ));
+
+        let events = read_dispatch_events(&app, &run_id);
+        // ApprovalResolved は出ない（state 変化が起きていないため）。
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ApprovalResolved { .. })));
+        // CliMutationRequested は引き続き記録される（リクエスト受領事実）。
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::CliMutationRequested { .. })));
+        // 5-4 修正: CliMutationRejected{reason: no_reject_rule} が補助履歴として追記される。
+        let reason = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::CliMutationRejected { reason, .. } => Some(*reason),
+                _ => None,
+            })
+            .expect("CliMutationRejected event must be appended for no-reject-rule path");
+        assert!(matches!(reason, CliMutationRejectionReason::NoRejectRule));
+    }
+
+    /// 5-3 / 5-4 修正: `classify_rejection_reason` は engine error の典型的な
+    /// メッセージから `CliMutationRejectionReason` を導出する。
+    #[test]
+    fn classify_rejection_reason_maps_known_errors() {
+        use crate::workflow::event::CliMutationRejectionReason as R;
+        let cases: Vec<(WorkflowEngineError, R)> = vec![
+            (
+                WorkflowEngineError::ExecutionNotFound("run".to_string()),
+                R::RunNotFound,
+            ),
+            (
+                WorkflowEngineError::UnauthorizedApprovalTarget("target".to_string()),
+                R::NotWaitingApproval,
+            ),
+            (
+                WorkflowEngineError::ValidationError(
+                    "contract mismatch: step 'r' expects 'a', got 'b'".to_string(),
+                ),
+                R::ContractMismatch,
+            ),
+            (
+                WorkflowEngineError::ValidationError(
+                    "step 'r' is not a valid submission target".to_string(),
+                ),
+                R::NodeNotFound,
+            ),
+            (
+                WorkflowEngineError::InvalidState("Step 'r' does not allow reject".to_string()),
+                R::NoRejectRule,
+            ),
+            (
+                WorkflowEngineError::InvalidState(
+                    "step 'r' is not currently accepting structured output".to_string(),
+                ),
+                R::StepNotAccepting,
+            ),
+            (
+                WorkflowEngineError::InvalidState("run x is already terminal".to_string()),
+                R::RunNotActive,
+            ),
+            (
+                WorkflowEngineError::InvalidState(
+                    "run x is not accepting structured output (state: Completed)".to_string(),
+                ),
+                R::RunNotActive,
+            ),
+            (
+                WorkflowEngineError::InvalidState("something else".to_string()),
+                R::Other,
+            ),
+        ];
+        for (err, expected) in cases {
+            let got = WorkflowEngine::classify_rejection_reason(&err);
+            assert_eq!(got, expected, "unexpected reason for error: {err}");
+        }
     }
 }

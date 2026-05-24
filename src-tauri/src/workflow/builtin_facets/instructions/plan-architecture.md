@@ -51,15 +51,6 @@ Specファイルの `## アーキテクチャ概要` セクションを追加ま
 - [実装時に判断してよい項目]
 ```
 
-## 出力
+## 完了条件
 
-Specファイル更新後、`spec-file-path` Contract に従う JSON を `releash workflow output submit` で提出する。
-
-```sh
-releash workflow output submit <run_id> \
-  --step <step_name> \
-  --type spec-file-path \
-  --json '{"spec_file_path":"docs/spec/issues-XXX.md"}'
-```
-
-提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。
+Specファイルの `## アーキテクチャ概要` セクションを追加または更新した状態で step を完了する。本 step には output contract が定義されておらず、前段 step（`plan_requirements`）の `spec-file-path` 出力が後続 step に引き継がれる。`releash workflow output submit` を呼ぶ必要はない。

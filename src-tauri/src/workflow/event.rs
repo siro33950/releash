@@ -225,6 +225,39 @@ pub enum WorkflowEvent {
         /// engine が本 event を append した時刻。
         timestamp: f64,
     },
+    /// [06] / [08] CLI 経路の mutation が engine 判断によって拒否された事実
+    /// （5-3 / 5-4 修正）。
+    ///
+    /// `CliMutationRequested` が「リクエストを受理した事実」であるのに対し、
+    /// 本 event は「engine が無効と判断して状態を変えなかった事実」を表す。
+    /// 両者は独立に発火し、両方記録される場合（reject rule なし node への
+    /// reject 等）と本 event のみ記録される場合（SubmitOutput の silent-drop
+    /// だった経路）がある。
+    ///
+    /// spec [08] Rule 1「SubmitOutput の拒否は事実履歴に残さない」の意味は、
+    /// accepted のメイン履歴（`OutputSubmitted` / `CliMutationRequested`）に
+    /// 出ないことを指すと再定義する。観測経路用の補助履歴として本 event は
+    /// 並列に追記される。
+    ///
+    /// `request` の自由記述（reason / comment）は平文で永続化される（spec
+    /// [06] 要求の運用境界と同じ）。
+    CliMutationRejected {
+        run_id: String,
+        workflow_name: String,
+        /// 元のリクエスト id（`CliMutationRequested` と同じ値）。
+        request_id: String,
+        /// 拒否されたリクエストの内容。SubmitOutput の場合は payload 本体を
+        /// 含めず `step_name` と `contract` のみ。
+        request: CliMutationRequestRecord,
+        /// 拒否理由の typed 分類。CLI ユーザはここを見て後続操作を判断する。
+        reason: CliMutationRejectionReason,
+        /// 人間可読の拒否理由（`WorkflowEngineError::to_string()` 由来）。
+        message: String,
+        /// caller が pending command を書き出した時刻（Unix 秒）。
+        requested_at: f64,
+        /// engine が本 event を append した時刻。
+        timestamp: f64,
+    },
 }
 
 /// [06] CLI mutating CLI が要求した内容の typed 表現。
@@ -232,6 +265,10 @@ pub enum WorkflowEvent {
 /// 各 variant の `node_name` は対象 node の限定の有無を表す（`None` = run 全体 /
 /// 現在の承認待ち node を engine 側で解決する、`Some` = caller が明示的に node
 /// を限定）。`Reject` の `reason` は CLI 入口で必須化済み。
+///
+/// `SubmitOutput` variant は `CliMutationRejected` でのみ使用する（accepted 経路
+/// は `OutputSubmitted` event が一次表現）。payload 本体は容量が大きい可能性が
+/// あるため `step_name` と `contract` のみを保持する。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum CliMutationRequestRecord {
@@ -250,6 +287,37 @@ pub enum CliMutationRequestRecord {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         node_name: Option<String>,
     },
+    /// SubmitOutput リクエストの拒否事実用 representation（accepted 経路では
+    /// 使用しない）。容量肥大を避けるため structured_output 本体は含めない。
+    SubmitOutput { step_name: String, contract: String },
+}
+
+/// [06] / [08] `CliMutationRejected` event の typed 拒否理由（5-3 / 5-4 修正）。
+///
+/// CLI ユーザはこの分類を読んで「再試行可能か」「workflow 設計の問題か」を
+/// 判断する。新しい拒否理由が判明した場合は variant を追加する（破壊変更ではなく
+/// `serde(rename_all = "snake_case")` の蓄積的拡張として扱う）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CliMutationRejectionReason {
+    /// 対象 run が engine から見つからない（CLI 側 5-2 チェックを通り抜けた
+    /// race condition 等）。
+    RunNotFound,
+    /// 対象 run が terminal 状態のため mutation を受け付けない。
+    RunNotActive,
+    /// 対象 node が workflow に存在しない。
+    NodeNotFound,
+    /// 現在 approval を待っていない node に approve/reject を要求した。
+    NotWaitingApproval,
+    /// 5-4: reject rule が定義されていない approval node に reject を要求した。
+    NoRejectRule,
+    /// 5-3: 構造化出力の受領を受け付けていない step に submit を要求した
+    /// （pending 等）。
+    StepNotAccepting,
+    /// 構造化出力の contract が step の expected と一致しない。
+    ContractMismatch,
+    /// 上記いずれにも分類されない、engine の InvalidState / Validation 由来の拒否。
+    Other,
 }
 
 /// approval 判断結果の typed 表現。NDJSON 上は snake_case として出力される。
@@ -292,7 +360,8 @@ impl WorkflowEvent {
             | Self::ParallelCompleted { run_id, .. }
             | Self::ContractRepairRequested { run_id, .. }
             | Self::CliMutationRequested { run_id, .. }
-            | Self::OutputSubmitted { run_id, .. } => run_id,
+            | Self::OutputSubmitted { run_id, .. }
+            | Self::CliMutationRejected { run_id, .. } => run_id,
         }
     }
 }
@@ -514,5 +583,96 @@ mod tests {
         for event in events {
             assert_eq!(event.run_id(), rid);
         }
+    }
+
+    /// 5-3 / 5-4 修正: `CliMutationRejected` event が全ての `request` variant
+    /// （SubmitOutput 含む）について NDJSON 上で round-trip し、`event` タグが
+    /// `cli_mutation_rejected` として出力される。`reason` は snake_case で
+    /// 出力される。
+    #[test]
+    fn cli_mutation_rejected_serde_round_trips_all_variants() {
+        let cases = vec![
+            (
+                WorkflowEvent::CliMutationRejected {
+                    run_id: "00000000-0000-0000-0000-000000000600".to_string(),
+                    workflow_name: "wf".to_string(),
+                    request_id: "00000000-0000-0000-0000-000000000700".to_string(),
+                    request: CliMutationRequestRecord::Reject {
+                        node_name: Some("plan_architecture".to_string()),
+                        reason: "rule なし node 拒否".to_string(),
+                    },
+                    reason: CliMutationRejectionReason::NoRejectRule,
+                    message: "Step 'plan_architecture' does not allow reject".to_string(),
+                    requested_at: 100.0,
+                    timestamp: 101.0,
+                },
+                "no_reject_rule",
+            ),
+            (
+                WorkflowEvent::CliMutationRejected {
+                    run_id: "00000000-0000-0000-0000-000000000601".to_string(),
+                    workflow_name: "wf".to_string(),
+                    request_id: "00000000-0000-0000-0000-000000000701".to_string(),
+                    request: CliMutationRequestRecord::SubmitOutput {
+                        step_name: "plan_fix_policy".to_string(),
+                        contract: "fix-policy".to_string(),
+                    },
+                    reason: CliMutationRejectionReason::StepNotAccepting,
+                    message: "step 'plan_fix_policy' is not currently accepting structured output"
+                        .to_string(),
+                    requested_at: 200.0,
+                    timestamp: 201.0,
+                },
+                "step_not_accepting",
+            ),
+            (
+                WorkflowEvent::CliMutationRejected {
+                    run_id: "00000000-0000-0000-0000-000000000602".to_string(),
+                    workflow_name: "wf".to_string(),
+                    request_id: "00000000-0000-0000-0000-000000000702".to_string(),
+                    request: CliMutationRequestRecord::Approve {
+                        node_name: None,
+                        comment: None,
+                    },
+                    reason: CliMutationRejectionReason::NotWaitingApproval,
+                    message: "approval target stale".to_string(),
+                    requested_at: 300.0,
+                    timestamp: 301.0,
+                },
+                "not_waiting_approval",
+            ),
+        ];
+        for (event, reason_str) in cases {
+            let json = serde_json::to_string(&event).unwrap();
+            assert!(
+                json.contains("\"event\":\"cli_mutation_rejected\""),
+                "event tag must be snake_case `cli_mutation_rejected`, got: {json}"
+            );
+            assert!(
+                json.contains(&format!("\"reason\":\"{reason_str}\"")),
+                "reason must serialize as snake_case `{reason_str}`, got: {json}"
+            );
+            let back: WorkflowEvent = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&back).unwrap();
+            assert_eq!(json, json2);
+        }
+    }
+
+    /// 5-3 / 5-4 修正: `CliMutationRejected` event の `run_id()` accessor が
+    /// `run_id` を返す。
+    #[test]
+    fn cli_mutation_rejected_run_id_accessor_returns_run_id() {
+        let rid = "00000000-0000-0000-0000-000000000888";
+        let event = WorkflowEvent::CliMutationRejected {
+            run_id: rid.to_string(),
+            workflow_name: "wf".to_string(),
+            request_id: "00000000-0000-0000-0000-000000000999".to_string(),
+            request: CliMutationRequestRecord::Abort { node_name: None },
+            reason: CliMutationRejectionReason::Other,
+            message: "x".to_string(),
+            requested_at: 0.0,
+            timestamp: 0.0,
+        };
+        assert_eq!(event.run_id(), rid);
     }
 }

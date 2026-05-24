@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::workflow::event::{
-    ApprovalDecisionRecord, CliMutationRequestRecord, CollectedOutputEntry,
-    TokenUsage as EventTokenUsage, WorkflowEvent,
+    ApprovalDecisionRecord, CliMutationRejectionReason, CliMutationRequestRecord,
+    CollectedOutputEntry, TokenUsage as EventTokenUsage, WorkflowEvent,
 };
 use crate::workflow::schema::{NodeType, Workflow};
 use crate::workflow::state::{
@@ -128,6 +128,49 @@ pub(crate) fn compute_step_timings(events: &[WorkflowEvent]) -> Vec<WorkflowStep
             }
         })
         .collect()
+}
+
+/// spec [08]: 提出済みの構造化出力スナップショット。CLI / Tauri の `get` 入口が
+/// それぞれ別 DTO（`OutputGetView` / `WorkflowGetOutputResponse`）に map するための
+/// 中間型として、最新の `OutputSubmitted` から抽出した contract / structured_output /
+/// 付随メタを保持する。本構造体は engine projection 由来の事実情報のみを持ち、
+/// 表示用フォーマット変換は呼び出し側に閉じる。
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputSubmittedSnapshot {
+    pub contract: String,
+    pub structured_output: serde_json::Value,
+    pub submitted_at: Option<f64>,
+    pub request_id: Option<String>,
+    pub timestamp: f64,
+}
+
+/// spec [08] Rule 3: 指定 step に対する最新の `OutputSubmitted` event を返す。
+///
+/// 同一 step に複数回 submit があった場合は最後（最新）の event を採用する。
+/// 該当 step に対する `OutputSubmitted` が一切なければ `None`（呼び出し側で
+/// 「未提出」として表現する）。
+pub fn latest_output_submitted_for(
+    events: &[WorkflowEvent],
+    step: &str,
+) -> Option<OutputSubmittedSnapshot> {
+    events.iter().rev().find_map(|event| match event {
+        WorkflowEvent::OutputSubmitted {
+            node_name,
+            contract,
+            structured_output,
+            submitted_at,
+            request_id,
+            timestamp,
+            ..
+        } if node_name == step => Some(OutputSubmittedSnapshot {
+            contract: contract.clone(),
+            structured_output: structured_output.clone(),
+            submitted_at: *submitted_at,
+            request_id: request_id.clone(),
+            timestamp: *timestamp,
+        }),
+        _ => None,
+    })
 }
 
 /// spec issues-1023: frontend へ返す event 列の view 型。
@@ -304,6 +347,19 @@ pub enum WorkflowEventView {
         request_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none", rename = "submittedAtMs")]
         submitted_at_ms: Option<f64>,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
+    /// [06] / [08] engine が拒否した CLI mutation 要求の事実（5-3 / 5-4 修正）。
+    CliMutationRejected {
+        run_id: String,
+        workflow_name: String,
+        request_id: String,
+        request: CliMutationRequestRecord,
+        reason: CliMutationRejectionReason,
+        message: String,
+        #[serde(rename = "requestedAtMs")]
+        requested_at_ms: f64,
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
@@ -563,6 +619,25 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 structured_output,
                 request_id,
                 submitted_at_ms: submitted_at.map(seconds_to_ms),
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::CliMutationRejected {
+                run_id,
+                workflow_name,
+                request_id,
+                request,
+                reason,
+                message,
+                requested_at,
+                timestamp,
+            } => WorkflowEventView::CliMutationRejected {
+                run_id,
+                workflow_name,
+                request_id,
+                request,
+                reason,
+                message,
+                requested_at_ms: seconds_to_ms(requested_at),
                 timestamp_ms: seconds_to_ms(timestamp),
             },
         }
@@ -1184,6 +1259,17 @@ pub(crate) fn reconstruct_state_from_events(
                 timestamp,
                 ..
             } => {
+                // [08] 先行する OutputSubmitted で確定済みの structured_output /
+                //   output_contract は ParallelChildCompleted（prose 抽出廃止後は
+                //   `structured_output: None` 固定）で上書きしない。reload 経路でも
+                //   live と同じく「経路非依存に提出済み output を参照できる」
+                //   （spec [08] Rule 3 Scenario 1）を満たすため、既存 slot から
+                //   merge する。
+                let prior = step_outputs.get(child_node_name).cloned();
+                let merged_structured_output = structured_output
+                    .clone()
+                    .or_else(|| prior.as_ref().and_then(|p| p.structured_output.clone()));
+                let merged_output_contract = prior.as_ref().and_then(|p| p.output_contract.clone());
                 if let Some(ps) = active_parallel_steps
                     .iter_mut()
                     .find(|p| p.step_name == *child_node_name)
@@ -1191,7 +1277,8 @@ pub(crate) fn reconstruct_state_from_events(
                     ps.state = "completed".to_string();
                     ps.result = result.clone();
                     ps.completed_at = Some(*timestamp);
-                    ps.structured_output = structured_output.clone();
+                    ps.structured_output = merged_structured_output.clone();
+                    ps.output_contract = merged_output_contract.clone();
                 }
                 step_outputs.insert(
                     child_node_name.clone(),
@@ -1200,8 +1287,8 @@ pub(crate) fn reconstruct_state_from_events(
                         run_index: *run_index,
                         session_id: Some(session_id.clone()),
                         result: result.clone(),
-                        structured_output: structured_output.clone(),
-                        output_contract: None,
+                        structured_output: merged_structured_output,
+                        output_contract: merged_output_contract,
                         token_usage: token_usage.clone(),
                         completed_at: *timestamp,
                     },
@@ -1231,14 +1318,29 @@ pub(crate) fn reconstruct_state_from_events(
             } => {
                 // [08] CLI / in-process 経由で確定した step output を state に復元する。
                 // 後続 step が `pass_output_from` で経路非依存に参照できる shape に揃える。
+                // `result` は engine の live state と同じ値（contract validator の戻り値）
+                // を再導出する。これにより live と reload 経路で aggregate 評価が乖離しない。
                 let ri = step_execution_counts.get(node_name).copied().unwrap_or(0);
+                let restored_result = match crate::workflow::contract::validate_contract_value(
+                    contract,
+                    structured_output.clone(),
+                ) {
+                    crate::workflow::contract::ContractValidationResult::Valid {
+                        result, ..
+                    } => result,
+                    // append-only ログに記録された OutputSubmitted は engine 側で validator を
+                    // 通過しているため通常ここには到達しない。validator が将来変更されて
+                    // 不適合判定になっても、result を None にして live と同等に振る舞う
+                    // （aggregate 評価では match なしになるだけ）。
+                    crate::workflow::contract::ContractValidationResult::Invalid(_) => None,
+                };
                 step_outputs.insert(
                     node_name.clone(),
                     StepOutput {
                         step_name: node_name.clone(),
                         run_index: ri,
                         session_id: None,
-                        result: None,
+                        result: restored_result,
                         structured_output: Some(structured_output.clone()),
                         output_contract: Some(contract.clone()),
                         token_usage: None,
@@ -1256,6 +1358,10 @@ pub(crate) fn reconstruct_state_from_events(
                 }
                 updated_at = *timestamp;
             }
+            // [06] / [08] CliMutationRejected は観測経路用の補助履歴であり、
+            // engine の workflow state には影響しない（accepted 経路の event のみが
+            // 一次表現）。projection では no-op として扱う（5-3 / 5-4 修正）。
+            WorkflowEvent::CliMutationRejected { .. } => {}
         }
     }
 
@@ -1885,5 +1991,141 @@ mod tests {
         assert_eq!(detail.state, "pending");
         assert!(detail.result.is_none());
         assert_eq!(detail.input.instruction.as_deref(), Some("review later"));
+    }
+
+    /// [08] OutputSubmitted projection: live engine と同じ shape で `StepOutput` slot を
+    /// 復元する。`result` は contract validator を再導出するため、reload 経路でも
+    /// `pass_output_from` で経路非依存に参照できる（spec [08] Rule 3 Scenario 1/3）。
+    #[test]
+    fn projection_restores_step_output_from_output_submitted_with_validator_derived_result() {
+        let mut workflow = workflow_with_nodes("wf", vec!["review"]);
+        workflow.nodes[0].output_contract = Some("review-verdict".to_string());
+        let events = vec![
+            run_started("exec-submit", workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: "exec-submit".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                execution_count: 1,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::OutputSubmitted {
+                run_id: "exec-submit".to_string(),
+                workflow_name: "wf".to_string(),
+                node_name: "review".to_string(),
+                contract: "review-verdict".to_string(),
+                structured_output: serde_json::json!({"verdict": "LGTM"}),
+                request_id: Some("00000000-0000-0000-0000-0000000000aa".to_string()),
+                submitted_at: Some(1010.0),
+                timestamp: 1011.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events("exec-submit", &events)
+            .unwrap()
+            .unwrap();
+        let so = state
+            .step_outputs
+            .get("review")
+            .expect("OutputSubmitted should restore step_outputs slot");
+        assert_eq!(so.output_contract.as_deref(), Some("review-verdict"));
+        assert!(so.structured_output.is_some());
+        // validator から再導出された result を持つ（live と同じ shape）。
+        assert_eq!(so.result.as_deref(), Some("LGTM"));
+    }
+
+    fn output_submitted_event(
+        step: &str,
+        value: serde_json::Value,
+        request_id: Option<&str>,
+        submitted_at: Option<f64>,
+        timestamp: f64,
+    ) -> WorkflowEvent {
+        WorkflowEvent::OutputSubmitted {
+            run_id: "run-1".to_string(),
+            workflow_name: "wf".to_string(),
+            node_name: step.to_string(),
+            contract: "test-contract".to_string(),
+            structured_output: value,
+            request_id: request_id.map(str::to_string),
+            submitted_at,
+            timestamp,
+        }
+    }
+
+    /// spec [08] Rule 3: 同一 step に複数回 submit があった場合は最新の提出が返る。
+    #[test]
+    fn latest_output_submitted_for_picks_latest_when_multiple_submitted() {
+        let events = vec![
+            output_submitted_event(
+                "review",
+                serde_json::json!({"verdict": "FIRST"}),
+                Some("req-1"),
+                Some(1.0),
+                10.0,
+            ),
+            output_submitted_event(
+                "review",
+                serde_json::json!({"verdict": "LATEST"}),
+                Some("req-2"),
+                Some(2.0),
+                20.0,
+            ),
+        ];
+
+        let snapshot = latest_output_submitted_for(&events, "review")
+            .expect("latest OutputSubmitted should be returned");
+        assert_eq!(snapshot.contract, "test-contract");
+        assert_eq!(
+            snapshot.structured_output,
+            serde_json::json!({"verdict": "LATEST"})
+        );
+        assert_eq!(snapshot.request_id.as_deref(), Some("req-2"));
+        assert_eq!(snapshot.submitted_at, Some(2.0));
+        assert_eq!(snapshot.timestamp, 20.0);
+    }
+
+    /// spec [08] Rule 3: 別 step に対する OutputSubmitted は対象 step の最新提出に影響しない。
+    #[test]
+    fn latest_output_submitted_for_ignores_other_steps() {
+        let events = vec![
+            output_submitted_event(
+                "other",
+                serde_json::json!({"unused": true}),
+                None,
+                None,
+                30.0,
+            ),
+            output_submitted_event(
+                "review",
+                serde_json::json!({"verdict": "TARGET"}),
+                None,
+                None,
+                25.0,
+            ),
+        ];
+
+        let snapshot = latest_output_submitted_for(&events, "review")
+            .expect("OutputSubmitted for review step should be returned");
+        assert_eq!(
+            snapshot.structured_output,
+            serde_json::json!({"verdict": "TARGET"})
+        );
+        assert_eq!(snapshot.timestamp, 25.0);
+    }
+
+    /// spec [08] Rule 3 Scenario 2: 該当 step に OutputSubmitted が一切なければ None。
+    #[test]
+    fn latest_output_submitted_for_returns_none_when_no_match() {
+        let events = vec![output_submitted_event(
+            "other",
+            serde_json::json!({}),
+            None,
+            None,
+            10.0,
+        )];
+
+        assert!(latest_output_submitted_for(&events, "review").is_none());
+        assert!(latest_output_submitted_for(&[], "review").is_none());
     }
 }

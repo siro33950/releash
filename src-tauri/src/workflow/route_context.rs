@@ -38,12 +38,6 @@ impl WorkflowMutationContext {
         &self.run_id
     }
 
-    pub(crate) fn request_id(&self) -> &str {
-        match &self.source {
-            WorkflowMutationSource::CliPendingCommand { request_id } => request_id,
-        }
-    }
-
     /// `WorkflowEvent::CliMutationRequested` 構築時に所有を `run_id` /
     /// `request` ごと engine 側へ移譲するための分解関数。
     pub(crate) fn into_event_parts(self) -> (String, CliMutationRequestRecord, f64, String) {
@@ -59,21 +53,93 @@ pub(crate) enum WorkflowMutationSource {
     CliPendingCommand { request_id: String },
 }
 
+/// dispatch_external 経由で渡される commit metadata。
+///
+/// `CliPending` は CliMutationRequested を伴う Approve / Reject / Abort 系の文脈。
+/// `SubmitOutput` は OutputSubmitted 単体で記録される [08] structured output 提出系で、
+/// CliMutationRequested は emit しない（spec [08] 振る舞い定義 Rule 1 / Rule 4:
+/// SubmitOutput 単独で `request_id` / `submitted_at` を伴う OutputSubmitted を記録）。
+///
+/// 5-3 / 5-4 修正: いずれの variant も engine 拒否時に `CliMutationRejected` event
+/// を補助履歴として記録する。SubmitOutput variant は payload 本体を持たないが、
+/// `step_name` と `contract` を保持して rejected event の `request` フィールドを
+/// 構築できるようにする（payload 全体は容量肥大を避けるため含めない）。
 #[derive(Debug, Clone)]
-pub(crate) struct CommandCommitContext {
-    mutation: WorkflowMutationContext,
+pub(crate) enum CommandCommitContext {
+    CliPending {
+        mutation: WorkflowMutationContext,
+    },
+    SubmitOutput {
+        request_id: String,
+        submitted_at: f64,
+        step_name: String,
+        contract: String,
+    },
 }
 
 impl CommandCommitContext {
     pub(crate) fn cli_pending(mutation: WorkflowMutationContext) -> Self {
-        Self { mutation }
+        Self::CliPending { mutation }
     }
 
-    pub(crate) fn mutation(&self) -> &WorkflowMutationContext {
-        &self.mutation
+    pub(crate) fn submit_output(
+        request_id: String,
+        submitted_at: f64,
+        step_name: String,
+        contract: String,
+    ) -> Self {
+        Self::SubmitOutput {
+            request_id,
+            submitted_at,
+            step_name,
+            contract,
+        }
     }
 
-    pub(crate) fn into_mutation(self) -> WorkflowMutationContext {
-        self.mutation
+    /// `CliPending` バリアントに含まれる `WorkflowMutationContext` への参照を返す。
+    /// `SubmitOutput` バリアントには CliMutationRequested 用の mutation context は無い。
+    pub(crate) fn cli_pending_mutation(&self) -> Option<&WorkflowMutationContext> {
+        match self {
+            Self::CliPending { mutation } => Some(mutation),
+            Self::SubmitOutput { .. } => None,
+        }
+    }
+
+    pub(crate) fn into_cli_pending_mutation(self) -> Option<WorkflowMutationContext> {
+        match self {
+            Self::CliPending { mutation } => Some(mutation),
+            Self::SubmitOutput { .. } => None,
+        }
+    }
+
+    /// SubmitOutput context の `(request_id, submitted_at)` を取り出す。
+    pub(crate) fn submit_output_metadata(&self) -> Option<(String, f64)> {
+        match self {
+            Self::SubmitOutput {
+                request_id,
+                submitted_at,
+                ..
+            } => Some((request_id.clone(), *submitted_at)),
+            Self::CliPending { .. } => None,
+        }
+    }
+
+    /// SubmitOutput context から CliMutationRejected event 用の構成要素を取り出す。
+    /// `(request_id, requested_at, step_name, contract)` を返す（5-3 修正）。
+    pub(crate) fn submit_output_rejection_parts(&self) -> Option<(String, f64, String, String)> {
+        match self {
+            Self::SubmitOutput {
+                request_id,
+                submitted_at,
+                step_name,
+                contract,
+            } => Some((
+                request_id.clone(),
+                *submitted_at,
+                step_name.clone(),
+                contract.clone(),
+            )),
+            Self::CliPending { .. } => None,
+        }
     }
 }

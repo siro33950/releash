@@ -45,6 +45,10 @@ impl WorkflowEventLog {
     }
 
     /// イベントをNDJSON形式でログファイルに追記する。
+    ///
+    /// [08] production の単発 append は `write_log_required` → `append_batch` 経路に
+    /// 集約された。本ヘルパは log 単体のセットアップが必要なテストからのみ呼ばれる。
+    #[cfg(test)]
     pub fn append(&self, event: &WorkflowEvent) -> Result<(), String> {
         self.append_batch(std::slice::from_ref(event))
     }

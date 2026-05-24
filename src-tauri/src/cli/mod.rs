@@ -167,7 +167,9 @@ pub fn run() -> i32 {
     // data_dir は List / Runs / Status / Logs それぞれの branch 内で解決する。
     // List も workflow_runs/ 由来の `is_running` 反映のため data_dir を必要とするが、
     // 各 branch 内で解決することで未到達の branch では I/O を走らせない。
-    let resolve = || -> Result<PathBuf, CliError> { resolve_data_dir().map_err(CliError::Other) };
+    // [05] 観測経路境界: data_dir 自体が存在しない場合は `NotFound` として扱い、
+    // 「run が 0 件」と「向き先がそもそも無い」を区別する（5-1 修正）。
+    let resolve = || -> Result<PathBuf, CliError> { resolve_existing_data_dir() };
     let result = match cli.command {
         TopCommand::Workflow { command } => match command {
             WorkflowSubcommand::List { json } => match resolve() {
@@ -289,7 +291,7 @@ impl From<String> for CliError {
     }
 }
 
-/// データディレクトリの解決。
+/// データディレクトリの解決（パス計算のみ。存在チェックは行わない）。
 ///
 /// Tauri 側 `AppHandle::path().app_data_dir()` と同等のパスを CLI 側で計算する。
 /// CLI 起動独立性境界: デスクトップアプリ非稼働でも動作する。
@@ -299,6 +301,28 @@ fn resolve_data_dir() -> Result<PathBuf, String> {
     }
     let base = dirs::data_dir().ok_or_else(|| "Cannot resolve OS data_dir".to_string())?;
     Ok(base.join("com.releash.app"))
+}
+
+/// data_dir を解決し、パスが実在することを確認する。
+///
+/// [05] 観測経路境界: `RELEASH_DATA_DIR` の typo / アプリ未起動などで data_dir
+/// が存在しない場合に「runs が 0 件」と紛れないよう、CLI 入口で `NotFound`
+/// として弾く（5-1 修正）。
+fn resolve_existing_data_dir() -> Result<PathBuf, CliError> {
+    let path = resolve_data_dir().map_err(CliError::Other)?;
+    ensure_existing_data_dir(&path)?;
+    Ok(path)
+}
+
+/// data_dir パスの実在を確認する純粋判定（環境変数に依存せずテスト可能）。
+fn ensure_existing_data_dir(path: &Path) -> Result<(), CliError> {
+    if !path.exists() {
+        return Err(CliError::NotFound(format!(
+            "data directory does not exist: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 /// workflow template 一覧。
@@ -448,6 +472,15 @@ fn enqueue_pending_command(
     payload: CliRequestPayload,
 ) -> Result<PendingEnqueueOutput, CliError> {
     validate_run_id(run_id)?;
+    // [06] 入口バリデーション (5-2 修正): 不在 run_id への mutation は engine で
+    // silent-drop されるため、pending file 書き出し前に CLI で弾く。spec [06] の
+    // 「CLI 完了基準＝pending file 書き出しまで」境界は維持され、本チェックは
+    // 書き出し前の入口バリデーションとして位置づける。
+    if get_run_summary_file_direct(data_dir, run_id).is_none() {
+        return Err(CliError::NotFound(format!(
+            "Workflow run not found: {run_id}"
+        )));
+    }
     let store = PendingCommandStore::new(data_dir);
     let command = PendingCommand::new(run_id.to_string(), payload, current_timestamp());
     let path = store
@@ -485,6 +518,19 @@ fn command_input_error_to_cli_error(err: CommandInputError) -> CliError {
 
 /// [08] `releash workflow output submit`: 構造化出力を pending command として書き出す。
 /// engine 到達は稼働中アプリの watcher が担う（spec [08] CLI 完了基準境界）。
+///
+/// CLI 入口で同期的に以下を検証し、不適合な入力は pending file を作らずに
+/// `CliError::InvalidInput` として返す（spec [08]:「不適合な入力は決定論的な
+/// validation error として CLI 終了コードで返り、`step_outputs` / 事実履歴は
+/// 副作用なしの状態に保たれる」）。
+///
+/// 検証項目:
+///   - run が存在する（event log の RunStarted から workflow を解決）
+///   - step が workflow に存在し output_contract を持つ
+///   - caller の `--type` が step の expected contract と一致する
+///   - 入力 JSON が contract 適合（pure validator 再利用）
+///
+/// stale step 判定（受付中であるか）は engine の権威に委ねる。
 fn cmd_output_submit(
     data_dir: &Path,
     run_id: &str,
@@ -499,6 +545,24 @@ fn cmd_output_submit(
     let raw_json = read_submit_input_json(json_arg, file_arg)?;
     let structured_output: serde_json::Value = serde_json::from_str(&raw_json)
         .map_err(|e| CliError::InvalidInput(format!("Failed to parse JSON: {e}")))?;
+
+    // 同期検証: run / step / contract type 一致 / contract validation。
+    let expected_contract = resolve_step_output_contract_via_log(data_dir, run_id, step)?;
+    if expected_contract != contract {
+        return Err(CliError::InvalidInput(format!(
+            "contract mismatch: step '{step}' expects '{expected_contract}', got '{contract}'"
+        )));
+    }
+    match crate::workflow::contract::validate_contract_value(contract, structured_output.clone()) {
+        crate::workflow::contract::ContractValidationResult::Valid { .. } => {}
+        crate::workflow::contract::ContractValidationResult::Invalid(violation) => {
+            return Err(CliError::InvalidInput(format!(
+                "contract violation ({}): {}",
+                violation.reason, violation.details
+            )));
+        }
+    }
+
     let output = enqueue_pending_command(
         data_dir,
         run_id,
@@ -551,6 +615,10 @@ fn cmd_output_get(data_dir: &Path, run_id: &str, step: &str, json: bool) -> Resu
             "Workflow run not found: {run_id}"
         )));
     }
+    // [08] 振る舞い定義 Rule 3 (5-5 修正): step が workflow に存在しない場合は
+    // `output validate` と対称に `InvalidInput` を返す。`not_submitted` 出力は
+    // 「step は存在するが未提出」専用とする。
+    let _contract = resolve_step_output_contract_via_log(data_dir, run_id, step)?;
     let events = read_log(data_dir, run_id)?;
     let view = build_output_get_view(events, step);
     if json {
@@ -625,56 +693,31 @@ fn read_submit_input_json(
 
 /// event log の `RunStarted` から workflow definition を取り出し、step の
 /// `output_contract` を解決する。
+///
+/// 経路本体は pure helper
+/// `workflow::contract::resolve_step_output_contract_from_events` に委譲し、CLI
+/// 層は `ContractLookupError` を `CliError` に射影するだけを担う（[08]
+/// アーキテクチャ概要: Contract 解決は engine と CLI 双方から再利用される
+/// pure 関数。CLI 層は engine internals に依存しない境界）。
 fn resolve_step_output_contract_via_log(
     data_dir: &Path,
     run_id: &str,
     step: &str,
 ) -> Result<String, CliError> {
     let events = read_log(data_dir, run_id)?;
-    let workflow = events
-        .iter()
-        .find_map(|e| match e {
-            WorkflowEvent::RunStarted {
-                workflow_definition,
-                ..
-            } => Some(workflow_definition.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| CliError::NotFound(format!("Workflow run not found: {run_id}")))?;
-    for node in &workflow.nodes {
-        if node.name == step {
-            return node
-                .output_contract
-                .clone()
-                .filter(|c| !c.trim().is_empty())
-                .ok_or_else(|| {
-                    CliError::InvalidInput(format!(
-                        "step '{step}' has no output_contract in workflow '{}'",
-                        workflow.name
-                    ))
-                });
-        }
-        if let Some(children) = &node.parallel_children {
-            for child in children {
-                if child.name == step {
-                    return child
-                        .output_contract
-                        .clone()
-                        .filter(|c| !c.trim().is_empty())
-                        .ok_or_else(|| {
-                            CliError::InvalidInput(format!(
-                                "step '{step}' has no output_contract in workflow '{}'",
-                                workflow.name
-                            ))
-                        });
-                }
+    crate::workflow::contract::resolve_step_output_contract_from_events(&events, step).map_err(
+        |err| match err {
+            crate::workflow::contract::ContractLookupError::RunNotFound => {
+                CliError::NotFound(format!("Workflow run not found: {run_id}"))
             }
-        }
-    }
-    Err(CliError::InvalidInput(format!(
-        "step '{step}' not found in workflow '{}'",
-        workflow.name
-    )))
+            crate::workflow::contract::ContractLookupError::NoOutputContract {
+                workflow_name,
+                step,
+            } => CliError::InvalidInput(format!(
+                "step '{step}' has no output_contract in workflow '{workflow_name}'"
+            )),
+        },
+    )
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -693,31 +736,19 @@ enum OutputGetView {
 }
 
 fn build_output_get_view(events: Vec<WorkflowEvent>, step: &str) -> OutputGetView {
-    // 最新 (= 最後尾) の OutputSubmitted を採用する。
-    let mut latest: Option<OutputGetView> = None;
-    for event in events {
-        if let WorkflowEvent::OutputSubmitted {
-            node_name,
-            contract,
-            structured_output,
-            submitted_at,
-            request_id,
-            timestamp,
-            ..
-        } = event
-        {
-            if node_name == step {
-                latest = Some(OutputGetView::Submitted {
-                    contract,
-                    structured_output,
-                    submitted_at,
-                    request_id,
-                    timestamp,
-                });
-            }
-        }
+    // 最新の OutputSubmitted は pure projection helper（spec [08] L165 / 振る舞い定義
+    // Rule 3）に集約する。CLI / Tauri 経路はそれぞれ自層の DTO（OutputGetView /
+    // WorkflowGetOutputResponse）へ map するだけで挙動を共有する。
+    match crate::workflow::event_projection::latest_output_submitted_for(&events, step) {
+        Some(snapshot) => OutputGetView::Submitted {
+            contract: snapshot.contract,
+            structured_output: snapshot.structured_output,
+            submitted_at: snapshot.submitted_at,
+            request_id: snapshot.request_id,
+            timestamp: snapshot.timestamp,
+        },
+        None => OutputGetView::NotSubmitted,
     }
-    latest.unwrap_or(OutputGetView::NotSubmitted)
 }
 
 /// 指定 run の event log。
@@ -866,6 +897,7 @@ fn format_event(event: &WorkflowEvent) -> String {
         WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
         WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
         WorkflowEvent::OutputSubmitted { .. } => "OutputSubmitted",
+        WorkflowEvent::CliMutationRejected { .. } => "CliMutationRejected",
     };
     match serde_json::to_string(event) {
         Ok(json) => format!("{kind} {json}"),
@@ -1578,6 +1610,44 @@ mod tests {
         assert!(Cli::try_parse_from(&argv).is_err());
     }
 
+    /// テスト用 helper: 指定 step に output_contract を持つ workflow を含む RunStarted
+    /// event を log に append し、run_file も書き込む。CLI submit / validate の synchronous
+    /// 解決経路は event log の RunStarted から workflow を取り出すため、テストでも本前提を
+    /// 揃えてからコマンドを呼ぶ。
+    fn seed_submit_workflow_log(
+        data_dir: &Path,
+        run_id: &str,
+        worktree_path: &str,
+        step_name: &str,
+        contract: &str,
+    ) {
+        let workflow = crate::workflow::schema::Workflow {
+            name: "wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            nodes: vec![crate::workflow::schema::NodeDefinition {
+                name: step_name.to_string(),
+                node_type: crate::workflow::schema::NodeType::Agent,
+                output_contract: Some(contract.to_string()),
+                ..Default::default()
+            }],
+        };
+        write_run_file(
+            data_dir,
+            &make_run(run_id, worktree_path, RunStatus::Running, 100.0),
+        );
+        let log = WorkflowEventLog::new(data_dir);
+        log.append(&WorkflowEvent::RunStarted {
+            run_id: run_id.to_string(),
+            workflow_name: "wf".to_string(),
+            workflow_file_stem: "wf".to_string(),
+            worktree_path: worktree_path.to_string(),
+            workflow_definition: workflow,
+            timestamp: 100.0,
+        })
+        .unwrap();
+    }
+
     /// [08] CLI 完了基準境界: `submit` は受理キュー投入（pending file の書き出し）まで
     /// 完了した時点で `Ok(())` を返す。書き出された pending entry は
     /// `PendingCommandPayload::SubmitOutput` shape を持ち、`run_id` と `step` /
@@ -1587,6 +1657,13 @@ mod tests {
         use crate::workflow::pending_command::PendingCommandPayload;
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(91);
+        seed_submit_workflow_log(
+            tmp.path(),
+            &run_id,
+            "/wt/submit-pending",
+            "review",
+            "review-verdict",
+        );
         let json = "{\"verdict\":\"LGTM\"}";
         cmd_output_submit(
             tmp.path(),
@@ -1621,6 +1698,13 @@ mod tests {
         let input_file = tmp.path().join("input.json");
         std::fs::write(&input_file, b"{\"verdict\":\"LGTM\"}").unwrap();
         let run_id = test_uuid(92);
+        seed_submit_workflow_log(
+            tmp.path(),
+            &run_id,
+            "/wt/submit-pending-file",
+            "review",
+            "review-verdict",
+        );
         cmd_output_submit(
             tmp.path(),
             &run_id,
@@ -1665,8 +1749,117 @@ mod tests {
         assert!(matches!(err, CliError::InvalidInput(_)));
     }
 
+    /// [08] 振る舞い定義 Rule 1: 対象 run が存在しなければ pending file を作らず CliError。
+    /// CLI 同期検証の reject 経路を担保する（spec [08] 副作用なし境界）。
+    #[test]
+    fn cmd_output_submit_rejects_unknown_run_without_side_effects() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(101);
+        let err = cmd_output_submit(
+            tmp.path(),
+            &run_id,
+            "review",
+            "review-verdict",
+            Some("{\"verdict\":\"LGTM\"}".to_string()),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CliError::NotFound(_)));
+        // pending file が作られていない
+        assert!(PendingCommandStore::new(tmp.path())
+            .list_pending()
+            .unwrap()
+            .is_empty());
+    }
+
+    /// [08] CLI 同期検証: workflow に存在しない step に対する submit は
+    /// pending file を作らず CliError::InvalidInput を返す。
+    #[test]
+    fn cmd_output_submit_rejects_unknown_step_without_side_effects() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(102);
+        seed_submit_workflow_log(
+            tmp.path(),
+            &run_id,
+            "/wt/submit-unknown-step",
+            "review",
+            "review-verdict",
+        );
+        let err = cmd_output_submit(
+            tmp.path(),
+            &run_id,
+            "no-such-step",
+            "review-verdict",
+            Some("{\"verdict\":\"LGTM\"}".to_string()),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CliError::InvalidInput(_)));
+        assert!(PendingCommandStore::new(tmp.path())
+            .list_pending()
+            .unwrap()
+            .is_empty());
+    }
+
+    /// [08] CLI 同期検証: caller の `--type` が step の expected contract と
+    /// 一致しない場合は pending file を作らず CliError::InvalidInput。
+    #[test]
+    fn cmd_output_submit_rejects_contract_type_mismatch_without_side_effects() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(103);
+        seed_submit_workflow_log(
+            tmp.path(),
+            &run_id,
+            "/wt/submit-type-mismatch",
+            "review",
+            "review-verdict",
+        );
+        let err = cmd_output_submit(
+            tmp.path(),
+            &run_id,
+            "review",
+            "fix-result",
+            Some("{\"status\":\"FIXED\"}".to_string()),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CliError::InvalidInput(_)));
+        assert!(PendingCommandStore::new(tmp.path())
+            .list_pending()
+            .unwrap()
+            .is_empty());
+    }
+
+    /// [08] CLI 同期検証: contract に適合しない JSON は pending file を作らず CliError。
+    #[test]
+    fn cmd_output_submit_rejects_contract_violation_without_side_effects() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(104);
+        seed_submit_workflow_log(
+            tmp.path(),
+            &run_id,
+            "/wt/submit-violation",
+            "review",
+            "review-verdict",
+        );
+        let err = cmd_output_submit(
+            tmp.path(),
+            &run_id,
+            "review",
+            "review-verdict",
+            Some("{\"verdict\":\"MAYBE\"}".to_string()),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CliError::InvalidInput(_)));
+        assert!(PendingCommandStore::new(tmp.path())
+            .list_pending()
+            .unwrap()
+            .is_empty());
+    }
+
     /// [08] 振る舞い定義 Rule 2: validate は pure validator を呼び、副作用を起こさない。
-    /// pending dir / event log のいずれも変化しない。
+    /// pending dir / event log / run file / 既存 step_outputs のいずれも変化しない。
     #[test]
     fn cmd_output_validate_returns_ok_for_contract_compliant_input() {
         let tmp = TempDir::new().unwrap();
@@ -1697,16 +1890,52 @@ mod tests {
             timestamp: 100.0,
         })
         .unwrap();
+        // 既存の OutputSubmitted を 1 件入れておき、validate がそれを変化させないことも確認する。
+        log.append(&WorkflowEvent::OutputSubmitted {
+            run_id: run_id.clone(),
+            workflow_name: "wf".to_string(),
+            node_name: "review".to_string(),
+            contract: "review-verdict".to_string(),
+            structured_output: serde_json::json!({"verdict": "LGTM"}),
+            request_id: Some("00000000-0000-0000-0000-0000000000aa".to_string()),
+            submitted_at: Some(120.0),
+            timestamp: 130.0,
+        })
+        .unwrap();
         let input_file = tmp.path().join("input.json");
         std::fs::write(&input_file, b"{\"verdict\":\"LGTM\"}").unwrap();
 
+        let run_file_path = tmp
+            .path()
+            .join("workflow_runs")
+            .join(format!("{run_id}.json"));
+        let event_log_before = log.read_log(&run_id).unwrap();
+        let run_file_before = std::fs::read_to_string(&run_file_path).unwrap();
+
         cmd_output_validate(tmp.path(), &run_id, "review", &input_file).unwrap();
 
-        // 副作用なし: pending dir に何も書き込まれていない
+        // pending dir 不変
         assert!(PendingCommandStore::new(tmp.path())
             .list_pending()
             .unwrap()
             .is_empty());
+        // event log の長さ・内容が validate 前後で一致
+        let event_log_after = log.read_log(&run_id).unwrap();
+        assert_eq!(event_log_before.len(), event_log_after.len());
+        // run file の中身が変わっていない
+        let run_file_after = std::fs::read_to_string(&run_file_path).unwrap();
+        assert_eq!(run_file_before, run_file_after);
+        // 既存の OutputSubmitted がそのまま残る（reconstruct で step_outputs slot が不変）
+        let view = build_output_get_view(event_log_after.clone(), "review");
+        assert!(matches!(
+            view,
+            OutputGetView::Submitted {
+                ref contract,
+                submitted_at: Some(120.0),
+                timestamp: 130.0,
+                ..
+            } if contract == "review-verdict"
+        ));
     }
 
     #[test]
@@ -1915,6 +2144,10 @@ mod tests {
     fn cmd_enqueue_pending_writes_pending_file_for_approve() {
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(81);
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/approve", RunStatus::Running, 100.0),
+        );
         let payload = CliRequestPayload::Approve {
             node_name: Some("review".to_string()),
             comment: Some("LGTM".to_string()),
@@ -1933,6 +2166,10 @@ mod tests {
     fn cmd_enqueue_pending_writes_pending_file_for_reject_with_reason_and_node() {
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(82);
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/reject", RunStatus::Running, 100.0),
+        );
         let payload = CliRequestPayload::Reject {
             node_name: Some("review".to_string()),
             reason: "needs changes".to_string(),
@@ -1950,6 +2187,10 @@ mod tests {
     fn cmd_enqueue_pending_writes_pending_file_for_abort_with_node() {
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(83);
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/abort", RunStatus::Running, 100.0),
+        );
         let payload = CliRequestPayload::Abort {
             node_name: Some("review".to_string()),
         };
@@ -1969,6 +2210,89 @@ mod tests {
         let payload = CliRequestPayload::Abort { node_name: None };
         let err = enqueue_pending_command(tmp.path(), "not-a-uuid", payload).unwrap_err();
         assert!(matches!(err, CliError::InvalidInput(_)));
+    }
+
+    /// [05] 観測経路境界 (5-1 修正): data_dir が存在しない場合は `NotFound` として
+    /// 扱い、「runs 0 件」と「向き先がそもそも無い」を区別する。
+    #[test]
+    fn ensure_existing_data_dir_returns_not_found_for_missing_path() {
+        let missing = std::path::PathBuf::from("/non/existent/releash-data-dir-test-path");
+        let err = ensure_existing_data_dir(&missing).expect_err("missing data_dir must error");
+        let CliError::NotFound(msg) = &err else {
+            panic!("expected CliError::NotFound for missing data_dir, got: {err:?}");
+        };
+        assert!(
+            msg.contains(&missing.display().to_string()),
+            "error message must contain the path, got: {msg}"
+        );
+    }
+
+    /// [05] 観測経路境界 (5-1 修正): data_dir が存在する場合は Ok を返す。
+    #[test]
+    fn ensure_existing_data_dir_returns_ok_for_existing_path() {
+        let tmp = TempDir::new().unwrap();
+        ensure_existing_data_dir(tmp.path()).expect("existing data_dir must succeed");
+    }
+
+    /// [08] 振る舞い定義 Rule 3 (5-5 修正): `output get` は step が workflow に
+    /// 存在しない場合、`output validate` と対称に `CliError::InvalidInput` を返す
+    /// （exit=2）。`not_submitted` は「step は存在するが未提出」専用。
+    #[test]
+    fn cmd_output_get_rejects_unknown_step_with_invalid_input() {
+        let tmp = TempDir::new().unwrap();
+        let run_id = test_uuid(96);
+        write_run_file(
+            tmp.path(),
+            &make_run(&run_id, "/wt/get-unknown-step", RunStatus::Running, 100.0),
+        );
+        // step "review" を持つ workflow を log に播種し、それとは別名の step を問い合わせる。
+        seed_submit_workflow_log(
+            tmp.path(),
+            &run_id,
+            "/wt/get-unknown-step",
+            "review",
+            "review-verdict",
+        );
+        let err =
+            cmd_output_get(tmp.path(), &run_id, "nonexistent_step", true).expect_err("must error");
+        let CliError::InvalidInput(msg) = &err else {
+            panic!("expected CliError::InvalidInput for unknown step, got: {err:?}");
+        };
+        assert!(
+            msg.contains("nonexistent_step"),
+            "error message must include step name, got: {msg}"
+        );
+        assert!(
+            msg.contains("output_contract"),
+            "error message must mention output_contract (symmetric with validate), got: {msg}"
+        );
+    }
+
+    /// [06] 入口バリデーション (5-2 修正): 不存在 run_id への mutation は pending
+    /// file を書き出さずに `CliError::NotFound` で弾かれる。engine 到達後の
+    /// silent-drop を待たずに CLI 入口で検知する。
+    #[test]
+    fn cmd_enqueue_pending_rejects_unknown_run_id_without_side_effects() {
+        let tmp = TempDir::new().unwrap();
+        let unknown_run_id = test_uuid(99);
+        let payload = CliRequestPayload::Approve {
+            node_name: None,
+            comment: Some("x".to_string()),
+        };
+        let err = enqueue_pending_command(tmp.path(), &unknown_run_id, payload).unwrap_err();
+        let CliError::NotFound(msg) = &err else {
+            panic!("expected CliError::NotFound for unknown run_id, got: {err:?}");
+        };
+        assert!(
+            msg.contains(&unknown_run_id),
+            "error message must include run_id, got: {msg}"
+        );
+        // pending file は一切書き出されていない（副作用なし）。
+        let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
+        assert!(
+            entries.is_empty(),
+            "pending file must not be written when run is unknown"
+        );
     }
 
     /// [05] CLI 入力の信頼境界: managed worktree でない入力は

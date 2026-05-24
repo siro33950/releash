@@ -8,6 +8,82 @@
 
 use serde_json::Value;
 
+use crate::workflow::event::WorkflowEvent;
+use crate::workflow::schema::Workflow;
+
+/// [08] event 列から step の `output_contract` を解決する際の決定論的エラー。
+///
+/// CLI / Tauri 経路は本エラーをそれぞれ自層の表現（`CliError::NotFound /
+/// InvalidInput` や `String`）に map するだけで、event log → workflow definition →
+/// contract resolution の経路自体を共有する（spec [08] アーキテクチャ概要:
+/// contract resolution は engine と CLI 双方から再利用される pure 関数）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContractLookupError {
+    /// 当該 run の `RunStarted` event が存在しない（run 不在 / 認可外）。
+    RunNotFound,
+    /// step が `output_contract` を持たない（あるいは空文字）。
+    NoOutputContract { workflow_name: String, step: String },
+}
+
+/// [08] event 列の `RunStarted` から workflow definition を取り出し、step の
+/// `output_contract` を解決する pure helper。
+///
+/// CLI `workflow output validate / submit` の事前検証と Tauri `workflow_validate_output`
+/// が完全に同一ロジックで contract type を引いていたため共通化する（spec [08]
+/// アーキテクチャ概要: CLI と engine の双方から再利用される pure 関数）。
+pub fn resolve_step_output_contract_from_events(
+    events: &[WorkflowEvent],
+    step: &str,
+) -> Result<String, ContractLookupError> {
+    let workflow = events
+        .iter()
+        .find_map(|e| match e {
+            WorkflowEvent::RunStarted {
+                workflow_definition,
+                ..
+            } => Some(workflow_definition.clone()),
+            _ => None,
+        })
+        .ok_or(ContractLookupError::RunNotFound)?;
+    lookup_step_output_contract(&workflow, step).ok_or_else(|| {
+        ContractLookupError::NoOutputContract {
+            workflow_name: workflow.name,
+            step: step.to_string(),
+        }
+    })
+}
+
+/// [08] workflow definition から `step_name` の `output_contract` を解決する pure helper。
+///
+/// top-level node / parallel child の両方を探索し、`output_contract` が空文字 /
+/// 未設定の step は「提出対象として妥当でない」として `None` を返す。
+///
+/// engine の `WorkflowCommand::SubmitOutput` handler と CLI `workflow output submit /
+/// validate` の双方から再利用される pure 関数として contract モジュールに置く
+/// （spec [08] アーキテクチャ概要: contract resolution は engine と CLI 双方から
+/// 再利用される pure 関数。CLI 層が engine internals に依存しないようにする境界）。
+pub fn lookup_step_output_contract(workflow: &Workflow, step_name: &str) -> Option<String> {
+    for node in &workflow.nodes {
+        if node.name == step_name {
+            return node
+                .output_contract
+                .clone()
+                .filter(|c| !c.trim().is_empty());
+        }
+        if let Some(children) = &node.parallel_children {
+            for child in children {
+                if child.name == step_name {
+                    return child
+                        .output_contract
+                        .clone()
+                        .filter(|c| !c.trim().is_empty());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// contract検証結果。
 #[derive(Debug, Clone)]
 pub enum ContractValidationResult {
@@ -388,5 +464,68 @@ mod tests {
             }
             other => panic!("expected Valid, got {:?}", other),
         }
+    }
+
+    // ---- [08] resolve_step_output_contract_from_events: CLI / Tauri 共通の解決経路 ----
+
+    fn workflow_with_review_contract(contract: Option<&str>) -> Workflow {
+        use crate::workflow::schema::{NodeDefinition, NodeType};
+        Workflow {
+            name: "wf-resolve".to_string(),
+            description: "".to_string(),
+            builtin: false,
+            nodes: vec![NodeDefinition {
+                name: "review".to_string(),
+                node_type: NodeType::Agent,
+                instruction: Some("review".to_string()),
+                output_contract: contract.map(str::to_string),
+                ..NodeDefinition::default()
+            }],
+        }
+    }
+
+    fn run_started_event(workflow: Workflow) -> WorkflowEvent {
+        WorkflowEvent::RunStarted {
+            run_id: "run-1".to_string(),
+            workflow_name: workflow.name.clone(),
+            workflow_file_stem: workflow.name.clone(),
+            worktree_path: "/wt".to_string(),
+            workflow_definition: workflow,
+            timestamp: 1.0,
+        }
+    }
+
+    /// spec [08]: RunStarted から workflow_definition を引き、step の contract を解決する。
+    #[test]
+    fn resolve_step_output_contract_from_events_resolves_compliant_contract() {
+        let events = vec![run_started_event(workflow_with_review_contract(Some(
+            "review-verdict",
+        )))];
+        let contract = resolve_step_output_contract_from_events(&events, "review")
+            .expect("contract should be resolved");
+        assert_eq!(contract, "review-verdict");
+    }
+
+    /// spec [08]: RunStarted event がない event 列は `RunNotFound`。
+    #[test]
+    fn resolve_step_output_contract_from_events_returns_run_not_found_without_run_started() {
+        let err = resolve_step_output_contract_from_events(&[], "review")
+            .expect_err("missing RunStarted should yield error");
+        assert_eq!(err, ContractLookupError::RunNotFound);
+    }
+
+    /// spec [08]: step に `output_contract` が無い場合は `NoOutputContract`。
+    #[test]
+    fn resolve_step_output_contract_from_events_returns_no_output_contract_when_unset() {
+        let events = vec![run_started_event(workflow_with_review_contract(None))];
+        let err = resolve_step_output_contract_from_events(&events, "review")
+            .expect_err("missing output_contract should yield error");
+        assert_eq!(
+            err,
+            ContractLookupError::NoOutputContract {
+                workflow_name: "wf-resolve".to_string(),
+                step: "review".to_string(),
+            }
+        );
     }
 }

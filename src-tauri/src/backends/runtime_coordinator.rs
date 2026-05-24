@@ -104,18 +104,6 @@ pub(crate) async fn wait_until_session_close_finished(chat_session_id: &str) {
     }
 }
 
-/// 指定 session_id が現在 close 中（mark_session_closing 後 clear_session_closing 前）か返す。
-/// engine 層の retry / spawn 判断で「ユーザーが閉じた直後の bridge を再起動しない」ガードに使う。
-/// [08] prose 抽出経路廃止以降は engine 内 caller がいないが、将来の再導入余地のため保持する。
-#[allow(dead_code)]
-pub(crate) async fn is_session_closing(chat_session_id: &str) -> bool {
-    RUNTIME_COORDINATOR
-        .closing_counts
-        .lock()
-        .await
-        .contains_key(chat_session_id)
-}
-
 pub(crate) async fn mark_pending_turn_starting(chat_session_id: &str) {
     RUNTIME_COORDINATOR
         .pending_turns

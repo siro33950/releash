@@ -4458,37 +4458,6 @@ pub async fn prepare_image_attachments_from_paths(
     Ok(attachments)
 }
 
-/// ワークフローエンジンから呼ばれる内部版。
-/// AgentSessionを開始し、プロンプトを送信する。
-/// メッセージの追加(human + agent)とstart_agent_turnをまとめて行う。
-///
-/// [08] prose 抽出経路（contract repair prompt 経由）の廃止により caller が消えたが、
-/// 将来の再利用余地のため pub(crate) を保持する。
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn start_agent_turn_internal<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    handles: &Arc<Mutex<AgentProcessMap>>,
-    session_store: &Arc<SessionStore>,
-    chat_session_id: &str,
-    cwd: &str,
-    permission_mode: &str,
-    prompt: &str,
-) -> Result<(), String> {
-    wait_until_session_close_finished(chat_session_id).await;
-    let _runtime_guard = acquire_session_runtime_lock(chat_session_id).await;
-    start_agent_turn_internal_locked(
-        app,
-        handles,
-        session_store,
-        chat_session_id,
-        cwd,
-        permission_mode,
-        prompt,
-    )
-    .await
-}
-
 /// Runtime lock acquired by the caller variant used by workflow step startup.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_turn_internal_locked<R: tauri::Runtime>(

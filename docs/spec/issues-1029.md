@@ -76,7 +76,8 @@ Feature: Workflow step への構造化出力の提出
       When 提出者が当該 step に対し contract に適合しない構造化出力を提出する
       Then 提出は拒否されたことが提出者に伝わる
       And 当該 step の構造化出力は提出前の状態のまま保たれる
-      And 当該拒否は run の事実履歴に残らない
+      And 当該拒否は run のメイン履歴（OutputSubmitted）に残らない
+      And 当該拒否は observability 用の補助履歴として記録される
 
     Scenario: 提出対象として妥当でない step に対し提出する
       Given workflow run が存在する
@@ -84,6 +85,7 @@ Feature: Workflow step への構造化出力の提出
       When 提出者が当該 step に対し構造化出力を提出する
       Then 提出は拒否されたことが提出者に伝わる
       And 当該 run の状態は提出前のまま保たれる
+      And 当該拒否は observability 用の補助履歴として記録される
 
   Rule: 提出前に副作用なしで適合性を確認できる
     Scenario: 構造化出力の適合性のみを確認する
@@ -104,6 +106,13 @@ Feature: Workflow step への構造化出力の提出
       When 参照者が当該 step の構造化出力を要求する
       Then 未提出であることが参照者に伝わる
 
+    Scenario: workflow に存在しない step の構造化出力を参照する
+      Given workflow run が存在する
+      And 参照者が指定した step が当該 workflow に存在しない
+      When 参照者が当該 step の構造化出力を要求する
+      Then 参照は拒否されたことが参照者に伝わる
+      And 当該拒否は適合性確認（validate）の不在 step に対する判定と同じ扱いになる
+
     Scenario: 提出済みの構造化出力を後続 step が参照する
       Given workflow run の先行 step に構造化出力が提出済みである
       And 後続 step が当該 step の出力を入力として参照するよう定義されている
@@ -117,6 +126,33 @@ Feature: Workflow step への構造化出力の提出
       But 明示的な提出は行わない
       Then 当該 step の構造化出力は未提出のまま保たれる
       And 後続 step からも未提出として扱われる
+
+  Rule: CLI 入口は対象 run の実在を提出前に検証する
+    Scenario: 存在しない run_id に対し mutation を要求する
+      Given workflow run の観測経路に対象 run_id が存在しない
+      When 提出者が当該 run_id に対し承認・却下・中止・構造化出力提出のいずれかを要求する
+      Then 提出は CLI 入口で拒否されたことが提出者に伝わる
+      And 受理キューには当該要求が投入されない
+
+    Scenario: 観測経路の向き先が存在しない
+      Given 観測経路として指定されたデータ領域そのものが存在しない
+      When 提出者が観測経路を介して run 一覧・状態・履歴を要求する
+      Then 観測は拒否されたことが提出者に伝わる
+      And 「観測対象が 0 件」と区別される
+
+  Rule: engine が判断した拒否は観測可能な補助履歴として記録される
+    Scenario: 拒否規則を持たない承認待ち step に対し却下する
+      Given 進行中の workflow run の承認待ち step に対する却下規則が定義されていない
+      When 提出者が当該 step に対し却下を要求する
+      Then 当該 step の状態は承認待ちのまま保たれる
+      And 当該却下要求が受理された事実は run の事実履歴に記録される
+      And 当該要求が engine によって拒否された事実が補助履歴として記録される
+
+    Scenario: 承認規則と整合しない理由で却下要求が engine に拒否される
+      Given 進行中の workflow run の承認待ち step に対し engine の認可・状態判定が承認外と判断する条件が成立している
+      When 提出者が当該 step に対し却下を要求する
+      Then 当該要求が engine によって拒否された事実が補助履歴として記録される
+      And 補助履歴には拒否理由の分類が含まれる
 ```
 
 ## アーキテクチャ概要
@@ -136,7 +172,7 @@ Feature: Workflow step への構造化出力の提出
   - 担当: 既存 output contract 適合判定を pure validator として engine と `validate` CLI の双方から再利用される形で提供
   - 担当しない: prose 抽出（`<workflow_output>` block を agent 自由文から取り出すヘルパは本 issue で除去）、state への副作用
 - **Event log / Run store（`src-tauri/src/workflow/event.rs`, `log.rs`, `run.rs`, `state.rs`）**:
-  - 担当: `WorkflowEvent::OutputSubmitted` variant の追加、append-only NDJSON への書き込み、`step_outputs` slot の永続化（書き込み入口は engine 経由のみ）
+  - 担当: `WorkflowEvent::OutputSubmitted` variant の追加、`WorkflowEvent::CliMutationRejected` variant の追加（観測経路用の補助履歴）、append-only NDJSON への書き込み、`step_outputs` slot の永続化（書き込み入口は engine 経由のみ）
 - **Pending command queue（`src-tauri/src/workflow/pending_command.rs`, `pending_command_dispatcher.rs`）**:
   - 担当: `SubmitOutput` を `PendingCommandPayload` の新 variant として受け入れ、`workflow_pending/{pending,processing,processed}/` 経路で engine に取り次ぐ
 - **Built-in workflow YAML（`workflows/built-in/spec-driven-development.yml` および同梱の他 built-in YAML）**:
@@ -165,7 +201,8 @@ Feature: Workflow step への構造化出力の提出
 - **CLI 層は engine state を直接読み書きしない**: `submit` は必ず pending file 経由、`get` は read-only file-direct のみ、`validate` は副作用のない pure validator 呼び出しのみ
 - **Contract validation は engine と CLI（`validate`）の双方から再利用される pure 関数**: state mutation を伴わず、入力に対する判定だけを返す
 - **Prose 抽出経路は engine 側から完全に除去**: step agent の自由文に含まれる `<workflow_output>` 相当の表現を engine は一切観測しない（振る舞い定義の「明示的提出は行わない」シナリオに対応）
-- **OutputSubmitted の append は適合判定および state 更新と同一トランザクション境界内**: validation 失敗時は event を残さず `step_outputs` / `workflow_variables` も不変、成功時は 3 者が原子的に揃う
+- **OutputSubmitted の append は適合判定および state 更新と同一トランザクション境界内**: validation 失敗時はメイン履歴（OutputSubmitted）を残さず `step_outputs` / `workflow_variables` も不変、成功時は 3 者が原子的に揃う
+- **CliMutationRejected はメイン履歴と独立した観測経路用補助履歴**: engine が CLI mutation（承認・却下・中止・構造化出力提出）を拒否した事実を observability 用途で記録する。accepted のメイン履歴（`OutputSubmitted` / `CliMutationRequested` / `ApprovalResolved` 等）に出ない条件と並列に発火し、CLI ユーザに「engine が無効と判断した」事実と理由分類を提供する
 - **CLI 経路と in-process 経路は `dispatch_external` で合流**: 入口層に依らず同一の engine 処理を経るため、提出経路ごとの分岐は engine の責務範囲に閉じる
 - **Workflow panel（[07]）への追加実装は本 issue の境界外**: `OutputSubmitted` event は既存 timeline 表示の中で素朴に観測されるに留め、structured output 表示専用 UI は追加しない
 
@@ -175,6 +212,8 @@ Feature: Workflow step への構造化出力の提出
 - `PendingCommandPayload` における `SubmitOutput` variant の field 名・シリアライズ表現
 - engine 内 `SubmitOutput` handler の関数分割と helper 命名
 - 不適合・stale・不在 step などのエラー種別に対する CLI exit code および API error code の具体値
+- CLI 入口で run_id / data_dir / step の実在チェックを行うタイミング・順序・エラーメッセージ文面（CLI 入口バリデーション境界）
+- `CliMutationRejected` event の拒否理由分類の追加・粗粒度設計（`run_not_found` / `no_reject_rule` / `step_not_accepting` / `contract_mismatch` / 他）
 - `get` の返却ペイロードに含める付随メタ（提出時刻・event index 等）の項目選定と命名
 - Built-in workflow YAML 内の step prompt 文面（CLI 提出を指示する具体的な日本語/英語表現）
 - テストケースの具体的配置（contract 適合判定 reuse は `contract.rs` 内、submit 一貫トランザクションは `engine.rs` 内、CLI 経路は `cli` モジュール内、pending dispatcher との結合は `pending_command_dispatcher.rs` 内など）と各テストのデータ準備手順
