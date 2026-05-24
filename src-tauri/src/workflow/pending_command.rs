@@ -66,6 +66,13 @@ pub enum PendingCommandPayload {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         node_name: Option<String>,
     },
+    /// [08] `releash workflow output submit` 経由で書き出される構造化出力提出。
+    /// engine 側 dispatcher が `WorkflowCommand::SubmitOutput` に変換する。
+    SubmitOutput {
+        step_name: String,
+        contract: String,
+        structured_output: serde_json::Value,
+    },
 }
 
 pub type CliRequestPayload = PendingCommandPayload;

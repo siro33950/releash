@@ -199,6 +199,32 @@ pub enum WorkflowEvent {
         /// engine が本 event を受理・追記した時刻（commit timestamp）。
         timestamp: f64,
     },
+    /// [08] step に対する構造化出力が contract 適合判定を経て確定した事実。
+    ///
+    /// `WorkflowCommand::SubmitOutput`（CLI / in-process 経路問わず）が
+    /// engine の `dispatch_external` 単一入口で受理され、contract 適合判定 →
+    /// `step_outputs` / `workflow_variables` 更新と同一トランザクションで
+    /// append される。contract 不適合・stale step・不在 step などの拒否は本
+    /// event を残さない（spec [08] OutputSubmitted append の不可分性境界）。
+    OutputSubmitted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        /// 対象 step の `output_contract`。
+        contract: String,
+        /// contract 適合判定を通過した構造化出力。
+        structured_output: serde_json::Value,
+        /// CLI pending command 経由で提出された場合の caller 側 request id。
+        /// in-process 経路（Tauri command 等）で提出された場合は `None`。
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        request_id: Option<String>,
+        /// caller が pending command を書き出した時刻（Unix 秒）。
+        /// in-process 経路では `None`。
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        submitted_at: Option<f64>,
+        /// engine が本 event を append した時刻。
+        timestamp: f64,
+    },
 }
 
 /// [06] CLI mutating CLI が要求した内容の typed 表現。
@@ -265,7 +291,8 @@ impl WorkflowEvent {
             | Self::ParallelChildCompleted { run_id, .. }
             | Self::ParallelCompleted { run_id, .. }
             | Self::ContractRepairRequested { run_id, .. }
-            | Self::CliMutationRequested { run_id, .. } => run_id,
+            | Self::CliMutationRequested { run_id, .. }
+            | Self::OutputSubmitted { run_id, .. } => run_id,
         }
     }
 }

@@ -19,8 +19,8 @@ use crate::workflow::command_input::{
     CommandInputError,
 };
 use crate::workflow::contract::{
-    build_repair_prompt, extract_workflow_output, validate_contract, ContractValidationResult,
-    ExtractionResult,
+    build_repair_prompt, extract_workflow_output, validate_contract, validate_contract_value,
+    ContractValidationResult, ExtractionResult,
 };
 use crate::workflow::event::{ApprovalDecisionRecord, CollectedOutputEntry, WorkflowEvent};
 use crate::workflow::event_projection::reconstruct_state_from_events;
@@ -1116,6 +1116,32 @@ fn find_any_by_worktree<'a>(
     execs.values().find(|e| e.worktree_path == worktree_path)
 }
 
+/// [08] workflow definition から `step_name` の `output_contract` を解決する。
+///
+/// top-level node / parallel child の両方を探索し、`output_contract` が空文字 /
+/// 未設定の step は「提出対象として妥当でない」として `None` を返す。
+fn lookup_step_output_contract(workflow: &Workflow, step_name: &str) -> Option<String> {
+    for node in &workflow.nodes {
+        if node.name == step_name {
+            return node
+                .output_contract
+                .clone()
+                .filter(|c| !c.trim().is_empty());
+        }
+        if let Some(children) = &node.parallel_children {
+            for child in children {
+                if child.name == step_name {
+                    return child
+                        .output_contract
+                        .clone()
+                        .filter(|c| !c.trim().is_empty());
+                }
+            }
+        }
+    }
+    None
+}
+
 impl WorkflowEngine {
     pub(crate) fn new(
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
@@ -1770,6 +1796,162 @@ impl WorkflowEngine {
             .await
     }
 
+    /// [08] CLI pending command 経由で `SubmitOutput` を engine に取り次ぐ entry。
+    ///
+    /// in-process 経路 (`dispatch_external` の `SubmitOutput` match arm) と同じ
+    /// `handle_submit_output` に合流するが、CLI 経由では caller の `request_id`
+    /// （pending entry id）と `submitted_at`（CLI 側 timestamp）を `OutputSubmitted`
+    /// event に保存する（spec [08] アーキテクチャ概要 / 状態 Owner）。
+    pub(crate) async fn dispatch_submit_output_with_context<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        run_id: &str,
+        step_name: String,
+        contract: String,
+        structured_output: serde_json::Value,
+        request_id: Option<String>,
+        submitted_at: Option<f64>,
+    ) -> Result<(), WorkflowEngineError> {
+        self.handle_submit_output(
+            app,
+            run_id,
+            step_name,
+            contract,
+            structured_output,
+            request_id,
+            submitted_at,
+        )
+        .await
+    }
+
+    /// [08] step に対する構造化出力提出の単一トランザクション handler。
+    ///
+    /// 1. run / step / contract の妥当性検証
+    /// 2. `validate_contract_value` で contract 適合判定
+    /// 3. 適合時のみ `step_outputs` / `workflow_variables` を更新し、
+    ///    `OutputSubmitted` event を append
+    /// 4. 不適合・stale step・不在 step・契約タイプ不一致は副作用なしで `Err` を返し、
+    ///    `step_outputs` / `workflow_variables` / event log を一切変更しない。
+    async fn handle_submit_output<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        run_id: &str,
+        step_name: String,
+        contract: String,
+        structured_output: serde_json::Value,
+        request_id: Option<String>,
+        submitted_at: Option<f64>,
+    ) -> Result<(), WorkflowEngineError> {
+        uuid::Uuid::parse_str(run_id).map_err(|_| {
+            WorkflowEngineError::ValidationError("run_id must be UUID".to_string())
+        })?;
+        if step_name.trim().is_empty() {
+            return Err(WorkflowEngineError::ValidationError(
+                "step_name must not be empty".to_string(),
+            ));
+        }
+        if contract.trim().is_empty() {
+            return Err(WorkflowEngineError::ValidationError(
+                "contract must not be empty".to_string(),
+            ));
+        }
+
+        // 1. run / step の妥当性検証（read-only lock スコープ）。
+        let (workflow_name, run_index, expected_contract) = {
+            let execs = self.executions.lock().await;
+            let exec = execs
+                .get(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            match exec.state {
+                WorkflowExecutionState::Running | WorkflowExecutionState::WaitingApproval => {}
+                _ => {
+                    return Err(WorkflowEngineError::InvalidState(format!(
+                        "run {run_id} is not accepting structured output (state: {})",
+                        exec.state.as_str()
+                    )));
+                }
+            }
+            let expected_contract = lookup_step_output_contract(&exec.workflow, &step_name)
+                .ok_or_else(|| {
+                    WorkflowEngineError::ValidationError(format!(
+                        "step '{step_name}' is not a valid submission target"
+                    ))
+                })?;
+            if expected_contract != contract {
+                return Err(WorkflowEngineError::ValidationError(format!(
+                    "contract mismatch: step '{step_name}' expects '{expected_contract}', got '{contract}'"
+                )));
+            }
+            let run_index = exec
+                .step_execution_counts
+                .get(&step_name)
+                .copied()
+                .unwrap_or(0);
+            (exec.workflow.name.clone(), run_index, expected_contract)
+        };
+        // 2. contract 適合判定（pure validator、副作用なし）。
+        let validated_output = match validate_contract_value(&contract, structured_output) {
+            ContractValidationResult::Valid {
+                structured_output, ..
+            } => structured_output,
+            ContractValidationResult::Invalid(violation) => {
+                return Err(WorkflowEngineError::ValidationError(format!(
+                    "contract validation failed ({}): {}",
+                    violation.reason, violation.details
+                )));
+            }
+        };
+        debug_assert_eq!(expected_contract, contract);
+
+        // 3. state mutation（writer lock スコープ）。step_outputs と workflow_variables
+        //    を 1 度のロックで揃って更新する。
+        let timestamp = current_timestamp();
+        let contract_vars = Self::extract_contract_variables(
+            &Some(contract.clone()),
+            &Some(validated_output.clone()),
+        );
+        {
+            let mut execs = self.executions.lock().await;
+            let exec = execs
+                .get_mut(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            exec.step_outputs.insert(
+                step_name.clone(),
+                StepOutput {
+                    step_name: step_name.clone(),
+                    run_index,
+                    session_id: None,
+                    result: None,
+                    structured_output: Some(validated_output.clone()),
+                    output_contract: Some(contract.clone()),
+                    token_usage: None,
+                    completed_at: timestamp,
+                },
+            );
+            if !contract_vars.is_empty() {
+                exec.workflow_variables.extend(contract_vars);
+            }
+        }
+
+        // 4. OutputSubmitted event を append。append 失敗時は state を rollback せず、
+        //    storage 異常として SessionStore エラーで伝播する（spec [08] 状態 Owner:
+        //    event log は engine 経由のみ）。
+        let event = WorkflowEvent::OutputSubmitted {
+            run_id: run_id.to_string(),
+            workflow_name,
+            node_name: step_name,
+            contract,
+            structured_output: validated_output,
+            request_id,
+            submitted_at,
+            timestamp,
+        };
+        self.write_log_required(app, event)
+            .map_err(WorkflowEngineError::SessionStore)?;
+
+        Ok(())
+    }
+
     pub(crate) async fn append_command_commit_context<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -2085,6 +2267,28 @@ impl WorkflowEngine {
                     Some(reason),
                     node_name.as_deref(),
                     commit_context,
+                )
+                .await?;
+                Ok(WorkflowCommandResult::Accepted)
+            }
+            // [08] step に対する構造化出力の typed 提出。CLI / Tauri command / in-process
+            // caller が組み立てた外部入口の単一合流点。in-process 経路 (commit_context = None)
+            // と CLI pending 経路 (dispatcher が `dispatch_submit_output_with_context`
+            // 直接呼び出し) の双方が同一 handler を経由する。
+            WorkflowCommand::SubmitOutput {
+                run_id,
+                step_name,
+                contract,
+                structured_output,
+            } => {
+                self.handle_submit_output(
+                    app,
+                    &run_id,
+                    step_name,
+                    contract,
+                    structured_output,
+                    None,
+                    None,
                 )
                 .await?;
                 Ok(WorkflowCommandResult::Accepted)
@@ -6901,7 +7105,8 @@ impl WorkflowEngine {
             | WorkflowEvent::ParallelChildCompleted { timestamp, .. }
             | WorkflowEvent::ParallelCompleted { timestamp, .. }
             | WorkflowEvent::ContractRepairRequested { timestamp, .. }
-            | WorkflowEvent::CliMutationRequested { timestamp, .. } => *timestamp,
+            | WorkflowEvent::CliMutationRequested { timestamp, .. }
+            | WorkflowEvent::OutputSubmitted { timestamp, .. } => *timestamp,
         }
     }
 
@@ -6922,7 +7127,8 @@ impl WorkflowEngine {
             | WorkflowEvent::ParallelChildCompleted { timestamp, .. }
             | WorkflowEvent::ParallelCompleted { timestamp, .. }
             | WorkflowEvent::ContractRepairRequested { timestamp, .. }
-            | WorkflowEvent::CliMutationRequested { timestamp, .. } => {
+            | WorkflowEvent::CliMutationRequested { timestamp, .. }
+            | WorkflowEvent::OutputSubmitted { timestamp, .. } => {
                 *timestamp = commit_timestamp;
             }
         }

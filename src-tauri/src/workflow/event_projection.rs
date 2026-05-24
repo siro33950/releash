@@ -294,6 +294,19 @@ pub enum WorkflowEventView {
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
+    OutputSubmitted {
+        run_id: String,
+        workflow_name: String,
+        node_name: String,
+        contract: String,
+        structured_output: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", rename = "submittedAtMs")]
+        submitted_at_ms: Option<f64>,
+        #[serde(rename = "timestampMs")]
+        timestamp_ms: f64,
+    },
 }
 
 impl From<WorkflowEvent> for WorkflowEventView {
@@ -531,6 +544,25 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 request_id,
                 request,
                 requested_at_ms: seconds_to_ms(requested_at),
+                timestamp_ms: seconds_to_ms(timestamp),
+            },
+            WorkflowEvent::OutputSubmitted {
+                run_id,
+                workflow_name,
+                node_name,
+                contract,
+                structured_output,
+                request_id,
+                submitted_at,
+                timestamp,
+            } => WorkflowEventView::OutputSubmitted {
+                run_id,
+                workflow_name,
+                node_name,
+                contract,
+                structured_output,
+                request_id,
+                submitted_at_ms: submitted_at.map(seconds_to_ms),
                 timestamp_ms: seconds_to_ms(timestamp),
             },
         }
@@ -853,6 +885,7 @@ pub(crate) fn reconstruct_state_from_events(
     let mut step_history: Vec<StepHistoryEntry> = Vec::new();
     let mut step_execution_counts: HashMap<String, u32> = HashMap::new();
     let mut step_outputs: HashMap<String, StepOutput> = HashMap::new();
+    let mut workflow_variables: HashMap<String, String> = HashMap::new();
     let mut total_token_usage = TokenUsage::default();
     let mut exec_state = WorkflowExecutionState::Running;
     let mut current_step_name = workflow
@@ -1189,6 +1222,43 @@ pub(crate) fn reconstruct_state_from_events(
                 // [06] CLI mutation 要求の事実は append-only な観測情報のみで、
                 // engine domain state には影響しない。
             }
+            WorkflowEvent::OutputSubmitted {
+                node_name,
+                contract,
+                structured_output,
+                timestamp,
+                ..
+            } => {
+                // [08] CLI / in-process 経由で確定した step output を state に復元する。
+                // 後続 step が `pass_output_from` で経路非依存に参照できる shape に揃える。
+                let ri = step_execution_counts
+                    .get(node_name)
+                    .copied()
+                    .unwrap_or(0);
+                step_outputs.insert(
+                    node_name.clone(),
+                    StepOutput {
+                        step_name: node_name.clone(),
+                        run_index: ri,
+                        session_id: None,
+                        result: None,
+                        structured_output: Some(structured_output.clone()),
+                        output_contract: Some(contract.clone()),
+                        token_usage: None,
+                        completed_at: *timestamp,
+                    },
+                );
+                // contract 由来の workflow_variables を反映（spec-file-path のみ）。
+                if contract == "spec-file-path" {
+                    if let Some(path) = structured_output
+                        .get("spec_file_path")
+                        .and_then(|v| v.as_str())
+                    {
+                        workflow_variables.insert("spec_file_path".to_string(), path.to_string());
+                    }
+                }
+                updated_at = *timestamp;
+            }
         }
     }
 
@@ -1214,7 +1284,7 @@ pub(crate) fn reconstruct_state_from_events(
         step_outputs,
         step_states,
         active_parallel_steps,
-        workflow_variables: HashMap::new(),
+        workflow_variables,
         approval_operations: None,
         started_at,
         updated_at,

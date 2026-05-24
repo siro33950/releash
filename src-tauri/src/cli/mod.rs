@@ -570,6 +570,7 @@ fn format_event(event: &WorkflowEvent) -> String {
         WorkflowEvent::ParallelCompleted { .. } => "ParallelCompleted",
         WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
         WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
+        WorkflowEvent::OutputSubmitted { .. } => "OutputSubmitted",
     };
     match serde_json::to_string(event) {
         Ok(json) => format!("{kind} {json}"),

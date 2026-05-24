@@ -136,6 +136,17 @@ pub fn validate_contract(
     }
 }
 
+/// [08] `validate_contract` の Value-only 入口。
+///
+/// CLI `workflow output submit` / `validate` および engine の
+/// `WorkflowCommand::SubmitOutput` handler から再利用される pure validator。
+/// caller は既に「contract type」と「JSON value」を typed 入力として持っているため
+/// prose 抽出を経由せず、`<workflow_output>` block の存在判定は行わない。
+/// type 名の照合は caller (CLI / engine) 側の責務に閉じる。
+pub fn validate_contract_value(contract_type: &str, value: Value) -> ContractValidationResult {
+    validate_contract_specific(contract_type, value)
+}
+
 /// contract typeごとのバリデーション。
 fn validate_contract_specific(contract_type: &str, json: Value) -> ContractValidationResult {
     match contract_type {

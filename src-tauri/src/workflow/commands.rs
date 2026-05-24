@@ -1266,6 +1266,7 @@ mod tests {
                 WorkflowEvent::ParallelCompleted { .. } => "ParallelCompleted",
                 WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
                 WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
+                WorkflowEvent::OutputSubmitted { .. } => "OutputSubmitted",
             })
             .collect()
     }

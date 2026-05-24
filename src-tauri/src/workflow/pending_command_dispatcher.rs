@@ -106,6 +106,28 @@ pub(crate) async fn dispatch_pending_command<R: tauri::Runtime>(
         ..
     } = pending;
 
+    // [08] SubmitOutput は CliMutationRequested 系の commit_context を経由せず、
+    // engine 側で OutputSubmitted event を直接 append する独立トランザクション。
+    if let PendingCommandPayload::SubmitOutput {
+        step_name,
+        contract,
+        structured_output,
+    } = payload
+    {
+        return dispatch_submit_output_pending(
+            app,
+            engine,
+            session_store,
+            &run_id,
+            id,
+            step_name,
+            contract,
+            structured_output,
+            requested_at,
+        )
+        .await;
+    }
+
     let request = payload_to_cli_request(&payload);
     let metadata = WorkflowMutationContext::new(
         run_id.clone(),
@@ -145,6 +167,41 @@ pub(crate) async fn dispatch_pending_command<R: tauri::Runtime>(
             "CLI mutation dispatch returned unexpected result: {other:?}"
         )),
         Err(e) => handle_rejected_dispatch(app, engine, e, commit_context).await,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_submit_output_pending<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    engine: &Arc<WorkflowEngine>,
+    session_store: &Arc<SessionStore>,
+    run_id: &str,
+    request_id: String,
+    step_name: String,
+    contract: String,
+    structured_output: serde_json::Value,
+    requested_at: f64,
+) -> PendingCommandDispatchOutcome {
+    if let Err(e) = engine
+        .ensure_execution_loaded_for_external(app, session_store, run_id)
+        .await
+    {
+        return classify_dispatch_error(e);
+    }
+    match engine
+        .dispatch_submit_output_with_context(
+            app,
+            run_id,
+            step_name,
+            contract,
+            structured_output,
+            Some(request_id),
+            Some(requested_at),
+        )
+        .await
+    {
+        Ok(()) => PendingCommandDispatchOutcome::Accepted,
+        Err(e) => classify_dispatch_error(e),
     }
 }
 
@@ -195,6 +252,11 @@ fn payload_to_cli_request(payload: &PendingCommandPayload) -> CliMutationRequest
         PendingCommandPayload::Abort { node_name } => CliMutationRequestRecord::Abort {
             node_name: node_name.clone(),
         },
+        PendingCommandPayload::SubmitOutput { .. } => {
+            unreachable!(
+                "SubmitOutput payload must be routed via dispatch_submit_output_pending"
+            )
+        }
     }
 }
 
@@ -219,6 +281,16 @@ fn payload_to_workflow_command(payload: PendingCommandPayload, run_id: String) -
         PendingCommandPayload::Abort { node_name } => WorkflowCommand::AbortRun {
             run_id,
             expected_node_name: node_name,
+        },
+        PendingCommandPayload::SubmitOutput {
+            step_name,
+            contract,
+            structured_output,
+        } => WorkflowCommand::SubmitOutput {
+            run_id,
+            step_name,
+            contract,
+            structured_output,
         },
     }
 }

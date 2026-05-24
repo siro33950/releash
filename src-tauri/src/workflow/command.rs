@@ -8,7 +8,7 @@
 //! `WorkflowEngine::dispatch` 経由で外部から到達した場合は内部不整合として `Err` に
 //! 変換する境界（spec [05] internal command の非公開境界）を engine 側で担保する。
 //!
-//! `SubmitOutput`（[08]）は本ファイルでは導入しない。
+//! `SubmitOutput`（[08]）は外部入口を持つ variant として本ファイルで導入する。
 //!
 //! ハンドラ実体は engine 側（`engine.rs`）に置く。本ファイルは型の所有のみを担い、
 //! `ApprovalDecision` 等の engine domain 型には依存しない。
@@ -72,6 +72,21 @@ pub enum WorkflowCommand {
         run_id: String,
         node_name: Option<String>,
         reason: String,
+    },
+    /// [08] step の `output_contract` に従う構造化出力の typed 提出。
+    ///
+    /// CLI（`releash workflow output submit`）/ Tauri command / in-process caller が
+    /// `run_id` と `step_name` を主語に組み立てる外部入口。engine は
+    /// `dispatch_external` で受理し、contract 適合判定 → `step_outputs` /
+    /// `workflow_variables` 更新 → `WorkflowEvent::OutputSubmitted` append を
+    /// 単一トランザクションで実行する。`contract` は caller が指定した contract
+    /// 種別で、engine 側で対象 step の `output_contract` と一致するか検証する。
+    /// 不適合・stale step・不在 step は副作用なしで `Err` を返す。
+    SubmitOutput {
+        run_id: String,
+        step_name: String,
+        contract: String,
+        structured_output: serde_json::Value,
     },
     /// [05] internal-only: engine 内部の node 完了遷移。発行 event は
     /// `WorkflowEvent::NodeCompleted` と同一 shape のフィールドを持つ。
