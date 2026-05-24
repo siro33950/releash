@@ -29,9 +29,7 @@ use crate::session::{
     GetSessionResponse, MessagePart, MessageRole, SessionStore, SessionSummary,
 };
 
-pub(crate) use crate::backends::runtime_coordinator::{
-    acquire_session_runtime_lock, is_session_closing,
-};
+pub(crate) use crate::backends::runtime_coordinator::acquire_session_runtime_lock;
 
 pub const CLAUDE_BACKEND_ID: &str = "claude";
 pub const CODEX_BACKEND_ID: &str = "codex";
@@ -4463,6 +4461,10 @@ pub async fn prepare_image_attachments_from_paths(
 /// ワークフローエンジンから呼ばれる内部版。
 /// AgentSessionを開始し、プロンプトを送信する。
 /// メッセージの追加(human + agent)とstart_agent_turnをまとめて行う。
+///
+/// [08] prose 抽出経路（contract repair prompt 経由）の廃止により caller が消えたが、
+/// 将来の再利用余地のため pub(crate) を保持する。
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_turn_internal<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -7026,19 +7028,10 @@ mod tests {
             .rev()
             .find(|msg| msg.role == MessageRole::Agent)
             .unwrap();
-        match crate::workflow::contract::validate_contract(
-            "approved-fix-policy",
-            crate::workflow::contract::extract_workflow_output(&latest_agent.content),
-        ) {
-            crate::workflow::contract::ContractValidationResult::Valid {
-                structured_output,
-                result,
-            } => {
-                assert_eq!(result.as_deref(), Some("approved"));
-                assert_eq!(structured_output["policy"], "Latest adjusted policy.");
-            }
-            other => panic!("expected latest assistant output to be valid policy, got {other:?}"),
-        }
+        // [08] prose 抽出経路は廃止済み。session が更新されていることだけ確認し、
+        // contract 検証は CLI submit 経由（`workflow::contract::validate_contract_value`）
+        // の単体テストでカバーする。
+        assert!(latest_agent.content.contains("Latest adjusted policy."));
 
         let removed_proc = handles.lock().await.remove(&session.id);
         if let Some(mut proc) = removed_proc {

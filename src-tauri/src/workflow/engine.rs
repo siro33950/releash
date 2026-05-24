@@ -18,13 +18,9 @@ use crate::workflow::command_input::{
     validate_optional_comment_text, validate_reject_reason_text, validate_required_comment_text,
     CommandInputError,
 };
-use crate::workflow::contract::{
-    build_repair_prompt, extract_workflow_output, validate_contract, validate_contract_value,
-    ContractValidationResult, ExtractionResult,
-};
+use crate::workflow::contract::{validate_contract_value, ContractValidationResult};
 use crate::workflow::event::{ApprovalDecisionRecord, CollectedOutputEntry, WorkflowEvent};
 use crate::workflow::event_projection::reconstruct_state_from_events;
-use crate::workflow::facet;
 use crate::workflow::log::WorkflowEventLog;
 use crate::workflow::resolver::{
     ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
@@ -45,7 +41,6 @@ use crate::workflow::state::{
 
 #[allow(dead_code)]
 const MAX_OUTPUT_SIZE: usize = 100 * 1024; // 100KB
-const MAX_CONTRACT_RETRIES: u32 = 2;
 
 static PRIVATE_KEY_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
@@ -491,6 +486,9 @@ struct ParallelChildRun {
     output_contract: Option<String>,
     token_usage: TokenUsage,
     run_index: u32,
+    /// [08] prose 抽出経路の廃止により本 field は事実上常に 0 で推移する。
+    /// 既存 NDJSON 互換と struct shape 維持のため field 自体は残す。
+    #[allow(dead_code)]
     contract_retry_count: u32,
 }
 
@@ -995,6 +993,11 @@ struct ReduceResult {
 }
 
 /// Contract検証の結果（呼び出し元の次アクションを示す）
+/// [08] prose 抽出経路の廃止により本 enum は事実上 `NoContract` 単一となったが、
+/// `validate_*_contract` の戻り値 shape を保持し、呼び出し側の `match` 構造を
+/// 変えずにスタブ化するために `Valid` / `RetrySent` / `Failed` を残す（将来の
+/// 「engine 内 contract 副作用」を再導入する余地としても保持）。
+#[allow(dead_code)]
 enum ContractCheckResult {
     /// contractなし → 通常フローで続行
     NoContract,
@@ -1890,17 +1893,19 @@ impl WorkflowEngine {
             (exec.workflow.name.clone(), run_index, expected_contract)
         };
         // 2. contract 適合判定（pure validator、副作用なし）。
-        let validated_output = match validate_contract_value(&contract, structured_output) {
-            ContractValidationResult::Valid {
-                structured_output, ..
-            } => structured_output,
-            ContractValidationResult::Invalid(violation) => {
-                return Err(WorkflowEngineError::ValidationError(format!(
-                    "contract validation failed ({}): {}",
-                    violation.reason, violation.details
-                )));
-            }
-        };
+        let (validated_output, validated_result) =
+            match validate_contract_value(&contract, structured_output) {
+                ContractValidationResult::Valid {
+                    structured_output,
+                    result,
+                } => (structured_output, result),
+                ContractValidationResult::Invalid(violation) => {
+                    return Err(WorkflowEngineError::ValidationError(format!(
+                        "contract validation failed ({}): {}",
+                        violation.reason, violation.details
+                    )));
+                }
+            };
         debug_assert_eq!(expected_contract, contract);
 
         // 3. state mutation（writer lock スコープ）。step_outputs と workflow_variables
@@ -1921,7 +1926,7 @@ impl WorkflowEngine {
                     step_name: step_name.clone(),
                     run_index,
                     session_id: None,
-                    result: None,
+                    result: validated_result.clone(),
                     structured_output: Some(validated_output.clone()),
                     output_contract: Some(contract.clone()),
                     token_usage: None,
@@ -3398,160 +3403,20 @@ impl WorkflowEngine {
             })
         };
 
-        // contract検証（exit_code == 0 かつ output_contractが設定されている場合のみ）
-        let (child_result, child_structured_output) = if exit_code == 0 {
-            if let Some(ref contract) = child_output_contract {
-                // output_textがNoneの場合もNoBlockとして検証する
-                let extraction = match &output_text {
-                    Some(text) => extract_workflow_output(text),
-                    None => ExtractionResult::NoBlock,
-                };
-                match validate_contract(contract, extraction) {
-                    ContractValidationResult::Valid {
-                        structured_output,
-                        result,
-                    } => (
-                        result,
-                        Some(Self::mask_sensitive_structured_output(
-                            app,
-                            contract,
-                            structured_output,
-                        )),
-                    ),
-                    ContractValidationResult::Invalid(violation) => {
-                        // contract violation: child単位のリトライまたは失敗
-                        let (should_retry, retry_count, exec_id, wf_name, child_step_name) = {
-                            let mut execs = self.executions.lock().await;
-                            let exec = execs.get_mut(run_id).ok_or_else(|| {
-                                WorkflowEngineError::ExecutionNotFound(run_id.to_string())
-                            })?;
-                            let exec_id = exec.id.clone();
-                            let wf_name = exec.workflow.name.clone();
-                            let pr = exec.parallel_run.as_mut().ok_or_else(|| {
-                                WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
-                            })?;
-                            let child = pr
-                                .children
-                                .iter_mut()
-                                .find(|c| c.session_id == session_id)
-                                .ok_or_else(|| {
-                                    WorkflowEngineError::ExecutionNotFound(
-                                        worktree_path.to_string(),
-                                    )
-                                })?;
-                            let retry_count = child.contract_retry_count;
-                            let child_step_name = child.step_name.clone();
-                            if retry_count < MAX_CONTRACT_RETRIES {
-                                child.contract_retry_count += 1;
-                                (true, retry_count, exec_id, wf_name, child_step_name)
-                            } else {
-                                (false, retry_count, exec_id, wf_name, child_step_name)
-                            }
-                        };
-
-                        if should_retry {
-                            self.send_contract_repair(
-                                app,
-                                session_store,
-                                handles,
-                                worktree_path,
-                                session_id,
-                                contract,
-                                &violation,
-                                &exec_id,
-                                &wf_name,
-                                &child_step_name,
-                                retry_count + 1,
-                            )
-                            .await?;
-                            return Ok(());
-                        } else {
-                            // リトライ上限超過 → ワークフロー全体をFailed
-                            // [05] commit 境界: terminal event は pre-commit batch で
-                            // append し、append 失敗時は engine state を mutation 直前
-                            // snapshot で一括復元する（post-persist warn 廃止）。
-                            let (snapshot, running_ids, exec_snapshot_before) = {
-                                let mut execs = self.executions.lock().await;
-                                let exec = execs.get_mut(run_id).ok_or_else(|| {
-                                    WorkflowEngineError::ExecutionNotFound(run_id.to_string())
-                                })?;
-                                let exec_snapshot_before = exec.clone();
-                                let running_ids: Vec<String> = exec
-                                    .parallel_run
-                                    .as_mut()
-                                    .map(|pr| {
-                                        pr.children
-                                            .iter_mut()
-                                            .filter(|c| c.state == ParallelChildState::Running)
-                                            .map(|c| {
-                                                c.state = ParallelChildState::Interrupted;
-                                                c.session_id.clone()
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
-                                exec.state = WorkflowExecutionState::Failed {
-                                        reason: format!(
-                                        "Contract violation at parallel child '{}' after {} retries: {}",
-                                        child_step_name, MAX_CONTRACT_RETRIES, violation.details
-                                    ),
-                                    };
-                                exec.parallel_run = None;
-                                exec.updated_at = current_timestamp();
-                                (exec.to_workflow_state(), running_ids, exec_snapshot_before)
-                            };
-
-                            // [05] pre-commit: terminal event を先に append。失敗時は
-                            // engine state を snapshot_before で一括復元し Err を返す。
-                            if let Err(e) = self.write_terminal_log(app, &snapshot) {
-                                let mut execs = self.executions.lock().await;
-                                if let Some(exec) = execs.get_mut(run_id) {
-                                    *exec = exec_snapshot_before;
-                                }
-                                return Err(WorkflowEngineError::SessionStore(format!(
-                                    "contract failure terminal event append failed: {e}"
-                                )));
-                            }
-
-                            if let Err(e) =
-                                self.sync_run_store_from_snapshot(run_id, &snapshot).await
-                            {
-                                self.rollback_execution_projection_after_run_store_sync_failure(
-                                    run_id, &snapshot,
-                                )
-                                .await;
-                                return Err(e);
-                            }
-                            for sid in &running_ids {
-                                self.interrupt_agent(handles, sid).await;
-                            }
-                            let mut cleanup_ids = running_ids;
-                            cleanup_ids.push(session_id.to_string());
-                            cleanup_ids.sort();
-                            cleanup_ids.dedup();
-                            for sid in cleanup_ids {
-                                self.release_completed_step_session(
-                                    app,
-                                    session_store,
-                                    handles,
-                                    &sid,
-                                )
-                                .await;
-                            }
-                            self.broadcast_state(app, worktree_path, snapshot.clone())
-                                .await;
-                            self.cleanup_session_workflow_refs_by_run_id(&snapshot.execution_id)
-                                .await;
-                            return Ok(());
-                        }
-                    }
-                }
+        // [08] parallel child の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
+        // 旧来の「agent 自由文から `<workflow_output>` を抽出して step output を確定する」
+        // 経路は廃止された（spec [08] Rule 4 構造化出力の確定経路は明示的提出のみ）。
+        // child 完了時点では `child_structured_output = None` のまま進行し、後続 step
+        // からは未提出として扱われる。
+        let _ = (session_id, session_store, handles); // 旧 contract retry 経路用引数の参照を維持
+        let (child_result, child_structured_output): (Option<String>, Option<serde_json::Value>) =
+            if exit_code == 0 {
+                let _ = child_output_contract.as_ref();
+                let _ = output_text.as_deref();
+                (None, None)
             } else {
                 (None, None)
-            }
-        } else {
-            (None, None)
-        };
+            };
 
         // contract検証成功時のworkflow_variables反映
         self.apply_contract_variables_for_run(
@@ -3953,363 +3818,37 @@ impl WorkflowEngine {
         }
     }
 
+    /// [08] approval node の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
+    /// engine 側で自由文から `<workflow_output>` を抽出する経路は廃止された
+    /// （spec [08] Rule 4）。`output_contract` の有無に依らず常に `NoContract` を返し、
+    /// 後続経路では `structured_output = None` として進行する。
     fn validate_approval_output_contract<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
-        output_contract: &Option<String>,
-        output_text: Option<&str>,
-        workflow: &Workflow,
-        current_step_index: usize,
+        _app: &tauri::AppHandle<R>,
+        _output_contract: &Option<String>,
+        _output_text: Option<&str>,
+        _workflow: &Workflow,
+        _current_step_index: usize,
     ) -> Result<ContractCheckResult, WorkflowEngineError> {
-        let contract = match output_contract {
-            Some(c) => c,
-            None => return Ok(ContractCheckResult::NoContract),
-        };
-        let extraction = match output_text {
-            Some(text) if !text.trim().is_empty() => extract_workflow_output(text),
-            _ => ExtractionResult::NoBlock,
-        };
-        match Self::validate_approval_contract_extraction(
-            contract,
-            extraction,
-            workflow,
-            current_step_index,
-        )? {
-            ContractCheckResult::Valid {
-                structured_output,
-                result,
-            } => Ok(ContractCheckResult::Valid {
-                structured_output: Self::mask_sensitive_structured_output(
-                    app,
-                    contract,
-                    structured_output,
-                ),
-                result,
-            }),
-            other => Ok(other),
-        }
+        Ok(ContractCheckResult::NoContract)
     }
 
-    fn validate_approval_contract_extraction(
-        contract: &str,
-        extraction: ExtractionResult,
-        workflow: &Workflow,
-        current_step_index: usize,
-    ) -> Result<ContractCheckResult, WorkflowEngineError> {
-        let step_name = workflow
-            .nodes
-            .get(current_step_index)
-            .map(|s| s.name.as_str())
-            .unwrap_or("<unknown>");
-        match validate_contract(contract, extraction) {
-            ContractValidationResult::Valid {
-                structured_output,
-                result,
-            } => {
-                Self::validate_approval_contract_semantics(
-                    contract,
-                    &structured_output,
-                    workflow,
-                    current_step_index,
-                )?;
-                Ok(ContractCheckResult::Valid {
-                    structured_output,
-                    result,
-                })
-            }
-            ContractValidationResult::Invalid(violation) => {
-                Err(WorkflowEngineError::ValidationError(format!(
-                    "approval output contract violation at step '{}': {} ({})",
-                    step_name, violation.details, violation.reason
-                )))
-            }
-        }
-    }
-
-    fn validate_approval_contract_semantics(
-        contract: &str,
-        structured_output: &serde_json::Value,
-        workflow: &Workflow,
-        current_step_index: usize,
-    ) -> Result<(), WorkflowEngineError> {
-        if contract != "approved-fix-policy" {
-            return Ok(());
-        }
-        let step = workflow.nodes.get(current_step_index).ok_or_else(|| {
-            WorkflowEngineError::InvalidWorkflow(format!(
-                "Current step index {} is out of range",
-                current_step_index
-            ))
-        })?;
-        let review_step = structured_output
-            .get("review_step")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                WorkflowEngineError::ValidationError(format!(
-                    "approval output contract violation at step '{}': Missing required field \"review_step\". (missing_field)",
-                    step.name
-                ))
-            })?;
-        if !step
-            .pass_output_from
-            .as_deref()
-            .is_some_and(|refs| refs.iter().any(|r| r == review_step))
-        {
-            return Err(WorkflowEngineError::ValidationError(format!(
-                "approval output contract violation at step '{}': \"review_step\" must name a review source passed to this approval step. (unknown_review_step)",
-                step.name
-            )));
-        }
-        if !Self::workflow_step_is_review_source(workflow, review_step) {
-            return Err(WorkflowEngineError::ValidationError(format!(
-                "approval output contract violation at step '{}': \"review_step\" must name a review or aggregate step in the current workflow. (unknown_review_step)",
-                step.name
-            )));
-        }
-        Ok(())
-    }
-
-    fn workflow_step_is_review_source(workflow: &Workflow, step_name: &str) -> bool {
-        workflow.nodes.iter().any(|step| {
-            (step.name == step_name
-                && (step.aggregate.is_some()
-                    || step.output_contract.as_deref() == Some("review-verdict")))
-                || step.parallel_children.as_ref().is_some_and(|children| {
-                    children.iter().any(|child| {
-                        child.name == step_name
-                            && child.output_contract.as_deref() == Some("review-verdict")
-                    })
-                })
-        })
-    }
-
-    /// 非並列stepのcontract検証を共通処理する。
-    /// auto および並列子ステップの2パスで同一のcontract検証・retry・failure処理を行う。
+    /// [08] agent step の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
+    /// engine 側で自由文から `<workflow_output>` を抽出する経路は廃止された
+    /// （spec [08] Rule 4）。`output_contract` の有無に依らず常に `NoContract` を返し、
+    /// 後続経路では `structured_output = None` として進行する。
     #[allow(clippy::too_many_arguments)]
     async fn validate_and_handle_contract<R: tauri::Runtime>(
         &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
-        worktree_path: &str,
-        output_contract: &Option<String>,
-        output_text: Option<&str>,
-        current_session_id: &Option<String>,
-        step_name: &str,
+        _app: &tauri::AppHandle<R>,
+        _session_store: &Arc<SessionStore>,
+        _handles: &Arc<Mutex<AgentProcessMap>>,
+        _worktree_path: &str,
+        _output_contract: &Option<String>,
+        _output_text: Option<&str>,
+        _current_session_id: &Option<String>,
+        _step_name: &str,
     ) -> Result<ContractCheckResult, WorkflowEngineError> {
-        let contract = match output_contract {
-            Some(c) => c,
-            None => return Ok(ContractCheckResult::NoContract),
-        };
-
-        // output_textがNoneの場合もNoBlockとして検証する（Spec: blockが存在しない場合はretry）
-        let extraction = match output_text {
-            Some(text) => extract_workflow_output(text),
-            None => ExtractionResult::NoBlock,
-        };
-        match validate_contract(contract, extraction) {
-            ContractValidationResult::Valid {
-                structured_output,
-                result,
-            } => Ok(ContractCheckResult::Valid {
-                structured_output: Self::mask_sensitive_structured_output(
-                    app,
-                    contract,
-                    structured_output,
-                ),
-                result,
-            }),
-            ContractValidationResult::Invalid(violation) => {
-                let (should_retry, retry_count, exec_id, wf_name) = {
-                    let mut execs = self.executions.lock().await;
-                    let exec =
-                        find_by_worktree_mut(&mut execs, worktree_path).ok_or_else(|| {
-                            WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
-                        })?;
-                    let retry_count = exec.contract_retry_count;
-                    let exec_id = exec.id.clone();
-                    let wf_name = exec.workflow.name.clone();
-                    if retry_count < MAX_CONTRACT_RETRIES {
-                        exec.contract_retry_count += 1;
-                        (true, retry_count, exec_id, wf_name)
-                    } else {
-                        (false, retry_count, exec_id, wf_name)
-                    }
-                };
-
-                if should_retry {
-                    if let Some(ref sid) = current_session_id {
-                        self.send_contract_repair(
-                            app,
-                            session_store,
-                            handles,
-                            worktree_path,
-                            sid,
-                            contract,
-                            &violation,
-                            &exec_id,
-                            &wf_name,
-                            step_name,
-                            retry_count + 1,
-                        )
-                        .await?;
-                        return Ok(ContractCheckResult::RetrySent);
-                    }
-                }
-                // retry不可またはsession_idなし → Failed遷移
-                {
-                    let (snapshot, snapshot_before, run_id) = {
-                        let mut execs = self.executions.lock().await;
-                        let exec =
-                            find_by_worktree_mut(&mut execs, worktree_path).ok_or_else(|| {
-                                WorkflowEngineError::ExecutionNotFound(worktree_path.to_string())
-                            })?;
-                        // [05] commit 境界: terminal event を required append にするため、
-                        // mutation 前の snapshot を捕捉して rollback target に揃える。
-                        let snapshot_before = exec.clone();
-                        let run_id = exec.id.clone();
-                        let entry = exec.make_step_history_entry(
-                            Some("contract_violation".to_string()),
-                            None,
-                            output_contract.clone(),
-                        );
-                        exec.step_history.push(entry);
-                        let fail_reason = if should_retry {
-                            format!(
-                                "Contract violation at step '{}': no active session for repair: {}",
-                                step_name, violation.details
-                            )
-                        } else {
-                            format!(
-                                "Contract violation at step '{}' after {} retries: {}",
-                                step_name, MAX_CONTRACT_RETRIES, violation.details
-                            )
-                        };
-                        exec.state = WorkflowExecutionState::Failed {
-                            reason: fail_reason,
-                        };
-                        exec.updated_at = current_timestamp();
-                        (exec.to_workflow_state(), snapshot_before, run_id)
-                    };
-
-                    // [05] commit_required_events 基盤の共通 commit 境界に統合:
-                    // terminal event 列 (NodeFailed + RunFailed) を required event として
-                    // append し、失敗時は engine state と Run Store snapshot を
-                    // snapshot_before で一括復元する（spec [05] atomic mutation 境界 /
-                    // best-effort warn 廃止）。
-                    let mut terminal_snapshot = snapshot.clone();
-                    let required_events =
-                        match Self::terminal_events_for_snapshot(&mut terminal_snapshot) {
-                            Ok(events) => events,
-                            Err(e) => {
-                                // event 構築失敗時は engine state を snapshot_before に復元する。
-                                let mut execs = self.executions.lock().await;
-                                if let Some(exec) = execs.get_mut(&run_id) {
-                                    *exec = snapshot_before;
-                                }
-                                return Err(e);
-                            }
-                        };
-                    let completed_step_session_ids = Self::completed_step_session_ids(&snapshot);
-                    let run_store_snapshot_before =
-                        self.run_store.active_run_snapshot(&run_id).await;
-                    self.commit_required_events(
-                        app,
-                        session_store,
-                        RequiredEventCommit {
-                            run_id: &run_id,
-                            snapshot_for_commit: &snapshot,
-                            snapshot_before,
-                            run_store_snapshot_before,
-                            required_events,
-                            append_error_context: "contract violation terminal event append failed",
-                        },
-                    )
-                    .await?;
-                    self.release_completed_step_sessions(
-                        app,
-                        session_store,
-                        handles,
-                        &completed_step_session_ids,
-                    )
-                    .await;
-                    // terminal 系副作用: cleanup + broadcast。terminal event は append 済みのため
-                    // finalize_after_commit 側では write_terminal_events=false で二重 append を避ける。
-                    self.finalize_after_commit(app, &snapshot, worktree_path, false)
-                        .await;
-                    Ok(ContractCheckResult::Failed)
-                }
-            }
-        }
-    }
-
-    /// contract violation時のrepair prompt送信を行う共通ヘルパー。
-    /// ログ書き込み・ファセット読み込み・repair prompt生成・agent turn送信を一箇所にまとめる。
-    #[allow(clippy::too_many_arguments)]
-    async fn send_contract_repair<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        handles: &Arc<Mutex<AgentProcessMap>>,
-        worktree_path: &str,
-        session_id: &str,
-        contract: &str,
-        violation: &crate::workflow::contract::ContractViolation,
-        exec_id: &str,
-        wf_name: &str,
-        step_name: &str,
-        attempt: u32,
-    ) -> Result<(), WorkflowEngineError> {
-        self.write_log(
-            app,
-            WorkflowEvent::ContractRepairRequested {
-                run_id: exec_id.to_string(),
-                workflow_name: wf_name.to_string(),
-                node_name: step_name.to_string(),
-                attempt,
-                violation_reason: violation.reason.clone(),
-                timestamp: current_timestamp(),
-            },
-        );
-
-        // ユーザーが当該 session を閉じている最中なら retry を skip する。
-        // turn_complete cleanup と tab close が並走したとき、close 後に
-        // bridge が無いままここに来ても spawn し直してしまうのを防ぐ。
-        if crate::agent_sdk::is_session_closing(session_id).await {
-            return Ok(());
-        }
-
-        let contract_definition = {
-            let base_dir = facet::facets_base_dir();
-            crate::workflow::facet::load_facet(
-                crate::workflow::facet::FacetKind::Contract,
-                contract,
-                &base_dir,
-            )
-            .ok()
-        };
-        let repair_prompt =
-            build_repair_prompt(contract, violation, contract_definition.as_deref());
-        let permission_mode = {
-            let data_dir = crate::session::resolve_data_dir(app)
-                .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
-            let step_session = session_store
-                .get_session(&data_dir, session_id)
-                .map_err(|e| WorkflowEngineError::SessionStore(format!("get_session: {e}")))?
-                .ok_or_else(|| WorkflowEngineError::SessionNotFound(session_id.to_string()))?;
-            step_session.permission_mode
-        };
-        crate::agent_sdk::start_agent_turn_internal(
-            app,
-            handles,
-            session_store,
-            session_id,
-            worktree_path,
-            &permission_mode,
-            &repair_prompt,
-        )
-        .await
-        .map_err(WorkflowEngineError::AgentSession)?;
-        Ok(())
+        Ok(ContractCheckResult::NoContract)
     }
 
     /// `run_id` を直接指定して session_workflow_refs を掃除する。
@@ -5306,6 +4845,7 @@ impl WorkflowEngine {
         vars
     }
 
+    #[allow(dead_code)]
     fn mask_sensitive_structured_output<R: tauri::Runtime>(
         app: &tauri::AppHandle<R>,
         contract: &str,
@@ -5315,6 +4855,7 @@ impl WorkflowEngine {
         Self::mask_sensitive_structured_output_with_secrets(contract, value, &secrets)
     }
 
+    #[allow(dead_code)]
     fn mask_sensitive_structured_output_with_secrets(
         contract: &str,
         mut value: serde_json::Value,
@@ -5395,6 +4936,7 @@ impl WorkflowEngine {
         values
     }
 
+    #[allow(dead_code)]
     fn mask_json_strings(value: &mut serde_json::Value, configured_secrets: &[String]) {
         match value {
             serde_json::Value::String(s) => {
@@ -7311,35 +6853,19 @@ impl WorkflowEngine {
             ApprovalDecision::Approve => "approve",
             ApprovalDecision::Reject { .. } => "reject",
         };
-        let (structured_output, contract_result) = match &decision {
-            ApprovalDecision::Approve => match output_contract.as_deref() {
-                Some(contract) => {
-                    let extraction = match output_text.as_deref() {
-                        Some(text) => extract_workflow_output(text),
-                        None => ExtractionResult::NoBlock,
-                    };
-                    match Self::validate_approval_contract_extraction(
-                        contract,
-                        extraction,
-                        &workflow_for_contract,
-                        current_step_index_for_contract,
-                    )? {
-                        ContractCheckResult::Valid {
-                            structured_output,
-                            result,
-                        } => (Some(structured_output), result),
-                        ContractCheckResult::NoContract => (None, None),
-                        ContractCheckResult::RetrySent | ContractCheckResult::Failed => {
-                            unreachable!()
-                        }
-                    }
+        // [08] approval 経路の自由文 contract 抽出は廃止。approval node の構造化出力は
+        // CLI / Tauri 経由の `SubmitOutput` で確定する（spec [08] Rule 4）。Approve 時の
+        // `structured_output` は None で固定し、Reject 時のみ comment 由来の暫定 payload を
+        // 維持する（既存 reject 経路は本 issue のスコープ外）。
+        let _ = (workflow_for_contract, current_step_index_for_contract);
+        let _ = output_text.as_deref();
+        let (structured_output, contract_result): (Option<serde_json::Value>, Option<String>) =
+            match &decision {
+                ApprovalDecision::Approve => (None, None),
+                ApprovalDecision::Reject { comment } => {
+                    (Some(Self::reject_structured_output(comment, &[])), None)
                 }
-                None => (None, None),
-            },
-            ApprovalDecision::Reject { comment } => {
-                (Some(Self::reject_structured_output(comment, &[])), None)
-            }
-        };
+            };
 
         let application_output_contract = if matches!(decision, ApprovalDecision::Approve) {
             output_contract.clone()
@@ -7917,6 +7443,7 @@ mod tests {
         )
     }
 
+    #[allow(dead_code)]
     fn make_approved_fix_policy_workflow() -> Workflow {
         Workflow {
             name: "approved-fix-policy-test".to_string(),
@@ -9735,27 +9262,8 @@ mod tests {
         assert!(vars.is_empty());
     }
 
-    // ---- contract retry判定 ----
-
-    #[test]
-    fn contract_retry_within_limit() {
-        let retry_count: u32 = 0;
-        assert!(retry_count < MAX_CONTRACT_RETRIES);
-        let retry_count: u32 = 1;
-        assert!(retry_count < MAX_CONTRACT_RETRIES);
-    }
-
-    #[test]
-    fn contract_retry_at_limit_should_fail() {
-        let retry_count: u32 = MAX_CONTRACT_RETRIES;
-        assert!(retry_count >= MAX_CONTRACT_RETRIES);
-    }
-
-    #[test]
-    fn contract_retry_over_limit_should_fail() {
-        let retry_count: u32 = MAX_CONTRACT_RETRIES + 1;
-        assert!(retry_count >= MAX_CONTRACT_RETRIES);
-    }
+    // ---- contract retry 判定テストは prose 抽出経路 ([08] で廃止) の付随物だったため削除した。
+    //      contract 適合判定は CLI / Tauri 経由の SubmitOutput で発生し、retry は行わない。
 
     // ---- apply_reduce ----
 
@@ -11347,133 +10855,10 @@ mod tests {
         .is_ok());
     }
 
-    #[test]
-    fn validate_approval_contract_valid_returns_structured_output() {
-        let workflow = make_approved_fix_policy_workflow();
-        let result = WorkflowEngine::validate_approval_contract_extraction(
-            "approved-fix-policy",
-            ExtractionResult::Found {
-                type_name: "approved-fix-policy".to_string(),
-                json: serde_json::json!({
-                    "policy": "Fix the reported issue.",
-                    "review_step": "code_review_parallel"
-                }),
-            },
-            &workflow,
-            1,
-        )
-        .unwrap();
-        match result {
-            ContractCheckResult::Valid {
-                structured_output,
-                result,
-            } => {
-                assert_eq!(result.as_deref(), Some("approved"));
-                assert_eq!(structured_output["review_step"], "code_review_parallel");
-            }
-            _ => panic!("expected valid approval contract"),
-        }
-    }
-
-    #[test]
-    fn validate_approval_contract_rejects_review_step_not_passed_to_approval_step() {
-        let workflow = make_approved_fix_policy_workflow();
-        let result = WorkflowEngine::validate_approval_contract_extraction(
-            "approved-fix-policy",
-            ExtractionResult::Found {
-                type_name: "approved-fix-policy".to_string(),
-                json: serde_json::json!({
-                    "policy": "Fix the reported issue.",
-                    "review_step": "other_review_parallel"
-                }),
-            },
-            &workflow,
-            1,
-        );
-        match result {
-            Err(err) => {
-                let err = err.to_string();
-                assert!(err.starts_with("validation_error:"));
-                assert!(err.contains("unknown_review_step"));
-            }
-            Ok(_) => panic!("expected validation_error"),
-        }
-    }
-
-    #[test]
-    fn approval_contract_without_completed_assistant_output_returns_validation_error() {
-        let workflow = make_approved_fix_policy_workflow();
-        let result = WorkflowEngine::validate_approval_contract_extraction(
-            "approved-fix-policy",
-            ExtractionResult::NoBlock,
-            &workflow,
-            1,
-        );
-        match result {
-            Err(WorkflowEngineError::ValidationError(message)) => {
-                assert!(message.contains("no_block"));
-            }
-            _ => panic!("expected validation_error"),
-        }
-    }
-
-    #[test]
-    fn approval_contract_ignores_valid_policy_from_other_session_when_current_has_no_output() {
-        let workflow = make_approved_fix_policy_workflow();
-        let other_session = crate::session::ChatSession {
-            id: "other-policy-session".to_string(),
-            worktree_path: "/repo".to_string(),
-            messages: vec![crate::session::ChatMessage {
-                id: "m1".to_string(),
-                role: crate::session::MessageRole::Agent,
-                content: approved_fix_policy_output(
-                    "Policy from a previous run.",
-                    "code_review_parallel",
-                ),
-                thinking: None,
-                activities: None,
-                parts: None,
-                timestamp: 1.0,
-                mentions: None,
-            }],
-            state: crate::session::SessionState::Idle,
-            created_at: 1.0,
-            updated_at: 1.0,
-            agent_session_id: None,
-            permission_mode: "edit".to_string(),
-            selected_model: None,
-            backend_id: None,
-            workflow_step_session: false,
-        };
-        let current_session = crate::session::ChatSession {
-            id: "current-policy-session".to_string(),
-            worktree_path: "/repo".to_string(),
-            messages: vec![],
-            state: crate::session::SessionState::Idle,
-            created_at: 2.0,
-            updated_at: 2.0,
-            agent_session_id: None,
-            permission_mode: "edit".to_string(),
-            selected_model: None,
-            backend_id: None,
-            workflow_step_session: false,
-        };
-
-        assert!(WorkflowEngine::extract_last_assistant_text_from_session(&other_session).is_some());
-        assert!(
-            WorkflowEngine::extract_last_assistant_text_from_session(&current_session).is_none()
-        );
-        let result = WorkflowEngine::validate_approval_contract_extraction(
-            "approved-fix-policy",
-            ExtractionResult::NoBlock,
-            &workflow,
-            1,
-        );
-        match result {
-            Err(WorkflowEngineError::ValidationError(_)) => {}
-            _ => panic!("expected validation_error"),
-        }
-    }
+    // [08] 旧 `validate_approval_contract_extraction` ベースの 4 テストは prose 抽出経路の
+    // 廃止に伴い削除した。approval node の構造化出力は CLI / Tauri 経由の `SubmitOutput`
+    // で確定し、対応する境界テストは `dispatch_boundary_tests::submit_output_*` 群と
+    // `workflow::contract::tests::validate_contract_value_*` 群でカバーされる。
 
     #[tokio::test]
     async fn validate_approval_chat_instruction_limits_current_approval_session() {
@@ -11998,26 +11383,16 @@ mod tests {
 
     #[test]
     fn spec_driven_plan_fix_policy_approve_records_policy_and_starts_plan_fix_once() {
+        // [08] prose 抽出経路は廃止済み。テストでは CLI submit 経由で確定する想定の
+        // structured_output と effective_result を直接組み立てて apply_approval_application
+        // の遷移挙動を検証する（spec [08] Rule 4 / [05] internal node command 境界）。
         let mut exec =
             make_spec_driven_plan_fix_policy_exec("exec-plan-approve", "plan-policy-session");
-        let policy_text = approved_fix_policy_output(
-            "Update the spec only for the approved plan review finding.",
-            "plan_review_parallel",
-        );
-        let contract_result = WorkflowEngine::validate_approval_contract_extraction(
-            "approved-fix-policy",
-            extract_workflow_output(&policy_text),
-            &exec.workflow,
-            exec.current_step_index,
-        )
-        .unwrap();
-        let (structured_output, effective_result) = match contract_result {
-            ContractCheckResult::Valid {
-                structured_output,
-                result,
-            } => (structured_output, result.unwrap()),
-            _ => panic!("expected valid approved-fix-policy output"),
-        };
+        let structured_output = serde_json::json!({
+            "policy": "Update the spec only for the approved plan review finding.",
+            "review_step": "plan_review_parallel",
+        });
+        let effective_result = "approved".to_string();
 
         let outcome = WorkflowEngine::apply_approval_application(
             &mut exec,
@@ -12295,26 +11670,18 @@ mod tests {
             backend_id: None,
             workflow_step_session: false,
         };
-        let latest = WorkflowEngine::extract_last_assistant_text_from_session(&session).unwrap();
-        let contract_result = WorkflowEngine::validate_approval_contract_extraction(
-            "approved-fix-policy",
-            extract_workflow_output(&latest),
-            &exec.workflow,
-            exec.current_step_index,
-        )
-        .unwrap();
-        let (structured_output, contract_result) = match contract_result {
-            ContractCheckResult::Valid {
-                structured_output,
-                result,
-            } => (structured_output, result),
-            _ => panic!("expected valid approval contract"),
-        };
+        // [08] prose 抽出経路は廃止済み。CLI submit 経由で確定する想定の structured_output
+        // を直接組み立てて apply_approval_application の遷移挙動を検証する。
+        let _ = WorkflowEngine::extract_last_assistant_text_from_session(&session);
+        let structured_output = serde_json::json!({
+            "policy": "Fix only reviewed findings.",
+            "review_step": "code_review_parallel",
+        });
         let outcome = WorkflowEngine::apply_approval_application(
             &mut exec,
             &ApprovalDecision::Approve,
             ApprovalApplication {
-                effective_result: contract_result.unwrap(),
+                effective_result: "approved".to_string(),
                 structured_output: Some(structured_output),
                 output_contract: Some("approved-fix-policy".to_string()),
             },
@@ -12474,14 +11841,13 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(
-            exec.step_outputs
-                .get("implementation_fix_policy")
-                .and_then(|output| output.structured_output.as_ref())
-                .and_then(|output| output.get("policy"))
-                .and_then(|policy| policy.as_str()),
-            Some("Fix only the approved review finding.")
-        );
+        // [08] prose 抽出経路は廃止済み。auto approve 経路でも structured_output は
+        // 確定されず、step は output 無しで完了する（spec [08] Rule 4）。
+        assert!(exec
+            .step_outputs
+            .get("implementation_fix_policy")
+            .and_then(|output| output.structured_output.as_ref())
+            .is_none());
     }
 
     #[tokio::test]
@@ -12529,14 +11895,12 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(
-            exec.step_outputs
-                .get("plan_fix_policy")
-                .and_then(|output| output.structured_output.as_ref())
-                .and_then(|output| output.get("policy"))
-                .and_then(|policy| policy.as_str()),
-            Some("Revise the spec using the approved plan policy.")
-        );
+        // [08] prose 抽出経路は廃止済み（spec [08] Rule 4）。
+        assert!(exec
+            .step_outputs
+            .get("plan_fix_policy")
+            .and_then(|output| output.structured_output.as_ref())
+            .is_none());
     }
 
     #[tokio::test]
@@ -12653,14 +12017,12 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(
-            exec.step_outputs
-                .get("plan_fix_policy")
-                .and_then(|output| output.structured_output.as_ref())
-                .and_then(|output| output.get("review_step"))
-                .and_then(|review_step| review_step.as_str()),
-            Some("plan_review_parallel")
-        );
+        // [08] prose 抽出経路は廃止済み（spec [08] Rule 4）。
+        assert!(exec
+            .step_outputs
+            .get("plan_fix_policy")
+            .and_then(|output| output.structured_output.as_ref())
+            .is_none());
     }
 
     #[test]
