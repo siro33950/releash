@@ -1805,6 +1805,7 @@ impl WorkflowEngine {
     /// `handle_submit_output` に合流するが、CLI 経由では caller の `request_id`
     /// （pending entry id）と `submitted_at`（CLI 側 timestamp）を `OutputSubmitted`
     /// event に保存する（spec [08] アーキテクチャ概要 / 状態 Owner）。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_submit_output_with_context<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -1835,6 +1836,7 @@ impl WorkflowEngine {
     ///    `OutputSubmitted` event を append
     /// 4. 不適合・stale step・不在 step・契約タイプ不一致は副作用なしで `Err` を返し、
     ///    `step_outputs` / `workflow_variables` / event log を一切変更しない。
+    #[allow(clippy::too_many_arguments)]
     async fn handle_submit_output<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -1845,9 +1847,8 @@ impl WorkflowEngine {
         request_id: Option<String>,
         submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
-        uuid::Uuid::parse_str(run_id).map_err(|_| {
-            WorkflowEngineError::ValidationError("run_id must be UUID".to_string())
-        })?;
+        uuid::Uuid::parse_str(run_id)
+            .map_err(|_| WorkflowEngineError::ValidationError("run_id must be UUID".to_string()))?;
         if step_name.trim().is_empty() {
             return Err(WorkflowEngineError::ValidationError(
                 "step_name must not be empty".to_string(),
@@ -16842,10 +16843,7 @@ mod dispatch_boundary_tests {
         }
     }
 
-    fn read_submit_output_events(
-        app: &DispatchTestApp,
-        run_id: &str,
-    ) -> Vec<WorkflowEvent> {
+    fn read_submit_output_events(app: &DispatchTestApp, run_id: &str) -> Vec<WorkflowEvent> {
         let data_dir = crate::session::resolve_data_dir(app.handle()).expect("data_dir");
         WorkflowEventLog::new(&data_dir)
             .read_log(run_id)

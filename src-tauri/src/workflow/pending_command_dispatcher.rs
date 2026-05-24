@@ -253,9 +253,7 @@ fn payload_to_cli_request(payload: &PendingCommandPayload) -> CliMutationRequest
             node_name: node_name.clone(),
         },
         PendingCommandPayload::SubmitOutput { .. } => {
-            unreachable!(
-                "SubmitOutput payload must be routed via dispatch_submit_output_pending"
-            )
+            unreachable!("SubmitOutput payload must be routed via dispatch_submit_output_pending")
         }
     }
 }
@@ -733,11 +731,9 @@ mod tests {
                     request_id,
                     submitted_at,
                     ..
-                } if node_name == "review" => Some((
-                    contract.clone(),
-                    request_id.clone(),
-                    *submitted_at,
-                )),
+                } if node_name == "review" => {
+                    Some((contract.clone(), request_id.clone(), *submitted_at))
+                }
                 _ => None,
             })
             .expect("OutputSubmitted event must be appended via dispatcher");

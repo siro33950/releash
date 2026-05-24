@@ -1231,10 +1231,7 @@ pub(crate) fn reconstruct_state_from_events(
             } => {
                 // [08] CLI / in-process 経由で確定した step output を state に復元する。
                 // 後続 step が `pass_output_from` で経路非依存に参照できる shape に揃える。
-                let ri = step_execution_counts
-                    .get(node_name)
-                    .copied()
-                    .unwrap_or(0);
+                let ri = step_execution_counts.get(node_name).copied().unwrap_or(0);
                 step_outputs.insert(
                     node_name.clone(),
                     StepOutput {

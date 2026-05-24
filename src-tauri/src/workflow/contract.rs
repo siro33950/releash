@@ -168,7 +168,6 @@ fn validate_spec_file_path(json: Value) -> ContractValidationResult {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,10 +318,7 @@ mod tests {
 
     #[test]
     fn validate_contract_value_rejects_absolute_spec_file_path() {
-        match validate_contract_value(
-            "spec-file-path",
-            json!({"spec_file_path": "/etc/passwd"}),
-        ) {
+        match validate_contract_value("spec-file-path", json!({"spec_file_path": "/etc/passwd"})) {
             ContractValidationResult::Invalid(v) => {
                 assert_eq!(v.reason, "invalid_path");
             }
@@ -346,10 +342,7 @@ mod tests {
     #[test]
     fn validate_contract_value_rejects_windows_drive_spec_file_path() {
         for path in &["C:\\repo\\spec.md", "C:/repo/spec.md", "D:\\file.md"] {
-            match validate_contract_value(
-                "spec-file-path",
-                json!({"spec_file_path": path}),
-            ) {
+            match validate_contract_value("spec-file-path", json!({"spec_file_path": path})) {
                 ContractValidationResult::Invalid(v) => {
                     assert_eq!(v.reason, "invalid_path", "path: {path}");
                 }
@@ -360,10 +353,7 @@ mod tests {
 
     #[test]
     fn validate_contract_value_rejects_missing_spec_file_path_field() {
-        match validate_contract_value(
-            "spec-file-path",
-            json!({"path": "some/path.md"}),
-        ) {
+        match validate_contract_value("spec-file-path", json!({"path": "some/path.md"})) {
             ContractValidationResult::Invalid(v) => {
                 assert_eq!(v.reason, "missing_field");
             }

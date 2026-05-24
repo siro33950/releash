@@ -245,11 +245,9 @@ pub fn run() -> i32 {
                         json,
                         file,
                     } => cmd_output_submit(&data_dir, &run_id, &step, &contract, json, file),
-                    OutputSubcommand::Validate {
-                        run_id,
-                        step,
-                        file,
-                    } => cmd_output_validate(&data_dir, &run_id, &step, &file),
+                    OutputSubcommand::Validate { run_id, step, file } => {
+                        cmd_output_validate(&data_dir, &run_id, &step, &file)
+                    }
                     OutputSubcommand::Get { run_id, step, json } => {
                         cmd_output_get(&data_dir, &run_id, &step, json)
                     }
@@ -556,8 +554,8 @@ fn cmd_output_get(data_dir: &Path, run_id: &str, step: &str, json: bool) -> Resu
     let events = read_log(data_dir, run_id)?;
     let view = build_output_get_view(events, step);
     if json {
-        let text = serde_json::to_string_pretty(&view)
-            .map_err(|e| format!("serialize output: {e}"))?;
+        let text =
+            serde_json::to_string_pretty(&view).map_err(|e| format!("serialize output: {e}"))?;
         println!("{text}");
     } else {
         match &view {
@@ -696,7 +694,7 @@ enum OutputGetView {
 
 fn build_output_get_view(events: Vec<WorkflowEvent>, step: &str) -> OutputGetView {
     // 最新 (= 最後尾) の OutputSubmitted を採用する。
-    let mut latest: Option<(String, serde_json::Value, Option<f64>, Option<String>, f64)> = None;
+    let mut latest: Option<OutputGetView> = None;
     for event in events {
         if let WorkflowEvent::OutputSubmitted {
             node_name,
@@ -709,28 +707,17 @@ fn build_output_get_view(events: Vec<WorkflowEvent>, step: &str) -> OutputGetVie
         } = event
         {
             if node_name == step {
-                latest = Some((
+                latest = Some(OutputGetView::Submitted {
                     contract,
                     structured_output,
                     submitted_at,
                     request_id,
                     timestamp,
-                ));
+                });
             }
         }
     }
-    match latest {
-        Some((contract, structured_output, submitted_at, request_id, timestamp)) => {
-            OutputGetView::Submitted {
-                contract,
-                structured_output,
-                submitted_at,
-                request_id,
-                timestamp,
-            }
-        }
-        None => OutputGetView::NotSubmitted,
-    }
+    latest.unwrap_or(OutputGetView::NotSubmitted)
 }
 
 /// 指定 run の event log。
@@ -1551,34 +1538,14 @@ mod tests {
                 "out.json",
             ],
             vec![
-                "releash",
-                "workflow",
-                "output",
-                "validate",
-                run_id,
-                "--step",
-                "review",
-                "--file",
+                "releash", "workflow", "output", "validate", run_id, "--step", "review", "--file",
                 "out.json",
             ],
             vec![
-                "releash",
-                "workflow",
-                "output",
-                "get",
-                run_id,
-                "--step",
-                "review",
+                "releash", "workflow", "output", "get", run_id, "--step", "review",
             ],
             vec![
-                "releash",
-                "workflow",
-                "output",
-                "get",
-                run_id,
-                "--step",
-                "review",
-                "--json",
+                "releash", "workflow", "output", "get", run_id, "--step", "review", "--json",
             ],
         ] {
             assert!(
@@ -1789,7 +1756,8 @@ mod tests {
             &make_run(&run_id, "/wt/get", RunStatus::Running, 100.0),
         );
         let log = WorkflowEventLog::new(tmp.path());
-        log.append(&run_started_event(&run_id, "wf", "/wt/get")).unwrap();
+        log.append(&run_started_event(&run_id, "wf", "/wt/get"))
+            .unwrap();
         log.append(&WorkflowEvent::OutputSubmitted {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
@@ -1802,10 +1770,7 @@ mod tests {
         })
         .unwrap();
 
-        let view = build_output_get_view(
-            log.read_log(&run_id).unwrap(),
-            "review",
-        );
+        let view = build_output_get_view(log.read_log(&run_id).unwrap(), "review");
         assert!(matches!(
             view,
             OutputGetView::Submitted {

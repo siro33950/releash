@@ -931,6 +931,7 @@ pub async fn delete_facet(kind: String, key: String) -> Result<(), String> {
 /// 境界（spec [08] が依拠する [05] 観測経路の認可境界）を通過しない caller には
 /// 「該当 run なし」と同表現で拒否を返し、存在情報を漏らさない。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn workflow_submit_output(
     app: tauri::AppHandle,
     engine: tauri::State<'_, Arc<WorkflowEngine>>,
