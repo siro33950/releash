@@ -553,7 +553,16 @@ fn cmd_output_submit(
             "contract mismatch: step '{step}' expects '{expected_contract}', got '{contract}'"
         )));
     }
-    match crate::workflow::contract::validate_contract_value(contract, structured_output.clone()) {
+    // [08] preflight と本 submit (`handle_submit_output`) で同一の前処理 + validation を
+    // 共有するため、`preprocess_and_validate_output_with_secrets` 経由で呼ぶ。
+    // CLI は別プロセスでアプリ状態 (`AppConfig` / `AppHandle`) を持たないため、ここでは
+    // `secrets = &[]` で呼び、最終的な masking 込み判定は engine 側 watcher 経由で再評価される
+    // （spec [08] CLI 完了基準: pending を書き出した時点で CLI は完了、最終判定は engine 側）。
+    match crate::workflow::engine::WorkflowEngine::preprocess_and_validate_output_with_secrets(
+        contract,
+        structured_output.clone(),
+        &[],
+    ) {
         crate::workflow::contract::ContractValidationResult::Valid { .. } => {}
         crate::workflow::contract::ContractValidationResult::Invalid(violation) => {
             return Err(CliError::InvalidInput(format!(
@@ -591,7 +600,15 @@ fn cmd_output_validate(
         .map_err(|e| CliError::InvalidInput(format!("Failed to read file {:?}: {e}", file)))?;
     let value: serde_json::Value = serde_json::from_str(&raw_json)
         .map_err(|e| CliError::InvalidInput(format!("Failed to parse JSON: {e}")))?;
-    match crate::workflow::contract::validate_contract_value(&contract, value) {
+    // [08] preflight と本 submit (`handle_submit_output`) で同一の前処理 + validation を
+    // 共有するため、`preprocess_and_validate_output_with_secrets` 経由で呼ぶ。
+    // CLI は別プロセスでアプリ状態を持たないため、ここでは `secrets = &[]` で呼ぶ
+    // （最終 masking 込み judging は engine 側で再評価される）。
+    match crate::workflow::engine::WorkflowEngine::preprocess_and_validate_output_with_secrets(
+        &contract,
+        value,
+        &[],
+    ) {
         crate::workflow::contract::ContractValidationResult::Valid { .. } => {
             println!("ok: contract '{contract}' is satisfied");
             Ok(())

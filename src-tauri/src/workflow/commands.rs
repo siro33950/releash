@@ -980,8 +980,17 @@ pub async fn workflow_submit_output(
     engine
         .dispatch_external(&app, session_store.inner(), handles.inner(), command)
         .await
-        .map(|_| ())
         .map_err(|e| e.to_string())
+        .and_then(|result| match result {
+            WorkflowCommandResult::Accepted => Ok(()),
+            // dispatch routing が壊れていない限り `SubmitOutput` → `Accepted` のみが返るはず。
+            // ここに到達する場合は engine 内部不整合（spec [04] sentinel 禁止 / [08] CLI と
+            // in-process の合流境界）として明示的に Err にする。
+            WorkflowCommandResult::RunStarted { .. } => Err(
+                "workflow_submit_output received non-Accepted dispatch result; internal inconsistency"
+                    .to_string(),
+            ),
+        })
 }
 
 /// [08] structured output の contract 適合性のみを副作用なしで判定する Tauri command。
@@ -1019,8 +1028,12 @@ pub async fn workflow_validate_output(
                     format!("step '{step}' has no output_contract in workflow '{workflow_name}'")
                 }
             })?;
+    // [08] preflight と本 submit (`handle_submit_output`) で同一の前処理 + validation を
+    // 共有するため、masking + validate を集約した `preprocess_and_validate_output` を経由する。
+    // raw JSON のまま `validate_contract_value` を呼ぶと submit 側の redaction 後の値と
+    // 判定が食い違う構造になるため、ここでも secrets を収集して redaction 後に判定する。
     Ok(
-        match crate::workflow::contract::validate_contract_value(&contract, structured_output) {
+        match WorkflowEngine::preprocess_and_validate_output(&app, &contract, structured_output) {
             crate::workflow::contract::ContractValidationResult::Valid { .. } => {
                 WorkflowValidateOutputResponse::Valid
             }

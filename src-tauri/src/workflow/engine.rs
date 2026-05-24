@@ -1825,14 +1825,11 @@ impl WorkflowEngine {
         //    [08] 機密値 redaction: caller (CLI / Tauri API) 入力に approve コメントや
         //    secret token が混入していても event log / step_outputs に生で残らないよう、
         //    redaction 後の structured output を contract validation に通す。
-        let secrets = Self::collect_configured_secret_values(app);
-        let redacted_input = Self::mask_sensitive_structured_output_with_secrets(
-            &contract,
-            structured_output,
-            &secrets,
-        );
+        //    preflight (workflow_validate_output / CLI cmd_output_validate) と本 submit で
+        //    同一の前処理 + validation を共有するため、`preprocess_and_validate_output`
+        //    に集約する（spec [08] L169 / Rule 2）。
         let (validated_output, validated_result) =
-            match validate_contract_value(&contract, redacted_input) {
+            match Self::preprocess_and_validate_output(app, &contract, structured_output) {
                 ContractValidationResult::Valid {
                     structured_output,
                     result,
@@ -4871,6 +4868,44 @@ impl WorkflowEngine {
         }
         Self::mask_json_strings(&mut value, secrets);
         value
+    }
+
+    /// [08] structured output に対する「機密値 redaction → contract 適合判定」を
+    /// 1 関数にまとめた共有 preflight/validate ヘルパー（pure / 副作用なし）。
+    ///
+    /// `handle_submit_output` の本体・`workflow_validate_output` の preflight・
+    /// CLI 経路の preflight (`cmd_output_submit` / `cmd_output_validate`) を
+    /// 同一の前処理 + validation に揃え、preflight と本 submit で判定が
+    /// 食い違う構造を排除する（spec [08] CLI 完了基準: 最終判定は engine 側）。
+    ///
+    /// `secrets` は呼び出し側責任で収集する:
+    ///   - Tauri command / engine 内部: [`Self::collect_configured_secret_values`]
+    ///     経由（AppConfig + env vars）。
+    ///   - CLI 経路: 別プロセスでありアプリ状態を持たないため、現状は空配列で
+    ///     呼ぶ（最終 masking は engine 側で再評価される）。
+    pub(crate) fn preprocess_and_validate_output_with_secrets(
+        contract: &str,
+        structured_output: serde_json::Value,
+        secrets: &[String],
+    ) -> ContractValidationResult {
+        let redacted = Self::mask_sensitive_structured_output_with_secrets(
+            contract,
+            structured_output,
+            secrets,
+        );
+        validate_contract_value(contract, redacted)
+    }
+
+    /// [08] AppHandle 経由で secrets を収集した上で
+    /// [`Self::preprocess_and_validate_output_with_secrets`] に委譲する便利関数。
+    /// Tauri command / engine 内部からの呼び出し用。
+    pub(crate) fn preprocess_and_validate_output<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        contract: &str,
+        structured_output: serde_json::Value,
+    ) -> ContractValidationResult {
+        let secrets = Self::collect_configured_secret_values(app);
+        Self::preprocess_and_validate_output_with_secrets(contract, structured_output, &secrets)
     }
 
     fn collect_configured_secret_values<R: tauri::Runtime>(
