@@ -54,3 +54,16 @@ Specファイルを読み込む（パスはステップ出力で提供）。
 
 - **LGTM**: 全要求がビジネスルール（Rule）でカバーされ、ビジネスルール違反・暗黙の要求が表現され、アーキテクチャ概要の必須5セクションが存在する
 - **NEEDS_FIX**: 未カバーの要求、ビジネスルール違反・暗黙の要求の Rule 欠落、または必須セクションの欠落あり
+
+## 構造化出力の提出
+
+判定（`review-verdict` Contract に従う JSON）は、step 完了時に `releash workflow output submit` で engine に提出する。
+
+```sh
+releash workflow output submit <run_id> \
+  --step <step_name> \
+  --type review-verdict \
+  --json '{"verdict":"LGTM"}'   # または NEEDS_FIX の場合は findings を含める
+```
+
+提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。

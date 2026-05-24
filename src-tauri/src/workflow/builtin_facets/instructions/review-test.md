@@ -61,3 +61,16 @@
 
 - **LGTM**: 全ビジネスルール（Rule）に十分なテストがあり、テスト品質が良好
 - **NEEDS_FIX**: いずれかのビジネスルールにテストが不足、またはscope:diffのテスト品質に問題
+
+## 構造化出力の提出
+
+判定（`review-verdict` Contract に従う JSON）は、step 完了時に `releash workflow output submit` で engine に提出する。
+
+```sh
+releash workflow output submit <run_id> \
+  --step <step_name> \
+  --type review-verdict \
+  --json '{"verdict":"LGTM"}'   # または NEEDS_FIX の場合は findings を含める
+```
+
+提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。

@@ -68,4 +68,13 @@ Feature: [機能名]
 
 ## 出力
 
-Specファイル更新後、specファイルパスを構造化出力として出力する。
+Specファイル更新後、`spec-file-path` Contract に従う JSON を `releash workflow output submit` で提出する。
+
+```sh
+releash workflow output submit <run_id> \
+  --step <step_name> \
+  --type spec-file-path \
+  --json '{"spec_file_path":"docs/spec/issues-XXX.md"}'
+```
+
+提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する。
