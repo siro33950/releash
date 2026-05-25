@@ -396,12 +396,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: rust-ci
       - uses: taiki-e/install-action@cargo-deny
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo deny check
-      - run: cargo llvm-cov --codecov --output-path rust-codecov.json
+      - run: cargo clippy --locked -- -D warnings
+      - run: cargo deny --locked check
+      - run: cargo llvm-cov --locked --codecov --output-path rust-codecov.json
       - uses: actions/upload-artifact@v7
         with:
           name: rust-coverage
@@ -413,7 +417,7 @@ jobs:
           files: src-tauri/rust-codecov.json
           flags: rust
           fail_ci_if_error: false
-      - run: cargo build
+      - run: cargo build --locked
 
   quality:
     runs-on: ubuntu-latest

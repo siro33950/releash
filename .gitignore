@@ -46,6 +46,7 @@ src-tauri/generated/
 # Rust
 *.rs.bk
 Cargo.lock
+!src-tauri/Cargo.lock
 
 # Debug
 debug/
