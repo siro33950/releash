@@ -17,7 +17,19 @@
 
 ```contract-validation
 {
-  "result": "approved"
+  "result": "approved",
+  "required": ["policy", "review_step", "findings"],
+  "enums": {
+    "review_step": [
+      "code_review_parallel",
+      "spec_review_parallel",
+      "bug_investigation",
+      "bug_review_parallel"
+    ]
+  },
+  "array_items_required": {
+    "findings": ["severity", "message", "action", "rationale"]
+  }
 }
 ```
 

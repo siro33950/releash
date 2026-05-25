@@ -8920,7 +8920,8 @@ mod tests {
         let contract = Some("approved-fix-policy".to_string());
         let so = Some(serde_json::json!({
             "policy": "Fix only approved findings.",
-            "review_step": "spec_review_parallel"
+            "review_step": "spec_review_parallel",
+            "findings": []
         }));
         let vars = WorkflowEngine::extract_contract_variables(&contract, &so);
         assert!(vars.is_empty());
@@ -9010,7 +9011,8 @@ mod tests {
             "approved-fix-policy",
             serde_json::json!({
                 "policy": "Use password=secret123 and MY_TOKEN_VALUE_123456",
-                "review_step": "code_review_parallel"
+                "review_step": "code_review_parallel",
+                "findings": []
             }),
             &["MY_TOKEN_VALUE_123456".to_string()],
         );
@@ -9039,7 +9041,8 @@ mod tests {
 
         let sanitized = serde_json::json!({
             "policy": "Use password=[REDACTED] only in examples.",
-            "review_step": "code_review_parallel"
+            "review_step": "code_review_parallel",
+            "findings": []
         });
         let vars = WorkflowEngine::extract_contract_variables(
             &Some("approved-fix-policy".to_string()),
@@ -9072,7 +9075,8 @@ mod tests {
     fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injection() {
         let mut structured = serde_json::json!({
             "policy": "Use password=secret123 with ghp_abcdefghijklmnopqrstuvwxyz1234567890 -----BEGIN PRIVATE KEY-----abc-----END PRIVATE KEY----- MY_TOKEN_VALUE_123456",
-            "review_step": "code_review_parallel"
+            "review_step": "code_review_parallel",
+            "findings": []
         });
         WorkflowEngine::mask_json_strings(&mut structured, &["MY_TOKEN_VALUE_123456".to_string()]);
         let raw = serde_json::to_string(&structured).unwrap();
@@ -9152,7 +9156,8 @@ mod tests {
         let secret_env_value = "MY_TOKEN_VALUE_123456".to_string();
         let mut structured = serde_json::json!({
             "policy": "Use password=secret123 with ghp_abcdefghijklmnopqrstuvwxyz1234567890 -----BEGIN PRIVATE KEY-----abc-----END PRIVATE KEY----- MY_TOKEN_VALUE_123456",
-            "review_step": "spec_review_parallel"
+            "review_step": "spec_review_parallel",
+            "findings": []
         });
         WorkflowEngine::mask_json_strings(&mut structured, &[secret_env_value]);
 
@@ -10970,7 +10975,8 @@ mod tests {
             token_usage: None,
             structured_output: Some(serde_json::json!({
                 "policy": "Already approved.",
-                "review_step": "code_review_parallel"
+                "review_step": "code_review_parallel",
+                "findings": []
             })),
             run_index: 1,
             child_outputs: None,
@@ -10985,7 +10991,8 @@ mod tests {
                 result: Some("approved".to_string()),
                 structured_output: Some(serde_json::json!({
                     "policy": "Already approved.",
-                    "review_step": "code_review_parallel"
+                    "review_step": "code_review_parallel",
+                    "findings": []
                 })),
                 output_contract: Some("approved-fix-policy".to_string()),
                 token_usage: None,
@@ -11338,7 +11345,8 @@ mod tests {
         };
         let structured_output = serde_json::json!({
             "policy": "Fix only the reported issues.",
-            "review_step": "code_review_parallel"
+            "review_step": "code_review_parallel",
+            "findings": []
         });
         let first = WorkflowEngine::apply_approval_application(
             &mut exec,
@@ -11363,7 +11371,8 @@ mod tests {
                 effective_result: "approved".to_string(),
                 structured_output: Some(serde_json::json!({
                     "policy": "Duplicate",
-                    "review_step": "code_review_parallel"
+                    "review_step": "code_review_parallel",
+                    "findings": []
                 })),
                 output_contract: Some("approved-fix-policy".to_string()),
             },
@@ -11386,6 +11395,7 @@ mod tests {
         let structured_output = serde_json::json!({
             "policy": "Update the spec only for the approved plan review finding.",
             "review_step": "spec_review_parallel",
+            "findings": []
         });
         let effective_result = "approved".to_string();
 
@@ -11435,7 +11445,8 @@ mod tests {
                 effective_result: "approved".to_string(),
                 structured_output: Some(serde_json::json!({
                     "policy": "Duplicate",
-                    "review_step": "spec_review_parallel"
+                    "review_step": "spec_review_parallel",
+                    "findings": []
                 })),
                 output_contract: Some("approved-fix-policy".to_string()),
             },
@@ -11632,6 +11643,7 @@ mod tests {
         let structured_output = serde_json::json!({
             "policy": "Fix only reviewed findings.",
             "review_step": "code_review_parallel",
+            "findings": []
         });
         let outcome = WorkflowEngine::apply_approval_application(
             &mut exec,
@@ -11665,7 +11677,8 @@ mod tests {
                 effective_result: "approved".to_string(),
                 structured_output: Some(serde_json::json!({
                     "policy": "Duplicate",
-                    "review_step": "code_review_parallel"
+                    "review_step": "code_review_parallel",
+                    "findings": []
                 })),
                 output_contract: Some("approved-fix-policy".to_string()),
             },
