@@ -54,7 +54,7 @@ pub fn get_git_status(repo_path: String) -> Result<Vec<GitFileStatus>, GitError>
     let result: Vec<GitFileStatus> = statuses
         .iter()
         .filter_map(|entry| {
-            let path = entry.path()?.to_string();
+            let path = entry.path().ok()?.to_string();
             let path = path.trim_end_matches('/').to_string();
             let status = entry.status();
             let idx = index_status_from_flags(status);

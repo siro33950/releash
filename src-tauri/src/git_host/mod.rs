@@ -255,7 +255,7 @@ fn check_github_status() -> ProviderStatus {
 fn get_origin_url(repo_path: &str) -> Option<String> {
     let repo = git2::Repository::open(repo_path).ok()?;
     let remote = repo.find_remote("origin").ok()?;
-    remote.url().map(|s| s.to_string())
+    remote.url().ok().map(|s| s.to_string())
 }
 
 #[cfg(test)]

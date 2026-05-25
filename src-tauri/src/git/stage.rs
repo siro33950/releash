@@ -23,7 +23,7 @@ pub fn git_stage(repo_path: String, paths: Vec<String>) -> Result<(), GitError> 
                     || s.contains(git2::Status::WT_RENAMED)
                     || s.contains(git2::Status::WT_TYPECHANGE)
                 {
-                    entry.path().map(|p| p.to_string())
+                    entry.path().ok().map(|p| p.to_string())
                 } else {
                     None
                 }
@@ -83,7 +83,7 @@ pub fn git_unstage(repo_path: String, paths: Vec<String>) -> Result<(), GitError
                         || s.contains(git2::Status::INDEX_DELETED)
                         || s.contains(git2::Status::INDEX_RENAMED)
                     {
-                        entry.path().map(|p| p.to_string())
+                        entry.path().ok().map(|p| p.to_string())
                     } else {
                         None
                     }
