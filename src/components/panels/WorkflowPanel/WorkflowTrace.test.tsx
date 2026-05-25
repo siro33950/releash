@@ -751,7 +751,7 @@ describe("WorkflowTrace", () => {
 		expect(screen.getByText(/"verdict": "LGTM"/)).toBeInTheDocument();
 	});
 
-	it("shows spec_file_path only inside expanded Structured Output JSON", () => {
+	it("shows spec_dir only inside expanded Structured Output JSON", () => {
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState({
@@ -766,7 +766,7 @@ describe("WorkflowTrace", () => {
 							completedAt: 1001,
 							result: "done",
 							structuredOutput: {
-								spec_file_path: "docs/spec/issues-909.md",
+								spec_dir: "docs/specs/issues-909",
 							},
 						},
 					],
@@ -774,15 +774,13 @@ describe("WorkflowTrace", () => {
 			/>,
 		);
 		expect(
-			screen.queryByRole("button", { name: "docs/spec/issues-909.md" }),
+			screen.queryByRole("button", { name: "docs/specs/issues-909" }),
 		).not.toBeInTheDocument();
-		expect(
-			screen.queryByText("docs/spec/issues-909.md"),
-		).not.toBeInTheDocument();
+		expect(screen.queryByText("docs/specs/issues-909")).not.toBeInTheDocument();
 		fireEvent.click(screen.getByText("Structured Output"));
-		expect(screen.getByText(/docs\/spec\/issues-909\.md/)).toBeInTheDocument();
+		expect(screen.getByText(/docs\/specs\/issues-909/)).toBeInTheDocument();
 		expect(
-			screen.queryByRole("button", { name: "docs/spec/issues-909.md" }),
+			screen.queryByRole("button", { name: "docs/specs/issues-909" }),
 		).not.toBeInTheDocument();
 	});
 
@@ -1088,7 +1086,7 @@ describe("WorkflowTrace", () => {
 							result: "approve",
 							structuredOutput: {
 								policy: "Fix only the reported findings without refactoring.",
-								review_step: "code_review_parallel",
+								review_step: "source_parallel",
 							},
 						},
 					],
@@ -1099,19 +1097,19 @@ describe("WorkflowTrace", () => {
 		expect(
 			screen.getByText(/"Fix only the reported findings without refactoring."/),
 		).toBeInTheDocument();
-		expect(screen.getByText(/"code_review_parallel"/)).toBeInTheDocument();
+		expect(screen.getByText(/"source_parallel"/)).toBeInTheDocument();
 	});
 
-	it("shows fix policy step as waiting for approval in trace", () => {
+	it("shows policy approval step as waiting for approval in trace", () => {
 		render(
 			<WorkflowTrace
 				workflowState={makeWorkflowState({
 					state: { type: "waiting_approval" },
-					currentStepName: "plan_fix_policy",
+					currentStepName: "policy_gate",
 					currentStepIndex: 1,
 					stepStates: {
 						plan: "completed",
-						plan_fix_policy: "waiting_approval",
+						policy_gate: "waiting_approval",
 						fix: "pending",
 					},
 					workflowDefinition: {
@@ -1126,7 +1124,7 @@ describe("WorkflowTrace", () => {
 								rules: [],
 							},
 							{
-								name: "plan_fix_policy",
+								name: "policy_gate",
 								type: "approval",
 								instruction: "policy",
 								rules: [],
@@ -1142,7 +1140,7 @@ describe("WorkflowTrace", () => {
 				})}
 			/>,
 		);
-		expect(screen.getByText("plan_fix_policy")).toBeInTheDocument();
+		expect(screen.getByText("policy_gate")).toBeInTheDocument();
 		expect(screen.getByText("Waiting for approval")).toBeInTheDocument();
 	});
 

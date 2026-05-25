@@ -1,4 +1,5 @@
 use super::builtin;
+use super::contract::strip_contract_validation_metadata;
 use super::schema::{ChildNodeDefinition, NodeDefinition, ResolvedFacets, Workflow};
 use super::storage;
 use serde::Serialize;
@@ -376,7 +377,11 @@ fn compose_from_parts(
         system_parts.push(content.clone());
     }
     if let (Some(ref content), Some(key)) = (&resolved.output_contract, output_contract_key) {
-        system_parts.push(format!("{}\n\n{}", output_contract_preamble(key), content));
+        system_parts.push(format!(
+            "{}\n\n{}",
+            output_contract_preamble(key),
+            strip_contract_validation_metadata(content)
+        ));
     }
     let system_prompt = if system_parts.is_empty() {
         None
@@ -392,7 +397,11 @@ fn compose_from_parts(
         // resolved.input_contracts と input_contract_keys は同じ順序・同じ長さで対応する
         // ([02] Contract 双方向対称性: load 経路で keys を順に解決して body 配列に格納する)。
         for (key, body) in keys.iter().zip(resolved.input_contracts.iter()) {
-            user_parts.push(format!("{}\n\n{}", input_contract_preamble(key), body));
+            user_parts.push(format!(
+                "{}\n\n{}",
+                input_contract_preamble(key),
+                strip_contract_validation_metadata(body)
+            ));
         }
     }
     if let Some(ref content) = resolved.instruction {

@@ -1,7 +1,7 @@
 //! [05] / [06] `releash workflow ...` CLI 入口。
 //!
 //! read-only 観測経路は engine と IPC せず、`workflow_runs/` 配下と `workflows/`
-//! YAML / builtin を file-direct で読む（spec [05] アーキテクチャ概要）。
+//! YAML / builtin を file-direct で読む（spec [05] design）。
 //! mutating CLI (`approve` / `reject` / `abort`) も engine と直接 IPC せず、pending
 //! command file を enqueue するところまでを CLI の責務に閉じる（spec [06] CLI 完了
 //! 基準境界）。

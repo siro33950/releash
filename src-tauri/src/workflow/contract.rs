@@ -6,7 +6,9 @@
 //! `SubmitOutput` から呼ばれる pure validator (`validate_contract_value`) を唯一の
 //! 検証入口として提供する。
 
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::workflow::event::WorkflowEvent;
 use crate::workflow::schema::Workflow;
@@ -108,140 +110,250 @@ pub struct ContractViolation {
 /// prose 抽出を経由せず、`<workflow_output>` block の存在判定は行わない。
 /// type 名の照合は caller (CLI / engine) 側の責務に閉じる。
 pub fn validate_contract_value(contract_type: &str, value: Value) -> ContractValidationResult {
-    validate_contract_specific(contract_type, value)
+    let definition = crate::workflow::builtin::get_builtin_facet(
+        crate::workflow::facet::FacetKind::Contract,
+        contract_type,
+    );
+    validate_contract_value_with_definition(value, definition)
 }
 
-/// contract typeごとのバリデーション。
-fn validate_contract_specific(contract_type: &str, json: Value) -> ContractValidationResult {
-    match contract_type {
-        "review-verdict" => validate_review_verdict(json),
-        "fix-result" => validate_fix_result(json),
-        "spec-file-path" => validate_spec_file_path(json),
-        "approved-fix-policy" => validate_approved_fix_policy(json),
-        _ => {
-            // 未知のcontract typeはJSONが有効ならそのまま通す
-            ContractValidationResult::Valid {
-                structured_output: json,
-                result: None,
-            }
+pub fn validate_contract_value_with_definition(
+    value: Value,
+    contract_definition: Option<&str>,
+) -> ContractValidationResult {
+    validate_contract_against_metadata(value, contract_definition)
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct ContractValidationMetadata {
+    result_field: Option<String>,
+    result: Option<String>,
+    required: Vec<String>,
+    enums: HashMap<String, Vec<String>>,
+    non_empty_array_when: Vec<ConditionalArrayRule>,
+    array_items_required: HashMap<String, Vec<String>>,
+    relative_paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConditionalArrayRule {
+    field: String,
+    equals: Value,
+    array: String,
+}
+
+fn validate_contract_against_metadata(
+    json: Value,
+    contract_definition: Option<&str>,
+) -> ContractValidationResult {
+    let metadata = match contract_definition.and_then(extract_validation_metadata) {
+        Some(Ok(metadata)) => metadata,
+        Some(Err(details)) => {
+            return ContractValidationResult::Invalid(ContractViolation {
+                reason: "invalid_contract_validation_metadata".to_string(),
+                details,
+            });
         }
-    }
-}
+        None => ContractValidationMetadata::default(),
+    };
 
-fn validate_approved_fix_policy(json: Value) -> ContractValidationResult {
-    // approved-fix-policy はユーザーが指示書で任意のスキーマを定義する契約。
-    // フィールド検証・unknown フィールド除去・サイズ制限を行わず、入力 JSON をそのまま渡す。
+    if let Err(violation) = validate_metadata_rules(&json, &metadata) {
+        return ContractValidationResult::Invalid(violation);
+    }
+
+    let result = metadata
+        .result
+        .or_else(|| {
+            metadata
+                .result_field
+                .as_deref()
+                .and_then(|field| json.get(field))
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            ["result", "verdict", "status"]
+                .iter()
+                .find_map(|field| json.get(field).and_then(|value| value.as_str()))
+                .map(ToOwned::to_owned)
+        });
+
     ContractValidationResult::Valid {
         structured_output: json,
-        result: Some("approved".to_string()),
+        result,
     }
 }
 
-fn validate_review_verdict(json: Value) -> ContractValidationResult {
-    let verdict = json.get("verdict").and_then(|v| v.as_str());
-    match verdict {
-        Some("LGTM") => ContractValidationResult::Valid {
-            result: Some("LGTM".to_string()),
-            structured_output: json,
-        },
-        Some("NEEDS_FIX") => {
-            // NEEDS_FIX時はfindingsが非空配列であり、各findingにseverityとmessageがあることを検証
-            let findings = json.get("findings").and_then(|v| v.as_array());
-            match findings {
-                Some(arr) if !arr.is_empty() => {
-                    let invalid_finding = arr.iter().find(|f| {
-                        f.get("severity").and_then(|v| v.as_str()).is_none()
-                            || f.get("message").and_then(|v| v.as_str()).is_none()
+fn extract_validation_metadata(
+    contract_definition: &str,
+) -> Option<Result<ContractValidationMetadata, String>> {
+    let opening = "```contract-validation";
+    let start = contract_definition.find(opening)?;
+    let after_opening = &contract_definition[start + opening.len()..];
+    let body_start = after_opening.find('\n').map(|pos| pos + 1).unwrap_or(0);
+    let body = &after_opening[body_start..];
+    let end = body.find("```").unwrap_or(body.len());
+    let json = body[..end].trim();
+    Some(
+        serde_json::from_str(json)
+            .map_err(|err| format!("Invalid contract-validation metadata JSON: {err}")),
+    )
+}
+
+pub fn strip_contract_validation_metadata(contract_definition: &str) -> String {
+    let mut remaining = contract_definition;
+    let mut output = String::new();
+    let opening = "```contract-validation";
+
+    while let Some(start) = remaining.find(opening) {
+        output.push_str(&remaining[..start]);
+        let after_opening = &remaining[start + opening.len()..];
+        let body_start = after_opening.find('\n').map(|pos| pos + 1).unwrap_or(0);
+        let body = &after_opening[body_start..];
+        if let Some(end) = body.find("```") {
+            remaining = &body[end + 3..];
+        } else {
+            remaining = "";
+            break;
+        }
+    }
+    output.push_str(remaining);
+    output.trim().to_string()
+}
+
+fn validate_metadata_rules(
+    json: &Value,
+    metadata: &ContractValidationMetadata,
+) -> Result<(), ContractViolation> {
+    for field in &metadata.required {
+        match json.get(field) {
+            Some(Value::String(value)) if value.is_empty() => {
+                return Err(ContractViolation {
+                    reason: "missing_field".to_string(),
+                    details: format!("Required field \"{field}\" must not be empty."),
+                });
+            }
+            Some(_) => {}
+            None => {
+                return Err(ContractViolation {
+                    reason: "missing_field".to_string(),
+                    details: format!("Missing required field \"{field}\"."),
+                });
+            }
+        }
+    }
+
+    for (field, allowed) in &metadata.enums {
+        let Some(value) = json.get(field) else {
+            continue;
+        };
+        let Some(actual) = value.as_str() else {
+            return Err(ContractViolation {
+                reason: "invalid_enum".to_string(),
+                details: format!("Field \"{field}\" must be a string."),
+            });
+        };
+        if !allowed.iter().any(|candidate| candidate == actual) {
+            return Err(ContractViolation {
+                reason: "invalid_enum".to_string(),
+                details: format!(
+                    "Field \"{field}\" must be one of [{}], got \"{actual}\".",
+                    allowed
+                        .iter()
+                        .map(|value| format!("\"{value}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+    }
+
+    for rule in &metadata.non_empty_array_when {
+        if json.get(&rule.field) == Some(&rule.equals) {
+            match json.get(&rule.array).and_then(|value| value.as_array()) {
+                Some(values) if !values.is_empty() => {}
+                _ => {
+                    return Err(ContractViolation {
+                        reason: "missing_array".to_string(),
+                        details: format!(
+                            "Field \"{}\" must be a non-empty array when \"{}\" is {}.",
+                            rule.array, rule.field, rule.equals
+                        ),
                     });
-                    if let Some(bad) = invalid_finding {
-                        ContractValidationResult::Invalid(ContractViolation {
-                            reason: "invalid_finding".to_string(),
-                            details: format!(
-                                "Each finding must have \"severity\" and \"message\". Invalid finding: {}",
-                                bad
-                            ),
-                        })
-                    } else {
-                        ContractValidationResult::Valid {
-                            result: Some("NEEDS_FIX".to_string()),
-                            structured_output: json,
-                        }
-                    }
                 }
-                _ => ContractValidationResult::Invalid(ContractViolation {
-                    reason: "missing_findings".to_string(),
-                    details:
-                        "verdict is \"NEEDS_FIX\" but \"findings\" is missing or empty. At least one finding is required."
-                            .to_string(),
-                }),
             }
         }
-        Some(other) => ContractValidationResult::Invalid(ContractViolation {
-            reason: "invalid_verdict".to_string(),
-            details: format!("verdict must be \"LGTM\" or \"NEEDS_FIX\", got \"{other}\"."),
-        }),
-        None => ContractValidationResult::Invalid(ContractViolation {
-            reason: "missing_field".to_string(),
-            details: "Missing required field \"verdict\" (must be \"LGTM\" or \"NEEDS_FIX\")."
-                .to_string(),
-        }),
     }
+
+    for (array_field, required_fields) in &metadata.array_items_required {
+        let array = match json.get(array_field) {
+            None => continue,
+            Some(Value::Array(array)) => array,
+            Some(_) => {
+                return Err(ContractViolation {
+                    reason: "invalid_array".to_string(),
+                    details: format!("Field \"{array_field}\" must be an array."),
+                });
+            }
+        };
+        for item in array {
+            for field in required_fields {
+                if item.get(field).and_then(|value| value.as_str()).is_none() {
+                    return Err(ContractViolation {
+                        reason: "invalid_array_item".to_string(),
+                        details: format!(
+                            "Each item in \"{array_field}\" must have string field \"{field}\". Invalid item: {item}"
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    for field in &metadata.relative_paths {
+        let path = match json.get(field) {
+            None => continue,
+            Some(Value::String(path)) => path,
+            Some(_) => {
+                return Err(ContractViolation {
+                    reason: "invalid_path".to_string(),
+                    details: format!("Field \"{field}\" must be a string relative path."),
+                });
+            }
+        };
+        validate_relative_contract_path(field, path)?;
+    }
+
+    Ok(())
 }
 
-fn validate_fix_result(json: Value) -> ContractValidationResult {
-    let status = json.get("status").and_then(|v| v.as_str());
-    match status {
-        Some("FIXED") | Some("PARTIAL") | Some("BLOCKED") => ContractValidationResult::Valid {
-            result: Some(status.unwrap().to_string()),
-            structured_output: json,
-        },
-        Some(other) => ContractValidationResult::Invalid(ContractViolation {
-            reason: "invalid_status".to_string(),
+fn validate_relative_contract_path(field: &str, path: &str) -> Result<(), ContractViolation> {
+    let is_drive_letter_abs = path.len() >= 3
+        && path.as_bytes()[0].is_ascii_alphabetic()
+        && path.as_bytes()[1] == b':'
+        && (path.as_bytes()[2] == b'/' || path.as_bytes()[2] == b'\\');
+    if path.starts_with('/') || path.starts_with('\\') || is_drive_letter_abs {
+        return Err(ContractViolation {
+            reason: "invalid_path".to_string(),
             details: format!(
-                "status must be \"FIXED\", \"PARTIAL\", or \"BLOCKED\", got \"{other}\"."
+                "Field \"{field}\" must be a relative path, got absolute path: \"{path}\""
             ),
-        }),
-        None => ContractValidationResult::Invalid(ContractViolation {
-            reason: "missing_field".to_string(),
-            details:
-                "Missing required field \"status\" (must be \"FIXED\", \"PARTIAL\", or \"BLOCKED\")."
-                    .to_string(),
-        }),
+        });
     }
-}
-
-fn validate_spec_file_path(json: Value) -> ContractValidationResult {
-    let path = json.get("spec_file_path").and_then(|v| v.as_str());
-    match path {
-        Some(p) if !p.is_empty() => {
-            let is_drive_letter_abs = p.len() >= 3
-                && p.as_bytes()[0].is_ascii_alphabetic()
-                && p.as_bytes()[1] == b':'
-                && (p.as_bytes()[2] == b'/' || p.as_bytes()[2] == b'\\');
-            if p.starts_with('/') || p.starts_with('\\') || is_drive_letter_abs {
-                return ContractValidationResult::Invalid(ContractViolation {
-                    reason: "invalid_path".to_string(),
-                    details: format!(
-                        "spec_file_path must be a relative path, got absolute path: \"{p}\""
-                    ),
-                });
-            }
-            if p.contains("..") {
-                return ContractValidationResult::Invalid(ContractViolation {
-                    reason: "invalid_path".to_string(),
-                    details: format!("spec_file_path must not contain \"..\": \"{p}\""),
-                });
-            }
-            ContractValidationResult::Valid {
-                result: None,
-                structured_output: json,
-            }
-        }
-        _ => ContractValidationResult::Invalid(ContractViolation {
-            reason: "missing_field".to_string(),
-            details: "Missing required field \"spec_file_path\".".to_string(),
-        }),
+    if path.contains("..") {
+        return Err(ContractViolation {
+            reason: "invalid_path".to_string(),
+            details: format!("Field \"{field}\" must not contain \"..\": \"{path}\""),
+        });
     }
+    if path.ends_with('/') || path.ends_with('\\') {
+        return Err(ContractViolation {
+            reason: "invalid_path".to_string(),
+            details: format!("Field \"{field}\" must not end with a path separator: \"{path}\""),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -292,7 +404,7 @@ mod tests {
     fn validate_contract_value_rejects_invalid_verdict() {
         match validate_contract_value("review-verdict", json!({"verdict": "MAYBE"})) {
             ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_verdict");
+                assert_eq!(v.reason, "invalid_enum");
             }
             other => panic!("expected Invalid, got {:?}", other),
         }
@@ -302,7 +414,7 @@ mod tests {
     fn validate_contract_value_rejects_needs_fix_without_findings() {
         match validate_contract_value("review-verdict", json!({"verdict": "NEEDS_FIX"})) {
             ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "missing_findings");
+                assert_eq!(v.reason, "missing_array");
             }
             other => panic!("expected Invalid, got {:?}", other),
         }
@@ -315,7 +427,7 @@ mod tests {
             json!({"verdict": "NEEDS_FIX", "findings": []}),
         ) {
             ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "missing_findings");
+                assert_eq!(v.reason, "missing_array");
             }
             other => panic!("expected Invalid, got {:?}", other),
         }
@@ -328,7 +440,7 @@ mod tests {
             json!({"verdict": "NEEDS_FIX", "findings": [{"message": "bug"}]}),
         ) {
             ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_finding");
+                assert_eq!(v.reason, "invalid_array_item");
             }
             other => panic!("expected Invalid, got {:?}", other),
         }
@@ -341,7 +453,7 @@ mod tests {
             json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error"}]}),
         ) {
             ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_finding");
+                assert_eq!(v.reason, "invalid_array_item");
             }
             other => panic!("expected Invalid, got {:?}", other),
         }
@@ -349,8 +461,22 @@ mod tests {
 
     #[test]
     fn validate_contract_value_accepts_fix_result_statuses() {
+        let definition = r#"
+```contract-validation
+{
+  "result_field": "status",
+  "required": ["status"],
+  "enums": {
+    "status": ["FIXED", "PARTIAL", "BLOCKED"]
+  }
+}
+```
+"#;
         for status in &["FIXED", "PARTIAL", "BLOCKED"] {
-            match validate_contract_value("fix-result", json!({"status": status})) {
+            match validate_contract_value_with_definition(
+                json!({"status": status}),
+                Some(definition),
+            ) {
                 ContractValidationResult::Valid { result, .. } => {
                     assert_eq!(result, Some(status.to_string()));
                 }
@@ -361,9 +487,20 @@ mod tests {
 
     #[test]
     fn validate_contract_value_rejects_invalid_fix_result_status() {
-        match validate_contract_value("fix-result", json!({"status": "DONE"})) {
+        let definition = r#"
+```contract-validation
+{
+  "result_field": "status",
+  "required": ["status"],
+  "enums": {
+    "status": ["FIXED", "PARTIAL", "BLOCKED"]
+  }
+}
+```
+"#;
+        match validate_contract_value_with_definition(json!({"status": "DONE"}), Some(definition)) {
             ContractValidationResult::Invalid(v) => {
-                assert_eq!(v.reason, "invalid_status");
+                assert_eq!(v.reason, "invalid_enum");
             }
             other => panic!("expected Invalid, got {:?}", other),
         }
@@ -371,7 +508,19 @@ mod tests {
 
     #[test]
     fn validate_contract_value_rejects_missing_fix_result_status() {
-        match validate_contract_value("fix-result", json!({"summary": "done"})) {
+        let definition = r#"
+```contract-validation
+{
+  "result_field": "status",
+  "required": ["status"],
+  "enums": {
+    "status": ["FIXED", "PARTIAL", "BLOCKED"]
+  }
+}
+```
+"#;
+        match validate_contract_value_with_definition(json!({"summary": "done"}), Some(definition))
+        {
             ContractValidationResult::Invalid(v) => {
                 assert_eq!(v.reason, "missing_field");
             }
@@ -380,10 +529,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_contract_value_accepts_relative_spec_file_path() {
+    fn validate_contract_value_accepts_relative_spec_dir() {
         match validate_contract_value(
-            "spec-file-path",
-            json!({"spec_file_path": "docs/spec/issues-1029.md"}),
+            "spec-directory",
+            json!({"spec_dir": "docs/spec/issues-1029.md"}),
         ) {
             ContractValidationResult::Valid { result, .. } => {
                 assert_eq!(result, None);
@@ -393,8 +542,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_contract_value_rejects_absolute_spec_file_path() {
-        match validate_contract_value("spec-file-path", json!({"spec_file_path": "/etc/passwd"})) {
+    fn validate_contract_value_rejects_absolute_spec_dir() {
+        match validate_contract_value("spec-directory", json!({"spec_dir": "/etc/passwd"})) {
             ContractValidationResult::Invalid(v) => {
                 assert_eq!(v.reason, "invalid_path");
             }
@@ -403,10 +552,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_contract_value_rejects_spec_file_path_traversal() {
+    fn validate_contract_value_rejects_spec_dir_traversal() {
         match validate_contract_value(
-            "spec-file-path",
-            json!({"spec_file_path": "docs/../../etc/passwd"}),
+            "spec-directory",
+            json!({"spec_dir": "docs/../../etc/passwd"}),
         ) {
             ContractValidationResult::Invalid(v) => {
                 assert_eq!(v.reason, "invalid_path");
@@ -416,9 +565,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_contract_value_rejects_windows_drive_spec_file_path() {
+    fn validate_contract_value_rejects_windows_drive_spec_dir() {
         for path in &["C:\\repo\\spec.md", "C:/repo/spec.md", "D:\\file.md"] {
-            match validate_contract_value("spec-file-path", json!({"spec_file_path": path})) {
+            match validate_contract_value("spec-directory", json!({"spec_dir": path})) {
                 ContractValidationResult::Invalid(v) => {
                     assert_eq!(v.reason, "invalid_path", "path: {path}");
                 }
@@ -428,8 +577,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_contract_value_rejects_missing_spec_file_path_field() {
-        match validate_contract_value("spec-file-path", json!({"path": "some/path.md"})) {
+    fn validate_contract_value_rejects_missing_spec_dir_field() {
+        match validate_contract_value("spec-directory", json!({"path": "some/path.md"})) {
             ContractValidationResult::Invalid(v) => {
                 assert_eq!(v.reason, "missing_field");
             }
@@ -438,10 +587,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_contract_value_accepts_approved_fix_policy_with_arbitrary_fields() {
+    fn validate_contract_value_accepts_approved_fix_policy() {
         let input = json!({
             "policy": "Fix only NEEDS_FIX findings.",
             "review_step": "code_review_parallel",
+            "findings": [],
             "extra": {"nested": "value"}
         });
         match validate_contract_value("approved-fix-policy", input.clone()) {
@@ -453,6 +603,80 @@ mod tests {
                 assert_eq!(structured_output, input);
             }
             other => panic!("expected Valid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_approved_fix_policy_missing_fields() {
+        match validate_contract_value(
+            "approved-fix-policy",
+            json!({"review_step": "code_review_parallel", "findings": []}),
+        ) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "missing_field");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_approved_fix_policy_invalid_review_step() {
+        match validate_contract_value(
+            "approved-fix-policy",
+            json!({
+                "policy": "Fix only approved findings.",
+                "review_step": "unknown_parallel",
+                "findings": []
+            }),
+        ) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_enum");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_approved_fix_policy_non_array_findings() {
+        match validate_contract_value(
+            "approved-fix-policy",
+            json!({
+                "policy": "Fix only approved findings.",
+                "review_step": "code_review_parallel",
+                "findings": "none"
+            }),
+        ) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_array");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_approved_fix_policy_malformed_finding() {
+        match validate_contract_value(
+            "approved-fix-policy",
+            json!({
+                "policy": "Fix only approved findings.",
+                "review_step": "code_review_parallel",
+                "findings": [{"severity": "error", "message": "bug", "action": "fix"}]
+            }),
+        ) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_array_item");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_contract_value_rejects_non_string_spec_dir() {
+        match validate_contract_value("spec-directory", json!({"spec_dir": 123})) {
+            ContractValidationResult::Invalid(v) => {
+                assert_eq!(v.reason, "invalid_path");
+            }
+            other => panic!("expected Invalid, got {:?}", other),
         }
     }
 

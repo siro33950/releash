@@ -1,6 +1,6 @@
 # Implementation Fix Policy Approval
 
-入力で渡されるレビュー結果（6観点 reviewer の `review-verdict`）と Spec ファイルを読み込み、実装の修正方針を策定する。
+入力で渡されるレビュー結果（6観点 reviewer の `review-verdict`）と Spec 3文書を読み込み、実装の修正方針を策定する。
 
 ファイル編集は一切行わない。
 
@@ -43,10 +43,11 @@
 releash workflow output submit <run_id> \
   --step <step_name> \
   --type approved-fix-policy \
-  --json '{"review_step":"code_review_parallel","findings":[...]}'
+  --json '{"review_step":"code_review_parallel","policy":"...","findings":[...]}'
 ```
 
 - `review_step` には `"code_review_parallel"` を指定する（本 policy が参照した一次入力の種別）
+- `policy` には承認された修正方針の全体ガイダンスを書く
 - `findings` は人間に報告した内容と完全に一致させる
 - 追加項目（review にない「ついでに直す」など）も同じ配列に入れる
 - 提出が成功するまで step は完了として扱われない。失敗時は `releash workflow output validate` でフォーマットを確認してから再提出する

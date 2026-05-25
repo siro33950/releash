@@ -2,17 +2,7 @@ name: spec-review-auto
 description: Spec-driven code review workflow without user approvals (auto policy decision + fix loop + summary)
 builtin: true
 
-# 起動時の task には Spec ファイルパスを記述する想定（例: "Spec: docs/spec/issues-123.md"）。
-# 各 step は `input_contracts` で入力データ仕様を宣言する（[02] Contract 双方向対称性）。
-# spec-review.yml と異なり、approval node を一切持たず、自動で fix まで進む。
-#
-# 注意: code_review_parallel の children では approved-fix-policy を input_contracts に
-# 含めない。初回レビュー時には fix_policy が未実行で実値が届かないため、input_contracts
-# は実行時に必ず届くデータ仕様だけを宣言する原則に従う（再レビュー時の実値注入は
-# pass_output_from が担保する）。
-
 nodes:
-  # 1. コードレビュー 6観点（parallel agent）+ 集約
   - name: code_review_parallel
     type: parallel
     parallel_children:
@@ -24,7 +14,7 @@ nodes:
         policy: review
         output_contract: review-verdict
         input_contracts:
-          - spec-file-path
+          - spec-directory
         pass_output_from:
           - fix_policy
       - name: code_review_structure
@@ -35,7 +25,7 @@ nodes:
         policy: review
         output_contract: review-verdict
         input_contracts:
-          - spec-file-path
+          - spec-directory
         pass_output_from:
           - fix_policy
       - name: code_review_quality
@@ -46,7 +36,7 @@ nodes:
         policy: review
         output_contract: review-verdict
         input_contracts:
-          - spec-file-path
+          - spec-directory
         pass_output_from:
           - fix_policy
       - name: code_review_test
@@ -57,7 +47,7 @@ nodes:
         policy: review
         output_contract: review-verdict
         input_contracts:
-          - spec-file-path
+          - spec-directory
         pass_output_from:
           - fix_policy
       - name: code_review_security
@@ -68,7 +58,7 @@ nodes:
         policy: review
         output_contract: review-verdict
         input_contracts:
-          - spec-file-path
+          - spec-directory
         pass_output_from:
           - fix_policy
       - name: code_review_architecture
@@ -79,7 +69,7 @@ nodes:
         policy: review
         output_contract: review-verdict
         input_contracts:
-          - spec-file-path
+          - spec-directory
         pass_output_from:
           - fix_policy
     aggregate:
@@ -87,9 +77,6 @@ nodes:
       then: review_summary
       else: fix_policy
 
-  # 2. 修正方針の妥当性検証・自動決定（agent、readonly）
-  #    承認 node ではなく agent。レビュー指摘の妥当性を1件ずつ検証し、
-  #    action: fix / skip を自動決定して approved-fix-policy を出力する。
   - name: fix_policy
     type: agent
     model: default
@@ -98,13 +85,11 @@ nodes:
     policy: coding
     output_contract: approved-fix-policy
     input_contracts:
-      - spec-file-path
+      - spec-directory
       - review-verdict
     pass_output_from:
       - code_review_parallel
 
-  # 3. 修正（agent、edit）
-  #    既存 implement-fix を流用（approved-fix-policy を受け取る設計のため）。
   - name: fix
     type: agent
     model: default
@@ -112,7 +97,7 @@ nodes:
     instruction: implement-fix
     policy: coding
     input_contracts:
-      - spec-file-path
+      - spec-directory
       - approved-fix-policy
     pass_output_from:
       - fix_policy
@@ -125,7 +110,6 @@ nodes:
       max_iterations: 3
       on_exhausted: review_summary
 
-  # 4. 最終要約（agent、readonly）— 終端
   - name: review_summary
     type: agent
     model: default
@@ -133,7 +117,7 @@ nodes:
     instruction: review-summary
     policy: review
     input_contracts:
-      - spec-file-path
+      - spec-directory
       - review-verdict
       - approved-fix-policy
     pass_output_from:

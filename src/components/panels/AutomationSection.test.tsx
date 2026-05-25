@@ -81,7 +81,7 @@ describe("AutomationSection", () => {
 		const automation = createMockAutomation({
 			workflows: [
 				{
-					name: "spec-driven-development",
+					name: "builtin-workflow",
 					description: "Built-in workflow",
 					builtin: true,
 					is_running: false,
@@ -95,7 +95,7 @@ describe("AutomationSection", () => {
 			],
 		});
 		render(<AutomationSection automation={automation} />);
-		expect(screen.getByText("spec-driven-development")).toBeInTheDocument();
+		expect(screen.getByText("builtin-workflow")).toBeInTheDocument();
 		expect(screen.getByText("my-custom")).toBeInTheDocument();
 		expect(screen.getByText("builtin")).toBeInTheDocument();
 	});
@@ -104,7 +104,7 @@ describe("AutomationSection", () => {
 		const automation = createMockAutomation({
 			workflows: [
 				{
-					name: "spec-driven-development",
+					name: "builtin-workflow",
 					description: "Built-in",
 					builtin: true,
 					is_running: false,
@@ -190,7 +190,7 @@ describe("AutomationSection", () => {
 	it("workflow detail hides Edit button for builtin workflow", () => {
 		const automation = createMockAutomation({
 			selectedWorkflow: {
-				name: "spec-driven-development",
+				name: "builtin-workflow",
 				description: "Builtin",
 				builtin: true,
 				nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],

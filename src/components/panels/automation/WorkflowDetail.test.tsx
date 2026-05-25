@@ -65,7 +65,7 @@ describe("WorkflowDetail facet refs row", () => {
 		render(
 			<WorkflowDetail
 				workflow={makeWorkflow({
-					input_contracts: ["spec-file-path", "approved-fix-policy"],
+					input_contracts: ["input-contract-a", "input-contract-b"],
 				})}
 				report={EMPTY_REPORT}
 				onEdit={vi.fn()}
@@ -76,7 +76,7 @@ describe("WorkflowDetail facet refs row", () => {
 
 		expect(screen.getByText(matchLabel("Input Contracts"))).toBeInTheDocument();
 		expect(
-			screen.getByText("spec-file-path, approved-fix-policy"),
+			screen.getByText("input-contract-a, input-contract-b"),
 		).toBeInTheDocument();
 	});
 

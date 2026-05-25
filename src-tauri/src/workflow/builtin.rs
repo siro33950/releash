@@ -5,6 +5,8 @@ use super::schema::{Summary, Workflow};
 use super::validation::{self, ValidationError};
 
 const BUILTIN_SPEC_DRIVEN_DEVELOPMENT: &str = include_str!("builtin/spec-driven-development.yml");
+const BUILTIN_SPEC_DRIVEN_DEVELOPMENT_GPT_5_5: &str =
+    include_str!("builtin/spec-driven-development-gpt-5-5.yml");
 const BUILTIN_SPEC_PLAN: &str = include_str!("builtin/spec-plan.yml");
 const BUILTIN_SPEC_IMPLEMENT: &str = include_str!("builtin/spec-implement.yml");
 const BUILTIN_SPEC_REVIEW: &str = include_str!("builtin/spec-review.yml");
@@ -25,22 +27,27 @@ const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
         filename: "spec-driven-development.yml",
         content: BUILTIN_SPEC_DRIVEN_DEVELOPMENT,
-        description: "Spec-driven development workflow (requirements → behavior → architecture → review → implement → review → approve)",
+        description: "Spec-driven development workflow (requirements → behavior → design → spec review → implement → implementation review → approve)",
+    },
+    BuiltinEntry {
+        filename: "spec-driven-development-gpt-5-5.yml",
+        content: BUILTIN_SPEC_DRIVEN_DEVELOPMENT_GPT_5_5,
+        description: "Spec-driven development workflow with every agent step pinned to GPT-5.5 (requirements → behavior → design → spec review → implement → implementation review → approve)",
     },
     BuiltinEntry {
         filename: "spec-plan.yml",
         content: BUILTIN_SPEC_PLAN,
-        description: "Spec-driven planning workflow (requirements → behavior → architecture → review → approve)",
+        description: "Spec planning workflow (requirements → behavior → design → spec review → approve)",
     },
     BuiltinEntry {
         filename: "spec-implement.yml",
         content: BUILTIN_SPEC_IMPLEMENT,
-        description: "Spec-driven implementation workflow (implement from an approved Spec file path passed via task)",
+        description: "Spec-driven implementation workflow (implement from an approved Spec directory)",
     },
     BuiltinEntry {
         filename: "spec-review.yml",
         content: BUILTIN_SPEC_REVIEW,
-        description: "Spec-driven code review workflow (review against an approved Spec → fix loop → approve)",
+        description: "Spec-driven code review workflow (review against an approved Spec directory → fix loop → approve)",
     },
     BuiltinEntry {
         filename: "spec-review-auto.yml",
@@ -198,53 +205,53 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     // --- Spec-driven development workflow instructions ---
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-requirements",
-        content: include_str!("builtin_facets/instructions/plan-requirements.md"),
+        key: "write-requirements",
+        content: include_str!("builtin_facets/instructions/write-requirements.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-behavior",
-        content: include_str!("builtin_facets/instructions/plan-behavior.md"),
+        key: "write-behavior",
+        content: include_str!("builtin_facets/instructions/write-behavior.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-architecture",
-        content: include_str!("builtin_facets/instructions/plan-architecture.md"),
+        key: "write-design",
+        content: include_str!("builtin_facets/instructions/write-design.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-review-completeness",
-        content: include_str!("builtin_facets/instructions/plan-review-completeness.md"),
+        key: "spec-review-requirements",
+        content: include_str!("builtin_facets/instructions/spec-review-requirements.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-review-clarity",
-        content: include_str!("builtin_facets/instructions/plan-review-clarity.md"),
+        key: "spec-review-behavior",
+        content: include_str!("builtin_facets/instructions/spec-review-behavior.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-review-security",
-        content: include_str!("builtin_facets/instructions/plan-review-security.md"),
+        key: "spec-review-design",
+        content: include_str!("builtin_facets/instructions/spec-review-design.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-review-consistency",
-        content: include_str!("builtin_facets/instructions/plan-review-consistency.md"),
+        key: "spec-review-consistency",
+        content: include_str!("builtin_facets/instructions/spec-review-consistency.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-fix",
-        content: include_str!("builtin_facets/instructions/plan-fix.md"),
+        key: "spec-fix",
+        content: include_str!("builtin_facets/instructions/spec-fix.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-fix-policy",
-        content: include_str!("builtin_facets/instructions/plan-fix-policy.md"),
+        key: "spec-fix-policy",
+        content: include_str!("builtin_facets/instructions/spec-fix-policy.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "plan-approval",
-        content: include_str!("builtin_facets/instructions/plan-approval.md"),
+        key: "spec-approval",
+        content: include_str!("builtin_facets/instructions/spec-approval.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -303,8 +310,8 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Contract,
-        key: "spec-file-path",
-        content: include_str!("builtin_facets/contracts/spec-file-path.md"),
+        key: "spec-directory",
+        content: include_str!("builtin_facets/contracts/spec-directory.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Contract,
@@ -499,19 +506,52 @@ mod tests {
         assert_eq!(instructions.len(), 31);
 
         let contracts = list_builtin_facet_keys(FacetKind::Contract);
-        // spec-file-path / review-verdict / approved-fix-policy / bug-investigation-result = 4
+        // spec-directory / review-verdict / approved-fix-policy / bug-investigation-result = 4
         assert_eq!(contracts.len(), 4);
     }
 
     #[test]
     fn is_builtin_workflow_works() {
         assert!(is_builtin_workflow("spec-driven-development"));
+        assert!(is_builtin_workflow("spec-driven-development-gpt-5-5"));
         assert!(is_builtin_workflow("spec-plan"));
         assert!(is_builtin_workflow("spec-implement"));
         assert!(is_builtin_workflow("spec-review"));
         assert!(is_builtin_workflow("spec-review-auto"));
         assert!(is_builtin_workflow("bug-fix"));
         assert!(!is_builtin_workflow("custom-workflow"));
+    }
+
+    #[test]
+    fn spec_driven_development_gpt_5_5_pins_all_agent_steps() {
+        let wf = load_builtin_workflow_resolved("spec-driven-development-gpt-5-5")
+            .expect("load must succeed")
+            .expect("workflow must exist");
+        for node in &wf.nodes {
+            if matches!(
+                node.node_type,
+                crate::workflow::schema::NodeType::Agent
+                    | crate::workflow::schema::NodeType::Approval
+            ) {
+                assert_eq!(
+                    node.model.as_deref(),
+                    Some("gpt-5.5"),
+                    "top-level agent step '{}' must pin gpt-5.5",
+                    node.name
+                );
+            }
+            if let Some(children) = node.parallel_children.as_ref() {
+                for child in children {
+                    assert_eq!(
+                        child.model.as_deref(),
+                        Some("gpt-5.5"),
+                        "parallel child '{}.{}' must pin gpt-5.5",
+                        node.name,
+                        child.name
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -737,7 +777,7 @@ mod tests {
         use crate::workflow::engine::WorkflowEngine;
         use std::collections::HashMap;
 
-        const TASK_TEXT: &str = "Spec: docs/spec/issues-123.md";
+        const TASK_TEXT: &str = "Spec: docs/specs/issues-123";
 
         enum Target {
             Top,
@@ -756,52 +796,52 @@ mod tests {
                 wf: "spec-implement",
                 node: "implement",
                 target: Target::Top,
-                expected_keys: &["spec-file-path"],
+                expected_keys: &["spec-directory"],
             },
             Case {
                 wf: "spec-driven-development",
                 node: "implement",
                 target: Target::Top,
-                expected_keys: &["spec-file-path"],
+                expected_keys: &["spec-directory"],
             },
             Case {
                 wf: "spec-review",
                 node: "fix",
                 target: Target::Top,
-                expected_keys: &["spec-file-path", "approved-fix-policy"],
+                expected_keys: &["spec-directory", "approved-fix-policy"],
             },
-            // parallel child: input_contracts は spec-file-path のみ
+            // parallel child: input_contracts は spec-directory のみ
             // (approved-fix-policy は初回レビュー時に未解決のため宣言しない)
             Case {
                 wf: "spec-review",
                 node: "code_review_parallel",
                 target: Target::Child("code_review_acceptance"),
-                expected_keys: &["spec-file-path"],
+                expected_keys: &["spec-directory"],
             },
             Case {
                 wf: "spec-review-auto",
                 node: "code_review_parallel",
                 target: Target::Child("code_review_acceptance"),
-                expected_keys: &["spec-file-path"],
+                expected_keys: &["spec-directory"],
             },
             Case {
                 wf: "spec-driven-development",
                 node: "code_review_parallel",
                 target: Target::Child("code_review_acceptance"),
-                expected_keys: &["spec-file-path"],
+                expected_keys: &["spec-directory"],
             },
             // fix-policy 適用後の step は approved-fix-policy も input として宣言する
             Case {
                 wf: "spec-review-auto",
                 node: "fix",
                 target: Target::Top,
-                expected_keys: &["spec-file-path", "approved-fix-policy"],
+                expected_keys: &["spec-directory", "approved-fix-policy"],
             },
             Case {
                 wf: "spec-review-auto",
                 node: "review_summary",
                 target: Target::Top,
-                expected_keys: &["spec-file-path", "review-verdict", "approved-fix-policy"],
+                expected_keys: &["spec-directory", "review-verdict", "approved-fix-policy"],
             },
             // bug-fix workflow: Contract 経路に統合した step 群（旧 step 名 + pass_output_from
             // 経路情報を instruction 本文から排除する不変条件）
@@ -855,10 +895,8 @@ mod tests {
             },
         ];
 
-        let workflow_variables: HashMap<String, String> = HashMap::from([(
-            "spec_file_path".to_string(),
-            "docs/spec/issues-123.md".to_string(),
-        )]);
+        let workflow_variables: HashMap<String, String> =
+            HashMap::from([("spec_dir".to_string(), "docs/specs/issues-123".to_string())]);
 
         for case in cases {
             let wf = load_builtin_workflow_resolved(case.wf)
@@ -988,7 +1026,7 @@ mod tests {
     }
 
     /// `<task>` 注入は input_contracts を宣言した step だけに限る。
-    /// 既存 builtin の plan-requirements は `input_contracts` を持たず instruction 内で
+    /// 既存 builtin の write-requirements は `input_contracts` を持たず instruction 内で
     /// `{{task}}` テンプレートを直接展開するため、engine が `<task>` ブロックを別途
     /// 追記すると prompt が同等でなくなる。この回帰を A 層で固定する。
     #[test]
@@ -1002,11 +1040,11 @@ mod tests {
         let node = wf
             .nodes
             .iter()
-            .find(|n| n.name == "plan_requirements")
-            .expect("plan_requirements must exist");
+            .find(|n| n.name == "write_requirements")
+            .expect("write_requirements must exist");
         assert!(
             node.input_contracts.is_none(),
-            "test premise: plan_requirements has no input_contracts"
+            "test premise: write_requirements has no input_contracts"
         );
 
         let (_sys, prompt) = WorkflowEngine::build_step_prompt(
@@ -1078,7 +1116,7 @@ mod tests {
     }
 
     /// `spec-review` / `spec-review-auto` / `spec-driven-development` の
-    /// `code_review_parallel` children は input_contracts に `spec-file-path` のみを宣言し、
+    /// `code_review_parallel` children は input_contracts に `spec-directory` のみを宣言し、
     /// `approved-fix-policy` は宣言しない不変条件を YAML ロード段階で固定する。
     /// (初回レビュー時には fix-policy が未実行で実値が届かないため、input_contracts は
     /// 「実行時に必ず届くデータ仕様」だけを宣言する原則に従う。)
@@ -1105,8 +1143,8 @@ mod tests {
                 let inputs: Vec<String> = child.input_contracts.clone().unwrap_or_default();
                 assert_eq!(
                     inputs,
-                    vec!["spec-file-path".to_string()],
-                    "'{wf_name}/{}' child must declare input_contracts == [spec-file-path] only",
+                    vec!["spec-directory".to_string()],
+                    "'{wf_name}/{}' child must declare input_contracts == [spec-directory] only",
                     child.name
                 );
             }
@@ -1299,17 +1337,17 @@ mod tests {
         );
     }
 
-    /// spec-driven-development workflow の `plan_fix_policy` / `plan_fix` step が
+    /// spec-driven-development workflow の `spec_fix_policy` / `spec_fix` step が
     /// `input_contracts` を非空で宣言する不変条件を固定する。これにより
-    /// `plan-fix-policy.md` / `plan-fix.md` から経路情報を排除し、Contract pipeline 化
+    /// `spec-fix-policy.md` / `spec-fix.md` から経路情報を排除し、Contract pipeline 化
     /// が完了している状態を保証する（Spec「instruction ↔ 入力経路の分離」境界）。
     #[test]
-    fn plan_fix_workflow_steps_declare_input_contracts() {
+    fn spec_fix_workflow_steps_declare_input_contracts() {
         let wf = load_builtin_workflow_resolved("spec-driven-development")
             .expect("load must succeed")
             .expect("workflow must exist");
-        let plan_fix_step_names = ["plan_fix_policy", "plan_fix"];
-        for step_name in plan_fix_step_names {
+        let spec_fix_step_names = ["spec_fix_policy", "spec_fix"];
+        for step_name in spec_fix_step_names {
             let node = wf
                 .nodes
                 .iter()
@@ -1323,19 +1361,19 @@ mod tests {
         }
     }
 
-    /// plan-fix-policy / plan-fix instruction 本文が、前段 step 名・経路表現・
+    /// spec-fix-policy / spec-fix instruction 本文が、前段 step 名・経路表現・
     /// `{{task}}` テンプレ展開を一切含まないことを固定する。bug-* と同じ
     /// 「instruction ↔ 入力経路の分離」境界を plan-* 系にも適用する。
     #[test]
-    fn plan_fix_instructions_do_not_leak_route_information() {
-        let instruction_keys: &[&str] = &["plan-fix-policy", "plan-fix"];
+    fn spec_fix_instructions_do_not_leak_route_information() {
+        let instruction_keys: &[&str] = &["spec-fix-policy", "spec-fix"];
         let forbidden_route_substrings: &[&str] = &["の出力経由", "から渡された", "{{task}}"];
         let forbidden_step_names: &[&str] = &[
-            "plan_requirements",
-            "plan_review_parallel",
-            "plan_fix_policy",
-            "plan_fix",
-            "plan_approval",
+            "write_requirements",
+            "spec_review_parallel",
+            "spec_fix_policy",
+            "spec_fix",
+            "approve_spec",
         ];
 
         for key in instruction_keys {
